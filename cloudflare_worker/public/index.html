@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ForkMesh</title>
+    <meta name="description" content="ForkMesh is a distributed source-code preservation and collaboration network.">
+    <link rel="stylesheet" href="styles.css">
+    <script src="catalog.js" defer></script>
+    <script src="chat.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="#top" aria-label="ForkMesh home">
+          <img src="assets/forkmesh-mark.svg" alt="" width="32" height="32">
+          <span>ForkMesh</span>
+        </a>
+        <label class="search" aria-label="Search">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M10.7 9.5a6 6 0 1 0-1.2 1.2l3.4 3.4 1.2-1.2-3.4-3.4ZM6 10.5A4.5 4.5 0 1 1 6 1.5a4.5 4.5 0 0 1 0 9Z"/>
+          </svg>
+          <input type="search" placeholder="Search or jump to...">
+        </label>
+        <nav class="global-nav" aria-label="Global">
+          <a href="#code">Code</a>
+          <a href="#catalog">Repositories</a>
+          <a href="#network">Network</a>
+          <a href="#readme">Docs</a>
+          <a href="#roadmap">Roadmap</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="repo-heading" aria-labelledby="repo-title">
+        <div class="repo-heading-inner">
+          <div class="repo-title-line">
+            <svg class="repo-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 2.75A1.75 1.75 0 0 1 4.75 1h6.5A1.75 1.75 0 0 1 13 2.75v10.5A1.75 1.75 0 0 1 11.25 15h-6.5A1.75 1.75 0 0 1 3 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .14.11.25.25.25h6.5c.14 0 .25-.11.25-.25V2.75a.25.25 0 0 0-.25-.25Zm1 2.25h4.5v1.5h-4.5Zm0 3h4.5v1.5h-4.5Z"/>
+            </svg>
+            <h1 id="repo-title">
+              <a href="#top">forkmesh</a>
+              <span>/</span>
+              <strong>forkmesh</strong>
+            </h1>
+            <span class="badge">Public</span>
+          </div>
+          <div class="repo-actions" aria-label="Repository actions">
+            <a class="button" href="#activity">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 2.5c3.9 0 6.4 3.5 7 5.1-.6 1.6-3.1 5.1-7 5.1s-6.4-3.5-7-5.1C1.6 6 4.1 2.5 8 2.5Zm0 1.5C5.1 4 3.1 6.3 2.6 7.6c.5 1.3 2.5 3.6 5.4 3.6s4.9-2.3 5.4-3.6C12.9 6.3 10.9 4 8 4Zm0 1.2a2.4 2.4 0 1 1 0 4.8 2.4 2.4 0 0 1 0-4.8Z"/>
+              </svg>
+              Watch
+              <span>18</span>
+            </a>
+            <a class="button" href="#roadmap">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 .8 10.1 5l4.6.7-3.3 3.2.8 4.6L8 11.3l-4.1 2.2.8-4.6L1.4 5.7 6 5Z"/>
+              </svg>
+              Star
+              <span>426</span>
+            </a>
+            <a class="button" href="#network">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M5 3a2 2 0 1 1 1.5 1.94v1.32A2.75 2.75 0 0 0 9.25 9H10V4.94a2 2 0 1 1 1.5 0V9A1.5 1.5 0 0 1 10 10.5h-.75A4.25 4.25 0 0 1 5 6.25V4.94A2 2 0 0 1 5 3Zm-1 0a1 1 0 1 0 2 0 1 1 0 0 0-2 0Zm7-1a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/>
+              </svg>
+              Fork
+              <span>64</span>
+            </a>
+          </div>
+        </div>
+        <nav class="repo-tabs" aria-label="Repository">
+          <a class="active" href="#code">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m5.2 4.2-4 4 4 4 1.1-1.1L3.4 8.2l2.9-2.9Zm5.6 0-1.1 1.1 2.9 2.9-2.9 2.9 1.1 1.1 4-4Z"/>
+            </svg>
+            Code
+          </a>
+          <a href="#catalog">Repositories <span id="catalog-tab-count">0</span></a>
+          <a href="#issues">Issues <span>12</span></a>
+          <a href="#pulls">Pull requests <span>4</span></a>
+          <a href="#network">Discussions</a>
+          <a href="#activity">Insights</a>
+        </nav>
+      </section>
+
+      <div class="page-grid">
+        <div class="content-column">
+          <section id="network" class="network-panel" aria-labelledby="network-title">
+            <div class="network-copy">
+              <p class="eyebrow">Distributed source-code preservation</p>
+              <h2 id="network-title">A familiar Git workspace for mirrors, identities, and encrypted repo rooms.</h2>
+              <p>ForkMesh pairs local bare Git mirrors with signed identities and mainnode relay rooms, giving projects a path beyond one central forge.</p>
+              <div class="network-actions">
+                <a class="primary-button" href="#code">Browse code</a>
+                <a class="secondary-link" href="#readme">Read README</a>
+              </div>
+            </div>
+            <img class="network-image" src="assets/repo-network.svg" alt="ForkMesh repository network graphic" width="960" height="520">
+          </section>
+
+          <section id="catalog" class="catalog-card" aria-labelledby="catalog-title">
+            <div class="readme-header">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M2.75 1A1.75 1.75 0 0 0 1 2.75v8.5C1 12.22 1.78 13 2.75 13h2.5c.41 0 .75-.34.75-.75s-.34-.75-.75-.75h-2.5a.25.25 0 0 1-.25-.25v-8.5c0-.14.11-.25.25-.25h10.5c.14 0 .25.11.25.25v8.5c0 .14-.11.25-.25.25h-2.5a.75.75 0 0 0 0 1.5h2.5A1.75 1.75 0 0 0 15 11.25v-8.5A1.75 1.75 0 0 0 13.25 1Zm4.5 5.5a.75.75 0 0 1 1.5 0v6.19l1.22-1.22a.75.75 0 1 1 1.06 1.06l-2.5 2.5a.75.75 0 0 1-1.06 0l-2.5-2.5a.75.75 0 1 1 1.06-1.06l1.22 1.22Z"/>
+              </svg>
+              <h2 id="catalog-title">Network Repositories</h2>
+            </div>
+            <div class="catalog-toolbar">
+              <p>Local ForkMesh clients can publish signed mirror metadata here without exposing private filesystem paths.</p>
+              <span id="catalog-count">Loading</span>
+            </div>
+            <div id="catalog-list" class="catalog-list" aria-live="polite">
+              <div class="catalog-empty">Loading repository catalog...</div>
+            </div>
+          </section>
+
+          <section id="code" class="code-card" aria-labelledby="code-title">
+            <div class="code-toolbar">
+              <div class="branch-button">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M5 3a2 2 0 1 1 1.5 1.94v1.32A2.75 2.75 0 0 0 9.25 9H10V4.94a2 2 0 1 1 1.5 0V9A1.5 1.5 0 0 1 10 10.5h-.75A4.25 4.25 0 0 1 5 6.25V4.94A2 2 0 0 1 5 3Z"/>
+                </svg>
+                <span id="file-branch">files</span>
+              </div>
+              <h2 id="code-title">Repository files</h2>
+              <span id="file-meta" class="file-meta"></span>
+            </div>
+            <nav id="file-breadcrumb" class="file-breadcrumb" aria-label="File path"></nav>
+            <div id="file-list" class="file-list" role="list" aria-live="polite">
+              <div class="file-empty">Choose a repository under <a href="#catalog">Network Repositories</a> and select &ldquo;Browse files&rdquo; to traverse its tree.</div>
+            </div>
+            <div id="file-viewer" class="file-viewer" hidden>
+              <div class="file-viewer-bar">
+                <button id="file-viewer-back" type="button" class="file-viewer-back">&larr; Back</button>
+                <span id="file-viewer-path" class="file-viewer-path"></span>
+              </div>
+              <pre id="file-viewer-body" class="file-viewer-body"></pre>
+            </div>
+          </section>
+
+          <section id="readme" class="readme-card" aria-labelledby="readme-title">
+            <div class="readme-header">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M2.5 1.75A1.75 1.75 0 0 1 4.25 0h8A1.75 1.75 0 0 1 14 1.75v11.5A1.75 1.75 0 0 1 12.25 15h-8a1.75 1.75 0 0 1-1.75-1.75ZM4.25 1.5a.25.25 0 0 0-.25.25v11.5c0 .14.11.25.25.25h8c.14 0 .25-.11.25-.25V1.75a.25.25 0 0 0-.25-.25Zm1 3h6v1.25h-6Zm0 2.5h6v1.25h-6Zm0 2.5h3.75v1.25H5.25Z"/>
+              </svg>
+              <h2 id="readme-title">README</h2>
+            </div>
+            <div class="readme-body">
+              <h3>ForkMesh</h3>
+              <p>ForkMesh is an open-source desktop node and relay prototype for hosting, mirroring, discovering, and discussing software projects without depending on one central code-hosting company.</p>
+              <div class="readme-grid">
+                <article id="qt-client">
+                  <h4>Desktop node</h4>
+                  <p>Qt 6 app with Ed25519 identity keys, local bare Git mirrors, profile metadata, BCH address fields, and repository-scoped chat channels.</p>
+                </article>
+                <article id="cloudflare-worker">
+                  <h4>Mainnode relay</h4>
+                  <p>Python Cloudflare Worker routes encrypted WebSocket traffic through Durable Object rooms without storing message bodies.</p>
+                </article>
+                <article>
+                  <h4>Repository model</h4>
+                  <p>Projects are represented by signed metadata, clone URLs, mirror health, contribution objects, and optional funding metadata.</p>
+                </article>
+                <article>
+                  <h4>Federation path</h4>
+                  <p>Mainnodes can publish catalogs, host leaderboards, relay rooms, and mirror-health indexes while users keep their own identities.</p>
+                </article>
+              </div>
+              <pre><code>git clone --mirror &lt;url&gt; &lt;app-data&gt;/mirrors/&lt;owner&gt;-&lt;repo&gt;.git
+ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws</code></pre>
+            </div>
+          </section>
+
+          <section id="roadmap" class="roadmap-card" aria-labelledby="roadmap-title">
+            <div class="readme-header">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M2 2.75A.75.75 0 0 1 2.75 2h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 2.75Zm0 5A.75.75 0 0 1 2.75 7h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 7.75Zm0 5A.75.75 0 0 1 2.75 12h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 12.75Z"/>
+              </svg>
+              <h2 id="roadmap-title">Next</h2>
+            </div>
+            <div class="roadmap-list">
+              <div><span></span>Signed issues, comments, pull requests, releases, endorsements, and mirror-health reports</div>
+              <div><span></span>Mainnode repository catalogs with tags, clone URLs, BCH metadata, and host counts</div>
+              <div><span></span>Leaderboards for hosted repositories, uptime, contributor activity, and project funding</div>
+              <div><span></span>BCH registration and community faucet flow for Sybil resistance</div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="sidebar" aria-label="Repository sidebar">
+          <section class="side-section">
+            <h2>About</h2>
+            <p>A distributed Git preservation and collaboration network with local mirrors, signed identities, encrypted chat, and federated mainnodes.</p>
+            <a class="link-row" href="#network">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M7.78 2.25a.75.75 0 0 1 .44 0l6.25 2a.75.75 0 0 1 0 1.43l-2.2.7v3.73a.75.75 0 0 1-.32.61l-3.5 2.5a.75.75 0 0 1-.9 0l-3.5-2.5a.75.75 0 0 1-.32-.61V6.38l-2.2-.7a.75.75 0 0 1 0-1.43Zm.22 1.5L4.2 5 8 6.22 11.8 5Zm-2.77 3.1v2.87L8 11.7l2.77-1.98V6.85L8.22 7.67a.75.75 0 0 1-.44 0Z"/>
+              </svg>
+              Source preservation network
+            </a>
+          </section>
+
+          <section class="side-section">
+            <h2>Topics</h2>
+            <div class="topics">
+              <a href="#code">git</a>
+              <a href="#network">mirrors</a>
+              <a href="#network">federation</a>
+              <a href="#cloudflare-worker">cloudflare-workers</a>
+              <a href="#qt-client">qt6</a>
+              <a href="#readme">encrypted-chat</a>
+            </div>
+          </section>
+
+          <section id="activity" class="side-section">
+            <h2>Activity</h2>
+            <dl class="stats">
+              <div><dt>Stars</dt><dd>426</dd></div>
+              <div><dt>Forks</dt><dd>64</dd></div>
+              <div><dt>Watchers</dt><dd>18</dd></div>
+              <div><dt>Mirrors</dt><dd>128</dd></div>
+            </dl>
+          </section>
+
+          <section id="issues" class="side-section">
+            <h2>Issues</h2>
+            <div class="mini-list">
+              <a href="#roadmap"><span class="status open"></span> Signed collaboration objects</a>
+              <a href="#roadmap"><span class="status open"></span> Mainnode catalog search</a>
+              <a href="#roadmap"><span class="status closed"></span> Repo-centric relay routes</a>
+            </div>
+          </section>
+
+          <section id="pulls" class="side-section">
+            <h2>Pull requests</h2>
+            <div class="mini-list">
+              <a href="#roadmap"><span class="status review"></span> Mirror-health object schema</a>
+              <a href="#roadmap"><span class="status open"></span> Leaderboard indexing pass</a>
+            </div>
+          </section>
+
+          <section id="download" class="side-section">
+            <h2>Clone</h2>
+            <label class="clone-box">
+              <span>HTTPS</span>
+              <input value="https://mainnode.local/forkmesh/forkmesh.git" readonly>
+            </label>
+          </section>
+
+          <section id="clients" class="side-section">
+            <h2>Connected clients</h2>
+            <div class="clients-status" aria-live="polite">
+              <span class="clients-dot" id="clients-dot"></span>
+              <span id="clients-count">Checking&hellip;</span>
+            </div>
+            <p class="clients-note">Live links to the mainnode <code>general</code> room.</p>
+          </section>
+
+          <section id="roomchat" class="side-section">
+            <h2>Room chat</h2>
+            <p class="clients-note">Chat with connected ForkMesh clients in the public <code>#general</code> room. Messages are end-to-end encrypted in your browser.</p>
+            <div id="chat-log" class="chat-log" aria-live="polite">
+              <div class="chat-empty">Type below to join the room.</div>
+            </div>
+            <div class="chat-compose">
+              <input id="chat-name" class="chat-name" type="text" maxlength="32" placeholder="Your name" autocomplete="off">
+              <div class="chat-row">
+                <input id="chat-input" class="chat-input" type="text" maxlength="16000" placeholder="Message #general" autocomplete="off">
+                <button id="chat-send" class="chat-send" type="button">Send</button>
+              </div>
+              <span id="chat-status" class="chat-status">Not connected</span>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>
