@@ -1,0 +1,8 @@
+[
+  {
+    "title": "v1",
+    "due": 0,
+    "status": "open",
+    "description": "First federated release: security, PRs, accounts."
+  }
+]
