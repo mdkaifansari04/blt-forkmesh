@@ -4,7 +4,7 @@ number: 18
 title: show the open / closed status in the issue list
 status: open
 labels: []
-milestone: 
+milestone: v1
 assignees: []
 createdAt: 1781654112185
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
