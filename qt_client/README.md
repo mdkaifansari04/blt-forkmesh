@@ -100,3 +100,6 @@ any public clone URL you provide are sent to the mainnode.
 - Repository catalog path: `/api/repositories`
 - Compatibility WebSocket path: `/api/room/{room}/ws`
 - The client encrypts room traffic before sending it to the mainnode.
+
+
+- File browsing/clone are **pure live**: served on demand from a connected host, nothing stored on relay. No host = unavailable (website caches browsed data in localStorage). Keeps relay lean / free-plan-hostable.
