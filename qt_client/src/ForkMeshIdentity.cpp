@@ -171,11 +171,14 @@ QJsonObject ForkMeshIdentity::signedProfile(const QString &name,
 
 QString ForkMeshIdentity::signJson(const QJsonObject &object) const
 {
+    return signData(QJsonDocument(object).toJson(QJsonDocument::Compact));
+}
+
+QString ForkMeshIdentity::signData(const QByteArray &payload) const
+{
     if (!m_key)
         return {};
 
-    const QByteArray payload =
-        QJsonDocument(object).toJson(QJsonDocument::Compact);
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     if (!ctx)
         return {};

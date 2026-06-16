@@ -90,16 +90,29 @@ QPushButton#navButton:checked { background-color: #16a34a; color: #f0fdf4; }
 
 /* --- Home --- */
 #homeCard {
-    background-color: #1f2937; border: 1px solid #374151; border-radius: 12px;
+    background-color: #172033; border: 1px solid #334155; border-radius: 14px;
 }
 #homeCard QLabel { background: transparent; }
 #homeTitle { font-size: 24px; font-weight: 800; }
 #homeName { font-size: 18px; font-weight: 700; }
 #homeStat { color: #d1d5db; font-size: 14px; }
+#homeScoreBoard {
+    background-color: #0b1220; border: 1px solid #334155; border-radius: 12px;
+}
+#homeScoreValue {
+    color: #fef3c7; font-size: 18px; font-weight: 800; background: transparent;
+}
+#homeGraph {
+    background-color: #07111f; border: 1px solid #164e63; border-radius: 10px;
+    color: #7dd3fc; font-family: monospace; font-size: 12px; padding: 10px;
+}
 #homeCard QListWidget {
     background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 4px;
 }
-#homeCard QListWidget::item { color: #d1d5db; padding: 4px 6px; }
+#homeCard QListWidget::item { color: #d1d5db; padding: 8px 7px; margin: 2px; }
+QPushButton#primaryButton:disabled {
+    background-color: #334155; color: #94a3b8;
+}
 
 /* --- Danger button (Leave node) --- */
 QPushButton#dangerButton {

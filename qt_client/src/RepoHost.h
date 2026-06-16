@@ -27,6 +27,9 @@ public:
 
 signals:
     void log(const QString &line);
+    // Emitted whenever a web request is served for this repo; clone=true for a
+    // git clone (upload-pack) so the client can count relays and clones.
+    void requestServed(const QString &owner, const QString &name, bool clone);
 
 private:
     void connectSocket();
@@ -34,11 +37,17 @@ private:
     void onTransportReady();
     void onReadyRead();
     void sendText(const QByteArray &payload);
+    void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void handleFrame(const QByteArray &payload);
     void handleRequest(const QJsonObject &request);
     QString baseRef() const;
     QJsonObject buildTreeReply(const QString &path) const;
     QJsonObject buildBlobReply(const QString &path) const;
+    // Run git upload-pack and stream stdout back as git-chunk/git-end messages.
+    void runGitStream(const QString &reqId, const QStringList &args,
+                      const QByteArray &input);
+    void sendGitChunk(const QString &reqId, const QByteArray &data);
+    void sendGitEnd(const QString &reqId, bool ok, const QString &error);
     void scheduleReconnect();
 
     QTcpSocket *m_socket = nullptr;
@@ -51,4 +60,5 @@ private:
     bool m_wsReady = false;
     bool m_stopping = false;
     QTimer *m_reconnect = nullptr;
+    QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
 };

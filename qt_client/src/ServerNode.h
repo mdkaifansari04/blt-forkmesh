@@ -10,12 +10,15 @@
 #include <QTcpSocket>
 #include <QUrl>
 
+class QTimer;
+
 class ServerNode : public ChatBackend
 {
     Q_OBJECT
 public:
     ServerNode(const QString &userName, const QUrl &serverUrl,
                const QString &roomName, const QString &passphrase,
+               const QString &bchAddress,
                QObject *parent = nullptr);
 
     bool start();
@@ -38,6 +41,7 @@ public:
 private:
     struct Peer {
         QString name;
+        QString bchAddress;
         qint64 lastSeenMs = 0;
         bool online = true;
     };
@@ -48,6 +52,7 @@ private:
     void onConnectedTransport();
     void processFrame(const QByteArray &payload);
     void sendTextFrame(const QByteArray &payload);
+    void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void sendEncrypted(const QJsonObject &plain, bool showActivity = false);
     void sendHello();
     void sendHistoryTo(const QString &peerId);
@@ -56,7 +61,8 @@ private:
     void handlePlain(const QJsonObject &message);
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
-    void rememberPeer(const QString &peerId, const QString &name, bool online = true);
+    void rememberPeer(const QString &peerId, const QString &name,
+                      const QString &bchAddress = QString(), bool online = true);
     void updateRosterAndStatus();
     void storeHistory(const QJsonObject &message);
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
@@ -71,6 +77,7 @@ private:
     QString m_userName;
     QUrl m_url;
     QString m_roomName;
+    QString m_bchAddress;
     QString m_nodeId;
     // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so
     // members are only recalled for the exact same encrypted room.
@@ -80,6 +87,7 @@ private:
     QByteArray m_readBuffer;
     QByteArray m_wsKey;
     bool m_wsReady = false;
+    QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
 
     QStringList m_channels{"#general", "#random"};
     QHash<QString, Peer> m_peers;

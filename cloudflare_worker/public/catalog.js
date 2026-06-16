@@ -1,40 +1,16 @@
 const list = document.querySelector("#catalog-list");
 const count = document.querySelector("#catalog-count");
-const tabCount = document.querySelector("#catalog-tab-count");
+
+// Catalog records keyed "owner/name", so the repo page can show description
+// and clone URL for whichever repository is open.
+const repoIndex = new Map();
 
 function text(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-// Mirror the desktop client's repoSegment() so deep-link anchors match the
-// URLs it generates (lowercase, [a-z0-9_-], collapsed dashes, max 48 chars).
-function slug(value, fallback) {
-  let out = "";
-  let lastDash = false;
-  for (const ch of String(value || "").toLowerCase()) {
-    if (/[a-z0-9_-]/.test(ch)) {
-      out += ch;
-      lastDash = false;
-    } else if (!lastDash) {
-      out += "-";
-      lastDash = true;
-    }
-  }
-  out = out.replace(/^-+/, "").replace(/-+$/, "");
-  return (out || fallback).slice(0, 48);
-}
-
-function repoAnchor(repo) {
-  return `repo-${slug(repo.owner, "owner")}-${slug(repo.name, "repository")}`;
-}
-
-// After the async catalog renders, jump to and highlight a linked repository.
-function highlightHash() {
-  if (!location.hash) return;
-  const target = document.getElementById(location.hash.slice(1));
-  if (!target) return;
-  target.scrollIntoView({ behavior: "smooth", block: "center" });
-  target.classList.add("catalog-item-highlight");
+function repoRoute(owner, name) {
+  return `#repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
 }
 
 function formatDate(value) {
@@ -52,7 +28,7 @@ function formatDate(value) {
 function render(repositories) {
   const repos = Array.isArray(repositories) ? repositories : [];
   count.textContent = `${repos.length} mirrored`;
-  tabCount.textContent = String(repos.length);
+  repoIndex.clear();
 
   if (!repos.length) {
     list.innerHTML = `<div class="catalog-empty">No repositories have been published yet.</div>`;
@@ -61,17 +37,18 @@ function render(repositories) {
 
   list.replaceChildren(
     ...repos.map((repo) => {
-      const item = document.createElement("article");
+      repoIndex.set(`${repo.owner}/${repo.name}`, repo);
+
+      // The whole card is a link to the repository's own page.
+      const item = document.createElement("a");
       item.className = "catalog-item";
-      item.id = repoAnchor(repo);
+      item.href = repoRoute(repo.owner, repo.name);
 
       const header = document.createElement("div");
       header.className = "catalog-item-header";
-
       const title = document.createElement("h3");
       title.textContent = `${text(repo.owner, "owner")}/${text(repo.name, "repository")}`;
       header.append(title);
-
       const status = document.createElement("span");
       status.className = "catalog-status";
       status.textContent = text(repo.source, "local-node");
@@ -90,43 +67,18 @@ function render(repositories) {
       maintainer.textContent = `Maintainer ${text(repo.maintainer).slice(0, 12)}...`;
       meta.append(channel, synced, maintainer);
 
-      item.append(header, description, meta);
+      const open = document.createElement("span");
+      open.className = "catalog-open";
+      open.textContent = "Open repository →";
 
-      const actions = document.createElement("div");
-      actions.className = "catalog-actions";
-      const browse = document.createElement("button");
-      browse.type = "button";
-      browse.className = "catalog-browse";
-      browse.textContent = "Browse files";
-      browse.addEventListener("click", () => {
-        loadFiles(repo.owner, repo.name).then(() => {
-          document.querySelector("#code").scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        });
-      });
-      actions.append(browse);
-
-      if (text(repo.cloneUrl)) {
-        const link = document.createElement("a");
-        link.className = "catalog-clone";
-        link.href = repo.cloneUrl;
-        link.textContent = repo.cloneUrl;
-        actions.append(link);
-      }
-      item.append(actions);
-
+      item.append(header, description, meta, open);
       return item;
     })
   );
 
-  highlightHash();
-
-  // Show the most recently updated repository's files by default.
-  if (repos.length && !fileState) {
-    loadFiles(repos[0].owner, repos[0].name);
-  }
+  // If a repo page is already open (deep link / reload), fill in its details
+  // now that the catalog has loaded.
+  if (currentRepo) openRepoPage(currentRepo.owner, currentRepo.name);
 }
 
 // ---- Live file browser (tunnels to a connected client; caches in the browser)
@@ -237,6 +189,45 @@ function showViewer() {
   if (viewerEl) viewerEl.hidden = false;
 }
 
+function showViewerMessage(message) {
+  if (!viewerBodyEl) return;
+  viewerBodyEl.replaceChildren();
+  const note = document.createElement("div");
+  note.className = "file-viewer-message";
+  note.textContent = message;
+  viewerBodyEl.append(note);
+}
+
+function appendViewerNotice(message) {
+  if (!viewerBodyEl) return;
+  const note = document.createElement("div");
+  note.className = "file-viewer-notice";
+  note.textContent = message;
+  viewerBodyEl.append(note);
+}
+
+function renderCode(content) {
+  if (!viewerBodyEl) return;
+  viewerBodyEl.replaceChildren();
+  let lines = String(content || "").split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines = lines.slice(0, -1);
+  if (!lines.length) lines = [""];
+  const fragment = document.createDocumentFragment();
+  lines.forEach((line, index) => {
+    const row = document.createElement("div");
+    row.className = "code-line";
+    const number = document.createElement("span");
+    number.className = "line-number";
+    number.textContent = String(index + 1);
+    const code = document.createElement("span");
+    code.className = "line-code";
+    code.textContent = line || " ";
+    row.append(number, code);
+    fragment.append(row);
+  });
+  viewerBodyEl.append(fragment);
+}
+
 function loadFiles(owner, name) {
   if (!fileListEl) return Promise.resolve();
   fileState = { owner, name, dir: "" };
@@ -345,22 +336,22 @@ async function openBlob(path) {
   if (!fileState) return;
   const token = ++navToken;
   if (viewerPathEl) viewerPathEl.textContent = path;
-  if (viewerBodyEl) viewerBodyEl.textContent = "Loading…";
+  showViewerMessage("Loading...");
   showViewer();
   const { data, source, error } = await pullPath("blob", path);
   if (token !== navToken) return;
   setSource(source);
   if (!data) {
-    viewerBodyEl.textContent = unavailableMessage(error);
+    showViewerMessage(unavailableMessage(error));
     return;
   }
   if (data.encoding === "base64") {
-    viewerBodyEl.textContent = `[binary file — ${formatSize(data.size)}, not shown]`;
+    showViewerMessage(`[binary file - ${formatSize(data.size)}, not shown]`);
     return;
   }
-  viewerBodyEl.textContent = data.content || "";
+  renderCode(data.content || "");
   if (data.truncated) {
-    viewerBodyEl.textContent += "\n\n… file truncated by the host.";
+    appendViewerNotice("File truncated by the host.");
   }
 }
 
@@ -371,6 +362,162 @@ if (viewerBackEl) {
     openDir(fileState ? fileState.dir : "");
   });
 }
+
+// ---- Routing: home (repo list) vs. a single repository page ----------------
+
+const homeView = document.querySelector("#home-view");
+const repoView = document.querySelector("#repo-view");
+let currentRepo = null;
+
+function parseRoute() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash.startsWith("repo/")) {
+    const rest = hash.slice(5);
+    const slash = rest.indexOf("/");
+    if (slash > 0) {
+      return {
+        view: "repo",
+        owner: decodeURIComponent(rest.slice(0, slash)),
+        name: decodeURIComponent(rest.slice(slash + 1)),
+      };
+    }
+  }
+  return { view: "home" };
+}
+
+function route() {
+  const r = parseRoute();
+  if (r.view === "repo") {
+    currentRepo = { owner: r.owner, name: r.name };
+    if (homeView) homeView.hidden = true;
+    if (repoView) repoView.hidden = false;
+    window.scrollTo(0, 0);
+    openRepoPage(r.owner, r.name);
+  } else {
+    currentRepo = null;
+    if (repoView) repoView.hidden = true;
+    if (homeView) homeView.hidden = false;
+  }
+}
+
+function openRepoPage(owner, name) {
+  const titleEl = document.querySelector("#repo-page-title");
+  const descEl = document.querySelector("#repo-page-desc");
+  const cloneInput = document.querySelector("#repo-clone-input");
+  const cloneNote = document.querySelector("#repo-clone-note");
+  if (titleEl) {
+    titleEl.textContent = "";
+    const ownerSpan = document.createElement("span");
+    ownerSpan.textContent = owner + " / ";
+    const nameStrong = document.createElement("strong");
+    nameStrong.textContent = name;
+    titleEl.append(ownerSpan, nameStrong);
+  }
+  const repo = repoIndex.get(`${owner}/${name}`);
+  if (descEl) descEl.textContent = repo ? text(repo.description, "") : "";
+  if (cloneInput && cloneNote) {
+    // Clone straight from the mainnode; it streams live from the hosting client.
+    cloneInput.value = `${location.origin}/${owner}/${name}`;
+    cloneInput.placeholder = "";
+    cloneNote.textContent =
+      "git clone streams live from the client hosting this repo (it must be online).";
+  }
+  resetDownloadProgress();
+  loadFiles(owner, name);
+}
+
+window.addEventListener("hashchange", route);
+
+// ---- Download the whole repo into the browser (localStorage) with progress --
+
+const downloadBtn = document.querySelector("#download-repo");
+const downloadProgress = document.querySelector("#download-progress");
+const downloadFill = document.querySelector("#download-bar-fill");
+const downloadText = document.querySelector("#download-progress-text");
+let downloading = false;
+
+function resetDownloadProgress() {
+  if (downloadProgress) downloadProgress.hidden = true;
+  if (downloadFill) downloadFill.style.width = "0%";
+  if (downloadText) downloadText.textContent = "";
+  if (downloadBtn) downloadBtn.disabled = false;
+}
+
+function setDownloadProgress(fraction, message) {
+  if (downloadProgress) downloadProgress.hidden = false;
+  const safeFraction = Math.max(0, Math.min(1, Number(fraction) || 0));
+  if (downloadFill) downloadFill.style.width = `${Math.round(safeFraction * 100)}%`;
+  if (downloadText) downloadText.textContent = message;
+}
+
+// Walk every directory live to enumerate all file paths (each tree is cached).
+async function collectBlobPaths() {
+  const blobs = [];
+  const queue = [""];
+  let first = true;
+  let rootOk = false;
+  while (queue.length) {
+    const dir = queue.shift();
+    const { data } = await pullPath("tree", dir);
+    if (first) {
+      rootOk = !!(data && Array.isArray(data.entries));
+      first = false;
+    }
+    if (!data || !Array.isArray(data.entries)) continue;
+    for (const entry of data.entries) {
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.type === "tree") queue.push(path);
+      else blobs.push(path);
+    }
+  }
+  return { blobs, rootOk };
+}
+
+async function downloadRepo() {
+  if (downloading || !fileState) return;
+  downloading = true;
+  if (downloadBtn) downloadBtn.disabled = true;
+  setDownloadProgress(0, "Scanning files…");
+
+  const { blobs, rootOk } = await collectBlobPaths();
+  if (!rootOk && !blobs.length) {
+    setDownloadProgress(0, "No client is hosting this repo right now — can't download.");
+    downloading = false;
+    if (downloadBtn) downloadBtn.disabled = false;
+    return;
+  }
+  if (!blobs.length) {
+    setDownloadProgress(1, "Saved the empty repository tree in browser local storage.");
+    downloading = false;
+    if (downloadBtn) downloadBtn.disabled = false;
+    if (fileState) openDir(fileState.dir);
+    return;
+  }
+
+  let done = 0;
+  let failed = 0;
+  for (const path of blobs) {
+    const { data } = await pullPath("blob", path); // caches each blob
+    if (!data) failed += 1;
+    done += 1;
+    setDownloadProgress(
+      done / blobs.length,
+      `Downloading ${done} / ${blobs.length} files into browser local storage…`
+    );
+  }
+
+  setDownloadProgress(
+    1,
+    failed
+      ? `Saved ${blobs.length - failed} of ${blobs.length} files (${failed} unavailable) in browser local storage.`
+      : `Saved ${blobs.length} files in browser local storage — browsable offline.`
+  );
+  downloading = false;
+  if (downloadBtn) downloadBtn.disabled = false;
+  if (fileState) openDir(fileState.dir); // refresh from cache
+}
+
+if (downloadBtn) downloadBtn.addEventListener("click", downloadRepo);
 
 async function loadCatalog() {
   try {

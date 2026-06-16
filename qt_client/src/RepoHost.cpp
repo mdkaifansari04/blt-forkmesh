@@ -75,6 +75,10 @@ RepoHost::RepoHost(const QString &owner, const QString &name,
     m_reconnect = new QTimer(this);
     m_reconnect->setSingleShot(true);
     connect(m_reconnect, &QTimer::timeout, this, [this] { connectSocket(); });
+
+    m_pingTimer = new QTimer(this);
+    m_pingTimer->setInterval(25000);
+    connect(m_pingTimer, &QTimer::timeout, this, [this] { sendControlFrame(0x9); });
 }
 
 void RepoHost::start()
@@ -87,6 +91,7 @@ void RepoHost::stop()
 {
     m_stopping = true;
     m_reconnect->stop();
+    m_pingTimer->stop();
     if (m_socket) {
         m_socket->disconnect(this);
         m_socket->abort();
@@ -162,6 +167,7 @@ void RepoHost::onReadyRead()
             return;
         }
         m_wsReady = true;
+        m_pingTimer->start();
         emit log("Host: serving " + m_owner + "/" + m_name + " live to the web.");
     }
 
@@ -204,6 +210,12 @@ void RepoHost::onReadyRead()
             for (int i = 0; i < payload.size(); ++i)
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
+        if (opcode == 0x9) { // ping -> pong
+            sendControlFrame(0xA, payload);
+            continue;
+        }
+        if (opcode == 0xA) // pong
+            continue;
         if (opcode == 0x8) {
             m_socket->disconnectFromHost();
             return;
@@ -242,6 +254,24 @@ void RepoHost::sendText(const QByteArray &payload)
     m_socket->write(frame);
 }
 
+void RepoHost::sendControlFrame(int opcode, const QByteArray &payload)
+{
+    if (!m_socket || !m_wsReady || payload.size() > 125)
+        return;
+    QByteArray frame;
+    frame.append(char(0x80 | (opcode & 0x0f)));
+    frame.append(char(0x80 | payload.size()));
+    QByteArray mask(4, Qt::Uninitialized);
+    for (int i = 0; i < 4; ++i)
+        mask[i] = char(QRandomGenerator::global()->bounded(256));
+    frame.append(mask);
+    QByteArray masked = payload;
+    for (int i = 0; i < masked.size(); ++i)
+        masked[i] = masked.at(i) ^ mask.at(i % 4);
+    frame.append(masked);
+    m_socket->write(frame);
+}
+
 void RepoHost::handleFrame(const QByteArray &payload)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(payload);
@@ -259,6 +289,23 @@ void RepoHost::handleRequest(const QJsonObject &request)
     if (reqId.isEmpty())
         return;
 
+    emit requestServed(m_owner, m_name, op == "git-upload-pack");
+
+    // Git smart-HTTP clone: stream the packfile/advertisement back in chunks.
+    if (op == "git-info-refs") {
+        runGitStream(reqId,
+                     {"upload-pack", "--stateless-rpc", "--advertise-refs",
+                      m_mirrorPath},
+                     QByteArray());
+        return;
+    }
+    if (op == "git-upload-pack") {
+        const QByteArray body =
+            QByteArray::fromBase64(request.value("body").toString().toLatin1());
+        runGitStream(reqId, {"upload-pack", "--stateless-rpc", m_mirrorPath}, body);
+        return;
+    }
+
     QJsonObject reply;
     if (!isSafeRepoPath(path)) {
         reply = QJsonObject{{"ok", false}, {"error", "bad_path"}};
@@ -275,6 +322,60 @@ void RepoHost::handleRequest(const QJsonObject &request)
     reply.insert("op", op);
     reply.insert("path", path);
     sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+}
+
+void RepoHost::runGitStream(const QString &reqId, const QStringList &args,
+                            const QByteArray &input)
+{
+    auto *process = new QProcess(this);
+    process->setProgram("git");
+    process->setArguments(args);
+    // Stream stdout as it arrives so large packfiles don't block the UI or
+    // exceed the relay's per-message size limit.
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [this, process, reqId] {
+                sendGitChunk(reqId, process->readAllStandardOutput());
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, reqId](int exitCode, QProcess::ExitStatus) {
+                sendGitChunk(reqId, process->readAllStandardOutput());
+                sendGitEnd(reqId, exitCode == 0,
+                           exitCode == 0 ? QString() : QStringLiteral("git_failed"));
+                process->deleteLater();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, reqId] {
+                sendGitEnd(reqId, false, QStringLiteral("git_error"));
+                process->deleteLater();
+            });
+    process->start();
+    if (!input.isEmpty())
+        process->write(input);
+    process->closeWriteChannel();
+}
+
+void RepoHost::sendGitChunk(const QString &reqId, const QByteArray &data)
+{
+    if (data.isEmpty())
+        return;
+    // Keep each WebSocket message comfortably under the relay's ~1 MiB cap.
+    constexpr int kChunk = 256 * 1024;
+    for (int i = 0; i < data.size(); i += kChunk) {
+        const QByteArray piece = data.mid(i, kChunk);
+        sendText(QJsonDocument(QJsonObject{
+                     {"type", "git-chunk"},
+                     {"reqId", reqId},
+                     {"data", QString::fromLatin1(piece.toBase64())}})
+                     .toJson(QJsonDocument::Compact));
+    }
+}
+
+void RepoHost::sendGitEnd(const QString &reqId, bool ok, const QString &error)
+{
+    QJsonObject message{{"type", "git-end"}, {"reqId", reqId}, {"ok", ok}};
+    if (!error.isEmpty())
+        message.insert("error", error);
+    sendText(QJsonDocument(message).toJson(QJsonDocument::Compact));
 }
 
 QString RepoHost::baseRef() const
@@ -361,6 +462,8 @@ QJsonObject RepoHost::buildBlobReply(const QString &path) const
 
 void RepoHost::scheduleReconnect()
 {
+    if (m_pingTimer)
+        m_pingTimer->stop();
     if (m_stopping)
         return;
     m_wsReady = false;
