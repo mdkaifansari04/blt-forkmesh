@@ -48,7 +48,7 @@ ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws
 The deployed mainnode URL is:
 
 ```text
-wss://forkmesh-relay.forkmesh.workers.dev/api/repo/mainnode/forkmesh/rooms/general/ws
+wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws
 ```
 
 ## Deploy

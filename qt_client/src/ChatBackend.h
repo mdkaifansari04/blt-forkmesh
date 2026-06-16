@@ -14,6 +14,8 @@ struct MemberInfo {
     QString note;     // e.g. "(discovered)"
     bool self = false;
     bool online = false; // live link right now (green dot)
+    QString bchAddress;
+    QString bchBalance;  // reserved for a later balance indexer/API
 };
 
 // A single chat message delivered to the UI. `conversation` is either a

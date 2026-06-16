@@ -15,12 +15,12 @@
 
 class MessageRow;
 class RepoHost;
-class SettingsDialog;
 class QButtonGroup;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QNetworkAccessManager;
+class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QStackedWidget;
@@ -65,6 +65,10 @@ private:
     QWidget *buildHomeSection();
     QWidget *buildReposSection();
     QWidget *buildChatSection();
+    QWidget *buildSettingsSection();
+    void chooseAvatar();
+    void setSettingsAvatar(const QByteArray &pngData);
+    void rebuildAndRelaunch();
     void showSection(int index);
     void updateHomeStats();
     void attachBackend(ChatBackend *backend);
@@ -113,13 +117,15 @@ private:
     QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
     void stopRepoHosts();
+    void onRequestServed(const QString &owner, const QString &name, bool clone);
+    void loadRepoStats();
+    void saveRepoStats() const;
     QString repositorySource(const RepositoryRecord &repo) const;
     QString repositoryChannel(const RepositoryRecord &repo) const;
     QString repositoryMirrorRoot() const;
     QString repositoryWebUrl(const RepositoryRecord &repo) const;
     void updateRepoWebLink();
     QUrl catalogApiUrl() const;
-    void openSettings();
     void onDisplayNameChanged(const QString &name);
     void onAvatarChosen(const QByteArray &pngData);
     void showFirewallBanner(const QString &displayCommand,
@@ -143,8 +149,11 @@ private:
     QLabel *m_homeStatus = nullptr;
     QLabel *m_homePubkey = nullptr;
     QLabel *m_homeStats = nullptr;
+    QLabel *m_homeTotals = nullptr;
+    QLabel *m_homeGraph = nullptr;
     QLabel *m_homeNodes = nullptr;
     QListWidget *m_homeNodeList = nullptr;
+    QPushButton *m_homeSponsorButton = nullptr;
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -157,6 +166,10 @@ private:
     QLabel *m_setupError;
     QPushButton *m_updateButton;
     QLabel *m_updateStatus;
+    // Active build flow's status label and button (Quick update vs. Settings
+    // rebuild), so the shared build steps report to the right place.
+    QLabel *m_buildStatusLabel = nullptr;
+    QPushButton *m_buildButton = nullptr;
 
     // Chat widgets
     QLabel *m_statusLine;
@@ -182,11 +195,19 @@ private:
     QLabel *m_typingLabel;
     QLineEdit *m_messageInput;
 
-    SettingsDialog *m_settingsDialog = nullptr;
+    // Settings section widgets
+    QLineEdit *m_settingsNameEdit = nullptr;
+    QLabel *m_settingsAvatarPreview = nullptr;
+    QPlainTextEdit *m_settingsLog = nullptr;
+    QPushButton *m_rebuildButton = nullptr;
+    QLabel *m_rebuildStatus = nullptr;
 
     QStringList m_channels;
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
+    QList<MemberInfo> m_homeRoster;
+    // "owner/name" -> { times served through the mainnode, clones }.
+    QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
     QString m_currentConversation;
     // Per-conversation message log and the live rows for the open conversation.
@@ -204,4 +225,8 @@ private:
     QByteArray m_userAvatar;
     QString m_typingConversation;
     QTimer *m_typingStopTimer;
+    QTimer *m_homeStatsTimer = nullptr;
+    qint64 m_connectedAtMs = 0;
+    qint64 m_totalConnectionMs = 0;
+    QList<int> m_connectionMinuteSamples;
 };

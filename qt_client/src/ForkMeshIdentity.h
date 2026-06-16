@@ -33,6 +33,9 @@ public:
                               const QString &bio = QString(),
                               const QString &website = QString()) const;
     QString signJson(const QJsonObject &object) const;
+    // Sign arbitrary bytes (e.g. a canonical account/auth string). Returns a
+    // base64url Ed25519 signature, matching signJson's encoding.
+    QString signData(const QByteArray &payload) const;
 
 private:
     bool generate(const QString &keyPath);

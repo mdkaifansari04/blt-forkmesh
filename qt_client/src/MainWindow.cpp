@@ -3,20 +3,22 @@
 #include "MessageRow.h"
 #include "RepoHost.h"
 #include "ServerNode.h"
-#include "SettingsDialog.h"
 #include "Theme.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -31,7 +33,10 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QImage>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
@@ -44,6 +49,8 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
@@ -62,8 +69,6 @@ const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
 const QString kLocalServerUrl =
     QStringLiteral("ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws");
-const QString kWorkersDevServerUrl =
-    QStringLiteral("wss://forkmesh-relay.forkmesh.workers.dev/api/repo/mainnode/forkmesh/rooms/general/ws");
 const QString kDefaultServerUrl =
     QStringLiteral("wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws");
 const QString kRoomNameSetting = QStringLiteral("server/room");
@@ -71,7 +76,9 @@ const QString kPassphraseSetting = QStringLiteral("server/passphrase");
 const QString kDefaultRoomName = QStringLiteral("general");
 const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
+const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 constexpr int kNetworkLogLimit = 2000;
+constexpr int kHomeGraphSampleLimit = 18;
 
 // Directory holding client/CMakeLists.txt to update from: the build-time
 // checkout when it still exists, otherwise a persistent clone managed by the
@@ -184,6 +191,57 @@ QString formatRepoDate(qint64 timestampMs)
     return QDateTime::fromMSecsSinceEpoch(timestampMs).toString("yyyy-MM-dd hh:mm");
 }
 
+QString formatDuration(qint64 ms)
+{
+    const qint64 totalSeconds = std::max<qint64>(0, ms / 1000);
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+    if (hours > 0)
+        return QStringLiteral("%1h %2m").arg(hours).arg(minutes, 2, 10, QChar('0'));
+    if (minutes > 0)
+        return QStringLiteral("%1m %2s").arg(minutes).arg(seconds, 2, 10, QChar('0'));
+    return QStringLiteral("%1s").arg(seconds);
+}
+
+QString compactAddress(QString address)
+{
+    address = address.trimmed();
+    if (address.size() <= 30)
+        return address;
+    return address.left(18) + QStringLiteral("...") + address.right(8);
+}
+
+QString sponsorUrlFor(QString address)
+{
+    address = address.trimmed();
+    if (address.isEmpty())
+        return {};
+    if (address.startsWith(QStringLiteral("bitcoincash:"), Qt::CaseInsensitive))
+        return address;
+    return QStringLiteral("bitcoincash:") + address;
+}
+
+QString connectionGraphText(const QList<int> &samples)
+{
+    if (samples.isEmpty())
+        return QStringLiteral("00m [.       ] 0");
+
+    QStringList lines;
+    const int first = std::max(0, int(samples.size()) - kHomeGraphSampleLimit);
+    for (int i = first; i < samples.size(); ++i) {
+        const int count = std::max(0, samples.at(i));
+        const int marks = count == 0 ? 1 : std::min(8, count);
+        QString bar(marks, count == 0 ? QChar('.') : QChar('#'));
+        bar = bar.leftJustified(8, QChar('.'));
+        lines << QStringLiteral("%1m [%2] %3")
+                     .arg(i, 2, 10, QChar('0'))
+                     .arg(bar)
+                     .arg(count);
+    }
+    return lines.join('\n');
+}
+
 QString defaultDisplayName(const ForkMeshIdentity &identity)
 {
     const QString suffix = identity.shortPublicKey().left(8);
@@ -224,6 +282,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_trayIcon->show();
 
     m_networkAccess = new QNetworkAccessManager(this);
+    m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildSetupPage());
@@ -237,6 +296,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_typingStopTimer, &QTimer::timeout, this, [this] {
         sendTypingState(false);
     });
+    m_homeStatsTimer = new QTimer(this);
+    connect(m_homeStatsTimer, &QTimer::timeout, this, &MainWindow::updateHomeStats);
+    m_homeStatsTimer->start(60000);
 
     if (!m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
@@ -293,9 +355,11 @@ QWidget *MainWindow::buildSetupPage()
     m_serverUrlEdit->setPlaceholderText(kDefaultServerUrl);
     m_serverUrlEdit->setMaxLength(2048);
     const QString savedServerUrl = QSettings().value(kServerUrlSetting).toString().trimmed();
+    const bool legacyWorkersDevUrl = QUrl(savedServerUrl).host().endsWith(
+        QStringLiteral(".workers.dev"));
     m_serverUrlEdit->setText(
         savedServerUrl.isEmpty() || savedServerUrl == kLocalServerUrl ||
-                savedServerUrl == kWorkersDevServerUrl
+                legacyWorkersDevUrl
             ? kDefaultServerUrl
             : savedServerUrl);
     m_roomNameEdit = new QLineEdit;
@@ -412,6 +476,11 @@ void MainWindow::startSession()
     persistProfile();
     m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
 
+    // Seed the Settings section's profile controls.
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_userName);
+    setSettingsAvatar(m_userAvatar);
+
     // Reset chat state.
     m_channels.clear();
     m_currentConversation.clear();
@@ -435,12 +504,15 @@ void MainWindow::startSession()
     QSettings().setValue(kPassphraseSetting, m_passphraseEdit->text());
     const QUrl url(m_serverUrlEdit->text().trimmed());
     auto *server = new ServerNode(name, url, m_roomNameEdit->text().trimmed(),
-                                  m_passphraseEdit->text(), this);
+                                  m_passphraseEdit->text(),
+                                  m_bchEdit->text().trimmed(), this);
     attachBackend(server);
     if (!server->start())
         return;
 
     if (m_backend) {
+        if (m_connectedAtMs <= 0)
+            m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
         if (!m_userAvatar.isEmpty())
             m_backend->setAvatar(m_userAvatar);
         for (const RepositoryRecord &repo : std::as_const(m_repositories))
@@ -480,10 +552,13 @@ void MainWindow::persistProfile()
 
 void MainWindow::setUpdateStatus(const QString &status, bool isError)
 {
-    m_updateStatus->setStyleSheet(isError ? "color:#ff6b6b; background:transparent;"
-                                          : "color:#9ca3af; background:transparent;");
-    m_updateStatus->setText(status);
-    m_updateStatus->show();
+    QLabel *label = m_buildStatusLabel ? m_buildStatusLabel : m_updateStatus;
+    if (!label)
+        return;
+    label->setStyleSheet(isError ? "color:#ff6b6b; background:transparent;"
+                                  : "color:#9ca3af; background:transparent;");
+    label->setText(status);
+    label->show();
 }
 
 void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
@@ -499,7 +574,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                 process->deleteLater();
                 if (exitCode != 0) {
                     setUpdateStatus("Update failed: " + errors.right(300), true);
-                    m_updateButton->setEnabled(true);
+                    if (m_buildButton)
+                        m_buildButton->setEnabled(true);
                     return;
                 }
                 onSuccess();
@@ -507,7 +583,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
     connect(process, &QProcess::errorOccurred, this, [this, process] {
         setUpdateStatus("Update failed: could not run " + process->program(), true);
         process->deleteLater();
-        m_updateButton->setEnabled(true);
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
     });
     process->start(program, arguments);
 }
@@ -515,6 +592,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 void MainWindow::runQuickUpdate()
 {
     saveDisplayName(m_nameEdit->text());
+    m_buildButton = m_updateButton;
+    m_buildStatusLabel = m_updateStatus;
     m_updateButton->setEnabled(false);
     const QString clientDir = updateClientDir();
 
@@ -554,7 +633,8 @@ void MainWindow::buildAndRelaunch(const QString &clientDir)
                 QFile::remove(appPath);
                 if (!QFile::copy(built, appPath)) {
                     setUpdateStatus("Update failed: could not replace " + appPath, true);
-                    m_updateButton->setEnabled(true);
+                    if (m_buildButton)
+                        m_buildButton->setEnabled(true);
                     return;
                 }
                 QFile::setPermissions(appPath,
@@ -576,11 +656,12 @@ QWidget *MainWindow::buildChatPage()
 {
     auto *page = new QWidget;
 
-    // Section stack switched by the left navigation rail: Home / Repos / Chat.
+    // Section stack switched by the left navigation rail.
     m_sectionStack = new QStackedWidget;
-    m_sectionStack->addWidget(buildHomeSection());   // 0 Home
-    m_sectionStack->addWidget(buildReposSection());  // 1 Repos
-    m_sectionStack->addWidget(buildChatSection());   // 2 Chat
+    m_sectionStack->addWidget(buildHomeSection());     // 0 Home
+    m_sectionStack->addWidget(buildReposSection());    // 1 Repos
+    m_sectionStack->addWidget(buildChatSection());     // 2 Chat
+    m_sectionStack->addWidget(buildSettingsSection()); // 3 Settings
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -611,6 +692,10 @@ QWidget *MainWindow::buildNavRail()
     auto *homeButton = makeNavButton("\xF0\x9F\x8F\xA0", "Home");
     auto *reposButton = makeNavButton("\xF0\x9F\x93\xA6", "Repos");
     auto *chatButton = makeNavButton("\xF0\x9F\x92\xAC", "Chat");
+    auto *settingsButton = makeNavButton("\xE2\x9A\x99", "Settings");
+    auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
+    versionLabel->setObjectName("versionLabel");
+    versionLabel->setAlignment(Qt::AlignHCenter);
     homeButton->setChecked(true);
 
     m_navGroup = new QButtonGroup(this);
@@ -618,6 +703,7 @@ QWidget *MainWindow::buildNavRail()
     m_navGroup->addButton(homeButton, 0);
     m_navGroup->addButton(reposButton, 1);
     m_navGroup->addButton(chatButton, 2);
+    m_navGroup->addButton(settingsButton, 3);
     connect(m_navGroup, &QButtonGroup::idClicked, this, [this](int id) {
         m_sectionStack->setCurrentIndex(id);
         if (id == 0)
@@ -633,6 +719,8 @@ QWidget *MainWindow::buildNavRail()
     layout->addWidget(reposButton);
     layout->addWidget(chatButton);
     layout->addStretch();
+    layout->addWidget(settingsButton);
+    layout->addWidget(versionLabel);
     return rail;
 }
 
@@ -652,12 +740,12 @@ QWidget *MainWindow::buildHomeSection()
 
     auto *card = new QWidget;
     card->setObjectName("homeCard");
-    card->setFixedWidth(460);
+    card->setMaximumWidth(760);
+    card->setMinimumWidth(560);
 
     auto *title = new QLabel("<span style='color:#22c55e'>Fork</span>Mesh");
     title->setObjectName("homeTitle");
-    auto *subtitle = new QLabel(
-        "Preserve code, mirror repositories, and chat through a mainnode");
+    auto *subtitle = new QLabel("Mainnode quest board");
     subtitle->setObjectName("homeStat");
     subtitle->setWordWrap(true);
 
@@ -670,9 +758,36 @@ QWidget *MainWindow::buildHomeSection()
     m_homePubkey->setObjectName("homeStat");
     m_homePubkey->setWordWrap(true);
     m_homeStats = new QLabel;
-    m_homeStats->setObjectName("homeStat");
+    m_homeStats->setObjectName("homeScoreValue");
+    m_homeStats->setWordWrap(true);
+    m_homeTotals = new QLabel;
+    m_homeTotals->setObjectName("homeStat");
+    m_homeTotals->setWordWrap(true);
+    m_homeGraph = new QLabel;
+    m_homeGraph->setObjectName("homeGraph");
+    m_homeGraph->setMinimumHeight(96);
+    m_homeGraph->setWordWrap(false);
 
-    auto *nodesLabel = new QLabel("NETWORK NODES");
+    auto *scoreBoard = new QWidget;
+    scoreBoard->setObjectName("homeScoreBoard");
+    auto *scoreLayout = new QGridLayout(scoreBoard);
+    scoreLayout->setContentsMargins(14, 12, 14, 12);
+    scoreLayout->setHorizontalSpacing(14);
+    scoreLayout->setVerticalSpacing(6);
+    auto *scoreLabel = new QLabel("SCORE");
+    scoreLabel->setObjectName("sectionLabel");
+    auto *timeLabel = new QLabel("UPTIME");
+    timeLabel->setObjectName("sectionLabel");
+    scoreLayout->addWidget(scoreLabel, 0, 0);
+    scoreLayout->addWidget(timeLabel, 0, 1);
+    scoreLayout->addWidget(m_homeStats, 1, 0);
+    scoreLayout->addWidget(m_homeTotals, 1, 1);
+    scoreLayout->setColumnStretch(0, 1);
+    scoreLayout->setColumnStretch(1, 1);
+
+    auto *graphLabel = new QLabel("MINUTE GRAPH");
+    graphLabel->setObjectName("sectionLabel");
+    auto *nodesLabel = new QLabel("LEADERBOARD");
     nodesLabel->setObjectName("sectionLabel");
     m_homeNodes = new QLabel("No nodes connected yet.");
     m_homeNodes->setObjectName("homeStat");
@@ -682,22 +797,18 @@ QWidget *MainWindow::buildHomeSection()
     m_homeNodeList->setMinimumHeight(120);
     m_homeNodeList->setToolTip("Live connection status of nodes in this room");
 
-    auto *addRepoButton = new QPushButton("+ Add repository");
-    addRepoButton->setObjectName("primaryButton");
-    addRepoButton->setCursor(Qt::PointingHandCursor);
-    connect(addRepoButton, &QPushButton::clicked, this,
-            &MainWindow::promptAddRepository);
-    auto *settingsButton = new QPushButton("Settings");
-    settingsButton->setCursor(Qt::PointingHandCursor);
-    connect(settingsButton, &QPushButton::clicked, this, &MainWindow::openSettings);
+    m_homeSponsorButton = new QPushButton("Sponsor this node");
+    m_homeSponsorButton->setObjectName("primaryButton");
+    m_homeSponsorButton->setCursor(Qt::PointingHandCursor);
+    connect(m_homeSponsorButton, &QPushButton::clicked, this, [this] {
+        const QString url = sponsorUrlFor(QSettings().value(kBchSetting).toString());
+        if (!url.isEmpty())
+            QDesktopServices::openUrl(QUrl(url));
+    });
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->addWidget(addRepoButton);
-    actionRow->addWidget(settingsButton);
+    actionRow->addWidget(m_homeSponsorButton);
     actionRow->addStretch();
-
-    auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
-    versionLabel->setObjectName("versionLabel");
 
     auto *cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(28, 28, 28, 28);
@@ -709,15 +820,16 @@ QWidget *MainWindow::buildHomeSection()
     cardLayout->addWidget(m_homeStatus);
     cardLayout->addWidget(m_homePubkey);
     cardLayout->addSpacing(4);
-    cardLayout->addWidget(m_homeStats);
+    cardLayout->addWidget(scoreBoard);
+    cardLayout->addSpacing(6);
+    cardLayout->addWidget(graphLabel);
+    cardLayout->addWidget(m_homeGraph);
     cardLayout->addSpacing(12);
     cardLayout->addWidget(nodesLabel);
     cardLayout->addWidget(m_homeNodes);
     cardLayout->addWidget(m_homeNodeList);
-    cardLayout->addSpacing(16);
+    cardLayout->addSpacing(10);
     cardLayout->addLayout(actionRow);
-    cardLayout->addSpacing(8);
-    cardLayout->addWidget(versionLabel);
 
     auto *layout = new QVBoxLayout(page);
     layout->addStretch();
@@ -835,9 +947,6 @@ QWidget *MainWindow::buildChatSection()
     m_memberList->setCursor(Qt::PointingHandCursor);
     m_memberList->setToolTip("Click a member to start a direct chat");
 
-    auto *chatVersionLabel = new QLabel("v" FORKMESH_VERSION);
-    chatVersionLabel->setObjectName("versionLabel");
-
     auto *badgeRow = new QHBoxLayout;
     badgeRow->setContentsMargins(0, 0, 0, 0);
     badgeRow->addWidget(workspace);
@@ -855,11 +964,7 @@ QWidget *MainWindow::buildChatSection()
     sidebarLayout->addWidget(m_dmList, 1);
     sidebarLayout->addWidget(membersLabel);
     sidebarLayout->addWidget(m_memberList, 2);
-    auto *footerRow = new QHBoxLayout;
-    footerRow->setContentsMargins(0, 0, 0, 0);
-    footerRow->addStretch();
-    footerRow->addWidget(chatVersionLabel);
-    sidebarLayout->addLayout(footerRow);
+    sidebarLayout->addStretch();
 
     // Main column
     auto *header = new QWidget;
@@ -872,7 +977,7 @@ QWidget *MainWindow::buildChatSection()
     settingsButton->setObjectName("iconButton");
     settingsButton->setCursor(Qt::PointingHandCursor);
     settingsButton->setToolTip("Settings & network log");
-    connect(settingsButton, &QPushButton::clicked, this, &MainWindow::openSettings);
+    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(3); });
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
@@ -1005,6 +1110,12 @@ void MainWindow::updateHomeStats()
 {
     if (!m_homeName)
         return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 sessionMs = m_connectedAtMs > 0 ? now - m_connectedAtMs : 0;
+    const qint64 totalMs = m_totalConnectionMs + sessionMs;
+    if (m_connectedAtMs > 0)
+        QSettings().setValue(kConnectionTotalSetting, totalMs);
+
     const QString name = m_userName.isEmpty()
                              ? defaultDisplayName(m_profileIdentity)
                              : m_userName;
@@ -1013,16 +1124,216 @@ void MainWindow::updateHomeStats()
     m_homePubkey->setText(key.isEmpty()
                               ? QStringLiteral("Ed25519 key: generating\xE2\x80\xA6")
                               : "Ed25519 key: " + key);
+    int mirroredRepos = 0;
+    int onlineRepos = 0;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.lastSyncMs > 0 || (!repo.mirrorPath.isEmpty() &&
+                                    QDir(repo.mirrorPath).exists()))
+            ++mirroredRepos;
+        if (repo.publishedAtMs > 0 || repo.publishToNetwork)
+            ++onlineRepos;
+    }
     const int repoCount = m_repositories.size();
     const int chatCount = m_channels.size();
     const int dmCount = m_openDms.size();
+    int onlineNodes = 0;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (member.online)
+            ++onlineNodes;
+    }
+    if (m_connectedAtMs > 0) {
+        const int minute = int(sessionMs / 60000);
+        while (m_connectionMinuteSamples.size() <= minute)
+            m_connectionMinuteSamples.append(onlineNodes);
+        m_connectionMinuteSamples[minute] = onlineNodes;
+    }
+
     m_homeStats->setText(
-        QString::number(repoCount) +
-        (repoCount == 1 ? " repository mirrored" : " repositories mirrored") +
-        "  \xC2\xB7  " + QString::number(chatCount) +
-        (chatCount == 1 ? " chat" : " chats") + "  \xC2\xB7  " +
-        QString::number(dmCount) +
-        (dmCount == 1 ? " direct message" : " direct messages"));
+        QString::number(repoCount) + " repos\n" +
+        QString::number(mirroredRepos) + " mirrored  |  " +
+        QString::number(onlineRepos) + " online\n" +
+        QString::number(chatCount) + " chats  |  " +
+        QString::number(dmCount) + " DMs");
+    if (m_homeTotals) {
+        m_homeTotals->setText(
+            "Session " + formatDuration(sessionMs) + "\nTotal " +
+            formatDuration(totalMs) + "\n" +
+            QString::number(onlineNodes) + " / " +
+            QString::number(m_homeRoster.size()) + " nodes online");
+    }
+    if (m_homeGraph)
+        m_homeGraph->setText(connectionGraphText(m_connectionMinuteSamples));
+    if (m_homeNodes) {
+        m_homeNodes->setText(
+            m_homeRoster.isEmpty()
+                ? QStringLiteral("No nodes connected yet.")
+                : QString::number(onlineNodes) + " of " +
+                      QString::number(m_homeRoster.size()) +
+                      (m_homeRoster.size() == 1 ? " node online"
+                                                : " nodes online"));
+    }
+    if (m_homeSponsorButton) {
+        const QString bch = QSettings().value(kBchSetting).toString().trimmed();
+        m_homeSponsorButton->setEnabled(!bch.isEmpty());
+        m_homeSponsorButton->setText(bch.isEmpty() ? "No BCH address yet"
+                                                   : "Sponsor this node");
+        m_homeSponsorButton->setToolTip(bch.isEmpty()
+                                            ? "Add a BCH address on the start screen."
+                                            : sponsorUrlFor(bch));
+    }
+}
+
+// ----------------------------------------------------------------- settings
+
+QWidget *MainWindow::buildSettingsSection()
+{
+    auto *page = new QWidget;
+
+    auto *title = new QLabel("Settings");
+    title->setObjectName("settingsTitle");
+
+    auto *profileLabel = new QLabel("PROFILE");
+    profileLabel->setObjectName("sectionLabel");
+
+    m_settingsNameEdit = new QLineEdit;
+    m_settingsNameEdit->setMaxLength(32);
+    m_settingsNameEdit->setPlaceholderText("Display name");
+    connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
+            [this] { onDisplayNameChanged(m_settingsNameEdit->text()); });
+
+    m_settingsAvatarPreview = new QLabel("No\navatar");
+    m_settingsAvatarPreview->setObjectName("avatarPreview");
+    m_settingsAvatarPreview->setFixedSize(64, 64);
+    m_settingsAvatarPreview->setAlignment(Qt::AlignCenter);
+    auto *uploadButton = new QPushButton("Upload avatar…");
+    uploadButton->setObjectName("ghostButton");
+    uploadButton->setCursor(Qt::PointingHandCursor);
+    connect(uploadButton, &QPushButton::clicked, this, &MainWindow::chooseAvatar);
+    auto *avatarRow = new QHBoxLayout;
+    avatarRow->setSpacing(12);
+    avatarRow->addWidget(m_settingsAvatarPreview);
+    avatarRow->addWidget(uploadButton);
+    avatarRow->addStretch();
+
+    auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignLeft);
+    form->setSpacing(8);
+    form->addRow("Display name", m_settingsNameEdit);
+    form->addRow("Avatar", avatarRow);
+
+    auto *maintLabel = new QLabel("MAINTENANCE");
+    maintLabel->setObjectName("sectionLabel");
+    m_rebuildButton = new QPushButton("\xE2\x9F\xB3 Clear cache & rebuild");
+    m_rebuildButton->setObjectName("ghostButton");
+    m_rebuildButton->setCursor(Qt::PointingHandCursor);
+    m_rebuildButton->setToolTip(
+        "Delete the build cache, rebuild from scratch, and relaunch");
+    connect(m_rebuildButton, &QPushButton::clicked, this,
+            &MainWindow::rebuildAndRelaunch);
+    m_rebuildStatus = new QLabel;
+    m_rebuildStatus->setObjectName("modeHint");
+    m_rebuildStatus->setWordWrap(true);
+    m_rebuildStatus->hide();
+
+    auto *logLabel = new QLabel("NETWORK LOG");
+    logLabel->setObjectName("sectionLabel");
+    m_settingsLog = new QPlainTextEdit;
+    m_settingsLog->setReadOnly(true);
+    m_settingsLog->setObjectName("networkLog");
+    m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
+    for (const QString &line : std::as_const(m_networkLog))
+        m_settingsLog->appendPlainText(line);
+
+    auto *leaveButton = new QPushButton("\xE2\x86\x90 Leave node");
+    leaveButton->setObjectName("dangerButton");
+    leaveButton->setCursor(Qt::PointingHandCursor);
+    connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
+    auto *footerRow = new QHBoxLayout;
+    footerRow->setContentsMargins(0, 0, 0, 0);
+    footerRow->addWidget(leaveButton);
+    footerRow->addStretch();
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(10);
+    layout->addWidget(title);
+    layout->addWidget(profileLabel);
+    layout->addLayout(form);
+    layout->addSpacing(6);
+    layout->addWidget(maintLabel);
+    layout->addWidget(m_rebuildButton, 0, Qt::AlignLeft);
+    layout->addWidget(m_rebuildStatus);
+    layout->addSpacing(6);
+    layout->addWidget(logLabel);
+    layout->addWidget(m_settingsLog, 1);
+    layout->addLayout(footerRow);
+    return page;
+}
+
+void MainWindow::setSettingsAvatar(const QByteArray &pngData)
+{
+    if (!m_settingsAvatarPreview || pngData.isEmpty())
+        return;
+    QPixmap pixmap;
+    if (!pixmap.loadFromData(pngData))
+        return;
+    constexpr int side = 64;
+    QPixmap rounded(side, side);
+    rounded.fill(Qt::transparent);
+    QPainter painter(&rounded);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath clip;
+    clip.addRoundedRect(0, 0, side, side, 14, 14);
+    painter.setClipPath(clip);
+    painter.drawPixmap(0, 0,
+                       pixmap.scaled(side, side, Qt::KeepAspectRatioByExpanding,
+                                     Qt::SmoothTransformation));
+    m_settingsAvatarPreview->setPixmap(rounded);
+}
+
+void MainWindow::chooseAvatar()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Choose avatar image", QString(),
+        "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)");
+    if (path.isEmpty())
+        return;
+    QImage image(path);
+    if (image.isNull())
+        return;
+    // Center-crop to a square, scale down, and re-encode as a small PNG.
+    const int squareSide = qMin(image.width(), image.height());
+    image = image.copy((image.width() - squareSide) / 2,
+                       (image.height() - squareSide) / 2, squareSide, squareSide)
+                .scaled(128, 128, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    setSettingsAvatar(png);
+    onAvatarChosen(png);
+}
+
+void MainWindow::rebuildAndRelaunch()
+{
+    if (m_settingsNameEdit)
+        saveDisplayName(m_settingsNameEdit->text());
+    m_buildButton = m_rebuildButton;
+    m_buildStatusLabel = m_rebuildStatus;
+    m_rebuildButton->setEnabled(false);
+
+    const QString clientDir = updateClientDir();
+    if (!QDir(clientDir).exists("CMakeLists.txt")) {
+        setUpdateStatus("No local source checkout to rebuild from. Use Quick "
+                        "update on the start screen instead.",
+                        true);
+        m_rebuildButton->setEnabled(true);
+        return;
+    }
+    // Clear the build cache for a clean from-scratch rebuild, then relaunch.
+    setUpdateStatus("Clearing build cache...");
+    QDir(clientDir + "/build").removeRecursively();
+    buildAndRelaunch(clientDir);
 }
 
 void MainWindow::attachBackend(ChatBackend *backend)
@@ -1058,6 +1369,11 @@ void MainWindow::attachBackend(ChatBackend *backend)
 
 void MainWindow::leaveSession(const QString &)
 {
+    if (m_connectedAtMs > 0) {
+        m_totalConnectionMs += QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs;
+        m_connectedAtMs = 0;
+        QSettings().setValue(kConnectionTotalSetting, m_totalConnectionMs);
+    }
     stopRepoHosts();
     if (m_backend) {
         m_backend->disconnect(this);
@@ -1072,10 +1388,13 @@ void MainWindow::leaveSession(const QString &)
     // Reset the Home overview's live status back to disconnected.
     if (m_homeStatus)
         m_homeStatus->setText("\xE2\x97\x8F offline");
+    m_homeRoster.clear();
+    m_connectionMinuteSamples.clear();
     if (m_homeNodeList)
         m_homeNodeList->clear();
     if (m_homeNodes)
         m_homeNodes->setText("No nodes connected yet.");
+    updateHomeStats();
 }
 
 // ------------------------------------------------------------------ firewall
@@ -1152,9 +1471,8 @@ void MainWindow::logSystem(const QString &text)
     m_networkLog.append(line);
     while (m_networkLog.size() > kNetworkLogLimit)
         m_networkLog.removeFirst();
-    if (m_settingsDialog) {
-        m_settingsDialog->appendLog(line);
-    }
+    if (m_settingsLog)
+        m_settingsLog->appendPlainText(line);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
@@ -1387,6 +1705,7 @@ void MainWindow::setChannels(const QStringList &channels)
 
 void MainWindow::setRoster(const QList<MemberInfo> &members)
 {
+    m_homeRoster = members;
     m_memberList->clear();
     QHash<QString, int> nameCounts;
     for (const MemberInfo &member : members)
@@ -1417,28 +1736,41 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // Mirror the live connection status of every node onto the Home overview.
     if (m_homeNodeList) {
         m_homeNodeList->clear();
-        int online = 0;
-        for (const MemberInfo &member : members) {
+        QList<MemberInfo> ranked = members;
+        std::sort(ranked.begin(), ranked.end(), [](const MemberInfo &a,
+                                                   const MemberInfo &b) {
+            if (a.self != b.self)
+                return a.self;
+            if (a.online != b.online)
+                return a.online;
+            return a.name.localeAwareCompare(b.name) < 0;
+        });
+        int rank = 1;
+        for (const MemberInfo &member : std::as_const(ranked)) {
             QString label = member.name;
             if (member.self)
                 label += " (you)";
             else if (!member.note.isEmpty())
                 label += " " + member.note;
+            QString bch = member.bchAddress.trimmed();
+            if (member.self && bch.isEmpty())
+                bch = QSettings().value(kBchSetting).toString().trimmed();
+            const QString balance = member.bchBalance.trimmed().isEmpty()
+                                        ? QStringLiteral("balance pending")
+                                        : member.bchBalance.trimmed();
+            label = QString::number(rank) + ". " + label + "\nBCH " +
+                    (bch.isEmpty() ? QStringLiteral("no address")
+                                   : compactAddress(bch)) +
+                    " | " + balance;
             auto *item = new QListWidgetItem(statusDotIcon(member.online), label);
             item->setData(Qt::UserRole, member.online ? "online" : "offline");
+            item->setToolTip(bch.isEmpty() ? QStringLiteral("No BCH address published")
+                                           : sponsorUrlFor(bch));
             m_homeNodeList->addItem(item);
-            if (member.online)
-                ++online;
-        }
-        if (m_homeNodes) {
-            m_homeNodes->setText(
-                members.isEmpty()
-                    ? QStringLiteral("No nodes connected yet.")
-                    : QString::number(online) + " of " +
-                          QString::number(members.size()) +
-                          (members.size() == 1 ? " node online" : " nodes online"));
+            ++rank;
         }
     }
+    updateHomeStats();
 }
 
 void MainWindow::refreshChannelList()
@@ -1682,6 +2014,7 @@ void MainWindow::loadRepositories()
             m_repositories.append(repo);
     }
     settings.endArray();
+    loadRepoStats();
 }
 
 void MainWindow::saveRepositories() const
@@ -1726,6 +2059,13 @@ void MainWindow::refreshRepositoryList()
             label += "  \xC2\xB7 online";
         else if (repo.publishToNetwork)
             label += "  \xC2\xB7 publishing\xE2\x80\xA6";
+        const QPair<int, int> stats =
+            m_repoStats.value(repo.owner + "/" + repo.name);
+        if (stats.first > 0)
+            label += "\n   served " + QString::number(stats.first) +
+                     "\xC3\x97 through the mainnode \xC2\xB7 " +
+                     QString::number(stats.second) + " clone" +
+                     (stats.second == 1 ? "" : "s");
         auto *item = new QListWidgetItem(label);
         item->setData(Qt::UserRole, i);
         // Green dot = published and browsable on the web; grey = local/pending.
@@ -1773,9 +2113,10 @@ void MainWindow::promptAddRepository()
     RepositoryRecord repo;
     repo.localPath = path;
     repo.name = repoNameFromUrl(path);
-    repo.owner = QSettings().value(kHandleSetting).toString().trimmed();
-    if (repo.owner.isEmpty())
-        repo.owner = repoSegment(m_userName, QStringLiteral("owner"));
+    const QString ownerSetting = QSettings().value(kHandleSetting).toString().trimmed();
+    repo.owner = ownerSetting.isEmpty()
+                     ? repoSegment(m_userName, QStringLiteral("owner"))
+                     : repoSegment(ownerSetting, QStringLiteral("owner"));
     repo.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
     // Selecting a local repo publishes it to the website so it shows up online
     // and others can discover and mirror it. No public clone URL is sent.
@@ -1810,8 +2151,8 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
     // the same host that serves the catalog API.
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/"));
-    url.setFragment("repo-" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                    "-" + repoSegment(repo.name, QStringLiteral("repository")));
+    url.setFragment("repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+                    "/" + repoSegment(repo.name, QStringLiteral("repository")));
     return url.toString();
 }
 
@@ -1916,9 +2257,46 @@ void MainWindow::startRepoHosts()
         auto *host = new RepoHost(repo.owner, repo.name, repo.mirrorPath,
                                   hostWsUrl(repo), this);
         connect(host, &RepoHost::log, this, &MainWindow::logSystem);
+        connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
         host->start();
         m_repoHosts.append(host);
     }
+}
+
+void MainWindow::onRequestServed(const QString &owner, const QString &name, bool clone)
+{
+    QPair<int, int> &stats = m_repoStats[owner + "/" + name];
+    stats.first += 1; // served through the mainnode
+    if (clone)
+        stats.second += 1; // git clone
+    saveRepoStats();
+    refreshRepositoryList();
+}
+
+void MainWindow::loadRepoStats()
+{
+    m_repoStats.clear();
+    const QJsonObject obj =
+        QJsonDocument::fromJson(
+            QSettings().value(QStringLiteral("repositories/stats")).toByteArray())
+            .object();
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        const QJsonObject entry = it.value().toObject();
+        m_repoStats.insert(it.key(),
+                           {entry.value("served").toInt(),
+                            entry.value("clones").toInt()});
+    }
+}
+
+void MainWindow::saveRepoStats() const
+{
+    QJsonObject obj;
+    for (auto it = m_repoStats.constBegin(); it != m_repoStats.constEnd(); ++it) {
+        obj.insert(it.key(), QJsonObject{{"served", it.value().first},
+                                         {"clones", it.value().second}});
+    }
+    QSettings().setValue(QStringLiteral("repositories/stats"),
+                         QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 void MainWindow::publishRepositoryFiles(int index)
@@ -1942,6 +2320,8 @@ void MainWindow::publishRepositoryFiles(int index)
                     return;
 
                 const RepositoryRecord &repo = m_repositories.at(index);
+                const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+                const QString name = repoSegment(repo.name, QStringLiteral("repository"));
                 QJsonArray files;
                 const QList<QByteArray> lines = out.split('\n');
                 for (const QByteArray &line : lines) {
@@ -1965,14 +2345,14 @@ void MainWindow::publishRepositoryFiles(int index)
                 const QString updatedAt =
                     QString::number(QDateTime::currentMSecsSinceEpoch());
                 const QJsonObject signedMeta{
-                    {"owner", repo.owner},
-                    {"name", repo.name},
+                    {"owner", owner},
+                    {"name", name},
                     {"updatedAt", updatedAt},
                     {"count", files.size()},
                     {"maintainer", m_profileIdentity.publicKey()}};
                 QJsonObject payload{
-                    {"owner", repo.owner},
-                    {"name", repo.name},
+                    {"owner", owner},
+                    {"name", name},
                     {"updatedAt", updatedAt},
                     {"maintainer", m_profileIdentity.publicKey()},
                     {"signature", m_profileIdentity.signJson(signedMeta)},
@@ -2036,8 +2416,10 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
 
     RepositoryRecord &repo = m_repositories[index];
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    QJsonObject metadata{{"owner", repo.owner},
-                         {"name", repo.name},
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    QJsonObject metadata{{"owner", owner},
+                         {"name", name},
                          {"description", repo.description},
                          {"cloneUrl", repo.cloneUrl},
                          {"bch", repo.bchAddress},
@@ -2177,27 +2559,6 @@ void MainWindow::syncRepository(int index)
 }
 
 // ------------------------------------------------------------------ settings
-
-void MainWindow::openSettings()
-{
-    if (!m_settingsDialog) {
-        m_settingsDialog = new SettingsDialog(FORKMESH_VERSION, this);
-        m_settingsDialog->setDisplayName(m_userName);
-        if (!m_userAvatar.isEmpty())
-            m_settingsDialog->setAvatar(m_userAvatar);
-        for (const QString &line : std::as_const(m_networkLog))
-            m_settingsDialog->appendLog(line);
-        connect(m_settingsDialog, &SettingsDialog::displayNameChanged, this,
-                &MainWindow::onDisplayNameChanged);
-        connect(m_settingsDialog, &SettingsDialog::avatarChosen, this,
-                &MainWindow::onAvatarChosen);
-        connect(m_settingsDialog, &SettingsDialog::leaveRequested, this,
-                [this] { leaveSession(); });
-    }
-    m_settingsDialog->show();
-    m_settingsDialog->raise();
-    m_settingsDialog->activateWindow();
-}
 
 void MainWindow::onDisplayNameChanged(const QString &name)
 {

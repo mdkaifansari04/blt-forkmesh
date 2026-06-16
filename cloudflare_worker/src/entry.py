@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 from urllib.parse import parse_qs, unquote, urlparse
@@ -6,7 +7,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 from js import Date
 from js import Object
 from js import Response as JsResponse
+from js import Uint8Array
 from js import WebSocketPair
+from js import crypto as js_crypto
 from pyodide.ffi import create_proxy
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
@@ -26,8 +29,71 @@ REPO_FILES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/files$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob)$")
+# Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
+GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
+GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
 ROOM_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 TUNNEL_TIMEOUT_MS = 20000
+GIT_TIMEOUT_MS = 60000
+
+
+NODE_NAME_RE = re.compile(r"^[a-z][a-z0-9]*$")
+ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
+LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
+
+
+def valid_node_name(value):
+    value = (value or "").strip()
+    return bool(value) and len(value) <= 32 and bool(NODE_NAME_RE.match(value))
+
+
+def b64url_decode(value):
+    value = (value or "").strip()
+    value += "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value.encode())
+
+
+async def ed25519_verify(pubkey_b64url, sig_b64url, data_bytes):
+    # Verify a raw Ed25519 signature using the runtime's WebCrypto, matching the
+    # desktop client's identity (raw 32-byte key + 64-byte sig, base64url).
+    try:
+        raw_key = b64url_decode(pubkey_b64url)
+        signature = b64url_decode(sig_b64url)
+    except Exception:
+        return False
+    if len(raw_key) != 32 or len(signature) != 64:
+        return False
+    try:
+        key = await js_crypto.subtle.importKey(
+            "raw", _to_js(raw_key), to_js({"name": "Ed25519"}), False,
+            _to_js(["verify"])
+        )
+        ok = await js_crypto.subtle.verify(
+            to_js({"name": "Ed25519"}), key, _to_js(signature),
+            _to_js(data_bytes)
+        )
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def pkt_line(payload):
+    return ("%04x" % (len(payload) + 4)).encode() + payload
+
+
+def git_bytes_response(data, content_type):
+    return JsResponse.new(
+        _to_js(bytes(data)),
+        to_js(
+            {
+                "status": 200,
+                "headers": {
+                    "content-type": content_type,
+                    "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+            }
+        ),
+    )
 
 
 def to_js(value):
@@ -163,6 +229,14 @@ class Default(WorkerEntrypoint):
     async def fetch(self, request):
         url = urlparse(request.url)
 
+        # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
+        git_info = GIT_INFO_RE.match(url.path)
+        if git_info and parse_qs(url.query).get("service", [""])[0] == "git-upload-pack":
+            return await self._git_host(request, git_info.group(1), git_info.group(2))
+        git_pack = GIT_PACK_RE.match(url.path)
+        if git_pack and method_name(request) == "POST":
+            return await self._git_host(request, git_pack.group(1), git_pack.group(2))
+
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
                 {
@@ -185,6 +259,12 @@ class Default(WorkerEntrypoint):
             catalog_id = self.env.FORKMESH_CATALOG.idFromName("global")
             catalog = self.env.FORKMESH_CATALOG.get(catalog_id)
             return await catalog.fetch(request)
+
+        if url.path in ("/api/accounts/signup", "/api/accounts/login") or \
+                ACCOUNTS_RE.match(url.path):
+            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
+            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
+            return await accounts.fetch(request)
 
         files_match = REPO_FILES_RE.match(url.path)
         if files_match:
@@ -213,6 +293,15 @@ class Default(WorkerEntrypoint):
             return await room_object.fetch(request)
 
         return json_response({"error": "not_found"}, status=404)
+
+    async def _git_host(self, request, owner_raw, repo_raw):
+        owner = safe_segment(owner_raw)
+        repo = safe_segment(repo_raw)
+        if not owner or not repo:
+            return Response("not found", status=404)
+        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+        host_object = self.env.FORKMESH_HOST.get(host_id)
+        return await host_object.fetch(request)
 
 
 class ForkMeshRoom(DurableObject):
@@ -436,6 +525,139 @@ class ForkMeshFiles(DurableObject):
         return json_response({"error": "method_not_allowed"}, status=405)
 
 
+class ForkMeshAccounts(DurableObject):
+    # The website's account database. Each node registers a unique node name
+    # bound to its Ed25519 public key, plus an email encrypted at rest. Signup
+    # and login are proven by signing a canonical string with the node key, so
+    # only the node that holds the private key can claim or use a name.
+    async def _accounts(self):
+        accounts = await self.ctx.storage.get("accounts")
+        return accounts if isinstance(accounts, dict) else {}
+
+    async def _email_key(self):
+        secret = getattr(self.env, "ACCOUNTS_KEY", "forkmesh-dev-accounts-key")
+        digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+        return await js_crypto.subtle.importKey(
+            "raw", digest, to_js({"name": "AES-GCM"}), False,
+            _to_js(["encrypt", "decrypt"])
+        )
+
+    async def _encrypt_email(self, email):
+        key = await self._email_key()
+        iv = js_crypto.getRandomValues(Uint8Array.new(12))
+        cipher = await js_crypto.subtle.encrypt(
+            to_js({"name": "AES-GCM", "iv": iv}), key, _to_js(email.encode())
+        )
+        blob = bytes(iv.to_py()) + bytes(Uint8Array.new(cipher).to_py())
+        return base64.b64encode(blob).decode()
+
+    async def _decrypt_email(self, stored):
+        try:
+            blob = base64.b64decode(stored)
+            iv = _to_js(blob[:12])
+            cipher = _to_js(blob[12:])
+            key = await self._email_key()
+            plain = await js_crypto.subtle.decrypt(
+                to_js({"name": "AES-GCM", "iv": iv}), key, cipher
+            )
+            return bytes(Uint8Array.new(plain).to_py()).decode()
+        except Exception:
+            return ""
+
+    async def fetch(self, request):
+        url = urlparse(request.url)
+        method = method_name(request)
+
+        if url.path == "/api/accounts/signup" and method == "POST":
+            return await self._signup(request)
+        if url.path == "/api/accounts/login" and method == "POST":
+            return await self._login(request)
+
+        match = ACCOUNTS_RE.match(url.path)
+        if match and method == "GET":
+            name = match.group(1)
+            accounts = await self._accounts()
+            record = accounts.get(name)
+            if not record:
+                return json_response({"ok": True, "exists": False, "name": name})
+            # Public lookup never returns the email.
+            return json_response(
+                {"ok": True, "exists": True, "name": name,
+                 "pubkey": record.get("pubkey", ""),
+                 "createdAt": record.get("createdAt", 0)}
+            )
+
+        return json_response({"error": "not_found"}, status=404)
+
+    async def _signup(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+
+        name = clean_string(data.get("nodeName", ""), 32).lower()
+        pubkey = clean_string(data.get("pubkey", ""), 120)
+        email = clean_string(data.get("email", ""), 254)
+        ts = clean_string(data.get("ts", ""), 20)
+        signature = clean_string(data.get("sig", ""), 200)
+        if not valid_node_name(name):
+            return json_response(
+                {"error": "node_name_must_be_lowercase_alphanumeric_starting_with_a_letter"},
+                status=400,
+            )
+        if not pubkey or "@" not in email or not ts:
+            return json_response({"error": "pubkey_email_and_ts_required"}, status=400)
+
+        canonical = ("forkmesh-account-v1\n" + name + "\n" + email + "\n" + ts).encode()
+        if not await ed25519_verify(pubkey, signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+
+        accounts = await self._accounts()
+        existing = accounts.get(name)
+        if existing and existing.get("pubkey") != pubkey:
+            return json_response({"error": "node_name_taken"}, status=409)
+
+        accounts[name] = {
+            "pubkey": pubkey,
+            "emailEnc": await self._encrypt_email(email),
+            "createdAt": existing.get("createdAt", int(Date.now())) if existing
+            else int(Date.now()),
+        }
+        await self.ctx.storage.put("accounts", accounts)
+        return json_response({"ok": True, "nodeName": name}, status=201)
+
+    async def _login(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+
+        name = clean_string(data.get("nodeName", ""), 32).lower()
+        ts = clean_string(data.get("ts", ""), 20)
+        signature = clean_string(data.get("sig", ""), 200)
+        accounts = await self._accounts()
+        record = accounts.get(name)
+        if not record:
+            return json_response({"error": "no_such_account"}, status=404)
+
+        try:
+            skew = abs(int(Date.now()) - int(ts))
+        except (TypeError, ValueError):
+            skew = LOGIN_MAX_SKEW_MS + 1
+        if skew > LOGIN_MAX_SKEW_MS:
+            return json_response({"error": "stale_timestamp"}, status=401)
+
+        canonical = ("forkmesh-login-v1\n" + name + "\n" + ts).encode()
+        if not await ed25519_verify(record.get("pubkey", ""), signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+
+        # The owner proved key possession, so return their decrypted email.
+        return json_response(
+            {"ok": True, "nodeName": name, "email": await self._decrypt_email(
+                record.get("emailEnc", ""))}
+        )
+
+
 class ForkMeshHost(DurableObject):
     # Live tunnel for a single repository. Desktop clients that mirror the repo
     # connect here as "hosts" and answer tree/blob requests by reading their
@@ -451,14 +673,28 @@ class ForkMeshHost(DurableObject):
             self.callbacks = []
         if not hasattr(self, "counter"):
             self.counter = 0
+        if not hasattr(self, "git_buffers"):
+            self.git_buffers = {}  # reqId -> bytearray for chunked git output
 
     async def fetch(self, request):
         self._ensure()
         url = urlparse(request.url)
-        action = url.path.rsplit("/", 1)[-1]
+        path = url.path
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
 
+        # Git smart-HTTP clone endpoints proxied to the host's git upload-pack.
+        if path.endswith("/info/refs"):
+            return await self._git(request, "git-info-refs")
+        if path.endswith("/git-upload-pack"):
+            body = b""
+            try:
+                body = bytes(await request.bytes())
+            except Exception:
+                body = b""
+            return await self._git(request, "git-upload-pack", body)
+
+        action = path.rsplit("/", 1)[-1]
         if action == "host":
             if not is_websocket:
                 return json_response({"ok": True, "hosts": len(self.hosts)})
@@ -491,11 +727,30 @@ class ForkMeshHost(DurableObject):
                 return
             if not isinstance(msg, dict):
                 return
-            if msg.get("type") != "response":
-                return
-            fut = self.pending.pop(msg.get("reqId"), None)
-            if fut is not None and not fut.done():
-                fut.set_result(msg)
+            mtype = msg.get("type")
+            if mtype == "response":
+                fut = self.pending.pop(msg.get("reqId"), None)
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
+            elif mtype == "git-chunk":
+                buffer = self.git_buffers.get(msg.get("reqId"))
+                if buffer is not None:
+                    try:
+                        buffer += base64.b64decode(msg.get("data", ""))
+                    except Exception:
+                        pass
+            elif mtype == "git-end":
+                req_id = msg.get("reqId")
+                buffer = self.git_buffers.pop(req_id, None)
+                fut = self.pending.pop(req_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result(
+                        {
+                            "ok": bool(msg.get("ok")),
+                            "error": msg.get("error"),
+                            "data": bytes(buffer or b""),
+                        }
+                    )
 
         def forget(_event=None):
             self._forget_host(entry)
@@ -573,3 +828,51 @@ class ForkMeshHost(DurableObject):
         }
         payload["ok"] = True
         return json_response(payload)
+
+    async def _git(self, request, op, body=None):
+        # Forward a git smart-HTTP request to the hosting client, which runs
+        # git upload-pack on its local mirror and streams the result back in
+        # chunks (reassembled here).
+        self._ensure()
+        host = self._best_host()
+        if host is None:
+            return Response("No client is hosting this repository.", status=503)
+
+        self.counter += 1
+        req_id = "g%d" % self.counter
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        self.git_buffers[req_id] = bytearray()
+        message = {"type": "request", "reqId": req_id, "op": op}
+        if body:
+            message["body"] = base64.b64encode(body).decode()
+        try:
+            host["socket"].send(json.dumps(message))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            self._forget_host(host)
+            return Response("Host unavailable.", status=503)
+
+        try:
+            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            return Response("Host timed out.", status=504)
+
+        if not result.get("ok"):
+            return Response(
+                "Host error: " + str(result.get("error", "")), status=502
+            )
+
+        data = result.get("data", b"")
+        if op == "git-info-refs":
+            body_out = (
+                pkt_line(b"# service=git-upload-pack\n") + b"0000" + data
+            )
+            return git_bytes_response(
+                body_out, "application/x-git-upload-pack-advertisement"
+            )
+        return git_bytes_response(data, "application/x-git-upload-pack-result")

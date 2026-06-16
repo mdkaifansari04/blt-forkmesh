@@ -29,8 +29,6 @@ qt_add_executable(forkmesh
     src/RepoHost.cpp
     src/MessageRow.h
     src/MessageRow.cpp
-    src/SettingsDialog.h
-    src/SettingsDialog.cpp
     src/MainWindow.h
     src/MainWindow.cpp
 )

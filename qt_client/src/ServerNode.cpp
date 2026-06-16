@@ -7,6 +7,7 @@
 #include <QRandomGenerator>
 #include <QSettings>
 #include <QSslSocket>
+#include <QTimer>
 #include <QUuid>
 
 namespace {
@@ -18,6 +19,7 @@ constexpr int kKnownPeerLimit = 256;
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
 constexpr int kMaxDisplayNameChars = 32;
+constexpr int kMaxBchAddressChars = 160;
 constexpr int kMaxTextChars = 16000;
 constexpr int kMaxFileNameChars = 180;
 constexpr int kMaxMimeChars = 100;
@@ -76,6 +78,7 @@ bool messageHasSafePayload(const QJsonObject &message)
 {
     return message.value("text").toString().size() <= kMaxTextChars &&
            message.value("sender").toString().size() <= kMaxDisplayNameChars &&
+           message.value("bch").toString().size() <= kMaxBchAddressChars &&
            message.value("fileName").toString().size() <= kMaxFileNameChars &&
            message.value("fileMime").toString().size() <= kMaxMimeChars &&
            message.value("file").toString().size() <= kMaxBase64FileChars &&
@@ -86,11 +89,13 @@ bool messageHasSafePayload(const QJsonObject &message)
 
 ServerNode::ServerNode(const QString &userName, const QUrl &serverUrl,
                        const QString &roomName, const QString &passphrase,
+                       const QString &bchAddress,
                        QObject *parent)
     : ChatBackend(parent),
       m_userName(userName),
       m_url(serverUrl),
       m_roomName(roomName.trimmed()),
+      m_bchAddress(bchAddress.trimmed().left(kMaxBchAddressChars)),
       m_nodeId(QUuid::createUuid().toString(QUuid::WithoutBraces)),
       m_crypto(m_roomName, passphrase)
 {
@@ -117,6 +122,15 @@ bool ServerNode::start()
         return false;
     }
 
+    if (!m_pingTimer) {
+        // A periodic WebSocket ping keeps the relay (and Cloudflare's edge)
+        // from dropping the connection while the node is idle.
+        m_pingTimer = new QTimer(this);
+        m_pingTimer->setInterval(25000);
+        connect(m_pingTimer, &QTimer::timeout, this,
+                [this] { sendControlFrame(0x9); });
+    }
+
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
     connectSocketSignals();
     const int port = m_url.port(m_url.scheme() == "wss" ? 443 : 80);
@@ -138,6 +152,8 @@ void ServerNode::connectSocketSignals()
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &ServerNode::onConnectedTransport);
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
+        if (m_pingTimer)
+            m_pingTimer->stop();
         emit statusChanged("Disconnected from mainnode");
         for (auto it = m_peers.begin(); it != m_peers.end(); ++it)
             it->online = false;
@@ -183,6 +199,8 @@ void ServerNode::onSocketReadyRead()
             return;
         }
         m_wsReady = true;
+        if (m_pingTimer)
+            m_pingTimer->start();
         emit channelsChanged(m_channels);
         updateRosterAndStatus();
         emit statusChanged("Connected to encrypted mainnode room " + m_roomName);
@@ -231,6 +249,12 @@ void ServerNode::onSocketReadyRead()
             for (int i = 0; i < payload.size(); ++i)
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
+        if (opcode == 0x9) { // ping from server -> reply with pong
+            sendControlFrame(0xA, payload);
+            continue;
+        }
+        if (opcode == 0xA) // pong: keepalive acknowledged, nothing to do
+            continue;
         if (opcode == 0x8) {
             m_socket->disconnectFromHost();
             return;
@@ -286,13 +310,35 @@ void ServerNode::sendTextFrame(const QByteArray &payload)
     m_socket->write(frame);
 }
 
+void ServerNode::sendControlFrame(int opcode, const QByteArray &payload)
+{
+    // Ping/pong control frames (payload <= 125 bytes), client-masked per RFC 6455.
+    if (!m_socket || !m_wsReady || payload.size() > 125)
+        return;
+    QByteArray frame;
+    frame.append(char(0x80 | (opcode & 0x0f)));
+    frame.append(char(0x80 | payload.size()));
+    QByteArray mask(4, Qt::Uninitialized);
+    for (int i = 0; i < 4; ++i)
+        mask[i] = char(QRandomGenerator::global()->bounded(256));
+    frame.append(mask);
+    QByteArray masked = payload;
+    for (int i = 0; i < masked.size(); ++i)
+        masked[i] = masked.at(i) ^ mask.at(i % 4);
+    frame.append(masked);
+    m_socket->write(frame);
+}
+
 QJsonObject ServerNode::makeMessage(const QString &type) const
 {
-    return {{"type", type},
-            {"id", QUuid::createUuid().toString(QUuid::WithoutBraces)},
-            {"senderId", m_nodeId},
-            {"sender", m_userName.left(kMaxDisplayNameChars)},
-            {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
+    QJsonObject message{{"type", type},
+                        {"id", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                        {"senderId", m_nodeId},
+                        {"sender", m_userName.left(kMaxDisplayNameChars)},
+                        {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
+    if (!m_bchAddress.isEmpty())
+        message.insert("bch", m_bchAddress);
+    return message;
 }
 
 void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
@@ -453,6 +499,8 @@ void ServerNode::addChannel(const QString &channel)
 
 void ServerNode::shutdown()
 {
+    if (m_pingTimer)
+        m_pingTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
     if (m_socket) {
@@ -473,8 +521,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         return;
     const QString senderId = message.value("senderId").toString();
     const QString sender = message.value("sender").toString();
+    const QString bchAddress = boundedText(message, "bch", kMaxBchAddressChars);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender);
+        rememberPeer(senderId, sender, bchAddress);
 
     if (type == "hello") {
         bool changed = false;
@@ -632,31 +681,36 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
     emit messageArrived(out);
 }
 
-void ServerNode::rememberPeer(const QString &peerId, const QString &name, bool online)
+void ServerNode::rememberPeer(const QString &peerId, const QString &name,
+                              const QString &bchAddress, bool online)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
         return;
     const bool isNew = !m_peers.contains(peerId);
     Peer &peer = m_peers[peerId];
     const QString previousName = peer.name;
+    const QString previousBch = peer.bchAddress;
     peer.name = name.isEmpty() ? peer.name : name;
+    if (!bchAddress.trimmed().isEmpty())
+        peer.bchAddress = bchAddress.trimmed().left(kMaxBchAddressChars);
     peer.online = online;
     peer.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
     // Only touch persistent storage when the durable identity changes, not on
     // every incoming frame.
-    if (isNew || peer.name != previousName)
+    if (isNew || peer.name != previousName || peer.bchAddress != previousBch)
         persistKnownPeers();
     updateRosterAndStatus();
 }
 
 void ServerNode::updateRosterAndStatus()
 {
-    QList<MemberInfo> members{{m_nodeId, m_userName, QString(), true, m_wsReady}};
+    QList<MemberInfo> members{{m_nodeId, m_userName, QString(), true, m_wsReady,
+                               m_bchAddress, QString()}};
     int onlineCount = 0;
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
         members.append({it.key(), it->name,
                         it->online ? QString() : QStringLiteral("(offline)"), false,
-                        it->online});
+                        it->online, it->bchAddress, QString()});
         if (it->online)
             ++onlineCount;
     }
@@ -681,6 +735,7 @@ void ServerNode::loadKnownPeers()
             continue;
         Peer &peer = m_peers[id];
         peer.name = entry.value("name").toString().left(kMaxDisplayNameChars);
+        peer.bchAddress = entry.value("bch").toString().left(kMaxBchAddressChars);
         peer.lastSeenMs = qint64(entry.value("lastSeen").toDouble());
         peer.online = false; // Recalled members start offline until they speak.
     }
@@ -704,6 +759,7 @@ void ServerNode::persistKnownPeers() const
     for (const auto &pair : std::as_const(ordered)) {
         entries.append(QJsonObject{{"id", pair.first},
                                    {"name", pair.second.name},
+                                   {"bch", pair.second.bchAddress},
                                    {"lastSeen", double(pair.second.lastSeenMs)}});
     }
     QSettings settings;
