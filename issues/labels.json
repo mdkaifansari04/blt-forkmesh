@@ -1,0 +1,22 @@
+[
+  {
+    "name": "feature",
+    "color": "#22c55e"
+  },
+  {
+    "name": "bug",
+    "color": "#ef4444"
+  },
+  {
+    "name": "security",
+    "color": "#f97316"
+  },
+  {
+    "name": "enhancement",
+    "color": "#3b82f6"
+  },
+  {
+    "name": "infra",
+    "color": "#a855f7"
+  }
+]

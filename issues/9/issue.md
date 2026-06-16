@@ -1,0 +1,19 @@
+---
+schema: forkmesh-issue-v1
+number: 9
+title: Private repos
+status: open
+labels: [feature]
+milestone: 
+assignees: []
+createdAt: 1781642499087
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: node1
+type: open
+id: open-9
+ts: 1781642499087
+attachments: []
+sig: Z-JM3OPRChuFRKHn2FNrdS3v-_W4BkMvBqxvehg_Fh4LZsNRwbjpaI_Qxl28Tm1A0zWp7zlmPXRzpK3p_mIqDQ
+---
+
+Allow private repos to be shared to other nodes but hidden from the website unless the viewer is logged in.
