@@ -1,0 +1,19 @@
+---
+schema: forkmesh-issue-v1
+number: 36
+title: Have a waitlist signup
+status: open
+labels: []
+milestone: 
+assignees: []
+createdAt: 1781685850525
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: node1
+type: open
+id: open-36
+ts: 1781685850525
+attachments: []
+sig: y2OIfb6cWxN2e8CZXa_AowvfN6_XgjN35R2sivAhcsbfFQTZrqdYw93pgHGQqfAPpmbZccKPKGO7c1L5qAkDCg
+---
+
+
