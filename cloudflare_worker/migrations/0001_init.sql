@@ -1,51 +1,39 @@
--- ForkMesh D1 schema — initial tables.
+-- ForkMesh D1 schema — encrypted at rest.
 -- Applied automatically by ../migrate.sh (hooked into wrangler.toml [build]).
 -- The worker also creates these lazily (ensure_schema in src/entry.py).
--- Idempotent: every statement is CREATE ... IF NOT EXISTS, so re-running is safe.
--- Add later changes as new numbered files in this folder (0002_*.sql, ...).
+--
+-- Every table stores only HMAC "blind index" columns (for lookups/uniqueness)
+-- plus a single AES-GCM-encrypted JSON `data` blob — no plaintext content.
+-- The worker holds DATA_KEY: this is encryption at rest, not zero-knowledge.
+-- Idempotent (CREATE ... IF NOT EXISTS); add later changes as 0002_*.sql, etc.
 
-CREATE TABLE IF NOT EXISTS repositories (
-  key          TEXT PRIMARY KEY,   -- maintainer:owner/name
-  owner        TEXT NOT NULL,
-  name         TEXT NOT NULL,
-  description  TEXT,
-  clone_url    TEXT,
-  bch          TEXT,
-  channel      TEXT,
-  hosted_since TEXT,
-  last_sync    TEXT,
-  updated_at   TEXT,
-  source       TEXT,
-  maintainer   TEXT NOT NULL,
-  signature    TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_repos_updated ON repositories(updated_at DESC);
-
+-- Accounts = node = user/organization. data = {name, pubkey, email, bch,
+-- pass_salt, pass_hash, totp_secret, totp_enrolled, bch_verified, created_at}.
 CREATE TABLE IF NOT EXISTS accounts (
-  name       TEXT PRIMARY KEY,
-  pubkey     TEXT NOT NULL,
-  email_enc  TEXT,
-  created_at INTEGER
+  name_bi TEXT PRIMARY KEY,   -- blind_index(name)
+  data    TEXT NOT NULL       -- AES-GCM encrypted JSON
 );
 
+-- Repository catalog, namespaced under the owning account; one row per owner/name.
+CREATE TABLE IF NOT EXISTS repositories (
+  key_bi   TEXT PRIMARY KEY,  -- blind_index("owner/name")
+  owner_bi TEXT NOT NULL,     -- blind_index(owner)
+  data     TEXT NOT NULL      -- AES-GCM encrypted catalog record (incl. updatedAt)
+);
+CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi);
+
+-- Issue submission inbox (one row per pending signed event).
 CREATE TABLE IF NOT EXISTS issue_inbox (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  owner        TEXT NOT NULL,
-  repo         TEXT NOT NULL,
-  number       INTEGER,
-  title_if_new TEXT,
-  event        TEXT NOT NULL,   -- JSON-encoded signed issue event
-  submitter    TEXT,
-  submitted_at INTEGER
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_bi TEXT NOT NULL,      -- blind_index("owner/repo")
+  data    TEXT NOT NULL       -- AES-GCM encrypted submission
 );
-CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(owner, repo);
+CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi);
 
+-- Pull-request submission inbox.
 CREATE TABLE IF NOT EXISTS pull_inbox (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  owner        TEXT NOT NULL,
-  repo         TEXT NOT NULL,
-  pull         TEXT NOT NULL,   -- JSON-encoded signed pull request
-  submitter    TEXT,
-  submitted_at INTEGER
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_bi TEXT NOT NULL,      -- blind_index("owner/repo")
+  data    TEXT NOT NULL       -- AES-GCM encrypted submission
 );
-CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(owner, repo);
+CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi);

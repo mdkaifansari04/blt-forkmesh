@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import hmac
 import json
 import re
+import struct
 from urllib.parse import parse_qs, unquote, urlparse
 
 from js import Date
@@ -270,36 +272,34 @@ def safe_catalog_record(data):
 
 # --- D1 storage --------------------------------------------------------------
 # Durable Objects are reserved for transient relaying (chat rooms + the live
-# file/git tunnel). Everything that must persist — the repo catalog, accounts,
-# and the issue/pull submission inboxes — lives in the worker's D1 database.
+# file/git tunnel). Everything that must persist lives in D1, and every row is
+# encrypted at rest: each table stores HMAC "blind index" columns (for lookups
+# and uniqueness) plus a single AES-GCM-encrypted JSON `data` blob. The worker
+# holds DATA_KEY, so this protects data at rest but is not zero-knowledge.
+
+PBKDF2_ITERS = 150000
+MIN_ACTIVE_SATS = 100000  # 0.001 BCH — proves the wallet is active/funded
+BCH_RE = re.compile(r"^(bitcoincash:)?[qp][a-z0-9]{41}$")
 
 _schema_ready = False
 
 SCHEMA_STATEMENTS = [
+    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL)",
     """CREATE TABLE IF NOT EXISTS repositories (
-        key TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
-        description TEXT, clone_url TEXT, bch TEXT, channel TEXT,
-        hosted_since TEXT, last_sync TEXT, updated_at TEXT, source TEXT,
-        maintainer TEXT NOT NULL, signature TEXT)""",
-    "CREATE INDEX IF NOT EXISTS idx_repos_updated ON repositories(updated_at DESC)",
-    """CREATE TABLE IF NOT EXISTS accounts (
-        name TEXT PRIMARY KEY, pubkey TEXT NOT NULL, email_enc TEXT,
-        created_at INTEGER)""",
+        key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
     """CREATE TABLE IF NOT EXISTS issue_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
-        repo TEXT NOT NULL, number INTEGER, title_if_new TEXT,
-        event TEXT NOT NULL, submitter TEXT, submitted_at INTEGER)""",
-    "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(owner, repo)",
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS pull_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
-        repo TEXT NOT NULL, pull TEXT NOT NULL, submitter TEXT,
-        submitted_at INTEGER)""",
-    "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(owner, repo)",
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
 ]
 
 
 async def ensure_schema(env):
-    # Create the tables on first use per isolate (idempotent CREATE IF NOT EXISTS).
     global _schema_ready
     if _schema_ready:
         return
@@ -336,36 +336,148 @@ async def d1_run(env, sql, *args):
     await stmt.run()
 
 
+# --- Encryption-at-rest + blind index ---------------------------------------
+
+async def _data_key(env):
+    secret = getattr(env, "DATA_KEY", "forkmesh-dev-data-key")
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    return await js_crypto.subtle.importKey(
+        "raw", digest, to_js({"name": "AES-GCM"}), False,
+        _to_js(["encrypt", "decrypt"])
+    )
+
+
+async def encrypt_row(env, obj):
+    key = await _data_key(env)
+    iv = js_crypto.getRandomValues(Uint8Array.new(12))
+    plaintext = json.dumps(obj).encode()
+    cipher = await js_crypto.subtle.encrypt(
+        to_js({"name": "AES-GCM", "iv": iv}), key, _to_js(plaintext)
+    )
+    blob = bytes(iv.to_py()) + bytes(Uint8Array.new(cipher).to_py())
+    return base64.b64encode(blob).decode()
+
+
+async def decrypt_row(env, stored):
+    try:
+        blob = base64.b64decode(stored)
+        iv = _to_js(blob[:12])
+        cipher = _to_js(blob[12:])
+        key = await _data_key(env)
+        plain = await js_crypto.subtle.decrypt(
+            to_js({"name": "AES-GCM", "iv": iv}), key, cipher
+        )
+        return json.loads(bytes(Uint8Array.new(plain).to_py()).decode())
+    except Exception:
+        return None
+
+
+async def _hmac_key(env):
+    # A distinct key context so the blind-index HMAC key isn't the AES key.
+    secret = getattr(env, "DATA_KEY", "forkmesh-dev-data-key") + ":blind-index"
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    return await js_crypto.subtle.importKey(
+        "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
+        _to_js(["sign"])
+    )
+
+
+async def blind_index(env, value):
+    # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
+    key = await _hmac_key(env)
+    norm = (value or "").strip().lower().encode()
+    sig = await js_crypto.subtle.sign("HMAC", key, _to_js(norm))
+    return bytes(Uint8Array.new(sig).to_py()).hex()
+
+
+# --- Password (PBKDF2-SHA256) -----------------------------------------------
+
+async def hash_password(password):
+    salt = js_crypto.getRandomValues(Uint8Array.new(16))
+    base_key = await js_crypto.subtle.importKey(
+        "raw", _to_js(password.encode()), to_js({"name": "PBKDF2"}), False,
+        _to_js(["deriveBits"])
+    )
+    bits = await js_crypto.subtle.deriveBits(
+        to_js({"name": "PBKDF2", "salt": salt, "iterations": PBKDF2_ITERS,
+               "hash": "SHA-256"}),
+        base_key, 256
+    )
+    return (base64.b64encode(bytes(salt.to_py())).decode(),
+            base64.b64encode(bytes(Uint8Array.new(bits).to_py())).decode())
+
+
+async def verify_password(password, salt_b64, hash_b64):
+    try:
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(hash_b64)
+        base_key = await js_crypto.subtle.importKey(
+            "raw", _to_js(password.encode()), to_js({"name": "PBKDF2"}), False,
+            _to_js(["deriveBits"])
+        )
+        bits = await js_crypto.subtle.deriveBits(
+            to_js({"name": "PBKDF2", "salt": _to_js(salt),
+                   "iterations": PBKDF2_ITERS, "hash": "SHA-256"}),
+            base_key, 256
+        )
+        got = bytes(Uint8Array.new(bits).to_py())
+        return hmac.compare_digest(got, expected)
+    except Exception:
+        return False
+
+
+# --- TOTP (RFC 6238, HMAC-SHA1, 6 digits, 30s) ------------------------------
+
+def _b32_decode(secret):
+    s = (secret or "").strip().upper().replace(" ", "")
+    return base64.b32decode(s + "=" * ((8 - len(s) % 8) % 8))
+
+
+def gen_totp_secret():
+    raw = bytes(js_crypto.getRandomValues(Uint8Array.new(20)).to_py())
+    return base64.b32encode(raw).decode().rstrip("=")
+
+
+async def _totp_at(secret_b32, counter):
+    key = await js_crypto.subtle.importKey(
+        "raw", _to_js(_b32_decode(secret_b32)),
+        to_js({"name": "HMAC", "hash": "SHA-1"}), False, _to_js(["sign"])
+    )
+    msg = struct.pack(">Q", counter)
+    mac = bytes(Uint8Array.new(await js_crypto.subtle.sign(
+        "HMAC", key, _to_js(msg))).to_py())
+    offset = mac[-1] & 0x0F
+    code = ((mac[offset] & 0x7F) << 24 | (mac[offset + 1] & 0xFF) << 16 |
+            (mac[offset + 2] & 0xFF) << 8 | (mac[offset + 3] & 0xFF)) % 1000000
+    return "%06d" % code
+
+
+async def totp_verify(secret_b32, code):
+    code = (code or "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return False
+    counter = int(Date.now()) // 1000 // 30
+    for delta in (-1, 0, 1):  # allow one step of clock skew either way
+        if hmac.compare_digest(await _totp_at(secret_b32, counter + delta), code):
+            return True
+    return False
+
+
 # --- Catalog (repositories table) -------------------------------------------
-
-def _repo_row_to_json(r):
-    return {
-        "owner": r.get("owner", ""),
-        "name": r.get("name", ""),
-        "description": r.get("description", "") or "",
-        "cloneUrl": r.get("clone_url", "") or "",
-        "bch": r.get("bch", "") or "",
-        "channel": r.get("channel", "") or "",
-        "hostedSince": r.get("hosted_since", "") or "",
-        "lastSync": r.get("last_sync", "") or "",
-        "updatedAt": r.get("updated_at", "") or "",
-        "source": r.get("source", "local-node") or "local-node",
-        "maintainer": r.get("maintainer", ""),
-        "signature": r.get("signature", "") or "",
-    }
-
 
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
     if method == "GET":
-        rows = await d1_all(
-            env,
-            "SELECT * FROM repositories ORDER BY updated_at DESC LIMIT ?",
-            MAX_CATALOG_REPOS,
-        )
+        rows = await d1_all(env, "SELECT data FROM repositories")
+        repos = []
+        for r in rows:
+            rec = await decrypt_row(env, r["data"])
+            if rec:
+                repos.append(rec)
+        repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         return json_response(
-            {"ok": True, "repositories": [_repo_row_to_json(r) for r in rows]}
+            {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
         )
 
     if method == "POST":
@@ -378,69 +490,59 @@ async def catalog_handler(env, request):
             return json_response(
                 {"error": "owner_name_and_maintainer_required"}, status=400
             )
-        key = record["maintainer"] + ":" + record["owner"] + "/" + record["name"]
+        owner = record["owner"]
+        # Repos are namespaced under a registered account, and only that
+        # account's key holder may write its namespace. This ties repo identity
+        # to the account (fixes duplicate forks) and prevents impersonation.
+        owner_pub = await _owner_pubkey(env, owner)
+        if not owner_pub:
+            return json_response({"error": "owner_not_registered"}, status=403)
+        if record["maintainer"] != owner_pub:
+            return json_response({"error": "maintainer_mismatch"}, status=403)
+        catalog_sig = clean_string(data.get("catalogSig", ""), 200)
+        canonical = ("forkmesh-catalog-v1\n" + owner + "\n" + record["name"] +
+                     "\n" + record["updatedAt"]).encode()
+        if not await ed25519_verify(owner_pub, catalog_sig, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+
+        key_bi = await blind_index(env, owner + "/" + record["name"])
+        owner_bi = await blind_index(env, owner)
+        enc = await encrypt_row(env, record)
         await d1_run(
             env,
-            """INSERT INTO repositories
-               (key, owner, name, description, clone_url, bch, channel,
-                hosted_since, last_sync, updated_at, source, maintainer, signature)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(key) DO UPDATE SET
-                 description=excluded.description, clone_url=excluded.clone_url,
-                 bch=excluded.bch, channel=excluded.channel,
-                 hosted_since=excluded.hosted_since, last_sync=excluded.last_sync,
-                 updated_at=excluded.updated_at, source=excluded.source,
-                 signature=excluded.signature""",
-            key, record["owner"], record["name"], record["description"],
-            record["cloneUrl"], record["bch"], record["channel"],
-            record["hostedSince"], record["lastSync"], record["updatedAt"],
-            record["source"], record["maintainer"], record["signature"],
+            """INSERT INTO repositories (key_bi, owner_bi, data) VALUES (?,?,?)
+               ON CONFLICT(key_bi) DO UPDATE SET
+                 owner_bi=excluded.owner_bi, data=excluded.data""",
+            key_bi, owner_bi, enc,
         )
-        # Keep only the most-recent MAX_CATALOG_REPOS records.
-        await d1_run(
-            env,
-            """DELETE FROM repositories WHERE key NOT IN
-               (SELECT key FROM repositories ORDER BY updated_at DESC LIMIT ?)""",
-            MAX_CATALOG_REPOS,
-        )
+        # Cap: keep only the most-recent MAX_CATALOG_REPOS.
+        rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        if len(rows) > MAX_CATALOG_REPOS:
+            decoded = []
+            for r in rows:
+                rec2 = await decrypt_row(env, r["data"])
+                decoded.append((r["key_bi"], rec2.get("updatedAt", "") if rec2 else ""))
+            decoded.sort(key=lambda x: x[1], reverse=True)
+            for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
+                await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
         return json_response({"ok": True, "repository": record}, status=201)
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
-# --- Accounts (accounts table) ----------------------------------------------
+# --- Accounts (accounts table) — name + bch + password + TOTP ---------------
 
-async def _email_key(env):
-    secret = getattr(env, "ACCOUNTS_KEY", "forkmesh-dev-accounts-key")
-    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
-        "raw", digest, to_js({"name": "AES-GCM"}), False,
-        _to_js(["encrypt", "decrypt"])
-    )
-
-
-async def _encrypt_email(env, email):
-    key = await _email_key(env)
-    iv = js_crypto.getRandomValues(Uint8Array.new(12))
-    cipher = await js_crypto.subtle.encrypt(
-        to_js({"name": "AES-GCM", "iv": iv}), key, _to_js(email.encode())
-    )
-    blob = bytes(iv.to_py()) + bytes(Uint8Array.new(cipher).to_py())
-    return base64.b64encode(blob).decode()
+async def _account_row(env, name):
+    name_bi = await blind_index(env, name)
+    row = await d1_first(env, "SELECT data FROM accounts WHERE name_bi=?", name_bi)
+    if not row:
+        return name_bi, None
+    return name_bi, await decrypt_row(env, row["data"])
 
 
-async def _decrypt_email(env, stored):
-    try:
-        blob = base64.b64decode(stored)
-        iv = _to_js(blob[:12])
-        cipher = _to_js(blob[12:])
-        key = await _email_key(env)
-        plain = await js_crypto.subtle.decrypt(
-            to_js({"name": "AES-GCM", "iv": iv}), key, cipher
-        )
-        return bytes(Uint8Array.new(plain).to_py()).decode()
-    except Exception:
-        return ""
+async def _owner_pubkey(env, owner):
+    _, rec = await _account_row(env, owner)
+    return rec.get("pubkey", "") if rec else ""
 
 
 async def _account_signup(env, request):
@@ -452,8 +554,11 @@ async def _account_signup(env, request):
     name = clean_string(data.get("nodeName", ""), 32).lower()
     pubkey = clean_string(data.get("pubkey", ""), 120)
     email = clean_string(data.get("email", ""), 254)
+    bch = clean_string(data.get("bch", ""), 160)
+    password = (data.get("password", "") or "")[:256]
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
+
     if not valid_node_name(name):
         return json_response(
             {"error": "node_name_must_be_lowercase_alphanumeric_starting_with_a_letter"},
@@ -461,28 +566,44 @@ async def _account_signup(env, request):
         )
     if not pubkey or "@" not in email or not ts:
         return json_response({"error": "pubkey_email_and_ts_required"}, status=400)
+    if not BCH_RE.match(bch.lower()):
+        return json_response({"error": "valid_bch_address_required"}, status=400)
+    if len(password) < 8:
+        return json_response({"error": "password_too_short"}, status=400)
 
     canonical = ("forkmesh-account-v1\n" + name + "\n" + email + "\n" + ts).encode()
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
-    existing = await d1_first(
-        env, "SELECT pubkey, created_at FROM accounts WHERE name = ?", name
-    )
+    name_bi, existing = await _account_row(env, name)
     if existing and existing.get("pubkey") != pubkey:
         return json_response({"error": "node_name_taken"}, status=409)
 
-    email_enc = await _encrypt_email(env, email)
+    salt, phash = await hash_password(password)
+    # Preserve an existing operator's TOTP/verification across a re-signup.
+    totp_secret = existing.get("totp_secret") if existing else gen_totp_secret()
+    totp_enrolled = bool(existing.get("totp_enrolled")) if existing else False
+    bch_verified = bool(existing.get("bch_verified")) if existing else False
     created = existing.get("created_at") if existing else int(Date.now())
+
+    record = {
+        "name": name, "pubkey": pubkey, "email": email, "bch": bch,
+        "pass_salt": salt, "pass_hash": phash, "totp_secret": totp_secret,
+        "totp_enrolled": totp_enrolled, "bch_verified": bch_verified,
+        "created_at": int(created),
+    }
     await d1_run(
         env,
-        """INSERT INTO accounts (name, pubkey, email_enc, created_at)
-           VALUES (?,?,?,?)
-           ON CONFLICT(name) DO UPDATE SET
-             pubkey=excluded.pubkey, email_enc=excluded.email_enc""",
-        name, pubkey, email_enc, int(created),
+        """INSERT INTO accounts (name_bi, data) VALUES (?,?)
+           ON CONFLICT(name_bi) DO UPDATE SET data=excluded.data""",
+        name_bi, await encrypt_row(env, record),
     )
-    return json_response({"ok": True, "nodeName": name}, status=201)
+    resp = {"ok": True, "nodeName": name, "totpEnrolled": totp_enrolled}
+    if not totp_enrolled:
+        resp["totpSecret"] = totp_secret
+        resp["totpUri"] = ("otpauth://totp/ForkMesh:" + name + "?secret=" +
+                           totp_secret + "&issuer=ForkMesh&digits=6&period=30")
+    return json_response(resp, status=201)
 
 
 async def _account_login(env, request):
@@ -492,29 +613,84 @@ async def _account_login(env, request):
         return json_response({"error": "invalid_json"}, status=400)
 
     name = clean_string(data.get("nodeName", ""), 32).lower()
-    ts = clean_string(data.get("ts", ""), 20)
-    signature = clean_string(data.get("sig", ""), 200)
-    row = await d1_first(
-        env, "SELECT pubkey, email_enc FROM accounts WHERE name = ?", name
-    )
-    if not row:
+    password = (data.get("password", "") or "")[:256]
+    totp = clean_string(data.get("totp", ""), 10)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
         return json_response({"error": "no_such_account"}, status=404)
 
+    if not await verify_password(password, rec.get("pass_salt", ""),
+                                 rec.get("pass_hash", "")):
+        return json_response({"error": "bad_password"}, status=401)
+    if not await totp_verify(rec.get("totp_secret", ""), totp):
+        return json_response({"error": "bad_totp"}, status=401)
+
+    if not rec.get("totp_enrolled"):
+        rec["totp_enrolled"] = True
+        await d1_run(
+            env, "UPDATE accounts SET data=? WHERE name_bi=?",
+            await encrypt_row(env, rec), name_bi,
+        )
+    return json_response({
+        "ok": True, "nodeName": name, "email": rec.get("email", ""),
+        "bch": rec.get("bch", ""), "bchVerified": bool(rec.get("bch_verified")),
+    })
+
+
+async def _bch_total_received(bch):
+    from js import fetch as js_fetch
+    addr = bch.split(":")[-1]
+    try:
+        resp = await js_fetch(
+            "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + addr
+        )
+        obj = json.loads(await resp.text())
+        for _, value in (obj.get("data", {}) or {}).items():
+            address = value.get("address", {}) if isinstance(value, dict) else {}
+            if "received" in address:
+                return int(address.get("received", 0))
+        return 0
+    except Exception:
+        return None
+
+
+async def _account_verify_bch(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), 32).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_such_account"}, status=404)
     try:
         skew = abs(int(Date.now()) - int(ts))
     except (TypeError, ValueError):
         skew = LOGIN_MAX_SKEW_MS + 1
     if skew > LOGIN_MAX_SKEW_MS:
         return json_response({"error": "stale_timestamp"}, status=401)
-
-    canonical = ("forkmesh-login-v1\n" + name + "\n" + ts).encode()
-    if not await ed25519_verify(row.get("pubkey", ""), signature, canonical):
+    canonical = ("forkmesh-verify-bch-v1\n" + name + "\n" + ts).encode()
+    if not await ed25519_verify(rec.get("pubkey", ""), signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
-    return json_response(
-        {"ok": True, "nodeName": name,
-         "email": await _decrypt_email(env, row.get("email_enc", ""))}
-    )
+    bch = rec.get("bch", "")
+    if not bch:
+        return json_response({"error": "no_bch_address"}, status=400)
+    received = await _bch_total_received(bch)
+    if received is None:
+        return json_response({"error": "explorer_unavailable"}, status=502)
+    verified = received >= MIN_ACTIVE_SATS
+    if verified and not rec.get("bch_verified"):
+        rec["bch_verified"] = True
+        await d1_run(
+            env, "UPDATE accounts SET data=? WHERE name_bi=?",
+            await encrypt_row(env, rec), name_bi,
+        )
+    return json_response({"ok": True, "bchVerified": verified,
+                          "receivedSats": received,
+                          "requiredSats": MIN_ACTIVE_SATS})
 
 
 async def accounts_handler(env, request):
@@ -525,32 +701,27 @@ async def accounts_handler(env, request):
         return await _account_signup(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
+    if url.path == "/api/accounts/verify-bch" and method == "POST":
+        return await _account_verify_bch(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = match.group(1)
-        row = await d1_first(
-            env, "SELECT pubkey, created_at FROM accounts WHERE name = ?", name
-        )
-        if not row:
+        _, rec = await _account_row(env, clean_string(name, 32).lower())
+        if not rec:
             return json_response({"ok": True, "exists": False, "name": name})
-        # Public lookup never returns the email.
+        # Public lookup never returns email/secret material.
         return json_response(
-            {"ok": True, "exists": True, "name": name,
-             "pubkey": row.get("pubkey", ""), "createdAt": row.get("created_at", 0)}
+            {"ok": True, "exists": True, "name": rec.get("name", name),
+             "pubkey": rec.get("pubkey", ""),
+             "createdAt": rec.get("created_at", 0),
+             "bchVerified": bool(rec.get("bch_verified"))}
         )
     return json_response({"error": "not_found"}, status=404)
 
 
-# --- Issue & pull submission inboxes (issue_inbox / pull_inbox tables) -------
-
-async def _owner_pubkey(env, owner):
-    row = await d1_first(env, "SELECT pubkey FROM accounts WHERE name = ?", owner)
-    return row.get("pubkey", "") if row else ""
-
+# --- Issue & pull submission inboxes (encrypted) ----------------------------
 
 async def _authorize_owner(env, request, owner):
-    # The repo owner pulls/acks their inbox by signing forkmesh-issues-pull-v1
-    # with the node key registered to their account.
     if not owner:
         return False
     params = parse_qs(urlparse(request.url).query)
@@ -572,6 +743,7 @@ async def _authorize_owner(env, request, owner):
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
             data = await request.json()
@@ -589,19 +761,20 @@ async def issues_handler(env, request, owner, repo):
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
         count = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE owner=? AND repo=?",
-            owner, repo,
+            env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi
         )
         if count and count.get("c", 0) >= MAX_PENDING_ISSUES:
             return json_response({"error": "inbox_full"}, status=429)
+        item = {
+            "number": number,
+            "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
+            "event": event,
+            "submitter": clean_string(event.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        }
         await d1_run(
-            env,
-            """INSERT INTO issue_inbox
-               (owner, repo, number, title_if_new, event, submitter, submitted_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            owner, repo, number, clean_string(data.get("titleIfNew", ""), 240),
-            json.dumps(event), clean_string(event.get("author", ""), 120),
-            int(Date.now()),
+            env, "INSERT INTO issue_inbox (repo_bi, data) VALUES (?,?)",
+            repo_bi, await encrypt_row(env, item),
         )
         return json_response({"ok": True}, status=201)
 
@@ -609,32 +782,17 @@ async def issues_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
-            env,
-            """SELECT number, title_if_new, event, submitter, submitted_at
-               FROM issue_inbox WHERE owner=? AND repo=? ORDER BY id ASC""",
-            owner, repo,
+            env, "SELECT data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
         )
-        pending = []
-        for r in rows:
-            try:
-                ev = json.loads(r.get("event") or "{}")
-            except Exception:
-                ev = {}
-            pending.append({
-                "number": r.get("number", 0),
-                "titleIfNew": r.get("title_if_new", "") or "",
-                "event": ev,
-                "submitter": r.get("submitter", "") or "",
-                "submittedAt": r.get("submitted_at", 0),
-            })
+        pending = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(
-            env, "DELETE FROM issue_inbox WHERE owner=? AND repo=?", owner, repo
-        )
+        await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -643,6 +801,7 @@ async def issues_handler(env, request, owner, repo):
 async def pulls_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
             data = await request.json()
@@ -656,17 +815,18 @@ async def pulls_handler(env, request, owner, repo):
         if not await verify_pull_event(pull):
             return json_response({"error": "bad_signature"}, status=401)
         count = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM pull_inbox WHERE owner=? AND repo=?",
-            owner, repo,
+            env, "SELECT COUNT(*) AS c FROM pull_inbox WHERE repo_bi=?", repo_bi
         )
         if count and count.get("c", 0) >= MAX_PENDING_PULLS:
             return json_response({"error": "inbox_full"}, status=429)
+        item = {
+            "pull": pull,
+            "submitter": clean_string(pull.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        }
         await d1_run(
-            env,
-            """INSERT INTO pull_inbox (owner, repo, pull, submitter, submitted_at)
-               VALUES (?,?,?,?,?)""",
-            owner, repo, json.dumps(pull),
-            clean_string(pull.get("author", ""), 120), int(Date.now()),
+            env, "INSERT INTO pull_inbox (repo_bi, data) VALUES (?,?)",
+            repo_bi, await encrypt_row(env, item),
         )
         return json_response({"ok": True}, status=201)
 
@@ -674,30 +834,17 @@ async def pulls_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
-            env,
-            """SELECT pull, submitter, submitted_at FROM pull_inbox
-               WHERE owner=? AND repo=? ORDER BY id ASC""",
-            owner, repo,
+            env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
         )
-        pending = []
-        for r in rows:
-            try:
-                pj = json.loads(r.get("pull") or "{}")
-            except Exception:
-                pj = {}
-            pending.append({
-                "pull": pj,
-                "submitter": r.get("submitter", "") or "",
-                "submittedAt": r.get("submitted_at", 0),
-            })
+        pending = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(
-            env, "DELETE FROM pull_inbox WHERE owner=? AND repo=?", owner, repo
-        )
+        await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)

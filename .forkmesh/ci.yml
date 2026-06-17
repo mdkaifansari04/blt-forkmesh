@@ -1,0 +1,16 @@
+name: CI tests
+on: [push]
+jobs:
+  test:
+    steps:
+      - name: Worker crypto algorithm tests (TOTP / PBKDF2 / blind index)
+        run: python3 cloudflare_worker/tests/test_crypto.py
+      - name: Worker syntax + config
+        run: |
+          python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
+          python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
+      - name: Build and run Qt client tests
+        run: |
+          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
+          cmake --build qt_client/build-ci -j --target forkmesh-tests
+          ./qt_client/build-ci/forkmesh-tests

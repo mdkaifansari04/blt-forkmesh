@@ -101,6 +101,21 @@ private:
     // Setup page
     QWidget *buildSetupPage();
     void startSession();
+    // Account = node identity. Registration (name + BCH + password + TOTP) gates
+    // joining the network; the account name is the canonical repo owner.
+    bool ensureNodeAccount(const QString &accountName, const QString &bch);
+    bool runSignupFlow(const QString &accountName, const QString &bch);
+    bool runLoginFlow(const QString &accountName);
+    bool runTotpEnroll(const QString &accountName, const QString &password,
+                       const QString &secret, const QString &uri);
+    bool verifyTotpLogin(const QString &accountName, const QString &password,
+                         const QString &totp);
+    void verifyWallet(); // POST /verify-bch for the logged-in account
+    QUrl accountsApiUrl(const QString &leaf) const;
+    QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
+                                int *status);
+    QJsonObject getAccountSync(const QString &leaf, int *status);
+    QString accountOwner() const; // the registered account name (repo namespace)
     void runQuickUpdate();
     void buildAndRelaunch(const QString &clientDir);
     void runUpdateStep(const QString &program, const QStringList &arguments,
@@ -555,6 +570,8 @@ private:
     QWidget *m_profileBchSection = nullptr;
     QLabel *m_profileBalance = nullptr;
     QPushButton *m_profileBalanceButton = nullptr;
+    QPushButton *m_profileVerifyButton = nullptr;
+    QLabel *m_profileEligibility = nullptr;
     QPushButton *m_profileMessageButton = nullptr;
     QString m_profileNodeId;
     QString m_profileNodeName;
@@ -588,4 +605,9 @@ private:
     QTimer *m_homeStatsTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+
+    // Registered account/node identity for this session.
+    bool m_accountAuthenticated = false;
+    QString m_accountName;
+    bool m_accountBchVerified = false;
 };
