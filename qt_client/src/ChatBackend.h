@@ -16,6 +16,8 @@ struct MemberInfo {
     bool online = false; // live link right now (green dot)
     QString bchAddress;
     QString bchBalance;  // reserved for a later balance indexer/API
+    QString platform;    // linux | macos | windows | android | ios | web
+    QStringList mirrors; // "owner/name" of repos this node mirrors
 };
 
 // A single chat message delivered to the UI. `conversation` is either a
@@ -64,6 +66,8 @@ public:
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;
+    // Advertise to other nodes which repos ("owner/name") this node mirrors.
+    virtual void setMirroredRepos(const QStringList &ownerNames) { Q_UNUSED(ownerNames); }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 

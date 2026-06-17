@@ -35,6 +35,7 @@ public:
     void setAvatar(const QByteArray &pngData) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
+    void setMirroredRepos(const QStringList &ownerNames) override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
 
@@ -42,6 +43,8 @@ private:
     struct Peer {
         QString name;
         QString bchAddress;
+        QString platform;
+        QStringList mirrors;
         qint64 lastSeenMs = 0;
         bool online = true;
     };
@@ -62,7 +65,8 @@ private:
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
     void rememberPeer(const QString &peerId, const QString &name,
-                      const QString &bchAddress = QString(), bool online = true);
+                      const QString &bchAddress = QString(),
+                      const QString &platform = QString(), bool online = true);
     void updateRosterAndStatus();
     void storeHistory(const QJsonObject &message);
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
@@ -78,6 +82,8 @@ private:
     QUrl m_url;
     QString m_roomName;
     QString m_bchAddress;
+    QString m_platform;
+    QStringList m_mirroredRepos; // "owner/name" advertised to other nodes
     QString m_nodeId;
     // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so
     // members are only recalled for the exact same encrypted room.

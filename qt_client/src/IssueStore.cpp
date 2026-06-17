@@ -399,6 +399,7 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
         if (ef.open(QIODevice::ReadOnly))
             out.events.append(eventFromFrontMatter(parseFrontMatter(ef.readAll())));
     }
+    recomputeMetadata(out); // also tallies votes
     return true;
 }
 
@@ -501,6 +502,7 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
                     issue.events.append(eventFromFrontMatter(parseFrontMatter(ev)));
             }
         }
+        recomputeMetadata(issue); // tally votes (and fold event metadata)
         if (!issue.isDeleted())
             issues.append(issue);
     }
@@ -604,6 +606,7 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
 
 void IssueStore::recomputeMetadata(Issue &issue) const
 {
+    QStringList voters;
     for (const IssueEvent &ev : issue.events) {
         if (ev.type == "open")
             issue.title = ev.title;
@@ -615,7 +618,11 @@ void IssueStore::recomputeMetadata(Issue &issue) const
             issue.milestone = ev.milestone;
         else if (ev.type == "assignees")
             issue.assignees = ev.assignees;
+        else if (ev.type == "vote" && !ev.author.isEmpty() &&
+                 !voters.contains(ev.author))
+            voters.append(ev.author);
     }
+    issue.votes = voters.size();
 }
 
 QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths) const
@@ -741,6 +748,35 @@ bool IssueStore::addComment(int number, const QString &body,
     if (!writeIssueFile(issue, error))
         return false;
     return commit(QStringLiteral("issue #%1: comment").arg(number), error);
+}
+
+bool IssueStore::addVote(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    Issue issue;
+    if (!readIssueFile(number, issue)) {
+        if (error)
+            *error = QStringLiteral("Issue #%1 not found.").arg(number);
+        return false;
+    }
+    const QString me = m_identity ? m_identity->publicKey() : QString();
+    for (const IssueEvent &existing : std::as_const(issue.events))
+        if (existing.type == "vote" && existing.author == me) {
+            if (error)
+                *error = QStringLiteral("You have already voted on this issue.");
+            return false;
+        }
+    IssueEvent ev;
+    ev.type = "vote";
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: vote").arg(number), error);
 }
 
 bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
@@ -932,6 +968,12 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         placeholder.authorName = ev.authorName;
         placeholder.ts = ev.ts;
         issue.events.append(placeholder);
+    }
+    // One vote per author: ignore a repeat vote from someone we already counted.
+    if (ev.type == "vote") {
+        for (const IssueEvent &existing : std::as_const(issue.events))
+            if (existing.type == "vote" && existing.author == ev.author)
+                return true;
     }
     issue.events.append(ev);
     recomputeMetadata(issue);

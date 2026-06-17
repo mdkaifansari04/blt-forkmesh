@@ -30,6 +30,7 @@ class QPushButton;
 class QScrollArea;
 class QStackedWidget;
 class QSystemTrayIcon;
+class QTableWidget;
 class QTabWidget;
 class QTextBrowser;
 class QTimer;
@@ -169,6 +170,10 @@ private:
     void promptNewIssue();
     void quickAddIssue();
     void copyIssueToClipboard();
+    int availableCredits() const;     // 1 voting credit per hour online
+    void voteOnCurrentIssue();
+    void submitIssueVoteToInbox();
+    void updateVoteUi();
     void addIssueComment();
     void attachIssueImage();
     void toggleIssueStatus();
@@ -229,6 +234,7 @@ private:
     void saveRepositories() const;
     void refreshRepositoryList();
     void promptAddRepository();
+    void mirrorAdvertisedRepo(const QString &ownerName);
     void syncSelectedRepository();
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
@@ -342,7 +348,9 @@ private:
     QComboBox *m_issueStatusFilter = nullptr;
     QComboBox *m_issueLabelFilter = nullptr;
     QComboBox *m_issueMilestoneFilter = nullptr;
-    QListWidget *m_issueList = nullptr;
+    QTableWidget *m_issueTable = nullptr;
+    QWidget *m_issueDetail = nullptr;          // collapsible detail panel
+    QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
 
     // Repo detail view
@@ -398,6 +406,8 @@ private:
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issueCopyButton = nullptr;
+    QPushButton *m_issueVoteButton = nullptr;
+    QLabel *m_issueCreditsLabel = nullptr;
     QPushButton *m_issueCommentButton = nullptr;
     QPushButton *m_issueAttachButton = nullptr;
     QPushButton *m_issueCloseButton = nullptr;

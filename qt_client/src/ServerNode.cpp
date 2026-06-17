@@ -27,6 +27,24 @@ constexpr qsizetype kMaxFileBytes = 64ll * 1024 * 1024;
 constexpr qsizetype kMaxBase64FileChars = 90ll * 1024 * 1024;
 constexpr qsizetype kMaxAvatarBytes = 256 * 1024;
 
+// This node's operating system, advertised to peers.
+QString currentPlatform()
+{
+#if defined(Q_OS_ANDROID)
+    return QStringLiteral("android");
+#elif defined(Q_OS_IOS)
+    return QStringLiteral("ios");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("macos");
+#elif defined(Q_OS_WIN)
+    return QStringLiteral("windows");
+#elif defined(Q_OS_LINUX)
+    return QStringLiteral("linux");
+#else
+    return QStringLiteral("unknown");
+#endif
+}
+
 QByteArray randomKey()
 {
     QByteArray key(16, Qt::Uninitialized);
@@ -96,6 +114,7 @@ ServerNode::ServerNode(const QString &userName, const QUrl &serverUrl,
       m_url(serverUrl),
       m_roomName(roomName.trimmed()),
       m_bchAddress(bchAddress.trimmed().left(kMaxBchAddressChars)),
+      m_platform(currentPlatform()),
       m_nodeId(QUuid::createUuid().toString(QUuid::WithoutBraces)),
       m_crypto(m_roomName, passphrase)
 {
@@ -338,6 +357,8 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
                         {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
     if (!m_bchAddress.isEmpty())
         message.insert("bch", m_bchAddress);
+    if (!m_platform.isEmpty())
+        message.insert("platform", m_platform);
     return message;
 }
 
@@ -359,9 +380,22 @@ void ServerNode::sendHello()
     QJsonArray channels;
     for (const QString &channel : std::as_const(m_channels))
         channels.append(channel);
+    QJsonArray mirrors;
+    for (const QString &repo : std::as_const(m_mirroredRepos))
+        mirrors.append(repo);
     QJsonObject hello = makeMessage("hello");
     hello.insert("channels", channels);
+    hello.insert("mirrors", mirrors);
     sendEncrypted(hello, true);
+}
+
+void ServerNode::setMirroredRepos(const QStringList &ownerNames)
+{
+    if (m_mirroredRepos == ownerNames)
+        return;
+    m_mirroredRepos = ownerNames;
+    if (m_wsReady)
+        sendHello(); // re-advertise so peers see the updated mirror set
 }
 
 void ServerNode::sendChat(const QString &channel, const QString &text)
@@ -522,8 +556,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
     const QString senderId = message.value("senderId").toString();
     const QString sender = message.value("sender").toString();
     const QString bchAddress = boundedText(message, "bch", kMaxBchAddressChars);
+    const QString platform = message.value("platform").toString().left(16);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, bchAddress);
+        rememberPeer(senderId, sender, bchAddress, platform);
 
     if (type == "hello") {
         bool changed = false;
@@ -536,6 +571,17 @@ void ServerNode::handlePlain(const QJsonObject &message)
         }
         if (changed)
             emit channelsChanged(m_channels);
+        // Record which repos this peer advertises mirroring.
+        if (m_peers.contains(senderId)) {
+            QStringList mirrors;
+            for (const auto &value : message.value("mirrors").toArray()) {
+                const QString repo = value.toString().left(160);
+                if (!repo.isEmpty() && mirrors.size() < 500)
+                    mirrors.append(repo);
+            }
+            m_peers[senderId].mirrors = mirrors;
+            updateRosterAndStatus();
+        }
         // A broadcast hello (no "to") is a peer announcing themselves on a
         // fresh connect or reconnect. Existing peers must answer with their own
         // presence so the newcomer rebuilds its roster — otherwise it would not
@@ -682,7 +728,8 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
 }
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
-                              const QString &bchAddress, bool online)
+                              const QString &bchAddress, const QString &platform,
+                              bool online)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
         return;
@@ -693,6 +740,8 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
     peer.name = name.isEmpty() ? peer.name : name;
     if (!bchAddress.trimmed().isEmpty())
         peer.bchAddress = bchAddress.trimmed().left(kMaxBchAddressChars);
+    if (!platform.isEmpty())
+        peer.platform = platform;
     peer.online = online;
     peer.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
     // Only touch persistent storage when the durable identity changes, not on
@@ -704,13 +753,20 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
 
 void ServerNode::updateRosterAndStatus()
 {
-    QList<MemberInfo> members{{m_nodeId, m_userName, QString(), true, m_wsReady,
-                               m_bchAddress, QString()}};
+    MemberInfo self{m_nodeId,    m_userName, QString(), true, m_wsReady, m_bchAddress,
+                    QString(),   m_platform, m_mirroredRepos};
+    QList<MemberInfo> members{self};
     int onlineCount = 0;
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
-        members.append({it.key(), it->name,
-                        it->online ? QString() : QStringLiteral("(offline)"), false,
-                        it->online, it->bchAddress, QString()});
+        MemberInfo member;
+        member.id = it.key();
+        member.name = it->name;
+        member.note = it->online ? QString() : QStringLiteral("(offline)");
+        member.online = it->online;
+        member.bchAddress = it->bchAddress;
+        member.platform = it->platform;
+        member.mirrors = it->mirrors;
+        members.append(member);
         if (it->online)
             ++onlineCount;
     }

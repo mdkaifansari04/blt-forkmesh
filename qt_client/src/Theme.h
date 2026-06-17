@@ -244,6 +244,16 @@ QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#issueTable {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    gridline-color: #21262d;
+}
+#issueTable::item { padding: 4px 8px; color: #c9d1d9; }
+#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; }
+#issueTable QHeaderView::section {
+    background-color: #161b22; color: #8b949e; padding: 6px 8px;
+    border: none; border-bottom: 1px solid #30363d; font-weight: 700;
+}
 
 /* --- Chat area --- */
 #chatHeader {
@@ -563,6 +573,16 @@ QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#issueTable {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    gridline-color: #d8dee4;
+}
+#issueTable::item { padding: 4px 8px; color: #1f2328; }
+#issueTable::item:selected { background-color: #0969da; color: #ffffff; }
+#issueTable QHeaderView::section {
+    background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
+    border: none; border-bottom: 1px solid #d0d7de; font-weight: 700;
+}
 
 /* --- Chat area --- */
 #chatHeader {
