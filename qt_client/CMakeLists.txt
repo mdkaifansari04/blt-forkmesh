@@ -27,6 +27,8 @@ qt_add_executable(forkmesh
     src/ServerNode.cpp
     src/RepoHost.h
     src/RepoHost.cpp
+    src/IssueStore.h
+    src/IssueStore.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MainWindow.h
@@ -54,6 +56,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ForkMeshIdentity.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
+        src/IssueStore.h
+        src/IssueStore.cpp
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)

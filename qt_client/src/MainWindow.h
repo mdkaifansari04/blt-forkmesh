@@ -2,6 +2,7 @@
 
 #include "ChatBackend.h"
 #include "ForkMeshIdentity.h"
+#include "IssueStore.h"
 
 #include <QHash>
 #include <QList>
@@ -16,6 +17,8 @@
 class MessageRow;
 class RepoHost;
 class QButtonGroup;
+class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -27,6 +30,14 @@ class QStackedWidget;
 class QSystemTrayIcon;
 class QTimer;
 class QVBoxLayout;
+
+// A configured mainnode the user can connect to. The client connects to one at
+// a time; the favicon rail switches the active one.
+struct ServerConfig {
+    QString url;
+    QString room;
+    QString passphrase;
+};
 
 struct RepositoryRecord {
     QString owner;
@@ -61,11 +72,52 @@ private:
 
     // Chat page
     QWidget *buildChatPage();
+    QWidget *buildServerRail();
     QWidget *buildNavRail();
+
+    // Global donation nudge shown until this node sets a BCH address.
+    QWidget *buildBchNotice();
+    void updateBchNotice();
+    void promptSetBchAddress();
+
+    // Mainnode servers (favicon rail)
+    void loadServers();
+    void saveServers();
+    void refreshServerRail();
+    void switchToServer(int index);
+    void promptAddServer();
+    void removeServer(int index);
+    void loadActiveServerIntoEdits();
+    void persistEditsToActiveServer();
+    void loadCachedFavicons();
+    void fetchFavicon(int index);
+    QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
     QWidget *buildReposSection();
+    QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
+
+    // Issues tab
+    int issuesRepoIndex() const;                 // selected repo, or -1
+    IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
+    void refreshIssuesRepoCombo();
+    void reloadIssues();        // load issues + label/milestone filters from the store
+    void refreshIssueList();    // apply filters into the list widget
+    void showIssue(int number); // render the selected issue's thread
+    void renderIssueThread(const Issue &issue);
+    void promptNewIssue();
+    void addIssueComment();
+    void attachIssueImage();
+    void toggleIssueStatus();
+    void deleteCurrentIssue();
+    void editIssueLabels();
+    void editIssueMilestone();
+    void editIssueAssignees();
+    void updateIssueActionState();
+    QUrl issuesApiUrl(const RepositoryRecord &repo) const;
+    void submitIssueCommentToInbox(const QString &body);
+    void syncIssuesInbox();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     void rebuildAndRelaunch();
@@ -109,7 +161,10 @@ private:
     void refreshRepositoryList();
     void promptAddRepository();
     void syncSelectedRepository();
-    void syncRepository(int index);
+    void syncRepository(int index, bool quiet = false);
+    void autoSyncMirrors();
+    void quickRebuildRestart();
+    void changeMirrorLocation();
     void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
     void publishRepositoryFiles(int index);
@@ -143,6 +198,17 @@ private:
     QStackedWidget *m_sectionStack = nullptr;
     QButtonGroup *m_navGroup = nullptr;
     QSystemTrayIcon *m_trayIcon;
+
+    // Mainnode favicon rail (far left of the chat page).
+    QWidget *m_serverRail = nullptr;
+    QButtonGroup *m_serverGroup = nullptr;
+    QList<ServerConfig> m_servers;
+    int m_activeServer = 0;
+    QHash<QString, QPixmap> m_faviconCache; // host -> favicon
+
+    // Donation nudge banner (no BCH address yet).
+    QWidget *m_bchBanner = nullptr;
+    QLabel *m_bchBannerLabel = nullptr;
 
     // Home overview widgets
     QLabel *m_homeName = nullptr;
@@ -201,6 +267,40 @@ private:
     QPlainTextEdit *m_settingsLog = nullptr;
     QPushButton *m_rebuildButton = nullptr;
     QLabel *m_rebuildStatus = nullptr;
+    QLineEdit *m_mirrorRootEdit = nullptr;
+    QCheckBox *m_autostartCheck = nullptr;
+    QTimer *m_mirrorSyncTimer = nullptr;
+
+    // Issues section widgets
+    QComboBox *m_issuesRepoCombo = nullptr;
+    QComboBox *m_issueStatusFilter = nullptr;
+    QComboBox *m_issueLabelFilter = nullptr;
+    QComboBox *m_issueMilestoneFilter = nullptr;
+    QListWidget *m_issueList = nullptr;
+    QLabel *m_issueTitle = nullptr;
+    QLabel *m_issueMeta = nullptr;
+    QLabel *m_issueReadonlyNote = nullptr;
+    QLabel *m_issueAssigneesValue = nullptr;
+    QLabel *m_issueLabelsValue = nullptr;
+    QLabel *m_issueMilestoneValue = nullptr;
+    QScrollArea *m_issueThreadScroll = nullptr;
+    QWidget *m_issueThreadContainer = nullptr;
+    QVBoxLayout *m_issueThreadLayout = nullptr;
+    QPlainTextEdit *m_issueComposer = nullptr;
+    QPushButton *m_issueNewButton = nullptr;
+    QPushButton *m_issueSyncButton = nullptr;
+    QPushButton *m_issueCommentButton = nullptr;
+    QPushButton *m_issueAttachButton = nullptr;
+    QPushButton *m_issueCloseButton = nullptr;
+    QPushButton *m_issueLabelsButton = nullptr;
+    QPushButton *m_issueMilestoneButton = nullptr;
+    QPushButton *m_issueAssigneesButton = nullptr;
+    QPushButton *m_issueDeleteButton = nullptr;
+    QList<Issue> m_currentIssues;
+    QList<IssueLabel> m_currentLabels;
+    QList<IssueMilestone> m_currentMilestones;
+    int m_currentIssueNumber = -1;
+    QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     QStringList m_channels;
     QList<RepositoryRecord> m_repositories;

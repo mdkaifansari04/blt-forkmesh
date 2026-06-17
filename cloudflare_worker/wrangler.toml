@@ -34,6 +34,10 @@ class_name = "ForkMeshHost"
 name = "FORKMESH_ACCOUNTS"
 class_name = "ForkMeshAccounts"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_ISSUES"
+class_name = "ForkMeshIssues"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ForkMeshRoom"]
@@ -53,6 +57,10 @@ new_sqlite_classes = ["ForkMeshHost"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["ForkMeshAccounts"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["ForkMeshIssues"]
 
 
 [observability]
