@@ -1871,36 +1871,6 @@ QWidget *MainWindow::buildReposPanel()
     layout->addLayout(remoteRow);
     layout->addWidget(m_repoRemoteHint);
     layout->addWidget(m_repoWebLink);
-
-    // Per-repo opt-in to run .forkmesh/ workflows on push. Off by default: a
-    // pushed workflow runs commands on this machine, so the user must enable it
-    // and still approve any workflow change in the Actions tab.
-    m_actionsEnabledCheck = new QCheckBox("Run actions on push to this repo");
-    m_actionsEnabledCheck->setToolTip(
-        "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
-        "workflows. Workflow changes must be approved in the Actions tab before "
-        "they run.");
-    m_actionsEnabledCheck->setEnabled(false);
-    layout->addWidget(m_actionsEnabledCheck);
-    connect(m_actionsEnabledCheck, &QCheckBox::toggled, this, [this](bool on) {
-        const int index = m_repoList && m_repoList->currentItem()
-                              ? m_repoList->currentItem()->data(Qt::UserRole).toInt()
-                              : -1;
-        if (index < 0 || index >= m_repositories.size())
-            return;
-        if (m_repositories[index].actionsEnabled == on)
-            return;
-        m_repositories[index].actionsEnabled = on;
-        saveRepositories();
-        // The hook stays installed regardless (it powers live refresh too);
-        // just make sure it exists when enabling.
-        ensurePushHook(m_repositories.at(index));
-        logSystem(QStringLiteral("Actions %1 for %2/%3.")
-                      .arg(on ? "enabled" : "disabled",
-                           m_repositories.at(index).owner,
-                           m_repositories.at(index).name));
-    });
-
     layout->addLayout(repoButtonRow);
 
     connect(m_repoList, &QListWidget::currentRowChanged, this, [this](int) {
@@ -5874,7 +5844,7 @@ void MainWindow::loadRepositories()
         repo.bchAddress = settings.value("bchAddress").toString();
         repo.mirrorPath = settings.value("mirrorPath").toString();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
-        repo.actionsEnabled = settings.value("actionsEnabled").toBool();
+        repo.actionsEnabled = settings.value("actionsEnabled", true).toBool();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
@@ -6253,8 +6223,6 @@ void MainWindow::updateRepoRemoteInfo()
     if (!m_repoRemoteEdit)
         return;
     QListWidgetItem *item = m_repoList ? m_repoList->currentItem() : nullptr;
-    if (m_actionsEnabledCheck)
-        m_actionsEnabledCheck->setEnabled(false);
     if (!item) {
         m_repoRemoteEdit->clear();
         if (m_repoRemoteHint)
@@ -6264,11 +6232,6 @@ void MainWindow::updateRepoRemoteInfo()
     const int index = item->data(Qt::UserRole).toInt();
     if (index < 0 || index >= m_repositories.size())
         return;
-    if (m_actionsEnabledCheck) {
-        QSignalBlocker block(m_actionsEnabledCheck);
-        m_actionsEnabledCheck->setEnabled(true);
-        m_actionsEnabledCheck->setChecked(m_repositories.at(index).actionsEnabled);
-    }
     const QString path = m_repositories.at(index).mirrorPath;
     m_repoRemoteEdit->setText(path);
     if (!m_repoRemoteHint)
@@ -7169,6 +7132,11 @@ void MainWindow::refreshRepoActions()
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
 
+    if (m_actionsEnabledCheck) {
+        QSignalBlocker block(m_actionsEnabledCheck);
+        m_actionsEnabledCheck->setChecked(repo.actionsEnabled);
+    }
+
     auto *all = new QListWidgetItem(QStringLiteral("All workflows"));
     all->setData(Qt::UserRole, QString());
     m_actionWorkflowList->addItem(all);
@@ -7317,11 +7285,35 @@ QWidget *MainWindow::buildRepoActionsTab()
                     item ? item->data(Qt::UserRole).toString() : QString();
                 refreshActionsTable();
             });
+
+    // Enable/disable actions for this repo, right here on the Actions tab.
+    m_actionsEnabledCheck = new QCheckBox("Run actions on push");
+    m_actionsEnabledCheck->setToolTip(
+        "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
+        "workflows. Changed workflows still require approval below before they "
+        "run.");
+    connect(m_actionsEnabledCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+            return;
+        if (m_repositories[m_repoDetailIndex].actionsEnabled == on)
+            return;
+        m_repositories[m_repoDetailIndex].actionsEnabled = on;
+        saveRepositories();
+        // The hook stays installed regardless (it powers the live Code refresh);
+        // just make sure it exists when enabling.
+        ensurePushHook(m_repositories.at(m_repoDetailIndex));
+        logSystem(QStringLiteral("Actions %1 for %2/%3.")
+                      .arg(on ? "enabled" : "disabled",
+                           m_repositories.at(m_repoDetailIndex).owner,
+                           m_repositories.at(m_repoDetailIndex).name));
+    });
+
     auto *wfLayout = new QVBoxLayout(wfPane);
     wfLayout->setContentsMargins(16, 22, 8, 22);
     wfLayout->setSpacing(8);
     wfLayout->addWidget(wfHeading);
     wfLayout->addWidget(wfHint);
+    wfLayout->addWidget(m_actionsEnabledCheck);
     wfLayout->addWidget(m_actionWorkflowList, 1);
 
     // Middle: the run list for the selected workflow (or all).
