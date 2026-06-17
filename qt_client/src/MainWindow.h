@@ -148,6 +148,8 @@ private:
     QWidget *buildRepoOverviewPage();
     QWidget *buildRepoEditorPage();
     QWidget *buildRepoCommitsTab();
+    void showCommit(const QString &hash); // open the commit diff detail view
+    void showCommitList();                // back to the commits list
     QWidget *buildAboutSidebar();
     QWidget *buildPlaceholderTab(const QString &name);
 
@@ -435,6 +437,14 @@ private:
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QListWidget *m_commitsList = nullptr;
+    // Commits tab: a stack flipping between the list and a per-commit diff view.
+    QStackedWidget *m_commitsStack = nullptr;
+    QLabel *m_commitTitle = nullptr;
+    QLabel *m_commitMeta = nullptr;
+    QLabel *m_commitMessage = nullptr;
+    QLabel *m_commitFilesSummary = nullptr;
+    QListWidget *m_commitFileList = nullptr;
+    QTextBrowser *m_commitDiffView = nullptr;
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor

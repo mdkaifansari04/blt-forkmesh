@@ -2294,13 +2294,98 @@ QWidget *MainWindow::buildRepoDetailSection()
 
 QWidget *MainWindow::buildRepoCommitsTab()
 {
-    auto *page = new QWidget;
+    m_commitsStack = new QStackedWidget;
+
+    // --- Page 0: the commit list.
+    auto *listPage = new QWidget;
     m_commitsList = new QListWidget;
     m_commitsList->setObjectName("commitsList");
     m_commitsList->setWordWrap(true);
+    connect(m_commitsList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                if (item)
+                    showCommit(item->data(Qt::UserRole).toString());
+            });
+    auto *listLayout = new QVBoxLayout(listPage);
+    listLayout->setContentsMargins(16, 12, 16, 16);
+    listLayout->addWidget(m_commitsList);
+
+    // --- Page 1: the GitHub-style commit diff view.
+    auto *detailPage = new QWidget;
+
+    auto *backButton = new QPushButton("\xE2\x86\x90 Commits");
+    backButton->setObjectName("ghostButton");
+    backButton->setCursor(Qt::PointingHandCursor);
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::showCommitList);
+
+    m_commitTitle = new QLabel;
+    m_commitTitle->setObjectName("repoHeaderTitle");
+    m_commitTitle->setTextFormat(Qt::RichText);
+    m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->addWidget(m_commitTitle, 1);
+    headerRow->addWidget(backButton);
+
+    m_commitMessage = new QLabel;
+    m_commitMessage->setObjectName("commitMessage");
+    m_commitMessage->setWordWrap(true);
+    m_commitMessage->setTextFormat(Qt::RichText);
+    m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_commitMeta = new QLabel;
+    m_commitMeta->setObjectName("statusLine");
+    m_commitMeta->setTextFormat(Qt::RichText);
+    m_commitMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_commitFilesSummary = new QLabel;
+    m_commitFilesSummary->setObjectName("sectionLabel");
+    m_commitFilesSummary->setTextFormat(Qt::RichText);
+
+    // Left: changed-files list (click to scroll the diff to that file).
+    auto *filesPane = new QWidget;
+    filesPane->setMinimumWidth(200);
+    filesPane->setMaximumWidth(300);
+    m_commitFileList = new QListWidget;
+    m_commitFileList->setObjectName("commitFileList");
+    connect(m_commitFileList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item && m_commitDiffView)
+                    m_commitDiffView->scrollToAnchor(
+                        item->data(Qt::UserRole).toString());
+            });
+    auto *filesLayout = new QVBoxLayout(filesPane);
+    filesLayout->setContentsMargins(0, 0, 8, 0);
+    filesLayout->setSpacing(6);
+    filesLayout->addWidget(m_commitFilesSummary);
+    filesLayout->addWidget(m_commitFileList, 1);
+
+    // Right: the unified diff for the whole commit.
+    m_commitDiffView = new QTextBrowser;
+    m_commitDiffView->setObjectName("commitDiffView");
+    m_commitDiffView->setOpenExternalLinks(false);
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(filesPane);
+    split->addWidget(m_commitDiffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+
+    auto *detailLayout = new QVBoxLayout(detailPage);
+    detailLayout->setContentsMargins(16, 12, 16, 16);
+    detailLayout->setSpacing(8);
+    detailLayout->addLayout(headerRow);
+    detailLayout->addWidget(m_commitMessage);
+    detailLayout->addWidget(m_commitMeta);
+    detailLayout->addWidget(split, 1);
+
+    m_commitsStack->addWidget(listPage);   // 0
+    m_commitsStack->addWidget(detailPage); // 1
+
+    auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 12, 16, 16);
-    layout->addWidget(m_commitsList);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(m_commitsStack);
     return page;
 }
 
@@ -3467,6 +3552,7 @@ void MainWindow::loadCommits()
     if (!m_commitsList)
         return;
     m_commitsList->clear();
+    showCommitList(); // always land on the list when (re)loading
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return;
@@ -3485,8 +3571,239 @@ void MainWindow::loadCommits()
             QString::fromUtf8("%1\n%2 \xC2\xB7 %3 \xC2\xB7 %4")
                 .arg(f.at(3), f.at(1), f.at(2), f.at(0)),
             m_commitsList);
-        item->setToolTip(f.at(0));
+        item->setData(Qt::UserRole, f.at(0)); // short hash, used to open the diff
+        item->setToolTip(QStringLiteral("Click to view the diff for %1").arg(f.at(0)));
     }
+}
+
+void MainWindow::showCommitList()
+{
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(0);
+}
+
+namespace {
+
+struct DiffFileEntry {
+    QString path;
+    QString anchor;
+    int adds = 0;
+    int dels = 0;
+};
+
+// Render a unified diff into an HTML table with an old/new line-number gutter
+// and +/- coloring (classes styled by the document stylesheet), one block per
+// file with a named anchor so the file list can scroll to it.
+QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files)
+{
+    static const QRegularExpression hunkRe(
+        QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
+    QString html;
+    const QStringList lines = patch.split(QLatin1Char('\n'));
+    int oldNo = 0, newNo = 0, fileIdx = -1;
+    bool inFile = false;
+    auto closeFile = [&] {
+        if (inFile) {
+            html += QStringLiteral("</table></div>");
+            inFile = false;
+        }
+    };
+
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git "))) {
+            closeFile();
+            QString path = line;
+            const int bpos = line.indexOf(QLatin1String(" b/"));
+            if (bpos >= 0)
+                path = line.mid(bpos + 3);
+            DiffFileEntry f;
+            f.path = path;
+            f.anchor = QStringLiteral("file-%1").arg(files.size());
+            files.append(f);
+            fileIdx = files.size() - 1;
+            html += QStringLiteral("<a name=\"%1\"></a><div class='fileblock'>"
+                                   "<div class='fileheader'>%2</div>"
+                                   "<table class='difftable' width='100%' "
+                                   "cellspacing='0' cellpadding='0'>")
+                        .arg(f.anchor, path.toHtmlEscaped());
+            inFile = true;
+            continue;
+        }
+        if (!inFile)
+            continue;
+        if (line.startsWith(QLatin1String("index ")) ||
+            line.startsWith(QLatin1String("--- ")) ||
+            line.startsWith(QLatin1String("+++ ")) ||
+            line.startsWith(QLatin1String("new file")) ||
+            line.startsWith(QLatin1String("deleted file")) ||
+            line.startsWith(QLatin1String("similarity ")) ||
+            line.startsWith(QLatin1String("rename ")) ||
+            line.startsWith(QLatin1String("old mode")) ||
+            line.startsWith(QLatin1String("new mode")))
+            continue;
+        if (line.startsWith(QLatin1String("@@"))) {
+            const QRegularExpressionMatch m = hunkRe.match(line);
+            if (m.hasMatch()) {
+                oldNo = m.captured(1).toInt();
+                newNo = m.captured(2).toInt();
+            }
+            html += QStringLiteral(
+                        "<tr><td class='ln hunk'></td><td class='ln hunk'></td>"
+                        "<td class='code hunk'>%1</td></tr>")
+                        .arg(line.toHtmlEscaped());
+            continue;
+        }
+
+        const QChar c0 = line.isEmpty() ? QLatin1Char(' ') : line.at(0);
+        QString text = line.isEmpty() ? QString() : line.mid(1);
+        QString cls, oldCell, newCell;
+        if (c0 == QLatin1Char('+')) {
+            cls = QStringLiteral("add");
+            newCell = QString::number(newNo++);
+            if (fileIdx >= 0)
+                ++files[fileIdx].adds;
+        } else if (c0 == QLatin1Char('-')) {
+            cls = QStringLiteral("del");
+            oldCell = QString::number(oldNo++);
+            if (fileIdx >= 0)
+                ++files[fileIdx].dels;
+        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+            cls = QStringLiteral("ctx");
+            text = line;
+        } else {
+            cls = QStringLiteral("ctx");
+            oldCell = QString::number(oldNo++);
+            newCell = QString::number(newNo++);
+        }
+        html += QStringLiteral("<tr><td class='ln %1'>%2</td>"
+                               "<td class='ln %1'>%3</td>"
+                               "<td class='code %1'>%4</td></tr>")
+                    .arg(cls, oldCell, newCell,
+                         text.isEmpty() ? QStringLiteral("&nbsp;")
+                                        : text.toHtmlEscaped());
+    }
+    closeFile();
+    return html;
+}
+
+} // namespace
+
+void MainWindow::showCommit(const QString &hash)
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || hash.isEmpty() || !m_commitsStack)
+        return;
+
+    // --- Metadata (full hash, author, date, parents, subject, body).
+    QByteArray meta;
+    runGitCapture(dir,
+                  {"show", "-s", "--date=format:%b %e, %Y",
+                   "--format=%H%x1f%an%x1f%ad%x1f%P%x1f%s%x1f%b", hash},
+                  &meta, nullptr);
+    const QStringList mf = QString::fromUtf8(meta).split(QLatin1Char('\x1f'));
+    const QString full = mf.value(0).trimmed();
+    const QString author = mf.value(1).trimmed();
+    const QString date = mf.value(2).trimmed();
+    const QStringList parents =
+        mf.value(3).trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QString subject = mf.value(4).trimmed();
+    const QString body = mf.value(5).trimmed();
+    const QString shortHash = full.isEmpty() ? hash : full.left(7);
+
+    // Diff against the first parent (or the empty tree for a root commit), which
+    // matches how a commit page presents merges and initial commits.
+    const QString emptyTree =
+        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+    const QString base = parents.isEmpty() ? emptyTree : parents.first();
+    QByteArray patchRaw;
+    runGitCapture(dir, {"diff", "-M", base, full.isEmpty() ? hash : full},
+                  &patchRaw, nullptr);
+
+    // --- Header labels.
+    if (m_commitTitle)
+        m_commitTitle->setText(
+            QStringLiteral("Commit <code>%1</code>").arg(shortHash.toHtmlEscaped()));
+    if (m_commitMessage) {
+        QString msg = QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+        if (!body.isEmpty())
+            msg += QStringLiteral(
+                       "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
+                       .arg(body.toHtmlEscaped());
+        m_commitMessage->setText(msg);
+    }
+
+    // --- Render the diff and collect per-file stats.
+    QList<DiffFileEntry> files;
+    const QString diffHtml =
+        renderUnifiedDiffHtml(QString::fromUtf8(patchRaw), files);
+    int totalAdds = 0, totalDels = 0;
+    for (const DiffFileEntry &f : files) {
+        totalAdds += f.adds;
+        totalDels += f.dels;
+    }
+
+    if (m_commitMeta)
+        m_commitMeta->setText(
+            QStringLiteral("%1 committed on %2 \xC2\xB7 %3 parent%4 \xC2\xB7 "
+                           "<b>%5</b> file%6 changed "
+                           "<span style='color:#3fb950'>+%7</span> "
+                           "<span style='color:#f85149'>\xE2\x88\x92%8</span>")
+                .arg(author.toHtmlEscaped(), date.toHtmlEscaped(),
+                     QString::number(qMax(1, parents.size())),
+                     parents.size() == 1 ? "" : "s", QString::number(files.size()),
+                     files.size() == 1 ? "" : "s", QString::number(totalAdds),
+                     QString::number(totalDels)));
+
+    if (m_commitFilesSummary)
+        m_commitFilesSummary->setText(
+            QStringLiteral("%1 file%2 changed")
+                .arg(files.size())
+                .arg(files.size() == 1 ? "" : "s"));
+
+    // --- Left file list (click scrolls the diff to that file).
+    if (m_commitFileList) {
+        QSignalBlocker block(m_commitFileList);
+        m_commitFileList->clear();
+        for (const DiffFileEntry &f : files) {
+            auto *item = new QListWidgetItem(
+                QStringLiteral("%1   +%2 \xE2\x88\x92%3")
+                    .arg(f.path, QString::number(f.adds), QString::number(f.dels)));
+            item->setData(Qt::UserRole, f.anchor);
+            item->setToolTip(f.path);
+            m_commitFileList->addItem(item);
+        }
+    }
+
+    // --- Theme-aware diff styling, then the rendered HTML.
+    if (m_commitDiffView) {
+        const bool dark =
+            qApp->palette().color(QPalette::Base).lightness() < 128;
+        const QString addBg = dark ? "#12261c" : "#e6ffec";
+        const QString delBg = dark ? "#2d1416" : "#ffebe9";
+        const QString hunkBg = dark ? "#0d1d33" : "#ddf4ff";
+        const QString hunkFg = dark ? "#58a6ff" : "#0969da";
+        const QString lnFg = "#8b949e";
+        const QString headBg = dark ? "#161b22" : "#f6f8fa";
+        const QString css =
+            QStringLiteral(
+                ".fileblock { margin-bottom:16px; }"
+                ".fileheader { background:%1; padding:6px 10px; font-family:"
+                "monospace; font-weight:600; border:1px solid #30363d; }"
+                ".difftable { font-family:monospace; font-size:12px; }"
+                "td.ln { color:%2; text-align:right; padding:0 8px; }"
+                "td.code { white-space:pre; padding:0 6px; }"
+                ".add { background:%3; }"
+                ".del { background:%4; }"
+                ".hunk { color:%5; background:%6; }")
+                .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg);
+        m_commitDiffView->document()->setDefaultStyleSheet(css);
+        m_commitDiffView->setHtml(diffHtml.isEmpty()
+                                      ? QStringLiteral("<p style='color:#8b949e'>"
+                                                       "No changes in this commit.</p>")
+                                      : diffHtml);
+    }
+
+    m_commitsStack->setCurrentIndex(1);
 }
 
 void MainWindow::loadRepoInfo()
