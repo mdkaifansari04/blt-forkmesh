@@ -5,6 +5,7 @@
 #include "IssueStore.h"
 
 #include <QHash>
+#include <QIcon>
 #include <QList>
 #include <QMainWindow>
 #include <QMap>
@@ -19,6 +20,7 @@ class RepoHost;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
+class QCompleter;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -28,7 +30,10 @@ class QPushButton;
 class QScrollArea;
 class QStackedWidget;
 class QSystemTrayIcon;
+class QTabWidget;
+class QTextBrowser;
 class QTimer;
+class QTreeWidget;
 class QVBoxLayout;
 
 // A configured mainnode the user can connect to. The client connects to one at
@@ -37,6 +42,20 @@ struct ServerConfig {
     QString url;
     QString room;
     QString passphrase;
+};
+
+// Per-repository metadata that git can't provide, stored in the repo's info.json
+// (about text, topics, social counts, contributor avatar overrides).
+struct RepoInfo {
+    QString about;
+    QString website;
+    QString language; // optional primary-language override
+    QStringList topics;
+    int forks = 0;
+    int stars = 0;
+    int mirrors = 1;
+    QString defaultBranch;
+    QHash<QString, QString> contributorAvatars; // name -> image path/URL
 };
 
 struct RepositoryRecord {
@@ -59,6 +78,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
 
+    // Apply the saved theme (system/dark/light) to the whole application.
+    static void applyTheme();
+
 private:
     // Setup page
     QWidget *buildSetupPage();
@@ -80,6 +102,12 @@ private:
     void updateBchNotice();
     void promptSetBchAddress();
 
+    // Top breadcrumb: active server > current section.
+    QWidget *buildBreadcrumb();
+    void updateBreadcrumb();
+    // Persistent network log docked at the bottom of the app.
+    QWidget *buildNetworkLogDock();
+
     // Mainnode servers (favicon rail)
     void loadServers();
     void saveServers();
@@ -93,10 +121,38 @@ private:
     void fetchFavicon(int index);
     QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
-    QWidget *buildReposSection();
+    QWidget *buildReposPanel();
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
+
+    // Repo detail view (files + issues tabs), opened by clicking a repository.
+    QWidget *buildRepoDetailSection();
+    QWidget *buildRepoFilesPanel();
+    QWidget *buildRepoOverviewPage();
+    QWidget *buildRepoEditorPage();
+    QWidget *buildRepoCommitsTab();
+    QWidget *buildAboutSidebar();
+    QWidget *buildPlaceholderTab(const QString &name);
+    void openRepoDetail(int repoIndex);
+    void updateRepoIssueCount();
+    void loadRepoOverview(const QString &path);
+    void showRepoOverview();
+    void loadRepoFileTree();
+    void openRepoFile(const QString &path);
+    void loadRepoInfo();
+    void loadBranchesAndTags();
+    void loadFileSearchIndex();
+    void loadAboutSidebar();
+    void loadCommits();
+    void setRepoBranch(const QString &branch);
+    QString currentRef() const;
+    QString repoGitDir() const;
+    QString iconsDir() const;
+    QIcon iconForFile(const QString &fileName) const;
+    QIcon iconForDir(bool opened) const;
+    void startRefreshSpin();
+    void stopRefreshSpin();
 
     // Issues tab
     int issuesRepoIndex() const;                 // selected repo, or -1
@@ -104,9 +160,13 @@ private:
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
     void refreshIssueList();    // apply filters into the list widget
+    QWidget *makeIssueRow(const Issue &issue,
+                          const QHash<QString, QString> &labelColors) const;
     void showIssue(int number); // render the selected issue's thread
     void renderIssueThread(const Issue &issue);
     void promptNewIssue();
+    void quickAddIssue();
+    void copyIssueToClipboard();
     void addIssueComment();
     void attachIssueImage();
     void toggleIssueStatus();
@@ -211,6 +271,10 @@ private:
     QWidget *m_bchBanner = nullptr;
     QLabel *m_bchBannerLabel = nullptr;
 
+    // Top breadcrumb bar (active server favicon + server > section).
+    QLabel *m_breadcrumb = nullptr;
+    QLabel *m_breadcrumbServerIcon = nullptr;
+
     // Home overview widgets
     QLabel *m_homeName = nullptr;
     QLabel *m_homeStatus = nullptr;
@@ -272,6 +336,7 @@ private:
     QLabel *m_rebuildStatus = nullptr;
     QLineEdit *m_mirrorRootEdit = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
+    QComboBox *m_themeCombo = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
 
     // Issues section widgets
@@ -280,6 +345,48 @@ private:
     QComboBox *m_issueLabelFilter = nullptr;
     QComboBox *m_issueMilestoneFilter = nullptr;
     QListWidget *m_issueList = nullptr;
+    QLineEdit *m_issueQuickAdd = nullptr;
+
+    // Repo detail view
+    int m_repoDetailIndex = -1;
+    QButtonGroup *m_repoDetailTabs = nullptr;
+    QPushButton *m_repoIssuesTab = nullptr;
+    QStackedWidget *m_repoDetailStack = nullptr;
+    // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
+    QString m_repoBranch;
+    RepoInfo m_repoInfo;
+    QLabel *m_repoHeaderTitle = nullptr;
+    QPushButton *m_forkButton = nullptr;
+    QPushButton *m_mirrorButton = nullptr;
+    QPushButton *m_starButton = nullptr;
+    QPushButton *m_branchButton = nullptr;
+    QPushButton *m_tagsButton = nullptr;
+    QLineEdit *m_fileSearch = nullptr;
+    QCompleter *m_fileCompleter = nullptr;
+    QLabel *m_aboutText = nullptr;
+    QLabel *m_aboutTopics = nullptr;
+    QLabel *m_langBar = nullptr;
+    QLabel *m_langLegend = nullptr;
+    QLabel *m_contributorsHeader = nullptr;
+    QLabel *m_contributorsRow = nullptr;
+    QListWidget *m_commitsList = nullptr;
+    // Files view: a GitHub-style overview (latest commit + file list + README)
+    // that switches to an explorer-tree + editor-tabs view when a file is open.
+    QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
+    QString m_overviewPath;                 // current directory in the overview
+    int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
+    QLabel *m_commitBar = nullptr;
+    QPushButton *m_historyButton = nullptr;
+    QLabel *m_overviewCrumb = nullptr;
+    QListWidget *m_overviewList = nullptr;
+    QTextBrowser *m_readmeView = nullptr;
+    QTreeWidget *m_repoFileTree = nullptr;
+    QTabWidget *m_repoFileTabs = nullptr;
+    QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+    // Spinning refresh (rebuild) button in the nav rail.
+    QPushButton *m_refreshButton = nullptr;
+    QTimer *m_refreshSpinTimer = nullptr;
+    int m_refreshAngle = 0;
     QLabel *m_issueTitle = nullptr;
     QLabel *m_issueMeta = nullptr;
     QLabel *m_issueReadonlyNote = nullptr;
@@ -292,6 +399,7 @@ private:
     QPlainTextEdit *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
+    QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCommentButton = nullptr;
     QPushButton *m_issueAttachButton = nullptr;
     QPushButton *m_issueCloseButton = nullptr;

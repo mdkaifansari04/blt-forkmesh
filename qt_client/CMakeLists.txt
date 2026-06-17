@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.1.0 LANGUAGES CXX)
+project(ForkMesh VERSION 0.2.0 LANGUAGES CXX)
 
 # Baked into the binaries: shown in the UI, and the quick-update button uses
 # the source dir to git pull + rebuild when running from a checkout.
@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
 find_package(OpenSSL REQUIRED)
 
 qt_add_executable(forkmesh
@@ -35,7 +35,7 @@ qt_add_executable(forkmesh
     src/MainWindow.cpp
 )
 
-target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network OpenSSL::Crypto)
+target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
 
 if(APPLE)
     set_target_properties(forkmesh PROPERTIES
