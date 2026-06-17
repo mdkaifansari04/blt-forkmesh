@@ -1,6 +1,27 @@
 const list = document.querySelector("#catalog-list");
 const count = document.querySelector("#catalog-count");
 
+// Install one-liner: copy the command to the clipboard.
+const installCopyBtn = document.querySelector("#install-copy");
+if (installCopyBtn) {
+  installCopyBtn.addEventListener("click", async () => {
+    const cmd = document.querySelector("#install-cmd");
+    const text = cmd ? cmd.textContent : "";
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      const range = document.createRange();
+      range.selectNodeContents(cmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    const original = installCopyBtn.textContent;
+    installCopyBtn.textContent = "Copied";
+    setTimeout(() => (installCopyBtn.textContent = original), 1500);
+  });
+}
+
 // Catalog records keyed "owner/name", so the repo page can show description
 // and clone URL for whichever repository is open.
 const repoIndex = new Map();
