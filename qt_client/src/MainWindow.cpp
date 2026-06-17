@@ -1292,21 +1292,20 @@ QWidget *MainWindow::buildChatPage()
 {
     auto *page = new QWidget;
 
-    // Section stack switched by the left navigation rail. Repos now live inside
-    // the Home section (left column), so there is no separate Repos tab.
+    // One page per "place": Home holds the repos, quest board and chat all at
+    // once (no nav bar — you click a server to see everything). Repo detail and
+    // Settings are opened on demand (clicking a repo / the server-rail gear).
     m_sectionStack = new QStackedWidget;
-    m_sectionStack->addWidget(buildHomeSection());       // 0 Home (+ repos)
-    m_sectionStack->addWidget(buildChatSection());       // 1 Chat
+    m_sectionStack->addWidget(buildHomeSection());       // 0 Home (repos + chat)
+    m_sectionStack->addWidget(buildRepoDetailSection()); // 1 Repo detail
     m_sectionStack->addWidget(buildSettingsSection());   // 2 Settings
-    m_sectionStack->addWidget(buildRepoDetailSection()); // 3 Repo detail (not in nav)
 
-    // Rails + section content live in a horizontal row.
+    // The server rail is the only left strip now; the section fills the rest.
     auto *content = new QWidget;
     auto *contentLayout = new QHBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(0);
     contentLayout->addWidget(buildServerRail());
-    contentLayout->addWidget(buildNavRail());
     contentLayout->addWidget(m_sectionStack, 1);
 
     // Global donation nudge: shown across the whole app until this node sets a
@@ -1391,7 +1390,7 @@ void MainWindow::updateBreadcrumb()
 {
     if (!m_breadcrumb)
         return;
-    static const char *kSections[] = {"Home", "Chat", "Settings", "Repository"};
+    static const char *kSections[] = {"Home", "Repository", "Settings"};
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -1404,11 +1403,11 @@ void MainWindow::updateBreadcrumb()
         host = "ForkMesh";
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
     const QString sep =
-        QString::fromUtf8();
-    QString trail = (section >= 0 && section < 4) ? kSections[section] : "Home";
+        QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
+    QString trail = (section >= 0 && section < 3) ? kSections[section] : "Home";
     // On the repo detail view, fold the "Repositories › owner/name" path into the
     // single top breadcrumb (Repositories is a link back to the repo list).
-    if (section == 3 && m_repoDetailIndex >= 0 &&
+    if (section == 1 && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         trail = QStringLiteral("<a href=\"repos\">Repositories</a>%1%2")
@@ -1417,7 +1416,7 @@ void MainWindow::updateBreadcrumb()
     // No hardcoded text colors here: the section/separator inherit the
     // #breadcrumb stylesheet color so it stays readable in light and dark.
     m_breadcrumb->setText(
-        QString::fromUtf8().arg(host.toHtmlEscaped(), sep, trail));
+        QString::fromUtf8("\xF0\x9F\x9F\xA2 <b>%1</b>%2%3").arg(host.toHtmlEscaped(), sep, trail));
 }
 
 QWidget *MainWindow::buildBchNotice()
@@ -1569,7 +1568,7 @@ QWidget *MainWindow::buildHomeSection()
     auto *card = new QWidget;
     card->setObjectName("homeCard");
     card->setMaximumWidth(760);
-    card->setMinimumWidth(460);
+    card->setMinimumWidth(0);
 
     auto *title = new QLabel("<span style='color:#22c55e'>Fork</span>Mesh");
     title->setObjectName("homeTitle");
@@ -2449,12 +2448,12 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadRepoInfo();
     loadBranchesAndTags();
     if (m_forkButton)
-        m_forkButton->setText(QString::fromUtf8().arg(m_repoInfo.forks));
+        m_forkButton->setText(QString::fromUtf8("\xE2\x9A\x82 Fork %1").arg(m_repoInfo.forks));
     if (m_mirrorButton)
         m_mirrorButton->setText(
-            QString::fromUtf8().arg(qMax(1, m_repoInfo.mirrors)));
+            QString::fromUtf8("\xE2\x87\x86 Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
     if (m_starButton)
-        m_starButton->setText(QString::fromUtf8().arg(m_repoInfo.stars));
+        m_starButton->setText(QString::fromUtf8("\xE2\x98\x86 Star %1").arg(m_repoInfo.stars));
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -2486,14 +2485,14 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadRepoOverview(QString());
     if (m_filesStack)
         m_filesStack->setCurrentIndex(0);
-    showSection(3);
+    showSection(1);
 }
 
 void MainWindow::updateRepoIssueCount()
 {
     if (m_repoIssuesTab)
         m_repoIssuesTab->setText(
-            QString::fromUtf8().arg(m_currentIssues.size()));
+            QString::fromUtf8("\xF0\x9F\x93\x8B Issues (%1)").arg(m_currentIssues.size()));
 }
 
 void MainWindow::loadRepoFileTree()
@@ -2606,7 +2605,7 @@ void MainWindow::openRepoFile(const QString &path)
         content = QStringLiteral("File is too large to preview (%1 KB).")
                       .arg(out.size() / 1024);
     else if (out.contains('\0'))
-        content = QString::fromUtf8()
+        content = QString::fromUtf8("Binary file (%1 bytes) \xE2\x80\x94 not shown.")
                       .arg(out.size());
     else
         content = QString::fromUtf8(out);
@@ -2671,8 +2670,8 @@ void MainWindow::loadRepoOverview(const QString &path)
             runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
             count = QString::fromUtf8(countOut).trimmed();
         m_historyButton->setText(count.isEmpty()
-                                     ? QString::fromUtf8()
-                                     : QString::fromUtf8().arg(count));
+                                     ? QString::fromUtf8("\xF0\x9F\x95\x98 Commits")
+                                     : QString::fromUtf8("\xF0\x9F\x95\x98 %1 Commits").arg(count));
     }
 
     // Breadcrumb for directory navigation.
@@ -2781,7 +2780,7 @@ void MainWindow::loadCommits()
         if (f.size() < 4)
             continue;
         auto *item = new QListWidgetItem(
-            QString::fromUtf8()
+            QString::fromUtf8("%1\n%2 \xC2\xB7 %3 \xC2\xB7 %4")
                 .arg(f.at(3), f.at(1), f.at(2), f.at(0)),
             m_commitsList);
         item->setToolTip(f.at(0));
@@ -2891,7 +2890,7 @@ void MainWindow::loadBranchesAndTags()
         if (menu->isEmpty())
             menu->addAction("No tags")->setEnabled(false);
         m_tagsButton->setMenu(menu);
-        m_tagsButton->setText(QString::fromUtf8().arg(count));
+        m_tagsButton->setText(QString::fromUtf8("\xF0\x9F\x8F\xB7 Tags %1").arg(count));
     }
 }
 
@@ -3024,7 +3023,7 @@ void MainWindow::loadAboutSidebar()
         QString html;
         const int shown = qMin(12, int(contribs.size()));
         for (int i = 0; i < shown; ++i)
-            html += QString::fromUtf8()
+            html += QString::fromUtf8("<span style='color:%1' title='%2'>\xE2\x97\x8F</span> ")
                         .arg(senderColor(contribs.at(i).name),
                              (contribs.at(i).name + " \xC2\xB7 " +
                               QString::number(contribs.at(i).count) + " commits")
@@ -3194,7 +3193,7 @@ QWidget *MainWindow::makeIssueRow(const Issue &issue,
         // The milestone (if any) as a subtle outlined pill.
         if (!issue.milestone.isEmpty()) {
             auto *ms = new QLabel(
-                QString::fromUtf8().arg(issue.milestone));
+                QString::fromUtf8("\xF0\x9F\x8F\x81 %1").arg(issue.milestone));
             ms->setObjectName("issueMilestonePill");
             ms->setStyleSheet(
                 "QLabel#issueMilestonePill { border:1px solid #8b949e; "
@@ -3292,8 +3291,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
     // Status badge stays next to the title; labels/milestone/assignees live in
     // the GitHub-style right sidebar.
     m_issueMeta->setText(issue.status == "closed"
-                             ? QString::fromUtf8()
-                             : QString::fromUtf8());
+                             ? QString::fromUtf8("<b style='color:#ef4444'>\xE2\x97\x8F closed</b>")
+                             : QString::fromUtf8("<b style='color:#22c55e'>\xE2\x97\x8F open</b>"));
 
     auto colorFor = [this](const QString &name) -> QString {
         for (const IssueLabel &l : m_currentLabels)
@@ -3314,7 +3313,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
     } else {
         QStringList chips;
         for (const QString &name : issue.labels)
-            chips << QString::fromUtf8()
+            chips << QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F %2</span>")
                          .arg(colorFor(name), name.toHtmlEscaped());
         m_issueLabelsValue->setText(chips.join("<br>"));
     }
@@ -3358,7 +3357,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         auto *header = new QLabel(
             QStringLiteral("<b style='color:%1'>%2</b> <span style='color:#94a3b8'>%3%4</span>")
                 .arg(senderColor(who), who.toHtmlEscaped(), when,
-                     isOpen ? QString::fromUtf8() : QString()));
+                     isOpen ? QString::fromUtf8(" \xC2\xB7 opened") : QString()));
         header->setTextFormat(Qt::RichText);
         cardLayout->addWidget(header);
         auto *body = new QLabel;
@@ -3380,7 +3379,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     continue;
                 }
             }
-            auto *placeholder = new QLabel(QString::fromUtf8().arg(rel));
+            auto *placeholder = new QLabel(QString::fromUtf8("\xF0\x9F\x96\xBC %1").arg(rel));
             placeholder->setObjectName("statusLine");
             cardLayout->addWidget(placeholder);
         }
@@ -3389,7 +3388,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     auto addActivity = [&](const QString &text, qint64 ts, const QString &who) {
         const QString when = QDateTime::fromMSecsSinceEpoch(ts).toString("HH:mm");
-        auto *line = new QLabel(QString::fromUtf8()
+        auto *line = new QLabel(QString::fromUtf8("\xC2\xB7 %1 %2 (%3)")
                                     .arg(who.toHtmlEscaped(), text, when));
         line->setObjectName("statusLine");
         line->setWordWrap(true);
@@ -4088,7 +4087,7 @@ void MainWindow::updateHomeStats()
     m_homeName->setText(name);
     const QString key = m_profileIdentity.shortPublicKey();
     m_homePubkey->setText(key.isEmpty()
-                              ? QString::fromUtf8()
+                              ? QString::fromUtf8("Ed25519 key: generating\xE2\x80\xA6")
                               : "Ed25519 key: " + key);
     int mirroredRepos = 0;
     int onlineRepos = 0;
@@ -5105,7 +5104,7 @@ void MainWindow::refreshRepositoryList()
     for (const QString &node : std::as_const(nodeOrder)) {
         // Node header row: bold, not selectable.
         auto *header = new QListWidgetItem(
-            QString::fromUtf8().arg(node));
+            QString::fromUtf8("\xF0\x9F\x96\xA5 %1").arg(node));
         header->setData(Qt::UserRole, -1);
         header->setFlags(Qt::ItemIsEnabled);
         QFont headerFont = header->font();
