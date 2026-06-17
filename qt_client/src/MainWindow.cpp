@@ -96,7 +96,6 @@ const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 constexpr int kNetworkLogLimit = 2000;
-constexpr int kHomeGraphSampleLimit = 18;
 
 // Directory holding client/CMakeLists.txt to update from: the build-time
 // checkout when it still exists, otherwise a persistent clone managed by the
@@ -230,34 +229,60 @@ QString compactAddress(QString address)
     return address.left(18) + QStringLiteral("...") + address.right(8);
 }
 
-QString sponsorUrlFor(QString address)
+// Crisp vector icons for the server-rail footer (glyph fonts render these
+// inconsistently across platforms, so we draw them).
+QPixmap gearPixmap(const QColor &color, int size)
 {
-    address = address.trimmed();
-    if (address.isEmpty())
-        return {};
-    if (address.startsWith(QStringLiteral("bitcoincash:"), Qt::CaseInsensitive))
-        return address;
-    return QStringLiteral("bitcoincash:") + address;
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(size / 2.0, size / 2.0);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    const double rBody = size * 0.28;
+    const double toothW = size * 0.12;
+    const double toothH = size * 0.16;
+    for (int i = 0; i < 8; ++i) {
+        p.save();
+        p.rotate(i * 45.0);
+        p.drawRoundedRect(QRectF(-toothW / 2, -rBody - toothH * 0.55, toothW, toothH),
+                          1.0, 1.0);
+        p.restore();
+    }
+    QPainterPath body;
+    body.addEllipse(QPointF(0, 0), rBody, rBody);
+    QPainterPath hole;
+    hole.addEllipse(QPointF(0, 0), size * 0.11, size * 0.11);
+    p.drawPath(body.subtracted(hole));
+    return pm;
 }
 
-QString connectionGraphText(const QList<int> &samples)
+QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 {
-    if (samples.isEmpty())
-        return QStringLiteral("00m [.       ] 0");
-
-    QStringList lines;
-    const int first = std::max(0, int(samples.size()) - kHomeGraphSampleLimit);
-    for (int i = first; i < samples.size(); ++i) {
-        const int count = std::max(0, samples.at(i));
-        const int marks = count == 0 ? 1 : std::min(8, count);
-        QString bar(marks, count == 0 ? QChar('.') : QChar('#'));
-        bar = bar.leftJustified(8, QChar('.'));
-        lines << QStringLiteral("%1m [%2] %3")
-                     .arg(i, 2, 10, QChar('0'))
-                     .arg(bar)
-                     .arg(count);
-    }
-    return lines.join('\n');
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(size / 2.0, size / 2.0);
+    p.rotate(angleDeg);
+    const double r = size * 0.28;
+    QPen pen(color, std::max(1.6, size * 0.10));
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawArc(QRectF(-r, -r, 2 * r, 2 * r), 95 * 16, 250 * 16);
+    // Arrowhead at the arc's open end.
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    const double a = size * 0.14;
+    QPainterPath tri;
+    tri.moveTo(a * 0.2, -r - a * 0.7);
+    tri.lineTo(a * 0.2, -r + a * 0.7);
+    tri.lineTo(a * 1.2, -r);
+    tri.closeSubpath();
+    p.drawPath(tri);
+    return pm;
 }
 
 QString defaultDisplayName(const ForkMeshIdentity &identity)
@@ -614,7 +639,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         sendTypingState(false);
     });
     m_homeStatsTimer = new QTimer(this);
-    connect(m_homeStatsTimer, &QTimer::timeout, this, &MainWindow::updateHomeStats);
+    // Rebuild the nodes/repos list each minute so the self node's uptime line
+    // stays current (this also persists accumulated uptime via updateHomeStats).
+    connect(m_homeStatsTimer, &QTimer::timeout, this,
+            &MainWindow::refreshRepositoryList);
     m_homeStatsTimer->start(60000);
 
     // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
@@ -1160,10 +1188,13 @@ void MainWindow::refreshServerRail()
 
     // Footer pinned to the bottom: rebuild/restart and Settings (the nav bar is
     // gone, so Settings lives here as an icon).
-    auto *rebuildBtn = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
+    const QColor footerColor(Theme::kTextTertiary);
+    auto *rebuildBtn = new QPushButton;
     rebuildBtn->setObjectName("serverFooterButton");
     rebuildBtn->setCursor(Qt::PointingHandCursor);
-    rebuildBtn->setFixedSize(40, 30);
+    rebuildBtn->setFixedSize(40, 32);
+    rebuildBtn->setIconSize(QSize(22, 22));
+    rebuildBtn->setIcon(QIcon(refreshPixmap(footerColor, 0, 22)));
     rebuildBtn->setToolTip("Rebuild and restart ForkMesh");
     m_refreshButton = rebuildBtn;
     connect(rebuildBtn, &QPushButton::clicked, this, [this] {
@@ -1172,10 +1203,12 @@ void MainWindow::refreshServerRail()
     });
     layout->addWidget(rebuildBtn, 0, Qt::AlignHCenter);
 
-    auto *settingsBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\x99"));
+    auto *settingsBtn = new QPushButton;
     settingsBtn->setObjectName("serverFooterButton");
     settingsBtn->setCursor(Qt::PointingHandCursor);
     settingsBtn->setFixedSize(40, 40);
+    settingsBtn->setIconSize(QSize(22, 22));
+    settingsBtn->setIcon(QIcon(gearPixmap(footerColor, 22)));
     settingsBtn->setToolTip("Settings");
     connect(settingsBtn, &QPushButton::clicked, this, [this] { showSection(2); });
     layout->addWidget(settingsBtn, 0, Qt::AlignHCenter);
@@ -1517,124 +1550,16 @@ QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
 
-    auto *card = new QWidget;
-    card->setObjectName("homeCard");
-    card->setMaximumWidth(760);
-    card->setMinimumWidth(0);
-
-    auto *title = new QLabel("<span style='color:#22c55e'>Fork</span>Mesh");
-    title->setObjectName("homeTitle");
-    auto *subtitle = new QLabel("Mainnode quest board");
-    subtitle->setObjectName("homeStat");
-    subtitle->setWordWrap(true);
-
-    m_homeName = new QLabel;
-    m_homeName->setObjectName("homeName");
-    m_homeStatus = new QLabel("\xE2\x97\x8F offline");
-    m_homeStatus->setObjectName("homeStat");
-    m_homeStatus->setWordWrap(true);
-    m_homePubkey = new QLabel;
-    m_homePubkey->setObjectName("homeStat");
-    m_homePubkey->setWordWrap(true);
-    m_homeStats = new QLabel;
-    m_homeStats->setObjectName("homeScoreValue");
-    m_homeStats->setWordWrap(true);
-    m_homeTotals = new QLabel;
-    m_homeTotals->setObjectName("homeStat");
-    m_homeTotals->setWordWrap(true);
-    m_homeGraph = new QLabel;
-    m_homeGraph->setObjectName("homeGraph");
-    m_homeGraph->setMinimumHeight(96);
-    m_homeGraph->setWordWrap(false);
-
-    auto *scoreBoard = new QWidget;
-    scoreBoard->setObjectName("homeScoreBoard");
-    auto *scoreLayout = new QGridLayout(scoreBoard);
-    scoreLayout->setContentsMargins(14, 12, 14, 12);
-    scoreLayout->setHorizontalSpacing(14);
-    scoreLayout->setVerticalSpacing(6);
-    auto *scoreLabel = new QLabel("SCORE");
-    scoreLabel->setObjectName("sectionLabel");
-    auto *timeLabel = new QLabel("UPTIME");
-    timeLabel->setObjectName("sectionLabel");
-    scoreLayout->addWidget(scoreLabel, 0, 0);
-    scoreLayout->addWidget(timeLabel, 0, 1);
-    scoreLayout->addWidget(m_homeStats, 1, 0);
-    scoreLayout->addWidget(m_homeTotals, 1, 1);
-    scoreLayout->setColumnStretch(0, 1);
-    scoreLayout->setColumnStretch(1, 1);
-
-    auto *graphLabel = new QLabel("MINUTE GRAPH");
-    graphLabel->setObjectName("sectionLabel");
-    auto *nodesLabel = new QLabel("LEADERBOARD");
-    nodesLabel->setObjectName("sectionLabel");
-    m_homeNodes = new QLabel("No nodes connected yet.");
-    m_homeNodes->setObjectName("homeStat");
-    m_homeNodeList = new QListWidget;
-    m_homeNodeList->setSelectionMode(QAbstractItemView::NoSelection);
-    m_homeNodeList->setFocusPolicy(Qt::NoFocus);
-    m_homeNodeList->setMinimumHeight(120);
-    m_homeNodeList->setToolTip("Live connection status of nodes in this room");
-
-    m_homeSponsorButton = new QPushButton("Sponsor this node");
-    m_homeSponsorButton->setObjectName("primaryButton");
-    m_homeSponsorButton->setCursor(Qt::PointingHandCursor);
-    connect(m_homeSponsorButton, &QPushButton::clicked, this, [this] {
-        const QString url = sponsorUrlFor(QSettings().value(kBchSetting).toString());
-        if (!url.isEmpty())
-            QDesktopServices::openUrl(QUrl(url));
-    });
-    auto *actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->addWidget(m_homeSponsorButton);
-    actionRow->addStretch();
-
-    auto *cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(28, 28, 28, 28);
-    cardLayout->setSpacing(8);
-    cardLayout->addWidget(title);
-    cardLayout->addWidget(subtitle);
-    cardLayout->addSpacing(10);
-    cardLayout->addWidget(m_homeName);
-    cardLayout->addWidget(m_homeStatus);
-    cardLayout->addWidget(m_homePubkey);
-    cardLayout->addSpacing(4);
-    cardLayout->addWidget(scoreBoard);
-    cardLayout->addSpacing(6);
-    cardLayout->addWidget(graphLabel);
-    cardLayout->addWidget(m_homeGraph);
-    cardLayout->addSpacing(12);
-    cardLayout->addWidget(nodesLabel);
-    cardLayout->addWidget(m_homeNodes);
-    cardLayout->addWidget(m_homeNodeList);
-    cardLayout->addSpacing(10);
-    cardLayout->addLayout(actionRow);
-
-    // Quest board card, fills its column width.
-    auto *questWrap = new QWidget;
-    auto *questLayout = new QVBoxLayout(questWrap);
-    questLayout->setContentsMargins(14, 14, 14, 14);
-    questLayout->addWidget(card);
-    questLayout->addStretch();
-
-    // Left column = repositories (top) over the quest board (bottom); they share
-    // a vertical splitter so either can be resized.
-    auto *leftColumn = new QSplitter(Qt::Vertical);
-    leftColumn->setObjectName("homeLeftSplit");
-    leftColumn->setChildrenCollapsible(false);
-    leftColumn->addWidget(buildReposPanel());
-    leftColumn->addWidget(questWrap);
-    leftColumn->setSizes({420, 360});
-
-    // Everything on one page: repos + quest board on the left, chat on the right.
+    // Everything on one page: the nodes & repositories panel on the left (each
+    // node now carries its own stats inline), chat on the right.
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("homeSplitter");
     splitter->setChildrenCollapsible(false);
-    splitter->addWidget(leftColumn);
+    splitter->addWidget(buildReposPanel());
     splitter->addWidget(buildChatSection());
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({340, 680});
+    splitter->setSizes({360, 680});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -3005,23 +2930,10 @@ void MainWindow::startRefreshSpin()
         m_refreshSpinTimer = new QTimer(this);
         connect(m_refreshSpinTimer, &QTimer::timeout, this, [this] {
             m_refreshAngle = (m_refreshAngle + 30) % 360;
-            QPixmap pm(20, 20);
-            pm.fill(Qt::transparent);
-            QPainter p(&pm);
-            p.setRenderHint(QPainter::Antialiasing);
-            p.translate(10, 10);
-            p.rotate(m_refreshAngle);
-            p.translate(-10, -10);
-            QFont f = m_refreshButton->font();
-            f.setPixelSize(15);
-            p.setFont(f);
-            p.setPen(QColor(Theme::kTextTertiary));
-            p.drawText(pm.rect(), Qt::AlignCenter, QString::fromUtf8("\xE2\x9F\xB3"));
-            p.end();
-            m_refreshButton->setIcon(QIcon(pm));
+            m_refreshButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary), m_refreshAngle, 22)));
         });
     }
-    m_refreshButton->setText(QString());
     m_refreshSpinTimer->start(60);
 }
 
@@ -3029,10 +2941,9 @@ void MainWindow::stopRefreshSpin()
 {
     if (m_refreshSpinTimer)
         m_refreshSpinTimer->stop();
-    if (m_refreshButton) {
-        m_refreshButton->setIcon(QIcon());
-        m_refreshButton->setText(QString::fromUtf8("\xE2\x9F\xB3"));
-    }
+    if (m_refreshButton)
+        m_refreshButton->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
 }
 
 int MainWindow::issuesRepoIndex() const
@@ -4033,79 +3944,39 @@ QWidget *MainWindow::buildChatSection()
 
 void MainWindow::updateHomeStats()
 {
-    if (!m_homeName)
-        return;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 sessionMs = m_connectedAtMs > 0 ? now - m_connectedAtMs : 0;
-    const qint64 totalMs = m_totalConnectionMs + sessionMs;
-    if (m_connectedAtMs > 0)
-        QSettings().setValue(kConnectionTotalSetting, totalMs);
-
-    const QString name = m_userName.isEmpty()
-                             ? defaultDisplayName(m_profileIdentity)
-                             : m_userName;
-    m_homeName->setText(name);
-    const QString key = m_profileIdentity.shortPublicKey();
-    m_homePubkey->setText(key.isEmpty()
-                              ? QString::fromUtf8("Ed25519 key: generating\xE2\x80\xA6")
-                              : "Ed25519 key: " + key);
-    int mirroredRepos = 0;
-    int onlineRepos = 0;
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (repo.lastSyncMs > 0 || (!repo.mirrorPath.isEmpty() &&
-                                    QDir(repo.mirrorPath).exists()))
-            ++mirroredRepos;
-        if (repo.publishedAtMs > 0 || repo.publishToNetwork)
-            ++onlineRepos;
-    }
-    const int repoCount = m_repositories.size();
-    const int chatCount = m_channels.size();
-    const int dmCount = m_openDms.size();
-    int onlineNodes = 0;
-    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
-        if (member.online)
-            ++onlineNodes;
-    }
+    // The quest board is gone; this now just persists accumulated uptime. The
+    // per-node stats live inline in the repositories panel (see selfNodeStats).
     if (m_connectedAtMs > 0) {
-        const int minute = int(sessionMs / 60000);
-        while (m_connectionMinuteSamples.size() <= minute)
-            m_connectionMinuteSamples.append(onlineNodes);
-        m_connectionMinuteSamples[minute] = onlineNodes;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const qint64 totalMs = m_totalConnectionMs + (now - m_connectedAtMs);
+        QSettings().setValue(kConnectionTotalSetting, totalMs);
     }
+}
 
-    m_homeStats->setText(
-        QString::number(repoCount) + " repos\n" +
-        QString::number(mirroredRepos) + " mirrored  |  " +
-        QString::number(onlineRepos) + " online\n" +
-        QString::number(chatCount) + " chats  |  " +
-        QString::number(dmCount) + " DMs");
-    if (m_homeTotals) {
-        m_homeTotals->setText(
-            "Session " + formatDuration(sessionMs) + "\nTotal " +
-            formatDuration(totalMs) + "\n" +
-            QString::number(onlineNodes) + " / " +
-            QString::number(m_homeRoster.size()) + " nodes online");
+QString MainWindow::selfNodeStats() const
+{
+    int mirrored = 0;
+    int online = 0;
+    for (const RepositoryRecord &repo : m_repositories) {
+        if (repo.lastSyncMs > 0 ||
+            (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()))
+            ++mirrored;
+        if (repo.publishedAtMs > 0 || repo.publishToNetwork)
+            ++online;
     }
-    if (m_homeGraph)
-        m_homeGraph->setText(connectionGraphText(m_connectionMinuteSamples));
-    if (m_homeNodes) {
-        m_homeNodes->setText(
-            m_homeRoster.isEmpty()
-                ? QStringLiteral("No nodes connected yet.")
-                : QString::number(onlineNodes) + " of " +
-                      QString::number(m_homeRoster.size()) +
-                      (m_homeRoster.size() == 1 ? " node online"
-                                                : " nodes online"));
-    }
-    if (m_homeSponsorButton) {
-        const QString bch = QSettings().value(kBchSetting).toString().trimmed();
-        m_homeSponsorButton->setEnabled(!bch.isEmpty());
-        m_homeSponsorButton->setText(bch.isEmpty() ? "No BCH address yet"
-                                                   : "Sponsor this node");
-        m_homeSponsorButton->setToolTip(bch.isEmpty()
-                                            ? "Add a BCH address on the start screen."
-                                            : sponsorUrlFor(bch));
-    }
+    const qint64 sessionMs =
+        m_connectedAtMs > 0 ? QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs : 0;
+    const qint64 totalMs = m_totalConnectionMs + sessionMs;
+    const QString key = m_profileIdentity.shortPublicKey();
+    return QStringLiteral(
+               "%1 repos \xC2\xB7 %2 mirrored \xC2\xB7 %3 online \xC2\xB7 %4 chats")
+               .arg(m_repositories.size())
+               .arg(mirrored)
+               .arg(online)
+               .arg(m_channels.size()) +
+           "\n       uptime " + formatDuration(sessionMs) + " \xC2\xB7 total " +
+           formatDuration(totalMs) +
+           (key.isEmpty() ? QString() : " \xC2\xB7 key " + key);
 }
 
 // ----------------------------------------------------------------- settings
@@ -4325,8 +4196,6 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::statusChanged, this, [this](const QString &status) {
         const QString summary = status.section(" · ", 0, 0);
         m_statusLine->setText(summary);
-        if (m_homeStatus)
-            m_homeStatus->setText("\xE2\x97\x8F " + summary);
         logSystem("Status: " + status);
     });
     connect(backend, &ChatBackend::firewallBlocking, this, &MainWindow::showFirewallBanner);
@@ -4356,15 +4225,8 @@ void MainWindow::leaveSession(const QString &)
     m_stack->setCurrentIndex(0);
     m_userName.clear();
 
-    // Reset the Home overview's live status back to disconnected.
-    if (m_homeStatus)
-        m_homeStatus->setText("\xE2\x97\x8F offline");
     m_homeRoster.clear();
-    m_connectionMinuteSamples.clear();
-    if (m_homeNodeList)
-        m_homeNodeList->clear();
-    if (m_homeNodes)
-        m_homeNodes->setText("No nodes connected yet.");
+    refreshRepositoryList(); // clears node online status from the repos panel
     updateHomeStats();
 }
 
@@ -4704,43 +4566,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    // Mirror the live connection status of every node onto the Home overview.
-    if (m_homeNodeList) {
-        m_homeNodeList->clear();
-        QList<MemberInfo> ranked = members;
-        std::sort(ranked.begin(), ranked.end(), [](const MemberInfo &a,
-                                                   const MemberInfo &b) {
-            if (a.self != b.self)
-                return a.self;
-            if (a.online != b.online)
-                return a.online;
-            return a.name.localeAwareCompare(b.name) < 0;
-        });
-        int rank = 1;
-        for (const MemberInfo &member : std::as_const(ranked)) {
-            QString label = member.name;
-            if (member.self)
-                label += " (you)";
-            else if (!member.note.isEmpty())
-                label += " " + member.note;
-            QString bch = member.bchAddress.trimmed();
-            if (member.self && bch.isEmpty())
-                bch = QSettings().value(kBchSetting).toString().trimmed();
-            const QString balance = member.bchBalance.trimmed().isEmpty()
-                                        ? QStringLiteral("balance pending")
-                                        : member.bchBalance.trimmed();
-            label = QString::number(rank) + ". " + label + "\nBCH " +
-                    (bch.isEmpty() ? QStringLiteral("no address")
-                                   : compactAddress(bch)) +
-                    " | " + balance;
-            auto *item = new QListWidgetItem(statusDotIcon(member.online), label);
-            item->setData(Qt::UserRole, member.online ? "online" : "offline");
-            item->setToolTip(bch.isEmpty() ? QStringLiteral("No BCH address published")
-                                           : sponsorUrlFor(bch));
-            m_homeNodeList->addItem(item);
-            ++rank;
-        }
-    }
+    // Nodes now live in the repositories panel (each node with its repos under
+    // it), so refresh that to reflect live connection status.
+    refreshRepositoryList();
     updateHomeStats();
 }
 
@@ -5049,28 +4877,96 @@ void MainWindow::refreshRepositoryList()
     }
     m_repoList->clear();
 
-    // Group repositories by node (owner), preserving first-appearance order so
-    // nodes are listed first with their repos nested underneath.
-    QStringList nodeOrder;
+    // Repos grouped by node (owner).
     QHash<QString, QList<int>> reposByNode;
+    for (int i = 0; i < m_repositories.size(); ++i)
+        reposByNode[m_repositories.at(i).owner].append(i);
+
+    // Node order: connected nodes first (the old leaderboard ranking — you, then
+    // online, then by name), then any repo owners that aren't connected. Each
+    // node is shown with its repos nested underneath.
+    struct NodeInfo {
+        bool inRoster = false;
+        bool online = false;
+        bool self = false;
+        QString bch;
+        QString balance;
+    };
+    QHash<QString, NodeInfo> nodes;
+    QStringList nodeOrder;
+    QList<MemberInfo> ranked = m_homeRoster;
+    std::sort(ranked.begin(), ranked.end(),
+              [](const MemberInfo &a, const MemberInfo &b) {
+                  if (a.self != b.self)
+                      return a.self;
+                  if (a.online != b.online)
+                      return a.online;
+                  return a.name.localeAwareCompare(b.name) < 0;
+              });
+    for (const MemberInfo &m : std::as_const(ranked)) {
+        if (m.name.isEmpty())
+            continue;
+        if (!nodes.contains(m.name)) {
+            NodeInfo ni;
+            ni.inRoster = true;
+            ni.online = m.online;
+            ni.self = m.self;
+            ni.bch = m.bchAddress.trimmed();
+            if (ni.self && ni.bch.isEmpty())
+                ni.bch = QSettings().value(kBchSetting).toString().trimmed();
+            ni.balance = m.bchBalance.trimmed();
+            nodes.insert(m.name, ni);
+            nodeOrder.append(m.name);
+        } else if (m.online) {
+            nodes[m.name].online = true;
+        }
+    }
     for (int i = 0; i < m_repositories.size(); ++i) {
         const QString owner = m_repositories.at(i).owner;
-        if (!reposByNode.contains(owner))
+        if (!nodes.contains(owner)) {
+            nodes.insert(owner, NodeInfo());
             nodeOrder.append(owner);
-        reposByNode[owner].append(i);
+        }
     }
 
     QListWidgetItem *itemToSelect = nullptr;
     for (const QString &node : std::as_const(nodeOrder)) {
-        // Node header row: bold, not selectable.
-        auto *header = new QListWidgetItem(
-            QString::fromUtf8("\xF0\x9F\x96\xA5 %1").arg(node));
+        const NodeInfo info = nodes.value(node);
+        // Node header row: bold, not selectable, with a live status dot.
+        QString headerText = node;
+        if (info.self)
+            headerText += " (you)";
+        auto *header = new QListWidgetItem(headerText);
         header->setData(Qt::UserRole, -1);
         header->setFlags(Qt::ItemIsEnabled);
+        if (info.inRoster)
+            header->setIcon(statusDotIcon(info.online));
+        else
+            header->setText(QString::fromUtf8("\xF0\x9F\x96\xA5 ") + headerText);
         QFont headerFont = header->font();
         headerFont.setBold(true);
         header->setFont(headerFont);
         m_repoList->addItem(header);
+
+        // Inline node stats (this is the info the quest board used to show).
+        QString infoText;
+        if (info.self) {
+            infoText = "       " + selfNodeStats();
+        } else if (info.inRoster) {
+            infoText = QString::fromUtf8("       %1")
+                           .arg(info.online ? "online" : "offline");
+            if (!info.bch.isEmpty())
+                infoText += " \xC2\xB7 BCH " + compactAddress(info.bch);
+            if (!info.balance.isEmpty())
+                infoText += " \xC2\xB7 " + info.balance;
+        }
+        if (!infoText.isEmpty()) {
+            auto *infoItem = new QListWidgetItem(infoText);
+            infoItem->setData(Qt::UserRole, -1);
+            infoItem->setFlags(Qt::ItemIsEnabled);
+            infoItem->setForeground(QColor(Theme::kTextTertiary));
+            m_repoList->addItem(infoItem);
+        }
 
         for (int i : reposByNode.value(node)) {
             const RepositoryRecord &repo = m_repositories.at(i);
