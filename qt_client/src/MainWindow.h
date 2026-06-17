@@ -5,6 +5,7 @@
 #include "IssueStore.h"
 #include "PullStore.h"
 #include "ActionStore.h"
+#include "ActionFile.h"
 
 #include <QHash>
 #include <QIcon>
@@ -163,8 +164,11 @@ private:
     void submitPullToInbox(const PullRequest &pr);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
-    // Actions (CI on push to the mirror)
-    QWidget *buildActionsSection();
+    // Actions (CI on push to the mirror) — lives as a tab inside the repo detail.
+    QWidget *buildRepoActionsTab();
+    void refreshRepoActions();           // workflows column + runs for the open repo
+    QList<ActionWorkflow> availableWorkflowsForRepo(
+        const RepositoryRecord &repo) const;
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
@@ -466,6 +470,8 @@ private:
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
     int m_selectedRunId = -1;
+    QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
+    QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
@@ -475,7 +481,6 @@ private:
     QWidget *m_actionApprovalBar = nullptr;
     QPushButton *m_actionApproveButton = nullptr;
     QPushButton *m_actionRejectButton = nullptr;
-    QPushButton *m_actionsNavButton = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
     // Repos panel: per-repo "run actions on push" toggle for the selection.

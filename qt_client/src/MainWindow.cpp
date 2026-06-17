@@ -1393,16 +1393,6 @@ void MainWindow::refreshServerRail()
     });
     layout->addWidget(rebuildBtn, 0, Qt::AlignHCenter);
 
-    // Actions (CI) lives in the footer alongside Settings.
-    auto *actionsBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\xA1"));
-    actionsBtn->setObjectName("serverFooterButton");
-    actionsBtn->setCursor(Qt::PointingHandCursor);
-    actionsBtn->setFixedSize(40, 32);
-    actionsBtn->setToolTip("Actions");
-    m_actionsNavButton = actionsBtn;
-    connect(actionsBtn, &QPushButton::clicked, this, [this] { showSection(3); });
-    layout->addWidget(actionsBtn, 0, Qt::AlignHCenter);
-
     auto *settingsBtn = new QPushButton;
     settingsBtn->setObjectName("serverFooterButton");
     settingsBtn->setCursor(Qt::PointingHandCursor);
@@ -1554,7 +1544,6 @@ QWidget *MainWindow::buildChatPage()
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (repos + chat)
     m_sectionStack->addWidget(buildRepoDetailSection()); // 1 Repo detail
     m_sectionStack->addWidget(buildSettingsSection());   // 2 Settings
-    m_sectionStack->addWidget(buildActionsSection());    // 3 Actions (CI)
 
     // The server rail is the only left strip now; the section fills the rest.
     auto *content = new QWidget;
@@ -1646,7 +1635,7 @@ void MainWindow::updateBreadcrumb()
 {
     if (!m_breadcrumb)
         return;
-    static const char *kSections[] = {"Home", "Repository", "Settings", "Actions"};
+    static const char *kSections[] = {"Home", "Repository", "Settings"};
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -1660,7 +1649,7 @@ void MainWindow::updateBreadcrumb()
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
     const QString sep =
         QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
-    QString trail = (section >= 0 && section < 4) ? kSections[section] : "Home";
+    QString trail = (section >= 0 && section < 3) ? kSections[section] : "Home";
     // On the repo detail view, fold the "Repositories › owner/name" path into the
     // single top breadcrumb (Repositories is a link back to the repo list).
     if (section == 1 && m_repoDetailIndex >= 0 &&
@@ -1745,8 +1734,6 @@ void MainWindow::showSection(int index)
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
-    else if (index == 3)
-        refreshActionsTable();
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -2278,7 +2265,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
     m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
     m_repoDetailStack->addWidget(buildPullsTab());                       // 3 Pull requests
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Actions"));        // 4
+    m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 4 Actions
     m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
     m_repoDetailStack->addWidget(buildPlaceholderTab("Insights"));       // 7
@@ -2288,6 +2275,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadCommits();
         else if (id == 3)
             reloadPulls();
+        else if (id == 4)
+            refreshRepoActions();
     });
 
     auto *layout = new QVBoxLayout(page);
@@ -7012,16 +7001,27 @@ void MainWindow::refreshActionsTable()
 {
     if (!m_actionsTable)
         return;
+    // The table lives inside one repo's Actions tab, so only show that repo's
+    // runs, optionally narrowed to the workflow selected in the left column.
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+
     QSignalBlocker block(m_actionsTable);
     m_actionsTable->setRowCount(0);
     for (const ActionRun &run : m_actionRuns) {
+        if (run.owner != owner || run.name != name)
+            continue;
+        if (!m_selectedWorkflowFilter.isEmpty() &&
+            run.workflowPath != m_selectedWorkflowFilter)
+            continue;
         const int row = m_actionsTable->rowCount();
         m_actionsTable->insertRow(row);
 
-        auto *repoItem =
-            new QTableWidgetItem(run.owner + QLatin1Char('/') + run.name);
-        repoItem->setData(Qt::UserRole, run.id);
         auto *wfItem = new QTableWidgetItem(run.workflowName);
+        wfItem->setData(Qt::UserRole, run.id);
         auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
         statusItem->setForeground(actionStatusColor(run.status));
         const QString when =
@@ -7031,13 +7031,96 @@ void MainWindow::refreshActionsTable()
                 : QString();
         auto *whenItem = new QTableWidgetItem(when);
 
-        m_actionsTable->setItem(row, 0, repoItem);
-        m_actionsTable->setItem(row, 1, wfItem);
-        m_actionsTable->setItem(row, 2, statusItem);
-        m_actionsTable->setItem(row, 3, whenItem);
+        m_actionsTable->setItem(row, 0, wfItem);
+        m_actionsTable->setItem(row, 1, statusItem);
+        m_actionsTable->setItem(row, 2, whenItem);
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+}
+
+QList<ActionWorkflow>
+MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+{
+    QList<ActionWorkflow> out;
+    // Prefer reading the bare mirror's default branch (HEAD); fall back to a
+    // local working tree if one is configured.
+    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
+        QProcess ls;
+        ls.start(QStringLiteral("git"),
+                 {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
+                  QStringLiteral("-r"), QStringLiteral("--name-only"),
+                  QStringLiteral("HEAD"), QStringLiteral("--"),
+                  QStringLiteral(".forkmesh")});
+        ls.waitForFinished(8000);
+        const QStringList paths = QString::fromUtf8(ls.readAllStandardOutput())
+                                      .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &path : paths) {
+            if (!(path.endsWith(QLatin1String(".yml")) ||
+                  path.endsWith(QLatin1String(".yaml"))))
+                continue;
+            QProcess show;
+            show.start(QStringLiteral("git"),
+                       {QStringLiteral("-C"), repo.mirrorPath,
+                        QStringLiteral("show"), QStringLiteral("HEAD:") + path});
+            show.waitForFinished(8000);
+            if (show.exitCode() != 0)
+                continue;
+            out.append(ActionFile::parse(
+                path, QString::fromUtf8(show.readAllStandardOutput())));
+        }
+    }
+    if (out.isEmpty() && !repo.localPath.isEmpty())
+        out = ActionFile::parseWorkflowsInDir(repo.localPath);
+    return out;
+}
+
+void MainWindow::refreshRepoActions()
+{
+    if (!m_actionWorkflowList)
+        return;
+    QSignalBlocker block(m_actionWorkflowList);
+    m_actionWorkflowList->clear();
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        refreshActionsTable();
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+
+    auto *all = new QListWidgetItem(QStringLiteral("All workflows"));
+    all->setData(Qt::UserRole, QString());
+    m_actionWorkflowList->addItem(all);
+    all->setSelected(true);
+
+    const QList<ActionWorkflow> wfs = availableWorkflowsForRepo(repo);
+    for (const ActionWorkflow &wf : wfs) {
+        auto *item =
+            new QListWidgetItem(QString::fromUtf8("\xE2\x96\xB6 ") + wf.name);
+        item->setData(Qt::UserRole, wf.path);
+        item->setToolTip(wf.valid ? wf.path +
+                                        (wf.triggersOnPush()
+                                             ? QStringLiteral("  (on: push)")
+                                             : QString())
+                                  : wf.path + QStringLiteral("  — ") + wf.error);
+        m_actionWorkflowList->addItem(item);
+    }
+    if (wfs.isEmpty()) {
+        auto *none = new QListWidgetItem(
+            repo.actionsEnabled
+                ? QStringLiteral("No workflows in .forkmesh/")
+                : QStringLiteral("No workflows in .forkmesh/ (actions disabled)"));
+        none->setFlags(Qt::NoItemFlags);
+        m_actionWorkflowList->addItem(none);
+    }
+
+    m_selectedWorkflowFilter.clear();
+    refreshActionsTable();
+
+    // If the detail pane is showing a run from another repo, reset it.
+    const ActionRun *selected = findRun(m_selectedRunId);
+    if (!selected || selected->owner != repo.owner || selected->name != repo.name)
+        showRun(-1);
 }
 
 void MainWindow::showRun(int runId)
@@ -7130,23 +7213,48 @@ void MainWindow::rejectSelectedRun()
     showRun(m_selectedRunId);
 }
 
-QWidget *MainWindow::buildActionsSection()
+QWidget *MainWindow::buildRepoActionsTab()
 {
     auto *page = new QWidget;
 
-    // Left: the run list.
+    // Far left: the actions available in this repo (.forkmesh/ workflows).
+    auto *wfPane = new QWidget;
+    wfPane->setMinimumWidth(180);
+    wfPane->setMaximumWidth(260);
+    auto *wfHeading = new QLabel("Workflows");
+    wfHeading->setObjectName("sectionLabel");
+    auto *wfHint = new QLabel(
+        "Actions defined in .forkmesh/. They run when a fork pushes to this "
+        "repo's mirror.");
+    wfHint->setObjectName("statusLine");
+    wfHint->setWordWrap(true);
+    m_actionWorkflowList = new QListWidget;
+    m_actionWorkflowList->setObjectName("actionWorkflowList");
+    connect(m_actionWorkflowList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                m_selectedWorkflowFilter =
+                    item ? item->data(Qt::UserRole).toString() : QString();
+                refreshActionsTable();
+            });
+    auto *wfLayout = new QVBoxLayout(wfPane);
+    wfLayout->setContentsMargins(16, 22, 8, 22);
+    wfLayout->setSpacing(8);
+    wfLayout->addWidget(wfHeading);
+    wfLayout->addWidget(wfHint);
+    wfLayout->addWidget(m_actionWorkflowList, 1);
+
+    // Middle: the run list for the selected workflow (or all).
     auto *listPane = new QWidget;
-    listPane->setMinimumWidth(380);
-    auto *heading = new QLabel("Actions");
+    listPane->setMinimumWidth(300);
+    auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
-        "Workflows in .forkmesh/ run when a fork pushes to a repo's mirror. "
         "Changed workflows wait for your approval before they run.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
-    m_actionsTable = new QTableWidget(0, 4);
-    m_actionsTable->setHorizontalHeaderLabels({"Repo", "Workflow", "Status", "When"});
+    m_actionsTable = new QTableWidget(0, 3);
+    m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
     m_actionsTable->verticalHeader()->setVisible(false);
     m_actionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -7163,7 +7271,7 @@ QWidget *MainWindow::buildActionsSection()
     });
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(24, 22, 12, 22);
+    listLayout->setContentsMargins(12, 22, 12, 22);
     listLayout->setSpacing(8);
     listLayout->addWidget(heading);
     listLayout->addWidget(subtitle);
@@ -7229,10 +7337,12 @@ QWidget *MainWindow::buildActionsSection()
     detailLayout->addWidget(m_actionLog, 2);
 
     auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->addWidget(wfPane);
     splitter->addWidget(listPane);
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(1, 0);
+    splitter->setStretchFactor(2, 1);
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
