@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 4
 title: Signup + account UI
-status: open
+status: closed
 labels: [feature]
 milestone: 
 assignees: []
