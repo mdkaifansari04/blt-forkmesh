@@ -1,0 +1,455 @@
+#include "PullStore.h"
+
+#include "ForkMeshIdentity.h"
+
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QProcess>
+
+#include <algorithm>
+
+namespace {
+
+constexpr int kGitTimeoutMs = 15000;
+
+bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
+            QString *errText = nullptr)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    if (!process.waitForFinished(kGitTimeoutMs)) {
+        if (errText)
+            *errText = QStringLiteral("git timed out");
+        return false;
+    }
+    if (output)
+        *output = process.readAllStandardOutput();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (errText)
+            *errText =
+                QString::fromUtf8(process.readAllStandardError()).trimmed().left(300);
+        return false;
+    }
+    return true;
+}
+
+bool writeTextFile(const QString &path, const QString &text, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error)
+            *error = QStringLiteral("Could not write %1").arg(path);
+        return false;
+    }
+    file.write(text.toUtf8());
+    return true;
+}
+
+// Minimal "---\nkey: value\n---\n\nbody" frontmatter (same subset as IssueStore).
+struct FrontMatter {
+    QHash<QString, QString> values;
+    QString body;
+    QString get(const QString &key) const { return values.value(key); }
+    qint64 num(const QString &key) const { return values.value(key).toLongLong(); }
+};
+
+FrontMatter parseFrontMatter(const QByteArray &bytes)
+{
+    FrontMatter fm;
+    const QString text = QString::fromUtf8(bytes);
+    const QStringList lines = text.split('\n');
+    if (lines.isEmpty() || lines.first().trimmed() != "---") {
+        fm.body = text;
+        return fm;
+    }
+    int i = 1;
+    for (; i < lines.size() && lines.at(i) != "---"; ++i) {
+        const int sep = lines.at(i).indexOf(": ");
+        if (sep >= 0)
+            fm.values.insert(lines.at(i).left(sep), lines.at(i).mid(sep + 2));
+        else if (lines.at(i).endsWith(':'))
+            fm.values.insert(lines.at(i).left(lines.at(i).size() - 1), QString());
+    }
+    QString body = lines.mid(i + 1).join('\n');
+    while (body.startsWith('\n'))
+        body.remove(0, 1);
+    fm.body = body;
+    return fm;
+}
+
+} // namespace
+
+// ---- PullRequest (JSON wire format) ----------------------------------------
+
+QJsonObject PullRequest::toJson() const
+{
+    return {{"number", number},   {"title", title},   {"description", description},
+            {"base", base},       {"head", head},     {"status", status},
+            {"ts", double(ts)},   {"author", author}, {"authorName", authorName},
+            {"sig", sig},         {"patch", patch}};
+}
+
+PullRequest PullRequest::fromJson(const QJsonObject &obj)
+{
+    PullRequest pr;
+    pr.number = obj.value("number").toInt();
+    pr.title = obj.value("title").toString();
+    pr.description = obj.value("description").toString();
+    pr.base = obj.value("base").toString();
+    pr.head = obj.value("head").toString();
+    pr.status = obj.value("status").toString("open");
+    pr.ts = obj.value("ts").toVariant().toLongLong();
+    pr.author = obj.value("author").toString();
+    pr.authorName = obj.value("authorName").toString();
+    pr.sig = obj.value("sig").toString();
+    pr.patch = obj.value("patch").toString();
+    PullStore::computeStats(pr);
+    return pr;
+}
+
+// ---- PullStore -------------------------------------------------------------
+
+PullStore::PullStore(QString workTreePath, QString mirrorPath,
+                     const ForkMeshIdentity *identity, QString authorName)
+    : m_workTree(std::move(workTreePath)), m_mirror(std::move(mirrorPath)),
+      m_identity(identity), m_authorName(std::move(authorName))
+{
+}
+
+bool PullStore::canWrite() const
+{
+    if (m_workTree.isEmpty() || !m_identity || !m_identity->isValid())
+        return false;
+    return QFileInfo::exists(m_workTree + "/.git");
+}
+
+QString PullStore::pullsDir() const { return m_workTree + "/pulls"; }
+QString PullStore::pullDir(int number) const
+{
+    return pullsDir() + "/" + QString::number(number);
+}
+
+void PullStore::computeStats(PullRequest &pr)
+{
+    int files = 0, add = 0, del = 0;
+    for (const QString &line : pr.patch.split('\n')) {
+        if (line.startsWith("diff --git "))
+            ++files;
+        else if (line.startsWith("+++") || line.startsWith("---"))
+            continue;
+        else if (line.startsWith('+'))
+            ++add;
+        else if (line.startsWith('-'))
+            ++del;
+    }
+    pr.filesChanged = files;
+    pr.additions = add;
+    pr.deletions = del;
+}
+
+QByteArray PullStore::canonicalString(const PullRequest &pr)
+{
+    const QChar nul(QChar::Null);
+    const QString content = pr.title + nul + pr.base + nul + pr.head + nul + pr.patch;
+    const QByteArray contentHash =
+        QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex();
+    QByteArray canonical = "forkmesh-pull-event-v1\n";
+    canonical += pr.author.toUtf8() + "\n";
+    canonical += QByteArray::number(pr.ts) + "\n";
+    canonical += contentHash;
+    return canonical;
+}
+
+PullRequest PullStore::makeSignedPull(PullRequest pr) const
+{
+    pr.author = m_identity ? m_identity->publicKey() : QString();
+    if (pr.authorName.isEmpty())
+        pr.authorName = m_authorName;
+    if (pr.ts == 0)
+        pr.ts = QDateTime::currentMSecsSinceEpoch();
+    pr.sig = m_identity ? m_identity->signData(canonicalString(pr)) : QString();
+    return pr;
+}
+
+int PullStore::nextNumber() const
+{
+    int max = 0;
+    for (const QString &entry :
+         QDir(pullsDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        bool numeric = false;
+        const int n = entry.toInt(&numeric);
+        if (numeric && n > max)
+            max = n;
+    }
+    return max + 1;
+}
+
+bool PullStore::writePull(const PullRequest &pr, QString *error) const
+{
+    QDir().mkpath(pullDir(pr.number));
+    QStringList lines;
+    lines << "---";
+    lines << "schema: forkmesh-pull-v1";
+    lines << "number: " + QString::number(pr.number);
+    lines << "title: " + pr.title;
+    lines << "base: " + pr.base;
+    lines << "head: " + pr.head;
+    lines << "status: " + pr.status;
+    lines << "ts: " + QString::number(pr.ts);
+    lines << "author: " + pr.author;
+    lines << "authorName: " + pr.authorName;
+    lines << "sig: " + pr.sig;
+    lines << "---";
+    lines << "";
+    if (!writeTextFile(pullDir(pr.number) + "/pull.md",
+                       lines.join('\n') + "\n" + pr.description + "\n", error))
+        return false;
+    return writeTextFile(pullDir(pr.number) + "/changes.patch", pr.patch, error);
+}
+
+bool PullStore::readPull(int number, PullRequest &out) const
+{
+    QFile file(pullDir(number) + "/pull.md");
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const FrontMatter fm = parseFrontMatter(file.readAll());
+    out.number = number;
+    out.title = fm.get("title");
+    out.base = fm.get("base");
+    out.head = fm.get("head");
+    out.status = fm.values.contains("status") ? fm.get("status")
+                                              : QStringLiteral("open");
+    out.ts = fm.num("ts");
+    out.author = fm.get("author");
+    out.authorName = fm.get("authorName");
+    out.sig = fm.get("sig");
+    out.description = fm.body;
+    QFile patch(pullDir(number) + "/changes.patch");
+    if (patch.open(QIODevice::ReadOnly))
+        out.patch = QString::fromUtf8(patch.readAll());
+    computeStats(out);
+    return true;
+}
+
+QList<PullRequest> PullStore::loadAll(QString *error) const
+{
+    if (!canWrite())
+        return loadFromMirror(error);
+    QList<PullRequest> pulls;
+    for (const QString &entry :
+         QDir(pullsDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        bool numeric = false;
+        const int number = entry.toInt(&numeric);
+        if (!numeric)
+            continue;
+        PullRequest pr;
+        if (readPull(number, pr))
+            pulls.append(pr);
+    }
+    std::sort(pulls.begin(), pulls.end(),
+              [](const PullRequest &a, const PullRequest &b) { return a.number < b.number; });
+    return pulls;
+}
+
+int PullStore::createPull(const QString &title, const QString &description,
+                          const QString &base, const QString &head,
+                          const QString &patch, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return -1;
+    }
+    PullRequest pr;
+    pr.title = title;
+    pr.description = description;
+    pr.base = base;
+    pr.head = head;
+    pr.patch = patch;
+    pr = makeSignedPull(pr);
+    pr.number = nextNumber();
+    if (!writePull(pr, error))
+        return -1;
+    if (!commit(QStringLiteral("pull #%1: open").arg(pr.number), error))
+        return -1;
+    return pr.number;
+}
+
+bool PullStore::setStatus(int number, const QString &status, QString *error)
+{
+    if (!canWrite())
+        return false;
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    pr.status = status;
+    if (!writePull(pr, error))
+        return false;
+    return commit(QStringLiteral("pull #%1: %2").arg(number).arg(status), error);
+}
+
+bool PullStore::mergePull(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Merging needs a local working tree.");
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+    const QString patchPath = pullDir(number) + "/changes.patch";
+    QString err;
+    if (!runGit(m_workTree, {"apply", "--index", "--3way", patchPath}, nullptr, &err)) {
+        if (error)
+            *error = "Could not apply the patch cleanly: " + err;
+        return false;
+    }
+    pr.status = "merged";
+    if (!writePull(pr, error))
+        return false;
+    // Commit both the applied changes and the status update.
+    if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
+        if (error)
+            *error = "git add failed: " + err;
+        return false;
+    }
+    if (!runGit(m_workTree,
+                {"commit", "-m", QStringLiteral("merge pull #%1: %2")
+                                     .arg(number)
+                                     .arg(pr.title)},
+                nullptr, &err)) {
+        if (err.contains("nothing to commit"))
+            return true;
+        if (error)
+            *error = "git commit failed: " + err;
+        return false;
+    }
+    return true;
+}
+
+bool PullStore::applyRemotePull(const PullRequest &incoming, QString *error)
+{
+    if (!canWrite())
+        return false;
+    PullRequest pr = incoming;
+    pr.number = nextNumber();
+    pr.status = "open";
+    if (!writePull(pr, error))
+        return false;
+    return commit(QStringLiteral("pull #%1: opened (from %2)")
+                      .arg(pr.number)
+                      .arg(pr.authorName.isEmpty() ? pr.author.left(8) : pr.authorName),
+                  error);
+}
+
+bool PullStore::commit(const QString &message, QString *error) const
+{
+    QString err;
+    if (!runGit(m_workTree, {"add", "pulls"}, nullptr, &err)) {
+        if (error)
+            *error = "git add failed: " + err;
+        return false;
+    }
+    if (!runGit(m_workTree, {"commit", "-m", message, "--", "pulls"}, nullptr, &err)) {
+        if (err.contains("nothing to commit") || err.isEmpty())
+            return true;
+        if (error)
+            *error = "git commit failed: " + err;
+        return false;
+    }
+    return true;
+}
+
+// ---- Read-only access from a bare mirror -----------------------------------
+
+QString PullStore::mirrorRef() const
+{
+    QByteArray output;
+    if (runGit(m_mirror, {"rev-parse", "--verify", "-q", "HEAD"}, &output) &&
+        !output.trimmed().isEmpty())
+        return QStringLiteral("HEAD");
+    if (runGit(m_mirror,
+               {"for-each-ref", "--format=%(refname)", "--count=1", "refs/heads/"},
+               &output)) {
+        const QString ref = QString::fromUtf8(output).trimmed();
+        if (!ref.isEmpty())
+            return ref;
+    }
+    return QString();
+}
+
+QByteArray PullStore::showFromMirror(const QString &repoRelPath, bool *ok) const
+{
+    const QString ref = mirrorRef();
+    QByteArray output;
+    const bool good = !ref.isEmpty() &&
+                      runGit(m_mirror, {"show", ref + ":" + repoRelPath}, &output);
+    if (ok)
+        *ok = good;
+    return good ? output : QByteArray();
+}
+
+QList<PullRequest> PullStore::loadFromMirror(QString *error) const
+{
+    QList<PullRequest> pulls;
+    if (m_mirror.isEmpty())
+        return pulls;
+    const QString ref = mirrorRef();
+    if (ref.isEmpty())
+        return pulls;
+    QByteArray listing;
+    if (!runGit(m_mirror, {"ls-tree", ref, "pulls/"}, &listing))
+        return pulls;
+    for (const QString &line :
+         QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+        const int tab = line.indexOf('\t');
+        if (tab < 0 || !line.contains(" tree "))
+            continue;
+        const QString base = line.mid(tab + 1).section('/', -1);
+        bool numeric = false;
+        const int number = base.toInt(&numeric);
+        if (!numeric)
+            continue;
+        bool ok = false;
+        const QByteArray md = showFromMirror("pulls/" + base + "/pull.md", &ok);
+        if (!ok)
+            continue;
+        const FrontMatter fm = parseFrontMatter(md);
+        PullRequest pr;
+        pr.number = number;
+        pr.title = fm.get("title");
+        pr.base = fm.get("base");
+        pr.head = fm.get("head");
+        pr.status = fm.values.contains("status") ? fm.get("status")
+                                                  : QStringLiteral("open");
+        pr.ts = fm.num("ts");
+        pr.author = fm.get("author");
+        pr.authorName = fm.get("authorName");
+        pr.sig = fm.get("sig");
+        pr.description = fm.body;
+        bool pok = false;
+        pr.patch = QString::fromUtf8(showFromMirror("pulls/" + base + "/changes.patch", &pok));
+        computeStats(pr);
+        pulls.append(pr);
+    }
+    std::sort(pulls.begin(), pulls.end(),
+              [](const PullRequest &a, const PullRequest &b) { return a.number < b.number; });
+    Q_UNUSED(error);
+    return pulls;
+}

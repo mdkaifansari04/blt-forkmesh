@@ -126,6 +126,10 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     background-color: #0d1117; border: none; color: #e6edf3;
     font-family: monospace; font-size: 12px;
 }
+#diffView {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    color: #e6edf3; font-family: monospace; font-size: 12px;
+}
 #commitBar { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #e6edf3; }
@@ -244,6 +248,11 @@ QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#issueSearch {
+    background-color: #0d1117; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 10px;
+}
+#issueSearch:focus { border-color: #58a6ff; }
 #issueTable {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
     gridline-color: #21262d;
@@ -455,6 +464,10 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     background-color: #ffffff; border: none; color: #1f2328;
     font-family: monospace; font-size: 12px;
 }
+#diffView {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #1f2328; font-family: monospace; font-size: 12px;
+}
 #commitBar { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #1f2328; }
@@ -573,6 +586,11 @@ QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#issueSearch {
+    background-color: #ffffff; border: 1px solid #d0d7de;
+    border-radius: 6px; padding: 6px 10px;
+}
+#issueSearch:focus { border-color: #0969da; }
 #issueTable {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     gridline-color: #d8dee4;

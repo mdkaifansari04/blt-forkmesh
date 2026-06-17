@@ -59,6 +59,7 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextBrowser>
+#include <QTextEdit>
 #include <QTreeWidget>
 #include <QSystemTrayIcon>
 #include <QThread>
@@ -1880,12 +1881,18 @@ QWidget *MainWindow::buildIssuesSection()
     // is kept for state but hidden from the user.
     m_issuesRepoCombo->hide();
 
+    m_issueSearch = new QLineEdit;
+    m_issueSearch->setObjectName("issueSearch");
+    m_issueSearch->setPlaceholderText("Search issues\xE2\x80\xA6");
+    m_issueSearch->setClearButtonEnabled(true);
+
     m_issueStatusFilter = new QComboBox;
     m_issueStatusFilter->addItems({"Open", "Closed", "All"});
     m_issueLabelFilter = new QComboBox;
     m_issueMilestoneFilter = new QComboBox;
     auto *filterRow = new QHBoxLayout;
     filterRow->setContentsMargins(0, 0, 0, 0);
+    filterRow->addWidget(m_issueSearch, 1);
     filterRow->addWidget(m_issueStatusFilter);
     filterRow->addWidget(m_issueLabelFilter);
     filterRow->addWidget(m_issueMilestoneFilter);
@@ -2105,6 +2112,8 @@ QWidget *MainWindow::buildIssuesSection()
             [this](int) { refreshIssueList(); });
     connect(m_issueMilestoneFilter, &QComboBox::currentIndexChanged, this,
             [this](int) { refreshIssueList(); });
+    connect(m_issueSearch, &QLineEdit::textChanged, this,
+            [this] { refreshIssueList(); });
     connect(m_issueTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const QModelIndexList rows = m_issueTable->selectionModel()->selectedRows();
         if (rows.isEmpty())
@@ -2218,7 +2227,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
     m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Pull requests"));  // 3
+    m_repoDetailStack->addWidget(buildPullsTab());                       // 3 Pull requests
     m_repoDetailStack->addWidget(buildPlaceholderTab("Actions"));        // 4
     m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
@@ -2227,6 +2236,8 @@ QWidget *MainWindow::buildRepoDetailSection()
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
             loadCommits();
+        else if (id == 3)
+            reloadPulls();
     });
 
     auto *layout = new QVBoxLayout(page);
@@ -2265,6 +2276,530 @@ QWidget *MainWindow::buildPlaceholderTab(const QString &name)
     layout->addWidget(label, 0, Qt::AlignCenter);
     layout->addStretch();
     return page;
+}
+
+// ---- Pull requests ---------------------------------------------------------
+
+QWidget *MainWindow::buildPullsTab()
+{
+    auto *page = new QWidget;
+
+    // Left: toolbar + sortable PR table.
+    auto *listPane = new QWidget;
+    listPane->setMinimumWidth(360);
+    auto *heading = new QLabel("Pull requests");
+    heading->setObjectName("channelTitle");
+    m_pullNewButton = new QPushButton("+ New pull request");
+    m_pullSyncButton = new QPushButton("Sync inbox");
+    for (QPushButton *b : {m_pullNewButton, m_pullSyncButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
+    auto *toolbar = new QHBoxLayout;
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->addWidget(m_pullNewButton);
+    toolbar->addWidget(m_pullSyncButton);
+    toolbar->addStretch();
+
+    m_pullSearch = new QLineEdit;
+    m_pullSearch->setObjectName("issueSearch");
+    m_pullSearch->setPlaceholderText("Search pull requests\xE2\x80\xA6");
+    m_pullSearch->setClearButtonEnabled(true);
+
+    m_pullTable = new QTableWidget(0, 6);
+    m_pullTable->setObjectName("issueTable");
+    m_pullTable->setHorizontalHeaderLabels(
+        {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1"});
+    m_pullTable->verticalHeader()->setVisible(false);
+    m_pullTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_pullTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_pullTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_pullTable->setShowGrid(false);
+    m_pullTable->setWordWrap(false);
+    m_pullTable->setSortingEnabled(true);
+    QHeaderView *ph = m_pullTable->horizontalHeader();
+    ph->setHighlightSections(false);
+    ph->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    ph->setSectionResizeMode(1, QHeaderView::Stretch);
+    for (int c = 2; c < 6; ++c)
+        ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+
+    auto *listLayout = new QVBoxLayout(listPane);
+    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setSpacing(8);
+    listLayout->addWidget(heading);
+    listLayout->addLayout(toolbar);
+    listLayout->addWidget(m_pullSearch);
+    listLayout->addWidget(m_pullTable, 1);
+
+    // Right: PR detail — header + changed-files explorer + diff viewer.
+    m_pullDetail = new QWidget;
+    m_pullTitle = new QLabel("Select a pull request");
+    m_pullTitle->setObjectName("channelTitle");
+    m_pullTitle->setWordWrap(true);
+    m_pullMergeButton = new QPushButton("Merge");
+    m_pullCloseButton = new QPushButton("Close");
+    for (QPushButton *b : {m_pullMergeButton, m_pullCloseButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_pullMergeButton->setObjectName("primaryButton");
+    auto *pullHeaderRow = new QHBoxLayout;
+    pullHeaderRow->setContentsMargins(0, 0, 0, 0);
+    pullHeaderRow->addWidget(m_pullTitle, 1);
+    pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
+    m_pullMeta = new QLabel;
+    m_pullMeta->setObjectName("statusLine");
+    m_pullMeta->setTextFormat(Qt::RichText);
+    m_pullMeta->setWordWrap(true);
+    m_pullDesc = new QLabel;
+    m_pullDesc->setObjectName("statusLine");
+    m_pullDesc->setWordWrap(true);
+
+    m_pullFiles = new QListWidget;
+    m_pullFiles->setObjectName("overviewList");
+    m_pullFiles->setMinimumWidth(200);
+    connect(m_pullFiles, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item)
+                    renderPullDiff(item->data(Qt::UserRole).toString());
+            });
+    m_pullDiff = new QTextEdit;
+    m_pullDiff->setObjectName("diffView");
+    m_pullDiff->setReadOnly(true);
+    m_pullDiff->setLineWrapMode(QTextEdit::NoWrap);
+
+    auto *diffSplit = new QSplitter(Qt::Horizontal);
+    diffSplit->setChildrenCollapsible(false);
+    diffSplit->addWidget(m_pullFiles);
+    diffSplit->addWidget(m_pullDiff);
+    diffSplit->setStretchFactor(0, 0);
+    diffSplit->setStretchFactor(1, 1);
+    diffSplit->setSizes({240, 600});
+
+    auto *detailLayout = new QVBoxLayout(m_pullDetail);
+    detailLayout->setContentsMargins(18, 18, 18, 18);
+    detailLayout->setSpacing(8);
+    detailLayout->addLayout(pullHeaderRow);
+    detailLayout->addWidget(m_pullMeta);
+    detailLayout->addWidget(m_pullDesc);
+    detailLayout->addWidget(diffSplit, 1);
+
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(listPane);
+    splitter->addWidget(m_pullDetail);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({460, 620});
+
+    auto *layout = new QHBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(splitter);
+
+    connect(m_pullSearch, &QLineEdit::textChanged, this,
+            [this] { refreshPullList(); });
+    connect(m_pullTable, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QModelIndexList rows = m_pullTable->selectionModel()->selectedRows();
+        if (rows.isEmpty())
+            return;
+        if (QTableWidgetItem *first = m_pullTable->item(rows.first().row(), 0))
+            showPull(first->data(Qt::UserRole).toInt());
+    });
+    connect(m_pullNewButton, &QPushButton::clicked, this, &MainWindow::promptNewPull);
+    connect(m_pullSyncButton, &QPushButton::clicked, this, &MainWindow::syncPullsInbox);
+    connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
+    connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
+    return page;
+}
+
+PullStore MainWindow::pullStoreForCurrentRepo() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return PullStore(QString(), QString(), &m_profileIdentity, m_userName);
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    return PullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+}
+
+void MainWindow::reloadPulls()
+{
+    if (!m_pullTable)
+        return;
+    m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    refreshPullList();
+    updatePullActionState();
+}
+
+void MainWindow::refreshPullList()
+{
+    if (!m_pullTable)
+        return;
+    const QString search = m_pullSearch ? m_pullSearch->text().trimmed() : QString();
+    const int keep = m_currentPullNumber;
+    m_pullTable->setSortingEnabled(false);
+    m_pullTable->setRowCount(0);
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (!search.isEmpty()) {
+            const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
+                                    .arg(pr.number)
+                                    .arg(pr.title, pr.base, pr.head, pr.authorName);
+            if (!hay.contains(search, Qt::CaseInsensitive))
+                continue;
+        }
+        const int row = m_pullTable->rowCount();
+        m_pullTable->insertRow(row);
+        auto *num = new QTableWidgetItem;
+        num->setData(Qt::DisplayRole, pr.number);
+        num->setData(Qt::UserRole, pr.number);
+        m_pullTable->setItem(row, 0, num);
+        m_pullTable->setItem(row, 1, new QTableWidgetItem(pr.title));
+        m_pullTable->setItem(row, 2,
+                             new QTableWidgetItem(pr.base + QString::fromUtf8(" \xE2\x86\x90 ") +
+                                                  pr.head));
+        auto *st = new QTableWidgetItem(pr.status);
+        st->setForeground(QColor(pr.status == "merged"  ? "#a371f7"
+                                 : pr.status == "closed" ? "#f85149"
+                                                         : "#3fb950"));
+        m_pullTable->setItem(row, 3, st);
+        auto *files = new QTableWidgetItem;
+        files->setData(Qt::DisplayRole, pr.filesChanged);
+        m_pullTable->setItem(row, 4, files);
+        m_pullTable->setItem(row, 5,
+                             new QTableWidgetItem(QStringLiteral("+%1 -%2")
+                                                      .arg(pr.additions)
+                                                      .arg(pr.deletions)));
+    }
+    m_pullTable->setSortingEnabled(true);
+    int selRow = -1;
+    for (int r = 0; r < m_pullTable->rowCount(); ++r)
+        if (m_pullTable->item(r, 0)->data(Qt::UserRole).toInt() == keep) {
+            selRow = r;
+            break;
+        }
+    if (selRow < 0 && m_pullTable->rowCount() > 0)
+        selRow = 0;
+    if (selRow >= 0)
+        m_pullTable->selectRow(selRow);
+    else {
+        m_currentPullNumber = -1;
+        showPull(-1);
+    }
+}
+
+void MainWindow::showPull(int number)
+{
+    const PullRequest *found = nullptr;
+    for (const PullRequest &pr : m_currentPulls)
+        if (pr.number == number)
+            found = &pr;
+    m_currentPullNumber = found ? number : -1;
+    m_pullFiles->clear();
+    m_pullFileDiffs.clear();
+
+    if (!found) {
+        m_pullTitle->setText("Select a pull request");
+        m_pullMeta->clear();
+        m_pullDesc->clear();
+        m_pullDiff->clear();
+        updatePullActionState();
+        return;
+    }
+    m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
+    m_pullMeta->setText(
+        QStringLiteral("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
+                       "<span style='color:#3fb950'>+%5</span> "
+                       "<span style='color:#f85149'>-%6</span> \xC2\xB7 by %7")
+            .arg(found->base.toHtmlEscaped(), found->head.toHtmlEscaped(),
+                 found->status)
+            .arg(found->filesChanged)
+            .arg(found->additions)
+            .arg(found->deletions)
+            .arg((found->authorName.isEmpty() ? found->author.left(10)
+                                              : found->authorName)
+                     .toHtmlEscaped()));
+    m_pullDesc->setText(found->description.toHtmlEscaped());
+
+    // Split the unified diff into per-file sections.
+    QString currentFile;
+    QStringList currentLines;
+    const auto flush = [&] {
+        if (!currentFile.isEmpty())
+            m_pullFileDiffs.insert(currentFile, currentLines.join('\n'));
+        currentLines.clear();
+    };
+    for (const QString &line : found->patch.split('\n')) {
+        if (line.startsWith("diff --git ")) {
+            flush();
+            // "diff --git a/<path> b/<path>"
+            currentFile = line.section(" b/", 1);
+        }
+        if (!currentFile.isEmpty())
+            currentLines << line;
+    }
+    flush();
+
+    for (auto it = m_pullFileDiffs.constBegin(); it != m_pullFileDiffs.constEnd(); ++it) {
+        const QString name = it.key().section('/', -1);
+        auto *item = new QListWidgetItem(iconForFile(name), it.key());
+        item->setData(Qt::UserRole, it.key());
+        m_pullFiles->addItem(item);
+    }
+    m_pullFiles->sortItems();
+    if (m_pullFiles->count() > 0)
+        m_pullFiles->setCurrentRow(0);
+    else
+        m_pullDiff->setPlainText("(no changes)");
+    updatePullActionState();
+}
+
+void MainWindow::renderPullDiff(const QString &filePath)
+{
+    const QString diff = m_pullFileDiffs.value(filePath);
+    QString html =
+        "<pre style='font-family:monospace; font-size:12px; margin:0; white-space:pre'>";
+    for (const QString &line : diff.split('\n')) {
+        QString color;
+        if (line.startsWith("@@"))
+            color = "#58a6ff";
+        else if (line.startsWith("+++") || line.startsWith("---") ||
+                 line.startsWith("diff ") || line.startsWith("index "))
+            color = "#8b949e";
+        else if (line.startsWith('+'))
+            color = "#3fb950";
+        else if (line.startsWith('-'))
+            color = "#f85149";
+        const QString escaped = line.toHtmlEscaped();
+        if (color.isEmpty())
+            html += escaped + "\n";
+        else
+            html += "<span style='color:" + color + "'>" + escaped + "</span>\n";
+    }
+    html += "</pre>";
+    m_pullDiff->setHtml(html);
+}
+
+void MainWindow::updatePullActionState()
+{
+    const PullStore store = pullStoreForCurrentRepo();
+    const bool writable = store.canWrite();
+    const bool have = m_currentPullNumber >= 0;
+    bool open = false;
+    for (const PullRequest &pr : m_currentPulls)
+        if (pr.number == m_currentPullNumber)
+            open = pr.status == "open";
+    if (m_pullNewButton)
+        m_pullNewButton->setEnabled(m_repoDetailIndex >= 0);
+    if (m_pullSyncButton)
+        m_pullSyncButton->setEnabled(writable);
+    if (m_pullMergeButton)
+        m_pullMergeButton->setEnabled(writable && have && open);
+    if (m_pullCloseButton)
+        m_pullCloseButton->setEnabled(writable && have && open);
+}
+
+void MainWindow::promptNewPull()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        QMessageBox::warning(this, "New pull request",
+                             "No local copy of this repository to diff.");
+        return;
+    }
+    // Enumerate branches for the base/head pickers.
+    QByteArray out;
+    QStringList branches;
+    if (runGitCapture(dir, {"branch", "--format=%(refname:short)"}, &out, nullptr))
+        for (const QString &b : QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts))
+            branches << b.trimmed();
+    if (branches.size() < 1) {
+        QMessageBox::warning(this, "New pull request", "This repository has no branches.");
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("New pull request");
+    auto *baseCombo = new QComboBox(&dialog);
+    auto *headCombo = new QComboBox(&dialog);
+    baseCombo->addItems(branches);
+    headCombo->addItems(branches);
+    if (branches.size() > 1)
+        headCombo->setCurrentIndex(1);
+    auto *titleEdit = new QLineEdit(&dialog);
+    titleEdit->setPlaceholderText("Title");
+    auto *bodyEdit = new QPlainTextEdit(&dialog);
+    bodyEdit->setPlaceholderText("Describe the change\xE2\x80\xA6");
+    auto *form = new QFormLayout;
+    form->addRow("Base", baseCombo);
+    form->addRow("Head", headCombo);
+    form->addRow("Title", titleEdit);
+    form->addRow("Description", bodyEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *dl = new QVBoxLayout(&dialog);
+    dl->addLayout(form);
+    dl->addWidget(buttons);
+    dialog.resize(520, 420);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString base = baseCombo->currentText();
+    const QString head = headCombo->currentText();
+    const QString title = titleEdit->text().trimmed();
+    if (title.isEmpty()) {
+        QMessageBox::warning(this, "New pull request", "A title is required.");
+        return;
+    }
+    if (base == head) {
+        QMessageBox::warning(this, "New pull request", "Base and head must differ.");
+        return;
+    }
+    QByteArray diff;
+    if (!runGitCapture(dir, {"diff", base + ".." + head}, &diff, nullptr) ||
+        diff.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "New pull request",
+                             "No differences between " + base + " and " + head + ".");
+        return;
+    }
+    PullRequest pr;
+    pr.title = title;
+    pr.description = bodyEdit->toPlainText();
+    pr.base = base;
+    pr.head = head;
+    pr.patch = QString::fromUtf8(diff);
+
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
+                                             pr.patch, &error);
+        if (number < 0) {
+            QMessageBox::warning(this, "New pull request", error);
+            return;
+        }
+        m_currentPullNumber = number;
+        reloadPulls();
+    } else {
+        submitPullToInbox(store.makeSignedPull(pr));
+    }
+}
+
+void MainWindow::mergeCurrentPull()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    if (QMessageBox::question(this, "Merge pull request",
+                              QStringLiteral("Apply and merge pull request #%1?")
+                                  .arg(m_currentPullNumber)) != QMessageBox::Yes)
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.mergePull(m_currentPullNumber, &error)) {
+        QMessageBox::warning(this, "Merge pull request", error);
+        return;
+    }
+    logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
+    reloadPulls();
+}
+
+void MainWindow::closeCurrentPull()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.setStatus(m_currentPullNumber, "closed", &error))
+        QMessageBox::warning(this, "Close pull request", error);
+    reloadPulls();
+}
+
+QUrl MainWindow::pullsApiUrl(const RepositoryRecord &repo) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(repo.name, QStringLiteral("repository")) + "/pulls");
+    return url;
+}
+
+void MainWindow::submitPullToInbox(const PullRequest &pr)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"pull", pr.toJson()}};
+    QNetworkRequest request(pullsApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            QMessageBox::information(
+                this, "Pull request sent",
+                "Your signed pull request was delivered to the maintainer's inbox.");
+        else
+            QMessageBox::warning(this, "Pull request",
+                                 "Could not send the pull request: " +
+                                     reply->errorString());
+    });
+}
+
+void MainWindow::syncPullsInbox()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!pullStoreForCurrentRepo().canWrite())
+        return;
+
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    const QString sig = m_profileIdentity.signData(canonical);
+    QUrl url = pullsApiUrl(repo);
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", sig);
+    url.setQuery(query);
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::warning(this, "Sync inbox",
+                                 "Could not reach the inbox: " + reply->errorString());
+            return;
+        }
+        const QJsonArray pending =
+            QJsonDocument::fromJson(reply->readAll()).object().value("pending").toArray();
+        if (pending.isEmpty()) {
+            QMessageBox::information(this, "Sync inbox", "No pending pull requests.");
+            return;
+        }
+        PullStore store = pullStoreForCurrentRepo();
+        int merged = 0;
+        for (const QJsonValue &value : pending) {
+            const PullRequest pr =
+                PullRequest::fromJson(value.toObject().value("pull").toObject());
+            if (store.applyRemotePull(pr))
+                ++merged;
+        }
+        m_networkAccess->deleteResource(QNetworkRequest(url)); // ack/clear
+        reloadPulls();
+        QMessageBox::information(
+            this, "Sync inbox",
+            QStringLiteral("Merged %1 pull request(s) into pulls/.").arg(merged));
+    });
 }
 
 QWidget *MainWindow::buildRepoFilesPanel()
@@ -3324,6 +3859,8 @@ void MainWindow::refreshIssueList()
     const QString statusFilter = m_issueStatusFilter->currentText();
     const QString labelFilter = m_issueLabelFilter->currentData().toString();
     const QString msFilter = m_issueMilestoneFilter->currentData().toString();
+    const QString search =
+        m_issueSearch ? m_issueSearch->text().trimmed() : QString();
     const int keep = m_currentIssueNumber;
 
     // Disable sorting while inserting so rows aren't reordered mid-build.
@@ -3338,6 +3875,15 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
+        // Free-text search over number, title, labels and milestone.
+        if (!search.isEmpty()) {
+            const QString hay = QStringLiteral("#%1 %2 %3 %4")
+                                    .arg(issue.number)
+                                    .arg(issue.title, issue.labels.join(" "),
+                                         issue.milestone);
+            if (!hay.contains(search, Qt::CaseInsensitive))
+                continue;
+        }
 
         const int row = m_issueTable->rowCount();
         m_issueTable->insertRow(row);

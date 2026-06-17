@@ -25,6 +25,10 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# Pull-request inbox: a PR carries a unified diff (text), capped larger than an
+# issue body but still bounded.
+MAX_PULL_BYTES = 1024 * 1024
+MAX_PENDING_PULLS = 200
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -32,6 +36,8 @@ REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clien
 REPO_FILES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/files$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
+# Pull-request inbox: signed PR submissions from any node.
+REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob)$")
@@ -126,6 +132,28 @@ async def verify_issue_event(number, ev):
     canonical = (
         "forkmesh-issue-event-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
         author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
+
+
+async def verify_pull_event(pr):
+    # Mirrors PullStore::canonicalString: the signature commits to
+    # title/base/head/patch (not the number, which the owner assigns on merge).
+    author = pr.get("author", "")
+    signature = pr.get("sig", "")
+    if not author or not signature:
+        return False
+    try:
+        ts = int(pr.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content = "\x00".join([
+        pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
+        pr.get("patch", ""),
+    ])
+    content_hash = await sha256_hex(content)
+    canonical = (
+        "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
 
@@ -338,6 +366,16 @@ class Default(WorkerEntrypoint):
             issues_id = self.env.FORKMESH_ISSUES.idFromName(f"issues:{owner}/{repo}")
             issues_object = self.env.FORKMESH_ISSUES.get(issues_id)
             return await issues_object.fetch(request)
+
+        pulls_match = REPO_PULLS_RE.match(url.path)
+        if pulls_match:
+            owner = safe_segment(pulls_match.group(1))
+            repo = safe_segment(pulls_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            pulls_id = self.env.FORKMESH_PULLS.idFromName(f"pulls:{owner}/{repo}")
+            pulls_object = self.env.FORKMESH_PULLS.get(pulls_id)
+            return await pulls_object.fetch(request)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
@@ -651,6 +689,96 @@ class ForkMeshIssues(DurableObject):
     async def _owner_pubkey(self, owner):
         # Look up the repo owner's registered account public key via the accounts
         # Durable Object, so only the owner can pull/ack the inbox.
+        try:
+            from js import Request as JsRequest
+
+            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
+            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
+            resp = await accounts.fetch(
+                JsRequest.new("https://do/api/accounts/" + owner)
+            )
+            record = json.loads(await resp.text())
+            return record.get("pubkey", "") if record.get("exists") else ""
+        except Exception:
+            return ""
+
+    async def _authorize_owner(self, request):
+        owner = self._owner_from_path(request)
+        if not owner:
+            return False
+        params = parse_qs(urlparse(request.url).query)
+        ts = params.get("ts", [""])[0]
+        sig = params.get("sig", [""])[0]
+        owner_pub = await self._owner_pubkey(owner)
+        if not owner_pub or not ts or not sig:
+            return False
+        try:
+            skew = abs(int(Date.now()) - int(ts))
+        except (TypeError, ValueError):
+            return False
+        if skew > LOGIN_MAX_SKEW_MS:
+            return False
+        canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
+        return await ed25519_verify(owner_pub, sig, canonical)
+
+    async def _list(self, request):
+        if not await self._authorize_owner(request):
+            return json_response({"error": "unauthorized"}, status=401)
+        return json_response({"ok": True, "pending": await self._pending()})
+
+    async def _ack(self, request):
+        if not await self._authorize_owner(request):
+            return json_response({"error": "unauthorized"}, status=401)
+        await self.ctx.storage.put("pending", [])
+        return json_response({"ok": True})
+
+
+class ForkMeshPulls(DurableObject):
+    # Pull-request submission inbox for one repository. Any node POSTs a signed PR
+    # (title/base/head/unified-diff) here; the repo owner pulls (owner-authenticated),
+    # merges them into the repo's pulls/ folder, and acks to clear the inbox.
+    async def _pending(self):
+        data = await self.ctx.storage.get("pending")
+        return data if isinstance(data, list) else []
+
+    def _owner_from_path(self, request):
+        match = REPO_PULLS_RE.match(urlparse(request.url).path)
+        return safe_segment(match.group(1)) if match else None
+
+    async def fetch(self, request):
+        method = method_name(request)
+        if method == "POST":
+            return await self._submit(request)
+        if method == "GET":
+            return await self._list(request)
+        if method == "DELETE":
+            return await self._ack(request)
+        return json_response({"error": "method_not_allowed"}, status=405)
+
+    async def _submit(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        pull = data.get("pull")
+        if not isinstance(pull, dict):
+            return json_response({"error": "pull_required"}, status=400)
+        if len((pull.get("patch", "") or "").encode("utf-8")) > MAX_PULL_BYTES:
+            return json_response({"error": "pull_too_large"}, status=413)
+        if not await verify_pull_event(pull):
+            return json_response({"error": "bad_signature"}, status=401)
+        pending = await self._pending()
+        if len(pending) >= MAX_PENDING_PULLS:
+            return json_response({"error": "inbox_full"}, status=429)
+        pending.append({
+            "pull": pull,
+            "submitter": clean_string(pull.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        })
+        await self.ctx.storage.put("pending", pending)
+        return json_response({"ok": True, "pending": len(pending)}, status=201)
+
+    async def _owner_pubkey(self, owner):
         try:
             from js import Request as JsRequest
 
