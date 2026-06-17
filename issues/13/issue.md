@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 13
 title: Launch-on-boot setting
-status: open
+status: closed
 labels: [enhancement]
 milestone: 
 assignees: []
