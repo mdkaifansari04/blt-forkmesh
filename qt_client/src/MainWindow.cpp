@@ -533,6 +533,27 @@ QString faviconCachePath(const QString &host)
 
 // A circular fallback badge showing the first letter of the host, used until a
 // real favicon is fetched (or when the server has none).
+// Clip a pixmap into a rounded-rectangle (Discord/GitHub-style "squircle"),
+// scaling to fill and centering. Used so all server favicons render as rounded
+// rects rather than circles.
+QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
+{
+    QPixmap out(side, side);
+    out.fill(Qt::transparent);
+    if (src.isNull())
+        return out;
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    QPainterPath path;
+    path.addRoundedRect(QRectF(0, 0, side, side), radius, radius);
+    p.setClipPath(path);
+    const QPixmap scaled = src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
+                                      Qt::SmoothTransformation);
+    p.drawPixmap((side - scaled.width()) / 2, (side - scaled.height()) / 2, scaled);
+    return out;
+}
+
 QPixmap letterFavicon(const QString &host)
 {
     constexpr int side = 36;
@@ -543,7 +564,7 @@ QPixmap letterFavicon(const QString &host)
     const uint hash = qHash(host);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(Theme::kSenderPalette[hash % Theme::kSenderPaletteSize]));
-    painter.drawEllipse(0, 0, side, side);
+    painter.drawRoundedRect(0, 0, side, side, 9, 9);
     const QChar letter = host.isEmpty() ? QChar('?') : host.at(0).toUpper();
     QFont font = painter.font();
     font.setPixelSize(18);
@@ -1310,8 +1331,8 @@ QPixmap MainWindow::faviconFor(const ServerConfig &server) const
 {
     const QString host = serverHost(server.url);
     if (m_faviconCache.contains(host))
-        return m_faviconCache.value(host);
-    return letterFavicon(host);
+        return roundedRectPixmap(m_faviconCache.value(host), 36, 9);
+    return letterFavicon(host); // already drawn as a rounded rect
 }
 
 QWidget *MainWindow::buildServerRail()
@@ -1687,7 +1708,8 @@ void MainWindow::updateBreadcrumb()
     // Active server favicon, shown next to the breadcrumb at the top of the app.
     if (m_breadcrumbServerIcon) {
         const QPixmap fav = m_faviconCache.value(host);
-        m_breadcrumbServerIcon->setPixmap(fav.isNull() ? letterFavicon(host) : fav);
+        m_breadcrumbServerIcon->setPixmap(
+            fav.isNull() ? letterFavicon(host) : roundedRectPixmap(fav, 18, 5));
     }
     if (host.isEmpty())
         host = "ForkMesh";
@@ -2217,6 +2239,9 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (m_repoDetailIndex >= 0)
             syncRepository(m_repoDetailIndex);
     });
+    m_forkButton->setToolTip("Fork this repository into your own node");
+    connect(m_forkButton, &QPushButton::clicked, this,
+            &MainWindow::forkCurrentRepo);
 
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(16, 12, 16, 4);
@@ -2318,14 +2343,48 @@ QWidget *MainWindow::buildRepoCommitsTab()
     backButton->setCursor(Qt::PointingHandCursor);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::showCommitList);
 
+    // Prev/Next walk the commit list (newest first): Prev = newer, Next = older.
+    m_commitPrevButton = new QPushButton("\xE2\x86\x91 Prev");
+    m_commitNextButton = new QPushButton("Next \xE2\x86\x93");
+    for (QPushButton *b : {m_commitPrevButton, m_commitNextButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_commitPrevButton->setToolTip("Show the previous (newer) commit");
+    m_commitNextButton->setToolTip("Show the next (older) commit");
+    auto goToCommitRow = [this](int row) {
+        if (!m_commitsList || row < 0 || row >= m_commitsList->count())
+            return;
+        QListWidgetItem *it = m_commitsList->item(row);
+        if (it)
+            showCommit(it->data(Qt::UserRole).toString());
+    };
+    connect(m_commitPrevButton, &QPushButton::clicked, this,
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1); });
+    connect(m_commitNextButton, &QPushButton::clicked, this,
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1); });
+
     m_commitTitle = new QLabel;
     m_commitTitle->setObjectName("repoHeaderTitle");
     m_commitTitle->setTextFormat(Qt::RichText);
     m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *navCol = new QVBoxLayout;
+    navCol->setContentsMargins(0, 0, 0, 0);
+    navCol->setSpacing(4);
+    navCol->addWidget(backButton, 0, Qt::AlignRight);
+    auto *prevNextRow = new QHBoxLayout;
+    prevNextRow->setContentsMargins(0, 0, 0, 0);
+    prevNextRow->setSpacing(4);
+    prevNextRow->addStretch();
+    prevNextRow->addWidget(m_commitPrevButton);
+    prevNextRow->addWidget(m_commitNextButton);
+    navCol->addLayout(prevNextRow);
+
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);
-    headerRow->addWidget(m_commitTitle, 1);
-    headerRow->addWidget(backButton);
+    headerRow->addWidget(m_commitTitle, 1, Qt::AlignTop);
+    headerRow->addLayout(navCol);
 
     m_commitMessage = new QLabel;
     m_commitMessage->setObjectName("commitMessage");
@@ -3218,6 +3277,133 @@ QString MainWindow::repoGitDir() const
     return {};
 }
 
+void MainWindow::forkCurrentRepo()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord src = m_repositories.at(m_repoDetailIndex);
+
+    // Default destination: your own node owns it, keeping the same name.
+    const QString handle = QSettings().value(kHandleSetting).toString().trimmed();
+    const QString defaultOwner =
+        repoSegment(handle.isEmpty() ? m_userName : handle,
+                    QStringLiteral("owner"));
+
+    // --- Ask where to fork to (destination owner + repository name).
+    QDialog dialog(this);
+    dialog.setWindowTitle("Fork repository");
+    auto *form = new QFormLayout(&dialog);
+    auto *info = new QLabel(
+        QStringLiteral("Fork <b>%1/%2</b> into your own node. A new independent "
+                       "mirror is created that you can push to.")
+            .arg(src.owner.toHtmlEscaped(), src.name.toHtmlEscaped()));
+    info->setWordWrap(true);
+    info->setTextFormat(Qt::RichText);
+    auto *ownerEdit = new QLineEdit(defaultOwner);
+    auto *nameEdit = new QLineEdit(src.name);
+    form->addRow(info);
+    form->addRow("Owner (your node)", ownerEdit);
+    form->addRow("Repository name", nameEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                         QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Fork");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString owner =
+        repoSegment(ownerEdit->text().trimmed(), QStringLiteral("owner"));
+    const QString name =
+        repoSegment(nameEdit->text().trimmed(), QStringLiteral("repository"));
+    if (owner.isEmpty() || name.isEmpty())
+        return;
+    for (const RepositoryRecord &r : std::as_const(m_repositories))
+        if (r.owner == owner && r.name == name) {
+            QMessageBox::information(
+                this, "Fork repository",
+                QStringLiteral("You already have %1/%2.").arg(owner, name));
+            return;
+        }
+
+    // Clone the fork from the existing local mirror when available (fast,
+    // offline); otherwise from the repo's configured source.
+    const QString source =
+        (!src.mirrorPath.isEmpty() && QDir(src.mirrorPath).exists())
+            ? src.mirrorPath
+            : repositorySource(src);
+    if (source.isEmpty()) {
+        QMessageBox::warning(
+            this, "Fork repository",
+            "There is no local mirror or source to fork from yet. Sync the "
+            "repository first, then fork.");
+        return;
+    }
+
+    RepositoryRecord fork;
+    fork.owner = owner;
+    fork.name = name;
+    fork.description = src.description;
+    fork.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
+    fork.publishToNetwork = true;
+    fork.actionsEnabled = src.actionsEnabled;
+    fork.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    fork.mirrorPath = repositoryMirrorRoot() + "/" +
+                      repoSegment(owner, QStringLiteral("owner")) + "-" +
+                      repoSegment(name, QStringLiteral("repository")) + ".git";
+    // No cloneUrl/localPath: a fork is independent and must not auto-sync from
+    // upstream (that would prune the branches you push to it).
+
+    m_repositories.append(fork);
+    saveRepositories();
+    refreshRepositoryList();
+    logSystem(QStringLiteral("Forking %1/%2 to %3/%4 from %5")
+                  .arg(src.owner, src.name, owner, name, source));
+
+    QDir().mkpath(QFileInfo(fork.mirrorPath).absolutePath());
+    auto *process = new QProcess(this);
+    connect(process, &QProcess::finished, this,
+            [this, process, owner, name](int code, QProcess::ExitStatus) {
+                const QString err =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                const int idx = repoIndexFor(owner, name);
+                if (idx < 0)
+                    return;
+                if (code != 0) {
+                    logSystem("Fork failed: " + err.right(300));
+                    QMessageBox::warning(this, "Fork repository",
+                                         "Could not clone the fork" +
+                                             (err.isEmpty() ? QString()
+                                                            : ":\n" + err.right(400)));
+                    m_repositories.removeAt(idx);
+                    saveRepositories();
+                    refreshRepositoryList();
+                    return;
+                }
+                RepositoryRecord &f = m_repositories[idx];
+                // Detach from upstream so the fork is fully independent.
+                QProcess::execute(QStringLiteral("git"),
+                                  {QStringLiteral("-C"), f.mirrorPath,
+                                   QStringLiteral("remote"), QStringLiteral("remove"),
+                                   QStringLiteral("origin")});
+                f.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+                saveRepositories();
+                ensurePushHook(f);
+                if (m_backend)
+                    m_backend->addChannel(repositoryChannel(f));
+                publishRepository(idx, false);
+                startRepoHosts();
+                refreshRepositoryList();
+                logSystem(QStringLiteral("Forked into %1/%2.").arg(owner, name));
+                openRepoDetail(idx);
+            });
+    process->start(QStringLiteral("git"),
+                   {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
+                    fork.mirrorPath});
+}
+
 void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
@@ -3693,6 +3879,22 @@ void MainWindow::showCommit(const QString &hash)
     const QString dir = repoGitDir();
     if (dir.isEmpty() || hash.isEmpty() || !m_commitsStack)
         return;
+
+    // Track this commit's position so Prev/Next can walk the list, and reflect
+    // the available directions on the buttons.
+    m_currentCommitRow = -1;
+    if (m_commitsList)
+        for (int i = 0; i < m_commitsList->count(); ++i)
+            if (m_commitsList->item(i)->data(Qt::UserRole).toString() == hash) {
+                m_currentCommitRow = i;
+                break;
+            }
+    if (m_commitPrevButton)
+        m_commitPrevButton->setEnabled(m_currentCommitRow > 0);
+    if (m_commitNextButton)
+        m_commitNextButton->setEnabled(m_commitsList &&
+                                       m_currentCommitRow >= 0 &&
+                                       m_currentCommitRow < m_commitsList->count() - 1);
 
     // --- Metadata (full hash, author, date, parents, subject, body).
     QByteArray meta;
