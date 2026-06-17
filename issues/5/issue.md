@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 5
 title: Email sending from the main node
-status: open
+status: closed
 labels: [infra]
 milestone: 
 assignees: []
