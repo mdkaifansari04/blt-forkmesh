@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 19
 title: make the website show the issues in a list
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
