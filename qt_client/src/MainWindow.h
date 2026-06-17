@@ -95,7 +95,6 @@ private:
     // Chat page
     QWidget *buildChatPage();
     QWidget *buildServerRail();
-    QWidget *buildNavRail();
 
     // Global donation nudge shown until this node sets a BCH address.
     QWidget *buildBchNotice();

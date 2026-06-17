@@ -174,6 +174,11 @@ QPushButton#serverAddButton {
     border-radius: 12px; color: #8b949e; font-size: 20px; font-weight: 700;
 }
 QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; }
+QPushButton#serverFooterButton {
+    background: transparent; border: none; color: #8b949e; font-size: 18px;
+    border-radius: 8px;
+}
+QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
@@ -488,6 +493,11 @@ QPushButton#serverAddButton {
     border-radius: 12px; color: #656d76; font-size: 20px; font-weight: 700;
 }
 QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; }
+QPushButton#serverFooterButton {
+    background: transparent; border: none; color: #656d76; font-size: 18px;
+    border-radius: 8px;
+}
+QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
