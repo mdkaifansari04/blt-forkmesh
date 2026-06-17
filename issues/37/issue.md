@@ -2,7 +2,6 @@
 schema: forkmesh-issue-v1
 number: 37
 title: Make it so you start with a BCH address username and password also 2fa (Authenticator)
-Fully anonymous signup - no email or phone needed users pay .005 to join
 status: open
 labels: []
 milestone: 
