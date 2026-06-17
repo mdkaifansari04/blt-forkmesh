@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 6
 title: BCH registration + faucet flow
-status: open
+status: closed
 labels: [feature]
 milestone: 
 assignees: []
