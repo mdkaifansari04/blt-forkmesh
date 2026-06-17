@@ -1,9 +1,15 @@
 #include "../src/ForkMeshIdentity.h"
+#include "../src/IssueStore.h"
 #include "../src/RoomCrypto.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QJsonObject>
+#include <QProcess>
+#include <QTemporaryDir>
+
+#include <openssl/evp.h>
 
 namespace {
 
@@ -17,6 +23,37 @@ void check(bool condition, const char *what)
         qCritical("FAIL: %s", what);
         ++failures;
     }
+}
+
+// Verify a base64url Ed25519 signature against a base64url raw public key, the
+// same encoding ForkMeshIdentity uses, so the test mirrors the worker's
+// ed25519_verify rather than trusting the signer's own code path.
+bool verifyEd25519(const QString &pubB64Url, const QString &sigB64Url,
+                   const QByteArray &message)
+{
+    const QByteArray rawKey = QByteArray::fromBase64(
+        pubB64Url.toLatin1(), QByteArray::Base64UrlEncoding);
+    const QByteArray sig = QByteArray::fromBase64(
+        sigB64Url.toLatin1(), QByteArray::Base64UrlEncoding);
+    if (rawKey.size() != 32 || sig.size() != 64)
+        return false;
+    EVP_PKEY *key = EVP_PKEY_new_raw_public_key(
+        EVP_PKEY_ED25519, nullptr,
+        reinterpret_cast<const unsigned char *>(rawKey.constData()), rawKey.size());
+    if (!key)
+        return false;
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    bool ok = ctx &&
+              EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, key) == 1 &&
+              EVP_DigestVerify(
+                  ctx, reinterpret_cast<const unsigned char *>(sig.constData()),
+                  sig.size(),
+                  reinterpret_cast<const unsigned char *>(message.constData()),
+                  message.size()) == 1;
+    if (ctx)
+        EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(key);
+    return ok;
 }
 
 } // namespace
@@ -59,6 +96,82 @@ int main(int argc, char *argv[])
                            "wrong passphrase");
     check(wrongCrypto.decryptObject(encrypted).isEmpty(),
           "room crypto rejects the wrong passphrase");
+
+    // --- Issue event signing ---------------------------------------------
+    // Pin the canonical byte format so the C++ client, the Python seed
+    // generator, and the worker's ed25519_verify all agree.
+    IssueEvent vector;
+    vector.type = "open";
+    vector.author = "TESTPUB";
+    vector.ts = 1000;
+    vector.title = "Hello";
+    vector.body = "World";
+    vector.attachments = {"attachments/x.png"};
+    const QByteArray expected =
+        "forkmesh-issue-event-v1\nopen\n1\nTESTPUB\n1000\n"
+        "7b66aa5f19006b73598497bef2f5d6ed94700c48d479279df3ff5eb147fb0513";
+    check(IssueStore::canonicalString(1, vector) == expected,
+          "issue-event canonical string matches the cross-language vector");
+
+    // Sign a real event with the node identity and verify it independently.
+    IssueStore store(QString(), QString(), &identity, "tester");
+    IssueEvent open;
+    open.type = "open";
+    open.title = "First issue";
+    open.body = "Body text";
+    IssueEvent signed_ = store.makeSignedEvent(7, open);
+    check(signed_.author == identity.publicKey(),
+          "signed event is stamped with the node public key");
+    check(!signed_.sig.isEmpty(), "signed event carries a signature");
+    check(verifyEd25519(signed_.author, signed_.sig,
+                        IssueStore::canonicalString(7, signed_)),
+          "issue-event signature verifies against the public key");
+    IssueEvent tampered = signed_;
+    tampered.body = "Body text!";
+    check(!verifyEd25519(tampered.author, tampered.sig,
+                         IssueStore::canonicalString(7, tampered)),
+          "tampered issue-event signature is rejected");
+
+    // --- Full IssueStore round-trip in a throwaway git repo --------------
+    QTemporaryDir tmp;
+    if (tmp.isValid()) {
+        auto git = [&](const QStringList &args) {
+            QProcess p;
+            p.start("git", QStringList{"-C", tmp.path()} + args);
+            p.waitForFinished(8000);
+        };
+        git({"init", "-q"});
+        git({"config", "user.email", "test@forkmesh.local"});
+        git({"config", "user.name", "tester"});
+
+        IssueStore repo(tmp.path(), QString(), &identity, "tester");
+        check(repo.canWrite(), "store reports the temp work tree as writable");
+
+        QString err;
+        const int n = repo.createIssue("Round trip", "Hello **body**",
+                                       {"bug"}, "v1", {}, {}, &err);
+        check(n == 1, "createIssue returns the first issue number");
+        QList<Issue> loaded = repo.loadAll();
+        check(loaded.size() == 1 && loaded.first().title == "Round trip" &&
+                  loaded.first().labels.contains("bug") &&
+                  loaded.first().milestone == "v1",
+              "issue loads back with title, label and milestone");
+        check(!loaded.isEmpty() && loaded.first().events.first().body == "Hello **body**",
+              "open-event body round-trips from issue.md frontmatter");
+
+        check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
+        check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
+        loaded = repo.loadAll();
+        bool sawComment = false;
+        for (const IssueEvent &e : loaded.first().events)
+            if (e.type == "comment" && e.body == "a comment")
+                sawComment = true;
+        check(sawComment, "comment body round-trips from NNNN-comment.md");
+        check(loaded.first().status == "closed", "status reflects close event");
+
+        check(repo.deleteIssue(n, &err), "deleteIssue succeeds");
+        check(repo.loadAll().isEmpty(), "deleted issue no longer loads");
+    }
 
     if (failures) {
         qCritical("TESTS FAILED");

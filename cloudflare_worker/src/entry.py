@@ -21,11 +21,17 @@ MAX_OBSERVERS = 1000
 MAX_TEXT_BYTES = 96 * 1024 * 1024
 MAX_CATALOG_REPOS = 200
 MAX_FILES = 5000
+# Issue inbox: a single signed event body is small text; cap it and the number
+# of un-merged submissions a repo's inbox will hold.
+MAX_ISSUE_BYTES = 64 * 1024
+MAX_PENDING_ISSUES = 500
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
 REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$")
 REPO_FILES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/files$")
+# Issue inbox: signed submissions from people without write access to the repo.
+REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob)$")
@@ -75,6 +81,51 @@ async def ed25519_verify(pubkey_b64url, sig_b64url, data_bytes):
         return bool(ok)
     except Exception:
         return False
+
+
+async def sha256_hex(text):
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(text.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+def issue_event_content(ev):
+    # Type-specific canonical content; MUST match the client's
+    # IssueStore::contentForSigning and issues/README.md. Fields joined by NUL.
+    t = ev.get("type", "")
+    attachments = ",".join(ev.get("attachments") or [])
+    if t == "open":
+        return "\x00".join([ev.get("title", ""), ev.get("body", ""), attachments])
+    if t in ("comment", "edit"):
+        return "\x00".join([ev.get("body", ""), attachments])
+    if t == "status":
+        return ev.get("status", "")
+    if t == "labels":
+        return ",".join(ev.get("labels") or [])
+    if t == "milestone":
+        return ev.get("milestone", "") or ""
+    if t == "assignees":
+        return ",".join(ev.get("assignees") or [])
+    if t == "delete":
+        return ev.get("target", "")
+    return ""
+
+
+async def verify_issue_event(number, ev):
+    author = ev.get("author", "")
+    signature = ev.get("sig", "")
+    event_type = ev.get("type", "")
+    if not author or not signature or not event_type:
+        return False
+    try:
+        ts = int(ev.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(issue_event_content(ev))
+    canonical = (
+        "forkmesh-issue-event-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
+        author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
 
 
 def pkt_line(payload):
@@ -275,6 +326,16 @@ class Default(WorkerEntrypoint):
             files_id = self.env.FORKMESH_FILES.idFromName(f"files:{owner}/{repo}")
             files_object = self.env.FORKMESH_FILES.get(files_id)
             return await files_object.fetch(request)
+
+        issues_match = REPO_ISSUES_RE.match(url.path)
+        if issues_match:
+            owner = safe_segment(issues_match.group(1))
+            repo = safe_segment(issues_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            issues_id = self.env.FORKMESH_ISSUES.idFromName(f"issues:{owner}/{repo}")
+            issues_object = self.env.FORKMESH_ISSUES.get(issues_id)
+            return await issues_object.fetch(request)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
@@ -523,6 +584,113 @@ class ForkMeshFiles(DurableObject):
             )
 
         return json_response({"error": "method_not_allowed"}, status=405)
+
+
+class ForkMeshIssues(DurableObject):
+    # Submission inbox for one repository. Canonical issues live in the repo's
+    # issues/ folder (git). People without write access POST signed issue/comment
+    # events here; the repo owner's node pulls them (owner-authenticated), merges
+    # them into the folder, commits, and acks to clear the inbox. Every submission
+    # is signature-verified before it is accepted (see verify_issue_event).
+    async def _pending(self):
+        data = await self.ctx.storage.get("pending")
+        return data if isinstance(data, list) else []
+
+    def _owner_from_path(self, request):
+        match = REPO_ISSUES_RE.match(urlparse(request.url).path)
+        return safe_segment(match.group(1)) if match else None
+
+    async def fetch(self, request):
+        method = method_name(request)
+        if method == "POST":
+            return await self._submit(request)
+        if method == "GET":
+            return await self._list(request)
+        if method == "DELETE":
+            return await self._ack(request)
+        return json_response({"error": "method_not_allowed"}, status=405)
+
+    async def _submit(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+
+        event = data.get("event")
+        if not isinstance(event, dict):
+            return json_response({"error": "event_required"}, status=400)
+        try:
+            number = int(data.get("number", 0))
+        except (TypeError, ValueError):
+            number = 0
+
+        body_text = event.get("body", "") or ""
+        if len(body_text.encode("utf-8")) > MAX_ISSUE_BYTES:
+            return json_response({"error": "issue_too_large"}, status=413)
+
+        if not await verify_issue_event(number, event):
+            return json_response({"error": "bad_signature"}, status=401)
+
+        pending = await self._pending()
+        if len(pending) >= MAX_PENDING_ISSUES:
+            return json_response({"error": "inbox_full"}, status=429)
+        pending.append(
+            {
+                "number": number,
+                "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
+                "event": event,
+                "submitter": clean_string(event.get("author", ""), 120),
+                "submittedAt": int(Date.now()),
+            }
+        )
+        await self.ctx.storage.put("pending", pending)
+        return json_response({"ok": True, "pending": len(pending)}, status=201)
+
+    async def _owner_pubkey(self, owner):
+        # Look up the repo owner's registered account public key via the accounts
+        # Durable Object, so only the owner can pull/ack the inbox.
+        try:
+            from js import Request as JsRequest
+
+            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
+            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
+            resp = await accounts.fetch(
+                JsRequest.new("https://do/api/accounts/" + owner)
+            )
+            record = json.loads(await resp.text())
+            return record.get("pubkey", "") if record.get("exists") else ""
+        except Exception:
+            return ""
+
+    async def _authorize_owner(self, request):
+        owner = self._owner_from_path(request)
+        if not owner:
+            return False
+        params = parse_qs(urlparse(request.url).query)
+        ts = params.get("ts", [""])[0]
+        sig = params.get("sig", [""])[0]
+        owner_pub = await self._owner_pubkey(owner)
+        if not owner_pub or not ts or not sig:
+            return False
+        try:
+            skew = abs(int(Date.now()) - int(ts))
+        except (TypeError, ValueError):
+            return False
+        if skew > LOGIN_MAX_SKEW_MS:
+            return False
+        canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
+        return await ed25519_verify(owner_pub, sig, canonical)
+
+    async def _list(self, request):
+        if not await self._authorize_owner(request):
+            return json_response({"error": "unauthorized"}, status=401)
+        return json_response({"ok": True, "pending": await self._pending()})
+
+    async def _ack(self, request):
+        if not await self._authorize_owner(request):
+            return json_response({"error": "unauthorized"}, status=401)
+        await self.ctx.storage.put("pending", [])
+        return json_response({"ok": True})
 
 
 class ForkMeshAccounts(DurableObject):

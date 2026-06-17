@@ -9,6 +9,7 @@
 #include <QBuffer>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -39,15 +40,19 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -73,9 +78,12 @@ const QString kDefaultServerUrl =
     QStringLiteral("wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws");
 const QString kRoomNameSetting = QStringLiteral("server/room");
 const QString kPassphraseSetting = QStringLiteral("server/passphrase");
+const QString kServersArray = QStringLiteral("servers/items");
+const QString kActiveServerSetting = QStringLiteral("servers/active");
 const QString kDefaultRoomName = QStringLiteral("general");
 const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
+const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 constexpr int kNetworkLogLimit = 2000;
 constexpr int kHomeGraphSampleLimit = 18;
@@ -268,6 +276,143 @@ QIcon statusDotIcon(bool online)
     return QIcon(pixmap);
 }
 
+QString serverHost(const QString &serverUrl)
+{
+    return QUrl(serverUrl).host();
+}
+
+// A http(s) favicon URL derived from a ws(s) mainnode URL.
+QUrl faviconUrl(const QString &serverUrl)
+{
+    const QUrl url(serverUrl);
+    if (url.host().isEmpty())
+        return {};
+    QUrl out;
+    out.setScheme(url.scheme() == QStringLiteral("ws") ? QStringLiteral("http")
+                                                       : QStringLiteral("https"));
+    out.setHost(url.host());
+    if (url.port() > 0)
+        out.setPort(url.port());
+    out.setPath(QStringLiteral("/favicon.ico"));
+    return out;
+}
+
+QString faviconCacheDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/favicons";
+}
+
+QString faviconCachePath(const QString &host)
+{
+    QString safe = host;
+    safe.replace(QRegularExpression("[^a-zA-Z0-9._-]"), "_");
+    return faviconCacheDir() + "/" + safe + ".png";
+}
+
+// A circular fallback badge showing the first letter of the host, used until a
+// real favicon is fetched (or when the server has none).
+QPixmap letterFavicon(const QString &host)
+{
+    constexpr int side = 36;
+    QPixmap pixmap(side, side);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const uint hash = qHash(host);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(Theme::kSenderPalette[hash % Theme::kSenderPaletteSize]));
+    painter.drawEllipse(0, 0, side, side);
+    const QChar letter = host.isEmpty() ? QChar('?') : host.at(0).toUpper();
+    QFont font = painter.font();
+    font.setPixelSize(18);
+    font.setBold(true);
+    painter.setFont(font);
+    painter.setPen(QColor("#0f172a"));
+    painter.drawText(pixmap.rect(), Qt::AlignCenter, QString(letter));
+    return pixmap;
+}
+
+#if defined(Q_OS_WIN)
+const QString kWinRunKey =
+    QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+#endif
+
+QString autostartDesktopPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) +
+           "/autostart/forkmesh.desktop";
+}
+
+#if defined(Q_OS_MACOS)
+QString launchAgentPath()
+{
+    return QDir::homePath() + "/Library/LaunchAgents/com.forkmesh.app.plist";
+}
+#endif
+
+bool isAutostartEnabled()
+{
+#if defined(Q_OS_WIN)
+    QSettings run(kWinRunKey, QSettings::NativeFormat);
+    return run.contains("ForkMesh");
+#elif defined(Q_OS_MACOS)
+    return QFileInfo::exists(launchAgentPath());
+#else
+    return QFileInfo::exists(autostartDesktopPath());
+#endif
+}
+
+void setAutostartEnabled(bool enabled)
+{
+    const QString exe = QCoreApplication::applicationFilePath();
+#if defined(Q_OS_WIN)
+    QSettings run(kWinRunKey, QSettings::NativeFormat);
+    if (enabled)
+        run.setValue("ForkMesh", QDir::toNativeSeparators(exe));
+    else
+        run.remove("ForkMesh");
+#elif defined(Q_OS_MACOS)
+    const QString path = launchAgentPath();
+    if (!enabled) {
+        QFile::remove(path);
+        return;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString plist = QStringLiteral(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+            "<plist version=\"1.0\"><dict>\n"
+            "  <key>Label</key><string>com.forkmesh.app</string>\n"
+            "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
+            "  <key>RunAtLoad</key><true/>\n"
+            "</dict></plist>\n").arg(exe);
+        file.write(plist.toUtf8());
+    }
+#else
+    const QString path = autostartDesktopPath();
+    if (!enabled) {
+        QFile::remove(path);
+        return;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString desktop = QStringLiteral(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=ForkMesh\n"
+            "Exec=%1\n"
+            "Terminal=false\n"
+            "X-GNOME-Autostart-enabled=true\n").arg(exe);
+        file.write(desktop.toUtf8());
+    }
+#endif
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
@@ -284,12 +429,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_networkAccess = new QNetworkAccessManager(this);
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
 
+    loadServers();
+    loadCachedFavicons();
+
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildSetupPage());
     m_stack->addWidget(buildChatPage());
     setCentralWidget(m_stack);
     loadRepositories();
     refreshRepositoryList();
+    loadActiveServerIntoEdits();
+    refreshServerRail();
+    for (int i = 0; i < m_servers.size(); ++i)
+        fetchFavicon(i);
 
     m_typingStopTimer = new QTimer(this);
     m_typingStopTimer->setSingleShot(true);
@@ -299,6 +451,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_homeStatsTimer = new QTimer(this);
     connect(m_homeStatsTimer, &QTimer::timeout, this, &MainWindow::updateHomeStats);
     m_homeStatsTimer->start(60000);
+
+    // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
+    // owner's repo as it updates. A first pass runs shortly after startup.
+    m_mirrorSyncTimer = new QTimer(this);
+    connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
+    m_mirrorSyncTimer->start(5 * 60 * 1000);
+    QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
 
     if (!m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
@@ -433,8 +592,9 @@ QWidget *MainWindow::buildSetupPage()
     connect(m_handleEdit, &QLineEdit::textEdited, this, [](const QString &handle) {
         QSettings().setValue(kHandleSetting, handle.trimmed());
     });
-    connect(m_bchEdit, &QLineEdit::textEdited, this, [](const QString &address) {
+    connect(m_bchEdit, &QLineEdit::textEdited, this, [this](const QString &address) {
         QSettings().setValue(kBchSetting, address.trimmed());
+        updateBchNotice();
     });
     connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &url) {
         QSettings().setValue(kServerUrlSetting, url.trimmed());
@@ -502,6 +662,7 @@ void MainWindow::startSession()
     QSettings().setValue(kServerUrlSetting, m_serverUrlEdit->text().trimmed());
     QSettings().setValue(kRoomNameSetting, m_roomNameEdit->text().trimmed());
     QSettings().setValue(kPassphraseSetting, m_passphraseEdit->text());
+    persistEditsToActiveServer();
     const QUrl url(m_serverUrlEdit->text().trimmed());
     auto *server = new ServerNode(name, url, m_roomNameEdit->text().trimmed(),
                                   m_passphraseEdit->text(),
@@ -530,6 +691,8 @@ void MainWindow::startSession()
                   QString::number(profileBytes.toUtf8().size()) + " bytes).");
         m_stack->setCurrentIndex(1);
         showSection(0); // land on the Home overview after connecting
+        refreshServerRail();
+        updateBchNotice();
         // Serve already-mirrored repos live to the web for this session.
         startRepoHosts();
     }
@@ -650,6 +813,292 @@ void MainWindow::buildAndRelaunch(const QString &clientDir)
     });
 }
 
+// -------------------------------------------------------------- server rail
+
+void MainWindow::loadServers()
+{
+    m_servers.clear();
+    const QString json = QSettings().value(kServersArray).toString();
+    const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
+    for (const QJsonValue &value : array) {
+        const QJsonObject obj = value.toObject();
+        const QString url = obj.value("url").toString().trimmed();
+        if (url.isEmpty())
+            continue;
+        ServerConfig server;
+        server.url = url;
+        server.room = obj.value("room").toString(kDefaultRoomName);
+        server.passphrase = obj.value("passphrase").toString(kDefaultPassphrase);
+        m_servers.append(server);
+    }
+
+    // Migration: seed the list from the legacy single-server keys (or defaults).
+    if (m_servers.isEmpty()) {
+        const QString savedUrl =
+            QSettings().value(kServerUrlSetting).toString().trimmed();
+        const bool legacyWorkersDevUrl =
+            QUrl(savedUrl).host().endsWith(QStringLiteral(".workers.dev"));
+        ServerConfig server;
+        server.url = (savedUrl.isEmpty() || savedUrl == kLocalServerUrl ||
+                      legacyWorkersDevUrl)
+                         ? kDefaultServerUrl
+                         : savedUrl;
+        server.room =
+            QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        server.passphrase =
+            QSettings().value(kPassphraseSetting, kDefaultPassphrase).toString();
+        m_servers.append(server);
+    }
+
+    m_activeServer = QSettings().value(kActiveServerSetting, 0).toInt();
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        m_activeServer = 0;
+}
+
+void MainWindow::saveServers()
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        m_activeServer = qBound(0, m_activeServer, qMax(0, m_servers.size() - 1));
+
+    QJsonArray array;
+    for (const ServerConfig &server : std::as_const(m_servers)) {
+        array.append(QJsonObject{{"url", server.url},
+                                 {"room", server.room},
+                                 {"passphrase", server.passphrase}});
+    }
+    QSettings settings;
+    settings.setValue(kServersArray,
+                      QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact)));
+    settings.setValue(kActiveServerSetting, m_activeServer);
+
+    // Mirror the active server into the legacy keys the rest of the app reads.
+    if (!m_servers.isEmpty()) {
+        const ServerConfig &active = m_servers.at(m_activeServer);
+        settings.setValue(kServerUrlSetting, active.url);
+        settings.setValue(kRoomNameSetting, active.room);
+        settings.setValue(kPassphraseSetting, active.passphrase);
+    }
+}
+
+void MainWindow::loadActiveServerIntoEdits()
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        return;
+    const ServerConfig &active = m_servers.at(m_activeServer);
+    if (m_serverUrlEdit)
+        m_serverUrlEdit->setText(active.url);
+    if (m_roomNameEdit)
+        m_roomNameEdit->setText(active.room);
+    if (m_passphraseEdit)
+        m_passphraseEdit->setText(active.passphrase);
+}
+
+void MainWindow::persistEditsToActiveServer()
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        return;
+    ServerConfig &active = m_servers[m_activeServer];
+    active.url = m_serverUrlEdit->text().trimmed();
+    active.room = m_roomNameEdit->text().trimmed();
+    active.passphrase = m_passphraseEdit->text();
+    saveServers();
+}
+
+QPixmap MainWindow::faviconFor(const ServerConfig &server) const
+{
+    const QString host = serverHost(server.url);
+    if (m_faviconCache.contains(host))
+        return m_faviconCache.value(host);
+    return letterFavicon(host);
+}
+
+QWidget *MainWindow::buildServerRail()
+{
+    m_serverRail = new QWidget;
+    m_serverRail->setObjectName("serverRail");
+    m_serverRail->setFixedWidth(56);
+
+    m_serverGroup = new QButtonGroup(this);
+    m_serverGroup->setExclusive(true);
+
+    auto *layout = new QVBoxLayout(m_serverRail);
+    layout->setContentsMargins(8, 14, 8, 14);
+    layout->setSpacing(8);
+    layout->setAlignment(Qt::AlignTop);
+    refreshServerRail();
+    return m_serverRail;
+}
+
+void MainWindow::refreshServerRail()
+{
+    if (!m_serverRail)
+        return;
+    auto *layout = qobject_cast<QVBoxLayout *>(m_serverRail->layout());
+    if (!layout)
+        return;
+
+    // Clear existing buttons.
+    for (QAbstractButton *button : m_serverGroup->buttons())
+        m_serverGroup->removeButton(button);
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    for (int i = 0; i < m_servers.size(); ++i) {
+        const ServerConfig &server = m_servers.at(i);
+        auto *button = new QPushButton;
+        button->setObjectName("serverButton");
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFixedSize(40, 40);
+        button->setIconSize(QSize(28, 28));
+        button->setIcon(QIcon(faviconFor(server)));
+        button->setToolTip(serverHost(server.url));
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        if (i == m_activeServer)
+            button->setChecked(true);
+        m_serverGroup->addButton(button, i);
+        connect(button, &QWidget::customContextMenuRequested, this,
+                [this, i](const QPoint &) { removeServer(i); });
+        layout->addWidget(button, 0, Qt::AlignHCenter);
+    }
+
+    auto *addButton = new QPushButton("+");
+    addButton->setObjectName("serverAddButton");
+    addButton->setCursor(Qt::PointingHandCursor);
+    addButton->setFixedSize(40, 40);
+    addButton->setToolTip("Add a mainnode server");
+    connect(addButton, &QPushButton::clicked, this, &MainWindow::promptAddServer);
+    layout->addWidget(addButton, 0, Qt::AlignHCenter);
+    layout->addStretch();
+
+    connect(m_serverGroup, &QButtonGroup::idClicked, this,
+            &MainWindow::switchToServer, Qt::UniqueConnection);
+}
+
+void MainWindow::switchToServer(int index)
+{
+    if (index < 0 || index >= m_servers.size())
+        return;
+    const bool live = m_backend != nullptr;
+    if (index == m_activeServer && live)
+        return;
+
+    if (live)
+        persistEditsToActiveServer(); // capture any edits to the current server
+    m_activeServer = index;
+    saveServers();
+    loadActiveServerIntoEdits();
+    refreshServerRail();
+    startSession(); // tears down the old backend and connects to the new server
+}
+
+void MainWindow::promptAddServer()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Add mainnode server");
+    auto *urlEdit = new QLineEdit(&dialog);
+    urlEdit->setPlaceholderText(kDefaultServerUrl);
+    auto *roomEdit = new QLineEdit(kDefaultRoomName, &dialog);
+    auto *passEdit = new QLineEdit(kDefaultPassphrase, &dialog);
+
+    auto *form = new QFormLayout;
+    form->addRow("Server URL", urlEdit);
+    form->addRow("Room", roomEdit);
+    form->addRow("Passphrase", passEdit);
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *dialogLayout = new QVBoxLayout(&dialog);
+    dialogLayout->addLayout(form);
+    dialogLayout->addWidget(buttons);
+    dialog.resize(460, 200);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    ServerConfig server;
+    server.url = urlEdit->text().trimmed();
+    if (server.url.isEmpty())
+        server.url = kDefaultServerUrl;
+    server.room = roomEdit->text().trimmed().isEmpty() ? kDefaultRoomName
+                                                       : roomEdit->text().trimmed();
+    server.passphrase =
+        passEdit->text().isEmpty() ? kDefaultPassphrase : passEdit->text();
+    m_servers.append(server);
+    const int newIndex = m_servers.size() - 1;
+    saveServers();
+    refreshServerRail();
+    fetchFavicon(newIndex);
+    switchToServer(newIndex);
+}
+
+void MainWindow::removeServer(int index)
+{
+    if (index < 0 || index >= m_servers.size() || m_servers.size() <= 1)
+        return;
+    if (QMessageBox::question(
+            this, "Remove server",
+            QStringLiteral("Stop tracking %1?").arg(serverHost(m_servers.at(index).url))) !=
+        QMessageBox::Yes)
+        return;
+
+    const bool removingActive = (index == m_activeServer);
+    m_servers.removeAt(index);
+    if (m_activeServer > index)
+        --m_activeServer;
+    if (m_activeServer >= m_servers.size())
+        m_activeServer = m_servers.size() - 1;
+    saveServers();
+    loadActiveServerIntoEdits();
+    refreshServerRail();
+    if (removingActive)
+        startSession(); // reconnect to whichever server is now active
+}
+
+// ------------------------------------------------------------------ favicons
+
+void MainWindow::loadCachedFavicons()
+{
+    for (const ServerConfig &server : std::as_const(m_servers)) {
+        const QString host = serverHost(server.url);
+        const QString path = faviconCachePath(host);
+        QPixmap pix;
+        if (QFileInfo::exists(path) && pix.load(path) && !pix.isNull())
+            m_faviconCache.insert(host, pix);
+    }
+}
+
+void MainWindow::fetchFavicon(int index)
+{
+    if (index < 0 || index >= m_servers.size())
+        return;
+    const QString host = serverHost(m_servers.at(index).url);
+    if (host.isEmpty() || m_faviconCache.contains(host))
+        return;
+    const QUrl url = faviconUrl(m_servers.at(index).url);
+    if (!url.isValid())
+        return;
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        QPixmap pix;
+        if (!pix.loadFromData(reply->readAll()) || pix.isNull())
+            return;
+        if (pix.width() > 64)
+            pix = pix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        m_faviconCache.insert(host, pix);
+        QDir().mkpath(faviconCacheDir());
+        pix.save(faviconCachePath(host), "PNG");
+        refreshServerRail();
+    });
+}
+
 // ----------------------------------------------------------------- chat page
 
 QWidget *MainWindow::buildChatPage()
@@ -660,15 +1109,88 @@ QWidget *MainWindow::buildChatPage()
     m_sectionStack = new QStackedWidget;
     m_sectionStack->addWidget(buildHomeSection());     // 0 Home
     m_sectionStack->addWidget(buildReposSection());    // 1 Repos
-    m_sectionStack->addWidget(buildChatSection());     // 2 Chat
-    m_sectionStack->addWidget(buildSettingsSection()); // 3 Settings
+    m_sectionStack->addWidget(buildIssuesSection());   // 2 Issues
+    m_sectionStack->addWidget(buildChatSection());     // 3 Chat
+    m_sectionStack->addWidget(buildSettingsSection()); // 4 Settings
 
-    auto *layout = new QHBoxLayout(page);
+    // Rails + section content live in a horizontal row.
+    auto *content = new QWidget;
+    auto *contentLayout = new QHBoxLayout(content);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(0);
+    contentLayout->addWidget(buildServerRail());
+    contentLayout->addWidget(buildNavRail());
+    contentLayout->addWidget(m_sectionStack, 1);
+
+    // Global donation nudge: shown across the whole app until this node sets a
+    // Bitcoin Cash address, so the network stays open to donations.
+    auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(buildNavRail());
-    layout->addWidget(m_sectionStack, 1);
+    layout->addWidget(buildBchNotice());
+    layout->addWidget(content, 1);
     return page;
+}
+
+QWidget *MainWindow::buildBchNotice()
+{
+    m_bchBanner = new QWidget;
+    m_bchBanner->setObjectName("bchBanner");
+    m_bchBannerLabel = new QLabel(
+        "\xF0\x9F\x92\x9A Add a Bitcoin Cash address so others can sponsor this "
+        "node \xE2\x80\x94 it keeps the network open to donations and more "
+        "sustainable.");
+    m_bchBannerLabel->setObjectName("bchBannerLabel");
+    m_bchBannerLabel->setWordWrap(true);
+
+    auto *addButton = new QPushButton("Add BCH address");
+    addButton->setObjectName("primaryButton");
+    addButton->setCursor(Qt::PointingHandCursor);
+    connect(addButton, &QPushButton::clicked, this, &MainWindow::promptSetBchAddress);
+
+    auto *dismissButton = new QPushButton("\xE2\x9C\x95");
+    dismissButton->setObjectName("ghostButton");
+    dismissButton->setCursor(Qt::PointingHandCursor);
+    dismissButton->setToolTip("Hide for now");
+    connect(dismissButton, &QPushButton::clicked, m_bchBanner, &QWidget::hide);
+
+    auto *layout = new QHBoxLayout(m_bchBanner);
+    layout->setContentsMargins(16, 10, 12, 10);
+    layout->setSpacing(10);
+    layout->addWidget(m_bchBannerLabel, 1);
+    layout->addWidget(addButton);
+    layout->addWidget(dismissButton);
+    m_bchBanner->hide();
+    return m_bchBanner;
+}
+
+void MainWindow::updateBchNotice()
+{
+    if (!m_bchBanner)
+        return;
+    const bool hasAddress =
+        !QSettings().value(kBchSetting).toString().trimmed().isEmpty();
+    m_bchBanner->setVisible(!hasAddress);
+}
+
+void MainWindow::promptSetBchAddress()
+{
+    bool ok = false;
+    const QString current = QSettings().value(kBchSetting).toString().trimmed();
+    const QString address = QInputDialog::getText(
+        this, "Bitcoin Cash address",
+        "Enter a Bitcoin Cash address to receive donations:", QLineEdit::Normal,
+        current, &ok);
+    if (!ok)
+        return;
+    const QString trimmed = address.trimmed();
+    QSettings().setValue(kBchSetting, trimmed);
+    if (m_bchEdit)
+        m_bchEdit->setText(trimmed);
+    // The address is shared with peers on the next connect; the sponsor button
+    // and donation notice pick it up immediately.
+    updateBchNotice();
+    updateHomeStats();
 }
 
 QWidget *MainWindow::buildNavRail()
@@ -691,6 +1213,7 @@ QWidget *MainWindow::buildNavRail()
     };
     auto *homeButton = makeNavButton("\xF0\x9F\x8F\xA0", "Home");
     auto *reposButton = makeNavButton("\xF0\x9F\x93\xA6", "Repos");
+    auto *issuesButton = makeNavButton("\xF0\x9F\x93\x8B", "Issues");
     auto *chatButton = makeNavButton("\xF0\x9F\x92\xAC", "Chat");
     auto *settingsButton = makeNavButton("\xE2\x9A\x99", "Settings");
     auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
@@ -702,12 +1225,15 @@ QWidget *MainWindow::buildNavRail()
     m_navGroup->setExclusive(true);
     m_navGroup->addButton(homeButton, 0);
     m_navGroup->addButton(reposButton, 1);
-    m_navGroup->addButton(chatButton, 2);
-    m_navGroup->addButton(settingsButton, 3);
+    m_navGroup->addButton(issuesButton, 2);
+    m_navGroup->addButton(chatButton, 3);
+    m_navGroup->addButton(settingsButton, 4);
     connect(m_navGroup, &QButtonGroup::idClicked, this, [this](int id) {
         m_sectionStack->setCurrentIndex(id);
         if (id == 0)
             updateHomeStats();
+        else if (id == 2)
+            refreshIssuesRepoCombo();
     });
 
     auto *layout = new QVBoxLayout(rail);
@@ -717,10 +1243,27 @@ QWidget *MainWindow::buildNavRail()
     layout->addSpacing(10);
     layout->addWidget(homeButton);
     layout->addWidget(reposButton);
+    layout->addWidget(issuesButton);
     layout->addWidget(chatButton);
     layout->addStretch();
     layout->addWidget(settingsButton);
-    layout->addWidget(versionLabel);
+
+    // Tiny rebuild-and-restart button next to the version label.
+    auto *rebuildMini = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
+    rebuildMini->setObjectName("ghostButton");
+    rebuildMini->setCursor(Qt::PointingHandCursor);
+    rebuildMini->setFixedSize(26, 22);
+    rebuildMini->setToolTip("Rebuild and restart ForkMesh");
+    connect(rebuildMini, &QPushButton::clicked, this,
+            &MainWindow::quickRebuildRestart);
+    auto *footerRow = new QHBoxLayout;
+    footerRow->setContentsMargins(0, 0, 0, 0);
+    footerRow->setSpacing(4);
+    footerRow->addStretch();
+    footerRow->addWidget(rebuildMini);
+    footerRow->addWidget(versionLabel);
+    footerRow->addStretch();
+    layout->addLayout(footerRow);
     return rail;
 }
 
@@ -732,6 +1275,8 @@ void MainWindow::showSection(int index)
         m_sectionStack->setCurrentIndex(index);
     if (index == 0)
         updateHomeStats();
+    else if (index == 2)
+        refreshIssuesRepoCombo();
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -900,7 +1445,7 @@ QWidget *MainWindow::buildReposSection()
                 const int index = item->data(Qt::UserRole).toInt();
                 if (index >= 0 && index < m_repositories.size()) {
                     switchConversation(repositoryChannel(m_repositories.at(index)));
-                    showSection(2); // jump to the chat for this repo
+                    showSection(3); // jump to the chat for this repo
                 }
             });
     connect(addRepoButton, &QPushButton::clicked, this,
@@ -910,6 +1455,857 @@ QWidget *MainWindow::buildReposSection()
     connect(m_publishRepoButton, &QPushButton::clicked, this,
             &MainWindow::publishSelectedRepository);
     return page;
+}
+
+// ---- Issues section --------------------------------------------------------
+
+QWidget *MainWindow::buildIssuesSection()
+{
+    auto *page = new QWidget;
+
+    // Left: repo picker, filters, issue list.
+    auto *sidebar = new QWidget;
+    sidebar->setObjectName("sidebar");
+    sidebar->setFixedWidth(320);
+
+    auto *heading = new QLabel("Issues");
+    heading->setObjectName("channelTitle");
+
+    m_issuesRepoCombo = new QComboBox;
+    m_issuesRepoCombo->setToolTip("Repository whose issues you are viewing");
+
+    m_issueStatusFilter = new QComboBox;
+    m_issueStatusFilter->addItems({"Open", "Closed", "All"});
+    m_issueLabelFilter = new QComboBox;
+    m_issueMilestoneFilter = new QComboBox;
+    auto *filterRow = new QHBoxLayout;
+    filterRow->setContentsMargins(0, 0, 0, 0);
+    filterRow->addWidget(m_issueStatusFilter);
+    filterRow->addWidget(m_issueLabelFilter);
+    filterRow->addWidget(m_issueMilestoneFilter);
+
+    m_issueNewButton = new QPushButton("+ New issue");
+    m_issueNewButton->setObjectName("ghostButton");
+    m_issueNewButton->setCursor(Qt::PointingHandCursor);
+    m_issueSyncButton = new QPushButton("Sync inbox");
+    m_issueSyncButton->setObjectName("ghostButton");
+    m_issueSyncButton->setCursor(Qt::PointingHandCursor);
+    m_issueSyncButton->setToolTip(
+        "Pull issue/comment submissions filed by other nodes and merge them");
+    auto *newRow = new QHBoxLayout;
+    newRow->setContentsMargins(0, 0, 0, 0);
+    newRow->addWidget(m_issueNewButton);
+    newRow->addWidget(m_issueSyncButton);
+
+    m_issueList = new QListWidget;
+    m_issueList->setToolTip("Issues in this repository");
+
+    auto *sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->setContentsMargins(18, 18, 18, 18);
+    sidebarLayout->setSpacing(8);
+    sidebarLayout->addWidget(heading);
+    sidebarLayout->addWidget(m_issuesRepoCombo);
+    sidebarLayout->addLayout(filterRow);
+    sidebarLayout->addLayout(newRow);
+    sidebarLayout->addWidget(m_issueList, 1);
+
+    // Center: the selected issue's title, status badge, thread and composer.
+    m_issueTitle = new QLabel("Select an issue");
+    m_issueTitle->setObjectName("channelTitle");
+    m_issueTitle->setWordWrap(true);
+    m_issueMeta = new QLabel; // status badge
+    m_issueMeta->setObjectName("statusLine");
+    m_issueMeta->setWordWrap(true);
+    m_issueMeta->setTextFormat(Qt::RichText);
+    m_issueReadonlyNote = new QLabel;
+    m_issueReadonlyNote->setObjectName("statusLine");
+    m_issueReadonlyNote->setWordWrap(true);
+    m_issueReadonlyNote->hide();
+
+    m_issueThreadContainer = new QWidget;
+    m_issueThreadLayout = new QVBoxLayout(m_issueThreadContainer);
+    m_issueThreadLayout->setContentsMargins(0, 0, 0, 0);
+    m_issueThreadLayout->setSpacing(10);
+    m_issueThreadLayout->addStretch();
+    m_issueThreadScroll = new QScrollArea;
+    m_issueThreadScroll->setWidgetResizable(true);
+    m_issueThreadScroll->setWidget(m_issueThreadContainer);
+    m_issueThreadScroll->setObjectName("messageScroll");
+
+    m_issueComposer = new QPlainTextEdit;
+    m_issueComposer->setPlaceholderText("Write a comment\xE2\x80\xA6");
+    m_issueComposer->setFixedHeight(80);
+    m_issueAttachButton = new QPushButton("Attach image");
+    m_issueCloseButton = new QPushButton("Close issue");
+    m_issueCommentButton = new QPushButton("Comment");
+    m_issueCommentButton->setObjectName("primaryButton");
+    m_issueCommentButton->setCursor(Qt::PointingHandCursor);
+    for (QPushButton *b : {m_issueAttachButton, m_issueCloseButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    auto *composerButtons = new QVBoxLayout;
+    composerButtons->addWidget(m_issueAttachButton);
+    composerButtons->addWidget(m_issueCommentButton);
+    composerButtons->addWidget(m_issueCloseButton);
+    auto *composerRow = new QHBoxLayout;
+    composerRow->setContentsMargins(0, 0, 0, 0);
+    composerRow->addWidget(m_issueComposer, 1);
+    composerRow->addLayout(composerButtons);
+
+    auto *center = new QWidget;
+    auto *centerLayout = new QVBoxLayout(center);
+    centerLayout->setContentsMargins(22, 18, 16, 18);
+    centerLayout->setSpacing(8);
+    centerLayout->addWidget(m_issueTitle);
+    centerLayout->addWidget(m_issueMeta);
+    centerLayout->addWidget(m_issueReadonlyNote);
+    centerLayout->addWidget(m_issueThreadScroll, 1);
+    centerLayout->addLayout(composerRow);
+
+    // Right: GitHub-style metadata sidebar (assignees, labels, milestone).
+    auto *meta = new QWidget;
+    meta->setObjectName("sidebar");
+    meta->setFixedWidth(230);
+    m_issueAssigneesValue = new QLabel("No one assigned");
+    m_issueLabelsValue = new QLabel("None yet");
+    m_issueMilestoneValue = new QLabel("No milestone");
+    for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue, m_issueMilestoneValue}) {
+        v->setObjectName("statusLine");
+        v->setWordWrap(true);
+        v->setTextFormat(Qt::RichText);
+    }
+    m_issueLabelsButton = new QPushButton("Edit");
+    m_issueMilestoneButton = new QPushButton("Edit");
+    m_issueAssigneesButton = new QPushButton("Edit");
+    m_issueDeleteButton = new QPushButton("Delete issue");
+    for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
+                           m_issueAssigneesButton, m_issueDeleteButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    auto *metaLayout = new QVBoxLayout(meta);
+    metaLayout->setContentsMargins(16, 18, 16, 18);
+    metaLayout->setSpacing(6);
+    auto addMetaSection = [&](const QString &label, QLabel *value, QPushButton *btn) {
+        auto *header = new QHBoxLayout;
+        header->setContentsMargins(0, 0, 0, 0);
+        auto *l = new QLabel(label);
+        l->setObjectName("sectionLabel");
+        header->addWidget(l);
+        header->addStretch();
+        btn->setMaximumWidth(60);
+        header->addWidget(btn);
+        metaLayout->addLayout(header);
+        metaLayout->addWidget(value);
+        metaLayout->addSpacing(10);
+    };
+    addMetaSection("ASSIGNEES", m_issueAssigneesValue, m_issueAssigneesButton);
+    addMetaSection("LABELS", m_issueLabelsValue, m_issueLabelsButton);
+    addMetaSection("MILESTONE", m_issueMilestoneValue, m_issueMilestoneButton);
+    metaLayout->addStretch();
+    metaLayout->addWidget(m_issueDeleteButton);
+
+    auto *layout = new QHBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(sidebar);
+    layout->addWidget(center, 1);
+    layout->addWidget(meta);
+
+    connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
+            [this](int) { reloadIssues(); });
+    connect(m_issueStatusFilter, &QComboBox::currentIndexChanged, this,
+            [this](int) { refreshIssueList(); });
+    connect(m_issueLabelFilter, &QComboBox::currentIndexChanged, this,
+            [this](int) { refreshIssueList(); });
+    connect(m_issueMilestoneFilter, &QComboBox::currentIndexChanged, this,
+            [this](int) { refreshIssueList(); });
+    connect(m_issueList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item)
+                    showIssue(item->data(Qt::UserRole).toInt());
+            });
+    connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
+    connect(m_issueSyncButton, &QPushButton::clicked, this,
+            &MainWindow::syncIssuesInbox);
+    connect(m_issueCommentButton, &QPushButton::clicked, this,
+            &MainWindow::addIssueComment);
+    connect(m_issueAttachButton, &QPushButton::clicked, this,
+            &MainWindow::attachIssueImage);
+    connect(m_issueCloseButton, &QPushButton::clicked, this,
+            &MainWindow::toggleIssueStatus);
+    connect(m_issueDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentIssue);
+    connect(m_issueLabelsButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueLabels);
+    connect(m_issueMilestoneButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueMilestone);
+    connect(m_issueAssigneesButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueAssignees);
+    return page;
+}
+
+int MainWindow::issuesRepoIndex() const
+{
+    if (!m_issuesRepoCombo || m_issuesRepoCombo->currentIndex() < 0)
+        return -1;
+    bool ok = false;
+    const int idx = m_issuesRepoCombo->currentData().toInt(&ok);
+    if (!ok || idx < 0 || idx >= m_repositories.size())
+        return -1;
+    return idx;
+}
+
+IssueStore MainWindow::issueStoreForCurrentRepo() const
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return IssueStore(QString(), QString(), &m_profileIdentity, m_userName);
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+}
+
+void MainWindow::refreshIssuesRepoCombo()
+{
+    if (!m_issuesRepoCombo)
+        return;
+    const QVariant previous =
+        m_issuesRepoCombo->count() ? m_issuesRepoCombo->currentData() : QVariant();
+    QSignalBlocker blocker(m_issuesRepoCombo);
+    m_issuesRepoCombo->clear();
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        m_issuesRepoCombo->addItem(repo.owner + "/" + repo.name, i);
+    }
+    if (previous.isValid()) {
+        const int restore = m_issuesRepoCombo->findData(previous);
+        if (restore >= 0)
+            m_issuesRepoCombo->setCurrentIndex(restore);
+    }
+    blocker.unblock();
+    reloadIssues();
+}
+
+void MainWindow::reloadIssues()
+{
+    if (!m_issueList)
+        return;
+    if (issuesRepoIndex() < 0) {
+        m_currentIssues.clear();
+        m_currentLabels.clear();
+        m_currentMilestones.clear();
+        m_issueList->clear();
+        m_currentIssueNumber = -1;
+        renderIssueThread(Issue());
+        updateIssueActionState();
+        return;
+    }
+    const IssueStore store = issueStoreForCurrentRepo();
+    m_currentIssues = store.loadAll();
+    m_currentLabels = store.loadLabels();
+    m_currentMilestones = store.loadMilestones();
+
+    QSignalBlocker labelBlock(m_issueLabelFilter);
+    m_issueLabelFilter->clear();
+    m_issueLabelFilter->addItem("All labels", QString());
+    for (const IssueLabel &label : m_currentLabels)
+        m_issueLabelFilter->addItem(label.name, label.name);
+    labelBlock.unblock();
+
+    QSignalBlocker msBlock(m_issueMilestoneFilter);
+    m_issueMilestoneFilter->clear();
+    m_issueMilestoneFilter->addItem("All milestones", QString());
+    for (const IssueMilestone &ms : m_currentMilestones)
+        m_issueMilestoneFilter->addItem(ms.title, ms.title);
+    msBlock.unblock();
+
+    refreshIssueList();
+    updateIssueActionState();
+}
+
+void MainWindow::refreshIssueList()
+{
+    if (!m_issueList)
+        return;
+    const QString statusFilter = m_issueStatusFilter->currentText();
+    const QString labelFilter = m_issueLabelFilter->currentData().toString();
+    const QString msFilter = m_issueMilestoneFilter->currentData().toString();
+    const int keep = m_currentIssueNumber;
+
+    m_issueList->clear();
+    int rowToSelect = -1;
+    for (const Issue &issue : m_currentIssues) {
+        if (statusFilter == "Open" && issue.status != "open")
+            continue;
+        if (statusFilter == "Closed" && issue.status != "closed")
+            continue;
+        if (!labelFilter.isEmpty() && !issue.labels.contains(labelFilter))
+            continue;
+        if (!msFilter.isEmpty() && issue.milestone != msFilter)
+            continue;
+        QString text = QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title);
+        if (issue.status == "closed")
+            text += "  \xE2\x9C\x94"; // check mark
+        if (!issue.labels.isEmpty())
+            text += "\n   " + issue.labels.join(", ");
+        auto *item = new QListWidgetItem(text, m_issueList);
+        item->setData(Qt::UserRole, issue.number);
+        if (issue.number == keep)
+            rowToSelect = m_issueList->count() - 1;
+    }
+    if (rowToSelect >= 0)
+        m_issueList->setCurrentRow(rowToSelect);
+    else if (m_issueList->count() > 0)
+        m_issueList->setCurrentRow(0);
+    else {
+        m_currentIssueNumber = -1;
+        renderIssueThread(Issue());
+        updateIssueActionState();
+    }
+}
+
+void MainWindow::showIssue(int number)
+{
+    for (const Issue &issue : m_currentIssues) {
+        if (issue.number == number) {
+            m_currentIssueNumber = number;
+            renderIssueThread(issue);
+            updateIssueActionState();
+            return;
+        }
+    }
+}
+
+void MainWindow::renderIssueThread(const Issue &issue)
+{
+    // Clear all cards (keep the trailing stretch rebuilt at the end).
+    while (QLayoutItem *item = m_issueThreadLayout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    if (issue.number == 0) {
+        m_issueTitle->setText("Select an issue");
+        m_issueMeta->clear();
+        if (m_issueAssigneesValue)
+            m_issueAssigneesValue->setText("No one assigned");
+        if (m_issueLabelsValue)
+            m_issueLabelsValue->setText("None yet");
+        if (m_issueMilestoneValue)
+            m_issueMilestoneValue->setText("No milestone");
+        m_issueThreadLayout->addStretch();
+        return;
+    }
+
+    m_issueTitle->setText(QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title));
+
+    // Status badge stays next to the title; labels/milestone/assignees live in
+    // the GitHub-style right sidebar.
+    m_issueMeta->setText(issue.status == "closed"
+                             ? QStringLiteral("<b style='color:#ef4444'>\xE2\x97\x8F closed</b>")
+                             : QStringLiteral("<b style='color:#22c55e'>\xE2\x97\x8F open</b>"));
+
+    auto colorFor = [this](const QString &name) -> QString {
+        for (const IssueLabel &l : m_currentLabels)
+            if (l.name == name && !l.color.isEmpty())
+                return l.color;
+        return QStringLiteral("#94a3b8");
+    };
+    if (issue.assignees.isEmpty()) {
+        m_issueAssigneesValue->setText("No one assigned");
+    } else {
+        QStringList shown;
+        for (const QString &a : issue.assignees)
+            shown << a.left(16).toHtmlEscaped();
+        m_issueAssigneesValue->setText(shown.join("<br>"));
+    }
+    if (issue.labels.isEmpty()) {
+        m_issueLabelsValue->setText("None yet");
+    } else {
+        QStringList chips;
+        for (const QString &name : issue.labels)
+            chips << QStringLiteral("<span style='color:%1'>\xE2\x97\x8F %2</span>")
+                         .arg(colorFor(name), name.toHtmlEscaped());
+        m_issueLabelsValue->setText(chips.join("<br>"));
+    }
+    m_issueMilestoneValue->setText(
+        issue.milestone.isEmpty()
+            ? QStringLiteral("No milestone")
+            : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+
+    // Pre-compute edits (target -> latest edit) and deletions.
+    QHash<QString, IssueEvent> edits;
+    QSet<QString> deleted;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type == "edit" && !ev.target.isEmpty())
+            edits.insert(ev.target, ev); // later edits overwrite
+        else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
+            deleted.insert(ev.target);
+    }
+
+    const int idx = issuesRepoIndex();
+    const QString imageBase =
+        idx >= 0 ? m_repositories.at(idx).localPath + "/issues/" +
+                       QString::number(issue.number) + "/"
+                 : QString();
+    const bool haveLocalFiles = !imageBase.isEmpty() &&
+                                QFileInfo::exists(imageBase + "issue.md");
+
+    auto addCard = [&](const IssueEvent &ev, bool isOpen) {
+        IssueEvent shown = ev;
+        if (edits.contains(ev.id)) {
+            shown.body = edits.value(ev.id).body;
+            shown.attachments = edits.value(ev.id).attachments;
+        }
+        auto *card = new QWidget;
+        card->setObjectName("homeCard");
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(14, 10, 14, 12);
+        cardLayout->setSpacing(6);
+        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+        const QString when =
+            QDateTime::fromMSecsSinceEpoch(ev.ts).toString("yyyy-MM-dd HH:mm");
+        auto *header = new QLabel(
+            QStringLiteral("<b style='color:%1'>%2</b> <span style='color:#94a3b8'>%3%4</span>")
+                .arg(senderColor(who), who.toHtmlEscaped(), when,
+                     isOpen ? QStringLiteral(" \xC2\xB7 opened") : QString()));
+        header->setTextFormat(Qt::RichText);
+        cardLayout->addWidget(header);
+        auto *body = new QLabel;
+        body->setTextFormat(Qt::MarkdownText);
+        body->setText(shown.body);
+        body->setWordWrap(true);
+        body->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        body->setOpenExternalLinks(true);
+        cardLayout->addWidget(body);
+        for (const QString &rel : shown.attachments) {
+            if (haveLocalFiles) {
+                QPixmap pix(imageBase + rel);
+                if (!pix.isNull()) {
+                    auto *img = new QLabel;
+                    img->setPixmap(pix.width() > 420
+                                       ? pix.scaledToWidth(420, Qt::SmoothTransformation)
+                                       : pix);
+                    cardLayout->addWidget(img);
+                    continue;
+                }
+            }
+            auto *placeholder = new QLabel(QStringLiteral("\xF0\x9F\x96\xBC %1").arg(rel));
+            placeholder->setObjectName("statusLine");
+            cardLayout->addWidget(placeholder);
+        }
+        m_issueThreadLayout->addWidget(card);
+    };
+
+    auto addActivity = [&](const QString &text, qint64 ts, const QString &who) {
+        const QString when = QDateTime::fromMSecsSinceEpoch(ts).toString("HH:mm");
+        auto *line = new QLabel(QStringLiteral("\xC2\xB7 %1 %2 (%3)")
+                                    .arg(who.toHtmlEscaped(), text, when));
+        line->setObjectName("statusLine");
+        line->setWordWrap(true);
+        m_issueThreadLayout->addWidget(line);
+    };
+
+    for (const IssueEvent &ev : issue.events) {
+        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+        if (ev.type == "open")
+            addCard(ev, true);
+        else if (ev.type == "comment") {
+            if (!deleted.contains(ev.id))
+                addCard(ev, false);
+        } else if (ev.type == "status")
+            addActivity(ev.status == "closed" ? "closed this" : "reopened this", ev.ts, who);
+        else if (ev.type == "labels")
+            addActivity("set labels: " + ev.labels.join(", "), ev.ts, who);
+        else if (ev.type == "milestone")
+            addActivity(ev.milestone.isEmpty() ? "cleared the milestone"
+                                               : "set milestone: " + ev.milestone,
+                        ev.ts, who);
+        else if (ev.type == "assignees")
+            addActivity("set assignees: " + ev.assignees.join(", "), ev.ts, who);
+    }
+    m_issueThreadLayout->addStretch();
+}
+
+void MainWindow::updateIssueActionState()
+{
+    const IssueStore store = issueStoreForCurrentRepo();
+    const bool writable = store.canWrite();
+    const bool haveIssue = m_currentIssueNumber >= 0;
+
+    if (m_issueNewButton)
+        m_issueNewButton->setEnabled(writable);
+    if (m_issueSyncButton)
+        m_issueSyncButton->setEnabled(writable);
+    // Owner-only structural edits.
+    for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
+                           m_issueMilestoneButton, m_issueAssigneesButton,
+                           m_issueDeleteButton, m_issueAttachButton}) {
+        if (b)
+            b->setEnabled(writable && haveIssue);
+    }
+    // Comments work for everyone with an issue selected: owners write locally,
+    // others submit a signed comment to the relay inbox.
+    if (m_issueCommentButton)
+        m_issueCommentButton->setEnabled(haveIssue);
+    if (m_issueComposer)
+        m_issueComposer->setEnabled(haveIssue);
+
+    // Reflect current status on the close/reopen button.
+    if (m_issueCloseButton && haveIssue) {
+        for (const Issue &issue : m_currentIssues) {
+            if (issue.number == m_currentIssueNumber) {
+                m_issueCloseButton->setText(issue.status == "closed" ? "Reopen"
+                                                                     : "Close issue");
+                break;
+            }
+        }
+    }
+    if (m_issueReadonlyNote) {
+        m_issueReadonlyNote->setVisible(!writable && issuesRepoIndex() >= 0);
+        m_issueReadonlyNote->setText(
+            "You don't host this repository \xE2\x80\x94 comments are sent to the "
+            "maintainer's inbox (text only). New issues and edits are owner-only.");
+    }
+    if (m_issueCommentButton)
+        m_issueCommentButton->setText(writable ? "Comment" : "Send to maintainer");
+}
+
+void MainWindow::promptNewIssue()
+{
+    const IssueStore probe = issueStoreForCurrentRepo();
+    if (!probe.canWrite())
+        return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("New issue");
+    auto *titleEdit = new QLineEdit(&dialog);
+    titleEdit->setPlaceholderText("Title");
+    auto *bodyEdit = new QPlainTextEdit(&dialog);
+    bodyEdit->setPlaceholderText("Describe the issue (markdown supported)\xE2\x80\xA6");
+    auto *labelsEdit = new QLineEdit(&dialog);
+    labelsEdit->setPlaceholderText("labels (comma separated)");
+    auto *milestoneCombo = new QComboBox(&dialog);
+    milestoneCombo->addItem("(no milestone)", QString());
+    for (const IssueMilestone &ms : m_currentMilestones)
+        milestoneCombo->addItem(ms.title, ms.title);
+
+    auto *form = new QFormLayout;
+    form->addRow("Title", titleEdit);
+    form->addRow("Body", bodyEdit);
+    form->addRow("Labels", labelsEdit);
+    form->addRow("Milestone", milestoneCombo);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *dialogLayout = new QVBoxLayout(&dialog);
+    dialogLayout->addLayout(form);
+    dialogLayout->addWidget(buttons);
+    dialog.resize(520, 420);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString title = titleEdit->text().trimmed();
+    if (title.isEmpty()) {
+        QMessageBox::warning(this, "New issue", "A title is required.");
+        return;
+    }
+    QStringList labels;
+    for (const QString &part : labelsEdit->text().split(',', Qt::SkipEmptyParts))
+        labels << part.trimmed();
+
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    const int number = store.createIssue(title, bodyEdit->toPlainText(), labels,
+                                         milestoneCombo->currentData().toString(),
+                                         {}, {}, &error);
+    if (number < 0) {
+        QMessageBox::warning(this, "New issue", error);
+        return;
+    }
+    m_currentIssueNumber = number;
+    reloadIssues();
+}
+
+void MainWindow::addIssueComment()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    const QString body = m_issueComposer ? m_issueComposer->toPlainText() : QString();
+    if (body.trimmed().isEmpty() && m_pendingIssueAttachments.isEmpty())
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        // Not the host: send a signed comment to the maintainer's relay inbox.
+        submitIssueCommentToInbox(body);
+        return;
+    }
+    QString error;
+    if (!store.addComment(m_currentIssueNumber, body, m_pendingIssueAttachments, &error)) {
+        QMessageBox::warning(this, "Comment", error);
+        return;
+    }
+    m_issueComposer->clear();
+    m_pendingIssueAttachments.clear();
+    if (m_issueAttachButton)
+        m_issueAttachButton->setText("Attach image");
+    reloadIssues();
+}
+
+void MainWindow::attachIssueImage()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, "Attach images", QString(),
+        "Images (*.png *.jpg *.jpeg *.gif *.webp);;All files (*)");
+    if (files.isEmpty())
+        return;
+    m_pendingIssueAttachments += files;
+    if (m_issueAttachButton)
+        m_issueAttachButton->setText(
+            QStringLiteral("Attached: %1").arg(m_pendingIssueAttachments.size()));
+}
+
+void MainWindow::toggleIssueStatus()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    QString status = "open";
+    for (const Issue &issue : m_currentIssues)
+        if (issue.number == m_currentIssueNumber)
+            status = issue.status;
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setStatus(m_currentIssueNumber, status == "open" ? "closed" : "open",
+                         &error)) {
+        QMessageBox::warning(this, "Issue", error);
+        return;
+    }
+    reloadIssues();
+}
+
+void MainWindow::deleteCurrentIssue()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    if (QMessageBox::question(
+            this, "Delete issue",
+            QStringLiteral("Delete issue #%1? This removes its folder and commits.")
+                .arg(m_currentIssueNumber)) != QMessageBox::Yes)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.deleteIssue(m_currentIssueNumber, &error)) {
+        QMessageBox::warning(this, "Delete issue", error);
+        return;
+    }
+    m_currentIssueNumber = -1;
+    reloadIssues();
+}
+
+void MainWindow::editIssueLabels()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    QStringList current;
+    for (const Issue &issue : m_currentIssues)
+        if (issue.number == m_currentIssueNumber)
+            current = issue.labels;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Labels");
+    auto *list = new QListWidget(&dialog);
+    for (const IssueLabel &label : m_currentLabels) {
+        auto *item = new QListWidgetItem(label.name, list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(current.contains(label.name) ? Qt::Checked : Qt::Unchecked);
+    }
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *dialogLayout = new QVBoxLayout(&dialog);
+    dialogLayout->addWidget(new QLabel("Select labels for this issue:"));
+    dialogLayout->addWidget(list);
+    dialogLayout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QStringList chosen;
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->checkState() == Qt::Checked)
+            chosen << list->item(i)->text();
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setLabels(m_currentIssueNumber, chosen, &error))
+        QMessageBox::warning(this, "Labels", error);
+    reloadIssues();
+}
+
+void MainWindow::editIssueMilestone()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    QStringList options{"(no milestone)"};
+    for (const IssueMilestone &ms : m_currentMilestones)
+        options << ms.title;
+    QString current;
+    for (const Issue &issue : m_currentIssues)
+        if (issue.number == m_currentIssueNumber)
+            current = issue.milestone;
+    int currentIndex = current.isEmpty() ? 0 : options.indexOf(current);
+    if (currentIndex < 0)
+        currentIndex = 0;
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(this, "Milestone", "Milestone:",
+                                                 options, currentIndex, false, &ok);
+    if (!ok)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setMilestone(m_currentIssueNumber,
+                            choice == "(no milestone)" ? QString() : choice, &error))
+        QMessageBox::warning(this, "Milestone", error);
+    reloadIssues();
+}
+
+void MainWindow::editIssueAssignees()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    QString current;
+    for (const Issue &issue : m_currentIssues)
+        if (issue.number == m_currentIssueNumber)
+            current = issue.assignees.join(", ");
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, "Assignees", "Assignees (comma separated names or pubkeys):",
+        QLineEdit::Normal, current, &ok);
+    if (!ok)
+        return;
+    QStringList assignees;
+    for (const QString &part : text.split(',', Qt::SkipEmptyParts))
+        assignees << part.trimmed();
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setAssignees(m_currentIssueNumber, assignees, &error))
+        QMessageBox::warning(this, "Assignees", error);
+    reloadIssues();
+}
+
+QUrl MainWindow::issuesApiUrl(const RepositoryRecord &repo) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
+                "/issues");
+    return url;
+}
+
+void MainWindow::submitIssueCommentToInbox(const QString &body)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+
+    QString text = body;
+    while (text.endsWith('\n') || text.endsWith('\r'))
+        text.chop(1);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "comment";
+    ev.body = text;
+    ev = store.makeSignedEvent(m_currentIssueNumber, ev);
+    // bodyFile isn't part of the signature; name it after the (now-assigned) id
+    // so the maintainer's node stores it predictably.
+    ev.bodyFile = "comments/" + ev.id + ".md";
+
+    QJsonObject eventJson = ev.toJson();
+    eventJson.insert("body", ev.body); // worker needs the text to verify the sig
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", m_currentIssueNumber},
+                              {"event", eventJson}};
+
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            if (m_issueComposer)
+                m_issueComposer->clear();
+            QMessageBox::information(
+                this, "Comment sent",
+                "Your signed comment was delivered to the maintainer's inbox.");
+        } else {
+            QMessageBox::warning(this, "Comment",
+                                 "Could not send the comment: " + reply->errorString());
+        }
+    });
+}
+
+void MainWindow::syncIssuesInbox()
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    if (!issueStoreForCurrentRepo().canWrite())
+        return;
+
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    const QString sig = m_profileIdentity.signData(canonical);
+
+    QUrl url = issuesApiUrl(repo);
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", sig);
+    url.setQuery(query);
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, repo, url] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::warning(this, "Sync inbox",
+                                 "Could not reach the inbox: " + reply->errorString());
+            return;
+        }
+        const QJsonObject root =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonArray pending = root.value("pending").toArray();
+        if (pending.isEmpty()) {
+            QMessageBox::information(this, "Sync inbox", "No pending submissions.");
+            return;
+        }
+        IssueStore store = issueStoreForCurrentRepo();
+        int merged = 0;
+        for (const QJsonValue &value : pending) {
+            const QJsonObject item = value.toObject();
+            const int number = item.value("number").toInt();
+            const QJsonObject eventObj = item.value("event").toObject();
+            IssueEvent ev = IssueEvent::fromJson(eventObj);
+            ev.body = eventObj.value("body").toString();
+            if (store.applyRemoteEvent(number, ev,
+                                       item.value("titleIfNew").toString()))
+                ++merged;
+        }
+        // Acknowledge so the inbox clears the merged submissions.
+        m_networkAccess->deleteResource(QNetworkRequest(url));
+        reloadIssues();
+        QMessageBox::information(
+            this, "Sync inbox",
+            QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
+    });
 }
 
 QWidget *MainWindow::buildChatSection()
@@ -977,7 +2373,7 @@ QWidget *MainWindow::buildChatSection()
     settingsButton->setObjectName("iconButton");
     settingsButton->setCursor(Qt::PointingHandCursor);
     settingsButton->setToolTip("Settings & network log");
-    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(3); });
+    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(4); });
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
@@ -1221,6 +2617,16 @@ QWidget *MainWindow::buildSettingsSection()
     form->addRow("Display name", m_settingsNameEdit);
     form->addRow("Avatar", avatarRow);
 
+    auto *startupLabel = new QLabel("STARTUP");
+    startupLabel->setObjectName("sectionLabel");
+    m_autostartCheck = new QCheckBox("Launch ForkMesh at login");
+    m_autostartCheck->setChecked(isAutostartEnabled());
+    m_autostartCheck->setToolTip(
+        "Start ForkMesh automatically when you log in to this computer.");
+    connect(m_autostartCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        setAutostartEnabled(enabled);
+    });
+
     auto *maintLabel = new QLabel("MAINTENANCE");
     maintLabel->setObjectName("sectionLabel");
     m_rebuildButton = new QPushButton("\xE2\x9F\xB3 Clear cache & rebuild");
@@ -1234,6 +2640,25 @@ QWidget *MainWindow::buildSettingsSection()
     m_rebuildStatus->setObjectName("modeHint");
     m_rebuildStatus->setWordWrap(true);
     m_rebuildStatus->hide();
+
+    // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
+    // as the local "remote" a fork pushes to (see issue: fork from the client).
+    auto *storageLabel = new QLabel("MIRROR STORAGE");
+    storageLabel->setObjectName("sectionLabel");
+    m_mirrorRootEdit = new QLineEdit(repositoryMirrorRoot());
+    m_mirrorRootEdit->setReadOnly(true);
+    m_mirrorRootEdit->setToolTip(
+        "Folder where mirrored repositories are stored. New mirrors are created "
+        "here; a local fork pushes into its mirror.");
+    auto *mirrorChangeButton = new QPushButton("Change\xE2\x80\xA6");
+    mirrorChangeButton->setObjectName("ghostButton");
+    mirrorChangeButton->setCursor(Qt::PointingHandCursor);
+    connect(mirrorChangeButton, &QPushButton::clicked, this,
+            &MainWindow::changeMirrorLocation);
+    auto *mirrorRow = new QHBoxLayout;
+    mirrorRow->setContentsMargins(0, 0, 0, 0);
+    mirrorRow->addWidget(m_mirrorRootEdit, 1);
+    mirrorRow->addWidget(mirrorChangeButton);
 
     auto *logLabel = new QLabel("NETWORK LOG");
     logLabel->setObjectName("sectionLabel");
@@ -1259,6 +2684,12 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(title);
     layout->addWidget(profileLabel);
     layout->addLayout(form);
+    layout->addSpacing(6);
+    layout->addWidget(storageLabel);
+    layout->addLayout(mirrorRow);
+    layout->addSpacing(6);
+    layout->addWidget(startupLabel);
+    layout->addWidget(m_autostartCheck);
     layout->addSpacing(6);
     layout->addWidget(maintLabel);
     layout->addWidget(m_rebuildButton, 0, Qt::AlignLeft);
@@ -1312,6 +2743,25 @@ void MainWindow::chooseAvatar()
     image.save(&buffer, "PNG");
     setSettingsAvatar(png);
     onAvatarChosen(png);
+}
+
+void MainWindow::quickRebuildRestart()
+{
+    // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
+    // the Settings rebuild button/status as the progress target.
+    m_buildButton = m_rebuildButton;
+    m_buildStatusLabel = m_rebuildStatus;
+    const QString clientDir = updateClientDir();
+    if (!QDir(clientDir).exists("CMakeLists.txt")) {
+        QMessageBox::information(
+            this, "Rebuild & restart",
+            "No local source checkout to rebuild from. Use Quick update on the "
+            "start screen instead.");
+        return;
+    }
+    if (m_rebuildButton)
+        m_rebuildButton->setEnabled(false);
+    buildAndRelaunch(clientDir);
 }
 
 void MainWindow::rebuildAndRelaunch()
@@ -1975,8 +3425,31 @@ void MainWindow::saveIncomingFile(const QString &fileName, const QByteArray &dat
 
 QString MainWindow::repositoryMirrorRoot() const
 {
+    const QString configured =
+        QSettings().value(kMirrorRootSetting).toString().trimmed();
+    if (!configured.isEmpty())
+        return configured;
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
            "/mirrors";
+}
+
+void MainWindow::changeMirrorLocation()
+{
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, "Choose where to store mirrored repositories",
+        repositoryMirrorRoot());
+    if (chosen.isEmpty())
+        return;
+    QSettings().setValue(kMirrorRootSetting, chosen);
+    if (m_mirrorRootEdit)
+        m_mirrorRootEdit->setText(chosen);
+    logSystem("Mirror storage folder set to " + chosen +
+              " (applies to newly added repositories).");
+    QMessageBox::information(
+        this, "Mirror storage",
+        "New mirrors will be stored in:\n" + chosen +
+            "\n\nExisting mirrors stay where they are. A local fork will push "
+            "into its repository's mirror here.");
 }
 
 QString MainWindow::repositoryChannel(const RepositoryRecord &repo) const
@@ -2477,7 +3950,35 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             });
 }
 
-void MainWindow::syncRepository(int index)
+namespace {
+
+// A cheap digest of all refs in a bare mirror, so an automatic fetch can tell
+// whether the owner's repo actually changed before announcing/republishing.
+QString mirrorRefsDigest(const QString &mirrorPath)
+{
+    if (!QDir(mirrorPath).exists())
+        return QString();
+    QProcess p;
+    p.start("git", {"-C", mirrorPath, "for-each-ref",
+                    "--format=%(objectname) %(refname)"});
+    if (!p.waitForFinished(5000))
+        return QString();
+    return QString::fromUtf8(p.readAllStandardOutput());
+}
+
+} // namespace
+
+void MainWindow::autoSyncMirrors()
+{
+    // Quietly refresh every repo's mirror so it tracks the owner's repo.
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        if (!m_syncingRepos.contains(i) &&
+            !repositorySource(m_repositories.at(i)).isEmpty())
+            syncRepository(i, /*quiet=*/true);
+    }
+}
+
+void MainWindow::syncRepository(int index, bool quiet)
 {
     if (index < 0 || index >= m_repositories.size() ||
         m_syncingRepos.contains(index))
@@ -2485,14 +3986,16 @@ void MainWindow::syncRepository(int index)
 
     RepositoryRecord &repo = m_repositories[index];
     if (!QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath())) {
-        QMessageBox::warning(this, "Sync repository",
-                             "Could not create " +
-                                 QFileInfo(repo.mirrorPath).absolutePath());
+        if (!quiet)
+            QMessageBox::warning(this, "Sync repository",
+                                 "Could not create " +
+                                     QFileInfo(repo.mirrorPath).absolutePath());
         return;
     }
 
     const bool hasMirror = QDir(repo.mirrorPath).exists();
     const QString source = repositorySource(repo);
+    const QString beforeDigest = mirrorRefsDigest(repo.mirrorPath);
     const QStringList args = hasMirror
                                  ? QStringList{"-C", repo.mirrorPath,
                                                "fetch", "--prune"}
@@ -2501,13 +4004,15 @@ void MainWindow::syncRepository(int index)
 
     m_syncingRepos.insert(index);
     refreshRepositoryList();
-    logSystem(QStringLiteral("Mirror: ") +
-              (hasMirror ? QStringLiteral("fetching ") : QStringLiteral("cloning ")) +
-              repo.owner + "/" + repo.name + " from " + source + ".");
+    if (!quiet)
+        logSystem(QStringLiteral("Mirror: ") +
+                  (hasMirror ? QStringLiteral("fetching ") : QStringLiteral("cloning ")) +
+                  repo.owner + "/" + repo.name + " from " + source + ".");
 
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
-            [this, process, index](int exitCode, QProcess::ExitStatus) {
+            [this, process, index, quiet, beforeDigest, hasMirror](
+                int exitCode, QProcess::ExitStatus) {
                 const QString errors =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
@@ -2520,18 +4025,24 @@ void MainWindow::syncRepository(int index)
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (exitCode == 0) {
+                    // Did the owner's repo actually change?
+                    const bool changed =
+                        !hasMirror ||
+                        mirrorRefsDigest(repo.mirrorPath) != beforeDigest;
                     repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
                     saveRepositories();
                     refreshRepositoryList();
-                    logSystem("Mirror: synced " + repo.owner + "/" + repo.name +
-                              " into " + repo.mirrorPath + ".");
-                    if (m_backend) {
+                    // Quiet auto-syncs only speak up when something changed.
+                    if (!quiet || changed)
+                        logSystem("Mirror: synced " + repo.owner + "/" +
+                                  repo.name + " into " + repo.mirrorPath + ".");
+                    if (changed && m_backend) {
                         m_backend->sendChat(
                             repositoryChannel(repo),
                             "Mirror synced by " + m_userName + " at " +
                                 formatRepoDate(repo.lastSyncMs));
                     }
-                    if (repo.publishToNetwork) {
+                    if (repo.publishToNetwork && (changed || !quiet)) {
                         publishRepository(index, false);
                         // Serve this repo's files live to the web now that a
                         // mirror exists (pure live tunnel, nothing uploaded).
@@ -2541,20 +4052,24 @@ void MainWindow::syncRepository(int index)
                     refreshRepositoryList();
                     logSystem("Mirror: sync failed for " + repo.owner + "/" +
                               repo.name + ": " + errors.right(300));
-                    QMessageBox::warning(
-                        this, "Sync repository",
-                        "Git mirror sync failed" +
-                            (errors.isEmpty() ? QString() :
-                                                ": " + errors.right(500)));
+                    if (!quiet)
+                        QMessageBox::warning(
+                            this, "Sync repository",
+                            "Git mirror sync failed" +
+                                (errors.isEmpty() ? QString() :
+                                                    ": " + errors.right(500)));
                 }
             });
-    connect(process, &QProcess::errorOccurred, this, [this, process, index] {
-        process->deleteLater();
-        m_syncingRepos.remove(index);
-        refreshRepositoryList();
-        QMessageBox::warning(this, "Sync repository",
-                             "Could not run git. Install Git and try again.");
-    });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, index, quiet] {
+                process->deleteLater();
+                m_syncingRepos.remove(index);
+                refreshRepositoryList();
+                if (!quiet)
+                    QMessageBox::warning(
+                        this, "Sync repository",
+                        "Could not run git. Install Git and try again.");
+            });
     process->start("git", args);
 }
 

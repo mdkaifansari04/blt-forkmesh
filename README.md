@@ -148,28 +148,15 @@ visible while the code evolves.
 
 ## Todo
 
+The roadmap now lives in the in-repo issue tracker under [`issues/`](issues/) — a
+folder per issue with signed, append-only history, surfaced in the desktop
+client's **Issues** tab and editable across nodes. See
+[`issues/README.md`](issues/README.md) for the format.
+
 > **Design note (important):** File browsing and clone are **pure live** — data
 > is served on demand from a connected host and nothing is stored on the relay.
 > If no host is online the repo is unavailable (the website caches what you've
 > browsed in localStorage). This keeps the relay lean and free-plan-hostable.
-
-1. **Anti-spoofing / security** — require a node-key-signed token on `/host` + catalog/files publish (verified against account pubkey via `ed25519_verify`); rate-limit messages/host requests/catalog POSTs; lower the 96 MB room-frame cap; add catalog anti-spam.
-2. **Pull requests + signed collaboration objects** — one node's repo can PR to another's, with changes visible in client + web. Build append-only signed objects for issues, comments, pull requests, releases, endorsements, and mirror-health reports.
-3. **Fork from client** — fork a repo into your own directory; basis for opening a PR.
-4. **Signup + account UI** — new auth model: register through the client, verify an email + a BCH address (replaces passwordless Ed25519-only). Build website signup page (node-signed, unique name + email), in-node Account UI (Settings) with "Register node name" via `signData()` and login/status, and enforce `^[a-z][a-z0-9]*$` on the client handle.
-5. **Email sending from main node** — needed for email verification; evaluate free senders (Mailgun, etc.).
-6. **BCH registration + faucet flow** — 24-hour BCH transaction check plus a community faucet path for users without BCH.
-7. **@mention alerts** — native desktop notification when mentioned.
-8. **Auto-update mirrors** — mirrors refresh automatically when the owner's repo updates (owner = first to create the repo on their node).
-9. **Private repos** — shareable to other nodes but hidden from the website unless logged in.
-10. **Extend mainnode repository catalogs** — add search, tags, host count, and latest signed mirror-health reports.
-11. **Leaderboards** — longest hosted repos, most mirrored repos, mainnode uptime, contributor activity, and BCH received by projects/contributors/mainnodes.
-12. **Mirror storage location setting** — let the user choose which directory mirrors are stored in.
-13. **Launch-on-boot setting** — auto-restart the node when the computer restarts.
-14. **Live activity chart** — per-second chart on Home (`#homeGraph`/`#homeScoreBoard` styles started).
-15. **Federation & routing** — multi-relay federation and room discovery, optional Tor/relay routing modes, mirror bandwidth and storage accounting, and import/export of signed project metadata alongside Git history.
-16. **Set a real `ACCOUNTS_KEY` secret in prod** (`pywrangler secret put ACCOUNTS_KEY`) before relying on email encryption.
-17. **Keep this list current** — every meaningful implementation pass updates `Done` and this Todo, and records user-visible changes in [CHANGELOG.md](CHANGELOG.md).
 
 ## Done
 

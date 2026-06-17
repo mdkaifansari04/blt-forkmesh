@@ -44,6 +44,12 @@ QRadioButton::indicator {
     border: 2px solid #4b5563; background: #111827;
 }
 QRadioButton::indicator:checked { border-color: #22c55e; background: #22c55e; }
+QCheckBox { background: transparent; spacing: 8px; padding: 4px 0; }
+QCheckBox::indicator {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 2px solid #4b5563; background: #111827;
+}
+QCheckBox::indicator:checked { border-color: #22c55e; background: #22c55e; }
 #modeHint { color: #9ca3af; font-size: 12px; padding-left: 26px; background: transparent; }
 
 QLineEdit, QSpinBox {
@@ -87,6 +93,20 @@ QPushButton#navButton {
 }
 QPushButton#navButton:hover { background-color: #1f2937; color: #f1f5f9; }
 QPushButton#navButton:checked { background-color: #16a34a; color: #f0fdf4; }
+
+/* --- Server favicon rail --- */
+#serverRail { background-color: #070d18; border-right: 1px solid #374151; }
+QPushButton#serverButton {
+    background-color: #1f2937; border: 2px solid transparent;
+    border-radius: 12px; padding: 0;
+}
+QPushButton#serverButton:hover { border-color: #4b5563; border-radius: 12px; }
+QPushButton#serverButton:checked { border-color: #22c55e; border-radius: 12px; }
+QPushButton#serverAddButton {
+    background-color: #111827; border: 1px dashed #4b5563;
+    border-radius: 12px; color: #9ca3af; font-size: 20px; font-weight: 700;
+}
+QPushButton#serverAddButton:hover { color: #22c55e; border-color: #22c55e; }
 
 /* --- Home --- */
 #homeCard {
@@ -158,6 +178,13 @@ QPushButton#dangerButton:hover { background-color: #7f1d1d; color: #fee2e2; }
 }
 #firewallBannerLabel {
     color: #fecaca; font-size: 13px; background: transparent;
+}
+#bchBanner {
+    background-color: #0d2a1a;
+    border-bottom: 1px solid #16a34a;
+}
+#bchBannerLabel {
+    color: #bbf7d0; font-size: 13px; font-weight: 600; background: transparent;
 }
 #messageView, #messageContainer {
     background-color: #0f172a; border: none;
