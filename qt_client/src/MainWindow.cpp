@@ -582,7 +582,7 @@ void setAutostartEnabled(bool enabled)
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle("ForkMesh");
+    setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     resize(1060, 700);
 
     m_trayIcon = new QSystemTrayIcon(this);
@@ -1158,6 +1158,28 @@ void MainWindow::refreshServerRail()
     layout->addWidget(addButton, 0, Qt::AlignHCenter);
     layout->addStretch();
 
+    // Footer pinned to the bottom: rebuild/restart and Settings (the nav bar is
+    // gone, so Settings lives here as an icon).
+    auto *rebuildBtn = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
+    rebuildBtn->setObjectName("serverFooterButton");
+    rebuildBtn->setCursor(Qt::PointingHandCursor);
+    rebuildBtn->setFixedSize(40, 30);
+    rebuildBtn->setToolTip("Rebuild and restart ForkMesh");
+    m_refreshButton = rebuildBtn;
+    connect(rebuildBtn, &QPushButton::clicked, this, [this] {
+        startRefreshSpin();
+        quickRebuildRestart();
+    });
+    layout->addWidget(rebuildBtn, 0, Qt::AlignHCenter);
+
+    auto *settingsBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\x99"));
+    settingsBtn->setObjectName("serverFooterButton");
+    settingsBtn->setCursor(Qt::PointingHandCursor);
+    settingsBtn->setFixedSize(40, 40);
+    settingsBtn->setToolTip("Settings");
+    connect(settingsBtn, &QPushButton::clicked, this, [this] { showSection(2); });
+    layout->addWidget(settingsBtn, 0, Qt::AlignHCenter);
+
     connect(m_serverGroup, &QButtonGroup::idClicked, this,
             &MainWindow::switchToServer, Qt::UniqueConnection);
     updateBreadcrumb();
@@ -1480,76 +1502,6 @@ void MainWindow::promptSetBchAddress()
     updateHomeStats();
 }
 
-QWidget *MainWindow::buildNavRail()
-{
-    auto *rail = new QWidget;
-    rail->setObjectName("navRail");
-    rail->setFixedWidth(86);
-
-    auto *logo = new QLabel("<span style='color:#22c55e'>F</span>M");
-    logo->setObjectName("navLogo");
-    logo->setAlignment(Qt::AlignHCenter);
-
-    auto makeNavButton = [](const QString &glyph, const QString &text) {
-        auto *button = new QPushButton(glyph + "\n" + text);
-        button->setObjectName("navButton");
-        button->setCheckable(true);
-        button->setCursor(Qt::PointingHandCursor);
-        button->setMinimumHeight(60);
-        return button;
-    };
-    auto *homeButton = makeNavButton("\xF0\x9F\x8F\xA0", "Home");
-    auto *chatButton = makeNavButton("\xF0\x9F\x92\xAC", "Chat");
-    auto *settingsButton = makeNavButton("\xE2\x9A\x99", "Settings");
-    auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
-    versionLabel->setObjectName("versionLabel");
-    versionLabel->setAlignment(Qt::AlignHCenter);
-    homeButton->setChecked(true);
-
-    m_navGroup = new QButtonGroup(this);
-    m_navGroup->setExclusive(true);
-    m_navGroup->addButton(homeButton, 0);
-    m_navGroup->addButton(chatButton, 1);
-    m_navGroup->addButton(settingsButton, 2);
-    connect(m_navGroup, &QButtonGroup::idClicked, this, [this](int id) {
-        m_sectionStack->setCurrentIndex(id);
-        updateBreadcrumb();
-        if (id == 0)
-            updateHomeStats();
-    });
-
-    auto *layout = new QVBoxLayout(rail);
-    layout->setContentsMargins(10, 16, 10, 16);
-    layout->setSpacing(8);
-    layout->addWidget(logo);
-    layout->addSpacing(10);
-    layout->addWidget(homeButton);
-    layout->addWidget(chatButton);
-    layout->addStretch();
-    layout->addWidget(settingsButton);
-
-    // Tiny rebuild-and-restart button next to the version label.
-    auto *rebuildMini = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
-    rebuildMini->setObjectName("ghostButton");
-    rebuildMini->setCursor(Qt::PointingHandCursor);
-    rebuildMini->setFixedSize(26, 22);
-    rebuildMini->setToolTip("Rebuild and restart ForkMesh");
-    m_refreshButton = rebuildMini;
-    connect(rebuildMini, &QPushButton::clicked, this, [this] {
-        startRefreshSpin(); // spin while the rebuild runs
-        quickRebuildRestart();
-    });
-    auto *footerRow = new QHBoxLayout;
-    footerRow->setContentsMargins(0, 0, 0, 0);
-    footerRow->setSpacing(4);
-    footerRow->addStretch();
-    footerRow->addWidget(rebuildMini);
-    footerRow->addWidget(versionLabel);
-    footerRow->addStretch();
-    layout->addLayout(footerRow);
-    return rail;
-}
-
 void MainWindow::showSection(int index)
 {
     if (m_navGroup && m_navGroup->button(index))
@@ -1658,23 +1610,31 @@ QWidget *MainWindow::buildHomeSection()
     cardLayout->addSpacing(10);
     cardLayout->addLayout(actionRow);
 
-    // Right column: the mainnode quest board card, kept centered/top-aligned.
-    auto *rightWrap = new QWidget;
-    auto *rightLayout = new QVBoxLayout(rightWrap);
-    rightLayout->setContentsMargins(16, 16, 16, 16);
-    rightLayout->addWidget(card, 0, Qt::AlignHCenter);
-    rightLayout->addStretch();
+    // Quest board card, fills its column width.
+    auto *questWrap = new QWidget;
+    auto *questLayout = new QVBoxLayout(questWrap);
+    questLayout->setContentsMargins(14, 14, 14, 14);
+    questLayout->addWidget(card);
+    questLayout->addStretch();
 
-    // Left column: repositories grouped by node; right: the quest board. A
-    // splitter lets the user resize the repositories panel.
+    // Left column = repositories (top) over the quest board (bottom); they share
+    // a vertical splitter so either can be resized.
+    auto *leftColumn = new QSplitter(Qt::Vertical);
+    leftColumn->setObjectName("homeLeftSplit");
+    leftColumn->setChildrenCollapsible(false);
+    leftColumn->addWidget(buildReposPanel());
+    leftColumn->addWidget(questWrap);
+    leftColumn->setSizes({420, 360});
+
+    // Everything on one page: repos + quest board on the left, chat on the right.
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("homeSplitter");
     splitter->setChildrenCollapsible(false);
-    splitter->addWidget(buildReposPanel());
-    splitter->addWidget(rightWrap);
+    splitter->addWidget(leftColumn);
+    splitter->addWidget(buildChatSection());
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({340, 700});
+    splitter->setSizes({340, 680});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
