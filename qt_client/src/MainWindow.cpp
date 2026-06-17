@@ -55,6 +55,8 @@
 #include <QStringListModel>
 #include <QStyle>
 #include <QStyleHints>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QTabWidget>
 #include <QTextBrowser>
 #include <QTreeWidget>
@@ -98,6 +100,8 @@ const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
+const QString kVotesSpentSetting = QStringLiteral("votes/spent");
+const QString kVotedSetting = QStringLiteral("votes/voted");
 constexpr int kNetworkLogLimit = 2000;
 
 // Directory holding client/CMakeLists.txt to update from: the build-time
@@ -230,6 +234,24 @@ QString compactAddress(QString address)
     if (address.size() <= 30)
         return address;
     return address.left(18) + QStringLiteral("...") + address.right(8);
+}
+
+// A small platform emoji for a node's operating system.
+QString platformEmoji(const QString &platform)
+{
+    if (platform == "linux")
+        return QString::fromUtf8("\xF0\x9F\x90\xA7"); // penguin
+    if (platform == "macos")
+        return QString::fromUtf8("\xF0\x9F\x8D\x8E"); // apple
+    if (platform == "windows")
+        return QString::fromUtf8("\xF0\x9F\xAA\x9F"); // window
+    if (platform == "android")
+        return QString::fromUtf8("\xF0\x9F\xA4\x96"); // robot
+    if (platform == "ios")
+        return QString::fromUtf8("\xF0\x9F\x93\xB1"); // phone
+    if (platform == "web")
+        return QString::fromUtf8("\xF0\x9F\x8C\x90"); // globe
+    return QString();
 }
 
 // Crisp vector icons for the server-rail footer (glyph fonts render these
@@ -813,8 +835,8 @@ void MainWindow::loadChatHistory()
     }
 
     // Restore the open DM tabs and their display names.
-    for (auto it = root.value("dmNames").toObject().constBegin();
-         it != root.value("dmNames").toObject().constEnd(); ++it)
+    const QJsonObject dmNames = root.value("dmNames").toObject();
+    for (auto it = dmNames.constBegin(); it != dmNames.constEnd(); ++it)
         m_dmNames.insert(it.key(), it.value().toString());
     for (const QJsonValue &v : root.value("openDms").toArray()) {
         const QString peer = v.toString();
@@ -1827,6 +1849,8 @@ QWidget *MainWindow::buildReposPanel()
                 const int index = item->data(Qt::UserRole).toInt();
                 if (index >= 0 && index < m_repositories.size())
                     openRepoDetail(index); // files + issues for this repo
+                else if (index == -2) // advertised mirror: "mirror it too"
+                    mirrorAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
             });
     connect(addRepoButton, &QPushButton::clicked, this,
             &MainWindow::promptAddRepository);
@@ -1843,10 +1867,9 @@ QWidget *MainWindow::buildIssuesSection()
 {
     auto *page = new QWidget;
 
-    // Left: repo picker, filters, issue list.
-    auto *sidebar = new QWidget;
-    sidebar->setObjectName("sidebar");
-    sidebar->setMinimumWidth(240);
+    // --- Left: a sortable issue table with filters above and quick-add below.
+    auto *listPane = new QWidget;
+    listPane->setMinimumWidth(360);
 
     auto *heading = new QLabel("Issues");
     heading->setObjectName("channelTitle");
@@ -1875,32 +1898,59 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueSyncButton->setCursor(Qt::PointingHandCursor);
     m_issueSyncButton->setToolTip(
         "Pull issue/comment submissions filed by other nodes and merge them");
-    auto *newRow = new QHBoxLayout;
-    newRow->setContentsMargins(0, 0, 0, 0);
-    newRow->addWidget(m_issueNewButton);
-    newRow->addWidget(m_issueSyncButton);
+    m_issueDetailToggle = new QPushButton("Hide detail");
+    m_issueDetailToggle->setObjectName("ghostButton");
+    m_issueDetailToggle->setCursor(Qt::PointingHandCursor);
+    m_issueDetailToggle->setToolTip("Show/hide the issue detail panel");
+    m_issueCreditsLabel = new QLabel;
+    m_issueCreditsLabel->setObjectName("statusLine");
+    m_issueCreditsLabel->setToolTip("Voting credits — earn 1 per hour online");
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->addWidget(m_issueNewButton);
+    actionRow->addWidget(m_issueSyncButton);
+    actionRow->addStretch();
+    actionRow->addWidget(m_issueCreditsLabel);
+    actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueList = new QListWidget;
-    m_issueList->setToolTip("Issues in this repository \xC2\xB7 drag to reorder");
-    m_issueList->setDragDropMode(QAbstractItemView::InternalMove);
-    m_issueList->setDefaultDropAction(Qt::MoveAction);
+    m_issueTable = new QTableWidget(0, 6);
+    m_issueTable->setObjectName("issueTable");
+    m_issueTable->setHorizontalHeaderLabels(
+        {"#", "Title", "Status", "Votes", "Labels", "Milestone"});
+    m_issueTable->verticalHeader()->setVisible(false);
+    m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_issueTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_issueTable->setShowGrid(false);
+    m_issueTable->setWordWrap(false);
+    m_issueTable->setSortingEnabled(true);
+    m_issueTable->sortByColumn(0, Qt::AscendingOrder);
+    m_issueTable->setToolTip("Click a column header to sort");
+    QHeaderView *header = m_issueTable->horizontalHeader();
+    header->setHighlightSections(false);
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
+    header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Status
+    header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Votes
+    header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Labels
+    header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Milestone
 
-    // Quick-add: a single title field at the bottom where the scrollbar sits,
-    // for filing an issue without opening the full dialog.
+    // Quick-add: a single title field at the bottom, for filing an issue
+    // without opening the full dialog.
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
     m_issueQuickAdd->setMaxLength(160);
 
-    auto *sidebarLayout = new QVBoxLayout(sidebar);
-    sidebarLayout->setContentsMargins(18, 18, 18, 18);
-    sidebarLayout->setSpacing(8);
-    sidebarLayout->addWidget(heading);
-    sidebarLayout->addWidget(m_issuesRepoCombo);
-    sidebarLayout->addLayout(filterRow);
-    sidebarLayout->addLayout(newRow);
-    sidebarLayout->addWidget(m_issueList, 1);
-    sidebarLayout->addWidget(m_issueQuickAdd);
+    auto *listLayout = new QVBoxLayout(listPane);
+    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setSpacing(8);
+    listLayout->addWidget(heading);
+    listLayout->addWidget(m_issuesRepoCombo);
+    listLayout->addLayout(filterRow);
+    listLayout->addLayout(actionRow);
+    listLayout->addWidget(m_issueTable, 1);
+    listLayout->addWidget(m_issueQuickAdd);
 
     // Center: the selected issue's title, status badge, thread and composer.
     m_issueTitle = new QLabel("Select an issue");
@@ -1910,9 +1960,14 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueCopyButton->setObjectName("ghostButton");
     m_issueCopyButton->setCursor(Qt::PointingHandCursor);
     m_issueCopyButton->setToolTip("Copy this issue (title and thread) to the clipboard");
+    m_issueVoteButton = new QPushButton(QString::fromUtf8("\xE2\x96\xB2 Vote"));
+    m_issueVoteButton->setObjectName("ghostButton");
+    m_issueVoteButton->setCursor(Qt::PointingHandCursor);
+    m_issueVoteButton->setToolTip("Upvote this issue (spends 1 voting credit)");
     auto *issueTitleRow = new QHBoxLayout;
     issueTitleRow->setContentsMargins(0, 0, 0, 0);
     issueTitleRow->addWidget(m_issueTitle, 1);
+    issueTitleRow->addWidget(m_issueVoteButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
     m_issueMeta = new QLabel; // status badge
     m_issueMeta->setObjectName("statusLine");
@@ -2007,23 +2062,41 @@ QWidget *MainWindow::buildIssuesSection()
     metaLayout->addStretch();
     metaLayout->addWidget(m_issueDeleteButton);
 
-    // Draggable dividers between the issue list, the detail, and the metadata.
+    // Collapsible detail panel: the issue thread (center) + metadata sidebar,
+    // sharing their own draggable divider.
+    m_issueDetail = new QWidget;
+    auto *detailSplit = new QSplitter(Qt::Horizontal);
+    detailSplit->setChildrenCollapsible(false);
+    detailSplit->addWidget(center);
+    detailSplit->addWidget(meta);
+    detailSplit->setStretchFactor(0, 1);
+    detailSplit->setStretchFactor(1, 0);
+    detailSplit->setSizes({520, 220});
+    auto *detailLayout = new QVBoxLayout(m_issueDetail);
+    detailLayout->setContentsMargins(0, 0, 0, 0);
+    detailLayout->addWidget(detailSplit);
+
+    // The table and the detail panel share a draggable divider; hiding the
+    // detail lets the table use the full width.
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("issuesSplitter");
     splitter->setChildrenCollapsible(false);
-    splitter->addWidget(sidebar);
-    splitter->addWidget(center);
-    splitter->addWidget(meta);
-    splitter->setStretchFactor(0, 0);
+    splitter->addWidget(listPane);
+    splitter->addWidget(m_issueDetail);
+    splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 0);
-    splitter->setSizes({300, 560, 230});
+    splitter->setSizes({520, 560});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(splitter);
 
+    connect(m_issueDetailToggle, &QPushButton::clicked, this, [this] {
+        const bool show = !m_issueDetail->isVisible();
+        m_issueDetail->setVisible(show);
+        m_issueDetailToggle->setText(show ? "Hide detail" : "Show detail");
+    });
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
     connect(m_issueStatusFilter, &QComboBox::currentIndexChanged, this,
@@ -2032,11 +2105,14 @@ QWidget *MainWindow::buildIssuesSection()
             [this](int) { refreshIssueList(); });
     connect(m_issueMilestoneFilter, &QComboBox::currentIndexChanged, this,
             [this](int) { refreshIssueList(); });
-    connect(m_issueList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item)
-                    showIssue(item->data(Qt::UserRole).toInt());
-            });
+    connect(m_issueTable, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QModelIndexList rows = m_issueTable->selectionModel()->selectedRows();
+        if (rows.isEmpty())
+            return;
+        QTableWidgetItem *first = m_issueTable->item(rows.first().row(), 0);
+        if (first)
+            showIssue(first->data(Qt::UserRole).toInt());
+    });
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
     connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
             &MainWindow::quickAddIssue);
@@ -2044,6 +2120,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::syncIssuesInbox);
     connect(m_issueCopyButton, &QPushButton::clicked, this,
             &MainWindow::copyIssueToClipboard);
+    connect(m_issueVoteButton, &QPushButton::clicked, this,
+            &MainWindow::voteOnCurrentIssue);
     connect(m_issueCommentButton, &QPushButton::clicked, this,
             &MainWindow::addIssueComment);
     connect(m_issueAttachButton, &QPushButton::clicked, this,
@@ -3150,13 +3228,13 @@ void MainWindow::refreshIssuesRepoCombo()
 
 void MainWindow::reloadIssues()
 {
-    if (!m_issueList)
+    if (!m_issueTable)
         return;
     if (issuesRepoIndex() < 0) {
         m_currentIssues.clear();
         m_currentLabels.clear();
         m_currentMilestones.clear();
-        m_issueList->clear();
+        m_issueTable->setRowCount(0);
         m_currentIssueNumber = -1;
         renderIssueThread(Issue());
         updateIssueActionState();
@@ -3241,21 +3319,16 @@ QWidget *MainWindow::makeIssueRow(const Issue &issue,
 
 void MainWindow::refreshIssueList()
 {
-    if (!m_issueList)
+    if (!m_issueTable)
         return;
     const QString statusFilter = m_issueStatusFilter->currentText();
     const QString labelFilter = m_issueLabelFilter->currentData().toString();
     const QString msFilter = m_issueMilestoneFilter->currentData().toString();
     const int keep = m_currentIssueNumber;
 
-    // name -> color, so each label pill renders in its label color.
-    QHash<QString, QString> labelColors;
-    for (const IssueLabel &label : m_currentLabels)
-        if (!label.color.isEmpty())
-            labelColors.insert(label.name, label.color);
-
-    m_issueList->clear();
-    int rowToSelect = -1;
+    // Disable sorting while inserting so rows aren't reordered mid-build.
+    m_issueTable->setSortingEnabled(false);
+    m_issueTable->setRowCount(0);
     for (const Issue &issue : m_currentIssues) {
         if (statusFilter == "Open" && issue.status != "open")
             continue;
@@ -3265,19 +3338,43 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
-        auto *item = new QListWidgetItem(m_issueList);
-        item->setData(Qt::UserRole, issue.number);
-        QWidget *rowWidget = makeIssueRow(issue, labelColors);
-        item->setSizeHint(rowWidget->sizeHint());
-        m_issueList->setItemWidget(item, rowWidget);
-        if (issue.number == keep)
-            rowToSelect = m_issueList->count() - 1;
+
+        const int row = m_issueTable->rowCount();
+        m_issueTable->insertRow(row);
+
+        auto *numItem = new QTableWidgetItem;
+        // An int in DisplayRole both renders the number and sorts numerically.
+        numItem->setData(Qt::DisplayRole, issue.number);
+        numItem->setData(Qt::UserRole, issue.number); // lookup key
+        m_issueTable->setItem(row, 0, numItem);
+        m_issueTable->setItem(row, 1, new QTableWidgetItem(issue.title));
+        auto *status = new QTableWidgetItem(issue.status == "closed" ? "Closed"
+                                                                     : "Open");
+        status->setForeground(QColor(issue.status == "closed" ? "#f85149"
+                                                              : "#3fb950"));
+        m_issueTable->setItem(row, 2, status);
+        auto *votes = new QTableWidgetItem;
+        votes->setData(Qt::DisplayRole, issue.votes); // numeric sort
+        votes->setTextAlignment(Qt::AlignCenter);
+        m_issueTable->setItem(row, 3, votes);
+        m_issueTable->setItem(row, 4, new QTableWidgetItem(issue.labels.join(", ")));
+        m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.milestone));
     }
-    if (rowToSelect >= 0)
-        m_issueList->setCurrentRow(rowToSelect);
-    else if (m_issueList->count() > 0)
-        m_issueList->setCurrentRow(0);
-    else {
+    m_issueTable->setSortingEnabled(true);
+
+    // Re-select the kept issue (row order may differ after sorting).
+    int selRow = -1;
+    for (int r = 0; r < m_issueTable->rowCount(); ++r) {
+        if (m_issueTable->item(r, 0)->data(Qt::UserRole).toInt() == keep) {
+            selRow = r;
+            break;
+        }
+    }
+    if (selRow < 0 && m_issueTable->rowCount() > 0)
+        selRow = 0;
+    if (selRow >= 0) {
+        m_issueTable->selectRow(selRow); // fires itemSelectionChanged -> showIssue
+    } else {
         m_currentIssueNumber = -1;
         renderIssueThread(Issue());
         updateIssueActionState();
@@ -3473,6 +3570,7 @@ void MainWindow::updateIssueActionState()
         m_issueCopyButton->setEnabled(haveIssue);
     if (m_issueComposer)
         m_issueComposer->setEnabled(haveIssue);
+    updateVoteUi();
 
     // Reflect current status on the close/reopen button.
     if (m_issueCloseButton && haveIssue) {
@@ -3849,6 +3947,113 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
                                  "Could not send the comment: " + reply->errorString());
         }
     });
+}
+
+int MainWindow::availableCredits() const
+{
+    const qint64 live =
+        m_connectedAtMs > 0 ? QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs : 0;
+    const int earned = int((m_totalConnectionMs + live) / 3600000); // 1 per hour
+    const int spent = QSettings().value(kVotesSpentSetting).toInt();
+    return std::max(0, earned - spent);
+}
+
+void MainWindow::submitIssueVoteToInbox()
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "vote";
+    ev = store.makeSignedEvent(m_currentIssueNumber, ev);
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", m_currentIssueNumber},
+                              {"event", ev.toJson()}};
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            QMessageBox::warning(this, "Vote",
+                                 "Could not send your vote: " + reply->errorString());
+    });
+}
+
+void MainWindow::voteOnCurrentIssue()
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || m_currentIssueNumber < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    const QString key = repo.owner + "/" + repo.name + "#" +
+                        QString::number(m_currentIssueNumber);
+    QStringList voted = QSettings().value(kVotedSetting).toStringList();
+    if (voted.contains(key)) {
+        QMessageBox::information(this, "Vote", "You have already voted on this issue.");
+        return;
+    }
+    if (availableCredits() <= 0) {
+        QMessageBox::information(
+            this, "Vote",
+            "No voting credits yet — you earn 1 credit for every hour online.");
+        return;
+    }
+
+    IssueStore store = issueStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addVote(m_currentIssueNumber, &error)) {
+            QMessageBox::warning(this, "Vote", error);
+            return;
+        }
+    } else {
+        // Not the host: submit a signed vote to the maintainer's inbox.
+        submitIssueVoteToInbox();
+    }
+
+    // Spend a credit and record the vote locally (blocks double-voting).
+    QSettings s;
+    s.setValue(kVotesSpentSetting, s.value(kVotesSpentSetting).toInt() + 1);
+    voted << key;
+    s.setValue(kVotedSetting, voted);
+    reloadIssues();
+    updateVoteUi();
+}
+
+void MainWindow::updateVoteUi()
+{
+    if (m_issueCreditsLabel)
+        m_issueCreditsLabel->setText(
+            QStringLiteral("Credits: %1").arg(availableCredits()));
+    if (!m_issueVoteButton)
+        return;
+    const bool haveIssue = m_currentIssueNumber >= 0;
+    int votes = 0;
+    bool alreadyVoted = false;
+    if (haveIssue) {
+        for (const Issue &issue : m_currentIssues)
+            if (issue.number == m_currentIssueNumber)
+                votes = issue.votes;
+        const int idx = issuesRepoIndex();
+        if (idx >= 0) {
+            const RepositoryRecord &repo = m_repositories.at(idx);
+            const QString key = repo.owner + "/" + repo.name + "#" +
+                                QString::number(m_currentIssueNumber);
+            alreadyVoted = QSettings().value(kVotedSetting).toStringList().contains(key);
+        }
+    }
+    m_issueVoteButton->setText(
+        QString::fromUtf8("\xE2\x96\xB2 Vote (%1)").arg(votes));
+    m_issueVoteButton->setEnabled(haveIssue && !alreadyVoted &&
+                                  availableCredits() > 0);
+    m_issueVoteButton->setToolTip(
+        alreadyVoted ? "You already voted on this issue"
+                     : "Upvote this issue (spends 1 voting credit)");
 }
 
 void MainWindow::syncIssuesInbox()
@@ -5063,6 +5268,8 @@ void MainWindow::refreshRepositoryList()
         bool self = false;
         QString bch;
         QString balance;
+        QString platform;
+        QStringList mirrors;
     };
     QHash<QString, NodeInfo> nodes;
     QStringList nodeOrder;
@@ -5087,10 +5294,18 @@ void MainWindow::refreshRepositoryList()
             if (ni.self && ni.bch.isEmpty())
                 ni.bch = QSettings().value(kBchSetting).toString().trimmed();
             ni.balance = m.bchBalance.trimmed();
+            ni.platform = m.platform;
+            ni.mirrors = m.mirrors;
             nodes.insert(m.name, ni);
             nodeOrder.append(m.name);
-        } else if (m.online) {
-            nodes[m.name].online = true;
+        } else {
+            NodeInfo &ni = nodes[m.name];
+            if (m.online)
+                ni.online = true;
+            if (ni.platform.isEmpty())
+                ni.platform = m.platform;
+            if (!m.mirrors.isEmpty())
+                ni.mirrors = m.mirrors;
         }
     }
     for (int i = 0; i < m_repositories.size(); ++i) {
@@ -5101,13 +5316,23 @@ void MainWindow::refreshRepositoryList()
         }
     }
 
+    // Our own repos by "owner/name", so advertised mirrors we already have are
+    // not offered again.
+    QSet<QString> ourRepoKeys;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        ourRepoKeys.insert(repo.owner + "/" + repo.name);
+    QSet<QString> shownAdvertised; // dedupe a repo advertised by several nodes
+
     QListWidgetItem *itemToSelect = nullptr;
     for (const QString &node : std::as_const(nodeOrder)) {
         const NodeInfo info = nodes.value(node);
-        // Node header row: bold, not selectable, with a live status dot.
+        // Node header row: bold, not selectable, with a status dot + platform.
         QString headerText = node;
         if (info.self)
             headerText += " (you)";
+        const QString emoji = platformEmoji(info.platform);
+        if (!emoji.isEmpty())
+            headerText += "  " + emoji;
         auto *header = new QListWidgetItem(headerText);
         header->setData(Qt::UserRole, -1);
         header->setFlags(Qt::ItemIsEnabled);
@@ -5115,6 +5340,8 @@ void MainWindow::refreshRepositoryList()
             header->setIcon(statusDotIcon(info.online));
         else
             header->setText(QString::fromUtf8("\xF0\x9F\x96\xA5 ") + headerText);
+        if (!info.platform.isEmpty())
+            header->setToolTip("Platform: " + info.platform);
         QFont headerFont = header->font();
         headerFont.setBold(true);
         header->setFont(headerFont);
@@ -5179,12 +5406,84 @@ void MainWindow::refreshRepositoryList()
             if (i == selectedRepo)
                 itemToSelect = item;
         }
+
+        // Repos this node advertises mirroring that we don't have yet — offer to
+        // "mirror it too".
+        for (const QString &ownerName : info.mirrors) {
+            if (ourRepoKeys.contains(ownerName) || shownAdvertised.contains(ownerName))
+                continue;
+            shownAdvertised.insert(ownerName);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("    \xE2\x86\x93 ") + ownerName +
+                QString::fromUtf8("   \xC2\xB7 mirror it too"));
+            item->setData(Qt::UserRole, -2); // advertised mirror marker
+            item->setData(Qt::UserRole + 1, ownerName);
+            item->setForeground(QColor("#58a6ff"));
+            item->setToolTip("Click to mirror this repository into your own mirror");
+            m_repoList->addItem(item);
+        }
     }
     if (itemToSelect)
         m_repoList->setCurrentItem(itemToSelect);
     updateRepoWebLink();
     updateRepoRemoteInfo();
     updateHomeStats();
+
+    // Advertise our own mirrors so other nodes can see and mirror them too.
+    if (m_backend) {
+        QStringList ours;
+        for (const RepositoryRecord &repo : std::as_const(m_repositories))
+            ours << repo.owner + "/" + repo.name;
+        m_backend->setMirroredRepos(ours);
+    }
+}
+
+void MainWindow::mirrorAdvertisedRepo(const QString &ownerName)
+{
+    const int slash = ownerName.indexOf('/');
+    if (slash <= 0)
+        return;
+    const QString owner = ownerName.left(slash);
+    const QString name = ownerName.mid(slash + 1);
+    for (const RepositoryRecord &r : std::as_const(m_repositories))
+        if (r.owner == owner && r.name == name) {
+            QMessageBox::information(this, "Mirror",
+                                     "You already mirror this repository.");
+            return;
+        }
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        return;
+    const QUrl serverUrl(m_servers.at(m_activeServer).url);
+    const QString host = serverHost(m_servers.at(m_activeServer).url);
+    if (host.isEmpty())
+        return;
+    const QString scheme =
+        serverUrl.scheme() == "ws" ? QStringLiteral("http") : QStringLiteral("https");
+    const QString cloneUrl = scheme + "://" + host + "/" + owner + "/" + name;
+
+    if (QMessageBox::question(
+            this, "Mirror it too",
+            QStringLiteral("Mirror %1 into your local mirrors?\n\nIt will be cloned "
+                           "from %2.")
+                .arg(ownerName, cloneUrl)) != QMessageBox::Yes)
+        return;
+
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.cloneUrl = cloneUrl;
+    repo.publishToNetwork = true;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                      repoSegment(owner, QStringLiteral("owner")) + "-" +
+                      repoSegment(name, QStringLiteral("repository")) + ".git";
+    m_repositories.append(repo);
+    saveRepositories();
+    if (m_backend)
+        m_backend->addChannel(repositoryChannel(repo));
+    refreshRepositoryList();
+    logSystem("Mirroring " + ownerName + " from " + cloneUrl);
+    syncRepository(m_repositories.size() - 1); // clone from the network mirror
 }
 
 void MainWindow::promptAddRepository()

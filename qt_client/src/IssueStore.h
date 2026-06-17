@@ -42,6 +42,7 @@ struct Issue {
     qint64 createdAt = 0;
     QString author;
     QString authorName;
+    int votes = 0; // distinct voters (uptime-credit votes), derived from events
     QList<IssueEvent> events;
 
     QJsonObject toJson() const;
@@ -89,6 +90,8 @@ public:
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
     bool addComment(int number, const QString &body,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
+    // Cast a vote on an issue (one vote per author). Owner-side write path.
+    bool addVote(int number, QString *error = nullptr);
     bool editEvent(int number, const QString &eventId, const QString &newBody,
                    QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);

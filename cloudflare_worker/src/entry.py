@@ -107,6 +107,8 @@ def issue_event_content(ev):
         return ",".join(ev.get("assignees") or [])
     if t == "delete":
         return ev.get("target", "")
+    if t == "vote":
+        return ""  # type+number+author+ts already bind the signed vote
     return ""
 
 
