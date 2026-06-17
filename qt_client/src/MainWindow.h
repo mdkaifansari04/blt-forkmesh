@@ -205,8 +205,9 @@ private:
                            bool warning); // tray alert gated by the run-alert setting
     // Show a desktop notification with both a title and body, using notify-send
     // when available (reliable on Linux) and falling back to the tray icon.
+    // `icon` is a freedesktop icon name (e.g. "emblem-default").
     void postNotification(const QString &title, const QString &body,
-                          bool warning = false);
+                          bool warning = false, const QString &icon = QString());
     void onRunStatusChanged(int runId, const QString &status);
     void onRunFinished(int runId, bool ok);
     void refreshActionsTable();

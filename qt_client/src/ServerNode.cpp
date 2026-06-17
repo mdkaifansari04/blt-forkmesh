@@ -202,7 +202,7 @@ void ServerNode::scheduleReconnect()
     delay += int(QRandomGenerator::global()->bounded(750));
     ++m_reconnectAttempt;
     emit statusChanged(
-        QStringLiteral("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
+        QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
             .arg((delay + 999) / 1000));
     m_reconnectTimer->start(delay);
 }

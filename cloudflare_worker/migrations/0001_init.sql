@@ -5,7 +5,14 @@
 -- Every table stores only HMAC "blind index" columns (for lookups/uniqueness)
 -- plus a single AES-GCM-encrypted JSON `data` blob — no plaintext content.
 -- The worker holds DATA_KEY: this is encryption at rest, not zero-knowledge.
--- Idempotent (CREATE ... IF NOT EXISTS); add later changes as 0002_*.sql, etc.
+-- Add later changes as 0002_*.sql, etc. Run once each via `d1 migrations apply`.
+
+-- One-time: drop any superseded plaintext tables from before the encrypted
+-- schema (safe — this migration is recorded and never re-run; no-op on new DBs).
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS repositories;
+DROP TABLE IF EXISTS issue_inbox;
+DROP TABLE IF EXISTS pull_inbox;
 
 -- Accounts = node = user/organization. data = {name, pubkey, email, bch,
 -- pass_salt, pass_hash, totp_secret, totp_enrolled, bch_verified, created_at}.

@@ -144,7 +144,7 @@ QJsonObject IssueEvent::toJson() const
     QJsonObject obj{{"type", type}, {"id", id}, {"author", author},
                     {"authorName", authorName},
                     {"ts", double(ts)}};
-    if (type == "open")
+    if (type == "open" || type == "title")
         obj.insert("title", title);
     if (type == "open" || type == "comment" || type == "edit")
         obj.insert("attachments", fromStringList(attachments));
@@ -329,6 +329,7 @@ IssueEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.author = fm.get("author");
     ev.authorName = fm.get("authorName");
     ev.ts = fm.num("ts");
+    ev.title = fm.get("title"); // open + title events
     ev.target = fm.get("target");
     ev.status = fm.get("status");
     ev.labels = fm.list("labels");

@@ -38,6 +38,7 @@ class_name = "ForkMeshHost"
 binding = "DB"
 database_name = "forkmesh"
 database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
+migrations_dir = "migrations"
 
 [[migrations]]
 tag = "v1"
