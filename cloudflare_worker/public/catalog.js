@@ -363,6 +363,150 @@ if (viewerBackEl) {
   });
 }
 
+// ---- Issues tab: list the repo's issues from its git issues/ folder ---------
+
+const tabCodeEl = document.querySelector("#tab-code");
+const tabIssuesEl = document.querySelector("#tab-issues");
+const tabIssuesCountEl = document.querySelector("#tab-issues-count");
+const codeSectionEl = document.querySelector("#code");
+const issuesSectionEl = document.querySelector("#issues");
+const issueListEl = document.querySelector("#issue-list");
+const issuesMetaEl = document.querySelector("#issues-meta");
+let issuesLoadedFor = null;
+let issuesToken = 0;
+
+// Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
+function parseFrontmatter(content) {
+  const out = {};
+  if (!content) return out;
+  const lines = String(content).split("\n");
+  if (lines[0].trim() !== "---") return out;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") break;
+    const idx = lines[i].indexOf(":");
+    if (idx < 0) continue;
+    out[lines[i].slice(0, idx).trim()] = lines[i].slice(idx + 1).trim();
+  }
+  return out;
+}
+
+function issueRow(number, title, status) {
+  const row = document.createElement("button");
+  row.className = "file-row issue-row";
+  row.type = "button";
+  const dot = document.createElement("span");
+  dot.className = `issue-dot ${status === "closed" ? "is-closed" : "is-open"}`;
+  dot.title = status === "closed" ? "Closed" : "Open";
+  const label = document.createElement("span");
+  label.className = "file-name";
+  label.textContent = `#${number}  ${title}`;
+  const state = document.createElement("span");
+  state.className = "issue-state";
+  state.textContent = status === "closed" ? "Closed" : "Open";
+  row.append(dot, label, state);
+  // Open the issue's source markdown in the code viewer.
+  row.addEventListener("click", () => {
+    showRepoTab("code");
+    openBlob(`issues/${number}/issue.md`);
+  });
+  return row;
+}
+
+async function loadIssues(owner, name) {
+  if (!issueListEl) return;
+  const token = ++issuesToken;
+  issueListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
+  if (issuesMetaEl) issuesMetaEl.textContent = "";
+
+  const { data, source, error } = await pullPath("tree", "issues");
+  if (token !== issuesToken) return;
+  if (!data || !Array.isArray(data.entries)) {
+    issueListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    // Only host-availability errors are "unavailable"; any git/tree error
+    // (e.g. the repo simply has no issues/ folder) means none have been filed.
+    const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+    note.textContent = hostDown
+      ? unavailableMessage(error)
+      : "No issues have been filed for this repository yet.";
+    issueListEl.append(note);
+    if (tabIssuesCountEl && !hostDown) tabIssuesCountEl.textContent = "0";
+    return;
+  }
+  if (issuesMetaEl) {
+    issuesMetaEl.className = "file-meta";
+    if (source === "live") {
+      issuesMetaEl.textContent = "● live from host";
+      issuesMetaEl.classList.add("source-live");
+    } else if (source === "cached") {
+      issuesMetaEl.textContent = "● cached · host offline";
+      issuesMetaEl.classList.add("source-cached");
+    }
+  }
+
+  const numbers = data.entries
+    .filter((e) => e.type === "tree" && /^\d+$/.test(e.name))
+    .map((e) => parseInt(e.name, 10))
+    .sort((a, b) => b - a);
+  if (!numbers.length) {
+    issueListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent = "No issues have been filed for this repository yet.";
+    issueListEl.append(note);
+    if (tabIssuesCountEl) tabIssuesCountEl.textContent = "0";
+    return;
+  }
+
+  const issues = await Promise.all(
+    numbers.map(async (n) => {
+      const { data: blob } = await pullPath("blob", `issues/${n}/issue.md`);
+      const fm = parseFrontmatter(blob && blob.content);
+      let status = fm.status || "open";
+      // The current status may have changed via a later NNNN-status.md event.
+      const { data: dir } = await pullPath("tree", `issues/${n}`);
+      if (dir && Array.isArray(dir.entries)) {
+        const statusFiles = dir.entries
+          .filter((e) => e.type === "blob" && /^\d+-status\.md$/.test(e.name))
+          .map((e) => e.name)
+          .sort();
+        if (statusFiles.length) {
+          const last = statusFiles[statusFiles.length - 1];
+          const { data: sb } = await pullPath("blob", `issues/${n}/${last}`);
+          const sfm = parseFrontmatter(sb && sb.content);
+          if (sfm.status) status = sfm.status;
+        }
+      }
+      return { number: n, title: fm.title || `Issue #${n}`, status };
+    })
+  );
+  if (token !== issuesToken) return;
+
+  if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(issues.length);
+  issueListEl.replaceChildren(
+    ...issues.map((i) => issueRow(i.number, i.title, i.status))
+  );
+}
+
+function showRepoTab(tab) {
+  const code = tab !== "issues";
+  if (codeSectionEl) codeSectionEl.hidden = !code;
+  if (issuesSectionEl) issuesSectionEl.hidden = code;
+  if (tabCodeEl) tabCodeEl.classList.toggle("is-active", code);
+  if (tabIssuesEl) tabIssuesEl.classList.toggle("is-active", !code);
+  if (!code && fileState) {
+    const repoKey = `${fileState.owner}/${fileState.name}`;
+    if (issuesLoadedFor !== repoKey) {
+      issuesLoadedFor = repoKey;
+      loadIssues(fileState.owner, fileState.name);
+    }
+  }
+}
+
+if (tabCodeEl) tabCodeEl.addEventListener("click", () => showRepoTab("code"));
+if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues"));
+
 // ---- Routing: home (repo list) vs. a single repository page ----------------
 
 const homeView = document.querySelector("#home-view");
@@ -423,7 +567,11 @@ function openRepoPage(owner, name) {
       "git clone streams live from the client hosting this repo (it must be online).";
   }
   resetDownloadProgress();
+  // Reset to the Code tab; issues lazy-load when the Issues tab is opened.
+  issuesLoadedFor = null;
+  if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   loadFiles(owner, name);
+  showRepoTab("code");
 }
 
 window.addEventListener("hashchange", route);

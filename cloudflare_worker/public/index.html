@@ -149,6 +149,12 @@
 
         <div class="page-grid">
           <div class="content-column">
+            <div class="repo-tabs" role="tablist" aria-label="Repository views">
+              <button id="tab-code" class="repo-tab is-active" type="button" role="tab">Code</button>
+              <button id="tab-issues" class="repo-tab" type="button" role="tab">
+                Issues <span id="tab-issues-count" class="repo-tab-count"></span>
+              </button>
+            </div>
             <section id="code" class="code-card" aria-labelledby="code-title">
               <div class="code-toolbar">
                 <div class="branch-button">
@@ -170,6 +176,16 @@
                   <span id="file-viewer-path" class="file-viewer-path"></span>
                 </div>
                 <pre id="file-viewer-body" class="file-viewer-body"></pre>
+              </div>
+            </section>
+
+            <section id="issues" class="code-card" hidden aria-labelledby="issues-title">
+              <div class="code-toolbar">
+                <h2 id="issues-title">Issues</h2>
+                <span id="issues-meta" class="file-meta"></span>
+              </div>
+              <div id="issue-list" class="file-list" role="list" aria-live="polite">
+                <div class="file-empty">Loading…</div>
               </div>
             </section>
           </div>

@@ -11,6 +11,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCompleter>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -30,6 +31,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMimeDatabase>
 #include <QNetworkAccessManager>
@@ -46,8 +48,14 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QStackedWidget>
+#include <QStringListModel>
 #include <QStyle>
+#include <QStyleHints>
+#include <QTabWidget>
+#include <QTextBrowser>
+#include <QTreeWidget>
 #include <QSystemTrayIcon>
 #include <QThread>
 #include <QTimer>
@@ -86,6 +94,7 @@ const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
+const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 constexpr int kNetworkLogLimit = 2000;
 constexpr int kHomeGraphSampleLimit = 18;
 
@@ -282,6 +291,161 @@ QString serverHost(const QString &serverUrl)
     return QUrl(serverUrl).host();
 }
 
+// Map a file name to a vscode-icons SVG base name (without ".svg"). Falls back
+// to "default_file"; the caller verifies the file exists.
+QString fileTypeIconName(const QString &fileNameLower)
+{
+    static const QHash<QString, QString> byName = {
+        {"cmakelists.txt", "file_type_cmake"},
+        {"dockerfile", "file_type_docker"},
+        {"makefile", "file_type_makefile"},
+        {"package.json", "file_type_npm"},
+        {"package-lock.json", "file_type_npm"},
+        {".gitignore", "file_type_git"},
+        {".gitattributes", "file_type_git"},
+        {".gitmodules", "file_type_git"},
+        {"license", "file_type_license"},
+        {"license.md", "file_type_license"},
+        {"license.txt", "file_type_license"},
+        {"copying", "file_type_license"},
+        {"readme.md", "file_type_markdown"},
+        {"todo", "file_type_todo"},
+        {".env", "file_type_config"},
+    };
+    if (byName.contains(fileNameLower))
+        return byName.value(fileNameLower);
+
+    static const QHash<QString, QString> byExt = {
+        {"js", "file_type_js"}, {"mjs", "file_type_js"}, {"cjs", "file_type_js"},
+        {"jsx", "file_type_reactjs"}, {"ts", "file_type_typescript"},
+        {"tsx", "file_type_reactts"}, {"py", "file_type_python"},
+        {"pyw", "file_type_python"}, {"rb", "file_type_ruby"},
+        {"rs", "file_type_rust"}, {"go", "file_type_go"},
+        {"java", "file_type_java"}, {"kt", "file_type_kotlin"},
+        {"kts", "file_type_kotlin"}, {"swift", "file_type_swift"},
+        {"c", "file_type_c"}, {"h", "file_type_cheader"},
+        {"hpp", "file_type_cpp"}, {"hh", "file_type_cpp"}, {"hxx", "file_type_cpp"},
+        {"cpp", "file_type_cpp"}, {"cc", "file_type_cpp"}, {"cxx", "file_type_cpp"},
+        {"cs", "file_type_csharp"}, {"php", "file_type_php"},
+        {"pl", "file_type_perl"}, {"pm", "file_type_perl"},
+        {"lua", "file_type_lua"}, {"r", "file_type_r"},
+        {"scala", "file_type_scala"}, {"hs", "file_type_haskell"},
+        {"ex", "file_type_elixir"}, {"exs", "file_type_elixir"},
+        {"erl", "file_type_erlang"}, {"dart", "file_type_dart"},
+        {"html", "file_type_html"}, {"htm", "file_type_html"},
+        {"css", "file_type_css"}, {"scss", "file_type_scss"},
+        {"sass", "file_type_sass"}, {"less", "file_type_less"},
+        {"json", "file_type_json"}, {"yaml", "file_type_yaml"},
+        {"yml", "file_type_yaml"}, {"toml", "file_type_toml"},
+        {"xml", "file_type_xml"}, {"ini", "file_type_ini"},
+        {"cfg", "file_type_config"}, {"conf", "file_type_config"},
+        {"md", "file_type_markdown"}, {"markdown", "file_type_markdown"},
+        {"txt", "file_type_text"}, {"text", "file_type_text"},
+        {"log", "file_type_log"}, {"sql", "file_type_sql"},
+        {"sh", "file_type_shell"}, {"bash", "file_type_shell"},
+        {"zsh", "file_type_shell"}, {"ps1", "file_type_powershell"},
+        {"gradle", "file_type_gradle"}, {"svg", "file_type_svg"},
+        {"png", "file_type_image"}, {"jpg", "file_type_image"},
+        {"jpeg", "file_type_image"}, {"gif", "file_type_image"},
+        {"webp", "file_type_image"}, {"bmp", "file_type_image"},
+        {"ico", "file_type_image"}, {"mp3", "file_type_audio"},
+        {"wav", "file_type_audio"}, {"flac", "file_type_audio"},
+        {"ogg", "file_type_audio"}, {"mp4", "file_type_video"},
+        {"mov", "file_type_video"}, {"mkv", "file_type_video"},
+        {"webm", "file_type_video"}, {"pdf", "file_type_pdf"},
+        {"zip", "file_type_zip"}, {"tar", "file_type_zip"},
+        {"gz", "file_type_zip"}, {"7z", "file_type_zip"}, {"rar", "file_type_zip"},
+        {"ttf", "file_type_font"}, {"otf", "file_type_font"},
+        {"woff", "file_type_font"}, {"woff2", "file_type_font"},
+        {"exe", "file_type_binary"}, {"bin", "file_type_binary"},
+        {"o", "file_type_binary"}, {"a", "file_type_binary"},
+        {"so", "file_type_binary"}, {"dll", "file_type_binary"},
+        {"key", "file_type_key"}, {"pem", "file_type_key"},
+        {"crt", "file_type_cert"}, {"cert", "file_type_cert"},
+        {"cer", "file_type_cert"}, {"cmake", "file_type_cmake"},
+    };
+    const int dot = fileNameLower.lastIndexOf('.');
+    if (dot >= 0) {
+        const QString ext = fileNameLower.mid(dot + 1);
+        if (byExt.contains(ext))
+            return byExt.value(ext);
+    }
+    return QStringLiteral("default_file");
+}
+
+// Display language for a file path (empty = ignore for the language bar).
+QString languageForFile(const QString &name)
+{
+    static const QHash<QString, QString> byExt = {
+        {"js", "JavaScript"}, {"mjs", "JavaScript"}, {"cjs", "JavaScript"},
+        {"jsx", "JavaScript"}, {"ts", "TypeScript"}, {"tsx", "TypeScript"},
+        {"py", "Python"}, {"rb", "Ruby"}, {"rs", "Rust"}, {"go", "Go"},
+        {"java", "Java"}, {"kt", "Kotlin"}, {"swift", "Swift"}, {"c", "C"},
+        {"h", "C"}, {"hpp", "C++"}, {"cpp", "C++"}, {"cc", "C++"}, {"cxx", "C++"},
+        {"cs", "C#"}, {"php", "PHP"}, {"pl", "Perl"}, {"lua", "Lua"},
+        {"scala", "Scala"}, {"hs", "Haskell"}, {"ex", "Elixir"}, {"exs", "Elixir"},
+        {"erl", "Erlang"}, {"dart", "Dart"}, {"html", "HTML"}, {"htm", "HTML"},
+        {"css", "CSS"}, {"scss", "SCSS"}, {"sass", "Sass"}, {"less", "Less"},
+        {"json", "JSON"}, {"yaml", "YAML"}, {"yml", "YAML"}, {"toml", "TOML"},
+        {"xml", "XML"}, {"md", "Markdown"}, {"sh", "Shell"}, {"bash", "Shell"},
+        {"sql", "SQL"}, {"vue", "Vue"},
+    };
+    const int dot = name.lastIndexOf('.');
+    if (dot < 0)
+        return {};
+    return byExt.value(name.mid(dot + 1).toLower());
+}
+
+// GitHub linguist-ish color for a language.
+QString languageColor(const QString &lang)
+{
+    static const QHash<QString, QString> colors = {
+        {"JavaScript", "#f1e05a"}, {"TypeScript", "#3178c6"}, {"Python", "#3572A5"},
+        {"Ruby", "#701516"}, {"Rust", "#dea584"}, {"Go", "#00ADD8"},
+        {"Java", "#b07219"}, {"Kotlin", "#A97BFF"}, {"Swift", "#F05138"},
+        {"C", "#555555"}, {"C++", "#f34b7d"}, {"C#", "#178600"}, {"PHP", "#4F5D95"},
+        {"Perl", "#0298c3"}, {"Lua", "#000080"}, {"Scala", "#c22d40"},
+        {"Haskell", "#5e5086"}, {"Elixir", "#6e4a7e"}, {"Erlang", "#B83998"},
+        {"Dart", "#00B4AB"}, {"HTML", "#e34c26"}, {"CSS", "#563d7c"},
+        {"SCSS", "#c6538c"}, {"Sass", "#a53b70"}, {"Less", "#1d365d"},
+        {"JSON", "#959595"}, {"YAML", "#cb171e"}, {"TOML", "#9c4221"},
+        {"XML", "#0060ac"}, {"Markdown", "#083fa1"}, {"Shell", "#89e051"},
+        {"SQL", "#e38c00"}, {"Vue", "#41b883"},
+    };
+    return colors.value(lang, "#8b949e");
+}
+
+// Run a git command in `dir`, capturing stdout. Returns false (with stderr in
+// `err`) on failure. Used by the in-client repo file browser.
+bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
+                   QString *err)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    if (!process.waitForFinished(8000)) {
+        if (err)
+            *err = QStringLiteral("git timed out");
+        return false;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (err)
+            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return false;
+    }
+    if (out)
+        *out = process.readAllStandardOutput();
+    return true;
+}
+
+// Readable text color (black or white) for a label pill's background.
+QString pillTextColor(const QString &backgroundHex)
+{
+    const QColor c(backgroundHex);
+    const double luminance =
+        0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue();
+    return luminance > 150 ? QStringLiteral("#1f2328") : QStringLiteral("#ffffff");
+}
+
 // A http(s) favicon URL derived from a ws(s) mainnode URL.
 QUrl faviconUrl(const QString &serverUrl)
 {
@@ -472,6 +636,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         QTimer::singleShot(0, this, &MainWindow::startSession);
     }
     updateHomeStats();
+}
+
+void MainWindow::applyTheme()
+{
+    // Honour the user's override; otherwise follow the OS color scheme.
+    const QString pref = QSettings().value(kThemeSetting, "system").toString();
+    bool dark = true;
+    if (pref == "light")
+        dark = false;
+    else if (pref == "dark")
+        dark = true;
+    else {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+        dark = QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+#endif
+    }
+    qApp->setStyleSheet(Theme::styleSheetForDark(dark));
 }
 
 // ---------------------------------------------------------------- setup page
@@ -737,6 +918,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
                 if (exitCode != 0) {
+                    stopRefreshSpin();
                     setUpdateStatus("Update failed: " + errors.right(300), true);
                     if (m_buildButton)
                         m_buildButton->setEnabled(true);
@@ -745,6 +927,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                 onSuccess();
             });
     connect(process, &QProcess::errorOccurred, this, [this, process] {
+        stopRefreshSpin();
         setUpdateStatus("Update failed: could not run " + process->program(), true);
         process->deleteLater();
         if (m_buildButton)
@@ -977,6 +1160,7 @@ void MainWindow::refreshServerRail()
 
     connect(m_serverGroup, &QButtonGroup::idClicked, this,
             &MainWindow::switchToServer, Qt::UniqueConnection);
+    updateBreadcrumb();
 }
 
 void MainWindow::switchToServer(int index)
@@ -1108,13 +1292,13 @@ QWidget *MainWindow::buildChatPage()
 {
     auto *page = new QWidget;
 
-    // Section stack switched by the left navigation rail.
+    // Section stack switched by the left navigation rail. Repos now live inside
+    // the Home section (left column), so there is no separate Repos tab.
     m_sectionStack = new QStackedWidget;
-    m_sectionStack->addWidget(buildHomeSection());     // 0 Home
-    m_sectionStack->addWidget(buildReposSection());    // 1 Repos
-    m_sectionStack->addWidget(buildIssuesSection());   // 2 Issues
-    m_sectionStack->addWidget(buildChatSection());     // 3 Chat
-    m_sectionStack->addWidget(buildSettingsSection()); // 4 Settings
+    m_sectionStack->addWidget(buildHomeSection());       // 0 Home (+ repos)
+    m_sectionStack->addWidget(buildChatSection());       // 1 Chat
+    m_sectionStack->addWidget(buildSettingsSection());   // 2 Settings
+    m_sectionStack->addWidget(buildRepoDetailSection()); // 3 Repo detail (not in nav)
 
     // Rails + section content live in a horizontal row.
     auto *content = new QWidget;
@@ -1130,9 +1314,110 @@ QWidget *MainWindow::buildChatPage()
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+    layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildBchNotice());
     layout->addWidget(content, 1);
+    layout->addWidget(buildNetworkLogDock());
     return page;
+}
+
+QWidget *MainWindow::buildNetworkLogDock()
+{
+    auto *dock = new QWidget;
+    dock->setObjectName("logDock");
+
+    auto *label = new QLabel("NETWORK LOG");
+    label->setObjectName("sectionLabel");
+    auto *toggle = new QPushButton(QString::fromUtf8("\xE2\x96\xBE")); // down triangle
+    toggle->setObjectName("iconButton");
+    toggle->setCursor(Qt::PointingHandCursor);
+    toggle->setFixedWidth(26);
+    toggle->setToolTip("Show/hide the network log");
+
+    m_settingsLog = new QPlainTextEdit;
+    m_settingsLog->setReadOnly(true);
+    m_settingsLog->setObjectName("networkLog");
+    m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
+    m_settingsLog->setFixedHeight(96);
+    for (const QString &line : std::as_const(m_networkLog))
+        m_settingsLog->appendPlainText(line);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(12, 3, 8, 3);
+    headerRow->addWidget(label);
+    headerRow->addStretch();
+    headerRow->addWidget(toggle);
+
+    auto *layout = new QVBoxLayout(dock);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addLayout(headerRow);
+    layout->addWidget(m_settingsLog);
+
+    connect(toggle, &QPushButton::clicked, this, [this, toggle] {
+        const bool show = !m_settingsLog->isVisible();
+        m_settingsLog->setVisible(show);
+        toggle->setText(QString::fromUtf8(show ? "\xE2\x96\xBE" : "\xE2\x96\xB8"));
+    });
+    return dock;
+}
+
+QWidget *MainWindow::buildBreadcrumb()
+{
+    auto *bar = new QWidget;
+    bar->setObjectName("breadcrumbBar");
+    m_breadcrumbServerIcon = new QLabel;
+    m_breadcrumbServerIcon->setFixedSize(18, 18);
+    m_breadcrumbServerIcon->setScaledContents(true);
+    m_breadcrumb = new QLabel;
+    m_breadcrumb->setObjectName("breadcrumb");
+    m_breadcrumb->setTextFormat(Qt::RichText);
+    m_breadcrumb->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    connect(m_breadcrumb, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href == "repos")
+            showSection(0);
+    });
+    auto *layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(14, 6, 14, 6);
+    layout->setSpacing(8);
+    layout->addWidget(m_breadcrumbServerIcon);
+    layout->addWidget(m_breadcrumb);
+    layout->addStretch();
+    updateBreadcrumb();
+    return bar;
+}
+
+void MainWindow::updateBreadcrumb()
+{
+    if (!m_breadcrumb)
+        return;
+    static const char *kSections[] = {"Home", "Chat", "Settings", "Repository"};
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+    // Active server favicon, shown next to the breadcrumb at the top of the app.
+    if (m_breadcrumbServerIcon) {
+        const QPixmap fav = m_faviconCache.value(host);
+        m_breadcrumbServerIcon->setPixmap(fav.isNull() ? letterFavicon(host) : fav);
+    }
+    if (host.isEmpty())
+        host = "ForkMesh";
+    const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
+    const QString sep =
+        QString::fromUtf8();
+    QString trail = (section >= 0 && section < 4) ? kSections[section] : "Home";
+    // On the repo detail view, fold the "Repositories › owner/name" path into the
+    // single top breadcrumb (Repositories is a link back to the repo list).
+    if (section == 3 && m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        trail = QStringLiteral("<a href=\"repos\">Repositories</a>%1%2")
+                    .arg(sep, (repo.owner + "/" + repo.name).toHtmlEscaped());
+    }
+    // No hardcoded text colors here: the section/separator inherit the
+    // #breadcrumb stylesheet color so it stays readable in light and dark.
+    m_breadcrumb->setText(
+        QString::fromUtf8().arg(host.toHtmlEscaped(), sep, trail));
 }
 
 QWidget *MainWindow::buildBchNotice()
@@ -1215,8 +1500,6 @@ QWidget *MainWindow::buildNavRail()
         return button;
     };
     auto *homeButton = makeNavButton("\xF0\x9F\x8F\xA0", "Home");
-    auto *reposButton = makeNavButton("\xF0\x9F\x93\xA6", "Repos");
-    auto *issuesButton = makeNavButton("\xF0\x9F\x93\x8B", "Issues");
     auto *chatButton = makeNavButton("\xF0\x9F\x92\xAC", "Chat");
     auto *settingsButton = makeNavButton("\xE2\x9A\x99", "Settings");
     auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
@@ -1227,16 +1510,13 @@ QWidget *MainWindow::buildNavRail()
     m_navGroup = new QButtonGroup(this);
     m_navGroup->setExclusive(true);
     m_navGroup->addButton(homeButton, 0);
-    m_navGroup->addButton(reposButton, 1);
-    m_navGroup->addButton(issuesButton, 2);
-    m_navGroup->addButton(chatButton, 3);
-    m_navGroup->addButton(settingsButton, 4);
+    m_navGroup->addButton(chatButton, 1);
+    m_navGroup->addButton(settingsButton, 2);
     connect(m_navGroup, &QButtonGroup::idClicked, this, [this](int id) {
         m_sectionStack->setCurrentIndex(id);
+        updateBreadcrumb();
         if (id == 0)
             updateHomeStats();
-        else if (id == 2)
-            refreshIssuesRepoCombo();
     });
 
     auto *layout = new QVBoxLayout(rail);
@@ -1245,8 +1525,6 @@ QWidget *MainWindow::buildNavRail()
     layout->addWidget(logo);
     layout->addSpacing(10);
     layout->addWidget(homeButton);
-    layout->addWidget(reposButton);
-    layout->addWidget(issuesButton);
     layout->addWidget(chatButton);
     layout->addStretch();
     layout->addWidget(settingsButton);
@@ -1257,8 +1535,11 @@ QWidget *MainWindow::buildNavRail()
     rebuildMini->setCursor(Qt::PointingHandCursor);
     rebuildMini->setFixedSize(26, 22);
     rebuildMini->setToolTip("Rebuild and restart ForkMesh");
-    connect(rebuildMini, &QPushButton::clicked, this,
-            &MainWindow::quickRebuildRestart);
+    m_refreshButton = rebuildMini;
+    connect(rebuildMini, &QPushButton::clicked, this, [this] {
+        startRefreshSpin(); // spin while the rebuild runs
+        quickRebuildRestart();
+    });
     auto *footerRow = new QHBoxLayout;
     footerRow->setContentsMargins(0, 0, 0, 0);
     footerRow->setSpacing(4);
@@ -1276,10 +1557,9 @@ void MainWindow::showSection(int index)
         m_navGroup->button(index)->setChecked(true);
     if (m_sectionStack)
         m_sectionStack->setCurrentIndex(index);
+    updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
-    else if (index == 2)
-        refreshIssuesRepoCombo();
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -1289,7 +1569,7 @@ QWidget *MainWindow::buildHomeSection()
     auto *card = new QWidget;
     card->setObjectName("homeCard");
     card->setMaximumWidth(760);
-    card->setMinimumWidth(560);
+    card->setMinimumWidth(460);
 
     auto *title = new QLabel("<span style='color:#22c55e'>Fork</span>Mesh");
     title->setObjectName("homeTitle");
@@ -1379,30 +1659,50 @@ QWidget *MainWindow::buildHomeSection()
     cardLayout->addSpacing(10);
     cardLayout->addLayout(actionRow);
 
-    auto *layout = new QVBoxLayout(page);
-    layout->addStretch();
-    layout->addWidget(card, 0, Qt::AlignHCenter);
-    layout->addStretch();
+    // Right column: the mainnode quest board card, kept centered/top-aligned.
+    auto *rightWrap = new QWidget;
+    auto *rightLayout = new QVBoxLayout(rightWrap);
+    rightLayout->setContentsMargins(16, 16, 16, 16);
+    rightLayout->addWidget(card, 0, Qt::AlignHCenter);
+    rightLayout->addStretch();
+
+    // Left column: repositories grouped by node; right: the quest board. A
+    // splitter lets the user resize the repositories panel.
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setObjectName("homeSplitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(buildReposPanel());
+    splitter->addWidget(rightWrap);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({340, 700});
+
+    auto *layout = new QHBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(splitter);
     return page;
 }
 
-QWidget *MainWindow::buildReposSection()
+QWidget *MainWindow::buildReposPanel()
 {
     auto *page = new QWidget;
     page->setObjectName("sidebar"); // reuse list/label styling
+    page->setMinimumWidth(240);
 
     auto *heading = new QLabel("Repositories");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
-        "Pick a local Git repository to mirror and publish. Only signed "
-        "metadata is shared \xE2\x80\x94 the .git data stays on this machine.");
+        "Repos this node mirrors, grouped by node. Only signed metadata is "
+        "shared \xE2\x80\x94 the .git data stays on this machine.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
-    auto *reposLabel = new QLabel("MIRRORED REPOSITORIES");
+    auto *reposLabel = new QLabel("NODES & REPOSITORIES");
     reposLabel->setObjectName("sectionLabel");
     m_repoList = new QListWidget;
-    m_repoList->setToolTip("Repositories this node is preserving locally");
+    m_repoList->setToolTip(
+        "Repositories this node is preserving locally, grouped by node");
 
     // The bare mirror doubles as a local git remote: a fork can push here to
     // publish into the mirror. Show its path so the user can wire it up.
@@ -1475,15 +1775,13 @@ QWidget *MainWindow::buildReposSection()
             logSystem("Copied local remote path to clipboard: " + path);
         }
     });
-    connect(m_repoList, &QListWidget::itemDoubleClicked, this,
+    connect(m_repoList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 if (!item)
                     return;
                 const int index = item->data(Qt::UserRole).toInt();
-                if (index >= 0 && index < m_repositories.size()) {
-                    switchConversation(repositoryChannel(m_repositories.at(index)));
-                    showSection(3); // jump to the chat for this repo
-                }
+                if (index >= 0 && index < m_repositories.size())
+                    openRepoDetail(index); // files + issues for this repo
             });
     connect(addRepoButton, &QPushButton::clicked, this,
             &MainWindow::promptAddRepository);
@@ -1503,13 +1801,16 @@ QWidget *MainWindow::buildIssuesSection()
     // Left: repo picker, filters, issue list.
     auto *sidebar = new QWidget;
     sidebar->setObjectName("sidebar");
-    sidebar->setFixedWidth(320);
+    sidebar->setMinimumWidth(240);
 
     auto *heading = new QLabel("Issues");
     heading->setObjectName("channelTitle");
 
     m_issuesRepoCombo = new QComboBox;
     m_issuesRepoCombo->setToolTip("Repository whose issues you are viewing");
+    // The repo is fixed by the repo-detail view that hosts this panel; the combo
+    // is kept for state but hidden from the user.
+    m_issuesRepoCombo->hide();
 
     m_issueStatusFilter = new QComboBox;
     m_issueStatusFilter->addItems({"Open", "Closed", "All"});
@@ -1535,7 +1836,16 @@ QWidget *MainWindow::buildIssuesSection()
     newRow->addWidget(m_issueSyncButton);
 
     m_issueList = new QListWidget;
-    m_issueList->setToolTip("Issues in this repository");
+    m_issueList->setToolTip("Issues in this repository \xC2\xB7 drag to reorder");
+    m_issueList->setDragDropMode(QAbstractItemView::InternalMove);
+    m_issueList->setDefaultDropAction(Qt::MoveAction);
+
+    // Quick-add: a single title field at the bottom where the scrollbar sits,
+    // for filing an issue without opening the full dialog.
+    m_issueQuickAdd = new QLineEdit;
+    m_issueQuickAdd->setObjectName("issueQuickAdd");
+    m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
+    m_issueQuickAdd->setMaxLength(160);
 
     auto *sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
@@ -1545,11 +1855,20 @@ QWidget *MainWindow::buildIssuesSection()
     sidebarLayout->addLayout(filterRow);
     sidebarLayout->addLayout(newRow);
     sidebarLayout->addWidget(m_issueList, 1);
+    sidebarLayout->addWidget(m_issueQuickAdd);
 
     // Center: the selected issue's title, status badge, thread and composer.
     m_issueTitle = new QLabel("Select an issue");
     m_issueTitle->setObjectName("channelTitle");
     m_issueTitle->setWordWrap(true);
+    m_issueCopyButton = new QPushButton("\xF0\x9F\x93\x8B Copy");
+    m_issueCopyButton->setObjectName("ghostButton");
+    m_issueCopyButton->setCursor(Qt::PointingHandCursor);
+    m_issueCopyButton->setToolTip("Copy this issue (title and thread) to the clipboard");
+    auto *issueTitleRow = new QHBoxLayout;
+    issueTitleRow->setContentsMargins(0, 0, 0, 0);
+    issueTitleRow->addWidget(m_issueTitle, 1);
+    issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
     m_issueMeta = new QLabel; // status badge
     m_issueMeta->setObjectName("statusLine");
     m_issueMeta->setWordWrap(true);
@@ -1594,7 +1913,7 @@ QWidget *MainWindow::buildIssuesSection()
     auto *centerLayout = new QVBoxLayout(center);
     centerLayout->setContentsMargins(22, 18, 16, 18);
     centerLayout->setSpacing(8);
-    centerLayout->addWidget(m_issueTitle);
+    centerLayout->addLayout(issueTitleRow);
     centerLayout->addWidget(m_issueMeta);
     centerLayout->addWidget(m_issueReadonlyNote);
     centerLayout->addWidget(m_issueThreadScroll, 1);
@@ -1603,7 +1922,7 @@ QWidget *MainWindow::buildIssuesSection()
     // Right: GitHub-style metadata sidebar (assignees, labels, milestone).
     auto *meta = new QWidget;
     meta->setObjectName("sidebar");
-    meta->setFixedWidth(230);
+    meta->setMinimumWidth(180);
     m_issueAssigneesValue = new QLabel("No one assigned");
     m_issueLabelsValue = new QLabel("None yet");
     m_issueMilestoneValue = new QLabel("No milestone");
@@ -1643,12 +1962,22 @@ QWidget *MainWindow::buildIssuesSection()
     metaLayout->addStretch();
     metaLayout->addWidget(m_issueDeleteButton);
 
+    // Draggable dividers between the issue list, the detail, and the metadata.
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setObjectName("issuesSplitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(sidebar);
+    splitter->addWidget(center);
+    splitter->addWidget(meta);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(2, 0);
+    splitter->setSizes({300, 560, 230});
+
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(sidebar);
-    layout->addWidget(center, 1);
-    layout->addWidget(meta);
+    layout->addWidget(splitter);
 
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
@@ -1664,8 +1993,12 @@ QWidget *MainWindow::buildIssuesSection()
                     showIssue(item->data(Qt::UserRole).toInt());
             });
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
+    connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
+            &MainWindow::quickAddIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
+    connect(m_issueCopyButton, &QPushButton::clicked, this,
+            &MainWindow::copyIssueToClipboard);
     connect(m_issueCommentButton, &QPushButton::clicked, this,
             &MainWindow::addIssueComment);
     connect(m_issueAttachButton, &QPushButton::clicked, this,
@@ -1681,6 +2014,1066 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueAssigneesButton, &QPushButton::clicked, this,
             &MainWindow::editIssueAssignees);
     return page;
+}
+
+// ---- Repo detail (files + issues tabs) -------------------------------------
+
+QWidget *MainWindow::buildRepoDetailSection()
+{
+    auto *page = new QWidget;
+
+    // --- GitHub-style header: title + Public badge, action buttons on the right.
+    m_repoHeaderTitle = new QLabel("Repository");
+    m_repoHeaderTitle->setObjectName("repoHeaderTitle");
+    m_repoHeaderTitle->setTextFormat(Qt::RichText);
+    auto *publicBadge = new QLabel("Public");
+    publicBadge->setObjectName("publicBadge");
+
+    auto *notifyButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x94"));
+    notifyButton->setObjectName("repoAction");
+    notifyButton->setToolTip("Notifications");
+    m_forkButton = new QPushButton("\xE2\x9A\x82 Fork 0");
+    m_mirrorButton = new QPushButton("\xE2\x87\x86 Mirror 1");
+    m_starButton = new QPushButton("\xE2\x98\x86 Star 0");
+    for (QPushButton *b : {notifyButton, m_forkButton, m_mirrorButton, m_starButton}) {
+        b->setObjectName("repoAction");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_mirrorButton->setToolTip("Sync this repository's mirror now");
+    connect(m_mirrorButton, &QPushButton::clicked, this, [this] {
+        if (m_repoDetailIndex >= 0)
+            syncRepository(m_repoDetailIndex);
+    });
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(16, 12, 16, 4);
+    headerRow->setSpacing(8);
+    headerRow->addWidget(m_repoHeaderTitle);
+    headerRow->addWidget(publicBadge);
+    headerRow->addStretch();
+    headerRow->addWidget(notifyButton);
+    headerRow->addWidget(m_forkButton);
+    headerRow->addWidget(m_mirrorButton);
+    headerRow->addWidget(m_starButton);
+
+    // --- Tab bar (GitHub order; Commits gets its own tab).
+    struct TabDef {
+        const char *label;
+    };
+    const QList<QString> tabs = {"\xF0\x9F\x92\xBB Code",
+                                 "\xF0\x9F\x95\x98 Commits",
+                                 "\xF0\x9F\x93\x8B Issues",
+                                 "\xF0\x9F\x94\x80 Pull requests",
+                                 "\xE2\x96\xB6 Actions",
+                                 "\xF0\x9F\x93\x96 Wiki",
+                                 "\xF0\x9F\x9B\xA1 Security and quality",
+                                 "\xF0\x9F\x93\x8A Insights"};
+    m_repoDetailTabs = new QButtonGroup(this);
+    m_repoDetailTabs->setExclusive(true);
+    auto *tabRow = new QHBoxLayout;
+    tabRow->setContentsMargins(12, 0, 12, 0);
+    tabRow->setSpacing(2);
+    for (int i = 0; i < tabs.size(); ++i) {
+        auto *b = new QPushButton(tabs.at(i));
+        b->setObjectName("repoTab");
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        if (i == 0)
+            b->setChecked(true);
+        if (i == 2)
+            m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
+        m_repoDetailTabs->addButton(b, i);
+        tabRow->addWidget(b);
+    }
+    tabRow->addStretch();
+    auto *tabBar = new QWidget;
+    tabBar->setObjectName("repoTabBar");
+    tabBar->setLayout(tabRow);
+
+    // --- Inner stack: one page per tab.
+    m_repoDetailStack = new QStackedWidget;
+    m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
+    m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
+    m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Pull requests"));  // 3
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Actions"));        // 4
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Insights"));       // 7
+    connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        m_repoDetailStack->setCurrentIndex(id);
+        if (id == 1)
+            loadCommits();
+    });
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addLayout(headerRow);
+    layout->addWidget(tabBar);
+    layout->addWidget(m_repoDetailStack, 1);
+    return page;
+}
+
+QWidget *MainWindow::buildRepoCommitsTab()
+{
+    auto *page = new QWidget;
+    m_commitsList = new QListWidget;
+    m_commitsList->setObjectName("commitsList");
+    m_commitsList->setWordWrap(true);
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 12, 16, 16);
+    layout->addWidget(m_commitsList);
+    return page;
+}
+
+QWidget *MainWindow::buildPlaceholderTab(const QString &name)
+{
+    auto *page = new QWidget;
+    auto *label = new QLabel(
+        QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>Not available in "
+                       "ForkMesh yet.</span>")
+            .arg(name));
+    label->setObjectName("placeholderPanel");
+    label->setAlignment(Qt::AlignCenter);
+    label->setTextFormat(Qt::RichText);
+    auto *layout = new QVBoxLayout(page);
+    layout->addStretch();
+    layout->addWidget(label, 0, Qt::AlignCenter);
+    layout->addStretch();
+    return page;
+}
+
+QWidget *MainWindow::buildRepoFilesPanel()
+{
+    // Two modes: a GitHub-style overview, and an explorer+editor view shown only
+    // once a specific file is opened.
+    m_filesStack = new QStackedWidget;
+    m_filesStack->addWidget(buildRepoOverviewPage()); // 0 overview
+    m_filesStack->addWidget(buildRepoEditorPage());   // 1 editor (explorer + tabs)
+    return m_filesStack;
+}
+
+QWidget *MainWindow::buildRepoOverviewPage()
+{
+    auto *page = new QWidget;
+
+    // Latest-commit bar with a history button, like GitHub's commit strip.
+    auto *commitCard = new QWidget;
+    commitCard->setObjectName("commitBar");
+    m_commitBar = new QLabel;
+    m_commitBar->setObjectName("commitBarText");
+    m_commitBar->setTextFormat(Qt::RichText);
+    m_commitBar->setWordWrap(true);
+    m_historyButton = new QPushButton("\xF0\x9F\x95\x98 Commits");
+    m_historyButton->setObjectName("ghostButton");
+    m_historyButton->setCursor(Qt::PointingHandCursor);
+    m_historyButton->setToolTip("View the full commit history");
+    connect(m_historyButton, &QPushButton::clicked, this, [this] {
+        if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+            m_repoDetailTabs->button(1)->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(1);
+        loadCommits();
+    });
+    auto *commitRow = new QHBoxLayout(commitCard);
+    commitRow->setContentsMargins(12, 8, 8, 8);
+    commitRow->addWidget(m_commitBar, 1);
+    commitRow->addWidget(m_historyButton);
+
+    m_overviewCrumb = new QLabel;
+    m_overviewCrumb->setObjectName("statusLine");
+    m_overviewCrumb->setTextFormat(Qt::RichText);
+    m_overviewCrumb->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    connect(m_overviewCrumb, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                loadRepoOverview(href == "/" ? QString() : href);
+            });
+
+    m_overviewList = new QListWidget;
+    m_overviewList->setObjectName("overviewList");
+    connect(m_overviewList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                const QString path = item->data(Qt::UserRole).toString();
+                if (path.isEmpty())
+                    return;
+                if (item->data(Qt::UserRole + 1).toBool())
+                    loadRepoOverview(path); // navigate into the directory
+                else
+                    openRepoFile(path); // open the file (switches to editor view)
+            });
+
+    m_readmeView = new QTextBrowser;
+    m_readmeView->setObjectName("readmeView");
+    m_readmeView->setOpenExternalLinks(true);
+
+    // Toolbar: branch switcher + tags + "go to file" search.
+    m_branchButton = new QPushButton("\xF0\x9F\x8C\xBF main");
+    m_branchButton->setObjectName("ghostButton");
+    m_branchButton->setCursor(Qt::PointingHandCursor);
+    m_branchButton->setToolTip("Switch branch");
+    m_tagsButton = new QPushButton("\xF0\x9F\x8F\xB7 Tags");
+    m_tagsButton->setObjectName("ghostButton");
+    m_tagsButton->setCursor(Qt::PointingHandCursor);
+    m_fileSearch = new QLineEdit;
+    m_fileSearch->setPlaceholderText("Go to file\xE2\x80\xA6");
+    m_fileSearch->setClearButtonEnabled(true);
+    m_fileCompleter = new QCompleter(this);
+    m_fileCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_fileCompleter->setFilterMode(Qt::MatchContains);
+    m_fileCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_fileSearch->setCompleter(m_fileCompleter);
+    connect(m_fileCompleter, QOverload<const QString &>::of(&QCompleter::activated),
+            this, [this](const QString &path) {
+                if (!path.isEmpty())
+                    openRepoFile(path);
+                m_fileSearch->clear();
+            });
+    auto *toolbar = new QHBoxLayout;
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->setSpacing(8);
+    toolbar->addWidget(m_branchButton);
+    toolbar->addWidget(m_tagsButton);
+    toolbar->addWidget(m_fileSearch, 1);
+
+    // Left column: toolbar, latest commit, file list, README.
+    auto *leftColumn = new QWidget;
+    auto *leftLayout = new QVBoxLayout(leftColumn);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(8);
+    leftLayout->addLayout(toolbar);
+    leftLayout->addWidget(commitCard);
+    leftLayout->addWidget(m_overviewCrumb);
+    leftLayout->addWidget(m_overviewList, 2);
+    leftLayout->addWidget(m_readmeView, 3);
+
+    auto *body = new QHBoxLayout;
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(16);
+    body->addWidget(leftColumn, 1);
+    body->addWidget(buildAboutSidebar());
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 10, 16, 16);
+    layout->setSpacing(8);
+    layout->addLayout(body);
+    return page;
+}
+
+QWidget *MainWindow::buildAboutSidebar()
+{
+    auto *side = new QWidget;
+    side->setObjectName("aboutSidebar");
+    side->setFixedWidth(300);
+
+    auto *aboutLabel = new QLabel("About");
+    aboutLabel->setObjectName("aboutHeading");
+    m_aboutText = new QLabel;
+    m_aboutText->setObjectName("statusLine");
+    m_aboutText->setWordWrap(true);
+    m_aboutText->setTextFormat(Qt::RichText);
+    m_aboutText->setOpenExternalLinks(true);
+    m_aboutTopics = new QLabel;
+    m_aboutTopics->setObjectName("statusLine");
+    m_aboutTopics->setWordWrap(true);
+    m_aboutTopics->setTextFormat(Qt::RichText);
+
+    auto *langLabel = new QLabel("LANGUAGES");
+    langLabel->setObjectName("sectionLabel");
+    m_langBar = new QLabel;
+    m_langBar->setObjectName("langBar");
+    m_langBar->setFixedHeight(8);
+    m_langBar->setTextFormat(Qt::RichText);
+    m_langLegend = new QLabel;
+    m_langLegend->setObjectName("statusLine");
+    m_langLegend->setWordWrap(true);
+    m_langLegend->setTextFormat(Qt::RichText);
+
+    m_contributorsHeader = new QLabel("CONTRIBUTORS");
+    m_contributorsHeader->setObjectName("sectionLabel");
+    m_contributorsRow = new QLabel;
+    m_contributorsRow->setObjectName("statusLine");
+    m_contributorsRow->setWordWrap(true);
+    m_contributorsRow->setTextFormat(Qt::RichText);
+
+    auto *layout = new QVBoxLayout(side);
+    layout->setContentsMargins(8, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addWidget(aboutLabel);
+    layout->addWidget(m_aboutText);
+    layout->addWidget(m_aboutTopics);
+    layout->addSpacing(6);
+    layout->addWidget(langLabel);
+    layout->addWidget(m_langBar);
+    layout->addWidget(m_langLegend);
+    layout->addSpacing(6);
+    layout->addWidget(m_contributorsHeader);
+    layout->addWidget(m_contributorsRow);
+    layout->addStretch();
+    return side;
+}
+
+QWidget *MainWindow::buildRepoEditorPage()
+{
+    auto *page = new QWidget;
+
+    auto *backButton = new QPushButton("\xE2\x86\x90 Files");
+    backButton->setObjectName("ghostButton");
+    backButton->setCursor(Qt::PointingHandCursor);
+    backButton->setToolTip("Back to the repository overview");
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::showRepoOverview);
+    auto *backRow = new QHBoxLayout;
+    backRow->setContentsMargins(8, 4, 8, 0);
+    backRow->addWidget(backButton);
+    backRow->addStretch();
+
+    m_repoFileTree = new QTreeWidget;
+    m_repoFileTree->setObjectName("fileTree");
+    m_repoFileTree->setHeaderHidden(true);
+    m_repoFileTree->setMinimumWidth(180);
+    m_repoFileTree->setIndentation(14);
+    connect(m_repoFileTree, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (item && !item->data(0, Qt::UserRole + 1).toBool())
+                    openRepoFile(item->data(0, Qt::UserRole).toString());
+            });
+    connect(m_repoFileTree, &QTreeWidget::itemExpanded, this,
+            [this](QTreeWidgetItem *item) {
+                if (item && item->data(0, Qt::UserRole + 1).toBool())
+                    item->setIcon(0, iconForDir(true));
+            });
+    connect(m_repoFileTree, &QTreeWidget::itemCollapsed, this,
+            [this](QTreeWidgetItem *item) {
+                if (item && item->data(0, Qt::UserRole + 1).toBool())
+                    item->setIcon(0, iconForDir(false));
+            });
+
+    m_repoFileTabs = new QTabWidget;
+    m_repoFileTabs->setObjectName("fileTabs");
+    m_repoFileTabs->setDocumentMode(true);
+    m_repoFileTabs->setMovable(true);
+    m_repoFileTabs->setTabsClosable(true);
+    connect(m_repoFileTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
+        QWidget *w = m_repoFileTabs->widget(index);
+        m_openFileTabs.remove(m_openFileTabs.key(w));
+        m_repoFileTabs->removeTab(index);
+        w->deleteLater();
+        // With no files left open, return to the overview.
+        if (m_repoFileTabs->count() == 0)
+            showRepoOverview();
+    });
+
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setObjectName("filesSplitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(m_repoFileTree);
+    splitter->addWidget(m_repoFileTabs);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({240, 700});
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addLayout(backRow);
+    layout->addWidget(splitter, 1);
+    return page;
+}
+
+QString MainWindow::iconsDir() const
+{
+    static bool resolved = false;
+    static QString cached;
+    if (resolved)
+        return cached;
+    resolved = true;
+    const QString src = QStringLiteral(FORKMESH_SOURCE_DIR);
+    if (!src.isEmpty()) {
+        const QString candidate = QDir(src).absoluteFilePath("../icons");
+        if (QDir(candidate).exists()) {
+            cached = QDir(candidate).absolutePath();
+            return cached;
+        }
+    }
+    const QString beside = QCoreApplication::applicationDirPath() + "/icons";
+    if (QDir(beside).exists())
+        cached = beside;
+    return cached;
+}
+
+QIcon MainWindow::iconForFile(const QString &fileName) const
+{
+    const QString dir = iconsDir();
+    if (dir.isEmpty())
+        return {};
+    QString path = dir + "/" + fileTypeIconName(fileName.toLower()) + ".svg";
+    if (!QFileInfo::exists(path))
+        path = dir + "/default_file.svg";
+    return QIcon(path);
+}
+
+QIcon MainWindow::iconForDir(bool opened) const
+{
+    const QString dir = iconsDir();
+    if (dir.isEmpty())
+        return {};
+    return QIcon(dir + (opened ? "/default_folder_opened.svg" : "/default_folder.svg"));
+}
+
+QString MainWindow::repoGitDir() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return {};
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!repo.localPath.isEmpty() && QDir(repo.localPath).exists())
+        return repo.localPath;
+    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
+        return repo.mirrorPath;
+    return {};
+}
+
+void MainWindow::openRepoDetail(int repoIndex)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
+    m_repoDetailIndex = repoIndex;
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    if (m_repoHeaderTitle)
+        m_repoHeaderTitle->setText(
+            QStringLiteral("%1 / <b>%2</b>")
+                .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
+
+    // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
+    m_repoInfo = RepoInfo();
+    m_repoBranch.clear();
+    loadRepoInfo();
+    loadBranchesAndTags();
+    if (m_forkButton)
+        m_forkButton->setText(QString::fromUtf8().arg(m_repoInfo.forks));
+    if (m_mirrorButton)
+        m_mirrorButton->setText(
+            QString::fromUtf8().arg(qMax(1, m_repoInfo.mirrors)));
+    if (m_starButton)
+        m_starButton->setText(QString::fromUtf8().arg(m_repoInfo.stars));
+
+    // Point the embedded issues UI at this repo (its combo is hidden).
+    refreshIssuesRepoCombo();
+    if (m_issuesRepoCombo) {
+        const int combo = m_issuesRepoCombo->findData(repoIndex);
+        if (combo >= 0)
+            m_issuesRepoCombo->setCurrentIndex(combo);
+    }
+    reloadIssues();
+    updateRepoIssueCount();
+
+    // Default to the Code tab; reset the editor tabs/tree for the new repo.
+    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+        m_repoDetailTabs->button(0)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0);
+    if (m_repoFileTabs) {
+        m_repoFileTabs->clear();
+        m_openFileTabs.clear();
+    }
+    if (m_repoFileTree)
+        m_repoFileTree->clear();
+    m_treeLoadedForIndex = -1;
+
+    loadFileSearchIndex();
+    loadAboutSidebar();
+    loadCommits();
+    // Land on the GitHub-style overview (no explorer until a file is opened).
+    loadRepoOverview(QString());
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    showSection(3);
+}
+
+void MainWindow::updateRepoIssueCount()
+{
+    if (m_repoIssuesTab)
+        m_repoIssuesTab->setText(
+            QString::fromUtf8().arg(m_currentIssues.size()));
+}
+
+void MainWindow::loadRepoFileTree()
+{
+    if (!m_repoFileTree)
+        return;
+    m_repoFileTree->clear();
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        new QTreeWidgetItem(m_repoFileTree,
+                            {"No local copy of this repository to browse."});
+        return;
+    }
+    QByteArray out;
+    QString err;
+    // One recursive listing of every tracked path; we build the hierarchy below.
+    if (!runGitCapture(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()}, &out,
+                       &err)) {
+        new QTreeWidgetItem(m_repoFileTree,
+                            {err.isEmpty() ? "This repository has no commits yet."
+                                           : "Could not read files: " + err.left(120)});
+        return;
+    }
+
+    QStringList paths;
+    for (const QByteArray &record : out.split('\0'))
+        if (!record.isEmpty())
+            paths << QString::fromUtf8(record);
+    paths.sort(Qt::CaseInsensitive);
+
+    QHash<QString, QTreeWidgetItem *> dirs; // accumulated path -> directory node
+    for (const QString &path : std::as_const(paths)) {
+        const QStringList parts = path.split('/', Qt::SkipEmptyParts);
+        QString acc;
+        QTreeWidgetItem *parent = nullptr;
+        for (int i = 0; i < parts.size(); ++i) {
+            acc = acc.isEmpty() ? parts.at(i) : acc + "/" + parts.at(i);
+            const bool isLast = (i == parts.size() - 1);
+            if (isLast) {
+                auto *item = parent ? new QTreeWidgetItem(parent)
+                                    : new QTreeWidgetItem(m_repoFileTree);
+                item->setText(0, parts.at(i));
+                item->setIcon(0, iconForFile(parts.at(i)));
+                item->setData(0, Qt::UserRole, acc);
+                item->setData(0, Qt::UserRole + 1, false);
+            } else {
+                QTreeWidgetItem *node = dirs.value(acc);
+                if (!node) {
+                    node = parent ? new QTreeWidgetItem(parent)
+                                  : new QTreeWidgetItem(m_repoFileTree);
+                    node->setText(0, parts.at(i));
+                    node->setIcon(0, iconForDir(false));
+                    node->setData(0, Qt::UserRole, acc);
+                    node->setData(0, Qt::UserRole + 1, true);
+                    dirs.insert(acc, node);
+                }
+                parent = node;
+            }
+        }
+    }
+
+    // Folders first, then files, alphabetically — at every level.
+    std::function<void(QTreeWidgetItem *)> sortChildren = [&](QTreeWidgetItem *parent) {
+        const auto kids = parent->takeChildren();
+        QList<QTreeWidgetItem *> sorted = kids;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](QTreeWidgetItem *a, QTreeWidgetItem *b) {
+                      const bool ad = a->data(0, Qt::UserRole + 1).toBool();
+                      const bool bd = b->data(0, Qt::UserRole + 1).toBool();
+                      if (ad != bd)
+                          return ad;
+                      return a->text(0).toLower() < b->text(0).toLower();
+                  });
+        for (QTreeWidgetItem *child : std::as_const(sorted)) {
+            parent->addChild(child);
+            sortChildren(child);
+        }
+    };
+    sortChildren(m_repoFileTree->invisibleRootItem());
+
+    if (paths.isEmpty())
+        new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
+}
+
+void MainWindow::openRepoFile(const QString &path)
+{
+    if (path.isEmpty() || !m_repoFileTabs)
+        return;
+    // Opening a file reveals the explorer + editor view; build the tree lazily.
+    if (m_treeLoadedForIndex != m_repoDetailIndex) {
+        loadRepoFileTree();
+        m_treeLoadedForIndex = m_repoDetailIndex;
+    }
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(1);
+
+    // Focus an already-open tab for this file.
+    if (m_openFileTabs.contains(path)) {
+        m_repoFileTabs->setCurrentWidget(m_openFileTabs.value(path));
+        return;
+    }
+    const QString dir = repoGitDir();
+    QByteArray out;
+    QString err;
+    QString content;
+    if (dir.isEmpty() || !runGitCapture(dir, {"show", currentRef() + ":" + path}, &out, &err))
+        content = "Could not read file: " + err.left(200);
+    else if (out.size() > 1024 * 1024)
+        content = QStringLiteral("File is too large to preview (%1 KB).")
+                      .arg(out.size() / 1024);
+    else if (out.contains('\0'))
+        content = QString::fromUtf8()
+                      .arg(out.size());
+    else
+        content = QString::fromUtf8(out);
+
+    auto *editor = new QPlainTextEdit;
+    editor->setReadOnly(true);
+    editor->setObjectName("codeEditor");
+    editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    editor->setPlainText(content);
+
+    const QString name = path.section('/', -1);
+    const int index = m_repoFileTabs->addTab(editor, iconForFile(name), name);
+    m_repoFileTabs->setTabToolTip(index, path);
+    m_repoFileTabs->setCurrentIndex(index);
+    m_openFileTabs.insert(path, editor);
+}
+
+void MainWindow::showRepoOverview()
+{
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+}
+
+void MainWindow::loadRepoOverview(const QString &path)
+{
+    if (!m_overviewList)
+        return;
+    m_overviewPath = path;
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    m_overviewList->clear();
+    if (m_readmeView)
+        m_readmeView->clear();
+
+    const QString dir = repoGitDir();
+
+    // Latest commit strip: "<subject> · <author> committed <relative time>".
+    if (m_commitBar) {
+        QByteArray logOut;
+        QStringList logArgs{"log", "-1", "--format=%an%x1f%ar%x1f%s", currentRef()};
+        if (!path.isEmpty())
+            logArgs << "--" << path;
+        if (!dir.isEmpty() && runGitCapture(dir, logArgs, &logOut, nullptr) &&
+            !logOut.trimmed().isEmpty()) {
+            const QStringList f = QString::fromUtf8(logOut).trimmed().split('\x1f');
+            const QString author = f.value(0);
+            const QString when = f.value(1);
+            const QString subject = f.value(2);
+            m_commitBar->setText(
+                QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
+                               "committed %3</span>")
+                    .arg(author.toHtmlEscaped(), subject.toHtmlEscaped(),
+                         when.toHtmlEscaped()));
+        } else {
+            m_commitBar->setText("<span style='color:#8b949e'>No commits yet</span>");
+        }
+    }
+    if (m_historyButton) {
+        QByteArray countOut;
+        QString count;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
+            count = QString::fromUtf8(countOut).trimmed();
+        m_historyButton->setText(count.isEmpty()
+                                     ? QString::fromUtf8()
+                                     : QString::fromUtf8().arg(count));
+    }
+
+    // Breadcrumb for directory navigation.
+    if (m_overviewCrumb) {
+        QString crumb = QStringLiteral("<a href=\"/\">root</a>");
+        QString acc;
+        for (const QString &part : path.split('/', Qt::SkipEmptyParts)) {
+            acc = acc.isEmpty() ? part : acc + "/" + part;
+            crumb += " / <a href=\"" + acc.toHtmlEscaped() + "\">" +
+                     part.toHtmlEscaped() + "</a>";
+        }
+        m_overviewCrumb->setText(crumb);
+    }
+
+    if (dir.isEmpty()) {
+        new QListWidgetItem("No local copy of this repository to browse.",
+                            m_overviewList);
+        return;
+    }
+
+    const QString treeish = path.isEmpty() ? currentRef() : currentRef() + ":" + path;
+    QByteArray out;
+    QString err;
+    if (!runGitCapture(dir, {"ls-tree", "-z", treeish}, &out, &err)) {
+        new QListWidgetItem(err.isEmpty() ? "This repository has no commits yet."
+                                          : "Could not read files: " + err.left(120),
+                            m_overviewList);
+        return;
+    }
+
+    struct Entry {
+        QString name;
+        QString path;
+        bool isDir;
+    };
+    QList<Entry> entries;
+    QString readmePath;
+    for (const QByteArray &record : out.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QStringList meta =
+            QString::fromUtf8(record.left(tab)).split(' ', Qt::SkipEmptyParts);
+        if (meta.size() < 2)
+            continue;
+        Entry e;
+        e.name = QString::fromUtf8(record.mid(tab + 1));
+        e.isDir = meta.at(1) == "tree";
+        e.path = path.isEmpty() ? e.name : path + "/" + e.name;
+        entries.append(e);
+        if (!e.isDir && e.name.compare("README.md", Qt::CaseInsensitive) == 0)
+            readmePath = e.path;
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        if (a.isDir != b.isDir)
+            return a.isDir;
+        return a.name.toLower() < b.name.toLower();
+    });
+    if (!path.isEmpty()) {
+        auto *up = new QListWidgetItem(iconForDir(false), "..", m_overviewList);
+        const int cut = path.lastIndexOf('/');
+        up->setData(Qt::UserRole, cut < 0 ? QString() : path.left(cut));
+        up->setData(Qt::UserRole + 1, true);
+    }
+    for (const Entry &e : std::as_const(entries)) {
+        auto *item = new QListWidgetItem(
+            e.isDir ? iconForDir(false) : iconForFile(e.name), e.name, m_overviewList);
+        item->setData(Qt::UserRole, e.path);
+        item->setData(Qt::UserRole + 1, e.isDir);
+    }
+
+    // Render the directory's README beneath the file list (GitHub-style).
+    if (m_readmeView && !readmePath.isEmpty()) {
+        QByteArray readme;
+        if (runGitCapture(dir, {"show", currentRef() + ":" + readmePath}, &readme,
+                          nullptr) &&
+            !readme.contains('\0'))
+            m_readmeView->setMarkdown(QString::fromUtf8(readme));
+    }
+}
+
+QString MainWindow::currentRef() const
+{
+    return m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch;
+}
+
+void MainWindow::loadCommits()
+{
+    if (!m_commitsList)
+        return;
+    m_commitsList->clear();
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    QByteArray out;
+    if (!runGitCapture(dir, {"log", "--format=%h%x1f%an%x1f%ar%x1f%s", "-n", "300",
+                             currentRef()},
+                       &out, nullptr))
+        return;
+    for (const QByteArray &record : out.split('\n')) {
+        if (record.trimmed().isEmpty())
+            continue;
+        const QStringList f = QString::fromUtf8(record).split('\x1f');
+        if (f.size() < 4)
+            continue;
+        auto *item = new QListWidgetItem(
+            QString::fromUtf8()
+                .arg(f.at(3), f.at(1), f.at(2), f.at(0)),
+            m_commitsList);
+        item->setToolTip(f.at(0));
+    }
+}
+
+void MainWindow::loadRepoInfo()
+{
+    m_repoInfo = RepoInfo();
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+
+    QByteArray raw;
+    const QString local = repo.localPath + "/info.json";
+    if (!repo.localPath.isEmpty() && QFileInfo::exists(local)) {
+        QFile file(local);
+        if (file.open(QIODevice::ReadOnly))
+            raw = file.readAll();
+    } else {
+        const QString dir = repoGitDir();
+        if (!dir.isEmpty())
+            runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw, nullptr);
+    }
+    if (raw.isEmpty())
+        return;
+
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    m_repoInfo.about = obj.value("about").toString();
+    m_repoInfo.website = obj.value("website").toString();
+    m_repoInfo.language = obj.value("language").toString();
+    m_repoInfo.defaultBranch = obj.value("defaultBranch").toString();
+    m_repoInfo.forks = obj.value("forks").toInt(0);
+    m_repoInfo.stars = obj.value("stars").toInt(0);
+    m_repoInfo.mirrors = obj.value("mirrors").toInt(1);
+    for (const QJsonValue &v : obj.value("topics").toArray())
+        m_repoInfo.topics << v.toString();
+    for (const QJsonValue &v : obj.value("contributors").toArray()) {
+        const QJsonObject c = v.toObject();
+        if (!c.value("name").toString().isEmpty())
+            m_repoInfo.contributorAvatars.insert(c.value("name").toString(),
+                                                 c.value("avatar").toString());
+    }
+}
+
+void MainWindow::setRepoBranch(const QString &branch)
+{
+    m_repoBranch = branch;
+    if (m_branchButton)
+        m_branchButton->setText(QString::fromUtf8("\xF0\x9F\x8C\xBF ") + branch);
+    loadRepoOverview(QString());
+    loadAboutSidebar();
+    loadCommits();
+}
+
+void MainWindow::loadBranchesAndTags()
+{
+    const QString dir = repoGitDir();
+
+    // Current branch / default ref.
+    QString branch = m_repoInfo.defaultBranch;
+    if (branch.isEmpty() && !dir.isEmpty()) {
+        QByteArray head;
+        if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &head, nullptr))
+            branch = QString::fromUtf8(head).trimmed();
+    }
+    if (branch.isEmpty() || branch == "HEAD")
+        branch = QStringLiteral("HEAD");
+    m_repoBranch = branch == "HEAD" ? QString() : branch;
+    if (m_branchButton)
+        m_branchButton->setText(QString::fromUtf8("\xF0\x9F\x8C\xBF ") +
+                                (m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch));
+
+    // Branch menu.
+    if (m_branchButton) {
+        auto *menu = new QMenu(m_branchButton);
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"branch", "--format=%(refname:short)"}, &out, nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString b = line.trimmed();
+                if (b.isEmpty())
+                    continue;
+                menu->addAction(b, this, [this, b] { setRepoBranch(b); });
+            }
+        }
+        if (menu->isEmpty())
+            menu->addAction("No branches")->setEnabled(false);
+        m_branchButton->setMenu(menu);
+    }
+
+    // Tags menu.
+    if (m_tagsButton) {
+        auto *menu = new QMenu(m_tagsButton);
+        QByteArray out;
+        int count = 0;
+        if (!dir.isEmpty() && runGitCapture(dir, {"tag", "--sort=-creatordate"}, &out,
+                                            nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString t = line.trimmed();
+                if (t.isEmpty())
+                    continue;
+                ++count;
+                menu->addAction(t, this, [this, t] { setRepoBranch(t); });
+            }
+        }
+        if (menu->isEmpty())
+            menu->addAction("No tags")->setEnabled(false);
+        m_tagsButton->setMenu(menu);
+        m_tagsButton->setText(QString::fromUtf8().arg(count));
+    }
+}
+
+void MainWindow::loadFileSearchIndex()
+{
+    if (!m_fileCompleter)
+        return;
+    QStringList paths;
+    const QString dir = repoGitDir();
+    QByteArray out;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()}, &out,
+                      nullptr)) {
+        for (const QByteArray &record : out.split('\0'))
+            if (!record.isEmpty())
+                paths << QString::fromUtf8(record);
+    }
+    m_fileCompleter->setModel(new QStringListModel(paths, m_fileCompleter));
+}
+
+void MainWindow::loadAboutSidebar()
+{
+    const QString dir = repoGitDir();
+    const RepositoryRecord *repo =
+        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            ? &m_repositories.at(m_repoDetailIndex)
+            : nullptr;
+
+    // About text + website.
+    if (m_aboutText) {
+        QString text = m_repoInfo.about.isEmpty()
+                           ? (repo ? repo->description : QString())
+                           : m_repoInfo.about;
+        if (text.isEmpty())
+            text = "<span style='color:#8b949e'>No description.</span>";
+        else
+            text = text.toHtmlEscaped();
+        if (!m_repoInfo.website.isEmpty())
+            text += QStringLiteral("<br><a href=\"%1\">%1</a>")
+                        .arg(m_repoInfo.website.toHtmlEscaped());
+        m_aboutText->setText(text);
+    }
+    // Topics as chips.
+    if (m_aboutTopics) {
+        QStringList chips;
+        for (const QString &t : m_repoInfo.topics)
+            chips << "<span style='background:#1f6feb33; color:#58a6ff; "
+                     "border-radius:9px; padding:1px 8px;'>" +
+                         t.toHtmlEscaped() + "</span>";
+        m_aboutTopics->setText(chips.join(" "));
+        m_aboutTopics->setVisible(!chips.isEmpty());
+    }
+
+    // Languages: aggregate blob sizes per language.
+    if (m_langBar && m_langLegend) {
+        QHash<QString, qint64> bytesByLang;
+        qint64 total = 0;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"ls-tree", "-r", "-l", currentRef()}, &out, nullptr)) {
+            for (const QByteArray &record : out.split('\n')) {
+                const int tab = record.indexOf('\t');
+                if (tab < 0)
+                    continue;
+                const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+                if (meta.size() < 4)
+                    continue;
+                bool ok = false;
+                const qint64 size = QString::fromUtf8(meta.at(3)).toLongLong(&ok);
+                if (!ok || size <= 0)
+                    continue;
+                const QString name = QString::fromUtf8(record.mid(tab + 1));
+                const QString lang = languageForFile(name);
+                if (lang.isEmpty())
+                    continue;
+                bytesByLang[lang] += size;
+                total += size;
+            }
+        }
+        QList<QPair<QString, qint64>> langs;
+        for (auto it = bytesByLang.constBegin(); it != bytesByLang.constEnd(); ++it)
+            langs.append({it.key(), it.value()});
+        std::sort(langs.begin(), langs.end(),
+                  [](const auto &a, const auto &b) { return a.second > b.second; });
+
+        QString bar, legend;
+        const int shown = qMin(5, int(langs.size()));
+        for (int i = 0; i < shown && total > 0; ++i) {
+            const double pct = 100.0 * langs.at(i).second / total;
+            const QString color = languageColor(langs.at(i).first);
+            bar += QStringLiteral("<span style='background:%1;'>%2</span>")
+                       .arg(color, QString(qMax(1, int(pct / 2)), QChar(0x2588)));
+            legend += QStringLiteral(
+                          "<span style='color:%1'>\xE2\x97\x8F</span> %2 %3%&nbsp; ")
+                          .arg(color, langs.at(i).first.toHtmlEscaped(),
+                               QString::number(pct, 'f', 1));
+        }
+        m_langBar->setText(bar.isEmpty()
+                               ? QString()
+                               : QStringLiteral("<span style='font-size:8px'>%1</span>")
+                                     .arg(bar));
+        m_langLegend->setText(legend.isEmpty()
+                                  ? "<span style='color:#8b949e'>No code yet.</span>"
+                                  : legend);
+    }
+
+    // Contributors from git shortlog, with generated avatars.
+    if (m_contributorsRow && m_contributorsHeader) {
+        struct Contrib {
+            QString name;
+            int count;
+        };
+        QList<Contrib> contribs;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"shortlog", "-sn", "--all", "--no-merges"}, &out,
+                          nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString t = line.trimmed();
+                if (t.isEmpty())
+                    continue;
+                const int tab = t.indexOf('\t');
+                if (tab < 0)
+                    continue;
+                contribs.append({t.mid(tab + 1).trimmed(), t.left(tab).toInt()});
+            }
+        }
+        m_contributorsHeader->setText(
+            QStringLiteral("CONTRIBUTORS %1").arg(contribs.size()));
+        QString html;
+        const int shown = qMin(12, int(contribs.size()));
+        for (int i = 0; i < shown; ++i)
+            html += QString::fromUtf8()
+                        .arg(senderColor(contribs.at(i).name),
+                             (contribs.at(i).name + " \xC2\xB7 " +
+                              QString::number(contribs.at(i).count) + " commits")
+                                 .toHtmlEscaped());
+        if (contribs.size() > shown)
+            html += QStringLiteral("<span style='color:#8b949e'>+%1</span>")
+                        .arg(contribs.size() - shown);
+        m_contributorsRow->setText(html.isEmpty()
+                                       ? "<span style='color:#8b949e'>None yet.</span>"
+                                       : html);
+    }
+}
+
+void MainWindow::startRefreshSpin()
+{
+    if (!m_refreshButton)
+        return;
+    if (!m_refreshSpinTimer) {
+        m_refreshSpinTimer = new QTimer(this);
+        connect(m_refreshSpinTimer, &QTimer::timeout, this, [this] {
+            m_refreshAngle = (m_refreshAngle + 30) % 360;
+            QPixmap pm(20, 20);
+            pm.fill(Qt::transparent);
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.translate(10, 10);
+            p.rotate(m_refreshAngle);
+            p.translate(-10, -10);
+            QFont f = m_refreshButton->font();
+            f.setPixelSize(15);
+            p.setFont(f);
+            p.setPen(QColor(Theme::kTextTertiary));
+            p.drawText(pm.rect(), Qt::AlignCenter, QString::fromUtf8("\xE2\x9F\xB3"));
+            p.end();
+            m_refreshButton->setIcon(QIcon(pm));
+        });
+    }
+    m_refreshButton->setText(QString());
+    m_refreshSpinTimer->start(60);
+}
+
+void MainWindow::stopRefreshSpin()
+{
+    if (m_refreshSpinTimer)
+        m_refreshSpinTimer->stop();
+    if (m_refreshButton) {
+        m_refreshButton->setIcon(QIcon());
+        m_refreshButton->setText(QString::fromUtf8("\xE2\x9F\xB3"));
+    }
 }
 
 int MainWindow::issuesRepoIndex() const
@@ -1736,6 +3129,7 @@ void MainWindow::reloadIssues()
         m_currentIssueNumber = -1;
         renderIssueThread(Issue());
         updateIssueActionState();
+        updateRepoIssueCount();
         return;
     }
     const IssueStore store = issueStoreForCurrentRepo();
@@ -1759,6 +3153,59 @@ void MainWindow::reloadIssues()
 
     refreshIssueList();
     updateIssueActionState();
+    updateRepoIssueCount();
+}
+
+QWidget *MainWindow::makeIssueRow(const Issue &issue,
+                                  const QHash<QString, QString> &labelColors) const
+{
+    auto *row = new QWidget;
+    auto *col = new QVBoxLayout(row);
+    col->setContentsMargins(8, 5, 8, 5);
+    col->setSpacing(4);
+
+    QString titleText =
+        QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title.toHtmlEscaped());
+    if (issue.status == "closed")
+        titleText += "  \xE2\x9C\x94";
+    auto *title = new QLabel(titleText);
+    title->setObjectName("issueRowTitle");
+    title->setWordWrap(true);
+    col->addWidget(title);
+
+    if (!issue.labels.isEmpty() || !issue.milestone.isEmpty()) {
+        auto *pills = new QHBoxLayout;
+        pills->setContentsMargins(0, 0, 0, 0);
+        pills->setSpacing(4);
+        // Each label shown as a colored, pill-shaped chip. The id selector keeps
+        // the dynamic background from being overridden by the sidebar's
+        // "#sidebar QLabel { background: transparent }" rule.
+        for (const QString &name : issue.labels) {
+            const QString bg = labelColors.value(name, QStringLiteral("#94a3b8"));
+            auto *pill = new QLabel(name);
+            pill->setObjectName("issuePill");
+            pill->setStyleSheet(
+                QStringLiteral("QLabel#issuePill { background:%1; color:%2; "
+                               "border-radius:9px; padding:1px 8px; "
+                               "font-size:11px; font-weight:600; }")
+                    .arg(bg, pillTextColor(bg)));
+            pills->addWidget(pill, 0, Qt::AlignLeft);
+        }
+        // The milestone (if any) as a subtle outlined pill.
+        if (!issue.milestone.isEmpty()) {
+            auto *ms = new QLabel(
+                QString::fromUtf8().arg(issue.milestone));
+            ms->setObjectName("issueMilestonePill");
+            ms->setStyleSheet(
+                "QLabel#issueMilestonePill { border:1px solid #8b949e; "
+                "color:#8b949e; border-radius:9px; padding:1px 8px; "
+                "font-size:11px; }");
+            pills->addWidget(ms, 0, Qt::AlignLeft);
+        }
+        pills->addStretch();
+        col->addLayout(pills);
+    }
+    return row;
 }
 
 void MainWindow::refreshIssueList()
@@ -1769,6 +3216,12 @@ void MainWindow::refreshIssueList()
     const QString labelFilter = m_issueLabelFilter->currentData().toString();
     const QString msFilter = m_issueMilestoneFilter->currentData().toString();
     const int keep = m_currentIssueNumber;
+
+    // name -> color, so each label pill renders in its label color.
+    QHash<QString, QString> labelColors;
+    for (const IssueLabel &label : m_currentLabels)
+        if (!label.color.isEmpty())
+            labelColors.insert(label.name, label.color);
 
     m_issueList->clear();
     int rowToSelect = -1;
@@ -1781,13 +3234,11 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
-        QString text = QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title);
-        if (issue.status == "closed")
-            text += "  \xE2\x9C\x94"; // check mark
-        if (!issue.labels.isEmpty())
-            text += "\n   " + issue.labels.join(", ");
-        auto *item = new QListWidgetItem(text, m_issueList);
+        auto *item = new QListWidgetItem(m_issueList);
         item->setData(Qt::UserRole, issue.number);
+        QWidget *rowWidget = makeIssueRow(issue, labelColors);
+        item->setSizeHint(rowWidget->sizeHint());
+        m_issueList->setItemWidget(item, rowWidget);
         if (issue.number == keep)
             rowToSelect = m_issueList->count() - 1;
     }
@@ -1841,8 +3292,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
     // Status badge stays next to the title; labels/milestone/assignees live in
     // the GitHub-style right sidebar.
     m_issueMeta->setText(issue.status == "closed"
-                             ? QStringLiteral("<b style='color:#ef4444'>\xE2\x97\x8F closed</b>")
-                             : QStringLiteral("<b style='color:#22c55e'>\xE2\x97\x8F open</b>"));
+                             ? QString::fromUtf8()
+                             : QString::fromUtf8());
 
     auto colorFor = [this](const QString &name) -> QString {
         for (const IssueLabel &l : m_currentLabels)
@@ -1863,7 +3314,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
     } else {
         QStringList chips;
         for (const QString &name : issue.labels)
-            chips << QStringLiteral("<span style='color:%1'>\xE2\x97\x8F %2</span>")
+            chips << QString::fromUtf8()
                          .arg(colorFor(name), name.toHtmlEscaped());
         m_issueLabelsValue->setText(chips.join("<br>"));
     }
@@ -1907,7 +3358,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         auto *header = new QLabel(
             QStringLiteral("<b style='color:%1'>%2</b> <span style='color:#94a3b8'>%3%4</span>")
                 .arg(senderColor(who), who.toHtmlEscaped(), when,
-                     isOpen ? QStringLiteral(" \xC2\xB7 opened") : QString()));
+                     isOpen ? QString::fromUtf8() : QString()));
         header->setTextFormat(Qt::RichText);
         cardLayout->addWidget(header);
         auto *body = new QLabel;
@@ -1929,7 +3380,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     continue;
                 }
             }
-            auto *placeholder = new QLabel(QStringLiteral("\xF0\x9F\x96\xBC %1").arg(rel));
+            auto *placeholder = new QLabel(QString::fromUtf8().arg(rel));
             placeholder->setObjectName("statusLine");
             cardLayout->addWidget(placeholder);
         }
@@ -1938,7 +3389,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     auto addActivity = [&](const QString &text, qint64 ts, const QString &who) {
         const QString when = QDateTime::fromMSecsSinceEpoch(ts).toString("HH:mm");
-        auto *line = new QLabel(QStringLiteral("\xC2\xB7 %1 %2 (%3)")
+        auto *line = new QLabel(QString::fromUtf8()
                                     .arg(who.toHtmlEscaped(), text, when));
         line->setObjectName("statusLine");
         line->setWordWrap(true);
@@ -1987,6 +3438,8 @@ void MainWindow::updateIssueActionState()
     // others submit a signed comment to the relay inbox.
     if (m_issueCommentButton)
         m_issueCommentButton->setEnabled(haveIssue);
+    if (m_issueCopyButton)
+        m_issueCopyButton->setEnabled(haveIssue);
     if (m_issueComposer)
         m_issueComposer->setEnabled(haveIssue);
 
@@ -2065,6 +3518,86 @@ void MainWindow::promptNewIssue()
     }
     m_currentIssueNumber = number;
     reloadIssues();
+}
+
+void MainWindow::quickAddIssue()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString title = m_issueQuickAdd->text().trimmed();
+    if (title.isEmpty())
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        QMessageBox::warning(this, "Quick issue",
+                             issuesRepoIndex() < 0
+                                 ? "Pick a repository you host to add issues."
+                                 : "You don't host this repository, so new issues "
+                                   "are owner-only.");
+        return;
+    }
+    QString error;
+    const int number = store.createIssue(title, QString(), {}, QString(), {}, {},
+                                         &error);
+    if (number < 0) {
+        QMessageBox::warning(this, "Quick issue", error);
+        return;
+    }
+    m_issueQuickAdd->clear();
+    m_currentIssueNumber = number;
+    reloadIssues();
+}
+
+void MainWindow::copyIssueToClipboard()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    const Issue *issue = nullptr;
+    for (const Issue &candidate : m_currentIssues)
+        if (candidate.number == m_currentIssueNumber)
+            issue = &candidate;
+    if (!issue)
+        return;
+
+    // Pre-compute edits (target -> latest body) and deletions, mirroring
+    // renderIssueThread, so the copied text matches what's on screen.
+    QHash<QString, QString> edits;
+    QSet<QString> deleted;
+    for (const IssueEvent &ev : issue->events) {
+        if (ev.type == "edit" && !ev.target.isEmpty())
+            edits.insert(ev.target, ev.body);
+        else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
+            deleted.insert(ev.target);
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("#%1 %2").arg(issue->number).arg(issue->title);
+    lines << QStringLiteral("Status: %1").arg(issue->status);
+    if (!issue->labels.isEmpty())
+        lines << "Labels: " + issue->labels.join(", ");
+    if (!issue->milestone.isEmpty())
+        lines << "Milestone: " + issue->milestone;
+    if (!issue->assignees.isEmpty())
+        lines << "Assignees: " + issue->assignees.join(", ");
+
+    for (const IssueEvent &ev : issue->events) {
+        if (ev.type != "open" && ev.type != "comment")
+            continue;
+        if (deleted.contains(ev.id))
+            continue;
+        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+        const QString when =
+            QDateTime::fromMSecsSinceEpoch(ev.ts).toString("yyyy-MM-dd HH:mm");
+        const QString body = edits.contains(ev.id) ? edits.value(ev.id) : ev.body;
+        lines << QString() << QStringLiteral("--- %1 (%2) ---").arg(who, when) << body;
+    }
+
+    QApplication::clipboard()->setText(lines.join('\n'));
+    if (m_issueCopyButton) {
+        m_issueCopyButton->setText("\xE2\x9C\x94 Copied");
+        QTimer::singleShot(1500, m_issueCopyButton,
+                           [this] { m_issueCopyButton->setText("\xF0\x9F\x93\x8B Copy"); });
+    }
 }
 
 void MainWindow::addIssueComment()
@@ -2410,7 +3943,7 @@ QWidget *MainWindow::buildChatSection()
     settingsButton->setObjectName("iconButton");
     settingsButton->setCursor(Qt::PointingHandCursor);
     settingsButton->setToolTip("Settings & network log");
-    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(4); });
+    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(2); });
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
@@ -2555,7 +4088,7 @@ void MainWindow::updateHomeStats()
     m_homeName->setText(name);
     const QString key = m_profileIdentity.shortPublicKey();
     m_homePubkey->setText(key.isEmpty()
-                              ? QStringLiteral("Ed25519 key: generating\xE2\x80\xA6")
+                              ? QString::fromUtf8()
                               : "Ed25519 key: " + key);
     int mirroredRepos = 0;
     int onlineRepos = 0;
@@ -2664,19 +4197,22 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
-    auto *maintLabel = new QLabel("MAINTENANCE");
-    maintLabel->setObjectName("sectionLabel");
-    m_rebuildButton = new QPushButton("\xE2\x9F\xB3 Clear cache & rebuild");
-    m_rebuildButton->setObjectName("ghostButton");
-    m_rebuildButton->setCursor(Qt::PointingHandCursor);
-    m_rebuildButton->setToolTip(
-        "Delete the build cache, rebuild from scratch, and relaunch");
-    connect(m_rebuildButton, &QPushButton::clicked, this,
-            &MainWindow::rebuildAndRelaunch);
-    m_rebuildStatus = new QLabel;
-    m_rebuildStatus->setObjectName("modeHint");
-    m_rebuildStatus->setWordWrap(true);
-    m_rebuildStatus->hide();
+    auto *appearanceLabel = new QLabel("APPEARANCE");
+    appearanceLabel->setObjectName("sectionLabel");
+    m_themeCombo = new QComboBox;
+    m_themeCombo->addItem("Follow system", "system");
+    m_themeCombo->addItem("Dark", "dark");
+    m_themeCombo->addItem("Light", "light");
+    m_themeCombo->setToolTip("Choose the color theme, or follow the OS setting.");
+    {
+        const QString pref = QSettings().value(kThemeSetting, "system").toString();
+        const int idx = m_themeCombo->findData(pref);
+        m_themeCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(m_themeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        QSettings().setValue(kThemeSetting, m_themeCombo->currentData().toString());
+        applyTheme();
+    });
 
     // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
     // as the local "remote" a fork pushes to (see issue: fork from the client).
@@ -2696,15 +4232,6 @@ QWidget *MainWindow::buildSettingsSection()
     mirrorRow->setContentsMargins(0, 0, 0, 0);
     mirrorRow->addWidget(m_mirrorRootEdit, 1);
     mirrorRow->addWidget(mirrorChangeButton);
-
-    auto *logLabel = new QLabel("NETWORK LOG");
-    logLabel->setObjectName("sectionLabel");
-    m_settingsLog = new QPlainTextEdit;
-    m_settingsLog->setReadOnly(true);
-    m_settingsLog->setObjectName("networkLog");
-    m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
-    for (const QString &line : std::as_const(m_networkLog))
-        m_settingsLog->appendPlainText(line);
 
     auto *leaveButton = new QPushButton("\xE2\x86\x90 Leave node");
     leaveButton->setObjectName("dangerButton");
@@ -2728,12 +4255,9 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(startupLabel);
     layout->addWidget(m_autostartCheck);
     layout->addSpacing(6);
-    layout->addWidget(maintLabel);
-    layout->addWidget(m_rebuildButton, 0, Qt::AlignLeft);
-    layout->addWidget(m_rebuildStatus);
-    layout->addSpacing(6);
-    layout->addWidget(logLabel);
-    layout->addWidget(m_settingsLog, 1);
+    layout->addWidget(appearanceLabel);
+    layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    layout->addStretch();
     layout->addLayout(footerRow);
     return page;
 }
@@ -2790,6 +4314,7 @@ void MainWindow::quickRebuildRestart()
     m_buildStatusLabel = m_rebuildStatus;
     const QString clientDir = updateClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt")) {
+        stopRefreshSpin();
         QMessageBox::information(
             this, "Rebuild & restart",
             "No local source checkout to rebuild from. Use Quick update on the "
@@ -3555,47 +5080,81 @@ void MainWindow::refreshRepositoryList()
         return;
 
     QSignalBlocker blocker(m_repoList);
-    const int previousRow = m_repoList->currentRow();
-    m_repoList->clear();
-    for (int i = 0; i < m_repositories.size(); ++i) {
-        const RepositoryRecord &repo = m_repositories.at(i);
-        const bool online = repo.publishedAtMs > 0;
-        QString label = repo.owner + "/" + repo.name;
-        if (m_syncingRepos.contains(i))
-            label += "  \xC2\xB7 syncing";
-        else if (repo.lastSyncMs > 0)
-            label += "  \xC2\xB7 mirrored";
-        if (online)
-            label += "  \xC2\xB7 online";
-        else if (repo.publishToNetwork)
-            label += "  \xC2\xB7 publishing\xE2\x80\xA6";
-        const QPair<int, int> stats =
-            m_repoStats.value(repo.owner + "/" + repo.name);
-        if (stats.first > 0)
-            label += "\n   served " + QString::number(stats.first) +
-                     "\xC3\x97 through the mainnode \xC2\xB7 " +
-                     QString::number(stats.second) + " clone" +
-                     (stats.second == 1 ? "" : "s");
-        auto *item = new QListWidgetItem(label);
-        item->setData(Qt::UserRole, i);
-        // Green dot = published and browsable on the web; grey = local/pending.
-        if (repo.publishToNetwork)
-            item->setIcon(statusDotIcon(online));
-        item->setToolTip(
-            "Source: " + repositorySource(repo) +
-            "\nMirror path: " + repo.mirrorPath +
-            "\nHosted since: " + formatRepoDate(repo.hostedSinceMs) +
-            "\nLast sync: " + formatRepoDate(repo.lastSyncMs) +
-            "\nWeb: " +
-            (online ? "online at " + repositoryWebUrl(repo)
-                    : (repo.publishToNetwork ? "publishing\xE2\x80\xA6"
-                                             : "local only")) +
-            (repo.bchAddress.isEmpty() ? QString() :
-                                       "\nDonations: " + repo.bchAddress));
-        m_repoList->addItem(item);
+    // Preserve the selected repository across the rebuild (rows shift because of
+    // the node header rows).
+    int selectedRepo = -1;
+    if (QListWidgetItem *current = m_repoList->currentItem()) {
+        const int idx = current->data(Qt::UserRole).toInt();
+        if (idx >= 0)
+            selectedRepo = idx;
     }
-    if (previousRow >= 0 && previousRow < m_repoList->count())
-        m_repoList->setCurrentRow(previousRow);
+    m_repoList->clear();
+
+    // Group repositories by node (owner), preserving first-appearance order so
+    // nodes are listed first with their repos nested underneath.
+    QStringList nodeOrder;
+    QHash<QString, QList<int>> reposByNode;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const QString owner = m_repositories.at(i).owner;
+        if (!reposByNode.contains(owner))
+            nodeOrder.append(owner);
+        reposByNode[owner].append(i);
+    }
+
+    QListWidgetItem *itemToSelect = nullptr;
+    for (const QString &node : std::as_const(nodeOrder)) {
+        // Node header row: bold, not selectable.
+        auto *header = new QListWidgetItem(
+            QString::fromUtf8().arg(node));
+        header->setData(Qt::UserRole, -1);
+        header->setFlags(Qt::ItemIsEnabled);
+        QFont headerFont = header->font();
+        headerFont.setBold(true);
+        header->setFont(headerFont);
+        m_repoList->addItem(header);
+
+        for (int i : reposByNode.value(node)) {
+            const RepositoryRecord &repo = m_repositories.at(i);
+            const bool online = repo.publishedAtMs > 0;
+            QString label = "    " + repo.name; // indent under the node
+            if (m_syncingRepos.contains(i))
+                label += "  \xC2\xB7 syncing";
+            else if (repo.lastSyncMs > 0)
+                label += "  \xC2\xB7 mirrored";
+            if (online)
+                label += "  \xC2\xB7 online";
+            else if (repo.publishToNetwork)
+                label += "  \xC2\xB7 publishing\xE2\x80\xA6";
+            const QPair<int, int> stats =
+                m_repoStats.value(repo.owner + "/" + repo.name);
+            if (stats.first > 0)
+                label += "\n       served " + QString::number(stats.first) +
+                         "\xC3\x97 through the mainnode \xC2\xB7 " +
+                         QString::number(stats.second) + " clone" +
+                         (stats.second == 1 ? "" : "s");
+            auto *item = new QListWidgetItem(label);
+            item->setData(Qt::UserRole, i);
+            // Green dot = published and browsable on the web; grey = local/pending.
+            if (repo.publishToNetwork)
+                item->setIcon(statusDotIcon(online));
+            item->setToolTip(
+                "Source: " + repositorySource(repo) +
+                "\nMirror path: " + repo.mirrorPath +
+                "\nHosted since: " + formatRepoDate(repo.hostedSinceMs) +
+                "\nLast sync: " + formatRepoDate(repo.lastSyncMs) +
+                "\nWeb: " +
+                (online ? "online at " + repositoryWebUrl(repo)
+                        : (repo.publishToNetwork ? "publishing\xE2\x80\xA6"
+                                                 : "local only")) +
+                (repo.bchAddress.isEmpty() ? QString() :
+                                           "\nDonations: " + repo.bchAddress));
+            m_repoList->addItem(item);
+            if (i == selectedRepo)
+                itemToSelect = item;
+        }
+    }
+    if (itemToSelect)
+        m_repoList->setCurrentItem(itemToSelect);
     updateRepoWebLink();
     updateRepoRemoteInfo();
     updateHomeStats();

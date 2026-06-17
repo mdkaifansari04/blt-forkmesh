@@ -390,6 +390,74 @@ h1 span {
   overflow: hidden;
 }
 
+/* Repo page tabs: Code | Issues */
+.repo-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.repo-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.repo-tab:hover {
+  color: var(--text);
+}
+
+.repo-tab.is-active {
+  color: var(--text);
+  border-bottom-color: #fd8c73;
+}
+
+.repo-tab-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Issue list rows */
+.issue-row {
+  grid-template-columns: 16px minmax(120px, 1fr) auto;
+}
+
+.issue-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.issue-dot.is-open {
+  background: var(--green);
+}
+
+.issue-dot.is-closed {
+  background: var(--muted);
+}
+
+.issue-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .code-toolbar {
   display: flex;
   align-items: center;
