@@ -3,6 +3,10 @@ main = "src/entry.py"
 compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
 compatibility_date = "2026-06-14"
 
+# Runs automatically before every deploy: applies the D1 schema (idempotent).
+[build]
+command = "./migrate.sh"
+
 [assets]
 directory = "./public"
 run_worker_first = ["/api/*", "/health", "/*/info/refs", "/*/git-upload-pack"]
@@ -14,33 +18,23 @@ NODE_BCH_ADDRESS = ""
 #   uvx --from workers-py pywrangler secret put ACCOUNTS_KEY
 ACCOUNTS_KEY = "forkmesh-dev-accounts-key-change-me"
 
+# Durable Objects are used only for transient relaying now: the encrypted chat
+# rooms and the live file/git tunnel. All persistent data lives in D1 below.
 [[durable_objects.bindings]]
 name = "FORKMESH_MAINNODE_ROOM"
 class_name = "ForkMeshRoom"
 
 [[durable_objects.bindings]]
-name = "FORKMESH_CATALOG"
-class_name = "ForkMeshCatalog"
-
-[[durable_objects.bindings]]
-name = "FORKMESH_FILES"
-class_name = "ForkMeshFiles"
-
-[[durable_objects.bindings]]
 name = "FORKMESH_HOST"
 class_name = "ForkMeshHost"
 
-[[durable_objects.bindings]]
-name = "FORKMESH_ACCOUNTS"
-class_name = "ForkMeshAccounts"
-
-[[durable_objects.bindings]]
-name = "FORKMESH_ISSUES"
-class_name = "ForkMeshIssues"
-
-[[durable_objects.bindings]]
-name = "FORKMESH_PULLS"
-class_name = "ForkMeshPulls"
+# Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
+# Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
+# then paste the printed database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "forkmesh"
+database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
 
 [[migrations]]
 tag = "v1"
@@ -69,6 +63,17 @@ new_sqlite_classes = ["ForkMeshIssues"]
 [[migrations]]
 tag = "v7"
 new_sqlite_classes = ["ForkMeshPulls"]
+
+# Storage moved to D1: drop the Durable Objects that only held persistent data.
+[[migrations]]
+tag = "v8"
+deleted_classes = [
+    "ForkMeshCatalog",
+    "ForkMeshFiles",
+    "ForkMeshAccounts",
+    "ForkMeshIssues",
+    "ForkMeshPulls",
+]
 
 
 [observability]

@@ -33,7 +33,6 @@ MAX_PENDING_PULLS = 200
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
 REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$")
-REPO_FILES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/files$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
@@ -269,42 +268,439 @@ def safe_catalog_record(data):
     }
 
 
-def safe_files_record(data):
-    if not isinstance(data, dict):
+# --- D1 storage --------------------------------------------------------------
+# Durable Objects are reserved for transient relaying (chat rooms + the live
+# file/git tunnel). Everything that must persist — the repo catalog, accounts,
+# and the issue/pull submission inboxes — lives in the worker's D1 database.
+
+_schema_ready = False
+
+SCHEMA_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS repositories (
+        key TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
+        description TEXT, clone_url TEXT, bch TEXT, channel TEXT,
+        hosted_since TEXT, last_sync TEXT, updated_at TEXT, source TEXT,
+        maintainer TEXT NOT NULL, signature TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_repos_updated ON repositories(updated_at DESC)",
+    """CREATE TABLE IF NOT EXISTS accounts (
+        name TEXT PRIMARY KEY, pubkey TEXT NOT NULL, email_enc TEXT,
+        created_at INTEGER)""",
+    """CREATE TABLE IF NOT EXISTS issue_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
+        repo TEXT NOT NULL, number INTEGER, title_if_new TEXT,
+        event TEXT NOT NULL, submitter TEXT, submitted_at INTEGER)""",
+    "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(owner, repo)",
+    """CREATE TABLE IF NOT EXISTS pull_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
+        repo TEXT NOT NULL, pull TEXT NOT NULL, submitter TEXT,
+        submitted_at INTEGER)""",
+    "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(owner, repo)",
+]
+
+
+async def ensure_schema(env):
+    # Create the tables on first use per isolate (idempotent CREATE IF NOT EXISTS).
+    global _schema_ready
+    if _schema_ready:
+        return
+    for sql in SCHEMA_STATEMENTS:
+        await env.DB.prepare(sql).run()
+    _schema_ready = True
+
+
+async def d1_all(env, sql, *args):
+    stmt = env.DB.prepare(sql)
+    if args:
+        stmt = stmt.bind(*args)
+    result = await stmt.all()
+    out = []
+    for row in (result.results or []):
+        out.append(row.to_py() if hasattr(row, "to_py") else dict(row))
+    return out
+
+
+async def d1_first(env, sql, *args):
+    stmt = env.DB.prepare(sql)
+    if args:
+        stmt = stmt.bind(*args)
+    row = await stmt.first()
+    if row is None:
         return None
+    return row.to_py() if hasattr(row, "to_py") else dict(row)
 
-    owner = safe_segment(data.get("owner", ""))
-    name = safe_segment(data.get("name", ""))
-    public_key = clean_string(data.get("maintainer", ""), 120)
-    if not owner or not name or not public_key:
-        return None
 
-    raw_files = data.get("files")
-    if not isinstance(raw_files, list):
-        return None
+async def d1_run(env, sql, *args):
+    stmt = env.DB.prepare(sql)
+    if args:
+        stmt = stmt.bind(*args)
+    await stmt.run()
 
-    files = []
-    for item in raw_files[:MAX_FILES]:
-        if not isinstance(item, dict):
-            continue
-        path = clean_string(item.get("path", ""), 512)
-        if not path:
-            continue
-        try:
-            size = int(item.get("size", 0))
-        except (TypeError, ValueError):
-            size = 0
-        files.append({"path": path, "size": max(size, 0)})
 
+# --- Catalog (repositories table) -------------------------------------------
+
+def _repo_row_to_json(r):
     return {
-        "owner": owner,
-        "name": name,
-        "branch": clean_string(data.get("branch", ""), 80),
-        "updatedAt": clean_string(data.get("updatedAt", ""), 32),
-        "maintainer": public_key,
-        "signature": clean_string(data.get("signature", ""), 220),
-        "files": files,
+        "owner": r.get("owner", ""),
+        "name": r.get("name", ""),
+        "description": r.get("description", "") or "",
+        "cloneUrl": r.get("clone_url", "") or "",
+        "bch": r.get("bch", "") or "",
+        "channel": r.get("channel", "") or "",
+        "hostedSince": r.get("hosted_since", "") or "",
+        "lastSync": r.get("last_sync", "") or "",
+        "updatedAt": r.get("updated_at", "") or "",
+        "source": r.get("source", "local-node") or "local-node",
+        "maintainer": r.get("maintainer", ""),
+        "signature": r.get("signature", "") or "",
     }
+
+
+async def catalog_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT * FROM repositories ORDER BY updated_at DESC LIMIT ?",
+            MAX_CATALOG_REPOS,
+        )
+        return json_response(
+            {"ok": True, "repositories": [_repo_row_to_json(r) for r in rows]}
+        )
+
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        record = safe_catalog_record(data)
+        if not record:
+            return json_response(
+                {"error": "owner_name_and_maintainer_required"}, status=400
+            )
+        key = record["maintainer"] + ":" + record["owner"] + "/" + record["name"]
+        await d1_run(
+            env,
+            """INSERT INTO repositories
+               (key, owner, name, description, clone_url, bch, channel,
+                hosted_since, last_sync, updated_at, source, maintainer, signature)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET
+                 description=excluded.description, clone_url=excluded.clone_url,
+                 bch=excluded.bch, channel=excluded.channel,
+                 hosted_since=excluded.hosted_since, last_sync=excluded.last_sync,
+                 updated_at=excluded.updated_at, source=excluded.source,
+                 signature=excluded.signature""",
+            key, record["owner"], record["name"], record["description"],
+            record["cloneUrl"], record["bch"], record["channel"],
+            record["hostedSince"], record["lastSync"], record["updatedAt"],
+            record["source"], record["maintainer"], record["signature"],
+        )
+        # Keep only the most-recent MAX_CATALOG_REPOS records.
+        await d1_run(
+            env,
+            """DELETE FROM repositories WHERE key NOT IN
+               (SELECT key FROM repositories ORDER BY updated_at DESC LIMIT ?)""",
+            MAX_CATALOG_REPOS,
+        )
+        return json_response({"ok": True, "repository": record}, status=201)
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+# --- Accounts (accounts table) ----------------------------------------------
+
+async def _email_key(env):
+    secret = getattr(env, "ACCOUNTS_KEY", "forkmesh-dev-accounts-key")
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    return await js_crypto.subtle.importKey(
+        "raw", digest, to_js({"name": "AES-GCM"}), False,
+        _to_js(["encrypt", "decrypt"])
+    )
+
+
+async def _encrypt_email(env, email):
+    key = await _email_key(env)
+    iv = js_crypto.getRandomValues(Uint8Array.new(12))
+    cipher = await js_crypto.subtle.encrypt(
+        to_js({"name": "AES-GCM", "iv": iv}), key, _to_js(email.encode())
+    )
+    blob = bytes(iv.to_py()) + bytes(Uint8Array.new(cipher).to_py())
+    return base64.b64encode(blob).decode()
+
+
+async def _decrypt_email(env, stored):
+    try:
+        blob = base64.b64decode(stored)
+        iv = _to_js(blob[:12])
+        cipher = _to_js(blob[12:])
+        key = await _email_key(env)
+        plain = await js_crypto.subtle.decrypt(
+            to_js({"name": "AES-GCM", "iv": iv}), key, cipher
+        )
+        return bytes(Uint8Array.new(plain).to_py()).decode()
+    except Exception:
+        return ""
+
+
+async def _account_signup(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+
+    name = clean_string(data.get("nodeName", ""), 32).lower()
+    pubkey = clean_string(data.get("pubkey", ""), 120)
+    email = clean_string(data.get("email", ""), 254)
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name):
+        return json_response(
+            {"error": "node_name_must_be_lowercase_alphanumeric_starting_with_a_letter"},
+            status=400,
+        )
+    if not pubkey or "@" not in email or not ts:
+        return json_response({"error": "pubkey_email_and_ts_required"}, status=400)
+
+    canonical = ("forkmesh-account-v1\n" + name + "\n" + email + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    existing = await d1_first(
+        env, "SELECT pubkey, created_at FROM accounts WHERE name = ?", name
+    )
+    if existing and existing.get("pubkey") != pubkey:
+        return json_response({"error": "node_name_taken"}, status=409)
+
+    email_enc = await _encrypt_email(env, email)
+    created = existing.get("created_at") if existing else int(Date.now())
+    await d1_run(
+        env,
+        """INSERT INTO accounts (name, pubkey, email_enc, created_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(name) DO UPDATE SET
+             pubkey=excluded.pubkey, email_enc=excluded.email_enc""",
+        name, pubkey, email_enc, int(created),
+    )
+    return json_response({"ok": True, "nodeName": name}, status=201)
+
+
+async def _account_login(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+
+    name = clean_string(data.get("nodeName", ""), 32).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    row = await d1_first(
+        env, "SELECT pubkey, email_enc FROM accounts WHERE name = ?", name
+    )
+    if not row:
+        return json_response({"error": "no_such_account"}, status=404)
+
+    try:
+        skew = abs(int(Date.now()) - int(ts))
+    except (TypeError, ValueError):
+        skew = LOGIN_MAX_SKEW_MS + 1
+    if skew > LOGIN_MAX_SKEW_MS:
+        return json_response({"error": "stale_timestamp"}, status=401)
+
+    canonical = ("forkmesh-login-v1\n" + name + "\n" + ts).encode()
+    if not await ed25519_verify(row.get("pubkey", ""), signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    return json_response(
+        {"ok": True, "nodeName": name,
+         "email": await _decrypt_email(env, row.get("email_enc", ""))}
+    )
+
+
+async def accounts_handler(env, request):
+    await ensure_schema(env)
+    url = urlparse(request.url)
+    method = method_name(request)
+    if url.path == "/api/accounts/signup" and method == "POST":
+        return await _account_signup(env, request)
+    if url.path == "/api/accounts/login" and method == "POST":
+        return await _account_login(env, request)
+    match = ACCOUNTS_RE.match(url.path)
+    if match and method == "GET":
+        name = match.group(1)
+        row = await d1_first(
+            env, "SELECT pubkey, created_at FROM accounts WHERE name = ?", name
+        )
+        if not row:
+            return json_response({"ok": True, "exists": False, "name": name})
+        # Public lookup never returns the email.
+        return json_response(
+            {"ok": True, "exists": True, "name": name,
+             "pubkey": row.get("pubkey", ""), "createdAt": row.get("created_at", 0)}
+        )
+    return json_response({"error": "not_found"}, status=404)
+
+
+# --- Issue & pull submission inboxes (issue_inbox / pull_inbox tables) -------
+
+async def _owner_pubkey(env, owner):
+    row = await d1_first(env, "SELECT pubkey FROM accounts WHERE name = ?", owner)
+    return row.get("pubkey", "") if row else ""
+
+
+async def _authorize_owner(env, request, owner):
+    # The repo owner pulls/acks their inbox by signing forkmesh-issues-pull-v1
+    # with the node key registered to their account.
+    if not owner:
+        return False
+    params = parse_qs(urlparse(request.url).query)
+    ts = params.get("ts", [""])[0]
+    sig = params.get("sig", [""])[0]
+    owner_pub = await _owner_pubkey(env, owner)
+    if not owner_pub or not ts or not sig:
+        return False
+    try:
+        skew = abs(int(Date.now()) - int(ts))
+    except (TypeError, ValueError):
+        return False
+    if skew > LOGIN_MAX_SKEW_MS:
+        return False
+    canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
+    return await ed25519_verify(owner_pub, sig, canonical)
+
+
+async def issues_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        event = data.get("event")
+        if not isinstance(event, dict):
+            return json_response({"error": "event_required"}, status=400)
+        try:
+            number = int(data.get("number", 0))
+        except (TypeError, ValueError):
+            number = 0
+        if len((event.get("body", "") or "").encode("utf-8")) > MAX_ISSUE_BYTES:
+            return json_response({"error": "issue_too_large"}, status=413)
+        if not await verify_issue_event(number, event):
+            return json_response({"error": "bad_signature"}, status=401)
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE owner=? AND repo=?",
+            owner, repo,
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_ISSUES:
+            return json_response({"error": "inbox_full"}, status=429)
+        await d1_run(
+            env,
+            """INSERT INTO issue_inbox
+               (owner, repo, number, title_if_new, event, submitter, submitted_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            owner, repo, number, clean_string(data.get("titleIfNew", ""), 240),
+            json.dumps(event), clean_string(event.get("author", ""), 120),
+            int(Date.now()),
+        )
+        return json_response({"ok": True}, status=201)
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env,
+            """SELECT number, title_if_new, event, submitter, submitted_at
+               FROM issue_inbox WHERE owner=? AND repo=? ORDER BY id ASC""",
+            owner, repo,
+        )
+        pending = []
+        for r in rows:
+            try:
+                ev = json.loads(r.get("event") or "{}")
+            except Exception:
+                ev = {}
+            pending.append({
+                "number": r.get("number", 0),
+                "titleIfNew": r.get("title_if_new", "") or "",
+                "event": ev,
+                "submitter": r.get("submitter", "") or "",
+                "submittedAt": r.get("submitted_at", 0),
+            })
+        return json_response({"ok": True, "pending": pending})
+
+    if method == "DELETE":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        await d1_run(
+            env, "DELETE FROM issue_inbox WHERE owner=? AND repo=?", owner, repo
+        )
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def pulls_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        pull = data.get("pull")
+        if not isinstance(pull, dict):
+            return json_response({"error": "pull_required"}, status=400)
+        if len((pull.get("patch", "") or "").encode("utf-8")) > MAX_PULL_BYTES:
+            return json_response({"error": "pull_too_large"}, status=413)
+        if not await verify_pull_event(pull):
+            return json_response({"error": "bad_signature"}, status=401)
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM pull_inbox WHERE owner=? AND repo=?",
+            owner, repo,
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_PULLS:
+            return json_response({"error": "inbox_full"}, status=429)
+        await d1_run(
+            env,
+            """INSERT INTO pull_inbox (owner, repo, pull, submitter, submitted_at)
+               VALUES (?,?,?,?,?)""",
+            owner, repo, json.dumps(pull),
+            clean_string(pull.get("author", ""), 120), int(Date.now()),
+        )
+        return json_response({"ok": True}, status=201)
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env,
+            """SELECT pull, submitter, submitted_at FROM pull_inbox
+               WHERE owner=? AND repo=? ORDER BY id ASC""",
+            owner, repo,
+        )
+        pending = []
+        for r in rows:
+            try:
+                pj = json.loads(r.get("pull") or "{}")
+            except Exception:
+                pj = {}
+            pending.append({
+                "pull": pj,
+                "submitter": r.get("submitter", "") or "",
+                "submittedAt": r.get("submitted_at", 0),
+            })
+        return json_response({"ok": True, "pending": pending})
+
+    if method == "DELETE":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        await d1_run(
+            env, "DELETE FROM pull_inbox WHERE owner=? AND repo=?", owner, repo
+        )
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
 
 
 class Default(WorkerEntrypoint):
@@ -337,26 +733,13 @@ class Default(WorkerEntrypoint):
                 }
             )
 
+        # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):
-            catalog_id = self.env.FORKMESH_CATALOG.idFromName("global")
-            catalog = self.env.FORKMESH_CATALOG.get(catalog_id)
-            return await catalog.fetch(request)
+            return await catalog_handler(self.env, request)
 
         if url.path in ("/api/accounts/signup", "/api/accounts/login") or \
                 ACCOUNTS_RE.match(url.path):
-            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
-            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
-            return await accounts.fetch(request)
-
-        files_match = REPO_FILES_RE.match(url.path)
-        if files_match:
-            owner = safe_segment(files_match.group(1))
-            repo = safe_segment(files_match.group(2))
-            if not owner or not repo:
-                return json_response({"error": "not_found"}, status=404)
-            files_id = self.env.FORKMESH_FILES.idFromName(f"files:{owner}/{repo}")
-            files_object = self.env.FORKMESH_FILES.get(files_id)
-            return await files_object.fetch(request)
+            return await accounts_handler(self.env, request)
 
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
@@ -364,9 +747,7 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(issues_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
-            issues_id = self.env.FORKMESH_ISSUES.idFromName(f"issues:{owner}/{repo}")
-            issues_object = self.env.FORKMESH_ISSUES.get(issues_id)
-            return await issues_object.fetch(request)
+            return await issues_handler(self.env, request, owner, repo)
 
         pulls_match = REPO_PULLS_RE.match(url.path)
         if pulls_match:
@@ -374,9 +755,7 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(pulls_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
-            pulls_id = self.env.FORKMESH_PULLS.idFromName(f"pulls:{owner}/{repo}")
-            pulls_object = self.env.FORKMESH_PULLS.get(pulls_id)
-            return await pulls_object.fetch(request)
+            return await pulls_handler(self.env, request, owner, repo)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
@@ -540,421 +919,6 @@ class ForkMeshRoom(DurableObject):
                 stale.append(socket)
         for socket in stale:
             self._forget_observer(socket)
-
-
-class ForkMeshCatalog(DurableObject):
-    async def fetch(self, request):
-        method = method_name(request)
-        if method == "GET":
-            records = await self._records()
-            return json_response(
-                {
-                    "ok": True,
-                    "repositories": sorted(
-                        records.values(),
-                        key=lambda repo: repo.get("updatedAt", ""),
-                        reverse=True,
-                    ),
-                }
-            )
-
-        if method == "POST":
-            try:
-                data = await request.json()
-            except Exception:
-                return json_response({"error": "invalid_json"}, status=400)
-
-            record = safe_catalog_record(data)
-            if not record:
-                return json_response(
-                    {"error": "owner_name_and_maintainer_required"},
-                    status=400,
-                )
-
-            key = (
-                record["maintainer"] + ":" + record["owner"] + "/" + record["name"]
-            )
-            records = await self._records()
-            records[key] = record
-            if len(records) > MAX_CATALOG_REPOS:
-                ordered = sorted(
-                    records.items(),
-                    key=lambda item: item[1].get("updatedAt", ""),
-                    reverse=True,
-                )
-                records = dict(ordered[:MAX_CATALOG_REPOS])
-
-            await self.ctx.storage.put("repositories", records)
-            return json_response({"ok": True, "repository": record}, status=201)
-
-        return json_response({"error": "method_not_allowed"}, status=405)
-
-    async def _records(self):
-        records = await self.ctx.storage.get("repositories")
-        return records if isinstance(records, dict) else {}
-
-
-class ForkMeshFiles(DurableObject):
-    # Stores a per-repository file listing (paths + sizes only, no contents) so
-    # the website can let visitors traverse the repository tree. File data
-    # itself stays on the desktop node's local mirror.
-    async def fetch(self, request):
-        method = method_name(request)
-        if method == "GET":
-            record = await self.ctx.storage.get("files")
-            if not isinstance(record, dict):
-                return json_response({"ok": True, "exists": False, "files": []})
-            return json_response({"ok": True, "exists": True, **record})
-
-        if method == "POST":
-            try:
-                data = await request.json()
-            except Exception:
-                return json_response({"error": "invalid_json"}, status=400)
-
-            record = safe_files_record(data)
-            if not record:
-                return json_response(
-                    {"error": "owner_name_and_maintainer_required"},
-                    status=400,
-                )
-
-            await self.ctx.storage.put("files", record)
-            return json_response(
-                {"ok": True, "count": len(record["files"])}, status=201
-            )
-
-        return json_response({"error": "method_not_allowed"}, status=405)
-
-
-class ForkMeshIssues(DurableObject):
-    # Submission inbox for one repository. Canonical issues live in the repo's
-    # issues/ folder (git). People without write access POST signed issue/comment
-    # events here; the repo owner's node pulls them (owner-authenticated), merges
-    # them into the folder, commits, and acks to clear the inbox. Every submission
-    # is signature-verified before it is accepted (see verify_issue_event).
-    async def _pending(self):
-        data = await self.ctx.storage.get("pending")
-        return data if isinstance(data, list) else []
-
-    def _owner_from_path(self, request):
-        match = REPO_ISSUES_RE.match(urlparse(request.url).path)
-        return safe_segment(match.group(1)) if match else None
-
-    async def fetch(self, request):
-        method = method_name(request)
-        if method == "POST":
-            return await self._submit(request)
-        if method == "GET":
-            return await self._list(request)
-        if method == "DELETE":
-            return await self._ack(request)
-        return json_response({"error": "method_not_allowed"}, status=405)
-
-    async def _submit(self, request):
-        try:
-            data = await request.json()
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-
-        event = data.get("event")
-        if not isinstance(event, dict):
-            return json_response({"error": "event_required"}, status=400)
-        try:
-            number = int(data.get("number", 0))
-        except (TypeError, ValueError):
-            number = 0
-
-        body_text = event.get("body", "") or ""
-        if len(body_text.encode("utf-8")) > MAX_ISSUE_BYTES:
-            return json_response({"error": "issue_too_large"}, status=413)
-
-        if not await verify_issue_event(number, event):
-            return json_response({"error": "bad_signature"}, status=401)
-
-        pending = await self._pending()
-        if len(pending) >= MAX_PENDING_ISSUES:
-            return json_response({"error": "inbox_full"}, status=429)
-        pending.append(
-            {
-                "number": number,
-                "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
-                "event": event,
-                "submitter": clean_string(event.get("author", ""), 120),
-                "submittedAt": int(Date.now()),
-            }
-        )
-        await self.ctx.storage.put("pending", pending)
-        return json_response({"ok": True, "pending": len(pending)}, status=201)
-
-    async def _owner_pubkey(self, owner):
-        # Look up the repo owner's registered account public key via the accounts
-        # Durable Object, so only the owner can pull/ack the inbox.
-        try:
-            from js import Request as JsRequest
-
-            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
-            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
-            resp = await accounts.fetch(
-                JsRequest.new("https://do/api/accounts/" + owner)
-            )
-            record = json.loads(await resp.text())
-            return record.get("pubkey", "") if record.get("exists") else ""
-        except Exception:
-            return ""
-
-    async def _authorize_owner(self, request):
-        owner = self._owner_from_path(request)
-        if not owner:
-            return False
-        params = parse_qs(urlparse(request.url).query)
-        ts = params.get("ts", [""])[0]
-        sig = params.get("sig", [""])[0]
-        owner_pub = await self._owner_pubkey(owner)
-        if not owner_pub or not ts or not sig:
-            return False
-        try:
-            skew = abs(int(Date.now()) - int(ts))
-        except (TypeError, ValueError):
-            return False
-        if skew > LOGIN_MAX_SKEW_MS:
-            return False
-        canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-        return await ed25519_verify(owner_pub, sig, canonical)
-
-    async def _list(self, request):
-        if not await self._authorize_owner(request):
-            return json_response({"error": "unauthorized"}, status=401)
-        return json_response({"ok": True, "pending": await self._pending()})
-
-    async def _ack(self, request):
-        if not await self._authorize_owner(request):
-            return json_response({"error": "unauthorized"}, status=401)
-        await self.ctx.storage.put("pending", [])
-        return json_response({"ok": True})
-
-
-class ForkMeshPulls(DurableObject):
-    # Pull-request submission inbox for one repository. Any node POSTs a signed PR
-    # (title/base/head/unified-diff) here; the repo owner pulls (owner-authenticated),
-    # merges them into the repo's pulls/ folder, and acks to clear the inbox.
-    async def _pending(self):
-        data = await self.ctx.storage.get("pending")
-        return data if isinstance(data, list) else []
-
-    def _owner_from_path(self, request):
-        match = REPO_PULLS_RE.match(urlparse(request.url).path)
-        return safe_segment(match.group(1)) if match else None
-
-    async def fetch(self, request):
-        method = method_name(request)
-        if method == "POST":
-            return await self._submit(request)
-        if method == "GET":
-            return await self._list(request)
-        if method == "DELETE":
-            return await self._ack(request)
-        return json_response({"error": "method_not_allowed"}, status=405)
-
-    async def _submit(self, request):
-        try:
-            data = await request.json()
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-        pull = data.get("pull")
-        if not isinstance(pull, dict):
-            return json_response({"error": "pull_required"}, status=400)
-        if len((pull.get("patch", "") or "").encode("utf-8")) > MAX_PULL_BYTES:
-            return json_response({"error": "pull_too_large"}, status=413)
-        if not await verify_pull_event(pull):
-            return json_response({"error": "bad_signature"}, status=401)
-        pending = await self._pending()
-        if len(pending) >= MAX_PENDING_PULLS:
-            return json_response({"error": "inbox_full"}, status=429)
-        pending.append({
-            "pull": pull,
-            "submitter": clean_string(pull.get("author", ""), 120),
-            "submittedAt": int(Date.now()),
-        })
-        await self.ctx.storage.put("pending", pending)
-        return json_response({"ok": True, "pending": len(pending)}, status=201)
-
-    async def _owner_pubkey(self, owner):
-        try:
-            from js import Request as JsRequest
-
-            accounts_id = self.env.FORKMESH_ACCOUNTS.idFromName("global")
-            accounts = self.env.FORKMESH_ACCOUNTS.get(accounts_id)
-            resp = await accounts.fetch(
-                JsRequest.new("https://do/api/accounts/" + owner)
-            )
-            record = json.loads(await resp.text())
-            return record.get("pubkey", "") if record.get("exists") else ""
-        except Exception:
-            return ""
-
-    async def _authorize_owner(self, request):
-        owner = self._owner_from_path(request)
-        if not owner:
-            return False
-        params = parse_qs(urlparse(request.url).query)
-        ts = params.get("ts", [""])[0]
-        sig = params.get("sig", [""])[0]
-        owner_pub = await self._owner_pubkey(owner)
-        if not owner_pub or not ts or not sig:
-            return False
-        try:
-            skew = abs(int(Date.now()) - int(ts))
-        except (TypeError, ValueError):
-            return False
-        if skew > LOGIN_MAX_SKEW_MS:
-            return False
-        canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-        return await ed25519_verify(owner_pub, sig, canonical)
-
-    async def _list(self, request):
-        if not await self._authorize_owner(request):
-            return json_response({"error": "unauthorized"}, status=401)
-        return json_response({"ok": True, "pending": await self._pending()})
-
-    async def _ack(self, request):
-        if not await self._authorize_owner(request):
-            return json_response({"error": "unauthorized"}, status=401)
-        await self.ctx.storage.put("pending", [])
-        return json_response({"ok": True})
-
-
-class ForkMeshAccounts(DurableObject):
-    # The website's account database. Each node registers a unique node name
-    # bound to its Ed25519 public key, plus an email encrypted at rest. Signup
-    # and login are proven by signing a canonical string with the node key, so
-    # only the node that holds the private key can claim or use a name.
-    async def _accounts(self):
-        accounts = await self.ctx.storage.get("accounts")
-        return accounts if isinstance(accounts, dict) else {}
-
-    async def _email_key(self):
-        secret = getattr(self.env, "ACCOUNTS_KEY", "forkmesh-dev-accounts-key")
-        digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-        return await js_crypto.subtle.importKey(
-            "raw", digest, to_js({"name": "AES-GCM"}), False,
-            _to_js(["encrypt", "decrypt"])
-        )
-
-    async def _encrypt_email(self, email):
-        key = await self._email_key()
-        iv = js_crypto.getRandomValues(Uint8Array.new(12))
-        cipher = await js_crypto.subtle.encrypt(
-            to_js({"name": "AES-GCM", "iv": iv}), key, _to_js(email.encode())
-        )
-        blob = bytes(iv.to_py()) + bytes(Uint8Array.new(cipher).to_py())
-        return base64.b64encode(blob).decode()
-
-    async def _decrypt_email(self, stored):
-        try:
-            blob = base64.b64decode(stored)
-            iv = _to_js(blob[:12])
-            cipher = _to_js(blob[12:])
-            key = await self._email_key()
-            plain = await js_crypto.subtle.decrypt(
-                to_js({"name": "AES-GCM", "iv": iv}), key, cipher
-            )
-            return bytes(Uint8Array.new(plain).to_py()).decode()
-        except Exception:
-            return ""
-
-    async def fetch(self, request):
-        url = urlparse(request.url)
-        method = method_name(request)
-
-        if url.path == "/api/accounts/signup" and method == "POST":
-            return await self._signup(request)
-        if url.path == "/api/accounts/login" and method == "POST":
-            return await self._login(request)
-
-        match = ACCOUNTS_RE.match(url.path)
-        if match and method == "GET":
-            name = match.group(1)
-            accounts = await self._accounts()
-            record = accounts.get(name)
-            if not record:
-                return json_response({"ok": True, "exists": False, "name": name})
-            # Public lookup never returns the email.
-            return json_response(
-                {"ok": True, "exists": True, "name": name,
-                 "pubkey": record.get("pubkey", ""),
-                 "createdAt": record.get("createdAt", 0)}
-            )
-
-        return json_response({"error": "not_found"}, status=404)
-
-    async def _signup(self, request):
-        try:
-            data = await request.json()
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-
-        name = clean_string(data.get("nodeName", ""), 32).lower()
-        pubkey = clean_string(data.get("pubkey", ""), 120)
-        email = clean_string(data.get("email", ""), 254)
-        ts = clean_string(data.get("ts", ""), 20)
-        signature = clean_string(data.get("sig", ""), 200)
-        if not valid_node_name(name):
-            return json_response(
-                {"error": "node_name_must_be_lowercase_alphanumeric_starting_with_a_letter"},
-                status=400,
-            )
-        if not pubkey or "@" not in email or not ts:
-            return json_response({"error": "pubkey_email_and_ts_required"}, status=400)
-
-        canonical = ("forkmesh-account-v1\n" + name + "\n" + email + "\n" + ts).encode()
-        if not await ed25519_verify(pubkey, signature, canonical):
-            return json_response({"error": "bad_signature"}, status=401)
-
-        accounts = await self._accounts()
-        existing = accounts.get(name)
-        if existing and existing.get("pubkey") != pubkey:
-            return json_response({"error": "node_name_taken"}, status=409)
-
-        accounts[name] = {
-            "pubkey": pubkey,
-            "emailEnc": await self._encrypt_email(email),
-            "createdAt": existing.get("createdAt", int(Date.now())) if existing
-            else int(Date.now()),
-        }
-        await self.ctx.storage.put("accounts", accounts)
-        return json_response({"ok": True, "nodeName": name}, status=201)
-
-    async def _login(self, request):
-        try:
-            data = await request.json()
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-
-        name = clean_string(data.get("nodeName", ""), 32).lower()
-        ts = clean_string(data.get("ts", ""), 20)
-        signature = clean_string(data.get("sig", ""), 200)
-        accounts = await self._accounts()
-        record = accounts.get(name)
-        if not record:
-            return json_response({"error": "no_such_account"}, status=404)
-
-        try:
-            skew = abs(int(Date.now()) - int(ts))
-        except (TypeError, ValueError):
-            skew = LOGIN_MAX_SKEW_MS + 1
-        if skew > LOGIN_MAX_SKEW_MS:
-            return json_response({"error": "stale_timestamp"}, status=401)
-
-        canonical = ("forkmesh-login-v1\n" + name + "\n" + ts).encode()
-        if not await ed25519_verify(record.get("pubkey", ""), signature, canonical):
-            return json_response({"error": "bad_signature"}, status=401)
-
-        # The owner proved key possession, so return their decrypted email.
-        return json_response(
-            {"ok": True, "nodeName": name, "email": await self._decrypt_email(
-                record.get("emailEnc", ""))}
-        )
 
 
 class ForkMeshHost(DurableObject):
