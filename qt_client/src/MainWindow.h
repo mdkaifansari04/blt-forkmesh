@@ -181,6 +181,12 @@ private:
                           const QString &commit, const QString &ref);
     void processActionQueue();
     void onRunLog(int runId, const QString &text);
+    void notifyActionEvent(const QString &title, const QString &body,
+                           bool warning); // tray alert gated by the run-alert setting
+    // Show a desktop notification with both a title and body, using notify-send
+    // when available (reliable on Linux) and falling back to the tray icon.
+    void postNotification(const QString &title, const QString &body,
+                          bool warning = false);
     void onRunStatusChanged(int runId, const QString &status);
     void onRunFinished(int runId, bool ok);
     void refreshActionsTable();
