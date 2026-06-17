@@ -168,6 +168,7 @@ private:
     void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
     void publishRepositoryFiles(int index);
+    void updateRepoRemoteInfo();
     QUrl filesApiUrl(const RepositoryRecord &repo) const;
     QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
@@ -244,6 +245,8 @@ private:
     QListWidget *m_channelList;
     QListWidget *m_repoList;
     QLabel *m_repoWebLink = nullptr;
+    QLineEdit *m_repoRemoteEdit = nullptr; // local mirror path = push remote
+    QLabel *m_repoRemoteHint = nullptr;
     QPushButton *m_syncRepoButton;
     QPushButton *m_publishRepoButton;
     QListWidget *m_dmList;
