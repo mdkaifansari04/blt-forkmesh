@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 2
 title: Pull requests + signed collaboration objects
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 assignees: []
