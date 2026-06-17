@@ -187,6 +187,7 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
 #breadcrumb { background: transparent; font-size: 12px; font-weight: 600; }
+#connectionStatus { background: transparent; font-size: 12px; font-weight: 600; }
 
 /* --- Home --- */
 #homeCard {
@@ -525,6 +526,7 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 12px; font-weight: 600; }
+#connectionStatus { background: transparent; color: #656d76; font-size: 12px; font-weight: 600; }
 
 /* --- Home --- */
 #homeCard {

@@ -49,6 +49,8 @@ private:
         bool online = true;
     };
 
+    void openConnection();      // (re)create the socket and start connecting
+    void scheduleReconnect();   // progressive backoff after a drop/failure
     void connectSocketSignals();
     void sendHandshake();
     void onSocketReadyRead();
@@ -94,6 +96,11 @@ private:
     QByteArray m_wsKey;
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
+    // Auto-reconnect: the node stays online across drops, retrying with
+    // exponential backoff until the user explicitly leaves.
+    QTimer *m_reconnectTimer = nullptr;
+    int m_reconnectAttempt = 0;
+    bool m_userStopped = false;
 
     QStringList m_channels{"#general", "#random"};
     QHash<QString, Peer> m_peers;

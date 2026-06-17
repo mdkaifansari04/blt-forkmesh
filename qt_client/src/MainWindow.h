@@ -120,6 +120,7 @@ private:
     // Top breadcrumb: active server > current section.
     QWidget *buildBreadcrumb();
     void updateBreadcrumb();
+    void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Persistent network log docked at the bottom of the app.
     QWidget *buildNetworkLogDock();
 
@@ -193,6 +194,7 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
     void updateRepoIssueCount();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
@@ -344,6 +346,7 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     QLabel *m_breadcrumbServerIcon = nullptr;
+    QLabel *m_connectionStatus = nullptr; // top-right connection indicator
 
     // Setup widgets
     QLineEdit *m_nameEdit;

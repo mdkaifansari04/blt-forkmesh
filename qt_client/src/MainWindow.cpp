@@ -1621,14 +1621,59 @@ QWidget *MainWindow::buildBreadcrumb()
         if (href == "repos")
             showSection(0);
     });
+    // Live connection indicator, pinned to the top-right of the window.
+    m_connectionStatus = new QLabel;
+    m_connectionStatus->setObjectName("connectionStatus");
+    m_connectionStatus->setTextFormat(Qt::RichText);
+
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(14, 6, 14, 6);
     layout->setSpacing(8);
     layout->addWidget(m_breadcrumbServerIcon);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
+    layout->addWidget(m_connectionStatus);
     updateBreadcrumb();
+    updateConnectionStatus();
     return bar;
+}
+
+void MainWindow::updateConnectionStatus()
+{
+    if (!m_connectionStatus)
+        return;
+
+    // Connected when our own node shows a live link in the roster; the online
+    // count includes every node currently online (ourselves included).
+    bool selfOnline = false;
+    int onlineCount = 0;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (member.online)
+            ++onlineCount;
+        if (member.self && member.online)
+            selfOnline = true;
+    }
+    const bool connected = m_backend && selfOnline;
+
+    QString color, dot, text;
+    if (connected) {
+        color = "#3fb950"; // green
+        dot = QString::fromUtf8("\xE2\x97\x8F");
+        text = QStringLiteral("Connected \xC2\xB7 %1 %2 online")
+                   .arg(onlineCount)
+                   .arg(onlineCount == 1 ? "node" : "nodes");
+    } else if (m_backend) {
+        color = "#d29922"; // amber: connecting / backing off
+        dot = QString::fromUtf8("\xE2\x97\x8F");
+        text = QStringLiteral("Connecting\xE2\x80\xA6");
+    } else {
+        color = "#8b949e"; // grey: offline / not started
+        dot = QString::fromUtf8("\xE2\x97\x8B");
+        text = QStringLiteral("Offline");
+    }
+    m_connectionStatus->setText(
+        QStringLiteral("<span style='color:%1'>%2</span> %3")
+            .arg(color, dot, text.toHtmlEscaped()));
 }
 
 void MainWindow::updateBreadcrumb()
@@ -1764,16 +1809,8 @@ QWidget *MainWindow::buildReposPanel()
     page->setObjectName("sidebar"); // reuse list/label styling
     page->setMinimumWidth(240);
 
-    auto *heading = new QLabel("Repositories");
+    auto *heading = new QLabel("Nodes and repositories");
     heading->setObjectName("channelTitle");
-    auto *subtitle = new QLabel(
-        "Repos this node mirrors, grouped by node. Only signed metadata is "
-        "shared \xE2\x80\x94 the .git data stays on this machine.");
-    subtitle->setObjectName("statusLine");
-    subtitle->setWordWrap(true);
-
-    auto *reposLabel = new QLabel("NODES & REPOSITORIES");
-    reposLabel->setObjectName("sectionLabel");
     m_repoList = new QListWidget;
     m_repoList->setToolTip(
         "Repositories this node is preserving locally, grouped by node");
@@ -1828,9 +1865,7 @@ QWidget *MainWindow::buildReposPanel()
     layout->setContentsMargins(24, 22, 24, 22);
     layout->setSpacing(8);
     layout->addWidget(heading);
-    layout->addWidget(subtitle);
     layout->addSpacing(8);
-    layout->addWidget(reposLabel);
     layout->addWidget(m_repoList, 1);
     layout->addWidget(remoteLabel);
     layout->addLayout(remoteRow);
@@ -1857,10 +1892,9 @@ QWidget *MainWindow::buildReposPanel()
             return;
         m_repositories[index].actionsEnabled = on;
         saveRepositories();
-        if (on)
-            ensurePushHook(m_repositories.at(index));
-        else
-            removePushHook(m_repositories.at(index));
+        // The hook stays installed regardless (it powers live refresh too);
+        // just make sure it exists when enabling.
+        ensurePushHook(m_repositories.at(index));
         logSystem(QStringLiteral("Actions %1 for %2/%3.")
                       .arg(on ? "enabled" : "disabled",
                            m_repositories.at(index).owner,
@@ -5194,6 +5228,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
         const QString summary = status.section(" · ", 0, 0);
         m_statusLine->setText(summary);
         logSystem("Status: " + status);
+        updateConnectionStatus();
     });
     connect(backend, &ChatBackend::firewallBlocking, this, &MainWindow::showFirewallBanner);
     connect(backend, &ChatBackend::firewallHealthy, this, &MainWindow::hideFirewallBanner);
@@ -5219,6 +5254,7 @@ void MainWindow::leaveSession(const QString &)
         m_backend->deleteLater();
         m_backend = nullptr;
     }
+    updateConnectionStatus();
     m_stack->setCurrentIndex(0);
     m_userName.clear();
 
@@ -5578,6 +5614,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // it), so refresh that to reflect live connection status.
     refreshRepositoryList();
     updateHomeStats();
+    updateConnectionStatus();
 }
 
 void MainWindow::refreshChannelList()
@@ -6627,9 +6664,11 @@ void MainWindow::syncRepository(int index, bool quiet)
                     saveRepositories();
                     refreshRepositoryList();
                     // Now that the bare mirror exists, (re)install the push hook
-                    // if this repo opts into actions.
-                    if (repo.actionsEnabled)
-                        ensurePushHook(repo);
+                    // so local pushes are detected (for actions + live refresh).
+                    ensurePushHook(repo);
+                    // If this repo's detail is open, reflect the new commits.
+                    if (changed && index == m_repoDetailIndex)
+                        refreshOpenRepoDetail();
                     // Quiet auto-syncs only speak up when something changed.
                     if (!quiet || changed)
                         logSystem("Mirror: synced " + repo.owner + "/" +
@@ -6754,6 +6793,14 @@ void MainWindow::initActions()
     connect(m_actionSpoolWatcher, &QFileSystemWatcher::directoryChanged, this,
             [this](const QString &) { scanActionSpool(); });
 
+    // Fallback poll: QFileSystemWatcher can miss rapid create+rename events, so
+    // also sweep the spool on a short interval. The watcher keeps it snappy; the
+    // poll guarantees a push is never silently dropped.
+    auto *poll = new QTimer(this);
+    poll->setInterval(4000);
+    connect(poll, &QTimer::timeout, this, &MainWindow::scanActionSpool);
+    poll->start();
+
     // Catch pushes that landed while we were closed, then drain the queue.
     scanActionSpool();
     processActionQueue();
@@ -6805,9 +6852,11 @@ void MainWindow::removePushHook(const RepositoryRecord &repo) const
 
 void MainWindow::installAllPushHooks() const
 {
+    // Install the hook on every mirror, not just actions-enabled ones: it only
+    // writes a spool event, which we also use to refresh the open Code view in
+    // real time. Workflow execution is still gated on actionsEnabled.
     for (const RepositoryRecord &repo : m_repositories)
-        if (repo.actionsEnabled)
-            ensurePushHook(repo);
+        ensurePushHook(repo);
 }
 
 int MainWindow::repoIndexFor(const QString &owner, const QString &name) const
@@ -6876,8 +6925,17 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     if (repoIndex < 0)
         return;
     const RepositoryRecord repo = m_repositories.at(repoIndex);
+
+    logSystem(QStringLiteral("Push detected on %1/%2 @ %3 (%4).")
+                  .arg(owner, name, commit.left(8), ref));
+
+    // Live refresh: if this repo's detail view is open, reflect the new commit
+    // immediately (works for every mirror, whether or not actions are enabled).
+    if (repoIndex == m_repoDetailIndex)
+        refreshOpenRepoDetail();
+
     if (!repo.actionsEnabled)
-        return;
+        return; // push detection only; no workflow execution for this repo
 
     // List .forkmesh/*.yml|*.yaml at the pushed commit without checking it out.
     QProcess ls;
@@ -6929,8 +6987,31 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
                                     : QStringLiteral("awaiting approval of"),
                            wf.name, owner, name, commit.left(8)));
     }
-    if (added)
+    if (added) {
+        // Make the new run(s) visible immediately if this repo's Actions tab is
+        // the one on screen.
         refreshActionsTable();
+        if (m_actionWorkflowList && repoIndex == m_repoDetailIndex)
+            refreshRepoActions();
+    } else {
+        logSystem(QStringLiteral(
+                      "Actions: no .forkmesh/ workflow with 'on: push' at %1 for "
+                      "%2/%3 \xE2\x80\x94 nothing to run.")
+                      .arg(commit.left(8), owner, name));
+    }
+}
+
+void MainWindow::refreshOpenRepoDetail()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    // Re-read the branch tip, commit list, About sidebar and the current file
+    // view so a freshly pushed commit shows without reopening the repo.
+    loadBranchesAndTags();
+    loadCommits();
+    loadAboutSidebar();
+    m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
+    loadRepoOverview(m_overviewPath);
 }
 
 void MainWindow::processActionQueue()
