@@ -10,6 +10,8 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QCloseEvent>
+#include <QCryptographicHash>
 #include <QComboBox>
 #include <QCompleter>
 #include <QCoreApplication>
@@ -95,6 +97,7 @@ const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
+const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 constexpr int kNetworkLogLimit = 2000;
 
 // Directory holding client/CMakeLists.txt to update from: the build-time
@@ -609,6 +612,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     resize(1060, 700);
+    // Restore the last window size/position so it reopens where it was left.
+    const QByteArray savedGeometry =
+        QSettings().value(kWindowGeometrySetting).toByteArray();
+    if (!savedGeometry.isEmpty())
+        restoreGeometry(savedGeometry);
 
     m_trayIcon = new QSystemTrayIcon(this);
     m_trayIcon->setIcon(style()->standardIcon(QStyle::SP_MessageBoxInformation));
@@ -681,6 +689,155 @@ void MainWindow::applyTheme()
 #endif
     }
     qApp->setStyleSheet(Theme::styleSheetForDark(dark));
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    QSettings().setValue(kWindowGeometrySetting, saveGeometry());
+    saveChatHistory();
+    QMainWindow::closeEvent(event);
+}
+
+// ----------------------------------------------------------- chat persistence
+
+QString MainWindow::chatHistoryKey() const
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        return {};
+    const ServerConfig &s = m_servers.at(m_activeServer);
+    const QByteArray seed = (s.url + "\n" + s.room + "\n" + s.passphrase).toUtf8();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(seed, QCryptographicHash::Sha256).toHex());
+}
+
+QString MainWindow::chatHistoryPath() const
+{
+    const QString key = chatHistoryKey();
+    if (key.isEmpty())
+        return {};
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/chat_history/" + key + ".json";
+}
+
+void MainWindow::saveChatHistory()
+{
+    const QString path = chatHistoryPath();
+    if (path.isEmpty())
+        return;
+
+    QJsonObject conversations;
+    for (auto it = m_history.constBegin(); it != m_history.constEnd(); ++it) {
+        QJsonArray arr;
+        const QList<ChatMessage> &msgs = it.value();
+        // Keep the file bounded: only the most recent messages per conversation.
+        const int first = std::max(0, int(msgs.size()) - 1000);
+        for (int i = first; i < msgs.size(); ++i) {
+            const ChatMessage &m = msgs.at(i);
+            QJsonObject obj{{"id", m.id},
+                            {"senderId", m.senderId},
+                            {"senderName", m.senderName},
+                            {"text", m.text},
+                            {"ts", m.timestampMs},
+                            {"self", m.self},
+                            {"edited", m.edited},
+                            {"deleted", m.deleted}};
+            if (m.hasFile()) {
+                obj.insert("fileName", m.fileName);
+                obj.insert("fileMime", m.fileMime);
+                // Inline small attachments so they survive a restart.
+                if (m.fileData.size() <= 512 * 1024)
+                    obj.insert("fileData",
+                               QString::fromLatin1(m.fileData.toBase64()));
+            }
+            arr.append(obj);
+        }
+        if (!arr.isEmpty())
+            conversations.insert(it.key(), arr);
+    }
+
+    QJsonArray openDms;
+    for (const QString &peer : std::as_const(m_openDms))
+        openDms.append(peer);
+    QJsonObject dmNames;
+    for (auto it = m_dmNames.constBegin(); it != m_dmNames.constEnd(); ++it)
+        dmNames.insert(it.key(), it.value());
+
+    const QJsonObject root{{"current", m_currentConversation},
+                           {"openDms", openDms},
+                           {"dmNames", dmNames},
+                           {"conversations", conversations}};
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+void MainWindow::loadChatHistory()
+{
+    const QString path = chatHistoryPath();
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+
+    const QJsonObject conversations = root.value("conversations").toObject();
+    for (auto it = conversations.constBegin(); it != conversations.constEnd(); ++it) {
+        const QString conversation = it.key();
+        QList<ChatMessage> &dest = m_history[conversation];
+        for (const QJsonValue &v : it.value().toArray()) {
+            const QJsonObject obj = v.toObject();
+            ChatMessage m;
+            m.id = obj.value("id").toString();
+            m.conversation = conversation;
+            m.senderId = obj.value("senderId").toString();
+            m.senderName = obj.value("senderName").toString();
+            m.text = obj.value("text").toString();
+            m.timestampMs = obj.value("ts").toVariant().toLongLong();
+            m.self = obj.value("self").toBool();
+            m.edited = obj.value("edited").toBool();
+            m.deleted = obj.value("deleted").toBool();
+            m.fileName = obj.value("fileName").toString();
+            m.fileMime = obj.value("fileMime").toString();
+            if (obj.contains("fileData"))
+                m.fileData = QByteArray::fromBase64(
+                    obj.value("fileData").toString().toLatin1());
+            if (!m.id.isEmpty()) {
+                if (m_historyIds.contains(m.id))
+                    continue;
+                m_historyIds.insert(m.id);
+            }
+            dest.append(m);
+        }
+    }
+
+    // Restore the open DM tabs and their display names.
+    for (auto it = root.value("dmNames").toObject().constBegin();
+         it != root.value("dmNames").toObject().constEnd(); ++it)
+        m_dmNames.insert(it.key(), it.value().toString());
+    for (const QJsonValue &v : root.value("openDms").toArray()) {
+        const QString peer = v.toString();
+        if (!peer.isEmpty() && !m_openDms.contains(peer))
+            m_openDms.append(peer);
+    }
+    refreshDmList();
+
+    // Reopen the last conversation so history is visible immediately.
+    const QString current = root.value("current").toString();
+    if (!current.isEmpty() && m_history.contains(current))
+        switchConversation(current);
+}
+
+void MainWindow::scheduleChatSave()
+{
+    if (!m_chatSaveTimer) {
+        m_chatSaveTimer = new QTimer(this);
+        m_chatSaveTimer->setSingleShot(true);
+        connect(m_chatSaveTimer, &QTimer::timeout, this,
+                &MainWindow::saveChatHistory);
+    }
+    m_chatSaveTimer->start(1500);
 }
 
 // ---------------------------------------------------------------- setup page
@@ -855,6 +1012,7 @@ void MainWindow::startSession()
     m_channels.clear();
     m_currentConversation.clear();
     m_history.clear();
+    m_historyIds.clear();
     m_visibleRows.clear();
     m_reactions.clear();
     m_avatars.clear();
@@ -903,6 +1061,9 @@ void MainWindow::startSession()
         showSection(0); // land on the Home overview after connecting
         refreshServerRail();
         updateBchNotice();
+        // Restore locally-saved chat history for this server/room so past
+        // conversations are visible right away (deduped against any replay).
+        loadChatHistory();
         // Serve already-mirrored repos live to the web for this session.
         startRepoHosts();
     }
@@ -4387,6 +4548,14 @@ void MainWindow::onMessage(const ChatMessage &message)
     if (conversation.isEmpty())
         return;
 
+    // Skip messages we already have (e.g. loaded from disk then replayed by a
+    // peer on reconnect) so history isn't duplicated.
+    if (!message.id.isEmpty()) {
+        if (m_historyIds.contains(message.id))
+            return;
+        m_historyIds.insert(message.id);
+    }
+
     // Open a DM tab on first contact. For an incoming DM the author *is* the
     // other party (senderId == peerId), so that names the conversation; our
     // own echoed messages (senderId != peerId) must not rename it.
@@ -4423,6 +4592,7 @@ void MainWindow::onMessage(const ChatMessage &message)
             message.hasFile() ? "\xF0\x9F\x93\x8E " + message.fileName : message.text;
         notifyIfInactive(message.senderName + " " + where, preview);
     }
+    scheduleChatSave();
 }
 
 void MainWindow::onReaction(const QString &conversation, const QString &messageId,
@@ -4456,6 +4626,7 @@ void MainWindow::onMessageEdited(const QString &conversation, const QString &mes
     }
     if (conversation == m_currentConversation)
         rebuildConversationView();
+    scheduleChatSave();
 }
 
 void MainWindow::onMessageDeleted(const QString &conversation, const QString &messageId)
@@ -4474,6 +4645,7 @@ void MainWindow::onMessageDeleted(const QString &conversation, const QString &me
     m_reactions.remove(messageId);
     if (conversation == m_currentConversation)
         rebuildConversationView();
+    scheduleChatSave();
 }
 
 void MainWindow::promptEditMessage(const QString &messageId, const QString &currentText)

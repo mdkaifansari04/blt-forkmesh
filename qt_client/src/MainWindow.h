@@ -81,6 +81,9 @@ public:
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     // Setup page
     QWidget *buildSetupPage();
@@ -216,6 +219,12 @@ private:
     void refreshTypingLabel();
     void attachFile();
     void saveIncomingFile(const QString &fileName, const QByteArray &data);
+    // Local chat history persistence (per active server/room).
+    QString chatHistoryKey() const;
+    QString chatHistoryPath() const;
+    void saveChatHistory();
+    void loadChatHistory();
+    void scheduleChatSave();
     void loadRepositories();
     void saveRepositories() const;
     void refreshRepositoryList();
@@ -412,6 +421,8 @@ private:
     QString m_currentConversation;
     // Per-conversation message log and the live rows for the open conversation.
     QHash<QString, QList<ChatMessage>> m_history;
+    QSet<QString> m_historyIds; // message ids already in m_history (dedup)
+    QTimer *m_chatSaveTimer = nullptr;
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;

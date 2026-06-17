@@ -56,6 +56,49 @@ svg {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* Install one-liner banner, pinned at the very top of the page. */
+.install-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 10px 24px;
+}
+.install-label {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 13px;
+}
+#install-cmd {
+  flex: 1 1 320px;
+  min-width: 0;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+#install-cmd::before { content: "$ "; color: var(--muted); }
+.install-copy {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--green);
+  color: #ffffff;
+  border: 1px solid var(--green-dark);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.install-copy:hover { background: var(--green-dark); }
+
 .header-inner {
   display: flex;
   align-items: center;
