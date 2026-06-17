@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QRandomGenerator>
 #include <QSslSocket>
 #include <QTcpSocket>
@@ -313,6 +314,10 @@ void RepoHost::handleRequest(const QJsonObject &request)
         reply = buildTreeReply(path);
     } else if (op == "blob") {
         reply = buildBlobReply(path);
+    } else if (op == "commits") {
+        reply = buildCommitsReply();
+    } else if (op == "commit") {
+        reply = buildCommitReply(path); // path carries the commit hash
     } else {
         reply = QJsonObject{{"ok", false}, {"error", "bad_op"}};
     }
@@ -458,6 +463,97 @@ QJsonObject RepoHost::buildBlobReply(const QString &path) const
         reply.insert("content", QString::fromUtf8(output));
     }
     return reply;
+}
+
+QJsonObject RepoHost::buildCommitsReply() const
+{
+    const QString ref = baseRef();
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "empty_repo"}};
+    QByteArray output;
+    QString gitErr;
+    if (!runGit(m_mirrorPath,
+                {"log", "--date=format:%Y-%m-%d", "-n", "60",
+                 "--format=%H%x1f%an%x1f%ad%x1f%s", ref},
+                output, &gitErr))
+        return {{"ok", false}, {"error", gitErr.isEmpty() ? "log_failed" : gitErr}};
+
+    QJsonArray commits;
+    for (const QByteArray &record : output.split('\n')) {
+        if (record.trimmed().isEmpty())
+            continue;
+        const QList<QByteArray> f = record.split('\x1f');
+        if (f.size() < 4)
+            continue;
+        commits.append(QJsonObject{{"hash", QString::fromUtf8(f.at(0))},
+                                   {"author", QString::fromUtf8(f.at(1))},
+                                   {"date", QString::fromUtf8(f.at(2))},
+                                   {"subject", QString::fromUtf8(f.at(3))}});
+    }
+    return {{"ok", true}, {"commits", commits}};
+}
+
+QJsonObject RepoHost::buildCommitReply(const QString &hash) const
+{
+    // Strictly validate the hash so it can never be read as a git flag/path.
+    static const QRegularExpression hashRe(QStringLiteral("^[0-9a-fA-F]{4,40}$"));
+    if (!hashRe.match(hash).hasMatch())
+        return {{"ok", false}, {"error", "bad_hash"}};
+
+    QByteArray meta;
+    QString gitErr;
+    if (!runGit(m_mirrorPath,
+                {"show", "-s", "--date=format:%Y-%m-%d %H:%M",
+                 "--format=%H%x1f%an%x1f%ad%x1f%P%x1f%s%x1f%b", hash},
+                meta, &gitErr))
+        return {{"ok", false}, {"error", gitErr.isEmpty() ? "not_found" : gitErr}};
+    const QList<QByteArray> mf = meta.split('\x1f');
+    if (mf.size() < 5)
+        return {{"ok", false}, {"error", "bad_commit"}};
+
+    const QString full = QString::fromUtf8(mf.at(0)).trimmed();
+    const QString parents = QString::fromUtf8(mf.value(3)).trimmed();
+    const QString base =
+        parents.isEmpty()
+            ? QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904") // empty tree
+            : parents.split(QLatin1Char(' ')).first();
+
+    QByteArray diff;
+    runGit(m_mirrorPath, {"diff", "-M", "--no-color", base, full}, diff, nullptr);
+    QByteArray numstat;
+    runGit(m_mirrorPath, {"diff", "--numstat", base, full}, numstat, nullptr);
+
+    QJsonArray files;
+    for (const QByteArray &record : numstat.split('\n')) {
+        if (record.trimmed().isEmpty())
+            continue;
+        const QList<QByteArray> p = record.split('\t');
+        if (p.size() < 3)
+            continue;
+        files.append(QJsonObject{{"path", QString::fromUtf8(p.at(2))},
+                                 {"adds", QString::fromUtf8(p.at(0))},
+                                 {"dels", QString::fromUtf8(p.at(1))}});
+    }
+
+    // Keep the single tunnel frame bounded; the web view notes truncation.
+    constexpr int kMaxDiffBytes = 600 * 1024;
+    bool truncated = false;
+    if (diff.size() > kMaxDiffBytes) {
+        diff = diff.left(kMaxDiffBytes);
+        truncated = true;
+    }
+
+    QJsonObject commit{{"hash", full},
+                       {"author", QString::fromUtf8(mf.value(1))},
+                       {"date", QString::fromUtf8(mf.value(2))},
+                       {"subject", QString::fromUtf8(mf.value(4))},
+                       {"body", QString::fromUtf8(mf.value(5)).trimmed()},
+                       {"parents", parents}};
+    return {{"ok", true},
+            {"commit", commit},
+            {"files", files},
+            {"truncated", truncated},
+            {"diff", QString::fromUtf8(diff)}};
 }
 
 void RepoHost::scheduleReconnect()

@@ -43,6 +43,8 @@ private:
     QString baseRef() const;
     QJsonObject buildTreeReply(const QString &path) const;
     QJsonObject buildBlobReply(const QString &path) const;
+    QJsonObject buildCommitsReply() const;             // recent commit list
+    QJsonObject buildCommitReply(const QString &hash) const; // one commit's diff
     // Run git upload-pack and stream stdout back as git-chunk/git-end messages.
     void runGitStream(const QString &reqId, const QStringList &args,
                       const QByteArray &input);

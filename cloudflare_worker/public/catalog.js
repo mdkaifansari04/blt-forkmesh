@@ -155,7 +155,7 @@ async function pullPath(kind, path) {
   let liveError = null;
   try {
     const response = await fetch(
-      `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${kind === "tree" ? "tree" : "blob"}?path=${encodeURIComponent(path)}`,
+      `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${kind}?path=${encodeURIComponent(path)}`,
       { headers: { accept: "application/json" } }
     );
     const data = await response.json();
@@ -510,22 +510,238 @@ async function loadIssues(owner, name) {
   );
 }
 
-function showRepoTab(tab) {
-  const code = tab !== "issues";
-  if (codeSectionEl) codeSectionEl.hidden = !code;
-  if (issuesSectionEl) issuesSectionEl.hidden = code;
-  if (tabCodeEl) tabCodeEl.classList.toggle("is-active", code);
-  if (tabIssuesEl) tabIssuesEl.classList.toggle("is-active", !code);
-  if (!code && fileState) {
-    const repoKey = `${fileState.owner}/${fileState.name}`;
-    if (issuesLoadedFor !== repoKey) {
-      issuesLoadedFor = repoKey;
-      loadIssues(fileState.owner, fileState.name);
+// ---- Commits tab: list commits and show a commit's diff --------------------
+
+const tabCommitsEl = document.querySelector("#tab-commits");
+const tabCommitsCountEl = document.querySelector("#tab-commits-count");
+const commitsSectionEl = document.querySelector("#commits");
+const commitListEl = document.querySelector("#commit-list");
+const commitsMetaEl = document.querySelector("#commits-meta");
+const commitDetailEl = document.querySelector("#commit-detail");
+const commitDetailTitleEl = document.querySelector("#commit-detail-title");
+const commitDetailMetaEl = document.querySelector("#commit-detail-meta");
+const commitDiffEl = document.querySelector("#commit-diff");
+const commitBackEl = document.querySelector("#commit-back");
+const latestCommitEl = document.querySelector("#latest-commit");
+let commitsLoadedFor = null;
+let commitToken = 0;
+
+function shortHash(h) {
+  return String(h || "").slice(0, 7);
+}
+
+// The newest commit, shown as a bar above the file list on the Code tab.
+async function loadLatestCommit(owner, name) {
+  if (!latestCommitEl) return;
+  latestCommitEl.hidden = true;
+  const { data } = await pullPath("commits", "");
+  if (!data || !Array.isArray(data.commits) || !data.commits.length) return;
+  if (!fileState || fileState.owner !== owner || fileState.name !== name) return;
+  const c = data.commits[0];
+  latestCommitEl.replaceChildren();
+  const msg = document.createElement("span");
+  msg.className = "latest-commit-msg";
+  msg.textContent = c.subject;
+  const meta = document.createElement("span");
+  meta.className = "latest-commit-meta";
+  meta.textContent = `${c.author} · ${c.date} · ${shortHash(c.hash)}`;
+  latestCommitEl.append(msg, meta);
+  latestCommitEl.href = "#";
+  latestCommitEl.onclick = (e) => {
+    e.preventDefault();
+    showRepoTab("commits");
+    showCommitDiff(c.hash);
+  };
+  latestCommitEl.hidden = false;
+}
+
+function commitRow(c) {
+  const row = document.createElement("button");
+  row.className = "file-row commit-row";
+  row.type = "button";
+  const main = document.createElement("span");
+  main.className = "file-name";
+  main.textContent = c.subject;
+  const note = document.createElement("span");
+  note.className = "file-note";
+  note.textContent = `${c.author} · ${c.date} · ${shortHash(c.hash)}`;
+  row.append(main, note);
+  row.addEventListener("click", () => showCommitDiff(c.hash));
+  return row;
+}
+
+async function loadCommits(owner, name) {
+  if (!commitListEl) return;
+  if (commitDetailEl) commitDetailEl.hidden = true;
+  commitListEl.hidden = false;
+  commitListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
+  const token = ++commitToken;
+  const { data, source, error } = await pullPath("commits", "");
+  if (token !== commitToken) return;
+  if (commitsMetaEl)
+    commitsMetaEl.textContent =
+      source === "live" ? "● live from host" : source === "cached" ? "○ cached" : "";
+  if (!data || !Array.isArray(data.commits)) {
+    commitListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent = unavailableMessage(error);
+    commitListEl.append(note);
+    return;
+  }
+  if (tabCommitsCountEl) tabCommitsCountEl.textContent = String(data.commits.length);
+  commitListEl.replaceChildren(...data.commits.map(commitRow));
+}
+
+// Render a unified diff into DOM rows with an old/new line-number gutter.
+function renderDiff(container, diffText) {
+  container.replaceChildren();
+  const lines = String(diffText || "").split("\n");
+  let table = null;
+  let oldNo = 0;
+  let newNo = 0;
+  const startFile = (path) => {
+    const block = document.createElement("div");
+    block.className = "diff-file";
+    const head = document.createElement("div");
+    head.className = "diff-file-head";
+    head.textContent = path;
+    table = document.createElement("div");
+    table.className = "diff-body";
+    block.append(head, table);
+    container.append(block);
+  };
+  const addRow = (cls, oldn, newn, code) => {
+    if (!table) startFile("");
+    const row = document.createElement("div");
+    row.className = "diff-row " + cls;
+    const o = document.createElement("span");
+    o.className = "diff-ln";
+    o.textContent = oldn;
+    const n = document.createElement("span");
+    n.className = "diff-ln";
+    n.textContent = newn;
+    const c = document.createElement("span");
+    c.className = "diff-code";
+    c.textContent = code;
+    row.append(o, n, c);
+    table.append(row);
+  };
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      const b = line.indexOf(" b/");
+      startFile(b >= 0 ? line.slice(b + 3) : line);
+      continue;
     }
+    if (
+      line.startsWith("index ") || line.startsWith("--- ") ||
+      line.startsWith("+++ ") || line.startsWith("new file") ||
+      line.startsWith("deleted file") || line.startsWith("similarity ") ||
+      line.startsWith("rename ") || line.startsWith("old mode") ||
+      line.startsWith("new mode")
+    )
+      continue;
+    if (line.startsWith("@@")) {
+      const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (m) {
+        oldNo = +m[1];
+        newNo = +m[2];
+      }
+      addRow("diff-hunk", "", "", line);
+      continue;
+    }
+    const ch = line[0];
+    if (ch === "+") addRow("diff-add", "", String(newNo++), line.slice(1) || " ");
+    else if (ch === "-") addRow("diff-del", String(oldNo++), "", line.slice(1) || " ");
+    else if (ch === "\\") addRow("diff-ctx", "", "", line);
+    else addRow("diff-ctx", String(oldNo++), String(newNo++), line.slice(1) || " ");
+  }
+  if (!container.childNodes.length) {
+    const empty = document.createElement("div");
+    empty.className = "file-empty";
+    empty.textContent = "No changes in this commit.";
+    container.append(empty);
+  }
+}
+
+async function showCommitDiff(hash) {
+  if (!commitDetailEl) return;
+  if (commitListEl) commitListEl.hidden = true;
+  commitDetailEl.hidden = false;
+  commitDetailTitleEl.textContent = "Commit " + shortHash(hash);
+  commitDetailMetaEl.textContent = "Loading…";
+  commitDiffEl.replaceChildren();
+  const token = ++commitToken;
+  const { data, error } = await pullPath("commit", hash);
+  if (token !== commitToken) return;
+  if (!data || !data.commit) {
+    commitDetailMetaEl.textContent = unavailableMessage(error);
+    return;
+  }
+  const c = data.commit;
+  commitDetailTitleEl.textContent = "Commit " + shortHash(c.hash);
+  const files = Array.isArray(data.files) ? data.files : [];
+  let adds = 0;
+  let dels = 0;
+  for (const f of files) {
+    adds += Number(f.adds) || 0;
+    dels += Number(f.dels) || 0;
+  }
+  commitDetailMetaEl.replaceChildren();
+  const subj = document.createElement("div");
+  subj.className = "commit-subject";
+  subj.textContent = c.subject;
+  const info = document.createElement("div");
+  info.className = "commit-info";
+  info.textContent = `${c.author} committed on ${c.date} · ${files.length} file${
+    files.length === 1 ? "" : "s"
+  } changed · +${adds} −${dels}`;
+  commitDetailMetaEl.append(subj, info);
+  if (c.body) {
+    const body = document.createElement("div");
+    body.className = "commit-body";
+    body.textContent = c.body;
+    commitDetailMetaEl.append(body);
+  }
+  renderDiff(commitDiffEl, data.diff);
+  if (data.truncated) {
+    const t = document.createElement("div");
+    t.className = "file-empty";
+    t.textContent = "Diff truncated by the host.";
+    commitDiffEl.append(t);
+  }
+}
+
+if (commitBackEl)
+  commitBackEl.addEventListener("click", () => {
+    commitDetailEl.hidden = true;
+    if (commitListEl) commitListEl.hidden = false;
+  });
+
+function showRepoTab(tab) {
+  const isCommits = tab === "commits";
+  const isIssues = tab === "issues";
+  const isCode = !isCommits && !isIssues;
+  if (codeSectionEl) codeSectionEl.hidden = !isCode;
+  if (commitsSectionEl) commitsSectionEl.hidden = !isCommits;
+  if (issuesSectionEl) issuesSectionEl.hidden = !isIssues;
+  if (tabCodeEl) tabCodeEl.classList.toggle("is-active", isCode);
+  if (tabCommitsEl) tabCommitsEl.classList.toggle("is-active", isCommits);
+  if (tabIssuesEl) tabIssuesEl.classList.toggle("is-active", isIssues);
+  if (!fileState) return;
+  const repoKey = `${fileState.owner}/${fileState.name}`;
+  if (isIssues && issuesLoadedFor !== repoKey) {
+    issuesLoadedFor = repoKey;
+    loadIssues(fileState.owner, fileState.name);
+  }
+  if (isCommits && commitsLoadedFor !== repoKey) {
+    commitsLoadedFor = repoKey;
+    loadCommits(fileState.owner, fileState.name);
   }
 }
 
 if (tabCodeEl) tabCodeEl.addEventListener("click", () => showRepoTab("code"));
+if (tabCommitsEl) tabCommitsEl.addEventListener("click", () => showRepoTab("commits"));
 if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues"));
 
 // ---- Routing: home (repo list) vs. a single repository page ----------------
@@ -588,11 +804,15 @@ function openRepoPage(owner, name) {
       "git clone streams live from the client hosting this repo (it must be online).";
   }
   resetDownloadProgress();
-  // Reset to the Code tab; issues lazy-load when the Issues tab is opened.
+  // Reset to the Code tab; issues/commits lazy-load when their tab is opened.
   issuesLoadedFor = null;
+  commitsLoadedFor = null;
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
+  if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
+  if (latestCommitEl) latestCommitEl.hidden = true;
   loadFiles(owner, name);
   showRepoTab("code");
+  loadLatestCommit(owner, name);
 }
 
 window.addEventListener("hashchange", route);

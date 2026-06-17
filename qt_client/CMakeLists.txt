@@ -37,6 +37,8 @@ qt_add_executable(forkmesh
     src/ActionStore.cpp
     src/ActionRunner.h
     src/ActionRunner.cpp
+    src/QrCode.h
+    src/QrCode.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MainWindow.h

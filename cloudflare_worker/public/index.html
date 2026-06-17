@@ -157,6 +157,9 @@
           <div class="content-column">
             <div class="repo-tabs" role="tablist" aria-label="Repository views">
               <button id="tab-code" class="repo-tab is-active" type="button" role="tab">Code</button>
+              <button id="tab-commits" class="repo-tab" type="button" role="tab">
+                Commits <span id="tab-commits-count" class="repo-tab-count"></span>
+              </button>
               <button id="tab-issues" class="repo-tab" type="button" role="tab">
                 Issues <span id="tab-issues-count" class="repo-tab-count"></span>
               </button>
@@ -172,6 +175,7 @@
                 <h2 id="code-title">Repository files</h2>
                 <span id="file-meta" class="file-meta"></span>
               </div>
+              <a id="latest-commit" class="latest-commit" hidden></a>
               <nav id="file-breadcrumb" class="file-breadcrumb" aria-label="File path"></nav>
               <div id="file-list" class="file-list" role="list" aria-live="polite">
                 <div class="file-empty">Loading…</div>
@@ -192,6 +196,24 @@
               </div>
               <div id="issue-list" class="file-list" role="list" aria-live="polite">
                 <div class="file-empty">Loading…</div>
+              </div>
+            </section>
+
+            <section id="commits" class="code-card" hidden aria-labelledby="commits-title">
+              <div class="code-toolbar">
+                <h2 id="commits-title">Commits</h2>
+                <span id="commits-meta" class="file-meta"></span>
+              </div>
+              <div id="commit-list" class="file-list" role="list" aria-live="polite">
+                <div class="file-empty">Loading…</div>
+              </div>
+              <div id="commit-detail" class="commit-detail" hidden>
+                <div class="file-viewer-bar">
+                  <button id="commit-back" type="button" class="file-viewer-back">&larr; Commits</button>
+                  <span id="commit-detail-title" class="file-viewer-path"></span>
+                </div>
+                <div id="commit-detail-meta" class="commit-meta"></div>
+                <div id="commit-diff" class="commit-diff"></div>
               </div>
             </section>
           </div>
