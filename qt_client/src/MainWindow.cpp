@@ -107,6 +107,8 @@ const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs"
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 // Show a desktop alert when a push lands on one of this node's mirrors.
 const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
+// Show a desktop alert when an action run starts and finishes.
+const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
@@ -5515,6 +5517,16 @@ QWidget *MainWindow::buildSettingsSection()
     connect(pushAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kPushAlertSetting, enabled);
     });
+    auto *actionAlertCheck =
+        new QCheckBox("Show a system alert when an action runs");
+    actionAlertCheck->setChecked(
+        QSettings().value(kActionAlertSetting, true).toBool());
+    actionAlertCheck->setToolTip(
+        "Pop up a desktop notification when a .forkmesh/ workflow starts and "
+        "when it finishes.");
+    connect(actionAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kActionAlertSetting, enabled);
+    });
 
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
@@ -5616,6 +5628,7 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(notifyLabel);
     layout->addWidget(pushAlertCheck);
+    layout->addWidget(actionAlertCheck);
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
@@ -5854,13 +5867,10 @@ void MainWindow::notifyIfInactive(const QString &title, const QString &body)
         return;
 
     QApplication::alert(this, 0);
-    if (!m_trayIcon || !QSystemTrayIcon::isSystemTrayAvailable())
-        return;
-
     QString cleanBody = body.simplified();
     if (cleanBody.size() > 180)
         cleanBody = cleanBody.left(177) + "...";
-    m_trayIcon->showMessage(title, cleanBody, QSystemTrayIcon::Information, 6000);
+    postNotification(title, cleanBody);
 }
 
 // ------------------------------------------------------------------ messages
@@ -7448,15 +7458,13 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
                            : QStringLiteral(" \xE2\x80\x94 ") + subject));
 
     // Optional desktop alert with the push details (on by default).
-    if (QSettings().value(kPushAlertSetting, true).toBool() && m_trayIcon &&
-        QSystemTrayIcon::isSystemTrayAvailable()) {
+    if (QSettings().value(kPushAlertSetting, true).toBool()) {
         const QString body =
             QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4%5")
                 .arg(owner, name, branch, commit.left(8),
                      subject.isEmpty() ? QString()
                                        : QStringLiteral("\n") + subject);
-        m_trayIcon->showMessage(QStringLiteral("Push received"), body,
-                                QSystemTrayIcon::Information, 6000);
+        postNotification(QStringLiteral("Push received"), body);
     }
 
     // Live refresh: if this repo's detail view is open, reflect the new commit
@@ -7596,16 +7604,62 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
                          actionStatusText(status)));
         }
     }
+    if (status == ActionStatus::Running) {
+        if (const ActionRun *run = findRun(runId))
+            notifyActionEvent(QStringLiteral("Action started"),
+                              QStringLiteral("%1 \xC2\xB7 %2/%3")
+                                  .arg(run->workflowName, run->owner, run->name),
+                              false);
+    }
 }
 
 void MainWindow::onRunFinished(int runId, bool ok)
 {
-    Q_UNUSED(ok);
     m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
+    if (const ActionRun *run = findRun(runId))
+        notifyActionEvent(ok ? QStringLiteral("Action succeeded")
+                             : QStringLiteral("Action failed"),
+                          QStringLiteral("%1 \xC2\xB7 %2/%3")
+                              .arg(run->workflowName, run->owner, run->name),
+                          !ok);
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
     processActionQueue();
+}
+
+void MainWindow::notifyActionEvent(const QString &title, const QString &body,
+                                   bool warning)
+{
+    if (!QSettings().value(kActionAlertSetting, true).toBool())
+        return;
+    postNotification(title, body, warning);
+}
+
+void MainWindow::postNotification(const QString &title, const QString &body,
+                                  bool warning)
+{
+#if defined(Q_OS_LINUX)
+    // Prefer notify-send: many Linux desktops don't render the body of a
+    // QSystemTrayIcon message (they fall back to just the app name), but the
+    // libnotify daemon shows the summary and body reliably.
+    static const QString notifySend =
+        QStandardPaths::findExecutable(QStringLiteral("notify-send"));
+    if (!notifySend.isEmpty()) {
+        const QStringList args = {
+            QStringLiteral("-a"), QStringLiteral("ForkMesh"),
+            QStringLiteral("-u"),
+            warning ? QStringLiteral("critical") : QStringLiteral("normal"),
+            title, body};
+        if (QProcess::startDetached(notifySend, args))
+            return;
+    }
+#endif
+    if (m_trayIcon && QSystemTrayIcon::isSystemTrayAvailable())
+        m_trayIcon->showMessage(
+            title, body,
+            warning ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information,
+            6000);
 }
 
 void MainWindow::refreshActionsTable()
