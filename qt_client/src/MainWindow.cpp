@@ -105,6 +105,8 @@ const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
+// Show a desktop alert when a push lands on one of this node's mirrors.
+const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
@@ -5501,6 +5503,19 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
+    auto *notifyLabel = new QLabel("NOTIFICATIONS");
+    notifyLabel->setObjectName("sectionLabel");
+    auto *pushAlertCheck =
+        new QCheckBox("Show a system alert when a push reaches a mirror");
+    pushAlertCheck->setChecked(
+        QSettings().value(kPushAlertSetting, true).toBool());
+    pushAlertCheck->setToolTip(
+        "Pop up a desktop notification with the repo, branch and commit "
+        "whenever someone pushes to one of this node's mirrors.");
+    connect(pushAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kPushAlertSetting, enabled);
+    });
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -5598,6 +5613,9 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(startupLabel);
     layout->addWidget(m_autostartCheck);
+    layout->addSpacing(6);
+    layout->addWidget(notifyLabel);
+    layout->addWidget(pushAlertCheck);
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
@@ -7408,8 +7426,38 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
         return;
     const RepositoryRecord repo = m_repositories.at(repoIndex);
 
-    logSystem(QStringLiteral("Push detected on %1/%2 @ %3 (%4).")
-                  .arg(owner, name, commit.left(8), ref));
+    // Short branch name + the pushed commit's subject, for the log and alert.
+    const QString branch = ref.startsWith(QLatin1String("refs/heads/"))
+                               ? ref.mid(11)
+                               : ref;
+    QString subject;
+    {
+        QProcess s;
+        s.start(QStringLiteral("git"),
+                {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("show"),
+                 QStringLiteral("-s"), QStringLiteral("--format=%s"), commit});
+        s.waitForFinished(5000);
+        subject = QString::fromUtf8(s.readAllStandardOutput()).trimmed();
+    }
+
+    // Always note the push in the network log.
+    logSystem(QStringLiteral("Push to %1/%2 on %3 \xE2\x86\x92 %4%5")
+                  .arg(owner, name, branch, commit.left(8),
+                       subject.isEmpty()
+                           ? QString()
+                           : QStringLiteral(" \xE2\x80\x94 ") + subject));
+
+    // Optional desktop alert with the push details (on by default).
+    if (QSettings().value(kPushAlertSetting, true).toBool() && m_trayIcon &&
+        QSystemTrayIcon::isSystemTrayAvailable()) {
+        const QString body =
+            QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4%5")
+                .arg(owner, name, branch, commit.left(8),
+                     subject.isEmpty() ? QString()
+                                       : QStringLiteral("\n") + subject);
+        m_trayIcon->showMessage(QStringLiteral("Push received"), body,
+                                QSystemTrayIcon::Information, 6000);
+    }
 
     // Live refresh: if this repo's detail view is open, reflect the new commit
     // immediately (works for every mirror, whether or not actions are enabled).
