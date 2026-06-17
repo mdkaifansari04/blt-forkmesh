@@ -40,7 +40,8 @@ REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
-REPO_HOST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob)$")
+REPO_HOST_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|commits|commit)$")
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
@@ -1003,7 +1004,7 @@ class ForkMeshHost(DurableObject):
             )
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
-        if action in ("tree", "blob"):
+        if action in ("tree", "blob", "commits", "commit"):
             return await self._tunnel(action, rel_path)
         return json_response({"error": "not_found"}, status=404)
 

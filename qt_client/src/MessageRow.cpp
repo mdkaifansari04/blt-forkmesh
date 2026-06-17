@@ -2,9 +2,11 @@
 
 #include <QBuffer>
 #include <QDateTime>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
@@ -66,6 +68,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     m_avatarLabel = new QLabel;
     m_avatarLabel->setFixedSize(kAvatarSize, kAvatarSize);
     m_avatarLabel->setPixmap(initialsAvatar(message.senderName, nameColor));
+    m_avatarLabel->setCursor(Qt::PointingHandCursor);
+    m_avatarLabel->setToolTip("View node profile");
+    m_avatarLabel->installEventFilter(this);
     outer->addWidget(m_avatarLabel, 0, Qt::AlignTop);
 
     auto *column = new QVBoxLayout;
@@ -80,6 +85,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         "&nbsp;&nbsp;<span style='color:#6b7280; font-size:11px'>" + time +
         (message.edited ? " (edited)" : "") + "</span>");
     header->setTextFormat(Qt::RichText);
+    header->setCursor(Qt::PointingHandCursor);
+    header->installEventFilter(this);
+    m_senderLabel = header;
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->setSpacing(6);
@@ -203,6 +211,19 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
     chipLayout->addWidget(name, 1);
     chipLayout->addWidget(save);
     layout->addWidget(chip);
+}
+
+bool MessageRow::eventFilter(QObject *watched, QEvent *event)
+{
+    if ((watched == m_avatarLabel || watched == m_senderLabel) &&
+        event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            emit senderClicked(m_message.senderId, m_message.senderName);
+            return true;
+        }
+    }
+    return QFrame::eventFilter(watched, event);
 }
 
 void MessageRow::setAvatar(const QPixmap &pixmap)

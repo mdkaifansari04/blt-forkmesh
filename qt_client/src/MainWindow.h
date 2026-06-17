@@ -137,6 +137,11 @@ private:
     void fetchFavicon(int index);
     QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
+    // Slack-style node profile panel (right side of Home).
+    QWidget *buildNodeProfilePanel();
+    void showNodeProfile(const QString &nodeId, const QString &nodeName);
+    void hideNodeProfile();
+    void checkNodeBalance();
     QWidget *buildReposPanel();
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
@@ -539,6 +544,23 @@ private:
     QList<IssueMilestone> m_currentMilestones;
     int m_currentIssueNumber = -1;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
+
+    // Node profile panel widgets + the node it currently shows.
+    QWidget *m_nodeProfilePanel = nullptr;
+    QLabel *m_profileAvatar = nullptr;
+    QLabel *m_profileName = nullptr;
+    QLabel *m_profileStatus = nullptr;
+    QLabel *m_profilePlatform = nullptr;
+    QLabel *m_profileMirrors = nullptr;
+    QLabel *m_profileBchAddr = nullptr;
+    QLabel *m_profileQr = nullptr;
+    QWidget *m_profileBchSection = nullptr;
+    QLabel *m_profileBalance = nullptr;
+    QPushButton *m_profileBalanceButton = nullptr;
+    QPushButton *m_profileMessageButton = nullptr;
+    QString m_profileNodeId;
+    QString m_profileNodeName;
+    QString m_profileBchValue;
 
     QStringList m_channels;
     QList<RepositoryRecord> m_repositories;

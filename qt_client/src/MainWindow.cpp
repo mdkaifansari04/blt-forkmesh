@@ -2,6 +2,7 @@
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
+#include "QrCode.h"
 
 #include "MessageRow.h"
 #include "RepoHost.h"
@@ -1818,15 +1819,266 @@ QWidget *MainWindow::buildHomeSection()
     splitter->setChildrenCollapsible(false);
     splitter->addWidget(buildReposPanel());
     splitter->addWidget(buildChatSection());
+    splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({360, 680});
+    splitter->setStretchFactor(2, 0);
+    splitter->setSizes({360, 680, 320});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(splitter);
     return page;
+}
+
+QWidget *MainWindow::buildNodeProfilePanel()
+{
+    m_nodeProfilePanel = new QWidget;
+    m_nodeProfilePanel->setObjectName("nodeProfilePanel");
+    m_nodeProfilePanel->setMinimumWidth(280);
+    m_nodeProfilePanel->setMaximumWidth(380);
+
+    auto *closeButton = new QPushButton("\xE2\x9C\x95");
+    closeButton->setObjectName("ghostButton");
+    closeButton->setCursor(Qt::PointingHandCursor);
+    closeButton->setToolTip("Close");
+    connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
+    auto *titleLabel = new QLabel("Node profile");
+    titleLabel->setObjectName("sectionLabel");
+    auto *topRow = new QHBoxLayout;
+    topRow->setContentsMargins(0, 0, 0, 0);
+    topRow->addWidget(titleLabel);
+    topRow->addStretch();
+    topRow->addWidget(closeButton);
+
+    m_profileAvatar = new QLabel;
+    m_profileAvatar->setFixedSize(72, 72);
+    m_profileAvatar->setScaledContents(true);
+    m_profileName = new QLabel;
+    m_profileName->setObjectName("channelTitle");
+    m_profileName->setWordWrap(true);
+    m_profileStatus = new QLabel;
+    m_profileStatus->setObjectName("statusLine");
+    m_profileStatus->setTextFormat(Qt::RichText);
+    m_profilePlatform = new QLabel;
+    m_profilePlatform->setObjectName("statusLine");
+    m_profileMirrors = new QLabel;
+    m_profileMirrors->setObjectName("statusLine");
+    m_profileMirrors->setWordWrap(true);
+
+    m_profileMessageButton = new QPushButton("\xF0\x9F\x92\xAC Message");
+    m_profileMessageButton->setObjectName("ghostButton");
+    m_profileMessageButton->setCursor(Qt::PointingHandCursor);
+    connect(m_profileMessageButton, &QPushButton::clicked, this, [this] {
+        if (!m_profileNodeId.isEmpty())
+            openDirectChat(m_profileNodeId, m_profileNodeName);
+    });
+
+    // --- Bitcoin Cash section: address, QR, on-demand balance.
+    m_profileBchSection = new QWidget;
+    auto *bchLabel = new QLabel("BITCOIN CASH");
+    bchLabel->setObjectName("sectionLabel");
+    m_profileBchAddr = new QLabel;
+    m_profileBchAddr->setObjectName("statusLine");
+    m_profileBchAddr->setWordWrap(true);
+    m_profileBchAddr->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_profileBchAddr->setStyleSheet("font-family:monospace;");
+    auto *copyAddr = new QPushButton("Copy address");
+    copyAddr->setObjectName("ghostButton");
+    copyAddr->setCursor(Qt::PointingHandCursor);
+    connect(copyAddr, &QPushButton::clicked, this, [this] {
+        if (!m_profileBchValue.isEmpty()) {
+            QApplication::clipboard()->setText(m_profileBchValue);
+            logSystem("Copied BCH address to clipboard.");
+        }
+    });
+    m_profileQr = new QLabel;
+    m_profileQr->setAlignment(Qt::AlignCenter);
+
+    m_profileBalance = new QLabel("\xE2\x80\x94"); // em dash until checked
+    m_profileBalance->setObjectName("channelTitle");
+    m_profileBalanceButton = new QPushButton("Check balance");
+    m_profileBalanceButton->setObjectName("ghostButton");
+    m_profileBalanceButton->setCursor(Qt::PointingHandCursor);
+    m_profileBalanceButton->setToolTip(
+        "Query a public block explorer for this wallet's balance. This sends "
+        "the address to a third-party service.");
+    connect(m_profileBalanceButton, &QPushButton::clicked, this,
+            &MainWindow::checkNodeBalance);
+    auto *balanceRow = new QHBoxLayout;
+    balanceRow->setContentsMargins(0, 0, 0, 0);
+    balanceRow->addWidget(m_profileBalance, 1);
+    balanceRow->addWidget(m_profileBalanceButton);
+
+    auto *bchLayout = new QVBoxLayout(m_profileBchSection);
+    bchLayout->setContentsMargins(0, 8, 0, 0);
+    bchLayout->setSpacing(6);
+    bchLayout->addWidget(bchLabel);
+    bchLayout->addWidget(m_profileBchAddr);
+    bchLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
+    bchLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
+    auto *balLabel = new QLabel("BALANCE");
+    balLabel->setObjectName("sectionLabel");
+    bchLayout->addWidget(balLabel);
+    bchLayout->addLayout(balanceRow);
+
+    auto *layout = new QVBoxLayout(m_nodeProfilePanel);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
+    layout->addLayout(topRow);
+    layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
+    layout->addWidget(m_profileName, 0, Qt::AlignHCenter);
+    layout->addWidget(m_profileStatus, 0, Qt::AlignHCenter);
+    layout->addWidget(m_profilePlatform);
+    layout->addWidget(m_profileMirrors);
+    layout->addWidget(m_profileMessageButton, 0, Qt::AlignLeft);
+    layout->addWidget(m_profileBchSection);
+    layout->addStretch();
+
+    m_nodeProfilePanel->hide();
+    return m_nodeProfilePanel;
+}
+
+void MainWindow::hideNodeProfile()
+{
+    if (m_nodeProfilePanel)
+        m_nodeProfilePanel->hide();
+    m_profileNodeId.clear();
+    m_profileNodeName.clear();
+    m_profileBchValue.clear();
+}
+
+void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+{
+    if (!m_nodeProfilePanel)
+        return;
+
+    // Resolve the node from the live roster (by id, then by name).
+    MemberInfo info;
+    bool found = false;
+    for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+        if ((!nodeId.isEmpty() && m.id == nodeId) ||
+            (nodeId.isEmpty() && m.name == nodeName)) {
+            info = m;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        info.id = nodeId;
+        info.name = nodeName;
+    }
+    // Self's BCH address may only live in local settings.
+    QString bch = info.bchAddress.trimmed();
+    if (info.self && bch.isEmpty())
+        bch = QSettings().value(kBchSetting).toString().trimmed();
+
+    m_profileNodeId = info.id;
+    m_profileNodeName = info.name;
+    m_profileBchValue = bch;
+
+    // Avatar: real avatar if we have one, else a generated letter tile.
+    QPixmap avatar = m_avatars.value(info.id);
+    if (avatar.isNull())
+        avatar = letterFavicon(info.name);
+    m_profileAvatar->setPixmap(roundedRectPixmap(avatar, 72, 18));
+
+    m_profileName->setText(info.name.toHtmlEscaped() +
+                           (info.self ? " (you)" : QString()));
+    const bool online = info.self ? (m_backend != nullptr) : info.online;
+    m_profileStatus->setText(
+        QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> %2")
+            .arg(online ? "#3fb950" : "#8b949e", online ? "Online" : "Offline"));
+
+    const QString emoji = platformEmoji(info.platform);
+    m_profilePlatform->setText(
+        info.platform.isEmpty()
+            ? QStringLiteral("Platform: unknown")
+            : QStringLiteral("Platform: %1 %2").arg(info.platform, emoji));
+    m_profilePlatform->setVisible(!info.platform.isEmpty());
+
+    if (info.mirrors.isEmpty()) {
+        m_profileMirrors->setText("Mirrors: none advertised");
+    } else {
+        m_profileMirrors->setText(
+            QStringLiteral("Mirrors (%1): %2")
+                .arg(info.mirrors.size())
+                .arg(info.mirrors.join(", ").toHtmlEscaped()));
+    }
+
+    m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
+
+    // BCH address + QR + reset balance.
+    if (bch.isEmpty()) {
+        m_profileBchSection->hide();
+    } else {
+        m_profileBchSection->show();
+        m_profileBchAddr->setText(bch);
+        const QImage qr = QrCode::encodeToImage(bch, 4, 3);
+        if (!qr.isNull())
+            m_profileQr->setPixmap(QPixmap::fromImage(qr));
+        m_profileQr->setVisible(!qr.isNull());
+        m_profileBalance->setText(QStringLiteral("\xE2\x80\x94"));
+        m_profileBalanceButton->setEnabled(true);
+        m_profileBalanceButton->setText("Check balance");
+    }
+
+    m_nodeProfilePanel->show();
+}
+
+void MainWindow::checkNodeBalance()
+{
+    const QString addr = m_profileBchValue.trimmed();
+    if (addr.isEmpty())
+        return;
+    m_profileBalanceButton->setEnabled(false);
+    m_profileBalanceButton->setText("Checking\xE2\x80\xA6");
+    m_profileBalance->setText(QStringLiteral("\xE2\x80\xA6"));
+
+    // Strip the "bitcoincash:" prefix; the explorer accepts the bare cashaddr.
+    QString query = addr;
+    const int colon = query.indexOf(':');
+    if (colon >= 0)
+        query = query.mid(colon + 1);
+    const QUrl url(
+        "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + query);
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    const QString pendingAddr = addr;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, pendingAddr] {
+        reply->deleteLater();
+        // Ignore if the panel moved to a different node meanwhile.
+        if (m_profileBchValue.trimmed() != pendingAddr)
+            return;
+        m_profileBalanceButton->setEnabled(true);
+        m_profileBalanceButton->setText("Refresh balance");
+
+        if (reply->error() != QNetworkReply::NoError) {
+            m_profileBalance->setText("Unavailable");
+            return;
+        }
+        const QJsonObject root =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject data = root.value("data").toObject();
+        // Key may be the bare or prefixed address; take the first entry.
+        qint64 sats = -1;
+        for (auto it = data.constBegin(); it != data.constEnd(); ++it) {
+            const QJsonObject addrObj =
+                it.value().toObject().value("address").toObject();
+            if (addrObj.contains("balance")) {
+                sats = addrObj.value("balance").toVariant().toLongLong();
+                break;
+            }
+        }
+        if (sats < 0) {
+            m_profileBalance->setText("Unavailable");
+            return;
+        }
+        const double bch = sats / 100000000.0;
+        m_profileBalance->setText(
+            QStringLiteral("%1 BCH").arg(bch, 0, 'f', 8));
+    });
 }
 
 QWidget *MainWindow::buildReposPanel()
@@ -1919,6 +2171,9 @@ QWidget *MainWindow::buildReposPanel()
                     openRepoDetail(index); // files + issues for this repo
                 else if (index == -2) // advertised mirror: "mirror it too"
                     mirrorAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
+                else if (index == -3) // node header: open that node's profile
+                    showNodeProfile(QString(),
+                                    item->data(Qt::UserRole + 1).toString());
             });
     connect(addRepoButton, &QPushButton::clicked, this,
             &MainWindow::promptAddRepository);
@@ -5407,10 +5662,8 @@ QWidget *MainWindow::buildChatSection()
             });
     connect(m_memberList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
-                const QString id = item->data(Qt::UserRole).toString();
-                const bool self = item->data(Qt::UserRole + 2).toBool();
-                if (!id.isEmpty() && !self)
-                    openDirectChat(id, item->data(Qt::UserRole + 1).toString());
+                showNodeProfile(item->data(Qt::UserRole).toString(),
+                                item->data(Qt::UserRole + 1).toString());
             });
     connect(addChannelButton, &QPushButton::clicked, this, &MainWindow::promptAddChannel);
     connect(m_messageInput, &QLineEdit::textEdited, this, &MainWindow::onComposerEdited);
@@ -5897,6 +6150,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::saveFileRequested, this,
             &MainWindow::saveIncomingFile);
+    connect(row, &MessageRow::senderClicked, this, &MainWindow::showNodeProfile);
     // Insert before the trailing stretch.
     m_messageLayout->insertWidget(m_messageLayout->count() - 1, row);
     m_visibleRows.insert(message.id, row);
@@ -6521,8 +6775,12 @@ void MainWindow::refreshRepositoryList()
         if (!emoji.isEmpty())
             headerText += "  " + emoji;
         auto *header = new QListWidgetItem(headerText);
-        header->setData(Qt::UserRole, -1);
+        // -3 marks a node header row; the node name rides in UserRole+1 so the
+        // list's click handler can open that node's profile.
+        header->setData(Qt::UserRole, -3);
+        header->setData(Qt::UserRole + 1, node);
         header->setFlags(Qt::ItemIsEnabled);
+        header->setToolTip("Click to view this node's profile");
         if (info.inRoster)
             header->setIcon(statusDotIcon(info.online));
         else

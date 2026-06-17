@@ -32,6 +32,11 @@ signals:
     void editRequested(const QString &messageId, const QString &currentText);
     void deleteRequested(const QString &messageId);
     void saveFileRequested(const QString &fileName, const QByteArray &data);
+    // The avatar or sender name was clicked (to open that node's profile).
+    void senderClicked(const QString &id, const QString &name);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildAttachment(QWidget *parent, QVBoxLayout *layout);
@@ -40,5 +45,6 @@ private:
     ChatMessage m_message;
     QString m_nameColor;
     QLabel *m_avatarLabel;
+    QLabel *m_senderLabel = nullptr;
     QHBoxLayout *m_reactionsBar;
 };
