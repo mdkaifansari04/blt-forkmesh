@@ -184,11 +184,24 @@ if ! have_compiler; then
   fi
 fi
 
-# Qt 6 and OpenSSL are discovered by CMake; install the dev packages up front
-# when a package manager is available so configuration doesn't fail.
+# Qt 6 (Widgets, Network, Svg) and OpenSSL are required by CMake. Install the
+# dev packages up front. This is a hard requirement: if the package manager
+# can't provide them the build is guaranteed to fail at configure time with a
+# confusing "Could NOT find Qt6Svg" error, so fail here with a clear message
+# instead. The qt6 dev metapackages pull in the Svg/SvgWidgets components.
 if [ -n "$PM" ] && [ "${FORKMESH_NO_INSTALL_DEPS:-0}" != "1" ]; then
-  qt_pkgs="$(pkg_for qt)";     [ -n "$qt_pkgs" ]  && { say "Ensuring Qt 6 dev libraries ($qt_pkgs)";   pm_install $qt_pkgs  || warn "Could not install Qt packages; the build may fail."; }
-  ssl_pkgs="$(pkg_for openssl)"; [ -n "$ssl_pkgs" ] && { say "Ensuring OpenSSL dev libraries ($ssl_pkgs)"; pm_install $ssl_pkgs || warn "Could not install OpenSSL packages; the build may fail."; }
+  qt_pkgs="$(pkg_for qt)"
+  if [ -n "$qt_pkgs" ]; then
+    say "Installing Qt 6 dev libraries ($qt_pkgs)"
+    # shellcheck disable=SC2086
+    pm_install $qt_pkgs || die "Failed to install Qt 6 dev packages ($qt_pkgs) via $PM."
+  fi
+  ssl_pkgs="$(pkg_for openssl)"
+  if [ -n "$ssl_pkgs" ]; then
+    say "Installing OpenSSL dev libraries ($ssl_pkgs)"
+    # shellcheck disable=SC2086
+    pm_install $ssl_pkgs || die "Failed to install OpenSSL dev packages ($ssl_pkgs) via $PM."
+  fi
 else
   say "ForkMesh requires Qt 6 (Widgets, Network, Svg) and OpenSSL."
   say "  Debian/Ubuntu: sudo apt install qt6-base-dev qt6-svg-dev libssl-dev cmake g++"
