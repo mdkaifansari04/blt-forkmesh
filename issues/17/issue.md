@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 17
 title: Keep the issue tracker current
-status: open
+status: closed
 labels: [infra]
 milestone: 
 assignees: []
