@@ -29,6 +29,8 @@ qt_add_executable(forkmesh
     src/RepoHost.cpp
     src/IssueStore.h
     src/IssueStore.cpp
+    src/PullStore.h
+    src/PullStore.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MainWindow.h

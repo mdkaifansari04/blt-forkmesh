@@ -3,6 +3,7 @@
 #include "ChatBackend.h"
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
+#include "PullStore.h"
 
 #include <QHash>
 #include <QIcon>
@@ -33,6 +34,7 @@ class QSystemTrayIcon;
 class QTableWidget;
 class QTabWidget;
 class QTextBrowser;
+class QTextEdit;
 class QTimer;
 class QTreeWidget;
 class QVBoxLayout;
@@ -137,6 +139,21 @@ private:
     QWidget *buildRepoCommitsTab();
     QWidget *buildAboutSidebar();
     QWidget *buildPlaceholderTab(const QString &name);
+
+    // Pull requests tab (cross-node, patch-based) with explorer + diff viewer.
+    QWidget *buildPullsTab();
+    PullStore pullStoreForCurrentRepo() const;
+    void reloadPulls();
+    void refreshPullList();
+    void showPull(int number);
+    void renderPullDiff(const QString &filePath);
+    void promptNewPull();
+    void mergeCurrentPull();
+    void closeCurrentPull();
+    void syncPullsInbox();
+    void submitPullToInbox(const PullRequest &pr);
+    void updatePullActionState();
+    QUrl pullsApiUrl(const RepositoryRecord &repo) const;
     void openRepoDetail(int repoIndex);
     void updateRepoIssueCount();
     void loadRepoOverview(const QString &path);
@@ -344,6 +361,7 @@ private:
     QTimer *m_mirrorSyncTimer = nullptr;
 
     // Issues section widgets
+    QLineEdit *m_issueSearch = nullptr;
     QComboBox *m_issuesRepoCombo = nullptr;
     QComboBox *m_issueStatusFilter = nullptr;
     QComboBox *m_issueLabelFilter = nullptr;
@@ -389,6 +407,23 @@ private:
     QTreeWidget *m_repoFileTree = nullptr;
     QTabWidget *m_repoFileTabs = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+
+    // Pull requests tab
+    QTableWidget *m_pullTable = nullptr;
+    QLineEdit *m_pullSearch = nullptr;
+    QPushButton *m_pullNewButton = nullptr;
+    QPushButton *m_pullSyncButton = nullptr;
+    QWidget *m_pullDetail = nullptr;
+    QLabel *m_pullTitle = nullptr;
+    QLabel *m_pullMeta = nullptr;
+    QLabel *m_pullDesc = nullptr;
+    QPushButton *m_pullMergeButton = nullptr;
+    QPushButton *m_pullCloseButton = nullptr;
+    QListWidget *m_pullFiles = nullptr;
+    QTextEdit *m_pullDiff = nullptr;
+    QList<PullRequest> m_currentPulls;
+    QHash<QString, QString> m_pullFileDiffs; // current PR: file path -> diff text
+    int m_currentPullNumber = -1;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
