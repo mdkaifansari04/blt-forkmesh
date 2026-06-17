@@ -31,6 +31,12 @@ qt_add_executable(forkmesh
     src/IssueStore.cpp
     src/PullStore.h
     src/PullStore.cpp
+    src/ActionFile.h
+    src/ActionFile.cpp
+    src/ActionStore.h
+    src/ActionStore.cpp
+    src/ActionRunner.h
+    src/ActionRunner.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MainWindow.h

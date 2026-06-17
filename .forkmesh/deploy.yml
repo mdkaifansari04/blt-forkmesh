@@ -1,0 +1,7 @@
+name: Deploy Cloudflare Worker
+on: [push]
+jobs:
+  deploy:
+    steps:
+      - name: Deploy worker
+        run: cd cloudflare_worker && uvx --from workers-py pywrangler deploy
