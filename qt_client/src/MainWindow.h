@@ -4,6 +4,7 @@
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
 #include "PullStore.h"
+#include "ActionStore.h"
 
 #include <QHash>
 #include <QIcon>
@@ -18,7 +19,11 @@
 
 class MessageRow;
 class RepoHost;
+class ActionRunner;
 class QButtonGroup;
+class QFileSystemWatcher;
+class QSplitter;
+class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
@@ -70,6 +75,10 @@ struct RepositoryRecord {
     QString bchAddress;
     QString mirrorPath;
     bool publishToNetwork = false;
+    // Opt-in: run .forkmesh/ workflows when a fork pushes to this repo's bare
+    // mirror. Off by default because pushes can come from forks and workflows
+    // execute commands on this machine.
+    bool actionsEnabled = false;
     qint64 hostedSinceMs = 0;
     qint64 lastSyncMs = 0;
     qint64 publishedAtMs = 0;
@@ -154,6 +163,31 @@ private:
     void submitPullToInbox(const PullRequest &pr);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
+    // Actions (CI on push to the mirror)
+    QWidget *buildActionsSection();
+    void initActions();                  // store/runner/watcher, load history, hooks
+    void ensurePushHook(const RepositoryRecord &repo) const;
+    void removePushHook(const RepositoryRecord &repo) const;
+    void installAllPushHooks() const;
+    void scanActionSpool();              // read *.push events, enqueue runs
+    void enqueuePushEvent(const QString &owner, const QString &name,
+                          const QString &commit, const QString &ref);
+    void processActionQueue();
+    void onRunLog(int runId, const QString &text);
+    void onRunStatusChanged(int runId, const QString &status);
+    void onRunFinished(int runId, bool ok);
+    void refreshActionsTable();
+    void showRun(int runId);
+    void approveSelectedRun();
+    void rejectSelectedRun();
+    ActionRun *findRun(int runId);
+    int repoIndexFor(const QString &owner, const QString &name) const;
+    // Settings: global variables/secrets editor.
+    void reloadVariablesTable();
+    void addOrEditVariable();
+    void deleteSelectedVariable();
+    void persistVariablesFromTable();
+
     void openRepoDetail(int repoIndex);
     void updateRepoIssueCount();
     void loadRepoOverview(const QString &path);
@@ -424,6 +458,28 @@ private:
     QList<PullRequest> m_currentPulls;
     QHash<QString, QString> m_pullFileDiffs; // current PR: file path -> diff text
     int m_currentPullNumber = -1;
+
+    // Actions (CI on push to the mirror)
+    ActionStore *m_actionStore = nullptr;
+    ActionRunner *m_actionRunner = nullptr;
+    QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
+    QList<ActionRun> m_actionRuns;   // loaded history, newest first
+    QList<int> m_actionQueue;        // run ids queued for execution
+    int m_selectedRunId = -1;
+    QTableWidget *m_actionsTable = nullptr;
+    QLabel *m_actionRunTitle = nullptr;
+    QLabel *m_actionRunMeta = nullptr;
+    QLabel *m_actionApprovalBanner = nullptr;
+    QPlainTextEdit *m_actionLog = nullptr;
+    QTextEdit *m_actionDiff = nullptr;
+    QWidget *m_actionApprovalBar = nullptr;
+    QPushButton *m_actionApproveButton = nullptr;
+    QPushButton *m_actionRejectButton = nullptr;
+    QPushButton *m_actionsNavButton = nullptr;
+    // Settings: variables/secrets table.
+    QTableWidget *m_varsTable = nullptr;
+    // Repos panel: per-repo "run actions on push" toggle for the selection.
+    QCheckBox *m_actionsEnabledCheck = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;

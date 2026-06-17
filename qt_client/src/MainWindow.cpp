@@ -1,5 +1,8 @@
 #include "MainWindow.h"
 
+#include "ActionFile.h"
+#include "ActionRunner.h"
+
 #include "MessageRow.h"
 #include "RepoHost.h"
 #include "ServerNode.h"
@@ -43,7 +46,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QFileSystemWatcher>
 #include <QProcess>
+#include <QTextCursor>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -659,6 +664,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     setCentralWidget(m_stack);
     loadRepositories();
     refreshRepositoryList();
+    initActions();
     loadActiveServerIntoEdits();
     refreshServerRail();
     for (int i = 0; i < m_servers.size(); ++i)
@@ -1387,6 +1393,16 @@ void MainWindow::refreshServerRail()
     });
     layout->addWidget(rebuildBtn, 0, Qt::AlignHCenter);
 
+    // Actions (CI) lives in the footer alongside Settings.
+    auto *actionsBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\xA1"));
+    actionsBtn->setObjectName("serverFooterButton");
+    actionsBtn->setCursor(Qt::PointingHandCursor);
+    actionsBtn->setFixedSize(40, 32);
+    actionsBtn->setToolTip("Actions");
+    m_actionsNavButton = actionsBtn;
+    connect(actionsBtn, &QPushButton::clicked, this, [this] { showSection(3); });
+    layout->addWidget(actionsBtn, 0, Qt::AlignHCenter);
+
     auto *settingsBtn = new QPushButton;
     settingsBtn->setObjectName("serverFooterButton");
     settingsBtn->setCursor(Qt::PointingHandCursor);
@@ -1538,6 +1554,7 @@ QWidget *MainWindow::buildChatPage()
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (repos + chat)
     m_sectionStack->addWidget(buildRepoDetailSection()); // 1 Repo detail
     m_sectionStack->addWidget(buildSettingsSection());   // 2 Settings
+    m_sectionStack->addWidget(buildActionsSection());    // 3 Actions (CI)
 
     // The server rail is the only left strip now; the section fills the rest.
     auto *content = new QWidget;
@@ -1629,7 +1646,7 @@ void MainWindow::updateBreadcrumb()
 {
     if (!m_breadcrumb)
         return;
-    static const char *kSections[] = {"Home", "Repository", "Settings"};
+    static const char *kSections[] = {"Home", "Repository", "Settings", "Actions"};
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -1643,7 +1660,7 @@ void MainWindow::updateBreadcrumb()
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
     const QString sep =
         QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
-    QString trail = (section >= 0 && section < 3) ? kSections[section] : "Home";
+    QString trail = (section >= 0 && section < 4) ? kSections[section] : "Home";
     // On the repo detail view, fold the "Repositories › owner/name" path into the
     // single top breadcrumb (Repositories is a link back to the repo list).
     if (section == 1 && m_repoDetailIndex >= 0 &&
@@ -1728,6 +1745,8 @@ void MainWindow::showSection(int index)
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
+    else if (index == 3)
+        refreshActionsTable();
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -1830,6 +1849,37 @@ QWidget *MainWindow::buildReposPanel()
     layout->addLayout(remoteRow);
     layout->addWidget(m_repoRemoteHint);
     layout->addWidget(m_repoWebLink);
+
+    // Per-repo opt-in to run .forkmesh/ workflows on push. Off by default: a
+    // pushed workflow runs commands on this machine, so the user must enable it
+    // and still approve any workflow change in the Actions tab.
+    m_actionsEnabledCheck = new QCheckBox("Run actions on push to this repo");
+    m_actionsEnabledCheck->setToolTip(
+        "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
+        "workflows. Workflow changes must be approved in the Actions tab before "
+        "they run.");
+    m_actionsEnabledCheck->setEnabled(false);
+    layout->addWidget(m_actionsEnabledCheck);
+    connect(m_actionsEnabledCheck, &QCheckBox::toggled, this, [this](bool on) {
+        const int index = m_repoList && m_repoList->currentItem()
+                              ? m_repoList->currentItem()->data(Qt::UserRole).toInt()
+                              : -1;
+        if (index < 0 || index >= m_repositories.size())
+            return;
+        if (m_repositories[index].actionsEnabled == on)
+            return;
+        m_repositories[index].actionsEnabled = on;
+        saveRepositories();
+        if (on)
+            ensurePushHook(m_repositories.at(index));
+        else
+            removePushHook(m_repositories.at(index));
+        logSystem(QStringLiteral("Actions %1 for %2/%3.")
+                      .arg(on ? "enabled" : "disabled",
+                           m_repositories.at(index).owner,
+                           m_repositories.at(index).name));
+    });
+
     layout->addLayout(repoButtonRow);
 
     connect(m_repoList, &QListWidget::currentRowChanged, this, [this](int) {
@@ -4975,6 +5025,46 @@ QWidget *MainWindow::buildSettingsSection()
     mirrorRow->addWidget(m_mirrorRootEdit, 1);
     mirrorRow->addWidget(mirrorChangeButton);
 
+    // Variables / secrets shared by all action workflows on this node. Values
+    // are injected into each run's environment (e.g. CLOUDFLARE_API_TOKEN) and
+    // redacted from run logs.
+    auto *varsLabel = new QLabel("VARIABLES / SECRETS");
+    varsLabel->setObjectName("sectionLabel");
+    auto *varsHint = new QLabel(
+        "Injected into every action run's environment and redacted from logs. "
+        "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate.");
+    varsHint->setObjectName("statusLine");
+    varsHint->setWordWrap(true);
+
+    m_varsTable = new QTableWidget(0, 2);
+    m_varsTable->setHorizontalHeaderLabels({"Name", "Value"});
+    m_varsTable->horizontalHeader()->setStretchLastSection(true);
+    m_varsTable->verticalHeader()->setVisible(false);
+    m_varsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_varsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_varsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_varsTable->setMaximumHeight(160);
+
+    auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
+    auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
+    auto *varDeleteButton = new QPushButton("Delete");
+    for (QPushButton *b : {varAddButton, varEditButton, varDeleteButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    connect(varAddButton, &QPushButton::clicked, this,
+            &MainWindow::addOrEditVariable);
+    connect(varEditButton, &QPushButton::clicked, this,
+            &MainWindow::addOrEditVariable);
+    connect(varDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteSelectedVariable);
+    auto *varButtonRow = new QHBoxLayout;
+    varButtonRow->setContentsMargins(0, 0, 0, 0);
+    varButtonRow->addWidget(varAddButton);
+    varButtonRow->addWidget(varEditButton);
+    varButtonRow->addWidget(varDeleteButton);
+    varButtonRow->addStretch();
+
     auto *leaveButton = new QPushButton("\xE2\x86\x90 Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
@@ -4999,8 +5089,14 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    layout->addSpacing(6);
+    layout->addWidget(varsLabel);
+    layout->addWidget(varsHint);
+    layout->addWidget(m_varsTable);
+    layout->addLayout(varButtonRow);
     layout->addStretch();
     layout->addLayout(footerRow);
+    reloadVariablesTable();
     return page;
 }
 
@@ -5752,6 +5848,7 @@ void MainWindow::loadRepositories()
         repo.bchAddress = settings.value("bchAddress").toString();
         repo.mirrorPath = settings.value("mirrorPath").toString();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
+        repo.actionsEnabled = settings.value("actionsEnabled").toBool();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
@@ -5777,6 +5874,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("bchAddress", repo.bchAddress);
         settings.setValue("mirrorPath", repo.mirrorPath);
         settings.setValue("publishToNetwork", repo.publishToNetwork);
+        settings.setValue("actionsEnabled", repo.actionsEnabled);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
         settings.setValue("lastSyncMs", repo.lastSyncMs);
         settings.setValue("publishedAtMs", repo.publishedAtMs);
@@ -6129,6 +6227,8 @@ void MainWindow::updateRepoRemoteInfo()
     if (!m_repoRemoteEdit)
         return;
     QListWidgetItem *item = m_repoList ? m_repoList->currentItem() : nullptr;
+    if (m_actionsEnabledCheck)
+        m_actionsEnabledCheck->setEnabled(false);
     if (!item) {
         m_repoRemoteEdit->clear();
         if (m_repoRemoteHint)
@@ -6138,6 +6238,11 @@ void MainWindow::updateRepoRemoteInfo()
     const int index = item->data(Qt::UserRole).toInt();
     if (index < 0 || index >= m_repositories.size())
         return;
+    if (m_actionsEnabledCheck) {
+        QSignalBlocker block(m_actionsEnabledCheck);
+        m_actionsEnabledCheck->setEnabled(true);
+        m_actionsEnabledCheck->setChecked(m_repositories.at(index).actionsEnabled);
+    }
     const QString path = m_repositories.at(index).mirrorPath;
     m_repoRemoteEdit->setText(path);
     if (!m_repoRemoteHint)
@@ -6532,6 +6637,10 @@ void MainWindow::syncRepository(int index, bool quiet)
                     repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
                     saveRepositories();
                     refreshRepositoryList();
+                    // Now that the bare mirror exists, (re)install the push hook
+                    // if this repo opts into actions.
+                    if (repo.actionsEnabled)
+                        ensurePushHook(repo);
                     // Quiet auto-syncs only speak up when something changed.
                     if (!quiet || changed)
                         logSystem("Mirror: synced " + repo.owner + "/" +
@@ -6594,4 +6703,611 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
     QSettings().setValue(kAvatarSetting, pngData);
     if (m_backend)
         m_backend->setAvatar(pngData);
+}
+
+// ---- Actions (CI on push to the mirror) -----------------------------------
+
+namespace {
+
+QString actionStatusText(const QString &status)
+{
+    if (status == ActionStatus::AwaitingApproval) return QStringLiteral("Awaiting approval");
+    if (status == ActionStatus::Queued) return QStringLiteral("Queued");
+    if (status == ActionStatus::Running) return QStringLiteral("Running");
+    if (status == ActionStatus::Success) return QStringLiteral("Success");
+    if (status == ActionStatus::Failed) return QStringLiteral("Failed");
+    if (status == ActionStatus::Rejected) return QStringLiteral("Rejected");
+    return status;
+}
+
+QColor actionStatusColor(const QString &status)
+{
+    if (status == ActionStatus::Success) return QColor("#3fb950");
+    if (status == ActionStatus::Failed) return QColor("#f85149");
+    if (status == ActionStatus::Running) return QColor("#58a6ff");
+    if (status == ActionStatus::AwaitingApproval) return QColor("#d29922");
+    if (status == ActionStatus::Rejected) return QColor("#8b949e");
+    return QColor("#8b949e");
+}
+
+} // namespace
+
+void MainWindow::initActions()
+{
+    const QString root =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/actions");
+    m_actionStore = new ActionStore(root);
+    m_actionRunner = new ActionRunner(m_actionStore, this);
+    connect(m_actionRunner, &ActionRunner::logLine, this, &MainWindow::onRunLog);
+    connect(m_actionRunner, &ActionRunner::statusChanged, this,
+            &MainWindow::onRunStatusChanged);
+    connect(m_actionRunner, &ActionRunner::finished, this,
+            &MainWindow::onRunFinished);
+
+    m_actionRuns = m_actionStore->loadAllRuns();
+    // A run still marked Running was interrupted by a previous shutdown; it can't
+    // resume, so record it as failed. Re-queue anything that was only queued.
+    for (int i = 0; i < m_actionRuns.size(); ++i) {
+        ActionRun &run = m_actionRuns[i];
+        if (run.status == ActionStatus::Running) {
+            run.status = ActionStatus::Failed;
+            m_actionStore->saveRun(run);
+        } else if (run.status == ActionStatus::Queued) {
+            m_actionQueue.append(run.id);
+        }
+    }
+
+    installAllPushHooks();
+
+    m_actionSpoolWatcher = new QFileSystemWatcher(this);
+    m_actionSpoolWatcher->addPath(m_actionStore->spoolDir());
+    connect(m_actionSpoolWatcher, &QFileSystemWatcher::directoryChanged, this,
+            [this](const QString &) { scanActionSpool(); });
+
+    // Catch pushes that landed while we were closed, then drain the queue.
+    scanActionSpool();
+    processActionQueue();
+    refreshActionsTable();
+}
+
+void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
+{
+    if (!m_actionStore || repo.mirrorPath.isEmpty())
+        return;
+    if (!QDir(repo.mirrorPath).exists())
+        return; // mirror not cloned yet; installed on the next sync
+    const QString hooksDir = repo.mirrorPath + QStringLiteral("/hooks");
+    QDir().mkpath(hooksDir);
+
+    // A small POSIX-sh post-receive hook: it appends one event file per push to
+    // the spool dir (atomically via a .tmp rename) for the app to pick up.
+    const QString spool = m_actionStore->spoolDir();
+    const QString script = QStringLiteral(
+        "#!/bin/sh\n"
+        "spool='%1'\n"
+        "mkdir -p \"$spool\"\n"
+        "f=\"$spool/$(date +%s)-$$.push\"\n"
+        "{\n"
+        "  echo 'owner %2'\n"
+        "  echo 'name %3'\n"
+        "  echo 'mirror %4'\n"
+        "  while read old new ref; do echo \"ref $old $new $ref\"; done\n"
+        "} > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n")
+        .arg(spool, repo.owner, repo.name, repo.mirrorPath);
+
+    QFile f(hooksDir + QStringLiteral("/post-receive"));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    f.write(script.toUtf8());
+    f.close();
+    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                     QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                     QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                     QFileDevice::ExeOther);
+}
+
+void MainWindow::removePushHook(const RepositoryRecord &repo) const
+{
+    if (repo.mirrorPath.isEmpty())
+        return;
+    QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
+}
+
+void MainWindow::installAllPushHooks() const
+{
+    for (const RepositoryRecord &repo : m_repositories)
+        if (repo.actionsEnabled)
+            ensurePushHook(repo);
+}
+
+int MainWindow::repoIndexFor(const QString &owner, const QString &name) const
+{
+    for (int i = 0; i < m_repositories.size(); ++i)
+        if (m_repositories.at(i).owner == owner && m_repositories.at(i).name == name)
+            return i;
+    return -1;
+}
+
+ActionRun *MainWindow::findRun(int runId)
+{
+    for (ActionRun &run : m_actionRuns)
+        if (run.id == runId)
+            return &run;
+    return nullptr;
+}
+
+void MainWindow::scanActionSpool()
+{
+    if (!m_actionStore)
+        return;
+    QDir dir(m_actionStore->spoolDir());
+    const QStringList files =
+        dir.entryList({QStringLiteral("*.push")}, QDir::Files, QDir::Name);
+    for (const QString &file : files) {
+        const QString full = dir.filePath(file);
+        QFile f(full);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        QFile::remove(full);
+
+        QString owner, name, ref, commit;
+        const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            if (line.startsWith(QLatin1String("owner ")))
+                owner = line.mid(6).trimmed();
+            else if (line.startsWith(QLatin1String("name ")))
+                name = line.mid(5).trimmed();
+            else if (line.startsWith(QLatin1String("ref "))) {
+                const QStringList p =
+                    line.mid(4).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                if (p.size() >= 3 &&
+                    p.at(2).startsWith(QLatin1String("refs/heads/"))) {
+                    commit = p.at(1);
+                    ref = p.at(2);
+                }
+            }
+        }
+        // Skip events with no branch update or a branch deletion (all-zero SHA).
+        if (owner.isEmpty() || name.isEmpty() || commit.isEmpty())
+            continue;
+        if (commit.count(QLatin1Char('0')) == commit.size())
+            continue;
+        enqueuePushEvent(owner, name, commit, ref);
+    }
+    processActionQueue();
+}
+
+void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
+                                  const QString &commit, const QString &ref)
+{
+    const int repoIndex = repoIndexFor(owner, name);
+    if (repoIndex < 0)
+        return;
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
+    if (!repo.actionsEnabled)
+        return;
+
+    // List .forkmesh/*.yml|*.yaml at the pushed commit without checking it out.
+    QProcess ls;
+    ls.start(QStringLiteral("git"),
+             {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
+              QStringLiteral("-r"), QStringLiteral("--name-only"), commit,
+              QStringLiteral("--"), QStringLiteral(".forkmesh")});
+    ls.waitForFinished(10000);
+    const QStringList paths = QString::fromUtf8(ls.readAllStandardOutput())
+                                  .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+
+    bool added = false;
+    for (const QString &path : paths) {
+        if (!(path.endsWith(QLatin1String(".yml")) ||
+              path.endsWith(QLatin1String(".yaml"))))
+            continue;
+        QProcess show;
+        show.start(QStringLiteral("git"),
+                   {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("show"),
+                    commit + QLatin1Char(':') + path});
+        show.waitForFinished(10000);
+        if (show.exitCode() != 0)
+            continue;
+        const QString content = QString::fromUtf8(show.readAllStandardOutput());
+        const ActionWorkflow wf = ActionFile::parse(path, content);
+        if (!wf.valid || !wf.triggersOnPush())
+            continue;
+
+        ActionRun run;
+        run.owner = owner;
+        run.name = name;
+        run.workflowPath = path;
+        run.workflowName = wf.name;
+        run.workflowContent = content;
+        run.commit = commit;
+        run.ref = ref;
+        const bool approved =
+            ActionStore::isApproved(run.repoKey(), path, content);
+        run.status =
+            approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
+
+        const ActionRun created = m_actionStore->createRun(run);
+        m_actionRuns.prepend(created);
+        if (approved)
+            m_actionQueue.append(created.id);
+        added = true;
+        logSystem(QStringLiteral("Actions: %1 \"%2\" for %3/%4 @ %5")
+                      .arg(approved ? QStringLiteral("queued")
+                                    : QStringLiteral("awaiting approval of"),
+                           wf.name, owner, name, commit.left(8)));
+    }
+    if (added)
+        refreshActionsTable();
+}
+
+void MainWindow::processActionQueue()
+{
+    if (!m_actionRunner || m_actionRunner->busy())
+        return;
+    while (!m_actionQueue.isEmpty()) {
+        const int runId = m_actionQueue.takeFirst();
+        ActionRun *run = findRun(runId);
+        if (!run || run->status != ActionStatus::Queued)
+            continue;
+        const int repoIndex = repoIndexFor(run->owner, run->name);
+        if (repoIndex < 0) {
+            run->status = ActionStatus::Failed;
+            m_actionStore->saveRun(*run);
+            continue;
+        }
+        const QString mirror = m_repositories.at(repoIndex).mirrorPath;
+        const ActionWorkflow wf =
+            ActionFile::parse(run->workflowPath, run->workflowContent);
+        if (!wf.valid) {
+            run->status = ActionStatus::Failed;
+            m_actionStore->saveRun(*run);
+            continue;
+        }
+        // start() emits statusChanged synchronously (which reloads m_actionRuns),
+        // so copy the run out first and don't touch the pointer afterwards.
+        const ActionRun snapshot = *run;
+        m_actionRunner->start(snapshot, wf, mirror, ActionStore::variables());
+        return; // one run at a time; finished() drives the next
+    }
+}
+
+void MainWindow::onRunLog(int runId, const QString &text)
+{
+    if (runId != m_selectedRunId || !m_actionLog)
+        return;
+    m_actionLog->moveCursor(QTextCursor::End);
+    m_actionLog->insertPlainText(text);
+    m_actionLog->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::onRunStatusChanged(int runId, const QString &status)
+{
+    m_actionRuns = m_actionStore->loadAllRuns();
+    refreshActionsTable();
+    if (runId == m_selectedRunId && m_actionRunMeta) {
+        if (const ActionRun *run = findRun(runId)) {
+            m_actionRunMeta->setText(
+                QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
+                    .arg(run->owner, run->name, run->commit.left(8),
+                         actionStatusText(status)));
+        }
+    }
+}
+
+void MainWindow::onRunFinished(int runId, bool ok)
+{
+    Q_UNUSED(ok);
+    m_actionRuns = m_actionStore->loadAllRuns();
+    refreshActionsTable();
+    if (runId == m_selectedRunId)
+        showRun(runId); // finished: reload the complete log from disk
+    processActionQueue();
+}
+
+void MainWindow::refreshActionsTable()
+{
+    if (!m_actionsTable)
+        return;
+    QSignalBlocker block(m_actionsTable);
+    m_actionsTable->setRowCount(0);
+    for (const ActionRun &run : m_actionRuns) {
+        const int row = m_actionsTable->rowCount();
+        m_actionsTable->insertRow(row);
+
+        auto *repoItem =
+            new QTableWidgetItem(run.owner + QLatin1Char('/') + run.name);
+        repoItem->setData(Qt::UserRole, run.id);
+        auto *wfItem = new QTableWidgetItem(run.workflowName);
+        auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
+        statusItem->setForeground(actionStatusColor(run.status));
+        const QString when =
+            run.createdAtMs > 0
+                ? QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
+                      .toString(QStringLiteral("MMM d  hh:mm"))
+                : QString();
+        auto *whenItem = new QTableWidgetItem(when);
+
+        m_actionsTable->setItem(row, 0, repoItem);
+        m_actionsTable->setItem(row, 1, wfItem);
+        m_actionsTable->setItem(row, 2, statusItem);
+        m_actionsTable->setItem(row, 3, whenItem);
+        if (run.id == m_selectedRunId)
+            m_actionsTable->selectRow(row);
+    }
+}
+
+void MainWindow::showRun(int runId)
+{
+    m_selectedRunId = runId;
+    const ActionRun *run = findRun(runId);
+    if (!run) {
+        if (m_actionRunTitle)
+            m_actionRunTitle->setText(QStringLiteral("Select a run"));
+        if (m_actionRunMeta)
+            m_actionRunMeta->clear();
+        if (m_actionLog)
+            m_actionLog->clear();
+        if (m_actionApprovalBar)
+            m_actionApprovalBar->hide();
+        if (m_actionApprovalBanner)
+            m_actionApprovalBanner->hide();
+        if (m_actionDiff)
+            m_actionDiff->hide();
+        return;
+    }
+
+    if (m_actionRunTitle)
+        m_actionRunTitle->setText(run->workflowName);
+    if (m_actionRunMeta) {
+        QString meta = QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
+                           .arg(run->owner, run->name, run->commit.left(8),
+                                actionStatusText(run->status));
+        if (run->startedAtMs > 0 && run->finishedAtMs > run->startedAtMs)
+            meta += QStringLiteral(" \xC2\xB7 %1s")
+                        .arg((run->finishedAtMs - run->startedAtMs) / 1000);
+        m_actionRunMeta->setText(meta);
+    }
+
+    const bool pending = run->status == ActionStatus::AwaitingApproval;
+    if (m_actionApprovalBanner)
+        m_actionApprovalBanner->setVisible(pending);
+    if (m_actionApprovalBar)
+        m_actionApprovalBar->setVisible(pending);
+    if (m_actionDiff)
+        m_actionDiff->setVisible(pending);
+    if (m_actionLog)
+        m_actionLog->setVisible(!pending);
+
+    if (pending && m_actionDiff) {
+        const QString prior =
+            ActionStore::lastApprovedContent(run->repoKey(), run->workflowPath);
+        QString body;
+        body += QStringLiteral("# Previously approved (%1)\n").arg(run->workflowPath);
+        body += prior.isEmpty()
+                    ? QStringLiteral("(none — this workflow has never been approved)\n")
+                    : prior;
+        body += QStringLiteral("\n\n# Incoming from this push (%1)\n")
+                    .arg(run->commit.left(8));
+        body += run->workflowContent;
+        m_actionDiff->setPlainText(body);
+    } else if (m_actionLog) {
+        m_actionLog->setPlainText(m_actionStore->readLog(*run));
+        m_actionLog->moveCursor(QTextCursor::End);
+    }
+}
+
+void MainWindow::approveSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run || run->status != ActionStatus::AwaitingApproval)
+        return;
+    ActionStore::approve(run->repoKey(), run->workflowPath, run->workflowContent);
+    run->status = ActionStatus::Queued;
+    m_actionStore->saveRun(*run);
+    m_actionQueue.append(run->id);
+    logSystem(QStringLiteral("Actions: approved \"%1\" for %2/%3.")
+                  .arg(run->workflowName, run->owner, run->name));
+    refreshActionsTable();
+    showRun(m_selectedRunId);
+    processActionQueue();
+}
+
+void MainWindow::rejectSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run || run->status != ActionStatus::AwaitingApproval)
+        return;
+    run->status = ActionStatus::Rejected;
+    run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_actionStore->saveRun(*run);
+    logSystem(QStringLiteral("Actions: rejected \"%1\" for %2/%3.")
+                  .arg(run->workflowName, run->owner, run->name));
+    refreshActionsTable();
+    showRun(m_selectedRunId);
+}
+
+QWidget *MainWindow::buildActionsSection()
+{
+    auto *page = new QWidget;
+
+    // Left: the run list.
+    auto *listPane = new QWidget;
+    listPane->setMinimumWidth(380);
+    auto *heading = new QLabel("Actions");
+    heading->setObjectName("channelTitle");
+    auto *subtitle = new QLabel(
+        "Workflows in .forkmesh/ run when a fork pushes to a repo's mirror. "
+        "Changed workflows wait for your approval before they run.");
+    subtitle->setObjectName("statusLine");
+    subtitle->setWordWrap(true);
+
+    m_actionsTable = new QTableWidget(0, 4);
+    m_actionsTable->setHorizontalHeaderLabels({"Repo", "Workflow", "Status", "When"});
+    m_actionsTable->horizontalHeader()->setStretchLastSection(true);
+    m_actionsTable->verticalHeader()->setVisible(false);
+    m_actionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_actionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_actionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    connect(m_actionsTable, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QModelIndexList rows =
+            m_actionsTable->selectionModel()->selectedRows();
+        if (rows.isEmpty())
+            return;
+        QTableWidgetItem *first = m_actionsTable->item(rows.first().row(), 0);
+        if (first)
+            showRun(first->data(Qt::UserRole).toInt());
+    });
+
+    auto *listLayout = new QVBoxLayout(listPane);
+    listLayout->setContentsMargins(24, 22, 12, 22);
+    listLayout->setSpacing(8);
+    listLayout->addWidget(heading);
+    listLayout->addWidget(subtitle);
+    listLayout->addWidget(m_actionsTable, 1);
+
+    // Right: run detail (header, optional approval, log).
+    auto *detailPane = new QWidget;
+    m_actionRunTitle = new QLabel("Select a run");
+    m_actionRunTitle->setObjectName("channelTitle");
+    m_actionRunMeta = new QLabel;
+    m_actionRunMeta->setObjectName("statusLine");
+    m_actionRunMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_actionApprovalBanner = new QLabel(
+        "\xE2\x9A\xA0 This workflow is new or changed. Review the difference "
+        "below, then Approve to run it (secrets are only exposed after approval).");
+    m_actionApprovalBanner->setWordWrap(true);
+    m_actionApprovalBanner->setStyleSheet(
+        "color:#d29922; background:#1c1908; border:1px solid #3a3416; "
+        "border-radius:6px; padding:8px;");
+    m_actionApprovalBanner->hide();
+
+    m_actionDiff = new QTextEdit;
+    m_actionDiff->setReadOnly(true);
+    m_actionDiff->setLineWrapMode(QTextEdit::NoWrap);
+    m_actionDiff->setFontFamily(QStringLiteral("monospace"));
+    m_actionDiff->hide();
+
+    m_actionApproveButton = new QPushButton("Approve & run");
+    m_actionApproveButton->setObjectName("primaryButton");
+    m_actionApproveButton->setCursor(Qt::PointingHandCursor);
+    m_actionRejectButton = new QPushButton("Reject");
+    m_actionRejectButton->setObjectName("dangerButton");
+    m_actionRejectButton->setCursor(Qt::PointingHandCursor);
+    connect(m_actionApproveButton, &QPushButton::clicked, this,
+            &MainWindow::approveSelectedRun);
+    connect(m_actionRejectButton, &QPushButton::clicked, this,
+            &MainWindow::rejectSelectedRun);
+    m_actionApprovalBar = new QWidget;
+    auto *approvalRow = new QHBoxLayout(m_actionApprovalBar);
+    approvalRow->setContentsMargins(0, 0, 0, 0);
+    approvalRow->addWidget(m_actionApproveButton);
+    approvalRow->addWidget(m_actionRejectButton);
+    approvalRow->addStretch();
+    m_actionApprovalBar->hide();
+
+    m_actionLog = new QPlainTextEdit;
+    m_actionLog->setReadOnly(true);
+    m_actionLog->setObjectName("actionLog");
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    m_actionLog->setFont(mono);
+    m_actionLog->setMaximumBlockCount(20000);
+
+    auto *detailLayout = new QVBoxLayout(detailPane);
+    detailLayout->setContentsMargins(12, 22, 24, 22);
+    detailLayout->setSpacing(8);
+    detailLayout->addWidget(m_actionRunTitle);
+    detailLayout->addWidget(m_actionRunMeta);
+    detailLayout->addWidget(m_actionApprovalBanner);
+    detailLayout->addWidget(m_actionApprovalBar);
+    detailLayout->addWidget(m_actionDiff, 1);
+    detailLayout->addWidget(m_actionLog, 2);
+
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->addWidget(listPane);
+    splitter->addWidget(detailPane);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+
+    auto *layout = new QHBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(splitter);
+    return page;
+}
+
+// ---- Settings: variables / secrets ----------------------------------------
+
+void MainWindow::reloadVariablesTable()
+{
+    if (!m_varsTable)
+        return;
+    const QMap<QString, QString> vars = ActionStore::variables();
+    QSignalBlocker block(m_varsTable);
+    m_varsTable->setRowCount(0);
+    for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
+        const int row = m_varsTable->rowCount();
+        m_varsTable->insertRow(row);
+        m_varsTable->setItem(row, 0, new QTableWidgetItem(it.key()));
+        // Mask the value; the real text is kept in UserRole for editing.
+        auto *valueItem = new QTableWidgetItem(
+            QString(qMin(it.value().size(), 24), QChar(0x2022)));
+        valueItem->setData(Qt::UserRole, it.value());
+        m_varsTable->setItem(row, 1, valueItem);
+    }
+}
+
+void MainWindow::addOrEditVariable()
+{
+    QString name, value;
+    const QList<QTableWidgetItem *> selected =
+        m_varsTable ? m_varsTable->selectedItems() : QList<QTableWidgetItem *>();
+    const bool editing = !selected.isEmpty();
+    if (editing) {
+        const int row = selected.first()->row();
+        name = m_varsTable->item(row, 0)->text();
+        value = m_varsTable->item(row, 1)->data(Qt::UserRole).toString();
+    }
+
+    bool ok = false;
+    const QString newName = QInputDialog::getText(
+        this, editing ? "Edit variable" : "Add variable",
+        "Name (e.g. CLOUDFLARE_API_TOKEN):", QLineEdit::Normal, name, &ok);
+    if (!ok || newName.trimmed().isEmpty())
+        return;
+    const QString newValue = QInputDialog::getText(
+        this, editing ? "Edit variable" : "Add variable", "Value:",
+        QLineEdit::Password, value, &ok);
+    if (!ok)
+        return;
+
+    QMap<QString, QString> vars = ActionStore::variables();
+    if (editing && newName.trimmed() != name)
+        vars.remove(name);
+    vars.insert(newName.trimmed(), newValue);
+    ActionStore::setVariables(vars);
+    reloadVariablesTable();
+}
+
+void MainWindow::deleteSelectedVariable()
+{
+    if (!m_varsTable)
+        return;
+    const QList<QTableWidgetItem *> selected = m_varsTable->selectedItems();
+    if (selected.isEmpty())
+        return;
+    const QString name = m_varsTable->item(selected.first()->row(), 0)->text();
+    QMap<QString, QString> vars = ActionStore::variables();
+    vars.remove(name);
+    ActionStore::setVariables(vars);
+    reloadVariablesTable();
+}
+
+void MainWindow::persistVariablesFromTable()
+{
+    // Variables are written directly in add/edit/delete; nothing to flush here.
 }
