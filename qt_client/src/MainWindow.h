@@ -76,10 +76,10 @@ struct RepositoryRecord {
     QString bchAddress;
     QString mirrorPath;
     bool publishToNetwork = false;
-    // Opt-in: run .forkmesh/ workflows when a fork pushes to this repo's bare
-    // mirror. Off by default because pushes can come from forks and workflows
-    // execute commands on this machine.
-    bool actionsEnabled = false;
+    // Run .forkmesh/ workflows when a fork pushes to this repo's bare mirror.
+    // Enabled by default; can be turned off per repo on the Actions tab. Pushed
+    // workflow changes still require explicit approval before they run.
+    bool actionsEnabled = true;
     qint64 hostedSinceMs = 0;
     qint64 lastSyncMs = 0;
     qint64 publishedAtMs = 0;
