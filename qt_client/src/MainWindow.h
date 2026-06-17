@@ -196,6 +196,7 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    void forkCurrentRepo();       // clone the open repo into your own node
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
     void updateRepoIssueCount();
     void loadRepoOverview(const QString &path);
@@ -445,6 +446,9 @@ private:
     QLabel *m_commitFilesSummary = nullptr;
     QListWidget *m_commitFileList = nullptr;
     QTextBrowser *m_commitDiffView = nullptr;
+    QPushButton *m_commitPrevButton = nullptr;
+    QPushButton *m_commitNextButton = nullptr;
+    int m_currentCommitRow = -1; // row in m_commitsList the detail view is showing
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor

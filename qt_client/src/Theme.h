@@ -174,10 +174,12 @@ QPushButton#serverButton {
 QPushButton#serverButton:hover { border-color: #30363d; border-radius: 12px; }
 QPushButton#serverButton:checked { border-color: #2ea043; border-radius: 12px; }
 QPushButton#serverAddButton {
-    background-color: #0d1117; border: 1px dashed #30363d;
-    border-radius: 12px; color: #8b949e; font-size: 20px; font-weight: 700;
+    background-color: #21262d; border: none;
+    border-radius: 12px; color: #3fb950; font-size: 22px; font-weight: 500;
+    padding-bottom: 3px;
 }
-QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; }
+QPushButton#serverAddButton:hover { background-color: #2ea043; color: #ffffff; }
+QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
     border-radius: 8px;
@@ -513,10 +515,12 @@ QPushButton#serverButton {
 QPushButton#serverButton:hover { border-color: #d0d7de; border-radius: 12px; }
 QPushButton#serverButton:checked { border-color: #1f883d; border-radius: 12px; }
 QPushButton#serverAddButton {
-    background-color: #ffffff; border: 1px dashed #d0d7de;
-    border-radius: 12px; color: #656d76; font-size: 20px; font-weight: 700;
+    background-color: #eaeef2; border: none;
+    border-radius: 12px; color: #1f883d; font-size: 22px; font-weight: 500;
+    padding-bottom: 3px;
 }
-QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; }
+QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
+QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
     border-radius: 8px;
