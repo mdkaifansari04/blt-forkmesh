@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Applies the ForkMesh D1 migrations. Hooked into wrangler.toml as the [build]
 # command, so it runs automatically before every `pywrangler deploy` (and dev).
-# Each file in migrations/ is applied in filename order; they are idempotent
-# (CREATE ... IF NOT EXISTS), so re-running on every deploy is safe.
+# Uses D1's native migration tracking (`d1 migrations apply`), so each numbered
+# file in migrations/ runs exactly once per database — that lets a migration
+# do one-time, non-idempotent things (e.g. dropping a superseded table).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 DB="${FORKMESH_D1_NAME:-forkmesh}"
-MIGRATIONS_DIR="migrations"
 
 # Nothing to do until a real D1 database is wired up: skip (don't fail the
 # build) while wrangler.toml still has the placeholder id.
@@ -31,15 +31,8 @@ fi
 SCOPE="--remote"
 [ "${FORKMESH_D1_LOCAL:-0}" = "1" ] && SCOPE="--local"
 
-shopt -s nullglob
-migrations=("$MIGRATIONS_DIR"/*.sql)
-if [ ${#migrations[@]} -eq 0 ]; then
-  echo "migrate.sh: no migrations found in $MIGRATIONS_DIR/ — nothing to do."
-  exit 0
-fi
-
-for file in "${migrations[@]}"; do  # glob expands in sorted (numeric) order
-  echo "migrate.sh: applying $file to D1 '$DB' ($SCOPE)"
-  "${WRANGLER[@]}" d1 execute "$DB" --file "$file" "$SCOPE"
-done
-echo "migrate.sh: ${#migrations[@]} migration(s) applied."
+echo "migrate.sh: applying D1 migrations to '$DB' ($SCOPE)"
+# Non-interactive (build subprocess): wrangler auto-confirms when stdout is not
+# a TTY. Each migration is tracked in d1_migrations and applied at most once.
+"${WRANGLER[@]}" d1 migrations apply "$DB" "$SCOPE"
+echo "migrate.sh: migrations applied."

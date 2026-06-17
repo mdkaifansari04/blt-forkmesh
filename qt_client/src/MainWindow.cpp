@@ -1995,13 +1995,13 @@ void MainWindow::updateConnectionStatus()
     if (connected) {
         color = "#3fb950"; // green
         dot = QString::fromUtf8("\xE2\x97\x8F");
-        text = QStringLiteral("Connected \xC2\xB7 %1 %2 online")
+        text = QString::fromUtf8("Connected \xC2\xB7 %1 %2 online")
                    .arg(onlineCount)
                    .arg(onlineCount == 1 ? "node" : "nodes");
     } else if (m_backend) {
         color = "#d29922"; // amber: connecting / backing off
         dot = QString::fromUtf8("\xE2\x97\x8F");
-        text = QStringLiteral("Connecting\xE2\x80\xA6");
+        text = QString::fromUtf8("Connecting\xE2\x80\xA6");
     } else {
         color = "#8b949e"; // grey: offline / not started
         dot = QString::fromUtf8("\xE2\x97\x8B");
@@ -2315,7 +2315,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
                            (info.self ? " (you)" : QString()));
     const bool online = info.self ? (m_backend != nullptr) : info.online;
     m_profileStatus->setText(
-        QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> %2")
+        QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2")
             .arg(online ? "#3fb950" : "#8b949e", online ? "Online" : "Offline"));
 
     const QString emoji = platformEmoji(info.platform);
@@ -2344,7 +2344,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (info.self)
             m_profileEligibility->setText(
                 m_accountBchVerified
-                    ? QStringLiteral("<span style='color:#3fb950'>\xE2\x9C\x93 Active "
+                    ? QString::fromUtf8("<span style='color:#3fb950'>\xE2\x9C\x93 Active "
                                      "\xC2\xB7 revenue-sharing eligible</span>")
                     : QStringLiteral("<span style='color:#d29922'>Not yet eligible "
                                      "\xE2\x80\x94 deposit \xE2\x89\xA5 0.001 BCH and "
@@ -2361,7 +2361,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (!qr.isNull())
             m_profileQr->setPixmap(QPixmap::fromImage(qr));
         m_profileQr->setVisible(!qr.isNull());
-        m_profileBalance->setText(QStringLiteral("\xE2\x80\x94"));
+        m_profileBalance->setText(QString::fromUtf8("\xE2\x80\x94"));
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Check balance");
     }
@@ -2376,7 +2376,7 @@ void MainWindow::checkNodeBalance()
         return;
     m_profileBalanceButton->setEnabled(false);
     m_profileBalanceButton->setText("Checking\xE2\x80\xA6");
-    m_profileBalance->setText(QStringLiteral("\xE2\x80\xA6"));
+    m_profileBalance->setText(QString::fromUtf8("\xE2\x80\xA6"));
 
     // Strip the "bitcoincash:" prefix; the explorer accepts the bare cashaddr.
     QString query = addr;
@@ -3297,7 +3297,7 @@ void MainWindow::showPull(int number)
     }
     m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
     m_pullMeta->setText(
-        QStringLiteral("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
+        QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
                        "<span style='color:#3fb950'>+%5</span> "
                        "<span style='color:#f85149'>-%6</span> \xC2\xB7 by %7")
             .arg(found->base.toHtmlEscaped(), found->head.toHtmlEscaped(),
@@ -4544,7 +4544,7 @@ void MainWindow::showCommit(const QString &hash)
 
     if (m_commitMeta)
         m_commitMeta->setText(
-            QStringLiteral("%1 committed on %2 \xC2\xB7 %3 parent%4 \xC2\xB7 "
+            QString::fromUtf8("%1 committed on %2 \xC2\xB7 %3 parent%4 \xC2\xB7 "
                            "<b>%5</b> file%6 changed "
                            "<span style='color:#3fb950'>+%7</span> "
                            "<span style='color:#f85149'>\xE2\x88\x92%8</span>")
@@ -4566,7 +4566,7 @@ void MainWindow::showCommit(const QString &hash)
         m_commitFileList->clear();
         for (const DiffFileEntry &f : files) {
             auto *item = new QListWidgetItem(
-                QStringLiteral("%1   +%2 \xE2\x88\x92%3")
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
                     .arg(f.path, QString::number(f.adds), QString::number(f.dels)));
             item->setData(Qt::UserRole, f.anchor);
             item->setToolTip(f.path);
@@ -7961,20 +7961,21 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     }
 
     // Always note the push in the network log.
-    logSystem(QStringLiteral("Push to %1/%2 on %3 \xE2\x86\x92 %4%5")
+    logSystem(QString::fromUtf8("Push to %1/%2 on %3 \xE2\x86\x92 %4%5")
                   .arg(owner, name, branch, commit.left(8),
                        subject.isEmpty()
                            ? QString()
-                           : QStringLiteral(" \xE2\x80\x94 ") + subject));
+                           : QString::fromUtf8(" \xE2\x80\x94 ") + subject));
 
     // Optional desktop alert with the push details (on by default).
     if (QSettings().value(kPushAlertSetting, true).toBool()) {
         const QString body =
-            QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4%5")
+            QString::fromUtf8("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4%5")
                 .arg(owner, name, branch, commit.left(8),
                      subject.isEmpty() ? QString()
                                        : QStringLiteral("\n") + subject);
-        postNotification(QStringLiteral("Push received"), body);
+        postNotification(QString::fromUtf8("\xF0\x9F\x93\xA5 Push received"), body,
+                         false, QStringLiteral("emblem-synchronizing"));
     }
 
     // Live refresh: if this repo's detail view is open, reflect the new commit
@@ -8109,7 +8110,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
     if (runId == m_selectedRunId && m_actionRunMeta) {
         if (const ActionRun *run = findRun(runId)) {
             m_actionRunMeta->setText(
-                QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
+                QString::fromUtf8("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
                     .arg(run->owner, run->name, run->commit.left(8),
                          actionStatusText(status)));
         }
@@ -8117,7 +8118,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
     if (status == ActionStatus::Running) {
         if (const ActionRun *run = findRun(runId))
             notifyActionEvent(QStringLiteral("Action started"),
-                              QStringLiteral("%1 \xC2\xB7 %2/%3")
+                              QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                                   .arg(run->workflowName, run->owner, run->name),
                               false);
     }
@@ -8130,7 +8131,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
     if (const ActionRun *run = findRun(runId))
         notifyActionEvent(ok ? QStringLiteral("Action succeeded")
                              : QStringLiteral("Action failed"),
-                          QStringLiteral("%1 \xC2\xB7 %2/%3")
+                          QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
                           !ok);
     if (runId == m_selectedRunId)
@@ -8143,21 +8144,30 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
 {
     if (!QSettings().value(kActionAlertSetting, true).toBool())
         return;
-    postNotification(title, body, warning);
+    const QString icon = warning ? QStringLiteral("dialog-error")
+                         : title.contains("started")
+                             ? QStringLiteral("system-run")
+                             : QStringLiteral("emblem-default");
+    postNotification(title, body, warning, icon);
 }
 
 void MainWindow::postNotification(const QString &title, const QString &body,
-                                  bool warning)
+                                  bool warning, const QString &icon)
 {
+    const QString iconName =
+        !icon.isEmpty() ? icon
+                        : (warning ? QStringLiteral("dialog-error")
+                                   : QStringLiteral("dialog-information"));
 #if defined(Q_OS_LINUX)
     // Prefer notify-send: many Linux desktops don't render the body of a
     // QSystemTrayIcon message (they fall back to just the app name), but the
-    // libnotify daemon shows the summary and body reliably.
+    // libnotify daemon shows the summary, body and icon reliably.
     static const QString notifySend =
         QStandardPaths::findExecutable(QStringLiteral("notify-send"));
     if (!notifySend.isEmpty()) {
         const QStringList args = {
             QStringLiteral("-a"), QStringLiteral("ForkMesh"),
+            QStringLiteral("-i"), iconName,
             QStringLiteral("-u"),
             warning ? QStringLiteral("critical") : QStringLiteral("normal"),
             title, body};
@@ -8326,11 +8336,11 @@ void MainWindow::showRun(int runId)
     if (m_actionRunTitle)
         m_actionRunTitle->setText(run->workflowName);
     if (m_actionRunMeta) {
-        QString meta = QStringLiteral("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
+        QString meta = QString::fromUtf8("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4")
                            .arg(run->owner, run->name, run->commit.left(8),
                                 actionStatusText(run->status));
         if (run->startedAtMs > 0 && run->finishedAtMs > run->startedAtMs)
-            meta += QStringLiteral(" \xC2\xB7 %1s")
+            meta += QString::fromUtf8(" \xC2\xB7 %1s")
                         .arg((run->finishedAtMs - run->startedAtMs) / 1000);
         m_actionRunMeta->setText(meta);
     }
