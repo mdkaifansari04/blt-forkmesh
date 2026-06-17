@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 18
 title: show the open / closed status in the issue list
-status: open
+status: closed
 labels: []
 milestone: v1
 assignees: []
