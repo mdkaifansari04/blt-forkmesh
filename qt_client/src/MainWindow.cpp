@@ -47,6 +47,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QEventLoop>
 #include <QFileSystemWatcher>
 #include <QProcess>
 #include <QTextCursor>
@@ -89,6 +90,7 @@ namespace {
 const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.git");
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
+const QString kAccountNameSetting = QStringLiteral("account/nodeName");
 const QString kBchSetting = QStringLiteral("profile/bch");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
@@ -921,11 +923,11 @@ QWidget *MainWindow::buildSetupPage()
     m_nameEdit->setMaxLength(32);
     m_nameEdit->setText(QSettings().value(kDisplayNameSetting).toString());
     m_handleEdit = new QLineEdit;
-    m_handleEdit->setPlaceholderText("Handle (alice or node.example:alice)");
+    m_handleEdit->setPlaceholderText("Node name (e.g. alice) \xE2\x80\x94 your account/owner id");
     m_handleEdit->setMaxLength(80);
     m_handleEdit->setText(QSettings().value(kHandleSetting).toString());
     m_bchEdit = new QLineEdit;
-    m_bchEdit->setPlaceholderText("Bitcoin Cash address for donations (optional)");
+    m_bchEdit->setPlaceholderText("Bitcoin Cash address (required to join)");
     m_bchEdit->setMaxLength(160);
     m_bchEdit->setText(QSettings().value(kBchSetting).toString());
     m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
@@ -1049,6 +1051,40 @@ void MainWindow::startSession()
     }
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(kDefaultServerUrl);
+
+    // --- Account gate: a named, BCH-backed, password+TOTP account is required to
+    // join. The account name (not the mutable handle) is the canonical owner.
+    QString accountName;
+    for (const QChar &c : m_handleEdit->text().trimmed().toLower())
+        if (c.isLetterOrNumber() && c.unicode() < 128)
+            accountName.append(c);
+    while (!accountName.isEmpty() && !accountName.at(0).isLetter())
+        accountName.remove(0, 1);
+    accountName = accountName.left(32);
+    const QString bch = m_bchEdit->text().trimmed();
+    static const QRegularExpression bchRe(
+        QStringLiteral("^(bitcoincash:)?[qp][a-z0-9]{41}$"));
+    if (accountName.isEmpty()) {
+        m_setupError->setText(
+            "Choose a node name (lowercase letters/numbers) in the Handle field "
+            "\xE2\x80\x94 it identifies you on the network.");
+        m_setupError->show();
+        return;
+    }
+    if (!bchRe.match(bch.toLower()).hasMatch()) {
+        m_setupError->setText(
+            "Enter a valid Bitcoin Cash address \xE2\x80\x94 it is required to "
+            "join (used for rain, donations and revenue sharing).");
+        m_setupError->show();
+        return;
+    }
+    if (!ensureNodeAccount(accountName, bch)) {
+        // ensureNodeAccount surfaces its own error via m_setupError.
+        return;
+    }
+    m_accountName = accountName;
+    QSettings().setValue(kAccountNameSetting, accountName);
+
     if (m_roomNameEdit->text().trimmed().isEmpty())
         m_roomNameEdit->setText(kDefaultRoomName);
     if (m_passphraseEdit->text().isEmpty())
@@ -1121,6 +1157,265 @@ void MainWindow::startSession()
         loadChatHistory();
         // Serve already-mirrored repos live to the web for this session.
         startRepoHosts();
+    }
+}
+
+// ---- Account / node registration (password + TOTP, BCH-gated) --------------
+
+QString MainWindow::accountOwner() const
+{
+    if (!m_accountName.isEmpty())
+        return m_accountName;
+    return QSettings().value(kAccountNameSetting).toString();
+}
+
+QUrl MainWindow::accountsApiUrl(const QString &leaf) const
+{
+    QUrl url = catalogApiUrl(); // same host, http(s) scheme
+    url.setPath(QStringLiteral("/api/accounts/") + leaf);
+    url.setQuery(QString());
+    return url;
+}
+
+QJsonObject MainWindow::postAccountSync(const QString &leaf,
+                                        const QJsonObject &body, int *status)
+{
+    QNetworkRequest request(accountsApiUrl(leaf));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (status)
+        *status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray data = reply->readAll();
+    reply->deleteLater();
+    return QJsonDocument::fromJson(data).object();
+}
+
+QJsonObject MainWindow::getAccountSync(const QString &leaf, int *status)
+{
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(accountsApiUrl(leaf)));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (status)
+        *status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray data = reply->readAll();
+    reply->deleteLater();
+    return QJsonDocument::fromJson(data).object();
+}
+
+bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &bch)
+{
+    if (m_accountAuthenticated && m_accountName == accountName)
+        return true;
+
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(accountName, &status);
+    const bool exists = lookup.value("exists").toBool();
+    if (exists)
+        return runLoginFlow(accountName);
+    return runSignupFlow(accountName, bch);
+}
+
+bool MainWindow::verifyTotpLogin(const QString &accountName,
+                                 const QString &password, const QString &totp)
+{
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "login",
+        QJsonObject{{"nodeName", accountName}, {"password", password},
+                    {"totp", totp}},
+        &status);
+    if (status == 200 && resp.value("ok").toBool()) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountBchVerified = resp.value("bchVerified").toBool();
+        return true;
+    }
+    QString err = resp.value("error").toString();
+    QMessageBox::warning(this, "Log in",
+                         err == "bad_totp"
+                             ? "Incorrect authenticator code."
+                             : err == "bad_password"
+                                   ? "Incorrect password."
+                                   : "Login failed" +
+                                         (err.isEmpty() ? QString() : ": " + err) + ".");
+    return false;
+}
+
+bool MainWindow::runLoginFlow(const QString &accountName)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Log in to " + accountName);
+    auto *form = new QFormLayout(&dialog);
+    form->addRow(new QLabel("Log in to your node account to join the network."));
+    auto *passEdit = new QLineEdit;
+    passEdit->setEchoMode(QLineEdit::Password);
+    auto *totpEdit = new QLineEdit;
+    totpEdit->setPlaceholderText("6-digit authenticator code");
+    totpEdit->setMaxLength(6);
+    form->addRow("Password", passEdit);
+    form->addRow("2FA code", totpEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Log in");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    while (dialog.exec() == QDialog::Accepted) {
+        if (verifyTotpLogin(accountName, passEdit->text(), totpEdit->text().trimmed()))
+            return true;
+    }
+    m_setupError->setText("Account login is required to join the network.");
+    m_setupError->show();
+    return false;
+}
+
+bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
+{
+    // Collect email + password, then register and enrol TOTP.
+    QDialog dialog(this);
+    dialog.setWindowTitle("Create node account " + accountName);
+    auto *form = new QFormLayout(&dialog);
+    auto *intro = new QLabel(
+        QStringLiteral("Register <b>%1</b> to join. Your BCH address is <code>%2</code>.")
+            .arg(accountName.toHtmlEscaped(), bch.toHtmlEscaped()));
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    auto *emailEdit = new QLineEdit;
+    emailEdit->setPlaceholderText("you@example.com");
+    auto *passEdit = new QLineEdit;
+    passEdit->setEchoMode(QLineEdit::Password);
+    passEdit->setPlaceholderText("At least 8 characters");
+    auto *confirmEdit = new QLineEdit;
+    confirmEdit->setEchoMode(QLineEdit::Password);
+    form->addRow(intro);
+    form->addRow("Email", emailEdit);
+    form->addRow("Password", passEdit);
+    form->addRow("Confirm", confirmEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Create account");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        const QString email = emailEdit->text().trimmed();
+        const QString password = passEdit->text();
+        if (!email.contains('@')) {
+            QMessageBox::warning(this, "Create account", "Enter a valid email.");
+            continue;
+        }
+        if (password.size() < 8) {
+            QMessageBox::warning(this, "Create account",
+                                 "Password must be at least 8 characters.");
+            continue;
+        }
+        if (password != confirmEdit->text()) {
+            QMessageBox::warning(this, "Create account", "Passwords do not match.");
+            continue;
+        }
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-account-v1\n" + accountName + "\n" + email + "\n" + ts).toUtf8();
+        const QJsonObject body{
+            {"nodeName", accountName}, {"bch", bch}, {"email", email},
+            {"password", password}, {"pubkey", m_profileIdentity.publicKey()},
+            {"ts", ts}, {"sig", m_profileIdentity.signData(canonical)}};
+        int status = 0;
+        const QJsonObject resp = postAccountSync("signup", body, &status);
+        if (status != 201 || !resp.value("ok").toBool()) {
+            const QString err = resp.value("error").toString();
+            QMessageBox::warning(this, "Create account",
+                                 err == "node_name_taken"
+                                     ? "That node name is already registered."
+                                     : "Could not create the account" +
+                                           (err.isEmpty() ? QString() : ": " + err) + ".");
+            continue;
+        }
+        // Enrol TOTP: show the secret + QR, then verify with a code (= first login).
+        if (runTotpEnroll(accountName, password, resp.value("totpSecret").toString(),
+                          resp.value("totpUri").toString()))
+            return true;
+        return false; // user cancelled enrolment
+    }
+    m_setupError->setText("Account registration is required to join the network.");
+    m_setupError->show();
+    return false;
+}
+
+bool MainWindow::runTotpEnroll(const QString &accountName, const QString &password,
+                               const QString &secret, const QString &uri)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Set up two-factor authentication");
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *info = new QLabel(
+        "Scan this QR code with an authenticator app (Google Authenticator, "
+        "Authy, etc.), then enter the 6-digit code to finish.");
+    info->setWordWrap(true);
+    layout->addWidget(info);
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
+    const QImage qr = QrCode::encodeToImage(uri, 5, 3);
+    if (!qr.isNull())
+        qrLabel->setPixmap(QPixmap::fromImage(qr));
+    layout->addWidget(qrLabel);
+    auto *secretLabel = new QLabel("Or enter this key manually: " + secret);
+    secretLabel->setWordWrap(true);
+    secretLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    secretLabel->setStyleSheet("font-family:monospace;");
+    layout->addWidget(secretLabel);
+    auto *codeEdit = new QLineEdit;
+    codeEdit->setPlaceholderText("6-digit code");
+    codeEdit->setMaxLength(6);
+    layout->addWidget(codeEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Verify & finish");
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        if (verifyTotpLogin(accountName, password, codeEdit->text().trimmed()))
+            return true;
+    }
+    return false;
+}
+
+void MainWindow::verifyWallet()
+{
+    const QString name = accountOwner();
+    if (name.isEmpty())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-verify-bch-v1\n" + name + "\n" + ts).toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "verify-bch",
+        QJsonObject{{"nodeName", name}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    if (status == 200 && resp.value("ok").toBool()) {
+        m_accountBchVerified = resp.value("bchVerified").toBool();
+        const qint64 received = resp.value("receivedSats").toVariant().toLongLong();
+        if (m_accountBchVerified)
+            QMessageBox::information(
+                this, "Wallet verified",
+                "Your wallet is active and revenue-sharing eligible.");
+        else
+            QMessageBox::information(
+                this, "Wallet not yet active",
+                QStringLiteral("This address has received %1 BCH; deposit at least "
+                               "0.001 BCH total to unlock revenue sharing.")
+                    .arg(received / 100000000.0, 0, 'f', 8));
+    } else {
+        QMessageBox::warning(this, "Verify wallet",
+                             "Could not verify the wallet right now. Try again later.");
     }
 }
 
@@ -1941,6 +2236,20 @@ QWidget *MainWindow::buildNodeProfilePanel()
     bchLayout->addWidget(balLabel);
     bchLayout->addLayout(balanceRow);
 
+    // Revenue-sharing eligibility (self only): verify ≥0.001 BCH has reached
+    // this wallet so the network knows the address is active.
+    m_profileEligibility = new QLabel;
+    m_profileEligibility->setObjectName("statusLine");
+    m_profileEligibility->setWordWrap(true);
+    m_profileEligibility->setTextFormat(Qt::RichText);
+    m_profileVerifyButton = new QPushButton("Verify wallet (deposit \xE2\x89\xA5 0.001 BCH)");
+    m_profileVerifyButton->setObjectName("ghostButton");
+    m_profileVerifyButton->setCursor(Qt::PointingHandCursor);
+    connect(m_profileVerifyButton, &QPushButton::clicked, this,
+            &MainWindow::verifyWallet);
+    bchLayout->addWidget(m_profileEligibility);
+    bchLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
+
     auto *layout = new QVBoxLayout(m_nodeProfilePanel);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(8);
@@ -2026,6 +2335,21 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     }
 
     m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
+
+    // Wallet verification + eligibility badge are shown only on your own profile.
+    if (m_profileVerifyButton)
+        m_profileVerifyButton->setVisible(info.self);
+    if (m_profileEligibility) {
+        m_profileEligibility->setVisible(info.self);
+        if (info.self)
+            m_profileEligibility->setText(
+                m_accountBchVerified
+                    ? QStringLiteral("<span style='color:#3fb950'>\xE2\x9C\x93 Active "
+                                     "\xC2\xB7 revenue-sharing eligible</span>")
+                    : QStringLiteral("<span style='color:#d29922'>Not yet eligible "
+                                     "\xE2\x80\x94 deposit \xE2\x89\xA5 0.001 BCH and "
+                                     "verify.</span>"));
+    }
 
     // BCH address + QR + reset balance.
     if (bch.isEmpty()) {
@@ -3560,11 +3884,8 @@ void MainWindow::forkCurrentRepo()
         return;
     const RepositoryRecord src = m_repositories.at(m_repoDetailIndex);
 
-    // Default destination: your own node owns it, keeping the same name.
-    const QString handle = QSettings().value(kHandleSetting).toString().trimmed();
-    const QString defaultOwner =
-        repoSegment(handle.isEmpty() ? m_userName : handle,
-                    QStringLiteral("owner"));
+    // Default destination: your own account owns it, keeping the same name.
+    const QString defaultOwner = accountOwner();
 
     // --- Ask where to fork to (destination owner + repository name).
     QDialog dialog(this);
@@ -6972,10 +7293,9 @@ void MainWindow::promptAddRepository()
     RepositoryRecord repo;
     repo.localPath = path;
     repo.name = repoNameFromUrl(path);
-    const QString ownerSetting = QSettings().value(kHandleSetting).toString().trimmed();
-    repo.owner = ownerSetting.isEmpty()
-                     ? repoSegment(m_userName, QStringLiteral("owner"))
-                     : repoSegment(ownerSetting, QStringLiteral("owner"));
+    // Repos are namespaced under the registered account (stable identity), not
+    // the mutable handle/display name.
+    repo.owner = accountOwner();
     repo.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
     // Selecting a local repo publishes it to the website so it shows up online
     // and others can discover and mirror it. No public clone URL is sent.
@@ -7210,8 +7530,13 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
 
     RepositoryRecord &repo = m_repositories[index];
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    // Always publish under the registered account name so the catalog dedups by
+    // account/name (one entry per fork) and the server can verify ownership.
+    const QString owner = accountOwner().isEmpty()
+                              ? repoSegment(repo.owner, QStringLiteral("owner"))
+                              : accountOwner();
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString updatedAt = QString::number(now);
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"description", repo.description},
@@ -7220,12 +7545,17 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"channel", repositoryChannel(repo)},
                          {"hostedSince", QString::number(repo.hostedSinceMs)},
                          {"lastSync", QString::number(repo.lastSyncMs)},
-                         {"updatedAt", QString::number(now)},
+                         {"updatedAt", updatedAt},
                          {"source", repo.localPath.trimmed().isEmpty()
                                         ? QStringLiteral("remote-clone")
                                         : QStringLiteral("local-node")},
                          {"maintainer", m_profileIdentity.publicKey()}};
     metadata.insert("signature", m_profileIdentity.signJson(metadata));
+    // The server verifies this against the account's registered pubkey: only the
+    // account key holder can write its namespace (prevents impersonation/dups).
+    const QByteArray catalogCanonical =
+        ("forkmesh-catalog-v1\n" + owner + "\n" + name + "\n" + updatedAt).toUtf8();
+    metadata.insert("catalogSig", m_profileIdentity.signData(catalogCanonical));
 
     QNetworkRequest request(catalogApiUrl());
     request.setHeader(QNetworkRequest::ContentTypeHeader,

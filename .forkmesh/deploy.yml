@@ -3,5 +3,8 @@ on: [push]
 jobs:
   deploy:
     steps:
+      # CI/CD gate: run the crypto tests first; a failure aborts before deploy.
+      - name: Run tests
+        run: python3 cloudflare_worker/tests/test_crypto.py
       - name: Deploy worker
         run: cd cloudflare_worker && uvx --from workers-py pywrangler deploy
