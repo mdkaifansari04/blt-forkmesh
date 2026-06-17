@@ -150,15 +150,61 @@ bool ServerNode::start()
                 [this] { sendControlFrame(0x9); });
     }
 
+    emit statusChanged("Connecting to " + m_url.host() + "...");
+    openConnection();
+    return true;
+}
+
+void ServerNode::openConnection()
+{
+    // Tear down any previous socket (e.g. a failed attempt) before reconnecting.
+    if (m_socket) {
+        m_socket->disconnect(this);
+        m_socket->abort();
+        m_socket->deleteLater();
+        m_socket = nullptr;
+    }
+    m_wsReady = false;
+    m_readBuffer.clear();
+
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
     connectSocketSignals();
     const int port = m_url.port(m_url.scheme() == "wss" ? 443 : 80);
-    emit statusChanged("Connecting to " + m_url.host() + "...");
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         ssl->connectToHostEncrypted(m_url.host(), port);
     else
         m_socket->connectToHost(m_url.host(), port);
-    return true;
+}
+
+void ServerNode::scheduleReconnect()
+{
+    if (m_userStopped)
+        return; // the user left the node; don't keep retrying
+    if (m_reconnectTimer && m_reconnectTimer->isActive())
+        return; // a retry is already pending
+
+    if (!m_reconnectTimer) {
+        m_reconnectTimer = new QTimer(this);
+        m_reconnectTimer->setSingleShot(true);
+        connect(m_reconnectTimer, &QTimer::timeout, this, [this] {
+            if (m_userStopped)
+                return;
+            emit statusChanged("Reconnecting to " + m_url.host() + "...");
+            openConnection();
+        });
+    }
+
+    // Exponential backoff: ~1, 2, 4, 8, 16, 30 (capped) seconds, plus jitter so
+    // many nodes don't reconnect in lockstep.
+    const int base = 1000;
+    const int cap = 30000;
+    int delay = qMin(cap, base * (1 << qMin(m_reconnectAttempt, 5)));
+    delay += int(QRandomGenerator::global()->bounded(750));
+    ++m_reconnectAttempt;
+    emit statusChanged(
+        QStringLiteral("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
+            .arg((delay + 999) / 1000));
+    m_reconnectTimer->start(delay);
 }
 
 void ServerNode::connectSocketSignals()
@@ -173,13 +219,17 @@ void ServerNode::connectSocketSignals()
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
         if (m_pingTimer)
             m_pingTimer->stop();
-        emit statusChanged("Disconnected from mainnode");
+        m_wsReady = false;
         for (auto it = m_peers.begin(); it != m_peers.end(); ++it)
             it->online = false;
         updateRosterAndStatus();
+        scheduleReconnect();
     });
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
         emit systemMessage("Mainnode socket error: " + m_socket->errorString());
+        // A connect failure may not emit disconnected, so retry from here too.
+        if (!m_wsReady)
+            scheduleReconnect();
     });
 }
 
@@ -218,6 +268,7 @@ void ServerNode::onSocketReadyRead()
             return;
         }
         m_wsReady = true;
+        m_reconnectAttempt = 0; // healthy link: reset backoff
         if (m_pingTimer)
             m_pingTimer->start();
         emit channelsChanged(m_channels);
@@ -533,6 +584,9 @@ void ServerNode::addChannel(const QString &channel)
 
 void ServerNode::shutdown()
 {
+    m_userStopped = true; // intentional leave: stop the auto-reconnect loop
+    if (m_reconnectTimer)
+        m_reconnectTimer->stop();
     if (m_pingTimer)
         m_pingTimer->stop();
     QJsonObject bye = makeMessage("bye");
