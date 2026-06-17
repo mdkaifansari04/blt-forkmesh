@@ -1644,8 +1644,23 @@ QWidget *MainWindow::buildBreadcrumb()
     m_breadcrumb->setTextFormat(Qt::RichText);
     m_breadcrumb->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(m_breadcrumb, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href == "repos")
+        if (href == "repos") {
             showSection(0);
+        } else if (href == "server") {
+            // Open the active mainnode's website in the system browser.
+            if (m_activeServer >= 0 && m_activeServer < m_servers.size()) {
+                QUrl url(m_servers.at(m_activeServer).url);
+                if (url.scheme() == "ws")
+                    url.setScheme(QStringLiteral("http"));
+                else if (url.scheme() == "wss")
+                    url.setScheme(QStringLiteral("https"));
+                url.setPath(QStringLiteral("/"));
+                url.setQuery(QString());
+                url.setFragment(QString());
+                if (url.isValid() && !url.host().isEmpty())
+                    QDesktopServices::openUrl(url);
+            }
+        }
     });
     // Live connection indicator, pinned to the top-right of the window.
     m_connectionStatus = new QLabel;
@@ -1733,7 +1748,10 @@ void MainWindow::updateBreadcrumb()
     // No hardcoded text colors here: the section/separator inherit the
     // #breadcrumb stylesheet color so it stays readable in light and dark.
     m_breadcrumb->setText(
-        QString::fromUtf8("\xF0\x9F\x9F\xA2 <b>%1</b>%2%3").arg(host.toHtmlEscaped(), sep, trail));
+        QString::fromUtf8(
+            "\xF0\x9F\x9F\xA2 <a href=\"server\" style=\"text-decoration:none; "
+            "color:inherit\"><b>%1</b></a>%2%3")
+            .arg(host.toHtmlEscaped(), sep, trail));
 }
 
 QWidget *MainWindow::buildBchNotice()
@@ -7082,15 +7100,6 @@ QUrl MainWindow::catalogApiUrl() const
     return url;
 }
 
-QUrl MainWindow::filesApiUrl(const RepositoryRecord &repo) const
-{
-    QUrl url = catalogApiUrl();
-    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
-                "/files");
-    return url;
-}
-
 QUrl MainWindow::hostWsUrl(const RepositoryRecord &repo) const
 {
     QUrl url(m_serverUrlEdit ? m_serverUrlEdit->text().trimmed() : kDefaultServerUrl);
@@ -7169,93 +7178,6 @@ void MainWindow::saveRepoStats() const
     }
     QSettings().setValue(QStringLiteral("repositories/stats"),
                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
-}
-
-void MainWindow::publishRepositoryFiles(int index)
-{
-    if (index < 0 || index >= m_repositories.size())
-        return;
-    const RepositoryRecord repo = m_repositories.at(index);
-    if (!repo.publishToNetwork || repo.mirrorPath.isEmpty())
-        return;
-    if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
-        return;
-
-    // List the files in the mirror's default branch (paths + sizes only). The
-    // file contents never leave this machine; only the listing is published.
-    auto *process = new QProcess(this);
-    connect(process, &QProcess::finished, this,
-            [this, process, index](int exitCode, QProcess::ExitStatus) {
-                const QByteArray out = process->readAllStandardOutput();
-                process->deleteLater();
-                if (exitCode != 0 || index < 0 || index >= m_repositories.size())
-                    return;
-
-                const RepositoryRecord &repo = m_repositories.at(index);
-                const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-                const QString name = repoSegment(repo.name, QStringLiteral("repository"));
-                QJsonArray files;
-                const QList<QByteArray> lines = out.split('\n');
-                for (const QByteArray &line : lines) {
-                    // "<mode> <type> <oid> <size>\t<path>"
-                    const int tab = line.indexOf('\t');
-                    if (tab < 0)
-                        continue;
-                    const QList<QByteArray> meta =
-                        line.left(tab).simplified().split(' ');
-                    if (meta.size() < 4 || meta.at(1) != "blob")
-                        continue;
-                    bool ok = false;
-                    const qlonglong size = meta.at(3).toLongLong(&ok);
-                    files.append(QJsonObject{
-                        {"path", QString::fromUtf8(line.mid(tab + 1))},
-                        {"size", double(ok ? size : 0)}});
-                    if (files.size() >= 5000)
-                        break;
-                }
-
-                const QString updatedAt =
-                    QString::number(QDateTime::currentMSecsSinceEpoch());
-                const QJsonObject signedMeta{
-                    {"owner", owner},
-                    {"name", name},
-                    {"updatedAt", updatedAt},
-                    {"count", files.size()},
-                    {"maintainer", m_profileIdentity.publicKey()}};
-                QJsonObject payload{
-                    {"owner", owner},
-                    {"name", name},
-                    {"updatedAt", updatedAt},
-                    {"maintainer", m_profileIdentity.publicKey()},
-                    {"signature", m_profileIdentity.signJson(signedMeta)},
-                    {"files", files}};
-
-                QNetworkRequest request(filesApiUrl(repo));
-                request.setHeader(QNetworkRequest::ContentTypeHeader,
-                                  QStringLiteral("application/json"));
-                QNetworkReply *reply = m_networkAccess->post(
-                    request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-                logSystem("Files: publishing " + QString::number(files.size()) +
-                          " file paths for " + repo.owner + "/" + repo.name + ".");
-                connect(reply, &QNetworkReply::finished, this, [this, reply, repo] {
-                    const int status =
-                        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
-                            .toInt();
-                    const QNetworkReply::NetworkError error = reply->error();
-                    reply->deleteLater();
-                    if (error == QNetworkReply::NoError && status >= 200 &&
-                        status < 300)
-                        logSystem("Files: published file list for " + repo.owner +
-                                  "/" + repo.name + ".");
-                    else
-                        logSystem("Files: could not publish file list for " +
-                                  repo.owner + "/" + repo.name + " (HTTP " +
-                                  QString::number(status) + ").");
-                });
-            });
-    connect(process, &QProcess::errorOccurred, this, [process] { process->deleteLater(); });
-    process->start("git", {"-C", repo.mirrorPath, "ls-tree", "-r", "-l",
-                           "--full-tree", "HEAD"});
 }
 
 void MainWindow::publishSelectedRepository()

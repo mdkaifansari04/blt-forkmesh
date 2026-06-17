@@ -313,9 +313,7 @@ private:
     void changeMirrorLocation();
     void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
-    void publishRepositoryFiles(int index);
     void updateRepoRemoteInfo();
-    QUrl filesApiUrl(const RepositoryRecord &repo) const;
     QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
     void stopRepoHosts();
