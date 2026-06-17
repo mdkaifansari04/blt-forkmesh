@@ -182,6 +182,7 @@ private:
     void rebuildAndRelaunch();
     void showSection(int index);
     void updateHomeStats();
+    QString selfNodeStats() const; // inline stats line for your own node
     void attachBackend(ChatBackend *backend);
     void leaveSession(const QString &reason = QString());
 
@@ -273,17 +274,6 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     QLabel *m_breadcrumbServerIcon = nullptr;
-
-    // Home overview widgets
-    QLabel *m_homeName = nullptr;
-    QLabel *m_homeStatus = nullptr;
-    QLabel *m_homePubkey = nullptr;
-    QLabel *m_homeStats = nullptr;
-    QLabel *m_homeTotals = nullptr;
-    QLabel *m_homeGraph = nullptr;
-    QLabel *m_homeNodes = nullptr;
-    QListWidget *m_homeNodeList = nullptr;
-    QPushButton *m_homeSponsorButton = nullptr;
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -438,5 +428,4 @@ private:
     QTimer *m_homeStatsTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
-    QList<int> m_connectionMinuteSamples;
 };
