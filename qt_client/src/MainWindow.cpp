@@ -9,6 +9,7 @@
 #include <QBuffer>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -983,8 +984,10 @@ void MainWindow::switchToServer(int index)
     if (index < 0 || index >= m_servers.size())
         return;
     const bool live = m_backend != nullptr;
-    if (index == m_activeServer && live)
+    if (index == m_activeServer && live) {
+        showSection(0); // already connected here: just jump to its Home
         return;
+    }
 
     if (live)
         persistEditsToActiveServer(); // capture any edits to the current server
@@ -1401,6 +1404,28 @@ QWidget *MainWindow::buildReposSection()
     m_repoList = new QListWidget;
     m_repoList->setToolTip("Repositories this node is preserving locally");
 
+    // The bare mirror doubles as a local git remote: a fork can push here to
+    // publish into the mirror. Show its path so the user can wire it up.
+    auto *remoteLabel = new QLabel("LOCAL REMOTE \xC2\xB7 PUSH YOUR FORK HERE");
+    remoteLabel->setObjectName("sectionLabel");
+    m_repoRemoteEdit = new QLineEdit;
+    m_repoRemoteEdit->setReadOnly(true);
+    m_repoRemoteEdit->setPlaceholderText("Select a repository");
+    m_repoRemoteEdit->setToolTip(
+        "Add this as a remote in your fork, then push to publish into the mirror.");
+    auto *copyRemoteButton = new QPushButton("Copy");
+    copyRemoteButton->setObjectName("ghostButton");
+    copyRemoteButton->setCursor(Qt::PointingHandCursor);
+    auto *remoteRow = new QHBoxLayout;
+    remoteRow->setContentsMargins(0, 0, 0, 0);
+    remoteRow->addWidget(m_repoRemoteEdit, 1);
+    remoteRow->addWidget(copyRemoteButton);
+    m_repoRemoteHint = new QLabel;
+    m_repoRemoteHint->setObjectName("statusLine");
+    m_repoRemoteHint->setWordWrap(true);
+    m_repoRemoteHint->setTextFormat(Qt::RichText);
+    m_repoRemoteHint->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
     // Live web status for the selected repository: a green "online" indicator
     // and a clickable link to browse it on the website once it is published.
     m_repoWebLink = new QLabel("Select a repository to see its web status.");
@@ -1433,11 +1458,23 @@ QWidget *MainWindow::buildReposSection()
     layout->addSpacing(8);
     layout->addWidget(reposLabel);
     layout->addWidget(m_repoList, 1);
+    layout->addWidget(remoteLabel);
+    layout->addLayout(remoteRow);
+    layout->addWidget(m_repoRemoteHint);
     layout->addWidget(m_repoWebLink);
     layout->addLayout(repoButtonRow);
 
-    connect(m_repoList, &QListWidget::currentRowChanged, this,
-            [this](int) { updateRepoWebLink(); });
+    connect(m_repoList, &QListWidget::currentRowChanged, this, [this](int) {
+        updateRepoWebLink();
+        updateRepoRemoteInfo();
+    });
+    connect(copyRemoteButton, &QPushButton::clicked, this, [this] {
+        const QString path = m_repoRemoteEdit->text();
+        if (!path.isEmpty()) {
+            QApplication::clipboard()->setText(path);
+            logSystem("Copied local remote path to clipboard: " + path);
+        }
+    });
     connect(m_repoList, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem *item) {
                 if (!item)
@@ -3560,6 +3597,7 @@ void MainWindow::refreshRepositoryList()
     if (previousRow >= 0 && previousRow < m_repoList->count())
         m_repoList->setCurrentRow(previousRow);
     updateRepoWebLink();
+    updateRepoRemoteInfo();
     updateHomeStats();
 }
 
@@ -3653,6 +3691,37 @@ void MainWindow::updateRepoWebLink()
     } else {
         m_repoWebLink->setText("Local only \xC2\xB7 not published.");
     }
+}
+
+void MainWindow::updateRepoRemoteInfo()
+{
+    if (!m_repoRemoteEdit)
+        return;
+    QListWidgetItem *item = m_repoList ? m_repoList->currentItem() : nullptr;
+    if (!item) {
+        m_repoRemoteEdit->clear();
+        if (m_repoRemoteHint)
+            m_repoRemoteHint->clear();
+        return;
+    }
+    const int index = item->data(Qt::UserRole).toInt();
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    const QString path = m_repositories.at(index).mirrorPath;
+    m_repoRemoteEdit->setText(path);
+    if (!m_repoRemoteHint)
+        return;
+    if (path.isEmpty()) {
+        m_repoRemoteHint->setText("No mirror configured for this repository yet.");
+        return;
+    }
+    const QString mono = "<span style='font-family:monospace; color:#cbd5e1'>";
+    QString hint = "From your fork: " + mono +
+                   "git remote add forkmesh \"" + path.toHtmlEscaped() +
+                   "\"</span> then " + mono + "git push forkmesh &lt;branch&gt;</span>.";
+    if (!QDir(path).exists())
+        hint += " <i>(Sync this repository first to create the mirror.)</i>";
+    m_repoRemoteHint->setText(hint);
 }
 
 void MainWindow::syncSelectedRepository()
