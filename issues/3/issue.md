@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 3
 title: Fork from the client
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 assignees: []
