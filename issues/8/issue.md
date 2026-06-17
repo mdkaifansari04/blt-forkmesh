@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 8
 title: Auto-update mirrors
-status: open
+status: closed
 labels: [enhancement]
 milestone: 
 assignees: []
