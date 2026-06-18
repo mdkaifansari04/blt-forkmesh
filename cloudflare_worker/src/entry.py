@@ -494,15 +494,20 @@ async def catalog_handler(env, request):
         # Repos are namespaced under a registered account, and only that
         # account's key holder may write its namespace. This ties repo identity
         # to the account (fixes duplicate forks) and prevents impersonation.
+        #
+        # Account registration is temporarily disabled client-side, so when an
+        # owner has no registered account we fall back to verifying the publish
+        # against its own self-asserted maintainer key (the pre-accounts
+        # behaviour). Re-enable strictness by registering accounts again — the
+        # registered-owner branch below already enforces it.
         owner_pub = await _owner_pubkey(env, owner)
-        if not owner_pub:
-            return json_response({"error": "owner_not_registered"}, status=403)
-        if record["maintainer"] != owner_pub:
+        verify_pub = owner_pub or record["maintainer"]
+        if owner_pub and record["maintainer"] != owner_pub:
             return json_response({"error": "maintainer_mismatch"}, status=403)
         catalog_sig = clean_string(data.get("catalogSig", ""), 200)
         canonical = ("forkmesh-catalog-v1\n" + owner + "\n" + record["name"] +
                      "\n" + record["updatedAt"]).encode()
-        if not await ed25519_verify(owner_pub, catalog_sig, canonical):
+        if not await ed25519_verify(verify_pub, catalog_sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
