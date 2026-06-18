@@ -1052,8 +1052,10 @@ void MainWindow::startSession()
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(kDefaultServerUrl);
 
-    // --- Account gate: a named, BCH-backed, password+TOTP account is required to
-    // join. The account name (not the mutable handle) is the canonical owner.
+    // --- Node account name: derived from the handle and used as the canonical
+    // repo owner. The registration/login screen is temporarily disabled and will
+    // be re-added later; to bring it back, restore the BCH/name validation and
+    // the ensureNodeAccount() gate here (the flow methods are still present).
     QString accountName;
     for (const QChar &c : m_handleEdit->text().trimmed().toLower())
         if (c.isLetterOrNumber() && c.unicode() < 128)
@@ -1061,29 +1063,10 @@ void MainWindow::startSession()
     while (!accountName.isEmpty() && !accountName.at(0).isLetter())
         accountName.remove(0, 1);
     accountName = accountName.left(32);
-    const QString bch = m_bchEdit->text().trimmed();
-    static const QRegularExpression bchRe(
-        QStringLiteral("^(bitcoincash:)?[qp][a-z0-9]{41}$"));
-    if (accountName.isEmpty()) {
-        m_setupError->setText(
-            "Choose a node name (lowercase letters/numbers) in the Handle field "
-            "\xE2\x80\x94 it identifies you on the network.");
-        m_setupError->show();
-        return;
+    if (!accountName.isEmpty()) {
+        m_accountName = accountName;
+        QSettings().setValue(kAccountNameSetting, accountName);
     }
-    if (!bchRe.match(bch.toLower()).hasMatch()) {
-        m_setupError->setText(
-            "Enter a valid Bitcoin Cash address \xE2\x80\x94 it is required to "
-            "join (used for rain, donations and revenue sharing).");
-        m_setupError->show();
-        return;
-    }
-    if (!ensureNodeAccount(accountName, bch)) {
-        // ensureNodeAccount surfaces its own error via m_setupError.
-        return;
-    }
-    m_accountName = accountName;
-    QSettings().setValue(kAccountNameSetting, accountName);
 
     if (m_roomNameEdit->text().trimmed().isEmpty())
         m_roomNameEdit->setText(kDefaultRoomName);
@@ -1166,7 +1149,14 @@ QString MainWindow::accountOwner() const
 {
     if (!m_accountName.isEmpty())
         return m_accountName;
-    return QSettings().value(kAccountNameSetting).toString();
+    const QString stored = QSettings().value(kAccountNameSetting).toString();
+    if (!stored.isEmpty())
+        return stored;
+    // Account screen disabled for now: fall back to the handle / display name so
+    // repos stay namespaced sensibly until registration is re-enabled.
+    const QString handle = QSettings().value(kHandleSetting).toString().trimmed();
+    return repoSegment(handle.isEmpty() ? m_userName : handle,
+                       QStringLiteral("owner"));
 }
 
 QUrl MainWindow::accountsApiUrl(const QString &leaf) const
