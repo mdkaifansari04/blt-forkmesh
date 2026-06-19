@@ -29,7 +29,26 @@ cmake_args() {
     fi
 }
 
+# A CMakeCache.txt records the absolute source and binary dirs it was generated
+# in. When a checkout is copied/merged from another machine (or moved), those
+# paths no longer match and cmake aborts. Detect that and wipe the cache.
+check_stale_cache() {
+    local cache="build/CMakeCache.txt"
+    [ -f "$cache" ] || return 0
+
+    local cached_src cached_bin
+    cached_src="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache")"
+    cached_bin="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "$cache")"
+
+    if { [ -n "$cached_src" ] && [ "$cached_src" != "$PWD" ]; } ||
+       { [ -n "$cached_bin" ] && [ "$cached_bin" != "$PWD/build" ]; }; then
+        echo "Stale build cache (generated in ${cached_src:-$cached_bin}); cleaning." >&2
+        rm -rf build
+    fi
+}
+
 build() {
+    check_stale_cache
     local args=()
     while IFS= read -r -d '' arg; do
         args+=("$arg")

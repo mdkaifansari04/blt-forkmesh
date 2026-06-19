@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Docs · ForkMesh</title>
+    <meta name="description" content="ForkMesh documentation for repository hosting, host tunnels, Git clone, issues, pull requests, accounts, and encrypted rooms.">
+    <link rel="stylesheet" href="../styles.css">
+    <script src="../static-page.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true">
+          <span>ForkMesh</span>
+        </a>
+
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/" aria-current="page">Docs</a>
+          <a href="/#roomchat">Chat</a>
+        </nav>
+
+        <div class="header-actions">
+          <div class="clients-pill" aria-live="polite">
+            <span class="clients-dot" id="clients-dot"></span>
+            <span id="clients-count">Checking…</span>
+          </div>
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
+          </button>
+          <a class="install-link" href="/#install-banner">Install</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-shell docs-layout">
+      <aside class="docs-sidebar" aria-label="Documentation sections">
+        <nav class="docs-nav">
+          <h2>Documentation</h2>
+          <a href="#overview">Overview</a>
+          <a href="#repository">Repository</a>
+          <a href="#host-tunnel">Host tunnel</a>
+          <a href="#git-clone">Git clone</a>
+          <a href="#issues">Issues</a>
+          <a href="#pull-requests">Pull requests</a>
+          <a href="#accounts">Accounts</a>
+          <a href="#chat">Chat</a>
+          <a href="#limitations">Limitations</a>
+        </nav>
+      </aside>
+
+      <article class="docs-content">
+        <section id="overview" class="doc-section page-hero compact-hero">
+          <p class="eyebrow">Documentation</p>
+          <h1>ForkMesh documentation</h1>
+          <p class="hero-copy">ForkMesh is a distributed Git collaboration protocol where code remains on local mirrors, while the Worker coordinates discovery, live tunnels, encrypted rooms, signed inboxes, and Git-over-HTTP clone routing.</p>
+          <div class="callout">
+            <strong>Important boundary:</strong> the Worker is not canonical Git storage. It is the control plane and relay layer. Repository objects stream from a connected host node.
+          </div>
+        </section>
+
+        <section id="repository" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Repository model</h2><p>How ForkMesh stores and exposes code.</p></div></div>
+          <div class="doc-body">
+            <p>Each repository is hosted by one or more desktop nodes that keep a local Git mirror. The public catalog stores metadata such as owner, repo name, description, maintainer key, and last sync time.</p>
+            <ul class="doc-list">
+              <li><strong>Canonical code:</strong> local Git mirror on the host node.</li>
+              <li><strong>Public discovery:</strong> <code>GET /api/repositories</code>.</li>
+              <li><strong>Repo route:</strong> <code>https://forkmesh.com/&lt;owner&gt;/&lt;repo&gt;</code>.</li>
+              <li><strong>Browser view:</strong> live tree/blob requests routed to a connected host.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="host-tunnel" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Host tunnel</h2><p>How nodes stay reachable without exposing IP addresses.</p></div></div>
+          <div class="doc-body">
+            <p>A desktop node opens an outbound WebSocket tunnel to Cloudflare for each hosted repository. Browsers and Git clients connect to Cloudflare; the Worker routes requests through the matching Durable Object to the active host.</p>
+            <div class="route-table" role="table" aria-label="Host tunnel routes">
+              <div role="row"><strong>WS/GET</strong><code>/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code><span>Host attach/status</span></div>
+              <div role="row"><strong>GET</strong><code>/api/repo/&lt;owner&gt;/&lt;repo&gt;/tree?path=...</code><span>Browse directories</span></div>
+              <div role="row"><strong>GET</strong><code>/api/repo/&lt;owner&gt;/&lt;repo&gt;/blob?path=...</code><span>Fetch file content</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="git-clone" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Git clone</h2><p>Native Git-over-HTTP fetch path.</p></div></div>
+          <div class="doc-body">
+            <p>The current production path supports Git upload-pack, which covers clone/fetch style operations. The Worker proxies Git smart-HTTP requests to the host tunnel instead of storing packfiles itself.</p>
+            <pre class="code-card"><code>git clone https://forkmesh.com/mainnode/forkmesh</code></pre>
+            <ul class="doc-list">
+              <li><code>GET /&lt;owner&gt;/&lt;repo&gt;/info/refs?service=git-upload-pack</code></li>
+              <li><code>POST /&lt;owner&gt;/&lt;repo&gt;/git-upload-pack</code></li>
+              <li>No production-ready <code>git push</code>/<code>receive-pack</code> route yet.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="issues" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Issues</h2><p>Signed collaboration history that can live in Git.</p></div></div>
+          <div class="doc-body">
+            <p>Issue events are signed by the author's Ed25519 identity. The Worker can hold pending inbox submissions, but accepted issue history should be represented as repository files.</p>
+            <pre class="code-card"><code>forkmesh-issue-event-v1
+&lt;type&gt;
+&lt;issue number&gt;
+&lt;author pubkey&gt;
+&lt;ts&gt;
+sha256hex(content)</code></pre>
+          </div>
+        </section>
+
+        <section id="pull-requests" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Pull requests</h2><p>Patch-based PRs, not GitHub-style branch refs yet.</p></div></div>
+          <div class="doc-body">
+            <p>Current PRs are signed patch submissions. A maintainer can review and merge them into the repo, at which point the accepted record becomes part of Git-managed project history.</p>
+            <pre class="code-card"><code>forkmesh-pull-event-v1
+&lt;author pubkey&gt;
+&lt;ts&gt;
+sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+          </div>
+        </section>
+
+        <section id="accounts" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Accounts and identities</h2><p>Node names are bound to Ed25519 public keys.</p></div></div>
+          <div class="doc-body">
+            <p>The account registry is early. It maps node names to public keys and verifies signed login/signup messages. Treat this as protocol scaffolding, not final product auth.</p>
+            <div class="route-table" role="table" aria-label="Account routes">
+              <div role="row"><strong>POST</strong><code>/api/accounts/signup</code><span>Create node identity record</span></div>
+              <div role="row"><strong>POST</strong><code>/api/accounts/login</code><span>Signed login check</span></div>
+              <div role="row"><strong>GET</strong><code>/api/accounts/&lt;nodeName&gt;</code><span>Resolve public identity</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="chat" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Encrypted rooms</h2><p>Presence and chat over Durable Object rooms.</p></div></div>
+          <div class="doc-body">
+            <p>Room clients use WebSockets. The website also opens a read-only clients observer, so the header can show live network presence without joining chat.</p>
+            <ul class="doc-list">
+              <li><code>WS /api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code></li>
+              <li><code>WS /api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/clients</code></li>
+              <li>Chat payloads are encrypted in the browser/client before the Worker relays them.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="limitations" class="doc-section panel doc-panel">
+          <div class="panel-header"><div><h2>Current limitations</h2><p>What the MVP does not yet do.</p></div></div>
+          <div class="doc-body">
+            <ul class="doc-list">
+              <li>Cloudflare is still a trusted jump layer for connection metadata.</li>
+              <li>Fresh file browsing and clone require at least one host online.</li>
+              <li>Git push/receive-pack is not production-ready yet.</li>
+              <li>Pull requests are signed patch records, not full branch/ref PRs.</li>
+              <li>Durable Objects should not be used as heavy long-term Git storage.</li>
+            </ul>
+          </div>
+        </section>
+      </article>
+    </main>
+  </body>
+</html>

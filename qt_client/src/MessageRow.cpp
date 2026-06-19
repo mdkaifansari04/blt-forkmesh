@@ -19,10 +19,58 @@ namespace {
 constexpr int kAvatarSize = 36;
 constexpr int kMaxMediaWidth = 360;
 
-const char *kReactionChoices[] = {"\xF0\x9F\x91\x8D", "\xE2\x9D\xA4\xEF\xB8\x8F",
-                                  "\xF0\x9F\x98\x82", "\xF0\x9F\x8E\x89",
-                                  "\xF0\x9F\x98\xAE", "\xF0\x9F\x98\xA2",
-                                  "\xF0\x9F\x99\x8F", "\xF0\x9F\x94\xA5"};
+struct ReactionChoice {
+    const char *value;
+    const char *label;
+};
+
+const ReactionChoice kReactionChoices[] = {{"like", "Like"},
+                                           {"love", "Love"},
+                                           {"laugh", "Laugh"},
+                                           {"celebrate", "Celebrate"},
+                                           {"surprised", "Surprised"},
+                                           {"sad", "Sad"},
+                                           {"thanks", "Thanks"},
+                                           {"hot", "Hot"}};
+
+QString fromCodepoint(char32_t codepoint)
+{
+    const char32_t points[] = {codepoint};
+    return QString::fromUcs4(points, 1);
+}
+
+QString fromCodepoints(char32_t first, char32_t second)
+{
+    const char32_t points[] = {first, second};
+    return QString::fromUcs4(points, 2);
+}
+
+QString reactionDisplayName(const QString &value)
+{
+    for (const ReactionChoice &choice : kReactionChoices) {
+        if (value == QString::fromLatin1(choice.value))
+            return QString::fromLatin1(choice.label);
+    }
+
+    // Legacy reaction payloads used emoji values; display those as text labels.
+    if (value == fromCodepoint(0x1F44D))
+        return QStringLiteral("Like");
+    if (value == fromCodepoints(0x2764, 0xFE0F))
+        return QStringLiteral("Love");
+    if (value == fromCodepoint(0x1F602))
+        return QStringLiteral("Laugh");
+    if (value == fromCodepoint(0x1F389))
+        return QStringLiteral("Celebrate");
+    if (value == fromCodepoint(0x1F62E))
+        return QStringLiteral("Surprised");
+    if (value == fromCodepoint(0x1F622))
+        return QStringLiteral("Sad");
+    if (value == fromCodepoint(0x1F64F))
+        return QStringLiteral("Thanks");
+    if (value == fromCodepoint(0x1F525))
+        return QStringLiteral("Hot");
+    return value;
+}
 
 // A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
 QPixmap initialsAvatar(const QString &name, const QString &color)
@@ -139,7 +187,7 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         m_reactionsBar = new QHBoxLayout(reactionsRow);
         m_reactionsBar->setContentsMargins(0, 2, 0, 0);
         m_reactionsBar->setSpacing(4);
-        auto *addReaction = new QPushButton("\xF0\x9F\x99\x82\x2B");
+        auto *addReaction = new QPushButton("+");
         addReaction->setObjectName("reactionAdd");
         addReaction->setCursor(Qt::PointingHandCursor);
         addReaction->setToolTip("Add reaction");
@@ -196,7 +244,7 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
     auto *chipLayout = new QHBoxLayout(chip);
     chipLayout->setContentsMargins(10, 8, 10, 8);
     chipLayout->setSpacing(8);
-    auto *icon = new QLabel("\xF0\x9F\x93\x8E");
+    auto *icon = new QLabel("File");
     auto *name = new QLabel(m_message.fileName.toHtmlEscaped() + "  <span "
                             "style='color:#9ca3af'>(" +
                             humanSize(data.size()) + ")</span>");
@@ -257,14 +305,14 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
     }
     int insertAt = 0;
     for (auto it = reactions.constBegin(); it != reactions.constEnd(); ++it) {
-        auto *chip = new QPushButton(it.key() + " " +
+        auto *chip = new QPushButton(reactionDisplayName(it.key()) + " " +
                                      QString::number(it.value().size()));
         chip->setObjectName("reactionChip");
         chip->setCursor(Qt::PointingHandCursor);
         chip->setToolTip(it.value().join(", "));
-        const QString emoji = it.key();
+        const QString reaction = it.key();
         connect(chip, &QPushButton::clicked, this,
-                [this, emoji] { emit reactionToggled(m_message.id, emoji); });
+                [this, reaction] { emit reactionToggled(m_message.id, reaction); });
         m_reactionsBar->insertWidget(insertAt++, chip);
     }
 }
@@ -272,9 +320,9 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
 void MessageRow::showReactionPicker()
 {
     QMenu menu(this);
-    for (const char *emoji : kReactionChoices) {
-        QAction *action = menu.addAction(QString::fromUtf8(emoji));
-        const QString value = QString::fromUtf8(emoji);
+    for (const ReactionChoice &choice : kReactionChoices) {
+        QAction *action = menu.addAction(QString::fromLatin1(choice.label));
+        const QString value = QString::fromLatin1(choice.value);
         connect(action, &QAction::triggered, this,
                 [this, value] { emit reactionToggled(m_message.id, value); });
     }

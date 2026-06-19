@@ -28,6 +28,7 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -63,13 +64,17 @@
 #include <QStringListModel>
 #include <QStyle>
 #include <QStyleHints>
+#include <QSyntaxHighlighter>
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextBrowser>
+#include <QTextBlock>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QTreeWidget>
 #include <QSystemTrayIcon>
+#include <QSvgRenderer>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -253,6 +258,62 @@ QString formatRepoDate(qint64 timestampMs)
     return QDateTime::fromMSecsSinceEpoch(timestampMs).toString("yyyy-MM-dd hh:mm");
 }
 
+QString formatInsightBytes(qint64 bytes)
+{
+    if (bytes < 1024)
+        return QStringLiteral("%1 B").arg(bytes);
+    const QStringList units{"KB", "MB", "GB", "TB"};
+    double value = double(bytes);
+    int unit = -1;
+    do {
+        value /= 1024.0;
+        ++unit;
+    } while (value >= 1024.0 && unit + 1 < units.size());
+    const int precision = value >= 10.0 ? 0 : 1;
+    return QStringLiteral("%1 %2").arg(value, 0, 'f', precision).arg(units.at(unit));
+}
+
+QString insightMetricCell(const QString &label, const QString &value,
+                          const QString &detail = QString())
+{
+    const QString detailHtml =
+        detail.isEmpty()
+            ? QString()
+            : QStringLiteral("<br><span style='color:#8b949e; font-size:12px'>%1</span>")
+                  .arg(detail.toHtmlEscaped());
+    return QStringLiteral(
+               "<td width='16.6%' style='border:1px solid #30363d; "
+               "border-radius:8px; padding:10px 12px;'>"
+               "<div style='font-size:21px; font-weight:800'>%1</div>"
+               "<div style='color:#8b949e; font-size:12px; font-weight:600'>%2</div>%3"
+               "</td>")
+        .arg(value.toHtmlEscaped(), label.toHtmlEscaped(), detailHtml);
+}
+
+QString insightMetricsTable(const QStringList &cells)
+{
+    QString html =
+        QStringLiteral("<table width='100%' cellspacing='8' cellpadding='0'><tr>");
+    for (const QString &cell : cells)
+        html += cell;
+    html += QStringLiteral("</tr></table>");
+    return html;
+}
+
+bool currentThemeIsDark()
+{
+    const QString pref = QSettings().value(kThemeSetting, "system").toString();
+    if (pref == "light")
+        return false;
+    if (pref == "dark")
+        return true;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    return QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+#else
+    return true;
+#endif
+}
+
 QString formatDuration(qint64 ms)
 {
     const qint64 totalSeconds = std::max<qint64>(0, ms / 1000);
@@ -277,18 +338,7 @@ QString compactAddress(QString address)
 // A small platform emoji for a node's operating system.
 QString platformEmoji(const QString &platform)
 {
-    if (platform == "linux")
-        return QString::fromUtf8("\xF0\x9F\x90\xA7"); // penguin
-    if (platform == "macos")
-        return QString::fromUtf8("\xF0\x9F\x8D\x8E"); // apple
-    if (platform == "windows")
-        return QString::fromUtf8("\xF0\x9F\xAA\x9F"); // window
-    if (platform == "android")
-        return QString::fromUtf8("\xF0\x9F\xA4\x96"); // robot
-    if (platform == "ios")
-        return QString::fromUtf8("\xF0\x9F\x93\xB1"); // phone
-    if (platform == "web")
-        return QString::fromUtf8("\xF0\x9F\x8C\x90"); // globe
+    Q_UNUSED(platform);
     return QString();
 }
 
@@ -372,10 +422,430 @@ QIcon statusDotIcon(bool online)
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(online ? QColor("#2ea043") : QColor("#6e7681"));
     painter.setPen(Qt::NoPen);
-    painter.setBrush(online ? QColor("#22c55e") : QColor("#6b7280"));
     painter.drawEllipse(1, 1, 10, 10);
     return QIcon(pixmap);
+}
+
+enum class PreviewSyntax {
+    Plain,
+    Markdown,
+    Json,
+    Cpp,
+    JavaScript,
+    Python,
+    Yaml,
+    Diff
+};
+
+PreviewSyntax previewSyntaxForPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    if (lower.endsWith(".md") || lower.endsWith(".markdown"))
+        return PreviewSyntax::Markdown;
+    if (lower.endsWith(".json") || lower.endsWith(".jsonc"))
+        return PreviewSyntax::Json;
+    if (lower.endsWith(".yml") || lower.endsWith(".yaml") || lower.endsWith(".toml"))
+        return PreviewSyntax::Yaml;
+    if (lower.endsWith(".diff") || lower.endsWith(".patch"))
+        return PreviewSyntax::Diff;
+    if (lower.endsWith(".py"))
+        return PreviewSyntax::Python;
+    if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".ts") ||
+        lower.endsWith(".tsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs"))
+        return PreviewSyntax::JavaScript;
+    if (lower.endsWith(".cpp") || lower.endsWith(".cc") || lower.endsWith(".cxx") ||
+        lower.endsWith(".c") || lower.endsWith(".h") || lower.endsWith(".hpp") ||
+        lower.endsWith(".hh") || lower.endsWith(".rs") || lower.endsWith(".go") ||
+        lower.endsWith(".java") || lower.endsWith(".swift"))
+        return PreviewSyntax::Cpp;
+    return PreviewSyntax::Plain;
+}
+
+QTextCharFormat previewFormat(const QColor &color, int weight = QFont::Normal,
+                              bool italic = false)
+{
+    QTextCharFormat format;
+    format.setForeground(color);
+    format.setFontWeight(weight);
+    format.setFontItalic(italic);
+    return format;
+}
+
+struct HighlightRule {
+    QRegularExpression pattern;
+    QTextCharFormat format;
+};
+
+class CodePreviewHighlighter : public QSyntaxHighlighter
+{
+public:
+    CodePreviewHighlighter(QTextDocument *document, const QString &path)
+        : QSyntaxHighlighter(document), m_syntax(previewSyntaxForPath(path))
+    {
+        configureRules();
+    }
+
+protected:
+    void highlightBlock(const QString &text) override
+    {
+        if (m_syntax == PreviewSyntax::Diff) {
+            if (text.startsWith("+++ ") || text.startsWith("--- "))
+                setFormat(0, text.length(), m_keywordFormat);
+            else if (text.startsWith("+"))
+                setFormat(0, text.length(), m_addedFormat);
+            else if (text.startsWith("-"))
+                setFormat(0, text.length(), m_removedFormat);
+            else if (text.startsWith("@@"))
+                setFormat(0, text.length(), m_headingFormat);
+        }
+
+        if (m_syntax == PreviewSyntax::Markdown) {
+            if (text.startsWith("#")) {
+                const auto match =
+                    QRegularExpression(QStringLiteral("^#{1,6}\\s+.*$")).match(text);
+                if (match.hasMatch())
+                    setFormat(match.capturedStart(), match.capturedLength(),
+                              m_headingFormat);
+            }
+            const auto quoteMatch =
+                QRegularExpression(QStringLiteral("^\\s*>.*$")).match(text);
+            if (quoteMatch.hasMatch())
+                setFormat(quoteMatch.capturedStart(), quoteMatch.capturedLength(),
+                          m_commentFormat);
+        }
+
+        for (const HighlightRule &rule : std::as_const(m_rules)) {
+            auto matches = rule.pattern.globalMatch(text);
+            while (matches.hasNext()) {
+                const auto match = matches.next();
+                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+            }
+        }
+    }
+
+private:
+    void addKeywords(const QStringList &keywords, const QTextCharFormat &format)
+    {
+        m_rules.push_back({
+            QRegularExpression(QStringLiteral("\\b(%1)\\b").arg(keywords.join('|'))),
+            format});
+    }
+
+    void configureRules()
+    {
+        const bool dark = currentThemeIsDark();
+        m_headingFormat =
+            previewFormat(QColor(dark ? "#7ee787" : "#1a7f37"), QFont::Bold);
+        m_keywordFormat =
+            previewFormat(QColor(dark ? "#ff7b72" : "#cf222e"), QFont::Bold);
+        m_stringFormat = previewFormat(QColor(dark ? "#a5d6ff" : "#0a3069"));
+        m_numberFormat = previewFormat(QColor(dark ? "#79c0ff" : "#0550ae"));
+        m_commentFormat =
+            previewFormat(QColor(dark ? "#8b949e" : "#6e7781"), QFont::Normal, true);
+        m_keyFormat =
+            previewFormat(QColor(dark ? "#d2a8ff" : "#8250df"), QFont::Bold);
+        m_addedFormat = previewFormat(QColor(dark ? "#7ee787" : "#1a7f37"));
+        m_removedFormat = previewFormat(QColor(dark ? "#ffa198" : "#cf222e"));
+        const QTextCharFormat punctuationFormat =
+            previewFormat(QColor(dark ? "#8b949e" : "#6e7781"));
+
+        if (m_syntax == PreviewSyntax::Markdown) {
+            m_rules.push_back({QRegularExpression(QStringLiteral("`[^`]+`")),
+                               m_stringFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\\*\\*[^*]+\\*\\*")),
+                               m_keywordFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\\[[^\\]]+\\]\\([^\\)]+\\)")),
+                               m_keyFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("^\\s*[-*+]\\s+")),
+                               m_keywordFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("^\\s*```.*$")),
+                               m_commentFormat});
+            return;
+        }
+
+        if (m_syntax == PreviewSyntax::Json) {
+            m_rules.push_back({QRegularExpression(QStringLiteral("\"([^\"\\\\]|\\\\.)*\"")),
+                               m_stringFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\"([^\"\\\\]|\\\\.)+\"(?=\\s*:)")),
+                               m_keyFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\\b-?(0|[1-9]\\d*)(\\.\\d+)?([eE][+-]?\\d+)?\\b")),
+                               m_numberFormat});
+            addKeywords({"true", "false", "null"}, m_keywordFormat);
+            m_rules.push_back({QRegularExpression(QStringLiteral("[{}\\[\\],:]")),
+                               punctuationFormat});
+            return;
+        }
+
+        if (m_syntax == PreviewSyntax::Yaml) {
+            m_rules.push_back({QRegularExpression(QStringLiteral("#[^\\n]*")),
+                               m_commentFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\"([^\"\\\\]|\\\\.)*\"|'[^']*'")),
+                               m_stringFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("^\\s*-?\\s*[A-Za-z0-9_.-]+(?=:)")),
+                               m_keyFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\\b[0-9]+(\\.[0-9]+)?\\b")),
+                               m_numberFormat});
+            addKeywords({"true", "false", "yes", "no", "null"}, m_keywordFormat);
+            return;
+        }
+
+        if (m_syntax == PreviewSyntax::Python) {
+            addKeywords({"and", "as", "assert", "async", "await", "break", "class",
+                         "continue", "def", "elif", "else", "except", "False", "finally",
+                         "for", "from", "if", "import", "in", "is", "lambda", "None",
+                         "not", "or", "pass", "raise", "return", "True", "try", "while",
+                         "with", "yield"},
+                        m_keywordFormat);
+            m_rules.push_back({QRegularExpression(QStringLiteral("#[^\\n]*")),
+                               m_commentFormat});
+        } else if (m_syntax == PreviewSyntax::JavaScript) {
+            addKeywords({"async", "await", "break", "case", "catch", "class", "const",
+                         "continue", "default", "else", "export", "extends", "false",
+                         "for", "from", "function", "if", "import", "let", "new", "null",
+                         "return", "switch", "this", "throw", "true", "try", "typeof",
+                         "undefined", "var", "while"},
+                        m_keywordFormat);
+            m_rules.push_back({QRegularExpression(QStringLiteral("//[^\\n]*")),
+                               m_commentFormat});
+        } else if (m_syntax == PreviewSyntax::Cpp) {
+            addKeywords({"auto", "bool", "break", "case", "class", "const", "constexpr",
+                         "continue", "else", "enum", "false", "for", "if", "namespace",
+                         "nullptr", "private", "protected", "public", "return", "static",
+                         "struct", "switch", "template", "true", "typename", "using",
+                         "void", "while"},
+                        m_keywordFormat);
+            m_rules.push_back({QRegularExpression(QStringLiteral("^\\s*#[^\\n]*")),
+                               m_commentFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("//[^\\n]*")),
+                               m_commentFormat});
+        }
+
+        if (m_syntax == PreviewSyntax::Cpp || m_syntax == PreviewSyntax::JavaScript ||
+            m_syntax == PreviewSyntax::Python) {
+            m_rules.push_back({QRegularExpression(QStringLiteral("\"([^\"\\\\]|\\\\.)*\"|'([^'\\\\]|\\\\.)*'")),
+                               m_stringFormat});
+            m_rules.push_back({QRegularExpression(QStringLiteral("\\b[0-9]+(\\.[0-9]+)?\\b")),
+                               m_numberFormat});
+        }
+    }
+
+    PreviewSyntax m_syntax = PreviewSyntax::Plain;
+    QVector<HighlightRule> m_rules;
+    QTextCharFormat m_headingFormat;
+    QTextCharFormat m_keywordFormat;
+    QTextCharFormat m_stringFormat;
+    QTextCharFormat m_numberFormat;
+    QTextCharFormat m_commentFormat;
+    QTextCharFormat m_keyFormat;
+    QTextCharFormat m_addedFormat;
+    QTextCharFormat m_removedFormat;
+};
+
+class CodePreviewEditor;
+
+class CodeLineNumberArea : public QWidget
+{
+public:
+    explicit CodeLineNumberArea(CodePreviewEditor *editor);
+
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    CodePreviewEditor *m_editor = nullptr;
+};
+
+class CodePreviewEditor : public QPlainTextEdit
+{
+public:
+    explicit CodePreviewEditor(const QString &path, QWidget *parent = nullptr)
+        : QPlainTextEdit(parent), m_lineNumberArea(new CodeLineNumberArea(this))
+    {
+        setObjectName("codeEditor");
+        setProperty("previewPath", path);
+        setReadOnly(true);
+        setLineWrapMode(QPlainTextEdit::NoWrap);
+        setFrameShape(QFrame::NoFrame);
+
+        QFont mono = font();
+        mono.setFamily(QStringLiteral("Menlo"));
+        mono.setStyleHint(QFont::Monospace);
+        mono.setPointSize(12);
+        setFont(mono);
+        setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
+
+        connect(this, &QPlainTextEdit::blockCountChanged, this,
+                [this] { updateLineNumberAreaWidth(); });
+        connect(this, &QPlainTextEdit::updateRequest, this,
+                [this](const QRect &rect, int dy) { updateLineNumberArea(rect, dy); });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, this,
+                [this] { highlightCurrentLine(); });
+
+        updateLineNumberAreaWidth();
+        highlightCurrentLine();
+    }
+
+    int lineNumberAreaWidth() const
+    {
+        int digits = 1;
+        int max = qMax(1, blockCount());
+        while (max >= 10) {
+            max /= 10;
+            ++digits;
+        }
+        return qMax(42, 14 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits);
+    }
+
+    void lineNumberAreaPaintEvent(QPaintEvent *event)
+    {
+        const bool dark = currentThemeIsDark();
+        QPainter painter(m_lineNumberArea);
+        painter.fillRect(event->rect(), QColor(dark ? "#0d1117" : "#f6f8fa"));
+        painter.setPen(QColor(dark ? "#6e7681" : "#8c959f"));
+
+        QTextBlock block = firstVisibleBlock();
+        int blockNumber = block.blockNumber();
+        int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+        int bottom = top + qRound(blockBoundingRect(block).height());
+        const int rightPadding = 10;
+
+        while (block.isValid() && top <= event->rect().bottom()) {
+            if (block.isVisible() && bottom >= event->rect().top()) {
+                const QString number = QString::number(blockNumber + 1);
+                painter.drawText(0, top, m_lineNumberArea->width() - rightPadding,
+                                 fontMetrics().height(), Qt::AlignRight, number);
+            }
+            block = block.next();
+            top = bottom;
+            bottom = top + qRound(blockBoundingRect(block).height());
+            ++blockNumber;
+        }
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPlainTextEdit::resizeEvent(event);
+        const QRect cr = contentsRect();
+        m_lineNumberArea->setGeometry(
+            QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+    }
+
+    void changeEvent(QEvent *event) override
+    {
+        QPlainTextEdit::changeEvent(event);
+        if (event->type() == QEvent::PaletteChange ||
+            event->type() == QEvent::ApplicationPaletteChange ||
+            event->type() == QEvent::StyleChange) {
+            highlightCurrentLine();
+            m_lineNumberArea->update();
+        }
+    }
+
+private:
+    void updateLineNumberAreaWidth()
+    {
+        setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+    }
+
+    void updateLineNumberArea(const QRect &rect, int dy)
+    {
+        if (dy)
+            m_lineNumberArea->scroll(0, dy);
+        else
+            m_lineNumberArea->update(0, rect.y(), m_lineNumberArea->width(),
+                                     rect.height());
+        if (rect.contains(viewport()->rect()))
+            updateLineNumberAreaWidth();
+    }
+
+    void highlightCurrentLine()
+    {
+        QList<QTextEdit::ExtraSelection> selections;
+        QTextEdit::ExtraSelection selection;
+        selection.format.setBackground(
+            QColor(currentThemeIsDark() ? "#161b22" : "#f6f8fa"));
+        selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+        selection.cursor = textCursor();
+        selection.cursor.clearSelection();
+        selections.append(selection);
+        setExtraSelections(selections);
+    }
+
+    CodeLineNumberArea *m_lineNumberArea = nullptr;
+};
+
+CodeLineNumberArea::CodeLineNumberArea(CodePreviewEditor *editor)
+    : QWidget(editor), m_editor(editor)
+{
+    setObjectName("codeLineNumberArea");
+}
+
+QSize CodeLineNumberArea::sizeHint() const
+{
+    return QSize(m_editor ? m_editor->lineNumberAreaWidth() : 0, 0);
+}
+
+void CodeLineNumberArea::paintEvent(QPaintEvent *event)
+{
+    if (m_editor)
+        m_editor->lineNumberAreaPaintEvent(event);
+}
+
+
+QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int size)
+{
+    QPixmap pixmap(size, size);
+    pixmap.fill(Qt::transparent);
+
+    QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
+    if (!renderer.isValid())
+        return pixmap;
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    renderer.render(&painter, QRectF(0, 0, size, size));
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(pixmap.rect(), color);
+    return pixmap;
+}
+
+QIcon themedOcticon(const QString &name, const QColor &color, int size)
+{
+    QIcon icon;
+    icon.addPixmap(tintedOcticonPixmap(name, color, size), QIcon::Normal, QIcon::Off);
+    icon.addPixmap(tintedOcticonPixmap(name, color.darker(120), size),
+                   QIcon::Active, QIcon::Off);
+    icon.addPixmap(tintedOcticonPixmap(name, QColor("#6e7681"), size),
+                   QIcon::Disabled, QIcon::Off);
+    return icon;
+}
+
+void applyStoredOcticon(QPushButton *button)
+{
+    if (!button)
+        return;
+    const QString name = button->property("forkmeshOcticon").toString();
+    if (name.isEmpty())
+        return;
+    const int size = button->property("forkmeshOcticonSize").toInt();
+    const QColor color(
+        Theme::iconColorForButton(button->objectName(), currentThemeIsDark()));
+    button->setIcon(themedOcticon(name, color, size > 0 ? size : 16));
+    button->setIconSize(QSize(size > 0 ? size : 16, size > 0 ? size : 16));
+}
+
+void setOcticon(QPushButton *button, const QString &name, int size = 16)
+{
+    if (!button)
+        return;
+    button->setProperty("forkmeshOcticon", name);
+    button->setProperty("forkmeshOcticonSize", size);
+    applyStoredOcticon(button);
 }
 
 QString serverHost(const QString &serverUrl)
@@ -763,18 +1233,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 void MainWindow::applyTheme()
 {
     // Honour the user's override; otherwise follow the OS color scheme.
-    const QString pref = QSettings().value(kThemeSetting, "system").toString();
-    bool dark = true;
-    if (pref == "light")
-        dark = false;
-    else if (pref == "dark")
-        dark = true;
-    else {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-        dark = QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
-#endif
+    qApp->setStyleSheet(Theme::styleSheetForDark(currentThemeIsDark()));
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        if (auto *window = qobject_cast<MainWindow *>(widget))
+            window->refreshThemedIcons();
     }
-    qApp->setStyleSheet(Theme::styleSheetForDark(dark));
+}
+
+void MainWindow::refreshThemedIcons()
+{
+    const auto buttons = findChildren<QPushButton *>();
+    for (QPushButton *button : buttons)
+        applyStoredOcticon(button);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -994,10 +1464,11 @@ QWidget *MainWindow::buildSetupPage()
     startButton->setObjectName("primaryButton");
     startButton->setMinimumHeight(40);
 
-    m_updateButton = new QPushButton("\xE2\x9F\xB3 Quick update");
+    m_updateButton = new QPushButton("Quick update");
     m_updateButton->setObjectName("ghostButton");
     m_updateButton->setCursor(Qt::PointingHandCursor);
     m_updateButton->setToolTip("Pull the latest version, rebuild, and relaunch");
+    setOcticon(m_updateButton, "sync", 16);
     m_updateStatus = new QLabel;
     m_updateStatus->setObjectName("modeHint");
     m_updateStatus->setWordWrap(true);
@@ -1132,7 +1603,7 @@ void MainWindow::startSession()
             m_backend->setAvatar(m_userAvatar);
         for (const RepositoryRecord &repo : std::as_const(m_repositories))
             m_backend->addChannel(repositoryChannel(repo));
-        m_encryptionLabel->setText("\xF0\x9F\x94\x92 Mainnode encrypted");
+        m_encryptionLabel->setText("Mainnode encrypted");
         logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
         const QJsonObject signedProfile =
             m_profileIdentity.signedProfile(m_userName,
@@ -1689,11 +2160,12 @@ void MainWindow::refreshServerRail()
         layout->addWidget(button, 0, Qt::AlignHCenter);
     }
 
-    auto *addButton = new QPushButton("+");
+    auto *addButton = new QPushButton(QString());
     addButton->setObjectName("serverAddButton");
     addButton->setCursor(Qt::PointingHandCursor);
     addButton->setFixedSize(40, 40);
     addButton->setToolTip("Add a mainnode server");
+    setOcticon(addButton, "plus", 20);
     connect(addButton, &QPushButton::clicked, this, &MainWindow::promptAddServer);
     layout->addWidget(addButton, 0, Qt::AlignHCenter);
     layout->addStretch();
@@ -1894,11 +2366,12 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     auto *label = new QLabel("NETWORK LOG");
     label->setObjectName("sectionLabel");
-    auto *toggle = new QPushButton(QString::fromUtf8("\xE2\x96\xBE")); // down triangle
+    auto *toggle = new QPushButton(QString());
     toggle->setObjectName("iconButton");
     toggle->setCursor(Qt::PointingHandCursor);
     toggle->setFixedWidth(26);
     toggle->setToolTip("Show/hide the network log");
+    setOcticon(toggle, "chevron-down", 16);
 
     m_settingsLog = new QPlainTextEdit;
     m_settingsLog->setReadOnly(true);
@@ -1923,7 +2396,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(toggle, &QPushButton::clicked, this, [this, toggle] {
         const bool show = !m_settingsLog->isVisible();
         m_settingsLog->setVisible(show);
-        toggle->setText(QString::fromUtf8(show ? "\xE2\x96\xBE" : "\xE2\x96\xB8"));
+        setOcticon(toggle, show ? "chevron-down" : "chevron-right", 16);
     });
     return dock;
 }
@@ -1963,10 +2436,11 @@ QWidget *MainWindow::buildBreadcrumb()
     m_connectionStatus->setObjectName("connectionStatus");
     m_connectionStatus->setTextFormat(Qt::RichText);
 
-    m_notificationButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x94"));
+    m_notificationButton = new QPushButton(QString());
     m_notificationButton->setObjectName("notificationButton");
     m_notificationButton->setCursor(Qt::PointingHandCursor);
     m_notificationButton->setFixedWidth(42);
+    setOcticon(m_notificationButton, "bell", 16);
     m_notificationButton->setToolTip("Notifications");
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
@@ -2054,8 +2528,8 @@ void MainWindow::updateBreadcrumb()
     // No hardcoded text colors here: the section/separator inherit the
     // #breadcrumb stylesheet color so it stays readable in light and dark.
     m_breadcrumb->setText(
-        QString::fromUtf8(
-            "\xF0\x9F\x9F\xA2 <a href=\"server\" style=\"text-decoration:none; "
+        QStringLiteral(
+            "<a href=\"server\" style=\"text-decoration:none; "
             "color:inherit\"><b>%1</b></a>%2%3")
             .arg(host.toHtmlEscaped(), sep, trail));
 }
@@ -2065,21 +2539,22 @@ QWidget *MainWindow::buildBchNotice()
     m_bchBanner = new QWidget;
     m_bchBanner->setObjectName("bchBanner");
     m_bchBannerLabel = new QLabel(
-        "\xF0\x9F\x92\x9A Add a Bitcoin Cash address so others can sponsor this "
-        "node \xE2\x80\x94 it keeps the network open to donations and more "
-        "sustainable.");
+        "Add a Bitcoin Cash address so others can sponsor this node — it keeps "
+        "the network open to donations and more sustainable.");
     m_bchBannerLabel->setObjectName("bchBannerLabel");
     m_bchBannerLabel->setWordWrap(true);
 
     auto *addButton = new QPushButton("Add BCH address");
     addButton->setObjectName("primaryButton");
     addButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(addButton, "plus", 16);
     connect(addButton, &QPushButton::clicked, this, &MainWindow::promptSetBchAddress);
 
-    auto *dismissButton = new QPushButton("\xE2\x9C\x95");
+    auto *dismissButton = new QPushButton(QString());
     dismissButton->setObjectName("ghostButton");
     dismissButton->setCursor(Qt::PointingHandCursor);
     dismissButton->setToolTip("Hide for now");
+    setOcticon(dismissButton, "x", 16);
     connect(dismissButton, &QPushButton::clicked, m_bchBanner, &QWidget::hide);
 
     auto *layout = new QHBoxLayout(m_bchBanner);
@@ -2163,10 +2638,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_nodeProfilePanel->setMinimumWidth(280);
     m_nodeProfilePanel->setMaximumWidth(380);
 
-    auto *closeButton = new QPushButton("\xE2\x9C\x95");
+    auto *closeButton = new QPushButton(QString());
     closeButton->setObjectName("ghostButton");
     closeButton->setCursor(Qt::PointingHandCursor);
     closeButton->setToolTip("Close");
+    setOcticon(closeButton, "x", 16);
     connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
     auto *titleLabel = new QLabel("Node profile");
     titleLabel->setObjectName("sectionLabel");
@@ -2212,9 +2688,10 @@ QWidget *MainWindow::buildNodeProfilePanel()
         }
     });
 
-    m_profileMessageButton = new QPushButton("\xF0\x9F\x92\xAC Message");
+    m_profileMessageButton = new QPushButton("Message");
     m_profileMessageButton->setObjectName("ghostButton");
     m_profileMessageButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileMessageButton, "comment", 16);
     connect(m_profileMessageButton, &QPushButton::clicked, this, [this] {
         if (!m_profileNodeId.isEmpty())
             openDirectChat(m_profileNodeId, m_profileNodeName);
@@ -2354,11 +2831,10 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2")
             .arg(online ? "#3fb950" : "#8b949e", online ? "Online" : "Offline"));
 
-    const QString emoji = platformEmoji(info.platform);
     m_profilePlatform->setText(
         info.platform.isEmpty()
             ? QStringLiteral("Platform: unknown")
-            : QStringLiteral("Platform: %1 %2").arg(info.platform, emoji));
+            : QStringLiteral("Platform: %1").arg(info.platform));
     m_profilePlatform->setVisible(!info.platform.isEmpty());
 
     if (info.mirrors.isEmpty()) {
@@ -2393,7 +2869,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (info.self)
             m_profileEligibility->setText(
                 m_accountBchVerified
-                    ? QString::fromUtf8("<span style='color:#3fb950'>\xE2\x9C\x93 Active "
+                    ? QStringLiteral("<span style='color:#3fb950'>Active "
                                      "\xC2\xB7 revenue-sharing eligible</span>")
                     : QStringLiteral("<span style='color:#d29922'>Not yet eligible "
                                      "\xE2\x80\x94 deposit \xE2\x89\xA5 0.001 BCH and "
@@ -2602,9 +3078,12 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueSearch->setClearButtonEnabled(true);
 
     m_issueStatusFilter = new QComboBox;
+    m_issueStatusFilter->setObjectName("issueControlSm");
     m_issueStatusFilter->addItems({"Open", "Closed", "All"});
     m_issueLabelFilter = new QComboBox;
+    m_issueLabelFilter->setObjectName("issueControlSm");
     m_issueMilestoneFilter = new QComboBox;
+    m_issueMilestoneFilter->setObjectName("issueControlSm");
     auto *filterRow = new QHBoxLayout;
     filterRow->setContentsMargins(0, 0, 0, 0);
     filterRow->addWidget(m_issueSearch, 1);
@@ -2612,12 +3091,16 @@ QWidget *MainWindow::buildIssuesSection()
     filterRow->addWidget(m_issueLabelFilter);
     filterRow->addWidget(m_issueMilestoneFilter);
 
-    m_issueNewButton = new QPushButton("+ New issue");
+    m_issueNewButton = new QPushButton("New issue");
     m_issueNewButton->setObjectName("ghostButton");
+    m_issueNewButton->setProperty("buttonSize", "sm");
     m_issueNewButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueNewButton, "plus", 16);
     m_issueSyncButton = new QPushButton("Sync inbox");
     m_issueSyncButton->setObjectName("ghostButton");
+    m_issueSyncButton->setProperty("buttonSize", "sm");
     m_issueSyncButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueSyncButton, "sync", 16);
     m_issueSyncButton->setToolTip(
         "Pull issue/comment submissions filed by other nodes and merge them");
     m_issueDetailToggle = new QPushButton("Hide detail");
@@ -2678,13 +3161,15 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueTitle = new QLabel("Select an issue");
     m_issueTitle->setObjectName("channelTitle");
     m_issueTitle->setWordWrap(true);
-    m_issueCopyButton = new QPushButton("\xF0\x9F\x93\x8B Copy");
+    m_issueCopyButton = new QPushButton("Copy");
     m_issueCopyButton->setObjectName("ghostButton");
     m_issueCopyButton->setCursor(Qt::PointingHandCursor);
     m_issueCopyButton->setToolTip("Copy this issue (title and thread) to the clipboard");
-    m_issueVoteButton = new QPushButton(QString::fromUtf8("\xE2\x96\xB2 Vote"));
+    setOcticon(m_issueCopyButton, "copy", 16);
+    m_issueVoteButton = new QPushButton("Vote");
     m_issueVoteButton->setObjectName("ghostButton");
     m_issueVoteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueVoteButton, "thumbsup", 16);
     m_issueVoteButton->setToolTip("Upvote this issue (spends 1 voting credit)");
     auto *issueTitleRow = new QHBoxLayout;
     issueTitleRow->setContentsMargins(0, 0, 0, 0);
@@ -2711,6 +3196,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueThreadScroll->setObjectName("messageScroll");
 
     m_issueComposer = new QPlainTextEdit;
+    m_issueComposer->setObjectName("issueComposerSm");
     m_issueComposer->setPlaceholderText("Write a comment\xE2\x80\xA6");
     m_issueComposer->setFixedHeight(80);
     m_issueAttachButton = new QPushButton("Attach image");
@@ -2876,16 +3362,20 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *publicBadge = new QLabel("Public");
     publicBadge->setObjectName("publicBadge");
 
-    auto *notifyButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x94"));
+    auto *notifyButton = new QPushButton("Notify");
     notifyButton->setObjectName("repoAction");
     notifyButton->setToolTip("Notifications");
-    m_forkButton = new QPushButton("\xE2\x9A\x82 Fork 0");
-    m_mirrorButton = new QPushButton("\xE2\x87\x86 Mirror 1");
-    m_starButton = new QPushButton("\xE2\x98\x86 Star 0");
+    setOcticon(notifyButton, "bell", 16);
+    m_forkButton = new QPushButton("Fork 0");
+    m_mirrorButton = new QPushButton("Mirror 1");
+    m_starButton = new QPushButton("Star 0");
     for (QPushButton *b : {notifyButton, m_forkButton, m_mirrorButton, m_starButton}) {
         b->setObjectName("repoAction");
         b->setCursor(Qt::PointingHandCursor);
     }
+    setOcticon(m_forkButton, "repo-forked", 16);
+    setOcticon(m_mirrorButton, "sync", 16);
+    setOcticon(m_starButton, "star", 16);
     m_mirrorButton->setToolTip("Sync this repository's mirror now");
     connect(m_mirrorButton, &QPushButton::clicked, this, [this] {
         if (m_repoDetailIndex >= 0)
@@ -2909,25 +3399,28 @@ QWidget *MainWindow::buildRepoDetailSection()
     // --- Tab bar (GitHub order; Commits gets its own tab).
     struct TabDef {
         const char *label;
+        const char *icon;
     };
-    const QList<QString> tabs = {"\xF0\x9F\x92\xBB Code",
-                                 "\xF0\x9F\x95\x98 Commits",
-                                 "\xF0\x9F\x93\x8B Issues",
-                                 "\xF0\x9F\x94\x80 Pull requests",
-                                 "\xE2\x96\xB6 Actions",
-                                 "\xF0\x9F\x93\x96 Wiki",
-                                 "\xF0\x9F\x9B\xA1 Security and quality",
-                                 "\xF0\x9F\x93\x8A Insights"};
+    const QList<TabDef> tabs = {{"Code", "code"},
+                                {"Commits", "git-branch"},
+                                {"Issues", "issue-opened"},
+                                {"Pull requests", "git-pull-request"},
+                                {"Actions", "workflow"},
+                                {"Wiki", "file"},
+                                {"Security and quality", "shield-check"},
+                                {"Insights", "graph"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
     tabRow->setContentsMargins(12, 0, 12, 0);
     tabRow->setSpacing(2);
     for (int i = 0; i < tabs.size(); ++i) {
-        auto *b = new QPushButton(tabs.at(i));
+        const TabDef tab = tabs.at(i);
+        auto *b = new QPushButton(QString::fromLatin1(tab.label));
         b->setObjectName("repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
+        setOcticon(b, QString::fromLatin1(tab.icon), 16);
         if (i == 0)
             b->setChecked(true);
         if (i == 2)
@@ -2949,7 +3442,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 4 Actions
     m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Insights"));       // 7
+    m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
@@ -2958,6 +3451,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             reloadPulls();
         else if (id == 4)
             refreshRepoActions();
+        else if (id == 7)
+            loadRepoInsights();
     });
 
     auto *layout = new QVBoxLayout(page);
@@ -2990,18 +3485,21 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // --- Page 1: the GitHub-style commit diff view.
     auto *detailPage = new QWidget;
 
-    auto *backButton = new QPushButton("\xE2\x86\x90 Commits");
+    auto *backButton = new QPushButton("Commits");
     backButton->setObjectName("ghostButton");
     backButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(backButton, "arrow-left", 16);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::showCommitList);
 
     // Prev/Next walk the commit list (newest first): Prev = newer, Next = older.
-    m_commitPrevButton = new QPushButton("\xE2\x86\x91 Prev");
-    m_commitNextButton = new QPushButton("Next \xE2\x86\x93");
+    m_commitPrevButton = new QPushButton("Prev");
+    m_commitNextButton = new QPushButton("Next");
     for (QPushButton *b : {m_commitPrevButton, m_commitNextButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
     }
+    setOcticon(m_commitPrevButton, "chevron-down", 16);
+    setOcticon(m_commitNextButton, "chevron-right", 16);
     m_commitPrevButton->setToolTip("Show the previous (newer) commit");
     m_commitNextButton->setToolTip("Show the next (older) commit");
     auto goToCommitRow = [this](int row) {
@@ -3100,6 +3598,142 @@ QWidget *MainWindow::buildRepoCommitsTab()
     return page;
 }
 
+QWidget *MainWindow::buildInsightsTab()
+{
+    auto *page = new QWidget;
+    page->setObjectName("mainContent");
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("mainContent");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+
+    auto *content = new QWidget;
+    content->setObjectName("insightsPage");
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(14);
+
+    auto *heading = new QLabel("Insights");
+    heading->setObjectName("channelTitle");
+    auto *subtitle = new QLabel(
+        "Local repository and ForkMesh traffic metrics. No data leaves this node.");
+    subtitle->setObjectName("statusLine");
+    subtitle->setWordWrap(true);
+
+    m_insightsRefreshButton = new QPushButton("Refresh");
+    m_insightsRefreshButton->setObjectName("ghostButton");
+    m_insightsRefreshButton->setProperty("buttonSize", "sm");
+    m_insightsRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_insightsRefreshButton, "sync", 16);
+    connect(m_insightsRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::loadRepoInsights);
+
+    auto *headingCol = new QVBoxLayout;
+    headingCol->setContentsMargins(0, 0, 0, 0);
+    headingCol->setSpacing(3);
+    headingCol->addWidget(heading);
+    headingCol->addWidget(subtitle);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addLayout(headingCol, 1);
+    headerRow->addWidget(m_insightsRefreshButton, 0, Qt::AlignTop);
+    layout->addLayout(headerRow);
+
+    m_insightsSummary = new QLabel;
+    m_insightsSummary->setObjectName("insightsCard");
+    m_insightsSummary->setTextFormat(Qt::RichText);
+    m_insightsSummary->setWordWrap(true);
+    m_insightsSummary->setMinimumHeight(110);
+
+    m_insightsTraffic = new QLabel;
+    m_insightsTraffic->setObjectName("insightsCard");
+    m_insightsTraffic->setTextFormat(Qt::RichText);
+    m_insightsTraffic->setWordWrap(true);
+    m_insightsTraffic->setMinimumHeight(110);
+
+    auto *summaryRow = new QHBoxLayout;
+    summaryRow->setContentsMargins(0, 0, 0, 0);
+    summaryRow->setSpacing(10);
+    summaryRow->addWidget(m_insightsSummary, 2);
+    summaryRow->addWidget(m_insightsTraffic, 1);
+    layout->addLayout(summaryRow);
+
+    auto *languageLabel = new QLabel("LANGUAGES");
+    languageLabel->setObjectName("sectionLabel");
+    m_insightsLanguageBar = new QLabel;
+    m_insightsLanguageBar->setObjectName("langBar");
+    m_insightsLanguageBar->setFixedHeight(8);
+    m_insightsLanguageBar->setTextFormat(Qt::RichText);
+    m_insightsLanguageLegend = new QLabel;
+    m_insightsLanguageLegend->setObjectName("statusLine");
+    m_insightsLanguageLegend->setTextFormat(Qt::RichText);
+    m_insightsLanguageLegend->setWordWrap(true);
+    layout->addWidget(languageLabel);
+    layout->addWidget(m_insightsLanguageBar);
+    layout->addWidget(m_insightsLanguageLegend);
+
+    auto configureTable = [](QTableWidget *table) {
+        table->setObjectName("issueTable");
+        table->verticalHeader()->setVisible(false);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setShowGrid(false);
+        table->setWordWrap(false);
+        table->setSortingEnabled(false);
+        table->horizontalHeader()->setHighlightSections(false);
+    };
+
+    auto *contributorsLabel = new QLabel("CONTRIBUTORS");
+    contributorsLabel->setObjectName("sectionLabel");
+    m_insightsContributors = new QTableWidget(0, 3);
+    m_insightsContributors->setHorizontalHeaderLabels({"Contributor", "Commits", "Share"});
+    configureTable(m_insightsContributors);
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    m_insightsContributors->setMinimumHeight(220);
+
+    auto *recentLabel = new QLabel("RECENT ACTIVITY");
+    recentLabel->setObjectName("sectionLabel");
+    m_insightsRecentCommits = new QTableWidget(0, 4);
+    m_insightsRecentCommits->setHorizontalHeaderLabels(
+        {"Commit", "Author", "When", "Message"});
+    configureTable(m_insightsRecentCommits);
+    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+        3, QHeaderView::Stretch);
+    m_insightsRecentCommits->setMinimumHeight(240);
+
+    layout->addWidget(contributorsLabel);
+    layout->addWidget(m_insightsContributors);
+    layout->addWidget(recentLabel);
+    layout->addWidget(m_insightsRecentCommits);
+
+    m_insightsActivity = new QLabel;
+    m_insightsActivity->setObjectName("statusLine");
+    m_insightsActivity->setTextFormat(Qt::RichText);
+    m_insightsActivity->setWordWrap(true);
+    layout->addWidget(m_insightsActivity);
+    layout->addStretch();
+
+    scroll->setWidget(content);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->addWidget(scroll);
+    return page;
+}
+
 QWidget *MainWindow::buildPlaceholderTab(const QString &name)
 {
     auto *page = new QWidget;
@@ -3128,12 +3762,15 @@ QWidget *MainWindow::buildPullsTab()
     listPane->setMinimumWidth(360);
     auto *heading = new QLabel("Pull requests");
     heading->setObjectName("channelTitle");
-    m_pullNewButton = new QPushButton("+ New pull request");
+    m_pullNewButton = new QPushButton("New pull request");
     m_pullSyncButton = new QPushButton("Sync inbox");
     for (QPushButton *b : {m_pullNewButton, m_pullSyncButton}) {
         b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
+    setOcticon(m_pullNewButton, "plus", 16);
+    setOcticon(m_pullSyncButton, "sync", 16);
     m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
@@ -3181,9 +3818,12 @@ QWidget *MainWindow::buildPullsTab()
     m_pullCloseButton = new QPushButton("Close");
     for (QPushButton *b : {m_pullMergeButton, m_pullCloseButton}) {
         b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
     m_pullMergeButton->setObjectName("primaryButton");
+    setOcticon(m_pullMergeButton, "check-circle", 16);
+    setOcticon(m_pullCloseButton, "circle-slash", 16);
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
@@ -3662,10 +4302,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_commitBar->setObjectName("commitBarText");
     m_commitBar->setTextFormat(Qt::RichText);
     m_commitBar->setWordWrap(true);
-    m_historyButton = new QPushButton("\xF0\x9F\x95\x98 Commits");
+    m_historyButton = new QPushButton("Commits");
     m_historyButton->setObjectName("ghostButton");
     m_historyButton->setCursor(Qt::PointingHandCursor);
     m_historyButton->setToolTip("View the full commit history");
+    setOcticon(m_historyButton, "git-branch", 16);
     connect(m_historyButton, &QPushButton::clicked, this, [this] {
         if (m_repoDetailTabs && m_repoDetailTabs->button(1))
             m_repoDetailTabs->button(1)->setChecked(true);
@@ -3705,13 +4346,15 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_readmeView->setOpenExternalLinks(true);
 
     // Toolbar: branch switcher + tags + "go to file" search.
-    m_branchButton = new QPushButton("\xF0\x9F\x8C\xBF main");
+    m_branchButton = new QPushButton("main");
     m_branchButton->setObjectName("ghostButton");
     m_branchButton->setCursor(Qt::PointingHandCursor);
     m_branchButton->setToolTip("Switch branch");
-    m_tagsButton = new QPushButton("\xF0\x9F\x8F\xB7 Tags");
+    setOcticon(m_branchButton, "git-branch", 16);
+    m_tagsButton = new QPushButton("Tags");
     m_tagsButton->setObjectName("ghostButton");
     m_tagsButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_tagsButton, "tag", 16);
     m_fileSearch = new QLineEdit;
     m_fileSearch->setPlaceholderText("Go to file\xE2\x80\xA6");
     m_fileSearch->setClearButtonEnabled(true);
@@ -3814,10 +4457,11 @@ QWidget *MainWindow::buildRepoEditorPage()
 {
     auto *page = new QWidget;
 
-    auto *backButton = new QPushButton("\xE2\x86\x90 Files");
+    auto *backButton = new QPushButton("Files");
     backButton->setObjectName("ghostButton");
     backButton->setCursor(Qt::PointingHandCursor);
     backButton->setToolTip("Back to the repository overview");
+    setOcticon(backButton, "arrow-left", 16);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::showRepoOverview);
     auto *backRow = new QHBoxLayout;
     backRow->setContentsMargins(8, 4, 8, 0);
@@ -4070,12 +4714,12 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadRepoInfo();
     loadBranchesAndTags();
     if (m_forkButton)
-        m_forkButton->setText(QString::fromUtf8("\xE2\x9A\x82 Fork %1").arg(m_repoInfo.forks));
+        m_forkButton->setText(QStringLiteral("Fork %1").arg(m_repoInfo.forks));
     if (m_mirrorButton)
         m_mirrorButton->setText(
-            QString::fromUtf8("\xE2\x87\x86 Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
+            QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
     if (m_starButton)
-        m_starButton->setText(QString::fromUtf8("\xE2\x98\x86 Star %1").arg(m_repoInfo.stars));
+        m_starButton->setText(QStringLiteral("Star %1").arg(m_repoInfo.stars));
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -4103,6 +4747,8 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadFileSearchIndex();
     loadAboutSidebar();
     loadCommits();
+    if (m_insightsSummary)
+        loadRepoInsights();
     // Land on the GitHub-style overview (no explorer until a file is opened).
     loadRepoOverview(QString());
     if (m_filesStack)
@@ -4114,7 +4760,7 @@ void MainWindow::updateRepoIssueCount()
 {
     if (m_repoIssuesTab)
         m_repoIssuesTab->setText(
-            QString::fromUtf8("\xF0\x9F\x93\x8B Issues (%1)").arg(m_currentIssues.size()));
+            QStringLiteral("Issues (%1)").arg(m_currentIssues.size()));
 }
 
 void MainWindow::loadRepoFileTree()
@@ -4229,14 +4875,19 @@ void MainWindow::openRepoFile(const QString &path)
     else if (out.contains('\0'))
         content = QString::fromUtf8("Binary file (%1 bytes) \xE2\x80\x94 not shown.")
                       .arg(out.size());
-    else
+    else {
         content = QString::fromUtf8(out);
+        if (path.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive) ||
+            path.endsWith(QStringLiteral(".jsonc"), Qt::CaseInsensitive)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(out);
+            if (!doc.isNull())
+                content = QString::fromUtf8(doc.toJson(QJsonDocument::Indented));
+        }
+    }
 
-    auto *editor = new QPlainTextEdit;
-    editor->setReadOnly(true);
-    editor->setObjectName("codeEditor");
-    editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    auto *editor = new CodePreviewEditor(path);
     editor->setPlainText(content);
+    new CodePreviewHighlighter(editor->document(), path);
 
     const QString name = path.section('/', -1);
     const int index = m_repoFileTabs->addTab(editor, iconForFile(name), name);
@@ -4292,8 +4943,8 @@ void MainWindow::loadRepoOverview(const QString &path)
             runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
             count = QString::fromUtf8(countOut).trimmed();
         m_historyButton->setText(count.isEmpty()
-                                     ? QString::fromUtf8("\xF0\x9F\x95\x98 Commits")
-                                     : QString::fromUtf8("\xF0\x9F\x95\x98 %1 Commits").arg(count));
+                                     ? QStringLiteral("Commits")
+                                     : QStringLiteral("%1 Commits").arg(count));
     }
 
     // Breadcrumb for directory navigation.
@@ -4657,6 +5308,308 @@ void MainWindow::showCommit(const QString &hash)
     m_commitsStack->setCurrentIndex(1);
 }
 
+void MainWindow::loadRepoInsights()
+{
+    if (!m_insightsSummary)
+        return;
+
+    if (m_insightsContributors)
+        m_insightsContributors->setRowCount(0);
+    if (m_insightsRecentCommits)
+        m_insightsRecentCommits->setRowCount(0);
+    if (m_insightsLanguageBar)
+        m_insightsLanguageBar->clear();
+    if (m_insightsLanguageLegend)
+        m_insightsLanguageLegend->clear();
+    if (m_insightsActivity)
+        m_insightsActivity->clear();
+
+    auto setNoRepo = [this] {
+        m_insightsSummary->setText(
+            "<b>Repository summary</b><br><span style='color:#8b949e'>Select a "
+            "repository with a local checkout or mirror to see insights.</span>");
+        if (m_insightsTraffic)
+            m_insightsTraffic->setText(
+                "<b>ForkMesh traffic</b><br><span style='color:#8b949e'>No "
+                "repository selected.</span>");
+        if (m_insightsLanguageLegend)
+            m_insightsLanguageLegend->setText(
+                "<span style='color:#8b949e'>No language data available.</span>");
+    };
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        setNoRepo();
+        return;
+    }
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoKey = repo.owner + "/" + repo.name;
+    const QString dir = repoGitDir();
+    const QString ref = currentRef();
+    QStringList notes;
+
+    QString sourceKind = QStringLiteral("unavailable");
+    if (!repo.localPath.isEmpty() && QDir(repo.localPath).exists())
+        sourceKind = QStringLiteral("local worktree");
+    else if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
+        sourceKind = QStringLiteral("bare mirror");
+
+    notes << QStringLiteral("Data source: %1. Selected ref: %2.")
+                 .arg(sourceKind, ref);
+    if (!repositorySource(repo).isEmpty())
+        notes << QStringLiteral("Source: %1.").arg(repositorySource(repo));
+    if (repo.lastSyncMs > 0)
+        notes << QStringLiteral("Last sync: %1.").arg(formatRepoDate(repo.lastSyncMs));
+    if (repo.publishedAtMs > 0)
+        notes << QStringLiteral("Published: %1.").arg(formatRepoDate(repo.publishedAtMs));
+
+    QString commitCountText = QStringLiteral("0");
+    qint64 fileCount = 0;
+    qint64 totalBytes = 0;
+    QHash<QString, qint64> bytesByLanguage;
+    qint64 recognizedBytes = 0;
+
+    if (dir.isEmpty()) {
+        notes << QStringLiteral("No local checkout or mirror is available for Git history.");
+    } else {
+        QByteArray countOut;
+        QString countErr;
+        if (runGitCapture(dir, {"rev-list", "--count", ref}, &countOut, &countErr)) {
+            commitCountText = QString::fromUtf8(countOut).trimmed();
+            if (commitCountText.isEmpty())
+                commitCountText = QStringLiteral("0");
+        } else {
+            notes << QStringLiteral("Commit count unavailable: %1.")
+                         .arg(countErr.isEmpty() ? QStringLiteral("git failed") : countErr.left(160));
+        }
+
+        QByteArray treeOut;
+        QString treeErr;
+        if (runGitCapture(dir, {"ls-tree", "-r", "-l", ref}, &treeOut, &treeErr)) {
+            for (const QByteArray &record : treeOut.split('\n')) {
+                if (record.trimmed().isEmpty())
+                    continue;
+                const int tab = record.indexOf('\t');
+                if (tab < 0)
+                    continue;
+                const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+                if (meta.size() < 4 || meta.at(1) != "blob")
+                    continue;
+                ++fileCount;
+                bool ok = false;
+                const qint64 size = QString::fromUtf8(meta.at(3)).toLongLong(&ok);
+                if (!ok)
+                    continue;
+                totalBytes += qMax<qint64>(0, size);
+                const QString name = QString::fromUtf8(record.mid(tab + 1));
+                const QString language = languageForFile(name);
+                if (!language.isEmpty() && size > 0) {
+                    bytesByLanguage[language] += size;
+                    recognizedBytes += size;
+                }
+            }
+        } else {
+            notes << QStringLiteral("File composition unavailable: %1.")
+                         .arg(treeErr.isEmpty() ? QStringLiteral("git failed") : treeErr.left(160));
+        }
+    }
+
+    int openIssues = 0;
+    int closedIssues = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.isDeleted())
+            continue;
+        if (issue.status == QStringLiteral("closed"))
+            ++closedIssues;
+        else
+            ++openIssues;
+    }
+
+    QString pullError;
+    const QList<PullRequest> pulls = pullStoreForCurrentRepo().loadAll(&pullError);
+    int openPulls = 0;
+    int mergedPulls = 0;
+    int closedPulls = 0;
+    for (const PullRequest &pr : pulls) {
+        if (pr.status == QStringLiteral("merged"))
+            ++mergedPulls;
+        else if (pr.status == QStringLiteral("closed"))
+            ++closedPulls;
+        else
+            ++openPulls;
+    }
+    if (!pullError.isEmpty())
+        notes << QStringLiteral("Pull request data unavailable: %1.").arg(pullError.left(160));
+
+    const int totalIssues = openIssues + closedIssues;
+    const int totalPulls = openPulls + mergedPulls + closedPulls;
+    m_insightsSummary->setText(
+        "<b>Repository summary</b>" +
+        insightMetricsTable({
+            insightMetricCell("Commits", commitCountText, ref),
+            insightMetricCell("Contributors", QStringLiteral("0"), "all branches"),
+            insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
+            insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
+            insightMetricCell("Issues", QString::number(totalIssues),
+                              QStringLiteral("%1 open / %2 closed")
+                                  .arg(openIssues)
+                                  .arg(closedIssues)),
+            insightMetricCell("Pull requests", QString::number(totalPulls),
+                              QStringLiteral("%1 open / %2 merged / %3 closed")
+                                  .arg(openPulls)
+                                  .arg(mergedPulls)
+                                  .arg(closedPulls)),
+        }));
+
+    const QPair<int, int> stats = m_repoStats.value(repoKey);
+    if (m_insightsTraffic) {
+        m_insightsTraffic->setText(
+            QStringLiteral(
+                "<b>ForkMesh traffic</b><br><br>"
+                "<span style='font-size:21px; font-weight:800'>%1</span><br>"
+                "<span style='color:#8b949e'>served requests</span><br><br>"
+                "<span style='font-size:21px; font-weight:800'>%2</span><br>"
+                "<span style='color:#8b949e'>clone requests</span><br><br>"
+                "<span style='color:#8b949e'>Local-only counters since this app "
+                "started tracking.</span>")
+                .arg(stats.first)
+                .arg(stats.second));
+    }
+
+    QList<QPair<QString, qint64>> languages;
+    for (auto it = bytesByLanguage.constBegin(); it != bytesByLanguage.constEnd(); ++it)
+        languages.append({it.key(), it.value()});
+    std::sort(languages.begin(), languages.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
+    QString languageBar;
+    QString languageLegend;
+    const int shownLanguages = qMin(5, int(languages.size()));
+    for (int i = 0; i < shownLanguages && recognizedBytes > 0; ++i) {
+        const double pct = 100.0 * languages.at(i).second / recognizedBytes;
+        const QString color = languageColor(languages.at(i).first);
+        languageBar += QStringLiteral("<span style='background:%1;'>%2</span>")
+                           .arg(color, QString(qMax(1, int(pct / 2)), QChar(0x2588)));
+        languageLegend += QString::fromUtf8(
+                              "<span style='color:%1'>\xE2\x97\x8F</span> %2 %3% "
+                              "<span style='color:#8b949e'>(%4)</span>&nbsp;&nbsp;")
+                              .arg(color,
+                                   languages.at(i).first.toHtmlEscaped(),
+                                   QString::number(pct, 'f', 1),
+                                   formatInsightBytes(languages.at(i).second));
+    }
+    if (m_insightsLanguageBar)
+        m_insightsLanguageBar->setText(
+            languageBar.isEmpty()
+                ? QString()
+                : QStringLiteral("<span style='font-size:8px'>%1</span>").arg(languageBar));
+    if (m_insightsLanguageLegend)
+        m_insightsLanguageLegend->setText(
+            languageLegend.isEmpty()
+                ? "<span style='color:#8b949e'>No recognized code files yet.</span>"
+                : languageLegend);
+
+    struct Contributor {
+        QString name;
+        int commits = 0;
+    };
+    QList<Contributor> contributors;
+    int contributorCommitTotal = 0;
+    if (!dir.isEmpty()) {
+        QByteArray shortlogOut;
+        QString shortlogErr;
+        if (runGitCapture(dir, {"shortlog", "-sn", "--all", "--no-merges"},
+                          &shortlogOut, &shortlogErr)) {
+            const QRegularExpression lineRe(QStringLiteral("^\\s*(\\d+)\\s+(.+)$"));
+            for (const QString &line : QString::fromUtf8(shortlogOut).split('\n')) {
+                const QRegularExpressionMatch match = lineRe.match(line);
+                if (!match.hasMatch())
+                    continue;
+                const int commits = match.captured(1).toInt();
+                const QString name = match.captured(2).trimmed();
+                if (name.isEmpty())
+                    continue;
+                contributors.append({name, commits});
+                contributorCommitTotal += commits;
+            }
+        } else {
+            notes << QStringLiteral("Contributor data unavailable: %1.")
+                         .arg(shortlogErr.isEmpty() ? QStringLiteral("git failed")
+                                                    : shortlogErr.left(160));
+        }
+    }
+    if (m_insightsContributors) {
+        const int shown = qMin(20, int(contributors.size()));
+        for (int i = 0; i < shown; ++i) {
+            const Contributor &contributor = contributors.at(i);
+            const int row = m_insightsContributors->rowCount();
+            m_insightsContributors->insertRow(row);
+            m_insightsContributors->setItem(row, 0, new QTableWidgetItem(contributor.name));
+            auto *countItem = new QTableWidgetItem;
+            countItem->setData(Qt::DisplayRole, contributor.commits);
+            m_insightsContributors->setItem(row, 1, countItem);
+            const double pct =
+                contributorCommitTotal > 0
+                    ? 100.0 * contributor.commits / contributorCommitTotal
+                    : 0.0;
+            m_insightsContributors->setItem(
+                row, 2, new QTableWidgetItem(QStringLiteral("%1%").arg(pct, 0, 'f', 1)));
+        }
+    }
+
+    // Refresh the contributor count now that the shortlog has been parsed.
+    m_insightsSummary->setText(
+        "<b>Repository summary</b>" +
+        insightMetricsTable({
+            insightMetricCell("Commits", commitCountText, ref),
+            insightMetricCell("Contributors", QString::number(contributors.size()),
+                              "all branches"),
+            insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
+            insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
+            insightMetricCell("Issues", QString::number(totalIssues),
+                              QStringLiteral("%1 open / %2 closed")
+                                  .arg(openIssues)
+                                  .arg(closedIssues)),
+            insightMetricCell("Pull requests", QString::number(totalPulls),
+                              QStringLiteral("%1 open / %2 merged / %3 closed")
+                                  .arg(openPulls)
+                                  .arg(mergedPulls)
+                                  .arg(closedPulls)),
+        }));
+
+    if (!dir.isEmpty()) {
+        QByteArray logOut;
+        QString logErr;
+        if (runGitCapture(dir, {"log", "--format=%h%x1f%an%x1f%ar%x1f%s", "-n", "10", ref},
+                          &logOut, &logErr)) {
+            for (const QByteArray &record : logOut.split('\n')) {
+                if (record.trimmed().isEmpty())
+                    continue;
+                const QStringList fields = QString::fromUtf8(record).split('\x1f');
+                if (fields.size() < 4)
+                    continue;
+                const int row = m_insightsRecentCommits->rowCount();
+                m_insightsRecentCommits->insertRow(row);
+                m_insightsRecentCommits->setItem(row, 0, new QTableWidgetItem(fields.at(0)));
+                m_insightsRecentCommits->setItem(row, 1, new QTableWidgetItem(fields.at(1)));
+                m_insightsRecentCommits->setItem(row, 2, new QTableWidgetItem(fields.at(2)));
+                m_insightsRecentCommits->setItem(row, 3, new QTableWidgetItem(fields.at(3)));
+            }
+            if (m_insightsRecentCommits->rowCount() == 0)
+                notes << QStringLiteral("No recent commits on the selected ref.");
+        } else {
+            notes << QStringLiteral("Recent activity unavailable: %1.")
+                         .arg(logErr.isEmpty() ? QStringLiteral("git failed") : logErr.left(160));
+        }
+    }
+
+    if (m_insightsActivity) {
+        QStringList escapedNotes;
+        for (const QString &note : std::as_const(notes))
+            escapedNotes << note.toHtmlEscaped();
+        m_insightsActivity->setText(escapedNotes.join("<br>"));
+    }
+}
+
 void MainWindow::loadRepoInfo()
 {
     m_repoInfo = RepoInfo();
@@ -4700,10 +5653,12 @@ void MainWindow::setRepoBranch(const QString &branch)
 {
     m_repoBranch = branch;
     if (m_branchButton)
-        m_branchButton->setText(QString::fromUtf8("\xF0\x9F\x8C\xBF ") + branch);
+        m_branchButton->setText(branch);
     loadRepoOverview(QString());
     loadAboutSidebar();
     loadCommits();
+    if (m_insightsSummary)
+        loadRepoInsights();
 }
 
 void MainWindow::loadBranchesAndTags()
@@ -4721,8 +5676,7 @@ void MainWindow::loadBranchesAndTags()
         branch = QStringLiteral("HEAD");
     m_repoBranch = branch == "HEAD" ? QString() : branch;
     if (m_branchButton)
-        m_branchButton->setText(QString::fromUtf8("\xF0\x9F\x8C\xBF ") +
-                                (m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch));
+        m_branchButton->setText(m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch);
 
     // Branch menu.
     if (m_branchButton) {
@@ -4760,7 +5714,7 @@ void MainWindow::loadBranchesAndTags()
         if (menu->isEmpty())
             menu->addAction("No tags")->setEnabled(false);
         m_tagsButton->setMenu(menu);
-        m_tagsButton->setText(QString::fromUtf8("\xF0\x9F\x8F\xB7 Tags %1").arg(count));
+        m_tagsButton->setText(QStringLiteral("Tags %1").arg(count));
     }
 }
 
@@ -5022,7 +5976,7 @@ QWidget *MainWindow::makeIssueRow(const Issue &issue,
     QString titleText =
         QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title.toHtmlEscaped());
     if (issue.status == "closed")
-        titleText += "  \xE2\x9C\x94";
+        titleText += "  (closed)";
     auto *title = new QLabel(titleText);
     title->setObjectName("issueRowTitle");
     title->setWordWrap(true);
@@ -5049,7 +6003,7 @@ QWidget *MainWindow::makeIssueRow(const Issue &issue,
         // The milestone (if any) as a subtle outlined pill.
         if (!issue.milestone.isEmpty()) {
             auto *ms = new QLabel(
-                QString::fromUtf8("\xF0\x9F\x8F\x81 %1").arg(issue.milestone));
+                QStringLiteral("Milestone %1").arg(issue.milestone));
             ms->setObjectName("issueMilestonePill");
             ms->setStyleSheet(
                 "QLabel#issueMilestonePill { border:1px solid #8b949e; "
@@ -5265,7 +6219,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     continue;
                 }
             }
-            auto *placeholder = new QLabel(QString::fromUtf8("\xF0\x9F\x96\xBC %1").arg(rel));
+            auto *placeholder = new QLabel(QStringLiteral("Image: %1").arg(rel));
             placeholder->setObjectName("statusLine");
             cardLayout->addWidget(placeholder);
         }
@@ -5480,9 +6434,9 @@ void MainWindow::copyIssueToClipboard()
 
     QApplication::clipboard()->setText(lines.join('\n'));
     if (m_issueCopyButton) {
-        m_issueCopyButton->setText("\xE2\x9C\x94 Copied");
+        m_issueCopyButton->setText("Copied");
         QTimer::singleShot(1500, m_issueCopyButton,
-                           [this] { m_issueCopyButton->setText("\xF0\x9F\x93\x8B Copy"); });
+                           [this] { m_issueCopyButton->setText("Copy"); });
     }
 }
 
@@ -5805,7 +6759,7 @@ void MainWindow::updateVoteUi()
         }
     }
     m_issueVoteButton->setText(
-        QString::fromUtf8("\xE2\x96\xB2 Vote (%1)").arg(votes));
+        QStringLiteral("Vote (%1)").arg(votes));
     m_issueVoteButton->setEnabled(haveIssue && !alreadyVoted &&
                                   availableCredits() > 0);
     m_issueVoteButton->setToolTip(
@@ -5933,10 +6887,11 @@ QWidget *MainWindow::buildChatSection()
     m_channelTitle->setObjectName("channelTitle");
     m_encryptionLabel = new QLabel;
     m_encryptionLabel->setObjectName("encryptionLabel");
-    auto *settingsButton = new QPushButton("\xE2\x9A\x99");
+    auto *settingsButton = new QPushButton(QString());
     settingsButton->setObjectName("iconButton");
     settingsButton->setCursor(Qt::PointingHandCursor);
     settingsButton->setToolTip("Settings & network log");
+    setOcticon(settingsButton, "gear", 18);
     connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(2); });
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
@@ -5956,10 +6911,11 @@ QWidget *MainWindow::buildChatSection()
     m_firewallAllowButton = new QPushButton("Allow through firewall");
     m_firewallAllowButton->setObjectName("primaryButton");
     m_firewallAllowButton->setCursor(Qt::PointingHandCursor);
-    auto *firewallDismiss = new QPushButton("\xE2\x9C\x95");
+    auto *firewallDismiss = new QPushButton(QString());
     firewallDismiss->setObjectName("ghostButton");
     firewallDismiss->setCursor(Qt::PointingHandCursor);
     firewallDismiss->setToolTip("Dismiss");
+    setOcticon(firewallDismiss, "x", 16);
     auto *firewallLayout = new QHBoxLayout(m_firewallBanner);
     firewallLayout->setContentsMargins(16, 10, 12, 10);
     firewallLayout->setSpacing(10);
@@ -6003,10 +6959,11 @@ QWidget *MainWindow::buildChatSection()
 
     auto *composer = new QWidget;
     composer->setObjectName("composerBar");
-    auto *attachButton = new QPushButton("\xF0\x9F\x93\x8E");
+    auto *attachButton = new QPushButton(QString());
     attachButton->setObjectName("iconButton");
     attachButton->setCursor(Qt::PointingHandCursor);
     attachButton->setToolTip("Share a file (any type, including GIFs)");
+    setOcticon(attachButton, "paperclip", 18);
     connect(attachButton, &QPushButton::clicked, this, &MainWindow::attachFile);
     m_messageInput = new QLineEdit;
     m_messageInput->setObjectName("messageInput");
@@ -6250,9 +7207,10 @@ QWidget *MainWindow::buildSettingsSection()
     varButtonRow->addWidget(varDeleteButton);
     varButtonRow->addStretch();
 
-    auto *leaveButton = new QPushButton("\xE2\x86\x90 Leave node");
+    auto *leaveButton = new QPushButton("Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
     auto *footerRow = new QHBoxLayout;
     footerRow->setContentsMargins(0, 0, 0, 0);
@@ -6436,7 +7394,7 @@ void MainWindow::showFirewallBanner(const QString &displayCommand,
 {
     m_firewallPrivilegedCommand = privilegedCommand;
     m_firewallBannerLabel->setText(
-        "\xE2\x9A\xA0 A firewall on this computer may be blocking peers from "
+        "A firewall on this computer may be blocking peers from "
         "connecting. Click to open ForkMesh's ports (asks for your password).");
     m_firewallBannerLabel->setToolTip(displayCommand);
     m_firewallAllowButton->setEnabled(true);
@@ -6469,7 +7427,7 @@ void MainWindow::allowFirewall()
                     // Ports are open immediately; existing sockets start
                     // receiving, so discovery recovers within a few seconds.
                     m_firewallBannerLabel->setText(
-                        "\xE2\x9C\x94 Firewall opened. Peers should connect "
+                        "Firewall opened. Peers should connect "
                         "within a few seconds.");
                     m_firewallAllowButton->hide();
                     logSystem("Firewall opened for ForkMesh's ports.");
@@ -6625,7 +7583,7 @@ void MainWindow::onMessage(const ChatMessage &message)
                                   ? "sent you a message"
                                   : "in " + conversation;
         const QString preview =
-            message.hasFile() ? "\xF0\x9F\x93\x8E " + message.fileName : message.text;
+            message.hasFile() ? "File: " + message.fileName : message.text;
         notifyIfInactive(message.senderName + " " + where, preview);
     }
     scheduleChatSave();
@@ -7285,7 +8243,7 @@ void MainWindow::refreshRepositoryList()
         if (info.inRoster)
             header->setIcon(statusDotIcon(info.online));
         else
-            header->setText(QString::fromUtf8("\xF0\x9F\x96\xA5 ") + headerText);
+            header->setText(QStringLiteral("Desktop node ") + headerText);
         if (!info.platform.isEmpty())
             header->setToolTip("Platform: " + info.platform);
         QFont headerFont = header->font();
@@ -7512,11 +8470,11 @@ void MainWindow::updateRepoWebLink()
     if (repo.publishedAtMs > 0) {
         const QString url = repositoryWebUrl(repo);
         m_repoWebLink->setText(
-            "\xF0\x9F\x9F\xA2 <b>Online</b> \xC2\xB7 browsable at "
+            "<b>Online</b> \xC2\xB7 browsable at "
             "<a style='color:#4ade80' href=\"" + url + "\">" + url + "</a>");
     } else if (repo.publishToNetwork) {
         m_repoWebLink->setText(
-            "\xF0\x9F\x95\x92 Publishing to the network\xE2\x80\xA6");
+            "Publishing to the network\xE2\x80\xA6");
     } else {
         m_repoWebLink->setText("Local only \xC2\xB7 not published.");
     }
@@ -8224,7 +9182,7 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
                 .arg(owner, name, branch, commit.left(8),
                      subject.isEmpty() ? QString()
                                        : QStringLiteral("\n") + subject);
-        postNotification(QString::fromUtf8("\xF0\x9F\x93\xA5 Push received"), body,
+        postNotification(QStringLiteral("Push received"), body,
                          false, QStringLiteral("emblem-synchronizing"));
     }
 
@@ -8315,6 +9273,8 @@ void MainWindow::refreshOpenRepoDetail()
     loadBranchesAndTags();
     loadCommits();
     loadAboutSidebar();
+    if (m_insightsSummary)
+        loadRepoInsights();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
 }
@@ -8440,8 +9400,8 @@ void MainWindow::updateNotificationButton()
         return;
     const int pending = pendingActionCount();
     m_notificationButton->setText(pending > 0
-                                      ? QString::fromUtf8("\xF0\x9F\x94\x94 \xE2\x80\xA2")
-                                      : QString::fromUtf8("\xF0\x9F\x94\x94"));
+                                      ? QStringLiteral("•")
+                                      : QString());
     m_notificationButton->setToolTip(
         pending > 0
             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
@@ -8677,7 +9637,7 @@ void MainWindow::refreshRepoActions()
     const QList<ActionWorkflow> wfs = availableWorkflowsForRepo(repo);
     for (const ActionWorkflow &wf : wfs) {
         auto *item =
-            new QListWidgetItem(QString::fromUtf8("\xE2\x96\xB6 ") + wf.name);
+            new QListWidgetItem(wf.name);
         item->setData(Qt::UserRole, wf.path);
         item->setToolTip(wf.valid ? wf.path +
                                         (wf.triggersOnPush()
@@ -8895,7 +9855,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionRunMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     m_actionApprovalBanner = new QLabel(
-        "\xE2\x9A\xA0 This workflow is new or changed. Review the difference "
+        "This workflow is new or changed. Review the difference "
         "below, then Approve to run it (secrets are only exposed after approval).");
     m_actionApprovalBanner->setWordWrap(true);
     m_actionApprovalBanner->setStyleSheet(

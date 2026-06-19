@@ -1073,6 +1073,13 @@ class Default(WorkerEntrypoint):
         if git_pack and method_name(request) == "POST":
             return await self._git_host(request, git_pack.group(1), git_pack.group(2))
 
+        # Static docs/network directories are canonical with a trailing slash.
+        # Keep this as routing support only; all persistent v0.3.0 APIs stay below.
+        if url.path == "/network":
+            return Response("", status=308, headers={"location": "/network/"})
+        if url.path == "/docs":
+            return Response("", status=308, headers={"location": "/docs/"})
+
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
                 {

@@ -1,24 +1,87 @@
 const list = document.querySelector("#catalog-list");
 const count = document.querySelector("#catalog-count");
+const searchInputs = [
+  document.querySelector("#repo-search"),
+  document.querySelector("#repo-search-inline"),
+].filter(Boolean);
+const statRepos = document.querySelector("#stat-repos");
+const statHosts = document.querySelector("#stat-hosts");
+const statIssues = document.querySelector("#stat-issues");
+const statPulls = document.querySelector("#stat-pulls");
+const viewList = document.querySelector("#view-list");
+const viewGrid = document.querySelector("#view-grid");
+let allRepositories = [];
+let catalogQuery = "";
+let catalogView = localStorage.getItem("forkmesh.catalog.view") || "list";
 
-// Install one-liner: copy the command to the clipboard.
+// Theme: mirrors the redesign behavior without adding a framework.
+function applyTheme(mode) {
+  const chosen =
+    mode ||
+    localStorage.getItem("forkmesh.theme") ||
+    (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light");
+  document.documentElement.classList.toggle("dark", chosen === "dark");
+  localStorage.setItem("forkmesh.theme", chosen);
+}
+applyTheme();
+const themeToggle = document.querySelector("#theme-toggle");
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    applyTheme(document.documentElement.classList.contains("dark") ? "light" : "dark");
+  });
+}
+
+// Slash focuses repository search, like modern forge UIs.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+  const active = document.activeElement;
+  if (active && ["INPUT", "TEXTAREA"].includes(active.tagName)) return;
+  const target = searchInputs[0];
+  if (target) {
+    event.preventDefault();
+    target.focus();
+  }
+});
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  if (button) {
+    const original = button.textContent;
+    button.textContent = "Copied";
+    setTimeout(() => (button.textContent = original), 1500);
+  }
+}
+
+// Install one-liner banner.
+const installBanner = document.querySelector("#install-banner");
 const installCopyBtn = document.querySelector("#install-copy");
+const installDismissBtn = document.querySelector("#install-dismiss");
+if (installBanner && localStorage.getItem("forkmesh.install.dismissed") === "1") {
+  installBanner.hidden = true;
+}
 if (installCopyBtn) {
-  installCopyBtn.addEventListener("click", async () => {
+  installCopyBtn.addEventListener("click", () => {
     const cmd = document.querySelector("#install-cmd");
-    const text = cmd ? cmd.textContent : "";
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (error) {
-      const range = document.createRange();
-      range.selectNodeContents(cmd);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-    const original = installCopyBtn.textContent;
-    installCopyBtn.textContent = "Copied";
-    setTimeout(() => (installCopyBtn.textContent = original), 1500);
+    copyText(cmd ? cmd.textContent : "", installCopyBtn);
+  });
+}
+if (installDismissBtn) {
+  installDismissBtn.addEventListener("click", () => {
+    if (installBanner) installBanner.hidden = true;
+    localStorage.setItem("forkmesh.install.dismissed", "1");
   });
 }
 
@@ -53,7 +116,6 @@ function treeUrl(owner, name, dir) {
 function blobUrl(owner, name, path) {
   return `${repoUrl(owner, name)}/blob/${encPath(path)}`;
 }
-// Used by the catalog card links.
 function repoRoute(owner, name) {
   return repoUrl(owner, name);
 }
@@ -70,72 +132,163 @@ function formatDate(value) {
   }).format(new Date(number));
 }
 
-function render(repositories) {
-  const repos = Array.isArray(repositories) ? repositories : [];
-  count.textContent = `${repos.length} mirrored`;
-  repoIndex.clear();
+function repoCloneUrl(owner, name) {
+  const origin = location.protocol === "file:" ? "https://forkmesh.com" : location.origin;
+  return `${origin}/${owner}/${name}`;
+}
 
+function updateCatalogStats(repos) {
+  if (count) count.textContent = `${repos.length} mirrored`;
+  if (statRepos) statRepos.textContent = String(repos.length);
+  if (statIssues) statIssues.textContent = "Git";
+  if (statPulls) statPulls.textContent = "Patch";
+  if (statHosts) statHosts.textContent = "0";
+}
+
+function setCatalogView(view) {
+  catalogView = view;
+  localStorage.setItem("forkmesh.catalog.view", view);
+  if (list) list.classList.toggle("grid-mode", view === "grid");
+  if (viewList) viewList.classList.toggle("is-active", view !== "grid");
+  if (viewGrid) viewGrid.classList.toggle("is-active", view === "grid");
+}
+
+function filteredRepositories() {
+  const q = catalogQuery.trim().toLowerCase();
+  if (!q) return allRepositories;
+  return allRepositories.filter((repo) => {
+    return [repo.owner, repo.name, repo.description, repo.channel, repo.source].some((value) =>
+      text(value).toLowerCase().includes(q)
+    );
+  });
+}
+
+function routeCatalogClick(event, owner, name) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  event.preventDefault();
+  go(repoUrl(owner, name));
+}
+
+function createCatalogItem(repo) {
+  repoIndex.set(`${repo.owner}/${repo.name}`, repo);
+
+  const item = document.createElement("article");
+  item.className = "catalog-item";
+
+  const header = document.createElement("div");
+  header.className = "catalog-item-header";
+
+  const title = document.createElement("h3");
+  const link = document.createElement("a");
+  link.href = repoRoute(repo.owner, repo.name);
+  link.textContent = `${text(repo.owner, "owner")}/${text(repo.name, "repository")}`;
+  link.addEventListener("click", (event) => routeCatalogClick(event, repo.owner, repo.name));
+  title.append(link);
+  header.append(title);
+
+  const status = document.createElement("span");
+  status.className = "status-pill cached";
+  status.append(document.createElement("span"), document.createTextNode("checking host"));
+  header.append(status);
+
+  const description = document.createElement("p");
+  description.textContent = text(repo.description, "No description published.");
+
+  const meta = document.createElement("div");
+  meta.className = "catalog-meta";
+  const channel = document.createElement("span");
+  channel.textContent = text(repo.channel, "#general");
+  const synced = document.createElement("span");
+  synced.textContent = `Last sync ${formatDate(repo.lastSync)}`;
+  const maintainer = document.createElement("span");
+  maintainer.textContent = `Maintainer ${text(repo.maintainer).slice(0, 12)}…`;
+  const source = document.createElement("span");
+  source.textContent = text(repo.source, "local-node");
+  meta.append(channel, synced, maintainer, source);
+
+  const actions = document.createElement("div");
+  actions.className = "repo-card-actions";
+  const copy = document.createElement("button");
+  copy.className = "copy-button";
+  copy.type = "button";
+  copy.textContent = "Copy clone";
+  copy.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    copyText(`git clone ${repoCloneUrl(repo.owner, repo.name)}`, copy);
+  });
+  const open = document.createElement("a");
+  open.className = "catalog-open";
+  open.href = repoRoute(repo.owner, repo.name);
+  open.textContent = "Browse repository →";
+  open.addEventListener("click", (event) => routeCatalogClick(event, repo.owner, repo.name));
+  actions.append(copy, open);
+
+  item.append(header, description, meta, actions);
+  checkHost(repo.owner, repo.name, status);
+  return item;
+}
+
+function renderCatalogList() {
+  if (!list) return;
+  const repos = filteredRepositories();
+  repoIndex.clear();
   if (!repos.length) {
-    list.innerHTML = `<div class="catalog-empty">No repositories have been published yet.</div>`;
+    list.innerHTML = allRepositories.length
+      ? `<div class="catalog-empty">No repositories match your search.</div>`
+      : `<div class="catalog-empty">No repositories have been published yet.</div>`;
     return;
   }
-
-  list.replaceChildren(
-    ...repos.map((repo) => {
-      repoIndex.set(`${repo.owner}/${repo.name}`, repo);
-
-      // The whole card is a link to the repository's own page.
-      const item = document.createElement("a");
-      item.className = "catalog-item";
-      item.href = repoRoute(repo.owner, repo.name);
-      item.addEventListener("click", (e) => {
-        // Let cmd/ctrl/middle-click open a normal new tab; otherwise route in-app.
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-        e.preventDefault();
-        go(repoUrl(repo.owner, repo.name));
-      });
-
-      const header = document.createElement("div");
-      header.className = "catalog-item-header";
-      const title = document.createElement("h3");
-      title.textContent = `${text(repo.owner, "owner")}/${text(repo.name, "repository")}`;
-      header.append(title);
-      const status = document.createElement("span");
-      status.className = "catalog-status";
-      status.textContent = text(repo.source, "local-node");
-      header.append(status);
-
-      const description = document.createElement("p");
-      description.textContent = text(repo.description, "No description published.");
-
-      const meta = document.createElement("div");
-      meta.className = "catalog-meta";
-      const channel = document.createElement("span");
-      channel.textContent = text(repo.channel, "#general");
-      const synced = document.createElement("span");
-      synced.textContent = `Last sync ${formatDate(repo.lastSync)}`;
-      const maintainer = document.createElement("span");
-      maintainer.textContent = `Maintainer ${text(repo.maintainer).slice(0, 12)}...`;
-      meta.append(channel, synced, maintainer);
-
-      const open = document.createElement("span");
-      open.className = "catalog-open";
-      open.textContent = "Open repository →";
-
-      item.append(header, description, meta, open);
-      return item;
-    })
-  );
-
-  // If a repo page is already open (deep link / reload), fill in its details
-  // now that the catalog has loaded.
+  list.replaceChildren(...repos.map(createCatalogItem));
   if (currentRepo) {
-    // Re-fill from the catalog (description etc.) while preserving the open
-    // tree/blob path from the URL.
     const r = parseRoute();
     openRepoPage(r.owner, r.name, r.mode, r.filePath);
   }
 }
+
+async function checkHost(owner, name, statusEl) {
+  try {
+    const response = await fetch(`/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/host`, {
+      headers: { accept: "application/json" },
+    });
+    const data = await response.json();
+    const hosts = Number(data.hosts) || 0;
+    statusEl.className = hosts > 0 ? "status-pill online" : "status-pill offline";
+    statusEl.replaceChildren(
+      document.createElement("span"),
+      document.createTextNode(hosts > 0 ? `${hosts} live host${hosts === 1 ? "" : "s"}` : "host offline")
+    );
+    updateLiveHostStat();
+  } catch (error) {
+    statusEl.className = "status-pill offline";
+    statusEl.replaceChildren(document.createElement("span"), document.createTextNode("host unknown"));
+  }
+}
+
+function updateLiveHostStat() {
+  if (!statHosts) return;
+  const live = document.querySelectorAll(".catalog-item .status-pill.online").length;
+  statHosts.textContent = String(live);
+}
+
+function render(repositories) {
+  allRepositories = Array.isArray(repositories) ? repositories : [];
+  updateCatalogStats(allRepositories);
+  renderCatalogList();
+}
+
+for (const input of searchInputs) {
+  input.addEventListener("input", (event) => {
+    catalogQuery = event.target.value;
+    for (const other of searchInputs) {
+      if (other !== event.target) other.value = catalogQuery;
+    }
+    renderCatalogList();
+  });
+}
+if (viewList) viewList.addEventListener("click", () => setCatalogView("list"));
+if (viewGrid) viewGrid.addEventListener("click", () => setCatalogView("grid"));
+setCatalogView(catalogView);
 
 // ---- Live file browser (tunnels to a connected client; caches in the browser)
 // The website pulls the tree and file contents live from whichever desktop
@@ -430,6 +583,20 @@ const issuesMetaEl = document.querySelector("#issues-meta");
 let issuesLoadedFor = null;
 let issuesToken = 0;
 
+const tabPullsEl = document.querySelector("#tab-pulls");
+const tabPullsCountEl = document.querySelector("#tab-pulls-count");
+const pullsSectionEl = document.querySelector("#pulls");
+const pullListEl = document.querySelector("#pull-list");
+const pullsMetaEl = document.querySelector("#pulls-meta");
+const tabDiscussionsEl = document.querySelector("#tab-discussions");
+const discussionsSectionEl = document.querySelector("#discussions");
+const tabNetworkEl = document.querySelector("#tab-network");
+const repoNetworkSectionEl = document.querySelector("#repo-network");
+const tabDocsEl = document.querySelector("#tab-docs");
+const repoDocsSectionEl = document.querySelector("#repo-docs");
+let pullsLoadedFor = null;
+let pullsToken = 0;
+
 // Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
 function parseFrontmatter(content) {
   const out = {};
@@ -541,6 +708,93 @@ async function loadIssues(owner, name) {
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(issues.length);
   issueListEl.replaceChildren(
     ...issues.map((i) => issueRow(i.number, i.title, i.status))
+  );
+}
+
+
+function pullRow(number, title, status, base, head, signed) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "file-row issue-row";
+  row.addEventListener("click", () => {
+    if (fileState) go(blobUrl(fileState.owner, fileState.name, `pulls/${number}/pull.md`));
+  });
+  const dot = document.createElement("span");
+  dot.className = `issue-dot ${status === "merged" ? "is-closed" : "is-open"}`;
+  const main = document.createElement("span");
+  main.className = "file-name";
+  main.textContent = `#${number} ${title}`;
+  const state = document.createElement("span");
+  state.className = "issue-state";
+  state.textContent = `${status || "open"}${signed ? " · signed" : ""}${base || head ? ` · ${head || "head"} → ${base || "base"}` : ""}`;
+  row.append(dot, main, state);
+  return row;
+}
+
+async function loadPulls(owner, name) {
+  if (!pullListEl) return;
+  const token = ++pullsToken;
+  pullListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
+  if (pullsMetaEl) pullsMetaEl.textContent = "";
+
+  const { data, source, error } = await pullPath("tree", "pulls");
+  if (token !== pullsToken) return;
+  if (!data || !Array.isArray(data.entries)) {
+    pullListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+    note.textContent = hostDown
+      ? unavailableMessage(error)
+      : "No pull requests have been published for this repository yet.";
+    pullListEl.append(note);
+    if (tabPullsCountEl && !hostDown) tabPullsCountEl.textContent = "0";
+    return;
+  }
+
+  if (pullsMetaEl) {
+    pullsMetaEl.className = "file-meta";
+    if (source === "live") {
+      pullsMetaEl.textContent = "● live from host";
+      pullsMetaEl.classList.add("source-live");
+    } else if (source === "cached") {
+      pullsMetaEl.textContent = "● cached · host offline";
+      pullsMetaEl.classList.add("source-cached");
+    }
+  }
+
+  const numbers = data.entries
+    .filter((e) => e.type === "tree" && /^\d+$/.test(e.name))
+    .map((e) => parseInt(e.name, 10))
+    .sort((a, b) => b - a);
+  if (!numbers.length) {
+    pullListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent = "No pull requests have been published for this repository yet.";
+    pullListEl.append(note);
+    if (tabPullsCountEl) tabPullsCountEl.textContent = "0";
+    return;
+  }
+
+  const pulls = await Promise.all(
+    numbers.map(async (n) => {
+      const { data: blob } = await pullPath("blob", `pulls/${n}/pull.md`);
+      const fm = parseFrontmatter(blob && blob.content);
+      return {
+        number: n,
+        title: fm.title || `Pull request #${n}`,
+        status: fm.status || "open",
+        base: fm.base || "",
+        head: fm.head || "",
+        signed: !!fm.sig,
+      };
+    })
+  );
+  if (token !== pullsToken) return;
+  if (tabPullsCountEl) tabPullsCountEl.textContent = String(pulls.length);
+  pullListEl.replaceChildren(
+    ...pulls.map((p) => pullRow(p.number, p.title, p.status, p.base, p.head, p.signed))
   );
 }
 
@@ -753,30 +1007,53 @@ if (commitBackEl)
   });
 
 function showRepoTab(tab) {
-  const isCommits = tab === "commits";
-  const isIssues = tab === "issues";
-  const isCode = !isCommits && !isIssues;
-  if (codeSectionEl) codeSectionEl.hidden = !isCode;
-  if (commitsSectionEl) commitsSectionEl.hidden = !isCommits;
-  if (issuesSectionEl) issuesSectionEl.hidden = !isIssues;
-  if (tabCodeEl) tabCodeEl.classList.toggle("is-active", isCode);
-  if (tabCommitsEl) tabCommitsEl.classList.toggle("is-active", isCommits);
-  if (tabIssuesEl) tabIssuesEl.classList.toggle("is-active", isIssues);
+  const sections = {
+    code: codeSectionEl,
+    commits: commitsSectionEl,
+    issues: issuesSectionEl,
+    pulls: pullsSectionEl,
+    discussions: discussionsSectionEl,
+    network: repoNetworkSectionEl,
+    docs: repoDocsSectionEl,
+  };
+  for (const [name, section] of Object.entries(sections)) {
+    if (section) section.hidden = name !== tab;
+  }
+  const tabs = {
+    code: tabCodeEl,
+    commits: tabCommitsEl,
+    issues: tabIssuesEl,
+    pulls: tabPullsEl,
+    discussions: tabDiscussionsEl,
+    network: tabNetworkEl,
+    docs: tabDocsEl,
+  };
+  for (const [name, button] of Object.entries(tabs)) {
+    if (button) button.classList.toggle("is-active", name === tab);
+  }
   if (!fileState) return;
   const repoKey = `${fileState.owner}/${fileState.name}`;
-  if (isIssues && issuesLoadedFor !== repoKey) {
+  if (tab === "issues" && issuesLoadedFor !== repoKey) {
     issuesLoadedFor = repoKey;
     loadIssues(fileState.owner, fileState.name);
   }
-  if (isCommits && commitsLoadedFor !== repoKey) {
+  if (tab === "commits" && commitsLoadedFor !== repoKey) {
     commitsLoadedFor = repoKey;
     loadCommits(fileState.owner, fileState.name);
+  }
+  if (tab === "pulls" && pullsLoadedFor !== repoKey) {
+    pullsLoadedFor = repoKey;
+    loadPulls(fileState.owner, fileState.name);
   }
 }
 
 if (tabCodeEl) tabCodeEl.addEventListener("click", () => showRepoTab("code"));
 if (tabCommitsEl) tabCommitsEl.addEventListener("click", () => showRepoTab("commits"));
 if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues"));
+if (tabPullsEl) tabPullsEl.addEventListener("click", () => showRepoTab("pulls"));
+if (tabDiscussionsEl) tabDiscussionsEl.addEventListener("click", () => showRepoTab("discussions"));
+if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("network"));
+if (tabDocsEl) tabDocsEl.addEventListener("click", () => showRepoTab("docs"));
 
 // ---- Routing: home (repo list) vs. a single repository page ----------------
 
@@ -846,6 +1123,8 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   const descEl = document.querySelector("#repo-page-desc");
   const cloneInput = document.querySelector("#repo-clone-input");
   const cloneNote = document.querySelector("#repo-clone-note");
+  const cloneCopy = document.querySelector("#repo-clone-copy");
+  const repoStatus = document.querySelector("#repo-status");
   if (titleEl) {
     titleEl.textContent = "";
     const ownerSpan = document.createElement("span");
@@ -858,17 +1137,27 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   if (descEl) descEl.textContent = repo ? text(repo.description, "") : "";
   if (cloneInput && cloneNote) {
     // Clone straight from the mainnode; it streams live from the hosting client.
-    cloneInput.value = `${location.origin}/${owner}/${name}`;
+    cloneInput.value = repoCloneUrl(owner, name);
     cloneInput.placeholder = "";
     cloneNote.textContent =
       "git clone streams live from the client hosting this repo (it must be online).";
   }
+  if (cloneCopy && cloneInput) {
+    cloneCopy.onclick = () => copyText(`git clone ${cloneInput.value}`, cloneCopy);
+  }
+  if (repoStatus) {
+    repoStatus.className = "status-pill cached";
+    repoStatus.replaceChildren(document.createElement("span"), document.createTextNode("checking host"));
+    checkHost(owner, name, repoStatus);
+  }
   resetDownloadProgress();
-  // Reset to the Code tab; issues/commits lazy-load when their tab is opened.
+  // Reset to the Code tab; issues/commits/pulls lazy-load when their tab is opened.
   issuesLoadedFor = null;
   commitsLoadedFor = null;
+  pullsLoadedFor = null;
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
+  if (tabPullsCountEl) tabPullsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
   renderRepoPath(owner, name, mode, filePath);
   loadLatestCommit(owner, name);
@@ -918,6 +1207,12 @@ document.querySelectorAll('header nav a[href^="#"]').forEach((a) =>
   a.addEventListener("click", (e) => {
     e.preventDefault();
     goHome(a.getAttribute("href"));
+  })
+);
+document.querySelectorAll('header nav a[href^="/#"], .install-link[href^="/#"]').forEach((a) =>
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    goHome(a.getAttribute("href").slice(1));
   })
 );
 
