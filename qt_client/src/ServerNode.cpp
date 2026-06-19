@@ -557,6 +557,28 @@ void ServerNode::setAvatar(const QByteArray &pngData)
     sendEncrypted(message, false);
 }
 
+void ServerNode::setUserName(const QString &name)
+{
+    const QString trimmed = name.trimmed().left(kMaxDisplayNameChars);
+    if (trimmed.isEmpty() || trimmed == m_userName)
+        return;
+    m_userName = trimmed;
+    updateRosterAndStatus();
+    if (m_wsReady)
+        sendHello();
+}
+
+void ServerNode::forgetMember(const QString &peerId)
+{
+    if (peerId.isEmpty() || peerId == m_nodeId)
+        return;
+    if (m_peers.remove(peerId) <= 0)
+        return;
+    persistKnownPeers();
+    updateRosterAndStatus();
+    emit systemMessage("Removed stale member from the remembered roster.");
+}
+
 void ServerNode::sendTyping(const QString &conversation, bool active)
 {
     QJsonObject message = makeMessage("typing");
