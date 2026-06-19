@@ -50,8 +50,13 @@
 
   const clientsCount = document.querySelector("#clients-count");
   const clientsDot = document.querySelector("#clients-dot");
-  const CLIENTS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/clients";
-  let clientsRetry = 0;
+  // Live counts come from a single cached aggregate endpoint, polled on an
+  // interval. This replaces a per-visitor WebSocket (which pinned a Durable
+  // Object in memory for the life of every open tab) and an 80-way per-visit
+  // fan-out to each repo's host — both of which dominated Durable Object cost.
+  const STATS_PATH = "/api/network/stats";
+  const STATS_INTERVAL_MS = 30000;
+  let statsTimer = null;
 
   function renderClients(online) {
     const label = online === 1 ? "1 client online" : `${online} clients online`;
@@ -60,78 +65,46 @@
     if (clientsDot) clientsDot.classList.toggle("online", online > 0);
   }
 
-  function scheduleReconnect() {
-    if (!clientsCount) return;
-    clientsCount.textContent = "Reconnecting…";
-    if (clientsDot) clientsDot.classList.remove("online");
-    const delay = Math.min(30000, 1000 * 2 ** clientsRetry);
-    clientsRetry += 1;
-    setTimeout(watchClients, delay);
-  }
-
-  function watchClients() {
-    if (!clientsCount) return;
-    if (location.protocol === "file:") {
-      clientsCount.textContent = "Preview only";
-      setText("#network-clients", "—");
-      return;
-    }
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    let socket;
-    try {
-      socket = new WebSocket(`${scheme}//${location.host}${CLIENTS_PATH}`);
-    } catch (error) {
-      scheduleReconnect();
-      return;
-    }
-    socket.addEventListener("message", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        renderClients(Number(data.clients) || 0);
-        clientsRetry = 0;
-      } catch (error) {
-        /* ignore malformed frames */
-      }
-    });
-    socket.addEventListener("close", scheduleReconnect);
-    socket.addEventListener("error", () => socket.close());
-  }
-
-  async function loadNetworkStats() {
+  async function pollStats() {
     const reposEl = document.querySelector("#network-repos");
     const hostsEl = document.querySelector("#network-hosts");
-    if (!reposEl && !hostsEl) return;
     if (location.protocol === "file:") {
+      if (clientsCount) clientsCount.textContent = "Preview only";
+      setText("#network-clients", "—");
       if (reposEl) reposEl.textContent = "—";
       if (hostsEl) hostsEl.textContent = "—";
       return;
     }
     try {
-      const response = await fetch("/api/repositories", { headers: { accept: "application/json" } });
+      const response = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      const repos = Array.isArray(data.repositories) ? data.repositories : [];
-      if (reposEl) reposEl.textContent = String(repos.length);
-      if (!hostsEl || !repos.length) {
-        if (hostsEl) hostsEl.textContent = "0";
-        return;
-      }
-      const checks = await Promise.allSettled(repos.slice(0, 80).map(async (repo) => {
-        if (!repo || !repo.owner || !repo.name) return 0;
-        const url = `/api/repo/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/host`;
-        const hostResponse = await fetch(url, { headers: { accept: "application/json" } });
-        if (!hostResponse.ok) return 0;
-        const hostData = await hostResponse.json();
-        return Number(hostData.hosts) || 0;
-      }));
-      const live = checks.reduce((sum, result) => sum + (result.status === "fulfilled" && result.value > 0 ? 1 : 0), 0);
-      hostsEl.textContent = String(live);
+      renderClients(Number(data.clients) || 0);
+      if (reposEl) reposEl.textContent = String(Number(data.repos) || 0);
+      if (hostsEl) hostsEl.textContent = String(Number(data.hosts) || 0);
     } catch (error) {
-      if (reposEl) reposEl.textContent = "0";
-      if (hostsEl) hostsEl.textContent = "0";
+      if (clientsCount) clientsCount.textContent = "Reconnecting…";
+      if (clientsDot) clientsDot.classList.remove("online");
     }
   }
 
-  watchClients();
-  loadNetworkStats();
+  function startStats() {
+    if (statsTimer !== null) return;
+    pollStats();
+    statsTimer = setInterval(pollStats, STATS_INTERVAL_MS);
+  }
+
+  function stopStats() {
+    if (statsTimer === null) return;
+    clearInterval(statsTimer);
+    statsTimer = null;
+  }
+
+  // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopStats();
+    else startStats();
+  });
+
+  startStats();
 })();

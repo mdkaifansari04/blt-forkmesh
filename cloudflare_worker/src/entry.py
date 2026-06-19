@@ -11,6 +11,7 @@ from js import Object
 from js import Response as JsResponse
 from js import Uint8Array
 from js import WebSocketPair
+from js import caches as js_caches
 from js import crypto as js_crypto
 from pyodide.ffi import create_proxy
 from pyodide.ffi import to_js as _to_js
@@ -50,6 +51,16 @@ GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
 ROOM_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 TUNNEL_TIMEOUT_MS = 20000
 GIT_TIMEOUT_MS = 60000
+# Aggregate homepage/network stats. Cached at the edge so a burst of visitors
+# costs one computation per colo per TTL instead of a Durable Object fan-out per
+# visit. The flagship room whose live client count the homepage shows.
+NETWORK_STATS_TTL = 20  # seconds the /api/network/stats response is cached
+FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
+# A host counts as "online" if it has been active within this window. The window
+# self-heals presence rows orphaned by a host that vanished without a clean close;
+# active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
+HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
+HOST_PRESENCE_REFRESH_MS = 60 * 1000
 
 
 NODE_NAME_RE = re.compile(r"^[a-z][a-z0-9]*$")
@@ -184,12 +195,104 @@ def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
 
 
-def json_response(data, status=200):
-    return Response(
-        json.dumps(data, indent=2),
-        status=status,
-        headers={"content-type": "application/json; charset=utf-8"},
+def json_response(data, status=200, cache_seconds=None):
+    headers = {"content-type": "application/json; charset=utf-8"}
+    if cache_seconds is not None:
+        # Lets both the Cloudflare edge cache (via the Cache API) and the browser
+        # reuse this response for cache_seconds, collapsing repeated polls.
+        headers["cache-control"] = "public, max-age=%d" % cache_seconds
+    return Response(json.dumps(data, indent=2), status=status, headers=headers)
+
+
+# --- Edge cache (Cache API) helpers -----------------------------------------
+# Dynamic Worker responses are not edge-cached automatically; we cache the few
+# read-heavy aggregate endpoints explicitly so a burst of visitors collapses to
+# one origin computation per colo per TTL. Keys are synthetic absolute URLs.
+
+async def edge_cache_match(cache_key):
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    return Response(hit) if hit is not None else None
+
+
+async def edge_cache_put(cache_key, response):
+    # cache.put consumes the body it is handed, so store a clone and return the
+    # original to the caller. Best-effort: a cache failure must not fail the read.
+    try:
+        await js_caches.default.put(cache_key, response.js_object.clone())
+    except Exception:
+        pass
+
+
+async def edge_cache_delete(cache_key):
+    try:
+        await js_caches.default.delete(cache_key)
+    except Exception:
+        pass
+
+
+CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
+NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
+CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
+
+
+async def touch_host_presence(env, repo_bi):
+    # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
+    # connects and, throttled, while it serves traffic.
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "INSERT INTO host_presence (repo_bi, ts) VALUES (?, ?) "
+        "ON CONFLICT(repo_bi) DO UPDATE SET ts=excluded.ts",
+        repo_bi, int(Date.now()),
     )
+
+
+async def _flagship_client_count(env):
+    # One internal request to the flagship room's count endpoint (not a WebSocket).
+    try:
+        room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(FLAGSHIP_ROOM_KEY)
+        room = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        resp = await room.fetch(
+            "https://forkmesh.internal/api/repo/mainnode/forkmesh/rooms/general/clients"
+        )
+        data = await resp.json()
+        return int(getattr(data, "clients", 0) or 0)
+    except Exception:
+        return 0
+
+
+async def network_stats(env):
+    # Aggregate homepage stats: repo count (D1), live host count (presence table),
+    # and flagship-room client count (one internal request). Cached at the edge.
+    cached = await edge_cache_match(NETWORK_STATS_CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    await ensure_schema(env)
+    repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
+    repos = int((repo_row or {}).get("n", 0) or 0)
+
+    cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+    try:
+        await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    host_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff
+    )
+    hosts = int((host_row or {}).get("n", 0) or 0)
+
+    clients = await _flagship_client_count(env)
+
+    resp = json_response(
+        {"ok": True, "repos": repos, "hosts": hosts, "clients": clients},
+        cache_seconds=NETWORK_STATS_TTL,
+    )
+    await edge_cache_put(NETWORK_STATS_CACHE_KEY, resp)
+    return resp
 
 
 def method_name(request):
@@ -302,6 +405,12 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
         status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
+    # Live host presence: lets /api/network/stats report "hosts online" without
+    # probing every repo's tunnel Durable Object on every page view. repo_bi is a
+    # blind index (no plaintext repo name), ts is refreshed while a host is active
+    # and a staleness window self-heals rows left behind by a missed disconnect.
+    "CREATE TABLE IF NOT EXISTS host_presence (repo_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_host_presence_ts ON host_presence(ts)",
 ]
 
 
@@ -475,16 +584,31 @@ async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
     if method == "GET":
-        rows = await d1_all(env, "SELECT data FROM repositories")
+        cached = await edge_cache_match(CATALOG_CACHE_KEY)
+        if cached is not None:
+            return cached
+        rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        # Annotate each repo with whether a host is currently live, computed once
+        # here from the presence table (keyed by the same blind index as the repo)
+        # instead of the catalog page probing every repo's tunnel DO per visit.
+        cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+        live_rows = await d1_all(
+            env, "SELECT repo_bi FROM host_presence WHERE ts >= ?", cutoff
+        )
+        live = {r["repo_bi"] for r in live_rows}
         repos = []
         for r in rows:
             rec = await decrypt_row(env, r["data"])
             if rec:
+                rec["liveHost"] = r["key_bi"] in live
                 repos.append(rec)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
-        return json_response(
-            {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
+        resp = json_response(
+            {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]},
+            cache_seconds=CATALOG_TTL,
         )
+        await edge_cache_put(CATALOG_CACHE_KEY, resp)
+        return resp
 
     if method == "POST":
         try:
@@ -536,6 +660,7 @@ async def catalog_handler(env, request):
             decoded.sort(key=lambda x: x[1], reverse=True)
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
+        await edge_cache_delete(CATALOG_CACHE_KEY)
         return json_response({"ok": True, "repository": record}, status=201)
 
     if method == "DELETE":
@@ -567,6 +692,7 @@ async def catalog_handler(env, request):
         if not verify_pub or not await ed25519_verify(verify_pub, sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
         await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
+        await edge_cache_delete(CATALOG_CACHE_KEY)
         return json_response({"ok": True, "deleted": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -1098,6 +1224,12 @@ class Default(WorkerEntrypoint):
                 }
             )
 
+        # Cached aggregate stats for the homepage/network page. Served before the
+        # per-repo handlers so a burst of visitors collapses to one computation
+        # per colo per TTL instead of a Durable Object fan-out per page view.
+        if url.path in ("/api/network/stats", "/api/network/stats/"):
+            return await network_stats(self.env)
+
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):
             return await catalog_handler(self.env, request)
@@ -1303,6 +1435,41 @@ class ForkMeshHost(DurableObject):
             self.counter = 0
         if not hasattr(self, "git_buffers"):
             self.git_buffers = {}  # reqId -> bytearray for chunked git output
+        if not hasattr(self, "_repo_bi"):
+            self._repo_bi = None   # blind index of this DO's owner/repo
+        if not hasattr(self, "_last_presence"):
+            self._last_presence = 0  # ms of last host_presence write (throttle)
+
+    async def _repo_blind_index(self, path):
+        # This DO is per-repo; derive its blind index from the request path once
+        # and cache it. Works for both /api/repo/{o}/{r}/* and git /{o}/{r}/* URLs.
+        if self._repo_bi:
+            return self._repo_bi
+        match = (REPO_HOST_RE.match(path) or GIT_INFO_RE.match(path)
+                 or GIT_PACK_RE.match(path))
+        if not match:
+            return None
+        owner = safe_segment(match.group(1))
+        repo = safe_segment(match.group(2))
+        if not owner or not repo:
+            return None
+        self._repo_bi = await blind_index(self.env, owner + "/" + repo)
+        return self._repo_bi
+
+    async def _mark_present(self, path=None):
+        # Refresh this repo's host-presence row, throttled so hot browse traffic
+        # doesn't write to D1 on every request. Best-effort; never fails the call.
+        now = int(Date.now())
+        if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
+            return
+        repo_bi = await self._repo_blind_index(path) if path else self._repo_bi
+        if not repo_bi:
+            return
+        self._last_presence = now
+        try:
+            await touch_host_presence(self.env, repo_bi)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         self._ensure()
@@ -1313,8 +1480,10 @@ class ForkMeshHost(DurableObject):
 
         # Git smart-HTTP clone endpoints proxied to the host's git upload-pack.
         if path.endswith("/info/refs"):
+            await self._mark_present(path)
             return await self._git(request, "git-info-refs")
         if path.endswith("/git-upload-pack"):
+            await self._mark_present(path)
             body = b""
             try:
                 body = bytes(await request.bytes())
@@ -1328,12 +1497,14 @@ class ForkMeshHost(DurableObject):
                 return json_response({"ok": True, "hosts": len(self.hosts)})
             client, server = WebSocketPair.new().object_values()
             self._accept_host(server)
+            await self._mark_present(path)
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
             )
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         if action in ("tree", "blob", "commits", "commit"):
+            await self._mark_present(path)
             return await self._tunnel(action, rel_path)
         return json_response({"error": "not_found"}, status=404)
 

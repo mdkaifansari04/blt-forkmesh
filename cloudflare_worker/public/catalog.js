@@ -187,8 +187,9 @@ function createCatalogItem(repo) {
   header.append(title);
 
   const status = document.createElement("span");
-  status.className = "status-pill cached";
-  status.append(document.createElement("span"), document.createTextNode("checking host"));
+  // Live-host state ships with the catalog payload (repo.liveHost), so cards no
+  // longer probe each repo's tunnel Durable Object on every page view.
+  renderHostPill(status, repo.liveHost ? 1 : 0);
   header.append(status);
 
   const description = document.createElement("p");
@@ -225,8 +226,18 @@ function createCatalogItem(repo) {
   actions.append(copy, open);
 
   item.append(header, description, meta, actions);
-  checkHost(repo.owner, repo.name, status);
   return item;
+}
+
+function renderHostPill(statusEl, hosts) {
+  const online = Number(hosts) || 0;
+  statusEl.className = online > 0 ? "status-pill online" : "status-pill offline";
+  statusEl.replaceChildren(
+    document.createElement("span"),
+    document.createTextNode(
+      online > 0 ? `${online} live host${online === 1 ? "" : "s"}` : "host offline"
+    )
+  );
 }
 
 function renderCatalogList() {
@@ -240,25 +251,22 @@ function renderCatalogList() {
     return;
   }
   list.replaceChildren(...repos.map(createCatalogItem));
+  updateLiveHostStat();
   if (currentRepo) {
     const r = parseRoute();
     openRepoPage(r.owner, r.name, r.mode, r.filePath);
   }
 }
 
+// A single live probe for the repo the user actually opened (the catalog list
+// itself renders from the cached liveHost flag, not per-card probes).
 async function checkHost(owner, name, statusEl) {
   try {
     const response = await fetch(`/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/host`, {
       headers: { accept: "application/json" },
     });
     const data = await response.json();
-    const hosts = Number(data.hosts) || 0;
-    statusEl.className = hosts > 0 ? "status-pill online" : "status-pill offline";
-    statusEl.replaceChildren(
-      document.createElement("span"),
-      document.createTextNode(hosts > 0 ? `${hosts} live host${hosts === 1 ? "" : "s"}` : "host offline")
-    );
-    updateLiveHostStat();
+    renderHostPill(statusEl, Number(data.hosts) || 0);
   } catch (error) {
     statusEl.className = "status-pill offline";
     statusEl.replaceChildren(document.createElement("span"), document.createTextNode("host unknown"));
@@ -1326,10 +1334,13 @@ async function loadCatalog() {
 
 const clientsCount = document.querySelector("#clients-count");
 const clientsDot = document.querySelector("#clients-dot");
-// The mainnode general room the desktop client joins by default. Connecting as
-// a read-only observer, the Durable Object pushes the live client count over a
-// WebSocket on every join/leave — no polling.
-const CLIENTS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/clients";
+// The live client count comes from a single cached aggregate endpoint, polled on
+// an interval and paused while the tab is hidden. This replaces a per-visitor
+// observer WebSocket that kept the mainnode room's Durable Object resident in
+// memory for the life of every open tab — the dominant Durable Object cost.
+const STATS_PATH = "/api/network/stats";
+const STATS_INTERVAL_MS = 30000;
+let statsTimer = null;
 
 function renderClients(online) {
   if (!clientsCount) return;
@@ -1338,41 +1349,35 @@ function renderClients(online) {
   if (clientsDot) clientsDot.classList.toggle("online", online > 0);
 }
 
-let clientsRetry = 0;
-
-function watchClients() {
+async function pollClients() {
   if (!clientsCount) return;
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  let socket;
   try {
-    socket = new WebSocket(`${scheme}//${location.host}${CLIENTS_PATH}`);
+    const response = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderClients(Number(data.clients) || 0);
   } catch (error) {
-    scheduleReconnect();
-    return;
+    clientsCount.textContent = "Reconnecting…";
+    if (clientsDot) clientsDot.classList.remove("online");
   }
-
-  socket.addEventListener("message", (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      renderClients(Number(data.clients) || 0);
-      clientsRetry = 0;
-    } catch (error) {
-      /* ignore malformed frames */
-    }
-  });
-  socket.addEventListener("close", scheduleReconnect);
-  socket.addEventListener("error", () => socket.close());
 }
 
-function scheduleReconnect() {
-  if (!clientsCount) return;
-  clientsCount.textContent = "Reconnecting…";
-  if (clientsDot) clientsDot.classList.remove("online");
-  // Back off the reconnect so a downed relay doesn't hammer the network.
-  const delay = Math.min(30000, 1000 * 2 ** clientsRetry);
-  clientsRetry += 1;
-  setTimeout(watchClients, delay);
+function startClients() {
+  if (statsTimer !== null || !clientsCount) return;
+  pollClients();
+  statsTimer = setInterval(pollClients, STATS_INTERVAL_MS);
 }
+
+function stopClients() {
+  if (statsTimer === null) return;
+  clearInterval(statsTimer);
+  statsTimer = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopClients();
+  else startClients();
+});
 
 loadCatalog();
-watchClients();
+startClients();
