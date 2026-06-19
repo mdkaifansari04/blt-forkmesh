@@ -2176,6 +2176,27 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors = new QLabel;
     m_profileMirrors->setObjectName("statusLine");
     m_profileMirrors->setWordWrap(true);
+    m_profileNote = new QLabel;
+    m_profileNote->setObjectName("statusLine");
+    m_profileNote->setWordWrap(true);
+
+    // Node ID = the node's Ed25519 public key. Selectable so it can be copied.
+    auto *nodeKeyLabel = new QLabel("NODE ID (PUBLIC KEY)");
+    nodeKeyLabel->setObjectName("sectionLabel");
+    m_profileNodeKey = new QLabel;
+    m_profileNodeKey->setObjectName("statusLine");
+    m_profileNodeKey->setWordWrap(true);
+    m_profileNodeKey->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_profileNodeKey->setStyleSheet("font-family:monospace;");
+    auto *copyKey = new QPushButton("Copy node ID");
+    copyKey->setObjectName("ghostButton");
+    copyKey->setCursor(Qt::PointingHandCursor);
+    connect(copyKey, &QPushButton::clicked, this, [this] {
+        if (!m_profileNodeId.isEmpty()) {
+            QApplication::clipboard()->setText(m_profileNodeId);
+            logSystem("Copied node ID to clipboard.");
+        }
+    });
 
     m_profileMessageButton = new QPushButton("\xF0\x9F\x92\xAC Message");
     m_profileMessageButton->setObjectName("ghostButton");
@@ -2254,8 +2275,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
     layout->addWidget(m_profileName, 0, Qt::AlignHCenter);
     layout->addWidget(m_profileStatus, 0, Qt::AlignHCenter);
+    layout->addWidget(m_profileNote, 0, Qt::AlignHCenter);
     layout->addWidget(m_profilePlatform);
     layout->addWidget(m_profileMirrors);
+    layout->addWidget(nodeKeyLabel);
+    layout->addWidget(m_profileNodeKey);
+    layout->addWidget(copyKey, 0, Qt::AlignLeft);
     layout->addWidget(m_profileMessageButton, 0, Qt::AlignLeft);
     layout->addWidget(m_profileBchSection);
     layout->addStretch();
@@ -2331,6 +2356,19 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
                 .arg(info.mirrors.join(", ").toHtmlEscaped()));
     }
 
+    // Discovery note (e.g. "(discovered)"), shown only when present.
+    m_profileNote->setText(info.note.toHtmlEscaped());
+    m_profileNote->setVisible(!info.note.trimmed().isEmpty());
+
+    // Node ID = Ed25519 public key. For yourself, fall back to our own key when
+    // the roster entry has no id yet.
+    QString nodeKey = info.id;
+    if (info.self && nodeKey.isEmpty())
+        nodeKey = m_profileIdentity.publicKey();
+    m_profileNodeId = nodeKey; // keep the copy button in sync with what's shown
+    m_profileNodeKey->setText(nodeKey.isEmpty() ? QStringLiteral("unknown")
+                                                : nodeKey);
+
     m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
 
     // Wallet verification + eligibility badge are shown only on your own profile.
@@ -2358,7 +2396,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (!qr.isNull())
             m_profileQr->setPixmap(QPixmap::fromImage(qr));
         m_profileQr->setVisible(!qr.isNull());
-        m_profileBalance->setText(QString::fromUtf8("\xE2\x80\x94"));
+        m_profileBalance->setText(info.bchBalance.trimmed().isEmpty()
+                                      ? QString::fromUtf8("\xE2\x80\x94")
+                                      : info.bchBalance.trimmed());
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Check balance");
     }
@@ -5850,7 +5890,9 @@ QWidget *MainWindow::buildChatSection()
     m_memberList->setSelectionMode(QAbstractItemView::NoSelection);
     m_memberList->setFocusPolicy(Qt::NoFocus);
     m_memberList->setCursor(Qt::PointingHandCursor);
-    m_memberList->setToolTip("Click a member to start a direct chat");
+    m_memberList->setToolTip("Click a member to start a direct chat \xC2\xB7 "
+                            "right-click to remove");
+    m_memberList->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto *badgeRow = new QHBoxLayout;
     badgeRow->setContentsMargins(0, 0, 0, 0);
@@ -6001,6 +6043,8 @@ QWidget *MainWindow::buildChatSection()
                 showNodeProfile(item->data(Qt::UserRole).toString(),
                                 item->data(Qt::UserRole + 1).toString());
             });
+    connect(m_memberList, &QListWidget::customContextMenuRequested, this,
+            &MainWindow::showMemberContextMenu);
     connect(addChannelButton, &QPushButton::clicked, this, &MainWindow::promptAddChannel);
     connect(m_messageInput, &QLineEdit::textEdited, this, &MainWindow::onComposerEdited);
     connect(m_messageInput, &QLineEdit::returnPressed, this, &MainWindow::sendCurrentMessage);
@@ -6722,6 +6766,58 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
+}
+
+void MainWindow::showMemberContextMenu(const QPoint &pos)
+{
+    QListWidgetItem *item = m_memberList->itemAt(pos);
+    if (!item)
+        return;
+    const QString id = item->data(Qt::UserRole).toString();
+    const QString name = item->data(Qt::UserRole + 1).toString();
+    const bool self = item->data(Qt::UserRole + 2).toBool();
+
+    QMenu menu(this);
+    QAction *profileAction = menu.addAction("Open profile");
+    menu.addSeparator();
+    QAction *removeAction = menu.addAction("Remove member");
+    removeAction->setEnabled(!self && !id.isEmpty());
+
+    QAction *chosen = menu.exec(m_memberList->mapToGlobal(pos));
+    if (!chosen)
+        return;
+    if (chosen == profileAction)
+        showNodeProfile(id, name);
+    else if (chosen == removeAction)
+        removeChatMember(id, name);
+}
+
+void MainWindow::removeChatMember(const QString &id, const QString &name)
+{
+    if (id.isEmpty())
+        return;
+    if (QMessageBox::question(
+            this, "Remove member",
+            QStringLiteral("Remove %1 from your chat list?\n\nThis just clears the "
+                           "stale entry \xE2\x80\x94 if they reconnect they'll appear "
+                           "again.")
+                .arg(name.isEmpty() ? id.left(8) : name)) != QMessageBox::Yes)
+        return;
+
+    // Drop any open direct chat with them and leave that conversation.
+    m_openDms.removeAll(id);
+    m_unread.remove(dmKey(id));
+    if (m_currentConversation == dmKey(id))
+        switchConversation(m_channels.isEmpty() ? QString() : m_channels.first());
+
+    // Remove the stale roster entry now; a fresh roster update re-adds them if
+    // they're still on the network.
+    QList<MemberInfo> remaining;
+    for (const MemberInfo &m : std::as_const(m_homeRoster))
+        if (m.id != id)
+            remaining.append(m);
+    refreshDmList();
+    setRoster(remaining);
 }
 
 void MainWindow::refreshChannelList()
