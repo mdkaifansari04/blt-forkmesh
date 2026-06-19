@@ -61,7 +61,8 @@ holds the text. Each event carries `type`, `id`, `author` (pubkey), `authorName`
 | type        | extra fields            | meaning                  |
 |-------------|-------------------------|--------------------------|
 | `comment`   | `attachments`           | a comment (body in file) |
-| `edit`      | `target`, `attachments` | edits event `target`     |
+| `edit`      | `target`, `attachments` | edits event `target` (body) |
+| `title`     | `title`                 | renames the issue        |
 | `status`    | `status` (`open`/`closed`) | close / reopen        |
 | `labels`    | `labels` (array)        | set the issue's labels   |
 | `milestone` | `milestone` (string)    | set the issue's milestone|
@@ -97,6 +98,7 @@ change the signature. `attachments` is the comma-joined list of image filenames:
 | `open`      | `title \0 body \0 attachments.join(",")`  |
 | `comment`   | `body \0 attachments.join(",")`           |
 | `edit`      | `body \0 attachments.join(",")`           |
+| `title`     | `title`                                   |
 | `status`    | `status`                                  |
 | `labels`    | `labels.join(",")`                        |
 | `milestone` | `milestone` (or "")                       |
