@@ -190,6 +190,19 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
 #breadcrumb { background: transparent; font-size: 12px; font-weight: 600; }
 #connectionStatus { background: transparent; font-size: 12px; font-weight: 600; }
+QPushButton#notificationButton, QPushButton#notificationButtonAlert {
+    background: transparent; border: 1px solid #30363d; border-radius: 6px;
+    padding: 2px 6px; font-size: 13px; color: #8b949e;
+}
+QPushButton#notificationButton:hover {
+    background-color: #161b22; color: #e6edf3;
+}
+QPushButton#notificationButtonAlert {
+    color: #d29922; border-color: #9e6a03; font-weight: 800;
+}
+QPushButton#notificationButtonAlert:hover {
+    background-color: #1c1908; color: #f0b72f;
+}
 
 /* --- Home --- */
 #homeCard {
@@ -245,6 +258,21 @@ QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 #sidebar QListWidget::item:hover { background-color: #161b22; }
 #sidebar QListWidget::item:selected {
     background-color: #1f6feb; color: #ffffff;
+}
+QWidget#memberRow { background: transparent; }
+QPushButton#memberNameButton {
+    background: transparent; border: none; color: #c9d1d9;
+    padding: 4px 6px; text-align: left; font-weight: 500;
+}
+QPushButton#memberNameButton:hover {
+    background-color: #161b22; color: #e6edf3; border-radius: 6px;
+}
+QPushButton#memberDeleteButton {
+    background: transparent; border: 1px solid #30363d; border-radius: 5px;
+    color: #f85149; padding: 2px 6px; font-size: 11px; font-weight: 700;
+}
+QPushButton#memberDeleteButton:hover {
+    background-color: #da3633; border-color: #da3633; color: #ffffff;
 }
 #issueQuickAdd {
     background-color: #0d1117; border: 1px solid #30363d;
@@ -531,6 +559,19 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 12px; font-weight: 600; }
 #connectionStatus { background: transparent; color: #656d76; font-size: 12px; font-weight: 600; }
+QPushButton#notificationButton, QPushButton#notificationButtonAlert {
+    background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 2px 6px; font-size: 13px; color: #656d76;
+}
+QPushButton#notificationButton:hover {
+    background-color: #f6f8fa; color: #1f2328;
+}
+QPushButton#notificationButtonAlert {
+    color: #9a6700; border-color: #d4a72c; font-weight: 800;
+}
+QPushButton#notificationButtonAlert:hover {
+    background-color: #fff8c5; color: #7d4e00;
+}
 
 /* --- Home --- */
 #homeCard {
@@ -586,6 +627,21 @@ QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 #sidebar QListWidget::item:hover { background-color: #f6f8fa; }
 #sidebar QListWidget::item:selected {
     background-color: #0969da; color: #ffffff;
+}
+QWidget#memberRow { background: transparent; }
+QPushButton#memberNameButton {
+    background: transparent; border: none; color: #1f2328;
+    padding: 4px 6px; text-align: left; font-weight: 500;
+}
+QPushButton#memberNameButton:hover {
+    background-color: #f6f8fa; color: #0969da; border-radius: 6px;
+}
+QPushButton#memberDeleteButton {
+    background: transparent; border: 1px solid #d0d7de; border-radius: 5px;
+    color: #cf222e; padding: 2px 6px; font-size: 11px; font-weight: 700;
+}
+QPushButton#memberDeleteButton:hover {
+    background-color: #cf222e; border-color: #cf222e; color: #ffffff;
 }
 #issueQuickAdd {
     background-color: #ffffff; border: 1px solid #d0d7de;

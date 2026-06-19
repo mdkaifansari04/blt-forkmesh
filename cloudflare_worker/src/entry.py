@@ -538,6 +538,37 @@ async def catalog_handler(env, request):
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
         return json_response({"ok": True, "repository": record}, status=201)
 
+    if method == "DELETE":
+        params = parse_qs(urlparse(request.url).query)
+        owner = safe_segment(params.get("owner", [""])[0])
+        name = safe_segment(params.get("name", [""])[0])
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        if not owner or not name or not ts or not sig:
+            return json_response({"error": "owner_name_ts_sig_required"}, status=400)
+        try:
+            skew = abs(int(Date.now()) - int(ts))
+        except (TypeError, ValueError):
+            skew = LOGIN_MAX_SKEW_MS + 1
+        if skew > LOGIN_MAX_SKEW_MS:
+            return json_response({"error": "stale_request"}, status=401)
+
+        key_bi = await blind_index(env, owner + "/" + name)
+        row = await d1_first(env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        if not row:
+            return json_response({"ok": True, "deleted": False})
+        existing = await decrypt_row(env, row["data"])
+        if not existing:
+            return json_response({"error": "catalog_record_unreadable"}, status=500)
+        owner_pub = await _owner_pubkey(env, owner)
+        verify_pub = owner_pub or clean_string(existing.get("maintainer", ""), 120)
+        canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
+                     "\n" + ts).encode()
+        if not verify_pub or not await ed25519_verify(verify_pub, sig, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+        await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
+        return json_response({"ok": True, "deleted": True})
+
     return json_response({"error": "method_not_allowed"}, status=405)
 
 

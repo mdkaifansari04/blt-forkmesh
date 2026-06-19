@@ -63,6 +63,10 @@ public:
     virtual void deleteMessage(const QString &conversation, const QString &messageId) = 0;
     // Publish this node's avatar (PNG bytes; empty clears it).
     virtual void setAvatar(const QByteArray &pngData) = 0;
+    // Update the single visible/account name used in outgoing messages.
+    virtual void setUserName(const QString &name) { Q_UNUSED(name); }
+    // Forget a stale member locally; a later live hello can add them again.
+    virtual void forgetMember(const QString &peerId) { Q_UNUSED(peerId); }
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;

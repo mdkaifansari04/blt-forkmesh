@@ -207,6 +207,12 @@ private:
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
                            bool warning); // tray alert gated by the run-alert setting
+    void addNotification(const QString &title, const QString &body,
+                         bool warning = false, int runId = -1);
+    void showNotifications();
+    void updateNotificationButton();
+    int pendingActionCount() const;
+    void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
     // when available (reliable on Linux) and falling back to the tray icon.
     // `icon` is a freedesktop icon name (e.g. "emblem-default").
@@ -348,7 +354,10 @@ private:
     QString repositoryWebUrl(const RepositoryRecord &repo) const;
     void updateRepoWebLink();
     QUrl catalogApiUrl() const;
-    void onDisplayNameChanged(const QString &name);
+    void deleteCatalogRepository(const QString &owner, const QString &name);
+    void migrateReposForProfileName(const QString &oldOwner,
+                                    const QString &newOwner);
+    void onProfileNameChanged(const QString &name);
     void onAvatarChosen(const QByteArray &pngData);
     void showFirewallBanner(const QString &displayCommand,
                             const QString &privilegedCommand);
@@ -384,7 +393,6 @@ private:
 
     // Setup widgets
     QLineEdit *m_nameEdit;
-    QLineEdit *m_handleEdit;
     QLineEdit *m_bchEdit;
     QLabel *m_pubkeyLabel;
     QLineEdit *m_serverUrlEdit;
@@ -512,11 +520,20 @@ private:
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
+    struct AppNotification {
+        QString title;
+        QString body;
+        qint64 timestampMs = 0;
+        bool warning = false;
+        int runId = -1;
+    };
     ActionStore *m_actionStore = nullptr;
     ActionRunner *m_actionRunner = nullptr;
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QList<AppNotification> m_notifications;
+    QPushButton *m_notificationButton = nullptr;
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all

@@ -57,6 +57,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringListModel>
@@ -221,6 +222,30 @@ QString repoNameFromUrl(QString url)
     return repoSegment(name, QStringLiteral("repository"));
 }
 
+QString accountNameFromInput(QString value, const QString &fallback = QStringLiteral("node"))
+{
+    value = value.trimmed().toLower();
+    QString out;
+    for (const QChar &c : value) {
+        if (c.isLetterOrNumber() && c.unicode() < 128)
+            out.append(c);
+    }
+    while (!out.isEmpty() && !out.at(0).isLetter())
+        out.remove(0, 1);
+    if (out.isEmpty())
+        out = fallback;
+    return out.left(32);
+}
+
+QString savedProfileName()
+{
+    QSettings settings;
+    const QString handle = settings.value(kHandleSetting).toString().trimmed();
+    if (!handle.isEmpty())
+        return handle;
+    return settings.value(kDisplayNameSetting).toString().trimmed();
+}
+
 QString formatRepoDate(qint64 timestampMs)
 {
     if (timestampMs <= 0)
@@ -325,16 +350,20 @@ QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 
 QString defaultDisplayName(const ForkMeshIdentity &identity)
 {
-    const QString suffix = identity.shortPublicKey().left(8);
-    return suffix.isEmpty() ? QStringLiteral("forkmesh-node")
-                            : QStringLiteral("node-") + suffix;
+    const QString suffix = accountNameFromInput(identity.publicKey(), QString()).left(8);
+    return suffix.isEmpty() ? QStringLiteral("node")
+                            : QStringLiteral("node") + suffix;
 }
 
-void saveDisplayName(const QString &name)
+void saveProfileName(const QString &name)
 {
-    const QString trimmed = name.trimmed();
-    if (!trimmed.isEmpty())
-        QSettings().setValue(kDisplayNameSetting, trimmed);
+    const QString trimmed = accountNameFromInput(name, QString());
+    if (!trimmed.isEmpty()) {
+        QSettings settings;
+        settings.setValue(kDisplayNameSetting, trimmed);
+        settings.setValue(kHandleSetting, trimmed);
+        settings.setValue(kAccountNameSetting, trimmed);
+    }
 }
 
 QIcon statusDotIcon(bool online)
@@ -919,13 +948,9 @@ QWidget *MainWindow::buildSetupPage()
     versionLabel->setAlignment(Qt::AlignHCenter);
 
     m_nameEdit = new QLineEdit;
-    m_nameEdit->setPlaceholderText("Display name");
+    m_nameEdit->setPlaceholderText("Name (e.g. alice)");
     m_nameEdit->setMaxLength(32);
-    m_nameEdit->setText(QSettings().value(kDisplayNameSetting).toString());
-    m_handleEdit = new QLineEdit;
-    m_handleEdit->setPlaceholderText("Node name (e.g. alice) \xE2\x80\x94 your account/owner id");
-    m_handleEdit->setMaxLength(80);
-    m_handleEdit->setText(QSettings().value(kHandleSetting).toString());
+    m_nameEdit->setText(savedProfileName());
     m_bchEdit = new QLineEdit;
     m_bchEdit->setPlaceholderText("Bitcoin Cash address (required to join)");
     m_bchEdit->setMaxLength(160);
@@ -987,7 +1012,6 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addWidget(versionLabel);
     cardLayout->addSpacing(14);
     cardLayout->addWidget(m_nameEdit);
-    cardLayout->addWidget(m_handleEdit);
     cardLayout->addWidget(m_bchEdit);
     cardLayout->addWidget(m_pubkeyLabel);
     cardLayout->addSpacing(8);
@@ -1011,10 +1035,7 @@ QWidget *MainWindow::buildSetupPage()
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
-        saveDisplayName(name);
-    });
-    connect(m_handleEdit, &QLineEdit::textEdited, this, [](const QString &handle) {
-        QSettings().setValue(kHandleSetting, handle.trimmed());
+        saveProfileName(name);
     });
     connect(m_bchEdit, &QLineEdit::textEdited, this, [this](const QString &address) {
         QSettings().setValue(kBchSetting, address.trimmed());
@@ -1038,12 +1059,13 @@ QWidget *MainWindow::buildSetupPage()
 
 void MainWindow::startSession()
 {
-    QString name = m_nameEdit->text().trimmed();
+    QString name = accountNameFromInput(m_nameEdit->text(), QString());
     if (name.isEmpty()) {
         name = defaultDisplayName(m_profileIdentity);
         m_nameEdit->setText(name);
-        saveDisplayName(name);
     }
+    m_nameEdit->setText(name);
+    saveProfileName(name);
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
@@ -1052,21 +1074,11 @@ void MainWindow::startSession()
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(kDefaultServerUrl);
 
-    // --- Node account name: derived from the handle and used as the canonical
-    // repo owner. The registration/login screen is temporarily disabled and will
-    // be re-added later; to bring it back, restore the BCH/name validation and
-    // the ensureNodeAccount() gate here (the flow methods are still present).
-    QString accountName;
-    for (const QChar &c : m_handleEdit->text().trimmed().toLower())
-        if (c.isLetterOrNumber() && c.unicode() < 128)
-            accountName.append(c);
-    while (!accountName.isEmpty() && !accountName.at(0).isLetter())
-        accountName.remove(0, 1);
-    accountName = accountName.left(32);
-    if (!accountName.isEmpty()) {
-        m_accountName = accountName;
-        QSettings().setValue(kAccountNameSetting, accountName);
-    }
+    // The one visible name is also the account owner / repo namespace. The
+    // registration/login gate is still disabled; re-enable ensureNodeAccount()
+    // here when the full account flow returns.
+    m_accountName = name;
+    QSettings().setValue(kAccountNameSetting, name);
 
     if (m_roomNameEdit->text().trimmed().isEmpty())
         m_roomNameEdit->setText(kDefaultRoomName);
@@ -1123,8 +1135,8 @@ void MainWindow::startSession()
         m_encryptionLabel->setText("\xF0\x9F\x94\x92 Mainnode encrypted");
         logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
         const QJsonObject signedProfile =
-            m_profileIdentity.signedProfile(m_nameEdit->text(),
-                                            m_handleEdit->text(),
+            m_profileIdentity.signedProfile(m_userName,
+                                            m_userName,
                                             m_bchEdit->text());
         const QString profileBytes = QString::fromUtf8(
             QJsonDocument(signedProfile).toJson(QJsonDocument::Compact));
@@ -1152,11 +1164,7 @@ QString MainWindow::accountOwner() const
     const QString stored = QSettings().value(kAccountNameSetting).toString();
     if (!stored.isEmpty())
         return stored;
-    // Account screen disabled for now: fall back to the handle / display name so
-    // repos stay namespaced sensibly until registration is re-enabled.
-    const QString handle = QSettings().value(kHandleSetting).toString().trimmed();
-    return repoSegment(handle.isEmpty() ? m_userName : handle,
-                       QStringLiteral("owner"));
+    return accountNameFromInput(m_userName, QStringLiteral("owner"));
 }
 
 QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
@@ -1249,7 +1257,7 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     QDialog dialog(this);
     dialog.setWindowTitle("Log in to " + accountName);
     auto *form = new QFormLayout(&dialog);
-    form->addRow(new QLabel("Log in to your node account to join the network."));
+    form->addRow(new QLabel("Log in to your account to join the network."));
     auto *passEdit = new QLineEdit;
     passEdit->setEchoMode(QLineEdit::Password);
     auto *totpEdit = new QLineEdit;
@@ -1328,7 +1336,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
             const QString err = resp.value("error").toString();
             QMessageBox::warning(this, "Create account",
                                  err == "node_name_taken"
-                                     ? "That node name is already registered."
+                                     ? "That name is already registered."
                                      : "Could not create the account" +
                                            (err.isEmpty() ? QString() : ": " + err) + ".");
             continue;
@@ -1418,14 +1426,10 @@ void MainWindow::verifyWallet()
 
 void MainWindow::persistProfile()
 {
-    QString handle = m_handleEdit->text().trimmed();
-    if (handle.isEmpty())
-        handle = repoSegment(m_nameEdit->text(), QStringLiteral("node"));
-    m_handleEdit->setText(handle);
-
-    saveDisplayName(m_nameEdit->text());
+    const QString name = accountNameFromInput(m_nameEdit->text(), m_userName);
+    m_nameEdit->setText(name);
+    saveProfileName(name);
     QSettings settings;
-    settings.setValue(kHandleSetting, handle);
     settings.setValue(kBchSetting, m_bchEdit->text().trimmed());
 }
 
@@ -1474,7 +1478,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 
 void MainWindow::runQuickUpdate()
 {
-    saveDisplayName(m_nameEdit->text());
+    saveProfileName(m_nameEdit->text());
     m_buildButton = m_updateButton;
     m_buildStatusLabel = m_updateStatus;
     m_updateButton->setEnabled(false);
@@ -1959,15 +1963,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_connectionStatus->setObjectName("connectionStatus");
     m_connectionStatus->setTextFormat(Qt::RichText);
 
+    m_notificationButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x94"));
+    m_notificationButton->setObjectName("notificationButton");
+    m_notificationButton->setCursor(Qt::PointingHandCursor);
+    m_notificationButton->setFixedWidth(42);
+    m_notificationButton->setToolTip("Notifications");
+    connect(m_notificationButton, &QPushButton::clicked, this,
+            &MainWindow::showNotifications);
+
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(14, 6, 14, 6);
     layout->setSpacing(8);
     layout->addWidget(m_breadcrumbServerIcon);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
+    layout->addWidget(m_notificationButton);
     layout->addWidget(m_connectionStatus);
     updateBreadcrumb();
     updateConnectionStatus();
+    updateNotificationButton();
     return bar;
 }
 
@@ -5890,8 +5904,7 @@ QWidget *MainWindow::buildChatSection()
     m_memberList->setSelectionMode(QAbstractItemView::NoSelection);
     m_memberList->setFocusPolicy(Qt::NoFocus);
     m_memberList->setCursor(Qt::PointingHandCursor);
-    m_memberList->setToolTip("Click a member to start a direct chat \xC2\xB7 "
-                            "right-click to remove");
+    m_memberList->setToolTip("Open a member profile or use Delete to clear stale entries");
     m_memberList->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto *badgeRow = new QHBoxLayout;
@@ -6104,9 +6117,9 @@ QWidget *MainWindow::buildSettingsSection()
 
     m_settingsNameEdit = new QLineEdit;
     m_settingsNameEdit->setMaxLength(32);
-    m_settingsNameEdit->setPlaceholderText("Display name");
+    m_settingsNameEdit->setPlaceholderText("Name");
     connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
-            [this] { onDisplayNameChanged(m_settingsNameEdit->text()); });
+            [this] { onProfileNameChanged(m_settingsNameEdit->text()); });
 
     m_settingsAvatarPreview = new QLabel("No\navatar");
     m_settingsAvatarPreview->setObjectName("avatarPreview");
@@ -6125,7 +6138,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft);
     form->setSpacing(8);
-    form->addRow("Display name", m_settingsNameEdit);
+    form->addRow("Name", m_settingsNameEdit);
     form->addRow("Avatar", avatarRow);
 
     auto *startupLabel = new QLabel("STARTUP");
@@ -6343,7 +6356,7 @@ void MainWindow::quickRebuildRestart()
 void MainWindow::rebuildAndRelaunch()
 {
     if (m_settingsNameEdit)
-        saveDisplayName(m_settingsNameEdit->text());
+        saveProfileName(m_settingsNameEdit->text());
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
     m_rebuildButton->setEnabled(false);
@@ -6746,12 +6759,45 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             label += " " + member.note;
         if (member.self)
             label += " (you)";
-        auto *item = new QListWidgetItem(label);
-        item->setIcon(statusDotIcon(member.online));
+
+        auto *item = new QListWidgetItem;
         item->setData(Qt::UserRole, member.id);
         item->setData(Qt::UserRole + 1, member.name);
         item->setData(Qt::UserRole + 2, member.self);
+        item->setSizeHint(QSize(0, 30));
         m_memberList->addItem(item);
+
+        auto *row = new QWidget;
+        row->setObjectName("memberRow");
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(2, 1, 2, 1);
+        rowLayout->setSpacing(2);
+
+        auto *nameButton = new QPushButton(label);
+        nameButton->setObjectName("memberNameButton");
+        nameButton->setIcon(statusDotIcon(member.online));
+        nameButton->setCursor(Qt::PointingHandCursor);
+        nameButton->setToolTip("Open member profile");
+        nameButton->setEnabled(!member.id.isEmpty());
+        connect(nameButton, &QPushButton::clicked, this,
+                [this, id = member.id, name = member.name] {
+                    showNodeProfile(id, name);
+                });
+        rowLayout->addWidget(nameButton, 1);
+
+        auto *deleteButton = new QPushButton("Delete");
+        deleteButton->setObjectName("memberDeleteButton");
+        deleteButton->setFixedSize(58, 24);
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        deleteButton->setToolTip("Remove stale member");
+        deleteButton->setVisible(!member.self && !member.id.isEmpty());
+        connect(deleteButton, &QPushButton::clicked, this,
+                [this, id = member.id, name = member.name] {
+                    removeChatMember(id, name);
+                });
+        rowLayout->addWidget(deleteButton);
+
+        m_memberList->setItemWidget(item, row);
         // Keep DM tab titles in sync with renamed/rediscovered members.
         if (m_dmNames.contains(member.id) && m_dmNames.value(member.id) != member.name) {
             m_dmNames.insert(member.id, member.name);
@@ -6796,28 +6842,51 @@ void MainWindow::removeChatMember(const QString &id, const QString &name)
 {
     if (id.isEmpty())
         return;
-    if (QMessageBox::question(
-            this, "Remove member",
-            QStringLiteral("Remove %1 from your chat list?\n\nThis just clears the "
-                           "stale entry \xE2\x80\x94 if they reconnect they'll appear "
-                           "again.")
-                .arg(name.isEmpty() ? id.left(8) : name)) != QMessageBox::Yes)
-        return;
+
+    if (m_backend)
+        m_backend->forgetMember(id);
 
     // Drop any open direct chat with them and leave that conversation.
+    const QString conversation = dmKey(id);
     m_openDms.removeAll(id);
-    m_unread.remove(dmKey(id));
-    if (m_currentConversation == dmKey(id))
-        switchConversation(m_channels.isEmpty() ? QString() : m_channels.first());
+    m_dmNames.remove(id);
+    m_avatars.remove(id);
+    m_unread.remove(conversation);
+    const QList<ChatMessage> removedMessages = m_history.take(conversation);
+    for (const ChatMessage &message : removedMessages) {
+        m_historyIds.remove(message.id);
+        m_reactions.remove(message.id);
+    }
+    m_typing.remove(conversation);
+    for (const QString &key : m_typing.keys()) {
+        m_typing[key].remove(id);
+        if (m_typing.value(key).isEmpty())
+            m_typing.remove(key);
+    }
+    if (m_typingConversation == conversation)
+        sendTypingState(false);
+    if (m_currentConversation == conversation) {
+        if (m_channels.isEmpty()) {
+            m_currentConversation.clear();
+            m_channelTitle->setText(QStringLiteral("No conversation"));
+            m_messageInput->setPlaceholderText(QStringLiteral("Message"));
+            rebuildConversationView();
+            refreshTypingLabel();
+        } else {
+            switchConversation(m_channels.first());
+        }
+    }
 
     // Remove the stale roster entry now; a fresh roster update re-adds them if
-    // they're still on the network.
+    // they join the network again.
     QList<MemberInfo> remaining;
     for (const MemberInfo &m : std::as_const(m_homeRoster))
         if (m.id != id)
             remaining.append(m);
     refreshDmList();
     setRoster(remaining);
+    saveChatHistory();
+    logSystem("Removed stale member " + (name.isEmpty() ? id.left(8) : name) + ".");
 }
 
 void MainWindow::refreshChannelList()
@@ -7386,8 +7455,7 @@ void MainWindow::promptAddRepository()
     RepositoryRecord repo;
     repo.localPath = path;
     repo.name = repoNameFromUrl(path);
-    // Repos are namespaced under the registered account (stable identity), not
-    // the mutable handle/display name.
+    // Repos are namespaced under the single account name.
     repo.owner = accountOwner();
     repo.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
     // Selecting a local repo publishes it to the website so it shows up online
@@ -7511,6 +7579,80 @@ QUrl MainWindow::catalogApiUrl() const
     url.setQuery(QString());
     url.setFragment(QString());
     return url;
+}
+
+void MainWindow::deleteCatalogRepository(const QString &owner, const QString &name)
+{
+    const QString safeOwner = repoSegment(owner, QStringLiteral("owner"));
+    const QString safeName = repoSegment(name, QStringLiteral("repository"));
+    if (safeOwner.isEmpty() || safeName.isEmpty())
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        logSystem("Catalog: could not load identity to remove old website entry.");
+        return;
+    }
+
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-catalog-delete-v1\n" + safeOwner + "\n" + safeName + "\n" + ts)
+            .toUtf8();
+    QUrl url = catalogApiUrl();
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("owner"), safeOwner);
+    query.addQueryItem(QStringLiteral("name"), safeName);
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"), m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+
+    QNetworkReply *reply = m_networkAccess->deleteResource(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, safeOwner, safeName] {
+                reply->deleteLater();
+                if (reply->error() == QNetworkReply::NoError) {
+                    logSystem("Catalog: removed old website entry " + safeOwner +
+                              "/" + safeName + ".");
+                } else {
+                    logSystem("Catalog: could not remove old website entry " +
+                              safeOwner + "/" + safeName + ": " +
+                              reply->errorString());
+                }
+            });
+}
+
+void MainWindow::migrateReposForProfileName(const QString &oldOwner,
+                                            const QString &newOwner)
+{
+    const QString oldName = repoSegment(oldOwner, QStringLiteral("owner"));
+    const QString newName = repoSegment(newOwner, QStringLiteral("owner"));
+    if (oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return;
+
+    QList<int> toRepublish;
+    bool changed = false;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        RepositoryRecord &repo = m_repositories[i];
+        const QString repoName = repoSegment(repo.name, QStringLiteral("repository"));
+        const bool wasPublished = repo.publishToNetwork || repo.publishedAtMs > 0;
+        if (wasPublished)
+            deleteCatalogRepository(oldName, repoName);
+        if (repo.owner == oldName || wasPublished) {
+            repo.owner = newName;
+            changed = true;
+            if (repo.publishToNetwork)
+                toRepublish.append(i);
+        }
+    }
+
+    if (!changed)
+        return;
+    saveRepositories();
+    installAllPushHooks();
+    refreshRepositoryList();
+    startRepoHosts();
+    for (int index : std::as_const(toRepublish))
+        publishRepository(index, false);
+    logSystem("Renamed local published repositories from " + oldName + " to " +
+              newName + ".");
 }
 
 QUrl MainWindow::hostWsUrl(const RepositoryRecord &repo) const
@@ -7825,17 +7967,31 @@ void MainWindow::syncRepository(int index, bool quiet)
 
 // ------------------------------------------------------------------ settings
 
-void MainWindow::onDisplayNameChanged(const QString &name)
+void MainWindow::onProfileNameChanged(const QString &name)
 {
-    const QString trimmed = name.trimmed();
-    if (trimmed.isEmpty() || trimmed == m_userName)
+    const QString trimmed = accountNameFromInput(name, QString());
+    if (trimmed.isEmpty()) {
+        if (m_settingsNameEdit)
+            m_settingsNameEdit->setText(m_userName);
         return;
+    }
+    if (m_settingsNameEdit && m_settingsNameEdit->text() != trimmed)
+        m_settingsNameEdit->setText(trimmed);
+    if (m_nameEdit && m_nameEdit->text() != trimmed)
+        m_nameEdit->setText(trimmed);
+    if (trimmed == m_userName)
+        return;
+    const QString oldOwner =
+        accountNameFromInput(m_accountName.isEmpty() ? m_userName : m_accountName,
+                             QStringLiteral("owner"));
     m_userName = trimmed;
-    saveDisplayName(trimmed);
-    // The display name is announced with each peer link; it takes effect for
-    // new messages immediately and for peers on their next reconnect.
-    logSystem("Display name changed to " + trimmed +
-              " (applies to new messages).");
+    m_accountName = trimmed;
+    saveProfileName(trimmed);
+    migrateReposForProfileName(oldOwner, trimmed);
+    if (m_backend)
+        m_backend->setUserName(trimmed);
+    refreshRepositoryList();
+    logSystem("Name changed to " + trimmed + ".");
 }
 
 void MainWindow::onAvatarChosen(const QByteArray &pngData)
@@ -7918,6 +8074,7 @@ void MainWindow::initActions()
     scanActionSpool();
     processActionQueue();
     refreshActionsTable();
+    updateNotificationButton();
 }
 
 void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
@@ -8123,6 +8280,11 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
         m_actionRuns.prepend(created);
         if (approved)
             m_actionQueue.append(created.id);
+        else
+            addNotification(QStringLiteral("Action waiting for approval"),
+                            QString::fromUtf8("%1 \xC2\xB7 %2/%3 at %4")
+                                .arg(wf.name, owner, name, commit.left(8)),
+                            false, created.id);
         added = true;
         logSystem(QStringLiteral("Actions: %1 \"%2\" for %3/%4 @ %5")
                       .arg(approved ? QStringLiteral("queued")
@@ -8135,6 +8297,7 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
         refreshActionsTable();
         if (m_actionWorkflowList && repoIndex == m_repoDetailIndex)
             refreshRepoActions();
+        updateNotificationButton();
     } else {
         logSystem(QStringLiteral(
                       "Actions: no .forkmesh/ workflow with 'on: push' at %1 for "
@@ -8208,6 +8371,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
                          actionStatusText(status)));
         }
     }
+    updateNotificationButton();
     if (status == ActionStatus::Running) {
         if (const ActionRun *run = findRun(runId))
             notifyActionEvent(QStringLiteral("Action started"),
@@ -8221,6 +8385,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
+    updateNotificationButton();
     if (const ActionRun *run = findRun(runId))
         notifyActionEvent(ok ? QStringLiteral("Action succeeded")
                              : QStringLiteral("Action failed"),
@@ -8235,6 +8400,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
 void MainWindow::notifyActionEvent(const QString &title, const QString &body,
                                    bool warning)
 {
+    addNotification(title, body, warning);
     if (!QSettings().value(kActionAlertSetting, true).toBool())
         return;
     const QString icon = warning ? QStringLiteral("dialog-error")
@@ -8242,6 +8408,138 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
                              ? QStringLiteral("system-run")
                              : QStringLiteral("emblem-default");
     postNotification(title, body, warning, icon);
+}
+
+void MainWindow::addNotification(const QString &title, const QString &body,
+                                 bool warning, int runId)
+{
+    AppNotification item;
+    item.title = title;
+    item.body = body;
+    item.warning = warning;
+    item.runId = runId;
+    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    m_notifications.prepend(item);
+    while (m_notifications.size() > 100)
+        m_notifications.removeLast();
+    updateNotificationButton();
+}
+
+int MainWindow::pendingActionCount() const
+{
+    int count = 0;
+    for (const ActionRun &run : m_actionRuns)
+        if (run.status == ActionStatus::AwaitingApproval)
+            ++count;
+    return count;
+}
+
+void MainWindow::updateNotificationButton()
+{
+    if (!m_notificationButton)
+        return;
+    const int pending = pendingActionCount();
+    m_notificationButton->setText(pending > 0
+                                      ? QString::fromUtf8("\xF0\x9F\x94\x94 \xE2\x80\xA2")
+                                      : QString::fromUtf8("\xF0\x9F\x94\x94"));
+    m_notificationButton->setToolTip(
+        pending > 0
+            ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
+            : QStringLiteral("Notifications"));
+    m_notificationButton->setObjectName(pending > 0
+                                            ? QStringLiteral("notificationButtonAlert")
+                                            : QStringLiteral("notificationButton"));
+    m_notificationButton->style()->unpolish(m_notificationButton);
+    m_notificationButton->style()->polish(m_notificationButton);
+}
+
+void MainWindow::openActionRunFromNotification(int runId)
+{
+    const ActionRun *run = findRun(runId);
+    if (!run)
+        return;
+    const int index = repoIndexFor(run->owner, run->name);
+    if (index < 0)
+        return;
+    openRepoDetail(index);
+    if (m_repoDetailTabs && m_repoDetailTabs->button(4))
+        m_repoDetailTabs->button(4)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(4);
+    refreshRepoActions();
+    if (m_actionsTable) {
+        for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
+            QTableWidgetItem *item = m_actionsTable->item(row, 0);
+            if (item && item->data(Qt::UserRole).toInt() == runId) {
+                m_actionsTable->selectRow(row);
+                break;
+            }
+        }
+    }
+    showRun(runId);
+}
+
+void MainWindow::showNotifications()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Notifications");
+    dialog.resize(520, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *list = new QListWidget;
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    layout->addWidget(list, 1);
+
+    bool hasRows = false;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (run.status != ActionStatus::AwaitingApproval)
+            continue;
+        auto *item = new QListWidgetItem(
+            QStringLiteral("Action waiting: %1\n%2/%3 at %4")
+                .arg(run.workflowName, run.owner, run.name, run.commit.left(8)));
+        item->setData(Qt::UserRole, run.id);
+        list->addItem(item);
+        hasRows = true;
+    }
+    for (const AppNotification &notice : std::as_const(m_notifications)) {
+        const QString when = formatRepoDate(notice.timestampMs);
+        auto *item = new QListWidgetItem(
+            notice.title + QStringLiteral("\n") + notice.body +
+            QStringLiteral("\n") + when);
+        item->setData(Qt::UserRole, notice.runId);
+        if (notice.warning)
+            item->setForeground(QColor("#f85149"));
+        list->addItem(item);
+        hasRows = true;
+    }
+    if (!hasRows) {
+        auto *empty = new QListWidgetItem("No notifications yet.");
+        empty->setFlags(Qt::NoItemFlags);
+        list->addItem(empty);
+    }
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    QPushButton *openButton = buttons->addButton("Open", QDialogButtonBox::ActionRole);
+    openButton->setEnabled(false);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(list, &QListWidget::currentItemChanged, this,
+            [openButton](QListWidgetItem *item, QListWidgetItem *) {
+                openButton->setEnabled(item && item->data(Qt::UserRole).toInt() > 0);
+            });
+    auto openSelected = [this, list, &dialog] {
+        QListWidgetItem *item = list->currentItem();
+        if (!item)
+            return;
+        const int runId = item->data(Qt::UserRole).toInt();
+        if (runId <= 0)
+            return;
+        dialog.accept();
+        openActionRunFromNotification(runId);
+    };
+    connect(openButton, &QPushButton::clicked, this, openSelected);
+    connect(list, &QListWidget::itemDoubleClicked, this,
+            [openSelected](QListWidgetItem *) { openSelected(); });
+    dialog.exec();
 }
 
 void MainWindow::postNotification(const QString &title, const QString &body,
@@ -8477,8 +8775,10 @@ void MainWindow::approveSelectedRun()
     m_actionQueue.append(run->id);
     logSystem(QStringLiteral("Actions: approved \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
+    m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
     showRun(m_selectedRunId);
+    updateNotificationButton();
     processActionQueue();
 }
 
@@ -8492,8 +8792,10 @@ void MainWindow::rejectSelectedRun()
     m_actionStore->saveRun(*run);
     logSystem(QStringLiteral("Actions: rejected \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
+    m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
     showRun(m_selectedRunId);
+    updateNotificationButton();
 }
 
 QWidget *MainWindow::buildRepoActionsTab()

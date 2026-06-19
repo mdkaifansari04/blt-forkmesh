@@ -33,6 +33,8 @@ public:
                      const QString &newText) override;
     void deleteMessage(const QString &conversation, const QString &messageId) override;
     void setAvatar(const QByteArray &pngData) override;
+    void setUserName(const QString &name) override;
+    void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
     void setMirroredRepos(const QStringList &ownerNames) override;
