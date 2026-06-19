@@ -44,6 +44,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSslSocket>
+#include <QSslError>
 #include <QImage>
 #include <QPainter>
 #include <QPainterPath>
@@ -83,6 +85,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
@@ -2724,8 +2727,8 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileBalanceButton->setObjectName("ghostButton");
     m_profileBalanceButton->setCursor(Qt::PointingHandCursor);
     m_profileBalanceButton->setToolTip(
-        "Query a public block explorer for this wallet's balance. This sends "
-        "the address to a third-party service.");
+        "Query the BCH network (public Electrum/Fulcrum servers) for this "
+        "wallet's balance. This sends the address to the server it connects to.");
     connect(m_profileBalanceButton, &QPushButton::clicked, this,
             &MainWindow::checkNodeBalance);
     auto *balanceRow = new QHBoxLayout;
@@ -2896,6 +2899,74 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_nodeProfilePanel->show();
 }
 
+// Public BCH Electrum/Fulcrum servers (SSL, JSON-RPC). Tried in order with
+// fallback; this is the decentralized indexer layer SPV wallets use, so the
+// balance comes from the BCH network rather than a single explorer service.
+namespace {
+struct ElectrumServer { const char *host; quint16 port; };
+const ElectrumServer kFulcrumServers[] = {
+    {"bch.imaginary.cash", 50002},
+    {"electroncash.dk", 50002},
+    {"bch.loping.net", 50002},
+    {"blackie.c3-soft.com", 50002},
+    {"fulcrum.greyh.at", 50002},
+};
+
+// Decode a CashAddr into the Electrum "scripthash" (SHA-256 of the output
+// script, byte-reversed, hex-encoded). Returns empty on any parse failure.
+QByteArray cashAddrToScriptHash(const QString &address)
+{
+    QString s = address.trimmed().toLower();
+    const int colon = s.indexOf(':');
+    const QString data = colon >= 0 ? s.mid(colon + 1) : s;
+
+    static const QString charset =
+        QStringLiteral("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
+    QList<int> symbols;
+    for (const QChar c : data) {
+        const int idx = charset.indexOf(c);
+        if (idx < 0)
+            return QByteArray();  // not a cashaddr
+        symbols.append(idx);
+    }
+    if (symbols.size() <= 8)
+        return QByteArray();
+    symbols.resize(symbols.size() - 8);  // drop the 40-bit checksum
+
+    // 5-bit groups -> bytes (no padding kept).
+    QByteArray payload;
+    int acc = 0, bits = 0;
+    for (const int v : symbols) {
+        acc = (acc << 5) | v;
+        bits += 5;
+        while (bits >= 8) {
+            bits -= 8;
+            payload.append(char((acc >> bits) & 0xFF));
+        }
+        acc &= (1 << bits) - 1;  // keep acc bounded to the leftover bits
+    }
+    if (payload.size() != 21)
+        return QByteArray();  // version byte + 20-byte hash only
+
+    const quint8 version = quint8(payload.at(0));
+    const int type = (version >> 3) & 0x1F;  // 0 = P2PKH, 1 = P2SH
+    const QByteArray hash = payload.mid(1);
+
+    QByteArray script;
+    if (type == 0) {  // OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
+        script = QByteArray::fromHex("76a914") + hash + QByteArray::fromHex("88ac");
+    } else if (type == 1) {  // OP_HASH160 <20> OP_EQUAL
+        script = QByteArray::fromHex("a914") + hash + QByteArray::fromHex("87");
+    } else {
+        return QByteArray();
+    }
+
+    QByteArray sha = QCryptographicHash::hash(script, QCryptographicHash::Sha256);
+    std::reverse(sha.begin(), sha.end());
+    return sha.toHex();
+}
+}  // namespace
+
 void MainWindow::checkNodeBalance()
 {
     const QString addr = m_profileBchValue.trimmed();
@@ -2905,49 +2976,97 @@ void MainWindow::checkNodeBalance()
     m_profileBalanceButton->setText("Checking\xE2\x80\xA6");
     m_profileBalance->setText(QString::fromUtf8("\xE2\x80\xA6"));
 
-    // Strip the "bitcoincash:" prefix; the explorer accepts the bare cashaddr.
-    QString query = addr;
-    const int colon = query.indexOf(':');
-    if (colon >= 0)
-        query = query.mid(colon + 1);
-    const QUrl url(
-        "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + query);
+    const QByteArray scriptHash = cashAddrToScriptHash(addr);
+    if (scriptHash.isEmpty()) {
+        m_profileBalanceButton->setEnabled(true);
+        m_profileBalanceButton->setText("Check balance");
+        m_profileBalance->setText("Invalid address");
+        return;
+    }
+    queryBalanceFromElectrum(addr, scriptHash, 0);
+}
 
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    const QString pendingAddr = addr;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, pendingAddr] {
-        reply->deleteLater();
-        // Ignore if the panel moved to a different node meanwhile.
-        if (m_profileBchValue.trimmed() != pendingAddr)
+void MainWindow::queryBalanceFromElectrum(const QString &addr,
+                                          const QByteArray &scriptHashHex,
+                                          int serverIndex)
+{
+    const int count = int(sizeof(kFulcrumServers) / sizeof(kFulcrumServers[0]));
+    if (serverIndex >= count) {  // exhausted the pool
+        if (m_profileBchValue.trimmed() == addr) {
+            m_profileBalanceButton->setEnabled(true);
+            m_profileBalanceButton->setText("Refresh balance");
+            m_profileBalance->setText("Unavailable");
+        }
+        return;
+    }
+    const ElectrumServer &srv = kFulcrumServers[serverIndex];
+
+    auto *sock = new QSslSocket(this);
+    // The public Fulcrum pool uses a mix of CA-signed and self-signed certs, and
+    // the balance is read-only/informational, so we don't hard-fail on cert
+    // validation — the privacy cost (sending the address) is identical to the
+    // previous explorer call.
+    sock->setPeerVerifyMode(QSslSocket::VerifyNone);
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    auto handled = std::make_shared<bool>(false);
+    auto buffer = std::make_shared<QByteArray>();
+
+    auto cleanup = [sock, timer]() {
+        timer->stop();
+        timer->deleteLater();
+        sock->abort();
+        sock->deleteLater();
+    };
+    auto next = [this, addr, scriptHashHex, serverIndex, handled, cleanup]() {
+        if (*handled)
             return;
+        *handled = true;
+        cleanup();
+        queryBalanceFromElectrum(addr, scriptHashHex, serverIndex + 1);
+    };
+    auto succeed = [this, addr, handled, cleanup](double bch) {
+        if (*handled)
+            return;
+        *handled = true;
+        cleanup();
+        if (m_profileBchValue.trimmed() != addr)
+            return;  // panel moved to another node meanwhile
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Refresh balance");
+        m_profileBalance->setText(QStringLiteral("%1 BCH").arg(bch, 0, 'f', 8));
+    };
 
-        if (reply->error() != QNetworkReply::NoError) {
-            m_profileBalance->setText("Unavailable");
-            return;
-        }
-        const QJsonObject root =
-            QJsonDocument::fromJson(reply->readAll()).object();
-        const QJsonObject data = root.value("data").toObject();
-        // Key may be the bare or prefixed address; take the first entry.
-        qint64 sats = -1;
-        for (auto it = data.constBegin(); it != data.constEnd(); ++it) {
-            const QJsonObject addrObj =
-                it.value().toObject().value("address").toObject();
-            if (addrObj.contains("balance")) {
-                sats = addrObj.value("balance").toVariant().toLongLong();
-                break;
-            }
-        }
-        if (sats < 0) {
-            m_profileBalance->setText("Unavailable");
-            return;
-        }
-        const double bch = sats / 100000000.0;
-        m_profileBalance->setText(
-            QStringLiteral("%1 BCH").arg(bch, 0, 'f', 8));
+    connect(timer, &QTimer::timeout, this, [next]() { next(); });
+    connect(sock, &QSslSocket::encrypted, this, [sock, scriptHashHex]() {
+        sock->write("{\"id\":1,\"method\":\"blockchain.scripthash.get_balance\","
+                    "\"params\":[\"" + scriptHashHex + "\"]}\n");
     });
+    connect(sock, &QSslSocket::readyRead, this, [sock, buffer, succeed, next]() {
+        buffer->append(sock->readAll());
+        const int nl = buffer->indexOf('\n');
+        if (nl < 0)
+            return;  // wait for a full line
+        const QJsonObject root =
+            QJsonDocument::fromJson(buffer->left(nl)).object();
+        if (!root.value("result").isObject()) {
+            next();
+            return;
+        }
+        const QJsonObject result = root.value("result").toObject();
+        const qint64 confirmed =
+            result.value("confirmed").toVariant().toLongLong();
+        const qint64 unconfirmed =
+            result.value("unconfirmed").toVariant().toLongLong();
+        succeed((confirmed + unconfirmed) / 100000000.0);
+    });
+    connect(sock, &QSslSocket::errorOccurred, this,
+            [next](QAbstractSocket::SocketError) { next(); });
+    connect(sock, &QSslSocket::sslErrors, this,
+            [sock](const QList<QSslError> &) { sock->ignoreSslErrors(); });
+
+    timer->start(7000);
+    sock->connectToHostEncrypted(QString::fromLatin1(srv.host), srv.port);
 }
 
 QWidget *MainWindow::buildReposPanel()
