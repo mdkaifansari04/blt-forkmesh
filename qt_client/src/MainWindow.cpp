@@ -1159,6 +1159,13 @@ QString MainWindow::accountOwner() const
                        QStringLiteral("owner"));
 }
 
+QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
+{
+    const QString account = accountOwner();
+    return account.isEmpty() ? repoSegment(repo.owner, QStringLiteral("owner"))
+                             : account;
+}
+
 QUrl MainWindow::accountsApiUrl(const QString &leaf) const
 {
     QUrl url = catalogApiUrl(); // same host, http(s) scheme
@@ -7419,7 +7426,7 @@ QUrl MainWindow::hostWsUrl(const RepositoryRecord &repo) const
         url.setScheme(QStringLiteral("ws"));
     else if (url.scheme() == "https")
         url.setScheme(QStringLiteral("wss"));
-    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+    url.setPath("/api/repo/" + catalogOwner(repo) +
                 "/" + repoSegment(repo.name, QStringLiteral("repository")) +
                 "/host");
     url.setQuery(QString());
@@ -7445,7 +7452,7 @@ void MainWindow::startRepoHosts()
         if (!repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
-        auto *host = new RepoHost(repo.owner, repo.name, repo.mirrorPath,
+        auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
                                   hostWsUrl(repo), this);
         connect(host, &RepoHost::log, this, &MainWindow::logSystem);
         connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
@@ -7522,9 +7529,9 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     // Always publish under the registered account name so the catalog dedups by
     // account/name (one entry per fork) and the server can verify ownership.
-    const QString owner = accountOwner().isEmpty()
-                              ? repoSegment(repo.owner, QStringLiteral("owner"))
-                              : accountOwner();
+    // catalogOwner() is shared with the live host tunnel so the website browses
+    // the same owner the host registers under.
+    const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     const QString updatedAt = QString::number(now);
     QJsonObject metadata{{"owner", owner},

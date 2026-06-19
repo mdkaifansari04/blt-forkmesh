@@ -22,6 +22,7 @@ MAX_CONNECTIONS = 128
 MAX_OBSERVERS = 1000
 MAX_TEXT_BYTES = 96 * 1024 * 1024
 MAX_CATALOG_REPOS = 200
+MAX_ERROR_LOG = 500
 MAX_FILES = 5000
 # Issue inbox: a single signed event body is small text; cap it and the number
 # of un-merged submissions a repo's inbox will hold.
@@ -296,6 +297,11 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
+    # Server-side 5xx / error log surfaced on the admin dashboard.
+    """CREATE TABLE IF NOT EXISTS error_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
 ]
 
 
@@ -855,10 +861,179 @@ async def pulls_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+# --- Error log + admin dashboard -------------------------------------------
+
+def _html_escape(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+async def log_error(env, status, method, path, message, ray=""):
+    """Record a 5xx / unhandled error. Best-effort: never raises."""
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            """INSERT INTO error_log (ts, status, method, path, message, ray)
+               VALUES (?,?,?,?,?,?)""",
+            int(Date.now()), int(status), str(method or ""), str(path or ""),
+            str(message or "")[:1000], str(ray or ""),
+        )
+        # Keep only the most-recent MAX_ERROR_LOG rows so the table is bounded.
+        await d1_run(
+            env,
+            """DELETE FROM error_log WHERE id NOT IN
+               (SELECT id FROM error_log ORDER BY id DESC LIMIT ?)""",
+            MAX_ERROR_LOG,
+        )
+    except Exception:
+        pass
+
+
+def _admin_path(env):
+    # Dynamic, secret admin URL segment. Set ADMIN_PATH in Cloudflare vars.
+    return str(getattr(env, "ADMIN_PATH", "") or "").strip("/")
+
+
+def _check_basic_auth(env, request):
+    user = str(getattr(env, "ADMIN_USER", "") or "")
+    password = str(getattr(env, "ADMIN_PASS", "") or "")
+    if not user or not password:
+        return False  # fail closed until creds are configured
+    header = request.headers.get("authorization") or ""
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
+    except Exception:
+        return False
+    sep = decoded.find(":")
+    if sep < 0:
+        return False
+    ok_user = hmac.compare_digest(decoded[:sep], user)
+    ok_pass = hmac.compare_digest(decoded[sep + 1:], password)
+    return ok_user and ok_pass
+
+
+ADMIN_TEMPLATE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forkmesh · error log</title>
+<style>
+ body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
+ header{padding:16px 24px;border-bottom:1px solid #21262d}
+ h1{font-size:18px;margin:0}
+ .meta{color:#8b949e;font-size:13px;margin-top:4px}
+ table{border-collapse:collapse;width:100%%}
+ th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
+ th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
+ td.msg{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:520px}
+ .s5{color:#f85149;font-weight:600}
+ tr:hover{background:#161b22}
+ .empty{padding:32px 24px;color:#8b949e}
+</style></head><body>
+<header><h1>forkmesh · server error log</h1>
+<div class="meta">%(count)d most recent error(s). True Cloudflare edge errors
+(520–526) never reach the worker — cross-reference the CF-Ray
+in the Cloudflare dashboard.</div></header>
+%(table)s
+<script>
+ for (const el of document.querySelectorAll('[data-ts]')) {
+   const ms = Number(el.getAttribute('data-ts'));
+   if (ms) el.textContent = new Date(ms).toLocaleString();
+ }
+</script>
+</body></html>"""
+
+
+def render_admin_html(rows):
+    if not rows:
+        table = '<div class="empty">No errors recorded yet.</div>'
+    else:
+        body = []
+        for r in rows:
+            status = r.get("status", "")
+            cls = "s5" if str(status).startswith("5") else ""
+            body.append(
+                "<tr>"
+                '<td data-ts="%s">%s</td>'
+                '<td class="%s">%s</td>'
+                "<td>%s</td><td>%s</td>"
+                '<td class="msg">%s</td><td>%s</td>'
+                "</tr>"
+                % (
+                    _html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                    cls, _html_escape(status),
+                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
+                    _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")),
+                )
+            )
+        table = (
+            "<table><thead><tr><th>Time</th><th>Status</th><th>Method</th>"
+            "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
+            + "".join(body)
+            + "</tbody></table>"
+        )
+    return ADMIN_TEMPLATE % {"count": len(rows), "table": table}
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         url = urlparse(request.url)
 
+        # Admin error dashboard at a secret, env-configured path. Handled before
+        # routing (and outside the 5xx wrapper) so its own 401 isn't logged.
+        admin_path = _admin_path(self.env)
+        if admin_path and url.path.strip("/") == admin_path:
+            return await self._admin(request)
+
+        # Capture any unhandled exception (which surfaces as an HTTP 500) and any
+        # 5xx the handlers return, so the admin dashboard has a record of them.
+        try:
+            response = await self._route(request, url)
+        except Exception as error:
+            await log_error(
+                self.env, 500, method_name(request), url.path,
+                repr(error), request.headers.get("cf-ray") or "",
+            )
+            return json_response({"error": "internal_error"}, status=500)
+        try:
+            status = int(getattr(response, "status", 200) or 200)
+        except Exception:
+            status = 200
+        if status >= 500:
+            await log_error(
+                self.env, status, method_name(request), url.path,
+                "response status %d" % status, request.headers.get("cf-ray") or "",
+            )
+        return response
+
+    async def _admin(self, request):
+        if not _check_basic_auth(self.env, request):
+            return Response(
+                "Authentication required.",
+                status=401,
+                headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
+            )
+        await ensure_schema(self.env)
+        rows = await d1_all(
+            self.env,
+            "SELECT ts, status, method, path, message, ray FROM error_log "
+            "ORDER BY id DESC LIMIT ?",
+            MAX_ERROR_LOG,
+        )
+        return Response(
+            render_admin_html(rows),
+            status=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    async def _route(self, request, url):
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info and parse_qs(url.query).get("service", [""])[0] == "git-upload-pack":

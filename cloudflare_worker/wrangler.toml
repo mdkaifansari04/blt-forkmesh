@@ -9,7 +9,9 @@ command = "./migrate.sh"
 
 [assets]
 directory = "./public"
-run_worker_first = ["/api/*", "/health", "/*/info/refs", "/*/git-upload-pack"]
+# /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
+# handled in code rather than served as a static asset.
+run_worker_first = ["/api/*", "/health", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"
@@ -20,6 +22,12 @@ NODE_BCH_ADDRESS = ""
 DATA_KEY = "forkmesh-dev-data-key-change-me"
 # Legacy: still referenced if present; DATA_KEY supersedes it.
 ACCOUNTS_KEY = "forkmesh-dev-accounts-key-change-me"
+# Admin error dashboard vars (ADMIN_PATH / ADMIN_USER / ADMIN_PASS) are kept out
+# of this committed file. They live in .env.production (gitignored) and are
+# injected at deploy time by deploy.sh via `pywrangler deploy --var`. See
+# .env.production.example. ADMIN_PATH must start with "admin-" so it is routed
+# to the worker (see run_worker_first above); the dashboard is then served at
+# https://<host>/<ADMIN_PATH> behind HTTP Basic auth.
 
 # Durable Objects are used only for transient relaying now: the encrypted chat
 # rooms and the live file/git tunnel. All persistent data lives in D1 below.

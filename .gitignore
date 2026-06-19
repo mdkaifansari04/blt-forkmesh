@@ -1,2 +1,7 @@
 qt_client/build-forkmesh/
 cloudflare_worker/python_modules/
+
+# Local secrets / env files (the *.example templates stay tracked).
+.env
+.env.*
+!.env.*.example
