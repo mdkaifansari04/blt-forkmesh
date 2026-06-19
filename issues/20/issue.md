@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 20
 title: make the plus button for the server look better
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
