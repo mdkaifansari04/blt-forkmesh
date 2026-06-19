@@ -1269,6 +1269,18 @@ class Default(WorkerEntrypoint):
         )
 
     async def _route(self, request, url):
+        # TEMP DIAGNOSTIC (remove after debugging the admin 404): reports whether
+        # the live worker sees ADMIN_PATH and whether it equals a candidate, with
+        # no secret leak (booleans + length only).
+        if url.path == "/api/_admincheck":
+            ap = _admin_path(self.env)
+            cand = (parse_qs(url.query).get("p", [""])[0] or "").strip("/")
+            return json_response({
+                "configured": bool(ap),
+                "length": len(ap),
+                "match": bool(ap) and ap == cand,
+            })
+
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info and parse_qs(url.query).get("service", [""])[0] == "git-upload-pack":
