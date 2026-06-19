@@ -106,10 +106,11 @@ generate steady upgrade-request churn against the same DOs.
 
 ## 3. Roadmap
 
-> **Implementation status (updated):** Phase 0 (R2, R3, R4-browse, R5), the host
-> side of Phase 1 #7, and **WebSocket Hibernation (R1)** are **implemented and live**.
-> Hibernation dispatch was verified in production (chat broadcast across two clients
-> works; see §3.5). Phase 2 is a **design**, not yet built.
+> **Implementation status (updated):** Phase 0 (R2, R3, R4-browse, R5), Phase 1 #7
+> (host presence), **WebSocket Hibernation (R1)**, and Phase 3 #13 (admin load panel)
+> are **implemented and live**. Hibernation dispatch was verified in production (chat
+> broadcast across two clients; see §3.5). Phase 1 #8 (blob caching) is deferred for
+> correctness; Phase 2 (federation + WebRTC) is a **design** pending product decisions.
 
 ### Phase 0 — Quick wins ✅ IMPLEMENTED
 
@@ -150,14 +151,20 @@ bindings resolve; no production write):
    count until its next request — exact long-idle presence would want an alarm-based
    heartbeat (deferred; low value for a vanity stat).
 
-8. ⬜ **Coalesce git browsing.** Batch `/tree`+`/blob` round-trips, and cache immutable
-   blobs (addressed by commit SHA) at the edge so repeat views don't re-hit the host
-   DO.
+8. ⏸️ **Coalesce git browsing / cache blobs — DEFERRED (correctness).** The `/blob`
+   API is keyed by **path only** (no commit SHA — see `pullPath("blob", path)` in
+   [catalog.js](public/catalog.js)), so edge-caching a blob would serve **stale file
+   content after any push**. Safe caching needs an immutable key: have the client pass
+   the resolved commit SHA and key the cache by `sha + path` (content is then immutable,
+   cache forever). Worth doing for browse-heavy repos, but it's a client+server feature,
+   not a quick win — and shipping it wrong is worse than the cost it saves. Deferred
+   until after the host tunnel is verified.
 
-9. ⬜ **Add per-DO idle timeouts.** *Caveat discovered:* a blanket idle-close is wrong
-   for host sockets (a connected-but-idle host is the "repo is available" guarantee)
-   and for chat (drops participants). Scope this to truly-abandoned connections only,
-   or fold it into hibernation (§3.5).
+9. ✅/⏸️ **Per-DO idle timeouts — largely SUPERSEDED by hibernation.** Hibernation (§3.5)
+   already stops idle sockets from billing duration, which was the goal. A blanket
+   idle-*close* is actually wrong here (a connected-but-idle host is the "repo is
+   available" guarantee; closing chat drops participants), so no further action unless
+   abandoned-connection cleanup proves necessary.
 
 ### 3.5 — WebSocket Hibernation (R1) ✅ IMPLEMENTED & LIVE
 
@@ -230,12 +237,15 @@ base64 chunks (R4). Move the bytes off the central account:
 
 ### Phase 3 — Cost controls & observability
 
-**13. Surface DO metrics on the admin dashboard.** You already have an admin error-log
-dashboard ([entry.py](src/entry.py) `render_admin_html`); add request/duration
-counters (and the new `host_presence` count) so you can *see* what drives cost.
+**13. ✅ DONE — live load panel on the admin dashboard.** The admin page
+([entry.py](src/entry.py) `admin_stats` / `render_admin_html`) now shows the things
+that actually hold a Durable Object open — **live hosts** and **chat clients** — plus
+catalog size and 24h error count. That's the at-a-glance signal for whether DO load is
+under control.
 
-**14. Budgets and graceful degradation.** Define per-day soft caps; when exceeded,
+**14. ⬜ Budgets and graceful degradation.** Define per-day soft caps; when exceeded,
 degrade live features (counts go stale, chat read-only) rather than returning 5xx.
+Deferred — only worth building once real traffic shows where the ceiling is.
 
 ---
 
@@ -247,14 +257,20 @@ requests (R3, R4-browse), and **WebSocket hibernation (R1)** so idle chat/host s
 bill ~no duration. Live presence is read from D1, read-heavy endpoints are edge-cached.
 Together these target every cost axis identified in §2.
 
-**Next, in priority order:**
+Observability is in place too: the admin dashboard now shows live hosts/clients so you
+can watch DO load directly (Phase 3 #13).
+
+**What's left (all needs your input or real traffic — not blind code):**
 1. **Exercise the host tunnel** (§3.5 remaining check) with a real desktop host —
-   `git clone` + file browse — to confirm hibernation under tunnel load.
-2. **Phase 1 #8/#9** — edge-cache immutable git blobs (by commit SHA) and scoped idle
-   handling.
-3. **Phase 2** — federation + WebRTC P2P: the durable answer to "free for the masses,"
-   gated on the trust-model and TURN decisions called out above.
-4. **Phase 3** — metrics + budgets so cost stays visible and degrades gracefully.
+   `git clone` + file browse — to confirm hibernation under tunnel load. *(Only you can
+   do this; it needs a connected host.)*
+2. **Phase 1 #8 (blob caching)** — deferred for correctness; needs the client to pass a
+   commit SHA so blobs can be keyed immutably. Do it after the tunnel is verified, if
+   browse traffic warrants.
+3. **Phase 2 — federation + WebRTC P2P** — the durable answer to "free for the masses,"
+   gated on your decisions: open vs. allowlisted federation, the end-to-end trust model,
+   and STUN/TURN. This is a project, not a patch.
+4. **Phase 3 #14 (budgets)** — wire once real traffic shows the ceiling.
 
 > ⚠️ Before deploying any of this: the worker's deploy must target the correct
 > Cloudflare account. `CLOUDFLARE_ACCOUNT_ID` is now pinned in the gitignored

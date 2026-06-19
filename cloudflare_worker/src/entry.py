@@ -1079,6 +1079,32 @@ def _admin_path(env):
     return str(getattr(env, "ADMIN_PATH", "") or "").strip("/")
 
 
+async def admin_stats(env):
+    # Cheap snapshot for the dashboard so the operator can watch whether Durable
+    # Object load is under control: live hosts/clients (the things that hold a DO
+    # open) plus catalog size and recent error volume. All from D1 + one count.
+    await ensure_schema(env)
+    cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+    try:
+        await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
+    host_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff
+    )
+    err_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
+        int(Date.now()) - 24 * 60 * 60 * 1000,
+    )
+    return {
+        "repos": int((repo_row or {}).get("n", 0) or 0),
+        "hosts": int((host_row or {}).get("n", 0) or 0),
+        "clients": await _flagship_client_count(env),
+        "errors_24h": int((err_row or {}).get("n", 0) or 0),
+    }
+
+
 def _check_basic_auth(env, request):
     user = str(getattr(env, "ADMIN_USER", "") or "")
     password = str(getattr(env, "ADMIN_PASS", "") or "")
@@ -1115,11 +1141,18 @@ ADMIN_TEMPLATE = """<!doctype html>
  .s5{color:#f85149;font-weight:600}
  tr:hover{background:#161b22}
  .empty{padding:32px 24px;color:#8b949e}
+ .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px}
+ .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 18px;min-width:120px}
+ .card .n{font-size:24px;font-weight:600}
+ .card .l{color:#8b949e;font-size:12px;margin-top:2px}
+ .card.warn .n{color:#f85149}
 </style></head><body>
-<header><h1>forkmesh · server error log</h1>
-<div class="meta">%(count)d most recent error(s). True Cloudflare edge errors
+<header><h1>forkmesh · admin</h1>
+<div class="meta">Live Durable Object load (hosts + clients are what hold a DO
+open). %(count)d most recent error(s) below. True Cloudflare edge errors
 (520–526) never reach the worker — cross-reference the CF-Ray
 in the Cloudflare dashboard.</div></header>
+%(stats)s
 %(table)s
 <script>
  for (const el of document.querySelectorAll('[data-ts]')) {
@@ -1130,7 +1163,25 @@ in the Cloudflare dashboard.</div></header>
 </body></html>"""
 
 
-def render_admin_html(rows):
+def _render_admin_stats(stats):
+    if not stats:
+        return ""
+    cards = [
+        ("hosts", "live hosts", False),
+        ("clients", "chat clients", False),
+        ("repos", "catalog repos", False),
+        ("errors_24h", "errors (24h)", True),
+    ]
+    out = []
+    for key, label, warn in cards:
+        value = stats.get(key, 0)
+        cls = "card warn" if warn and value else "card"
+        out.append('<div class="%s"><div class="n">%s</div><div class="l">%s</div></div>'
+                    % (cls, _html_escape(value), label))
+    return '<div class="cards">' + "".join(out) + "</div>"
+
+
+def render_admin_html(rows, stats=None):
     if not rows:
         table = '<div class="empty">No errors recorded yet.</div>'
     else:
@@ -1158,7 +1209,11 @@ def render_admin_html(rows):
             + "".join(body)
             + "</tbody></table>"
         )
-    return ADMIN_TEMPLATE % {"count": len(rows), "table": table}
+    return ADMIN_TEMPLATE % {
+        "count": len(rows),
+        "table": table,
+        "stats": _render_admin_stats(stats),
+    }
 
 
 class Default(WorkerEntrypoint):
@@ -1206,8 +1261,9 @@ class Default(WorkerEntrypoint):
             "ORDER BY id DESC LIMIT ?",
             MAX_ERROR_LOG,
         )
+        stats = await admin_stats(self.env)
         return Response(
-            render_admin_html(rows),
+            render_admin_html(rows, stats),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
