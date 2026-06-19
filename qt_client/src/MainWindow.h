@@ -116,6 +116,10 @@ private:
                                 int *status);
     QJsonObject getAccountSync(const QString &leaf, int *status);
     QString accountOwner() const; // the registered account name (repo namespace)
+    // The owner a repo is published/browsed under on the website. Must match the
+    // owner the live host tunnel registers with, or the website can't find the
+    // host. Mirrors the fallback used when publishing.
+    QString catalogOwner(const RepositoryRecord &repo) const;
     void runQuickUpdate();
     void buildAndRelaunch(const QString &clientDir);
     void runUpdateStep(const QString &program, const QStringList &arguments,

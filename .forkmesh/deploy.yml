@@ -6,5 +6,18 @@ jobs:
       # CI/CD gate: run the crypto tests first; a failure aborts before deploy.
       - name: Run tests
         run: python3 cloudflare_worker/tests/test_crypto.py
+      # .env.production is gitignored, so materialize it from CI secrets. deploy.sh
+      # reads it and passes the values to wrangler as --var overrides.
+      - name: Write production env (admin dashboard vars)
+        env:
+          ADMIN_PATH: ${{ secrets.ADMIN_PATH }}
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          cat > cloudflare_worker/.env.production <<EOF
+          ADMIN_PATH=${ADMIN_PATH}
+          ADMIN_USER=${ADMIN_USER}
+          ADMIN_PASS=${ADMIN_PASS}
+          EOF
       - name: Deploy worker
-        run: cd cloudflare_worker && uvx --from workers-py pywrangler deploy
+        run: cd cloudflare_worker && ./deploy.sh
