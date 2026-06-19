@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.3.0 LANGUAGES CXX)
+project(ForkMesh VERSION 0.4.1 LANGUAGES CXX)
 
 # Baked into the binaries: shown in the UI, and the quick-update button uses
 # the source dir to git pull + rebuild when running from a checkout.
@@ -11,12 +11,14 @@ add_compile_definitions(
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
 find_package(OpenSSL REQUIRED)
 
 qt_add_executable(forkmesh
     src/main.cpp
+    resources/icons.qrc
     src/Theme.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
@@ -62,6 +64,7 @@ option(FORKMESH_BUILD_TESTS "Build the headless smoke tests" ON)
 if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-tests
         tests/test_crypto.cpp
+        resources/icons.qrc
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
         src/RoomCrypto.h

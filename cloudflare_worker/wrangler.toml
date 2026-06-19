@@ -16,7 +16,7 @@ directory = "./public"
 not_found_handling = "single-page-application"
 # /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
 # handled in code rather than served as a static asset.
-run_worker_first = ["/api/*", "/health", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
+run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"

@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Network · ForkMesh</title>
+    <meta
+      name="description"
+      content="ForkMesh network architecture, relay status, and host tunnel model."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Tailwind CSS Play CDN -->
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script src="static-page.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img
+            class="brand-mark"
+            src="/assets/logo.png"
+            alt=""
+            aria-hidden="true"
+          />
+          <span>ForkMesh</span>
+        </a>
+
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/" aria-current="page">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/#roomchat">Chat</a>
+        </nav>
+
+        <div class="header-actions">
+          <div class="clients-pill" aria-live="polite">
+            <span class="clients-dot" id="clients-dot"></span>
+            <span id="clients-count">Checking…</span>
+          </div>
+          <button
+            id="theme-toggle"
+            class="icon-button"
+            type="button"
+            aria-label="Toggle theme"
+          >
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"
+              ></path>
+            </svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path
+                d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"
+              ></path>
+            </svg>
+          </button>
+          <a class="install-link" href="/#install-banner">Install</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section
+        class="page-hero two-column-hero"
+        aria-labelledby="network-title"
+      >
+        <div>
+          <p class="eyebrow">Network status</p>
+          <h1 id="network-title">
+            A private relay layer for distributed Git hosts.
+          </h1>
+          <p class="hero-copy">
+            ForkMesh keeps code on independently operated desktop nodes while
+            Cloudflare coordinates discovery, live host tunnels, encrypted
+            rooms, and Git clone routing.
+          </p>
+          <div class="hero-actions">
+            <a class="primary-button" href="/#catalog">Browse repositories</a>
+            <a class="secondary-button" href="/docs/">Read docs</a>
+          </div>
+        </div>
+        <div class="flow-card" aria-label="Network path diagram">
+          <div class="flow-node">Browser / Git client</div>
+          <span>↓</span>
+          <div class="flow-node accent">Cloudflare Worker</div>
+          <span>↓</span>
+          <div class="flow-node">Durable Object registry</div>
+          <span>↓</span>
+          <div class="flow-node accent">Outbound host tunnel</div>
+          <span>↓</span>
+          <div class="flow-node">Desktop node + Git mirror</div>
+        </div>
+      </section>
+
+      <section
+        class="stats-grid network-stats"
+        aria-label="Live network metrics"
+      >
+        <article class="stat-card icon-stat">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span>Online clients</span>
+          <strong id="network-clients">—</strong>
+        </article>
+        <article class="stat-card icon-stat">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+            <path d="M8 21h8M12 17v4"></path>
+          </svg>
+          <span>Live hosts</span>
+          <strong id="network-hosts">—</strong>
+        </article>
+        <article class="stat-card icon-stat">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"
+            ></path>
+            <path d="M8 9h8M8 13h5"></path>
+          </svg>
+          <span>Cataloged repos</span>
+          <strong id="network-repos">—</strong>
+        </article>
+        <article class="stat-card icon-stat">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 6v6l4 2"></path>
+          </svg>
+          <span>Relay role</span>
+          <strong class="small-stat">Control plane</strong>
+        </article>
+      </section>
+
+      <section class="panel doc-panel" aria-labelledby="architecture-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="architecture-title">Network architecture</h2>
+            <p>
+              Adapted from the redesign, corrected to match the current Worker +
+              Durable Object implementation.
+            </p>
+          </div>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2v20M2 12h20"></path>
+              <circle cx="12" cy="12" r="9"></circle>
+            </svg>
+            <h3>Catalog Durable Object</h3>
+            <p>
+              Maintains the public repository index and metadata returned by
+              <code>/api/repositories</code>.
+            </p>
+          </article>
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7h10v10H7z"></path>
+              <path d="M3 12h4M17 12h4M12 3v4M12 17v4"></path>
+            </svg>
+            <h3>Host tunnel</h3>
+            <p>
+              Desktop nodes keep outbound WebSocket tunnels open, so private
+              host IPs are not exposed to visitors.
+            </p>
+          </article>
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9v1a5 5 0 0 1-5 5H9"
+              ></path>
+            </svg>
+            <h3>Git clone protocol</h3>
+            <p>
+              <code>git clone https://forkmesh.com/owner/repo</code> streams
+              upload-pack data from the active host.
+            </p>
+          </article>
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 8v4M12 16h.01"></path>
+            </svg>
+            <h3>Issue / PR sync</h3>
+            <p>
+              Signed issue and patch submissions can arrive through Worker
+              inboxes, then become Git files when merged.
+            </p>
+          </article>
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"
+              ></path>
+            </svg>
+            <h3>Encrypted rooms</h3>
+            <p>
+              Chat payloads are encrypted before relay; the room Durable Object
+              broadcasts ciphertext and live counts.
+            </p>
+          </article>
+          <article class="feature-card">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 4h16v16H4z"></path>
+              <path d="M8 8h8v8H8z"></path>
+            </svg>
+            <h3>Storage boundary</h3>
+            <p>
+              The Worker coordinates and relays. Canonical Git objects live on
+              the hosting desktop mirror.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="docs-grid">
+        <article class="side-section doc-card">
+          <h2>What users see</h2>
+          <p>
+            Users browse repositories through ForkMesh URLs. They see Cloudflare
+            as the reachable edge, not the host node's real private address.
+          </p>
+          <div class="mini-metric">
+            <span>Public endpoint</span><strong>Cloudflare</strong>
+          </div>
+          <div class="mini-metric">
+            <span>Repo source</span><strong>Desktop host</strong>
+          </div>
+        </article>
+        <article class="side-section doc-card">
+          <h2>What Cloudflare sees</h2>
+          <p>
+            Cloudflare is still a trusted jump layer. Stronger privacy should
+            keep payloads encrypted end-to-end where possible.
+          </p>
+          <div class="mini-metric">
+            <span>Metadata</span><strong>Visible to relay</strong>
+          </div>
+          <div class="mini-metric">
+            <span>Chat body</span><strong>Client encrypted</strong>
+          </div>
+        </article>
+        <article class="side-section doc-card">
+          <h2>Failure state</h2>
+          <p>
+            If no desktop host is connected, fresh file browsing and clone are
+            unavailable. Browser-cached files may still be visible locally.
+          </p>
+          <div class="mini-metric">
+            <span>No host</span><strong>Fresh data offline</strong>
+          </div>
+          <div class="mini-metric">
+            <span>Cache</span><strong>Browser only</strong>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

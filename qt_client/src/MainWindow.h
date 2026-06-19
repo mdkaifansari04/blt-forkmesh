@@ -93,6 +93,7 @@ public:
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
+    void refreshThemedIcons();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -175,6 +176,7 @@ private:
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
     QWidget *buildAboutSidebar();
+    QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Pull requests tab (cross-node, patch-based) with explorer + diff viewer.
@@ -245,6 +247,7 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    void loadRepoInsights();
     void setRepoBranch(const QString &branch);
     QString currentRef() const;
     QString repoGitDir() const;
@@ -477,6 +480,14 @@ private:
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QListWidget *m_commitsList = nullptr;
+    QLabel *m_insightsSummary = nullptr;
+    QLabel *m_insightsTraffic = nullptr;
+    QLabel *m_insightsLanguageBar = nullptr;
+    QLabel *m_insightsLanguageLegend = nullptr;
+    QLabel *m_insightsActivity = nullptr;
+    QTableWidget *m_insightsContributors = nullptr;
+    QTableWidget *m_insightsRecentCommits = nullptr;
+    QPushButton *m_insightsRefreshButton = nullptr;
     // Commits tab: a stack flipping between the list and a per-commit diff view.
     QStackedWidget *m_commitsStack = nullptr;
     QLabel *m_commitTitle = nullptr;

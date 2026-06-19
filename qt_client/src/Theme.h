@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QString>
+
 // ForkMesh theme — GitHub (Primer) dark:
 //   canvas  #0d1117   surface/inset #161b22   header/rail #010409
 //   border  #30363d / muted #21262d
@@ -15,6 +17,18 @@ inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
                                        "#39c5cf", "#db6d28"};
 inline constexpr int kSenderPaletteSize = 8;
+
+inline const char *iconColorForButton(const QString &objectName, bool dark)
+{
+    if (objectName == QStringLiteral("primaryButton") ||
+        objectName == QStringLiteral("toolbarPrimaryButton"))
+        return "#ffffff";
+    if (objectName == QStringLiteral("dangerButton"))
+        return dark ? "#f85149" : "#cf222e";
+    if (objectName == QStringLiteral("repoTab"))
+        return dark ? "#8b949e" : "#656d76";
+    return dark ? "#e6edf3" : "#1f2328";
+}
 
 inline const char *kStyleSheet = R"(
 * { outline: none; }
@@ -164,6 +178,11 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList::item { padding: 8px; color: #e6edf3; border-bottom: 1px solid #21262d; }
 #commitsList::item:hover { background-color: #161b22; }
 #placeholderPanel { color: #e6edf3; font-size: 16px; }
+#insightsPage QLabel { background: transparent; }
+#insightsCard {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 10px; color: #e6edf3;
+}
 
 /* --- Server favicon rail --- */
 #serverRail { background-color: #010409; border-right: 1px solid #30363d; }
@@ -378,6 +397,158 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 
 QMessageBox, QInputDialog, QDialog { background-color: #161b22; }
+
+/* --- ForkMesh updated non-Home polish overrides --- */
+QPushButton[buttonSize="sm"] {
+    min-height: 24px; max-height: 28px; padding: 3px 8px;
+    font-size: 12px; border-radius: 6px;
+}
+QPushButton#repoTab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: #8b949e;
+    font-weight: 600;
+    padding: 6px 10px;
+}
+QPushButton#repoTab:hover { color: #e6edf3; background: transparent; }
+QPushButton#repoTab:checked {
+    color: #e6edf3;
+    border-bottom: 2px solid #2ea043;
+    border-radius: 0;
+    background: transparent;
+}
+QPushButton#repoAction {
+    background-color: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #e6edf3;
+    min-height: 24px;
+    max-height: 28px;
+}
+QPushButton#repoAction:hover { background-color: #30363d; }
+QPushButton#repoAction::menu-indicator { width: 0; }
+QPushButton#serverAddButton {
+    background-color: #0d1117;
+    border: 1px dashed #30363d;
+    border-radius: 12px;
+    color: #8b949e;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 0;
+    text-align: center;
+}
+QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; background-color: #0d1117; }
+#sectionCard, #settingsCard {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+}
+#sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+#settingsTitle { font-size: 20px; font-weight: 800; }
+#avatarPreview {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    color: #6e7681;
+    font-size: 11px;
+}
+#networkLog {
+    background-color: #010409;
+    border: none;
+    color: #8b949e;
+    font-family: monospace;
+    font-size: 12px;
+}
+#logDock { background-color: #010409; border-top: 1px solid #30363d; }
+#issueQuickAdd {
+    background-color: #0d1117;
+    border: 1px dashed #30363d;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 12px;
+    min-height: 24px;
+    max-height: 28px;
+}
+#issueQuickAdd:focus { border-color: #58a6ff; }
+QLineEdit#issueSearch, QComboBox#issueControlSm {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    min-height: 24px;
+    max-height: 28px;
+}
+QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #58a6ff; }
+QPlainTextEdit#issueComposerSm {
+    background-color: #161b22;
+    color: #e6edf3;
+    border: 1px solid #484f58;
+    border-radius: 8px;
+    padding: 8px;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#issueComposerSm:focus { border: 1px solid #58a6ff; }
+#issueTable {
+    background-color: #0d1117;
+    alternate-background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    gridline-color: #21262d;
+    selection-background-color: #1f6feb;
+    selection-color: #ffffff;
+}
+#issueTable::item { padding: 6px 8px; color: #c9d1d9; }
+#issueTable::item:hover { background-color: #161b22; color: #e6edf3; }
+#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; }
+#issueTable QHeaderView::section {
+    background-color: #161b22;
+    color: #8b949e;
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid #30363d;
+    font-weight: 700;
+}
+#issueTable QTableCornerButton::section {
+    background-color: #161b22;
+    border: none;
+    border-bottom: 1px solid #30363d;
+}
+#codeEditor {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    color: #e6edf3;
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 12px;
+    selection-background-color: #264f78;
+    selection-color: #ffffff;
+}
+#codeLineNumberArea {
+    background-color: #0d1117;
+    border-right: 1px solid #21262d;
+}
+#diffView {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #e6edf3;
+    font-family: monospace;
+    font-size: 12px;
+}
+#readmeView {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 12px;
+    color: #e6edf3;
+}
+
 )";
 
 // GitHub (Primer) light:
@@ -533,6 +704,11 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList::item { padding: 8px; color: #1f2328; border-bottom: 1px solid #d8dee4; }
 #commitsList::item:hover { background-color: #f6f8fa; }
 #placeholderPanel { color: #1f2328; font-size: 16px; }
+#insightsPage QLabel { background: transparent; }
+#insightsCard {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+    padding: 10px; color: #1f2328;
+}
 
 /* --- Server favicon rail --- */
 #serverRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
@@ -747,6 +923,158 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 
 QMessageBox, QInputDialog, QDialog { background-color: #ffffff; }
+
+/* --- ForkMesh updated non-Home polish overrides --- */
+QPushButton[buttonSize="sm"] {
+    min-height: 24px; max-height: 28px; padding: 3px 8px;
+    font-size: 12px; border-radius: 6px;
+}
+QPushButton#repoTab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: #656d76;
+    font-weight: 600;
+    padding: 6px 10px;
+}
+QPushButton#repoTab:hover { color: #1f2328; background: transparent; }
+QPushButton#repoTab:checked {
+    color: #1f2328;
+    border-bottom: 2px solid #1f883d;
+    border-radius: 0;
+    background: transparent;
+}
+QPushButton#repoAction {
+    background-color: #eaeef2;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #1f2328;
+    min-height: 24px;
+    max-height: 28px;
+}
+QPushButton#repoAction:hover { background-color: #d0d7de; }
+QPushButton#repoAction::menu-indicator { width: 0; }
+QPushButton#serverAddButton {
+    background-color: #ffffff;
+    border: 1px dashed #d0d7de;
+    border-radius: 12px;
+    color: #656d76;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 0;
+    text-align: center;
+}
+QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; background-color: #ffffff; }
+#sectionCard, #settingsCard {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+}
+#sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+#settingsTitle { font-size: 20px; font-weight: 800; }
+#avatarPreview {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 12px;
+    color: #6e7681;
+    font-size: 11px;
+}
+#networkLog {
+    background-color: #f6f8fa;
+    border: none;
+    color: #656d76;
+    font-family: monospace;
+    font-size: 12px;
+}
+#logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#issueQuickAdd {
+    background-color: #ffffff;
+    border: 1px dashed #d0d7de;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 12px;
+    min-height: 24px;
+    max-height: 28px;
+}
+#issueQuickAdd:focus { border-color: #0969da; }
+QLineEdit#issueSearch, QComboBox#issueControlSm {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    min-height: 24px;
+    max-height: 28px;
+}
+QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #0969da; }
+QPlainTextEdit#issueComposerSm {
+    background-color: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 8px;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#issueComposerSm:focus { border: 1px solid #0969da; }
+#issueTable {
+    background-color: #ffffff;
+    alternate-background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    gridline-color: #eaeef2;
+    selection-background-color: #0969da;
+    selection-color: #ffffff;
+}
+#issueTable::item { padding: 6px 8px; color: #1f2328; }
+#issueTable::item:hover { background-color: #ffffff; color: #1f2328; }
+#issueTable::item:selected { background-color: #0969da; color: #ffffff; }
+#issueTable QHeaderView::section {
+    background-color: #ffffff;
+    color: #656d76;
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid #d0d7de;
+    font-weight: 700;
+}
+#issueTable QTableCornerButton::section {
+    background-color: #ffffff;
+    border: none;
+    border-bottom: 1px solid #d0d7de;
+}
+#codeEditor {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    color: #1f2328;
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 12px;
+    selection-background-color: #0969da;
+    selection-color: #ffffff;
+}
+#codeLineNumberArea {
+    background-color: #ffffff;
+    border-right: 1px solid #eaeef2;
+}
+#diffView {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    color: #1f2328;
+    font-family: monospace;
+    font-size: 12px;
+}
+#readmeView {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 12px;
+    color: #1f2328;
+}
+
 )";
 
 // The stylesheet matching the OS color scheme (dark by default).

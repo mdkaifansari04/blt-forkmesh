@@ -1,11 +1,19 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ForkMesh</title>
-    <meta name="description" content="ForkMesh is a distributed source-code preservation and collaboration network.">
-    <link rel="stylesheet" href="styles.css">
+    <meta
+      name="description"
+      content="ForkMesh is a distributed source-code preservation and collaboration network."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Tailwind CSS Play CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="styles.css" />
+
     <script src="catalog.js" defer></script>
     <script src="chat.js" defer></script>
   </head>
@@ -13,122 +21,239 @@
     <header class="site-header">
       <div class="header-inner">
         <a class="brand" href="/" aria-label="ForkMesh home">
-          <img src="assets/forkmesh-mark.svg" alt="" width="32" height="32">
+          <img
+            class="brand-mark"
+            src="/assets/logo.png"
+            alt=""
+            aria-hidden="true"
+          />
           <span>ForkMesh</span>
         </a>
+
         <nav class="global-nav" aria-label="Global">
-          <a href="#">Repositories</a>
-          <a href="#clients">Network</a>
-          <a href="#readme">Docs</a>
-          <a href="#roadmap">Roadmap</a>
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/#roomchat">Chat</a>
         </nav>
+
+        <label class="header-search" aria-label="Search repositories">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.5-3.5"></path>
+          </svg>
+          <input
+            id="repo-search"
+            type="search"
+            placeholder="Search repositories..."
+            autocomplete="off"
+          />
+          <kbd>/</kbd>
+        </label>
+
+        <div class="header-actions">
+          <div class="clients-pill" aria-live="polite">
+            <span class="clients-dot" id="clients-dot"></span>
+            <span id="clients-count">Checking…</span>
+          </div>
+          <button
+            id="theme-toggle"
+            class="icon-button"
+            type="button"
+            aria-label="Toggle theme"
+          >
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"
+              ></path>
+            </svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path
+                d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"
+              ></path>
+            </svg>
+          </button>
+          <a class="install-link" href="#install-banner">Install</a>
+        </div>
       </div>
     </header>
 
-    <div class="install-banner">
-      <span class="install-label">Install the desktop client</span>
-      <code id="install-cmd">curl -fsSL https://forkmesh.com/install.sh | bash</code>
-      <button id="install-copy" class="install-copy" type="button">Copy</button>
+    <div id="install-banner" class="install-banner">
+      <div class="install-copyblock">
+        <strong>Install the desktop node</strong>
+        <span
+          >Clone, build, and run the native Qt client that hosts mirrors from
+          your machine.</span
+        >
+      </div>
+      <code id="install-cmd"
+        >curl -fsSL https://forkmesh.com/install.sh | bash</code
+      >
+      <button id="install-copy" class="copy-button" type="button">Copy</button>
+      <button
+        id="install-dismiss"
+        class="icon-button"
+        type="button"
+        aria-label="Dismiss install banner"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
     </div>
 
     <main id="top">
-      <!-- ======================= HOME: repo list + clients ===================== -->
       <div id="home-view">
-        <section class="network-panel" aria-labelledby="network-title">
-          <div class="network-copy">
-            <p class="eyebrow">Distributed source-code preservation</p>
-            <h2 id="network-title">Browse the repositories this network is preserving.</h2>
-            <p>ForkMesh pairs local bare Git mirrors with signed identities and mainnode relay rooms. Pick a repository to browse its files live from the client hosting it.</p>
-            <div class="network-actions">
-              <a class="primary-button" href="#catalog">Browse repositories</a>
-              <a class="secondary-link" href="#readme">Read README</a>
-            </div>
+        <section class="hero" aria-labelledby="hero-title">
+          <p class="eyebrow">Distributed source-code preservation</p>
+          <h1 id="hero-title">Code hosting that lives on the network.</h1>
+          <p class="hero-copy">
+            ForkMesh pairs local Git mirrors, signed identities, live host
+            tunnels, encrypted rooms, and in-repo collaboration records so
+            projects are not locked to one central forge.
+          </p>
+          <div class="hero-actions">
+            <a class="primary-button" href="#catalog">Browse repositories</a>
+            <a class="secondary-button" href="/docs/">Read docs</a>
           </div>
-          <img class="network-image" src="assets/repo-network.svg" alt="ForkMesh repository network graphic" width="960" height="520">
         </section>
 
-        <div class="page-grid">
-          <div class="content-column">
-            <section id="catalog" class="catalog-card" aria-labelledby="catalog-title">
-              <div class="readme-header">
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M2.75 1A1.75 1.75 0 0 0 1 2.75v8.5C1 12.22 1.78 13 2.75 13h2.5c.41 0 .75-.34.75-.75s-.34-.75-.75-.75h-2.5a.25.25 0 0 1-.25-.25v-8.5c0-.14.11-.25.25-.25h10.5c.14 0 .25.11.25.25v8.5c0 .14-.11.25-.25.25h-2.5a.75.75 0 0 0 0 1.5h2.5A1.75 1.75 0 0 0 15 11.25v-8.5A1.75 1.75 0 0 0 13.25 1Zm4.5 5.5a.75.75 0 0 1 1.5 0v6.19l1.22-1.22a.75.75 0 1 1 1.06 1.06l-2.5 2.5a.75.75 0 0 1-1.06 0l-2.5-2.5a.75.75 0 1 1 1.06-1.06l1.22 1.22Z"/>
-                </svg>
-                <h2 id="catalog-title">Network Repositories</h2>
-              </div>
-              <div class="catalog-toolbar">
-                <p>Click a repository to open its page and browse files live from the client hosting it.</p>
-                <span id="catalog-count">Loading</span>
-              </div>
-              <div id="catalog-list" class="catalog-list" aria-live="polite">
-                <div class="catalog-empty">Loading repository catalog...</div>
-              </div>
-            </section>
+        <section class="stats-grid" aria-label="Network stats">
+          <article class="stat-card">
+            <span>Repositories</span><strong id="stat-repos">—</strong>
+          </article>
+          <article class="stat-card">
+            <span>Live hosts</span><strong id="stat-hosts">—</strong>
+          </article>
+          <article class="stat-card">
+            <span>Issue model</span><strong id="stat-issues">Git</strong>
+          </article>
+          <article class="stat-card">
+            <span>PR model</span><strong id="stat-pulls">Patch</strong>
+          </article>
+        </section>
 
-            <section id="readme" class="readme-card" aria-labelledby="readme-title">
-              <div class="readme-header">
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M2.5 1.75A1.75 1.75 0 0 1 4.25 0h8A1.75 1.75 0 0 1 14 1.75v11.5A1.75 1.75 0 0 1 12.25 15h-8a1.75 1.75 0 0 1-1.75-1.75ZM4.25 1.5a.25.25 0 0 0-.25.25v11.5c0 .14.11.25.25.25h8c.14 0 .25-.11.25-.25V1.75a.25.25 0 0 0-.25-.25Zm1 3h6v1.25h-6Zm0 2.5h6v1.25h-6Zm0 2.5h3.75v1.25H5.25Z"/>
-                </svg>
-                <h2 id="readme-title">README</h2>
+        <div class="home-grid">
+          <section
+            id="catalog"
+            class="panel catalog-panel"
+            aria-labelledby="catalog-title"
+          >
+            <div class="panel-header catalog-header">
+              <div>
+                <h2 id="catalog-title">Repositories</h2>
+                <p>
+                  Mirrors published by ForkMesh desktop nodes. Open a repo to
+                  browse files live from its host.
+                </p>
               </div>
-              <div class="readme-body">
-                <h3>ForkMesh</h3>
-                <p>ForkMesh is an open-source desktop node and relay prototype for hosting, mirroring, discovering, and discussing software projects without depending on one central code-hosting company.</p>
-                <div class="readme-grid">
-                  <article>
-                    <h4>Desktop node</h4>
-                    <p>Qt 6 app with Ed25519 identity keys, local bare Git mirrors, profile metadata, BCH address fields, and repository-scoped chat channels.</p>
-                  </article>
-                  <article>
-                    <h4>Mainnode relay</h4>
-                    <p>Python Cloudflare Worker routes encrypted WebSocket traffic through Durable Object rooms without storing message bodies.</p>
-                  </article>
-                </div>
-              </div>
-            </section>
+              <span id="catalog-count" class="count-pill">Loading</span>
+            </div>
 
-            <section id="roadmap" class="roadmap-card" aria-labelledby="roadmap-title">
-              <div class="readme-header">
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M2 2.75A.75.75 0 0 1 2.75 2h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 2.75Zm0 5A.75.75 0 0 1 2.75 7h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 7.75Zm0 5A.75.75 0 0 1 2.75 12h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 12.75Z"/>
+            <div class="catalog-controls">
+              <label class="inline-search" aria-label="Filter repositories">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7"></circle>
+                  <path d="m20 20-3.5-3.5"></path>
                 </svg>
-                <h2 id="roadmap-title">Next</h2>
+                <input
+                  id="repo-search-inline"
+                  type="search"
+                  placeholder="Filter repositories..."
+                  autocomplete="off"
+                />
+              </label>
+              <div class="view-toggle" aria-label="View mode">
+                <button
+                  id="view-list"
+                  class="is-active"
+                  type="button"
+                  aria-label="List view"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"
+                    ></path>
+                  </svg>
+                </button>
+                <button id="view-grid" type="button" aria-label="Grid view">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="3" width="7" height="7"></rect>
+                    <rect x="3" y="14" width="7" height="7"></rect>
+                    <rect x="14" y="14" width="7" height="7"></rect>
+                  </svg>
+                </button>
               </div>
-              <div class="roadmap-list">
-                <div><span></span>Signed issues, comments, pull requests, releases, and mirror-health reports</div>
-                <div><span></span>Leaderboards for hosted repositories, uptime, and contributor activity</div>
-                <div><span></span>BCH registration and community faucet flow for Sybil resistance</div>
-              </div>
-            </section>
-          </div>
+            </div>
+
+            <div id="catalog-list" class="catalog-list" aria-live="polite">
+              <div class="catalog-empty">Loading repository catalog…</div>
+            </div>
+          </section>
 
           <aside class="sidebar" aria-label="Network sidebar">
-            <section class="side-section">
-              <h2>About</h2>
-              <p>A distributed Git preservation and collaboration network with local mirrors, signed identities, encrypted chat, and federated mainnodes.</p>
-            </section>
-
-            <section id="clients" class="side-section">
-              <h2>Connected clients</h2>
-              <div class="clients-status" aria-live="polite">
-                <span class="clients-dot" id="clients-dot"></span>
-                <span id="clients-count">Checking&hellip;</span>
+            <section id="network-overview" class="side-section">
+              <h2>Network status</h2>
+              <p>
+                Cloudflare coordinates catalog, live tunnels, and encrypted
+                rooms. Actual Git data is streamed from connected desktop nodes.
+              </p>
+              <div class="mini-metric">
+                <span>Relay role</span><strong>Control plane</strong>
               </div>
-              <p class="clients-note">Live count of clients in the mainnode <code>general</code> room.</p>
+              <div class="mini-metric">
+                <span>Data plane</span><strong>Live host tunnel</strong>
+              </div>
+              <a class="secondary-button wide" href="/network/"
+                >Open network page</a
+              >
             </section>
 
-            <section id="roomchat" class="side-section">
+            <section id="protocol-summary" class="side-section">
+              <h2>Protocol notes</h2>
+              <ul class="protocol-list">
+                <li>Code lives on local Git mirrors.</li>
+                <li>Clone uses live Git upload-pack through the relay.</li>
+                <li>Issues and PRs become Git files once merged.</li>
+                <li>Chat payloads are encrypted before relay.</li>
+              </ul>
+              <a class="secondary-button wide" href="/docs/"
+                >Open docs</a
+              >
+            </section>
+
+            <section id="roomchat" class="side-section chat-panel">
               <h2>Room chat</h2>
-              <p class="clients-note">Chat with connected ForkMesh clients in the public <code>#general</code> room. Messages are end-to-end encrypted in your browser.</p>
+              <p class="clients-note">
+                Public <code>#general</code> room. Messages are encrypted in the
+                browser before relay.
+              </p>
               <div id="chat-log" class="chat-log" aria-live="polite">
                 <div class="chat-empty">Type below to join the room.</div>
               </div>
               <div class="chat-compose">
-                <input id="chat-name" class="chat-name" type="text" maxlength="32" placeholder="Your name" autocomplete="off">
+                <input
+                  id="chat-name"
+                  class="chat-name"
+                  type="text"
+                  maxlength="32"
+                  placeholder="Your name"
+                  autocomplete="off"
+                />
                 <div class="chat-row">
-                  <input id="chat-input" class="chat-input" type="text" maxlength="16000" placeholder="Message #general" autocomplete="off">
-                  <button id="chat-send" class="chat-send" type="button">Send</button>
+                  <input
+                    id="chat-input"
+                    class="chat-input"
+                    type="text"
+                    maxlength="16000"
+                    placeholder="Message #general"
+                    autocomplete="off"
+                  />
+                  <button id="chat-send" class="chat-send" type="button">
+                    Send
+                  </button>
                 </div>
                 <span id="chat-status" class="chat-status">Not connected</span>
               </div>
@@ -137,71 +262,167 @@
         </div>
       </div>
 
-      <!-- ===================== REPO PAGE: one repository ====================== -->
       <div id="repo-view" hidden>
-        <section class="repo-heading">
-          <div class="repo-heading-inner">
-            <a class="back-link" href="/">&larr; All repositories</a>
-            <div class="repo-title-line">
-              <svg class="repo-icon" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M3 2.75A1.75 1.75 0 0 1 4.75 1h6.5A1.75 1.75 0 0 1 13 2.75v10.5A1.75 1.75 0 0 1 11.25 15h-6.5A1.75 1.75 0 0 1 3 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .14.11.25.25.25h6.5c.14 0 .25-.11.25-.25V2.75a.25.25 0 0 0-.25-.25Z"/>
-              </svg>
-              <h1 id="repo-page-title"><strong>repository</strong></h1>
+        <section class="repo-header">
+          <div class="repo-header-inner">
+            <a class="back-link" href="/">← Repositories</a>
+            <div class="repo-title-row">
+              <span class="repo-icon" aria-hidden="true"
+                ><svg viewBox="0 0 24 24">
+                  <path
+                    d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"
+                  ></path>
+                  <path d="M8 9h8M8 13h5"></path></svg
+              ></span>
+              <h1 id="repo-page-title">repository</h1>
               <span class="badge">Public</span>
+              <span id="repo-status" class="status-pill cached"
+                ><span></span>checking host</span
+              >
             </div>
             <p id="repo-page-desc" class="repo-page-desc"></p>
+            <div class="repo-clone-row">
+              <label class="clone-box">
+                <span>HTTPS</span>
+                <input id="repo-clone-input" value="" readonly />
+              </label>
+              <button id="repo-clone-copy" class="copy-button" type="button">
+                Copy
+              </button>
+              <p id="repo-clone-note" class="clients-note"></p>
+            </div>
+            <nav class="repo-tabs" role="tablist" aria-label="Repository views">
+              <button
+                id="tab-code"
+                class="repo-tab is-active"
+                type="button"
+                role="tab"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path d="m16 18 6-6-6-6M8 6l-6 6 6 6"></path></svg
+                >Code
+              </button>
+              <button id="tab-commits" class="repo-tab" type="button" role="tab">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M8 12h8M12 8v8"></path></svg
+                >Commits
+                <span id="tab-commits-count" class="repo-tab-count"></span>
+              </button>
+              <button id="tab-issues" class="repo-tab" type="button" role="tab">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M12 8v4M12 16h.01"></path></svg
+                >Issues
+                <span id="tab-issues-count" class="repo-tab-count"></span>
+              </button>
+              <button id="tab-pulls" class="repo-tab" type="button" role="tab">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="6" cy="6" r="3"></circle>
+                  <circle cx="18" cy="18" r="3"></circle>
+                  <path d="M6 9v5a4 4 0 0 0 4 4h5M14 6h4v4"></path></svg
+                >Pull requests
+                <span id="tab-pulls-count" class="repo-tab-count"></span>
+              </button>
+              <button
+                id="tab-discussions"
+                class="repo-tab"
+                type="button"
+                role="tab"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"
+                  ></path></svg
+                >Discussions
+              </button>
+              <button
+                id="tab-network"
+                class="repo-tab"
+                type="button"
+                role="tab"
+              >
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="3"></circle>
+                  <circle cx="6" cy="17" r="3"></circle>
+                  <circle cx="18" cy="17" r="3"></circle>
+                  <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path></svg
+                >Network
+              </button>
+              <button
+                id="tab-docs"
+                class="repo-tab"
+                type="button"
+                role="tab"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                  <path
+                    d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                  ></path></svg
+                >Docs
+              </button>
+            </nav>
           </div>
         </section>
 
-        <div class="page-grid">
-          <div class="content-column">
-            <div class="repo-tabs" role="tablist" aria-label="Repository views">
-              <button id="tab-code" class="repo-tab is-active" type="button" role="tab">Code</button>
-              <button id="tab-commits" class="repo-tab" type="button" role="tab">
-                Commits <span id="tab-commits-count" class="repo-tab-count"></span>
-              </button>
-              <button id="tab-issues" class="repo-tab" type="button" role="tab">
-                Issues <span id="tab-issues-count" class="repo-tab-count"></span>
-              </button>
-            </div>
-            <section id="code" class="code-card" aria-labelledby="code-title">
+        <div class="repo-grid">
+          <div class="repo-main">
+            <section
+              id="code"
+              class="panel code-panel"
+              aria-labelledby="code-title"
+            >
               <div class="code-toolbar">
                 <div class="branch-button">
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M5 3a2 2 0 1 1 1.5 1.94v1.32A2.75 2.75 0 0 0 9.25 9H10V4.94a2 2 0 1 1 1.5 0V9A1.5 1.5 0 0 1 10 10.5h-.75A4.25 4.25 0 0 1 5 6.25V4.94A2 2 0 0 1 5 3Z"/>
-                  </svg>
-                  <span id="file-branch">files</span>
+                  <svg viewBox="0 0 24 24">
+                    <path
+                      d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9v1a5 5 0 0 1-5 5H9"
+                    ></path></svg
+                  ><span id="file-branch">files</span>
                 </div>
                 <h2 id="code-title">Repository files</h2>
                 <span id="file-meta" class="file-meta"></span>
               </div>
               <a id="latest-commit" class="latest-commit" hidden></a>
-              <nav id="file-breadcrumb" class="file-breadcrumb" aria-label="File path"></nav>
-              <div id="file-list" class="file-list" role="list" aria-live="polite">
+              <nav
+                id="file-breadcrumb"
+                class="file-breadcrumb"
+                aria-label="File path"
+              ></nav>
+              <div
+                id="file-list"
+                class="file-list"
+                role="list"
+                aria-live="polite"
+              >
                 <div class="file-empty">Loading…</div>
               </div>
               <div id="file-viewer" class="file-viewer" hidden>
                 <div class="file-viewer-bar">
-                  <button id="file-viewer-back" type="button" class="file-viewer-back">&larr; Back</button>
-                  <span id="file-viewer-path" class="file-viewer-path"></span>
+                  <button
+                    id="file-viewer-back"
+                    type="button"
+                    class="file-viewer-back"
+                  >
+                    ← Back</button
+                  ><span id="file-viewer-path" class="file-viewer-path"></span>
                 </div>
                 <pre id="file-viewer-body" class="file-viewer-body"></pre>
               </div>
             </section>
 
-            <section id="issues" class="code-card" hidden aria-labelledby="issues-title">
-              <div class="code-toolbar">
-                <h2 id="issues-title">Issues</h2>
-                <span id="issues-meta" class="file-meta"></span>
-              </div>
-              <div id="issue-list" class="file-list" role="list" aria-live="polite">
-                <div class="file-empty">Loading…</div>
-              </div>
-            </section>
-
-            <section id="commits" class="code-card" hidden aria-labelledby="commits-title">
-              <div class="code-toolbar">
-                <h2 id="commits-title">Commits</h2>
+            <section
+              id="commits"
+              class="panel"
+              hidden
+              aria-labelledby="commits-title"
+            >
+              <div class="panel-header">
+                <div>
+                  <h2 id="commits-title">Commits</h2>
+                  <p>Recent commit history streamed from the connected desktop host.</p>
+                </div>
                 <span id="commits-meta" class="file-meta"></span>
               </div>
               <div id="commit-list" class="file-list" role="list" aria-live="polite">
@@ -209,33 +430,159 @@
               </div>
               <div id="commit-detail" class="commit-detail" hidden>
                 <div class="file-viewer-bar">
-                  <button id="commit-back" type="button" class="file-viewer-back">&larr; Commits</button>
+                  <button id="commit-back" type="button" class="file-viewer-back">← Commits</button>
                   <span id="commit-detail-title" class="file-viewer-path"></span>
                 </div>
                 <div id="commit-detail-meta" class="commit-meta"></div>
                 <div id="commit-diff" class="commit-diff"></div>
               </div>
             </section>
+
+            <section
+              id="issues"
+              class="panel"
+              hidden
+              aria-labelledby="issues-title"
+            >
+              <div class="panel-header">
+                <div>
+                  <h2 id="issues-title">Issues</h2>
+                  <p>
+                    Signed issue history loaded from the repository's
+                    <code>issues/</code> folder.
+                  </p>
+                </div>
+                <span id="issues-meta" class="file-meta"></span>
+              </div>
+              <div
+                id="issue-list"
+                class="issue-list"
+                role="list"
+                aria-live="polite"
+              >
+                <div class="file-empty">Loading…</div>
+              </div>
+            </section>
+
+            <section
+              id="pulls"
+              class="panel"
+              hidden
+              aria-labelledby="pulls-title"
+            >
+              <div class="panel-header">
+                <div>
+                  <h2 id="pulls-title">Pull requests</h2>
+                  <p>
+                    Signed patch submissions loaded from
+                    <code>pulls/</code> when present.
+                  </p>
+                </div>
+                <span id="pulls-meta" class="file-meta"></span>
+              </div>
+              <div
+                id="pull-list"
+                class="issue-list"
+                role="list"
+                aria-live="polite"
+              >
+                <div class="file-empty">
+                  Open the tab to scan for pull requests.
+                </div>
+              </div>
+            </section>
+
+            <section id="discussions" class="panel" hidden>
+              <div class="empty-state">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"
+                  ></path>
+                </svg>
+                <h2>Repo discussions use encrypted rooms</h2>
+                <p>
+                  Use the public chat panel on the home page today. Repo-scoped
+                  room UI can be wired here next.
+                </p>
+              </div>
+            </section>
+
+            <section id="repo-network" class="panel" hidden>
+              <div class="empty-state">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="3"></circle>
+                  <circle cx="6" cy="17" r="3"></circle>
+                  <circle cx="18" cy="17" r="3"></circle>
+                  <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path>
+                </svg>
+                <h2>Live host tunnel</h2>
+                <p>
+                  This repo is browsed and cloned through connected desktop
+                  hosts. The relay coordinates; it does not store the Git
+                  objects.
+                </p>
+              </div>
+            </section>
+
+            <section id="repo-docs" class="panel" hidden>
+              <div class="docs-card">
+                <h2>ForkMesh docs for this repo</h2>
+                <ul>
+                  <li>
+                    <strong>Code:</strong> live Git upload-pack from connected
+                    host.
+                  </li>
+                  <li>
+                    <strong>Issues:</strong> signed markdown events in
+                    <code>issues/</code>.
+                  </li>
+                  <li>
+                    <strong>Pull requests:</strong> signed patch records in
+                    <code>pulls/</code>.
+                  </li>
+                  <li>
+                    <strong>Privacy:</strong> users see the relay, not host IPs.
+                  </li>
+                </ul>
+              </div>
+            </section>
           </div>
 
-          <aside class="sidebar" aria-label="Repository sidebar">
+          <aside class="sidebar repo-sidebar" aria-label="Repository sidebar">
             <section class="side-section">
               <h2>Offline browsing</h2>
-              <p class="clients-note">Download this repository from the connected client into browser local storage so you can browse it offline.</p>
-              <button id="download-repo" class="catalog-browse" type="button">Download to localhost to browse files</button>
+              <p class="clients-note">
+                Cache this repository from the connected client into browser
+                local storage so recently browsed files remain visible when the
+                host disconnects.
+              </p>
+              <button
+                id="download-repo"
+                class="primary-button wide"
+                type="button"
+              >
+                Download to browser cache
+              </button>
               <div id="download-progress" class="download-progress" hidden>
-                <div class="download-bar"><div id="download-bar-fill" class="download-bar-fill"></div></div>
+                <div class="download-bar">
+                  <div id="download-bar-fill" class="download-bar-fill"></div>
+                </div>
                 <span id="download-progress-text" class="chat-status"></span>
               </div>
             </section>
 
             <section class="side-section">
-              <h2>Clone</h2>
-              <label class="clone-box">
-                <span>HTTPS</span>
-                <input id="repo-clone-input" value="" readonly>
-              </label>
-              <p id="repo-clone-note" class="clients-note"></p>
+              <h2>About this model</h2>
+              <p>
+                Clone and file browsing are pure live data-plane operations. No
+                host online means no fresh repo data.
+              </p>
+              <div class="mini-metric">
+                <span>Storage</span><strong>Desktop mirror</strong>
+              </div>
+              <div class="mini-metric">
+                <span>Relay</span><strong>Cloudflare Worker</strong>
+              </div>
             </section>
           </aside>
         </div>
