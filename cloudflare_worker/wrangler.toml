@@ -27,12 +27,13 @@ NODE_BCH_ADDRESS = ""
 DATA_KEY = "forkmesh-dev-data-key-change-me"
 # Legacy: still referenced if present; DATA_KEY supersedes it.
 ACCOUNTS_KEY = "forkmesh-dev-accounts-key-change-me"
-# Admin error dashboard vars (ADMIN_PATH / ADMIN_USER / ADMIN_PASS) are kept out
-# of this committed file. They live in .env.production (gitignored) and are
-# injected at deploy time by deploy.sh via `pywrangler deploy --var`. See
-# .env.production.example. ADMIN_PATH must start with "admin-" so it is routed
-# to the worker (see run_worker_first above); the dashboard is then served at
-# https://<host>/<ADMIN_PATH> behind HTTP Basic auth.
+# Admin error dashboard creds (ADMIN_PATH / ADMIN_USER / ADMIN_PASS) are kept out
+# of this committed file. They live in .env.production (gitignored) and are pushed
+# as Worker *secrets* by deploy.sh (`pywrangler secret put`) — NOT plaintext vars,
+# which get wiped on any deploy that doesn't re-declare them. Secrets persist
+# across deploys. See .env.production.example. ADMIN_PATH must start with "admin-"
+# so it is routed to the worker (see run_worker_first above); the dashboard is
+# then served at https://<host>/<ADMIN_PATH> behind HTTP Basic auth.
 
 # Durable Objects are used only for transient relaying now: the encrypted chat
 # rooms and the live file/git tunnel. All persistent data lives in D1 below.
