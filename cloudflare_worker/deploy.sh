@@ -47,6 +47,14 @@ if [ -f "$ENV_FILE" ]; then
         key="${line%%=*}"
         value="${line#*=}"
         [ -z "$key" ] && continue
+        # CLOUDFLARE_* keys configure wrangler itself (which account/token to use),
+        # not the Worker. Export them so every pywrangler call targets the right
+        # account — this is how the maintainer pins the account without committing
+        # the ID to this open-source wrangler.toml — and never ship them as Worker
+        # vars or secrets.
+        case "$key" in
+            CLOUDFLARE_*) export "$key=$value"; continue ;;
+        esac
         VAR_ARGS+=(--var "${key}:${value}")          # .env uses =, wrangler uses :
     done < "$ENV_FILE"
 fi
@@ -66,6 +74,8 @@ push_secrets() {
         local key="${line%%=*}"
         local value="${line#*=}"
         [ -z "$key" ] && continue
+        # CLOUDFLARE_* are wrangler config (exported above), not Worker secrets.
+        case "$key" in CLOUDFLARE_*) continue ;; esac
         echo "  secret: $key"
         printf '%s' "$value" | pywrangler secret put "$key"
         count=$((count + 1))
