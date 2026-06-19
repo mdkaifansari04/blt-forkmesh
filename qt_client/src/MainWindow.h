@@ -162,6 +162,11 @@ private:
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void hideNodeProfile();
     void checkNodeBalance();
+    // Query the BCH network for a balance via the public Electrum/Fulcrum server
+    // pool, trying servers in order and falling back on any failure.
+    void queryBalanceFromElectrum(const QString &addr,
+                                  const QByteArray &scriptHashHex,
+                                  int serverIndex);
     QWidget *buildReposPanel();
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
