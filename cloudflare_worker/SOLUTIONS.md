@@ -106,10 +106,10 @@ generate steady upgrade-request churn against the same DOs.
 
 ## 3. Roadmap
 
-> **Implementation status (updated):** Phase 0's cost-dominant items (R2, R3, R4
-> fan-out, R5) and the host side of Phase 1 #7 are **implemented and build-verified**.
-> WebSocket Hibernation (R1) is **specified but not yet applied** — see §3.5 for why
-> it needs a live test first. Phase 2 is a **design**, not yet built.
+> **Implementation status (updated):** Phase 0 (R2, R3, R4-browse, R5), the host
+> side of Phase 1 #7, and **WebSocket Hibernation (R1)** are **implemented and live**.
+> Hibernation dispatch was verified in production (chat broadcast across two clients
+> works; see §3.5). Phase 2 is a **design**, not yet built.
 
 ### Phase 0 — Quick wins ✅ IMPLEMENTED
 
@@ -159,42 +159,35 @@ bindings resolve; no production write):
    and for chat (drops participants). Scope this to truly-abandoned connections only,
    or fold it into hibernation (§3.5).
 
-### 3.5 — WebSocket Hibernation (R1) ⚠️ SPECIFIED, NOT APPLIED — needs a live test
+### 3.5 — WebSocket Hibernation (R1) ✅ IMPLEMENTED & LIVE
 
-This is the plan's biggest *duration* win, but it is **not a drop-in refactor** and I
-could not safely apply it blind. Two blockers, both requiring a running worker to
-resolve:
+The plan's biggest *duration* win, now shipped. Both DO classes use the Hibernation
+API so an idle chat room or a connected-but-idle repo host no longer bills duration
+while quiet.
 
-- **Unverifiable dispatch.** The `workers-py` SDK contains no hibernation glue
-  (`grep` for `acceptWebSocket`/`webSocketMessage` in the package is empty) — dispatch
-  happens in the workerd runtime. I could not confirm from the repo whether Python DOs
-  receive hibernation events, **nor the method-name convention** (`webSocketMessage`
-  camelCase vs `web_socket_message` snake_case). Guessing wrong = silently broken chat
-  and tunnel in production.
-- **State must be reconstructed, not held in memory.** Hibernation evicts the DO
-  between events, so `self.sockets` / `self.observers` / `self.hosts` (with `rtt`)
-  cannot live in instance attributes — they must be rebuilt from
-  `self.ctx.getWebSockets(...)` and per-socket `serializeAttachment(...)`.
+**What was done** (in [entry.py](src/entry.py)):
+- `ForkMeshRoom` and `ForkMeshHost` accept sockets via `self.ctx.acceptWebSocket(ws,
+  [tag])` and are serviced by `webSocketMessage` / `webSocketClose` / `webSocketError`
+  handlers (no more `addEventListener`/`create_proxy`).
+- Connection state is read from `self.ctx.getWebSockets(tag)` rather than instance
+  lists (which don't survive eviction). Per-host RTT and the chat sender-id ride in the
+  socket's `serializeAttachment`.
+- The host DO's `pending`/`git_buffers` stay in memory — they only ever hold an
+  *in-flight* request, which keeps the DO active, so no eviction occurs mid-request.
+- The retired observer/count socket path was removed; `/clients` over WebSocket now
+  returns `410` (the count is served over HTTP via `/api/network/stats`).
 
-**Implementation guide (do this in a `./deploy.sh dev` session, testing after each
-step):**
+**Verification (production):** `/clients` WS → `410` confirms the new code is live; a
+two-client test against `/rooms/general/ws` showed peer B receiving peer A's message
+and A correctly getting no echo — i.e. `webSocketMessage` dispatch, `getWebSockets`
+broadcast, and `serializeAttachment` sender-skip all work. The Python Workers runtime
+*does* dispatch hibernation handlers (camelCase); a snake_case alias is kept as a
+belt-and-suspenders.
 
-1. Confirm dispatch + naming: add a no-op DO that `acceptWebSocket`s a socket and logs
-   from a `webSocketMessage`/`web_socket_message` method; see which fires in dev.
-2. `ForkMeshRoom`: accept with `self.ctx.acceptWebSocket(server, ["chat"])` or
-   `["observer"]`. Move `on_message`/`forget` logic into the handler methods. Compute
-   the client count as `len(self.ctx.getWebSockets("chat"))`. Push counts to observers
-   on connect/close. Consider `setWebSocketAutoResponse` for a ping/pong keepalive.
-3. `ForkMeshHost`: tag host sockets `["host"]`; store `{id, rtt}` via
-   `serializeAttachment`. Rebuild the host registry from `getWebSockets("host")` in
-   `_best_host`. The `pending`/`git_buffers` in-memory maps are fine — they only live
-   during an in-flight request, which keeps the DO active (no hibernation mid-request).
-4. Smoke test before deploy: chat send/receive across two tabs, repo tree/blob browse,
-   and a full `git clone`. Only deploy once all three pass.
-
-**Revert plan:** the change is confined to the two DO classes; if dev shows broken
-dispatch, revert those classes and keep the Phase 0 wins (which already remove the
-dominant always-on cost).
+**Remaining check:** the host **tunnel** path (tree/blob/clone) reuses the exact same
+hibernation mechanism but was not exercised end-to-end here because it needs a live
+desktop host. Connect a host and confirm a `git clone` + file browse before relying on
+it under load.
 
 ### Phase 2 — Decentralize: the real path to "free for the masses" 🟢 (DESIGN)
 
@@ -248,17 +241,17 @@ degrade live features (counts go stale, chat read-only) rather than returning 5x
 
 ## 4. Where this leaves you
 
-**Shipped now (verified):** the dominant cost drivers are gone — no per-visitor
-WebSocket pinning a Durable Object 24/7 (R2), and no per-visit fan-out of dozens of DO
-requests (R3, R4-browse). Live presence is read from D1, and read-heavy endpoints are
-edge-cached. These required no architectural change and should, on their own, bring DO
-usage back toward the free tier.
+**Shipped & live (verified):** the dominant cost drivers are gone — no per-visitor
+WebSocket pinning a Durable Object 24/7 (R2), no per-visit fan-out of dozens of DO
+requests (R3, R4-browse), and **WebSocket hibernation (R1)** so idle chat/host sockets
+bill ~no duration. Live presence is read from D1, read-heavy endpoints are edge-cached.
+Together these target every cost axis identified in §2.
 
 **Next, in priority order:**
-1. **Hibernation (§3.5)** — the biggest remaining *duration* win, for long-lived chat
-   and host sockets. Needs a `./deploy.sh dev` test session first (method-name +
-   dispatch unknowns); revert-safe if Python doesn't support it.
-2. **Phase 1 #8/#9** — blob caching and scoped idle handling.
+1. **Exercise the host tunnel** (§3.5 remaining check) with a real desktop host —
+   `git clone` + file browse — to confirm hibernation under tunnel load.
+2. **Phase 1 #8/#9** — edge-cache immutable git blobs (by commit SHA) and scoped idle
+   handling.
 3. **Phase 2** — federation + WebRTC P2P: the durable answer to "free for the masses,"
    gated on the trust-model and TURN decisions called out above.
 4. **Phase 3** — metrics + budgets so cost stays visible and degrades gracefully.
