@@ -30,8 +30,32 @@ function text(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+// Encode a "/"-separated repo path, keeping the slashes but escaping segments.
+function encPath(path) {
+  return String(path || "")
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+}
+
+// Clean, shareable URLs (History API, no "#repo/" hash):
+//   /<owner>/<name>                     repo home
+//   /<owner>/<name>/tree/<dir>          a sub-directory
+//   /<owner>/<name>/blob/<file>         a file
+function repoUrl(owner, name) {
+  return `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+}
+function treeUrl(owner, name, dir) {
+  const d = encPath(dir);
+  return d ? `${repoUrl(owner, name)}/tree/${d}` : repoUrl(owner, name);
+}
+function blobUrl(owner, name, path) {
+  return `${repoUrl(owner, name)}/blob/${encPath(path)}`;
+}
+// Used by the catalog card links.
 function repoRoute(owner, name) {
-  return `#repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  return repoUrl(owner, name);
 }
 
 function formatDate(value) {
@@ -64,6 +88,12 @@ function render(repositories) {
       const item = document.createElement("a");
       item.className = "catalog-item";
       item.href = repoRoute(repo.owner, repo.name);
+      item.addEventListener("click", (e) => {
+        // Let cmd/ctrl/middle-click open a normal new tab; otherwise route in-app.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        go(repoUrl(repo.owner, repo.name));
+      });
 
       const header = document.createElement("div");
       header.className = "catalog-item-header";
@@ -99,7 +129,12 @@ function render(repositories) {
 
   // If a repo page is already open (deep link / reload), fill in its details
   // now that the catalog has loaded.
-  if (currentRepo) openRepoPage(currentRepo.owner, currentRepo.name);
+  if (currentRepo) {
+    // Re-fill from the catalog (description etc.) while preserving the open
+    // tree/blob path from the URL.
+    const r = parseRoute();
+    openRepoPage(r.owner, r.name, r.mode, r.filePath);
+  }
 }
 
 // ---- Live file browser (tunnels to a connected client; caches in the browser)
@@ -249,14 +284,6 @@ function renderCode(content) {
   viewerBodyEl.append(fragment);
 }
 
-function loadFiles(owner, name) {
-  if (!fileListEl) return Promise.resolve();
-  fileState = { owner, name, dir: "" };
-  if (codeTitle) codeTitle.textContent = `${owner}/${name}`;
-  showList();
-  return openDir("");
-}
-
 function fileRow(kind, label, note, onClick) {
   const tag = onClick ? "button" : "div";
   const row = document.createElement(tag);
@@ -285,7 +312,8 @@ function renderBreadcrumb() {
   root.type = "button";
   root.className = "crumb";
   root.textContent = `${fileState.owner}/${fileState.name}`;
-  root.addEventListener("click", () => openDir(""));
+  root.addEventListener("click", () =>
+    go(repoUrl(fileState.owner, fileState.name)));
   breadcrumbEl.append(root);
 
   let acc = "";
@@ -299,7 +327,8 @@ function renderBreadcrumb() {
     crumb.className = "crumb";
     crumb.textContent = segment;
     const target = acc;
-    crumb.addEventListener("click", () => openDir(target));
+    crumb.addEventListener("click", () =>
+      go(treeUrl(fileState.owner, fileState.name, target)));
     breadcrumbEl.append(sep, crumb);
   }
 }
@@ -334,18 +363,23 @@ async function openDir(path) {
     rows.push(
       fileRow("up", "..", "", () => {
         const cut = path.lastIndexOf("/");
-        openDir(cut === -1 ? "" : path.slice(0, cut));
+        const parent = cut === -1 ? "" : path.slice(0, cut);
+        go(treeUrl(fileState.owner, fileState.name, parent));
       })
     );
   }
   for (const entry of entries) {
     const childPath = path ? `${path}/${entry.name}` : entry.name;
     if (entry.type === "tree") {
-      rows.push(fileRow("folder", entry.name, "", () => openDir(childPath)));
+      rows.push(
+        fileRow("folder", entry.name, "", () =>
+          go(treeUrl(fileState.owner, fileState.name, childPath))
+        )
+      );
     } else {
       rows.push(
         fileRow("file", entry.name, formatSize(entry.size), () =>
-          openBlob(childPath)
+          go(blobUrl(fileState.owner, fileState.name, childPath))
         )
       );
     }
@@ -380,7 +414,7 @@ if (viewerBackEl) {
   viewerBackEl.addEventListener("click", () => {
     navToken += 1; // cancel any in-flight blob load
     setSource(null);
-    openDir(fileState ? fileState.dir : "");
+    if (fileState) go(treeUrl(fileState.owner, fileState.name, fileState.dir));
   });
 }
 
@@ -427,8 +461,8 @@ function issueRow(number, title, status) {
   row.append(dot, label, state);
   // Open the issue's source markdown in the code viewer.
   row.addEventListener("click", () => {
-    showRepoTab("code");
-    openBlob(`issues/${number}/issue.md`);
+    if (fileState)
+      go(blobUrl(fileState.owner, fileState.name, `issues/${number}/issue.md`));
   });
   return row;
 }
@@ -750,18 +784,26 @@ const homeView = document.querySelector("#home-view");
 const repoView = document.querySelector("#repo-view");
 let currentRepo = null;
 
+function decodeSeg(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch (error) {
+    return s;
+  }
+}
+
 function parseRoute() {
-  const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("repo/")) {
-    const rest = hash.slice(5);
-    const slash = rest.indexOf("/");
-    if (slash > 0) {
-      return {
-        view: "repo",
-        owner: decodeURIComponent(rest.slice(0, slash)),
-        name: decodeURIComponent(rest.slice(slash + 1)),
-      };
+  const path = location.pathname.replace(/^\/+|\/+$/g, "");
+  if (!path) return { view: "home" };
+  const segs = path.split("/").map(decodeSeg);
+  if (segs.length >= 2 && segs[0] && segs[1]) {
+    let mode = null;
+    let filePath = "";
+    if (segs.length >= 3 && (segs[2] === "tree" || segs[2] === "blob")) {
+      mode = segs[2];
+      filePath = segs.slice(3).join("/");
     }
+    return { view: "repo", owner: segs[0], name: segs[1], mode, filePath };
   }
   return { view: "home" };
 }
@@ -769,11 +811,23 @@ function parseRoute() {
 function route() {
   const r = parseRoute();
   if (r.view === "repo") {
+    // Navigating within the same repo (folder/file/Back) only re-renders the
+    // file area, so the page header and latest-commit aren't rebuilt each time.
+    const sameRepo =
+      currentRepo &&
+      currentRepo.owner === r.owner &&
+      currentRepo.name === r.name &&
+      repoView &&
+      !repoView.hidden;
     currentRepo = { owner: r.owner, name: r.name };
     if (homeView) homeView.hidden = true;
     if (repoView) repoView.hidden = false;
-    window.scrollTo(0, 0);
-    openRepoPage(r.owner, r.name);
+    if (sameRepo) {
+      renderRepoPath(r.owner, r.name, r.mode, r.filePath);
+    } else {
+      window.scrollTo(0, 0);
+      openRepoPage(r.owner, r.name, r.mode, r.filePath);
+    }
   } else {
     currentRepo = null;
     if (repoView) repoView.hidden = true;
@@ -781,7 +835,13 @@ function route() {
   }
 }
 
-function openRepoPage(owner, name) {
+// Navigate in-app: push a new history entry (so Back works) and render it.
+function go(url) {
+  history.pushState({}, "", url);
+  route();
+}
+
+function openRepoPage(owner, name, mode = null, filePath = "") {
   const titleEl = document.querySelector("#repo-page-title");
   const descEl = document.querySelector("#repo-page-desc");
   const cloneInput = document.querySelector("#repo-clone-input");
@@ -810,12 +870,59 @@ function openRepoPage(owner, name) {
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
-  loadFiles(owner, name);
-  showRepoTab("code");
+  renderRepoPath(owner, name, mode, filePath);
   loadLatestCommit(owner, name);
 }
 
-window.addEventListener("hashchange", route);
+// Render just the Code tab's file view for a route (root, a tree dir, or a blob).
+function renderRepoPath(owner, name, mode, filePath) {
+  showRepoTab("code");
+  fileState = { owner, name, dir: "" };
+  if (codeTitle) codeTitle.textContent = `${owner}/${name}`;
+  if (mode === "blob" && filePath) {
+    const cut = filePath.lastIndexOf("/");
+    fileState.dir = cut === -1 ? "" : filePath.slice(0, cut);
+    showList();
+    openBlob(filePath);
+  } else {
+    showList();
+    openDir(mode === "tree" ? filePath : "");
+  }
+}
+
+// Back/forward buttons (and our go() pushes) re-render from the URL.
+window.addEventListener("popstate", route);
+
+// Home/section links route back home via the History API (no full reload), then
+// scroll to the requested section. Targeted so file rows / latest-commit aren't
+// hijacked.
+function goHome(fragment) {
+  history.pushState({}, "", "/");
+  route();
+  if (fragment && fragment !== "#") {
+    const el = document.querySelector(fragment);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+  }
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll(".brand, .back-link").forEach((a) =>
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    goHome("");
+  })
+);
+document.querySelectorAll('header nav a[href^="#"]').forEach((a) =>
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    goHome(a.getAttribute("href"));
+  })
+);
+
+// Route on first load so deep links (e.g. /owner/name/blob/file) render.
+route();
 
 // ---- Download the whole repo into the browser (localStorage) with progress --
 

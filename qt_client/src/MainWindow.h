@@ -302,6 +302,8 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
+    void showMemberContextMenu(const QPoint &pos); // right-click a chat member
+    void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
     // ("@<peerId>").
     void switchConversation(const QString &conversation);
@@ -570,6 +572,8 @@ private:
     QLabel *m_profileStatus = nullptr;
     QLabel *m_profilePlatform = nullptr;
     QLabel *m_profileMirrors = nullptr;
+    QLabel *m_profileNote = nullptr;
+    QLabel *m_profileNodeKey = nullptr;
     QLabel *m_profileBchAddr = nullptr;
     QLabel *m_profileQr = nullptr;
     QWidget *m_profileBchSection = nullptr;

@@ -9,6 +9,11 @@ command = "./migrate.sh"
 
 [assets]
 directory = "./public"
+# Clean repo URLs (/owner/name, /owner/name/tree/..., /owner/name/blob/...) are
+# client-side routes with no matching asset file, so serve index.html for any
+# unmatched path and let catalog.js route it. Real assets still take priority,
+# and git/API paths below are handled by the worker first.
+not_found_handling = "single-page-application"
 # /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
 # handled in code rather than served as a static asset.
 run_worker_first = ["/api/*", "/health", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
