@@ -13,14 +13,12 @@ from js import Uint8Array
 from js import WebSocketPair
 from js import caches as js_caches
 from js import crypto as js_crypto
-from pyodide.ffi import create_proxy
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
 MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
 MAX_CONNECTIONS = 128
-MAX_OBSERVERS = 1000
 MAX_TEXT_BYTES = 96 * 1024 * 1024
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
@@ -193,6 +191,30 @@ def git_bytes_response(data, content_type):
 
 def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
+
+
+def new_socket_id():
+    # Stable per-socket id stored in the hibernation attachment, so we can skip
+    # the sender on broadcast without relying on object identity (which does not
+    # survive a Durable Object eviction).
+    rnd = js_crypto.getRandomValues(Uint8Array.new(4))
+    return "%d-%d" % (int(Date.now()),
+                      (rnd[0] << 24) | (rnd[1] << 16) | (rnd[2] << 8) | rnd[3])
+
+
+def _ws_attachment(ws):
+    try:
+        return ws.deserializeAttachment()
+    except Exception:
+        return None
+
+
+def _ws_attr(ws, name, default=None):
+    att = _ws_attachment(ws)
+    if att is None:
+        return default
+    value = getattr(att, name, default)
+    return default if value is None else value
 
 
 def json_response(data, status=200, cache_seconds=None):
@@ -1283,139 +1305,71 @@ class Default(WorkerEntrypoint):
 
 
 class ForkMeshRoom(DurableObject):
+    # Encrypted chat relay on the WebSocket Hibernation API. Sockets are accepted
+    # via ctx.acceptWebSocket and serviced by the webSocketMessage/Close handlers
+    # below, so the Durable Object is evicted from memory while a room is idle and
+    # bills ~no duration. Connection state lives in the runtime
+    # (ctx.getWebSockets("chat")), never in instance attributes — those would not
+    # survive eviction. The read-only "observer" count socket was retired: the
+    # live count is now served over HTTP via the cached /api/network/stats.
     async def fetch(self, request):
-        self._ensure_state()
         path = urlparse(request.url).path
-        is_watch = path.endswith("/clients")
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
 
         if not is_websocket:
-            # Non-WebSocket request: one-shot snapshot of the live client count.
-            return json_response({"ok": True, "clients": len(self.sockets)})
+            # One-shot snapshot of the live client count (used by network_stats).
+            return json_response({"ok": True, "clients": self._client_count()})
 
-        if is_watch:
-            # A /clients WebSocket is a read-only observer (e.g. the website):
-            # it never joins the chat and is not counted as a client. The room
-            # pushes it the live client count now and on every join/leave.
-            if len(self.observers) >= MAX_OBSERVERS:
-                return json_response({"error": "observers_full"}, status=429)
-        elif len(self.sockets) >= MAX_CONNECTIONS:
+        if path.endswith("/clients"):
+            return json_response({"error": "observers_removed"}, status=410)
+
+        if self._client_count() >= MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
 
         client, server = WebSocketPair.new().object_values()
-        if is_watch:
-            self._accept_observer(server)
-        else:
-            self._accept(server)
+        self.ctx.acceptWebSocket(server, to_js(["chat"]))
+        server.serializeAttachment(to_js({"id": new_socket_id()}))
+        return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
 
-        return JsResponse.new(
-            None,
-            to_js(
-                {
-                    "status": 101,
-                    "webSocket": client,
-                }
-            ),
-        )
+    def _client_count(self):
+        try:
+            return len(self.ctx.getWebSockets("chat"))
+        except Exception:
+            return 0
 
-    def _ensure_state(self):
-        if not hasattr(self, "sockets"):
-            self.sockets = []
-        if not hasattr(self, "observers"):
-            self.observers = []
-        if not hasattr(self, "callbacks"):
-            self.callbacks = []
-
-    def _accept(self, socket):
-        self._ensure_state()
-        socket.accept()
-        self.sockets.append(socket)
-        self._notify_observers()
-
-        def on_message(event):
-            data = event.data
-            if not isinstance(data, str):
-                socket.close(1003, "text frames only")
-                return
-
-            if len(data.encode("utf-8")) > MAX_TEXT_BYTES:
-                socket.close(1009, "message too large")
-                return
-
-            self._broadcast(data, socket)
-
-        def forget(_event=None):
-            self._forget(socket)
-
-        message_proxy = create_proxy(on_message)
-        close_proxy = create_proxy(forget)
-        error_proxy = create_proxy(forget)
-        self.callbacks.extend([message_proxy, close_proxy, error_proxy])
-
-        socket.addEventListener("message", message_proxy)
-        socket.addEventListener("close", close_proxy)
-        socket.addEventListener("error", error_proxy)
-
-    def _broadcast(self, payload, sender):
-        self._ensure_state()
-        stale = []
-        for socket in list(self.sockets):
-            if socket is sender:
+    async def webSocketMessage(self, ws, message):
+        if not isinstance(message, str):
+            self._safe_close(ws, 1003, "text frames only")
+            return
+        if len(message.encode("utf-8")) > MAX_TEXT_BYTES:
+            self._safe_close(ws, 1009, "message too large")
+            return
+        sender_id = _ws_attr(ws, "id")
+        for peer in self.ctx.getWebSockets("chat"):
+            if _ws_attr(peer, "id") == sender_id:
                 continue
             try:
-                socket.send(payload)
+                peer.send(message)
             except Exception:
-                stale.append(socket)
+                pass
 
-        for socket in stale:
-            self._forget(socket)
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        self._safe_close(ws, 1000, "")
 
-    def _forget(self, socket):
-        self._ensure_state()
-        self.sockets = [existing for existing in self.sockets if existing is not socket]
-        self._notify_observers()
+    async def webSocketError(self, ws, error):
+        return
 
-    def _accept_observer(self, socket):
-        self._ensure_state()
-        socket.accept()
-        self.observers.append(socket)
+    # Hibernation events may be dispatched under either naming convention.
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
 
-        def forget(_event=None):
-            self._forget_observer(socket)
-
-        close_proxy = create_proxy(forget)
-        error_proxy = create_proxy(forget)
-        self.callbacks.extend([close_proxy, error_proxy])
-        socket.addEventListener("close", close_proxy)
-        socket.addEventListener("error", error_proxy)
-
-        # Send the current count immediately so the page renders without a wait.
-        self._send_count(socket)
-
-    def _forget_observer(self, socket):
-        self._ensure_state()
-        self.observers = [
-            existing for existing in self.observers if existing is not socket
-        ]
-
-    def _send_count(self, socket):
+    def _safe_close(self, ws, code, reason):
         try:
-            socket.send(json.dumps({"clients": len(self.sockets)}))
+            ws.close(code, reason)
         except Exception:
-            self._forget_observer(socket)
-
-    def _notify_observers(self):
-        self._ensure_state()
-        payload = json.dumps({"clients": len(self.sockets)})
-        stale = []
-        for socket in list(self.observers):
-            try:
-                socket.send(payload)
-            except Exception:
-                stale.append(socket)
-        for socket in stale:
-            self._forget_observer(socket)
+            pass
 
 
 class ForkMeshHost(DurableObject):
@@ -1424,13 +1378,16 @@ class ForkMeshHost(DurableObject):
     # local Git mirror. The website's /tree and /blob calls are forwarded to the
     # host with the best (lowest round-trip) connection. Nothing is stored: when
     # no host is connected, the repo is simply unavailable.
+    # On the WebSocket Hibernation API: host sockets are accepted via
+    # ctx.acceptWebSocket(["host"]) and the live set is read from
+    # ctx.getWebSockets("host"), so an idle-but-connected host no longer pins the
+    # Durable Object in memory. Per-host round-trip time rides in the socket's
+    # hibernation attachment. The pending/git_buffers maps are in-memory and only
+    # ever hold an *in-flight* request, which keeps the DO active (no eviction
+    # mid-request), so they need not survive hibernation.
     def _ensure(self):
-        if not hasattr(self, "hosts"):
-            self.hosts = []  # [{socket, id, rtt, alive}]
         if not hasattr(self, "pending"):
             self.pending = {}  # reqId -> asyncio.Future
-        if not hasattr(self, "callbacks"):
-            self.callbacks = []
         if not hasattr(self, "counter"):
             self.counter = 0
         if not hasattr(self, "git_buffers"):
@@ -1494,9 +1451,10 @@ class ForkMeshHost(DurableObject):
         action = path.rsplit("/", 1)[-1]
         if action == "host":
             if not is_websocket:
-                return json_response({"ok": True, "hosts": len(self.hosts)})
+                return json_response({"ok": True, "hosts": self._host_count()})
             client, server = WebSocketPair.new().object_values()
-            self._accept_host(server)
+            self.ctx.acceptWebSocket(server, to_js(["host"]))
+            server.serializeAttachment(to_js({"rtt": None}))
             await self._mark_present(path)
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
@@ -1508,72 +1466,69 @@ class ForkMeshHost(DurableObject):
             return await self._tunnel(action, rel_path)
         return json_response({"error": "not_found"}, status=404)
 
-    def _accept_host(self, socket):
+    def _host_count(self):
+        try:
+            return len(self.ctx.getWebSockets("host"))
+        except Exception:
+            return 0
+
+    async def webSocketMessage(self, ws, message):
         self._ensure()
-        socket.accept()
-        self.counter += 1
-        entry = {"socket": socket, "id": self.counter, "rtt": float("inf"),
-                 "alive": True}
-        self.hosts.append(entry)
+        if not isinstance(message, str):
+            return
+        try:
+            msg = json.loads(message)
+        except Exception:
+            return
+        if not isinstance(msg, dict):
+            return
+        mtype = msg.get("type")
+        if mtype == "response":
+            fut = self.pending.pop(msg.get("reqId"), None)
+            if fut is not None and not fut.done():
+                fut.set_result(msg)
+        elif mtype == "git-chunk":
+            buffer = self.git_buffers.get(msg.get("reqId"))
+            if buffer is not None:
+                try:
+                    buffer += base64.b64decode(msg.get("data", ""))
+                except Exception:
+                    pass
+        elif mtype == "git-end":
+            req_id = msg.get("reqId")
+            buffer = self.git_buffers.pop(req_id, None)
+            fut = self.pending.pop(req_id, None)
+            if fut is not None and not fut.done():
+                fut.set_result(
+                    {
+                        "ok": bool(msg.get("ok")),
+                        "error": msg.get("error"),
+                        "data": bytes(buffer or b""),
+                    }
+                )
 
-        def on_message(event):
-            data = event.data
-            if not isinstance(data, str):
-                return
-            try:
-                msg = json.loads(data)
-            except Exception:
-                return
-            if not isinstance(msg, dict):
-                return
-            mtype = msg.get("type")
-            if mtype == "response":
-                fut = self.pending.pop(msg.get("reqId"), None)
-                if fut is not None and not fut.done():
-                    fut.set_result(msg)
-            elif mtype == "git-chunk":
-                buffer = self.git_buffers.get(msg.get("reqId"))
-                if buffer is not None:
-                    try:
-                        buffer += base64.b64decode(msg.get("data", ""))
-                    except Exception:
-                        pass
-            elif mtype == "git-end":
-                req_id = msg.get("reqId")
-                buffer = self.git_buffers.pop(req_id, None)
-                fut = self.pending.pop(req_id, None)
-                if fut is not None and not fut.done():
-                    fut.set_result(
-                        {
-                            "ok": bool(msg.get("ok")),
-                            "error": msg.get("error"),
-                            "data": bytes(buffer or b""),
-                        }
-                    )
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        return
 
-        def forget(_event=None):
-            self._forget_host(entry)
+    async def webSocketError(self, ws, error):
+        return
 
-        message_proxy = create_proxy(on_message)
-        close_proxy = create_proxy(forget)
-        error_proxy = create_proxy(forget)
-        self.callbacks.extend([message_proxy, close_proxy, error_proxy])
-        socket.addEventListener("message", message_proxy)
-        socket.addEventListener("close", close_proxy)
-        socket.addEventListener("error", error_proxy)
-
-    def _forget_host(self, entry):
-        self._ensure()
-        entry["alive"] = False
-        self.hosts = [h for h in self.hosts if h is not entry]
+    # Hibernation events may be dispatched under either naming convention.
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
 
     def _best_host(self):
-        live = [h for h in self.hosts if h.get("alive")]
-        if not live:
-            return None
-        # Prefer the lowest measured round-trip time; unmeasured hosts (inf)
-        # fall to the back until they've served at least one request.
-        return min(live, key=lambda h: h.get("rtt", float("inf")))
+        # Pick the live host with the lowest measured round-trip time (stored in
+        # each socket's hibernation attachment); unmeasured hosts sort last.
+        best = None
+        best_score = None
+        for ws in self.ctx.getWebSockets("host"):
+            rtt = _ws_attr(ws, "rtt")
+            score = rtt if isinstance(rtt, (int, float)) else float("inf")
+            if best is None or score < best_score:
+                best, best_score = ws, score
+        return best
 
     async def _tunnel(self, op, rel_path):
         self._ensure()
@@ -1590,13 +1545,13 @@ class ForkMeshHost(DurableObject):
         self.pending[req_id] = future
         started = Date.now()
         try:
-            host["socket"].send(
+            host.send(
                 json.dumps({"type": "request", "reqId": req_id, "op": op,
                             "path": rel_path})
             )
         except Exception:
             self.pending.pop(req_id, None)
-            self._forget_host(host)
+            self._drop_host(host)
             return json_response(
                 {"ok": False, "error": "host_unavailable"}, status=503
             )
@@ -1607,13 +1562,7 @@ class ForkMeshHost(DurableObject):
             self.pending.pop(req_id, None)
             return json_response({"ok": False, "error": "timeout"}, status=504)
 
-        # Update the host's round-trip estimate (exponential moving average).
-        elapsed = Date.now() - started
-        host["rtt"] = (
-            elapsed
-            if host.get("rtt", float("inf")) == float("inf")
-            else 0.5 * host["rtt"] + 0.5 * elapsed
-        )
+        self._update_rtt(host, Date.now() - started)
 
         if not msg.get("ok"):
             return json_response(
@@ -1627,6 +1576,24 @@ class ForkMeshHost(DurableObject):
         }
         payload["ok"] = True
         return json_response(payload)
+
+    def _drop_host(self, ws):
+        # A send failed: force-close so the runtime drops it from getWebSockets.
+        try:
+            ws.close(1011, "host unavailable")
+        except Exception:
+            pass
+
+    def _update_rtt(self, ws, elapsed):
+        # Exponential moving average of round-trip time, persisted in the socket's
+        # hibernation attachment so it survives a Durable Object eviction.
+        prev = _ws_attr(ws, "rtt")
+        new_rtt = (elapsed if not isinstance(prev, (int, float))
+                   else 0.5 * prev + 0.5 * elapsed)
+        try:
+            ws.serializeAttachment(to_js({"rtt": new_rtt}))
+        except Exception:
+            pass
 
     async def _git(self, request, op, body=None):
         # Forward a git smart-HTTP request to the hosting client, which runs
@@ -1647,11 +1614,11 @@ class ForkMeshHost(DurableObject):
         if body:
             message["body"] = base64.b64encode(body).decode()
         try:
-            host["socket"].send(json.dumps(message))
+            host.send(json.dumps(message))
         except Exception:
             self.pending.pop(req_id, None)
             self.git_buffers.pop(req_id, None)
-            self._forget_host(host)
+            self._drop_host(host)
             return Response("Host unavailable.", status=503)
 
         try:
