@@ -16,6 +16,8 @@ from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
+import bch_wallet
+
 MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
 MAX_CONNECTIONS = 128
@@ -61,14 +63,21 @@ HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
 HOST_PRESENCE_REFRESH_MS = 60 * 1000
 
 
-NODE_NAME_RE = re.compile(r"^[a-z][a-z0-9]*$")
+# Public node name = username = a single DNS-like label: lowercase letters,
+# digits, and hyphens; must start with a letter and end with a letter or digit;
+# no underscores, no spaces, <= 63 chars. This is the user's public handle and
+# their repo namespace, so it is validated identically in the web and desktop
+# clients.
+NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+MAX_NODE_NAME = 63
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 
 
 def valid_node_name(value):
     value = (value or "").strip()
-    return bool(value) and len(value) <= 32 and bool(NODE_NAME_RE.match(value))
+    return (bool(value) and len(value) <= MAX_NODE_NAME and
+            bool(NODE_NAME_RE.match(value)))
 
 
 def b64url_decode(value):
@@ -409,10 +418,32 @@ PBKDF2_ITERS = 150000
 MIN_ACTIVE_SATS = 100000  # 0.001 BCH — proves the wallet is active/funded
 BCH_RE = re.compile(r"^(bitcoincash:)?[qp][a-z0-9]{41}$")
 
+# Donation funnel: minimum "join" donation (~$1). Each signup gets a freshly
+# generated address; when it receives at least this much the account can be
+# finalized, the balance is split (see below), and the ephemeral key is forgotten.
+MIN_JOIN_SATS = 500000  # 0.005 BCH
+# Rough sat/byte fee model for the sweep/payout tx: a base plus a bit per output.
+BCH_BASE_FEE_SATS = 300
+BCH_FEE_PER_OUTPUT_SATS = 50
+BCH_DUST_SATS = 546  # below this an output is unspendable dust
+# Foundational reward split: half of each confirmed donation goes to the
+# treasury, the other half is divided equally among nodes that are currently
+# online and have a payout BCH address on file. Capped so the payout tx stays a
+# sane size; the split is intentionally simple and will be refined later.
+TREASURY_SPLIT_NUMERATOR = 1
+TREASURY_SPLIT_DENOMINATOR = 2
+MAX_PAYEES = 50
+# A node counts as online for payouts if it has sent a heartbeat within this
+# window (reuses the host-presence staleness window).
+ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
+
 _schema_ready = False
 
 SCHEMA_STATEMENTS = [
-    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL)",
+    # email_bi (blind index of the email) lets users log in by email, not just
+    # node name. Migration 0003 adds it to already-deployed databases.
+    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, email_bi TEXT)",
+    "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
@@ -435,6 +466,10 @@ SCHEMA_STATEMENTS = [
     # and a staleness window self-heals rows left behind by a missed disconnect.
     "CREATE TABLE IF NOT EXISTS host_presence (repo_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_host_presence_ts ON host_presence(ts)",
+    # Account-level presence: a node heartbeats here while it is online so it can
+    # be included in the reward split. Keyed by the account blind index.
+    "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_account_presence_ts ON account_presence(ts)",
 ]
 
 
@@ -737,65 +772,260 @@ async def _owner_pubkey(env, owner):
     return rec.get("pubkey", "") if rec else ""
 
 
-async def _account_signup(env, request):
+def _ts_ok(ts):
+    try:
+        return abs(int(Date.now()) - int(ts)) <= LOGIN_MAX_SKEW_MS
+    except (TypeError, ValueError):
+        return False
+
+
+async def _save_account(env, name_bi, rec, email_bi=None):
+    # Persist the encrypted record; pass email_bi to (re)index for email login.
+    if email_bi is None:
+        await d1_run(
+            env,
+            """INSERT INTO accounts (name_bi, data) VALUES (?,?)
+               ON CONFLICT(name_bi) DO UPDATE SET data=excluded.data""",
+            name_bi, await encrypt_row(env, rec),
+        )
+    else:
+        await d1_run(
+            env,
+            """INSERT INTO accounts (name_bi, data, email_bi) VALUES (?,?,?)
+               ON CONFLICT(name_bi) DO UPDATE SET
+                 data=excluded.data, email_bi=excluded.email_bi""",
+            name_bi, await encrypt_row(env, rec), email_bi,
+        )
+
+
+# Step 1 of the funnel: claim a public node name. The desktop client signs the
+# claim with its Ed25519 identity (binding the name to a key); the website may
+# reserve without a key. A name is only "taken" once it is finalized/paid.
+async def _account_reserve(env, request):
     try:
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-
-    name = clean_string(data.get("nodeName", ""), 32).lower()
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
     pubkey = clean_string(data.get("pubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_name"}, status=400)
+
+    name_bi, existing = await _account_row(env, name)
+    if existing:
+        ex_pub = existing.get("pubkey", "")
+        if existing.get("status") == "active" or existing.get("donation_confirmed"):
+            return json_response({"error": "node_name_taken"}, status=409)
+        if ex_pub and (not pubkey or ex_pub != pubkey):
+            return json_response({"error": "node_name_taken"}, status=409)
+        # else: a stale/own reservation — allow re-reserving it (idempotent).
+
+    if pubkey:
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=401)
+        canonical = ("forkmesh-reserve-v1\n" + name + "\n" + ts).encode()
+        if not await ed25519_verify(pubkey, signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+
+    rec = existing or {}
+    rec.update({
+        "name": name,
+        "status": "reserved",
+        "created_at": int(rec.get("created_at") or Date.now()),
+    })
+    if pubkey:
+        rec["pubkey"] = pubkey
+    await _save_account(env, name_bi, rec)
+    return json_response(
+        {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
+
+
+# Step 2 (the "Join" step): mint a fresh, single-use BCH address for this
+# signup. The private key is generated here, stored encrypted in the row, and
+# swept + forgotten once the donation lands (see _account_donation_status).
+async def _account_donation_address(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    try:
+        amount = int(data.get("amountSats", 0) or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "reserve_node_name_first"}, status=404)
+    if rec.get("status") == "active":
+        return json_response({"error": "already_active"}, status=409)
+
+    if not rec.get("donation_address"):
+        priv_int, priv_hex = bch_wallet.gen_privkey(_random_bytes(32))
+        addr = bch_wallet.pubkey_to_cashaddr(
+            bch_wallet.privkey_to_pubkey(priv_int))
+        rec["donation_address"] = addr
+        rec["donation_privkey"] = priv_hex
+        rec["donation_required_sats"] = max(amount, MIN_JOIN_SATS)
+        rec["donation_confirmed"] = False
+        rec["swept"] = False
+        rec["status"] = "pending_payment"
+        await _save_account(env, name_bi, rec)
+
+    addr = rec["donation_address"]
+    required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+    amount_bch = "%.8f" % (required / 1e8)
+    return json_response({
+        "ok": True, "address": addr, "uri": addr + "?amount=" + amount_bch,
+        "requiredSats": required, "amountBch": amount_bch,
+    })
+
+
+async def _reward_outputs(env, treasury, total_in):
+    """Compute the payout outputs for a confirmed donation.
+
+    Foundational reward split: ~50% to the treasury, the rest divided equally
+    among online nodes with a payout address. If there are no eligible nodes (or
+    each share would be dust), everything goes to the treasury. Returns a list of
+    (address, sats) for bch_wallet.build_tx, or None if the inputs can't even
+    cover the fee.
+    """
+    payees = await _online_payout_addresses(env)
+    num_outputs = 1 + len(payees)
+    fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS * num_outputs
+    distributable = total_in - fee
+    if distributable <= 0:
+        return None
+
+    treasury_share = (distributable * TREASURY_SPLIT_NUMERATOR
+                      ) // TREASURY_SPLIT_DENOMINATOR
+    remainder = distributable - treasury_share
+    if payees and remainder // len(payees) >= BCH_DUST_SATS:
+        per = remainder // len(payees)
+        leftover = remainder - per * len(payees)  # rounding dust → treasury
+        outputs = [(treasury, treasury_share + leftover)]
+        outputs += [(addr, per) for addr in payees]
+        return outputs
+    # No eligible payees (or shares too small): treasury takes the lot. Recompute
+    # the fee for the single-output case so we don't overpay miners.
+    fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS
+    distributable = total_in - fee
+    if distributable <= 0:
+        return None
+    return [(treasury, distributable)]
+
+
+# Polled while the user waits to pay. When the address has received enough, the
+# account is marked confirmed; we then split the balance (treasury + online
+# nodes) and, once the balance is zero, delete the ephemeral private key.
+async def _account_donation_status(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_such_account"}, status=404)
+    addr = rec.get("donation_address", "")
+    if not addr:
+        return json_response({"error": "no_donation_address"}, status=400)
+    required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+
+    state = await _bch_address_state(addr)
+    if state is None:
+        return json_response({"error": "explorer_unavailable"}, status=502)
+    received = state["received"]
+    changed = False
+    if received >= required and not rec.get("donation_confirmed"):
+        rec["donation_confirmed"] = True
+        changed = True
+
+    swept = bool(rec.get("swept"))
+    treasury = _treasury_address(env)
+    if (rec.get("donation_confirmed") and not swept and
+            rec.get("donation_privkey") and treasury and state["utxos"]):
+        try:
+            outputs = await _reward_outputs(env, treasury, sum(
+                u["value"] for u in state["utxos"]))
+            if outputs:
+                priv_int = int(rec["donation_privkey"], 16)
+                raw_hex, _, _ = bch_wallet.build_tx(
+                    priv_int, state["utxos"], outputs)
+                if await _bch_broadcast(raw_hex):
+                    rec["swept"] = True
+                    swept = True
+                    changed = True
+        except Exception:
+            pass  # retried on the next poll
+
+    # Forget the spendable key once the swept balance has confirmed to zero.
+    if swept and rec.get("donation_privkey") and state["balance"] == 0:
+        rec.pop("donation_privkey", None)
+        changed = True
+
+    if changed:
+        await _save_account(env, name_bi, rec)
+    return json_response({
+        "ok": True, "paid": bool(rec.get("donation_confirmed")),
+        "receivedSats": received, "requiredSats": required,
+        "swept": bool(rec.get("swept")),
+    })
+
+
+# Step 3: after a confirmed donation, set the email + password that unlock
+# universal (any-surface) login. Email + password hash are stored encrypted.
+async def _account_finalize(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
     email = clean_string(data.get("email", ""), 254)
-    bch = clean_string(data.get("bch", ""), 160)
     password = (data.get("password", "") or "")[:256]
+    pubkey = clean_string(data.get("pubkey", ""), 120)
+    bch = clean_string(data.get("bch", ""), 160)
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
 
-    if not valid_node_name(name):
-        return json_response(
-            {"error": "node_name_must_be_lowercase_alphanumeric_starting_with_a_letter"},
-            status=400,
-        )
-    if not pubkey or "@" not in email or not ts:
-        return json_response({"error": "pubkey_email_and_ts_required"}, status=400)
-    if not BCH_RE.match(bch.lower()):
-        return json_response({"error": "valid_bch_address_required"}, status=400)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_such_account"}, status=404)
+    if not rec.get("donation_confirmed"):
+        return json_response({"error": "donation_required"}, status=402)
+    if "@" not in email or len(email) < 3:
+        return json_response({"error": "valid_email_required"}, status=400)
     if len(password) < 8:
         return json_response({"error": "password_too_short"}, status=400)
 
-    canonical = ("forkmesh-account-v1\n" + name + "\n" + email + "\n" + ts).encode()
-    if not await ed25519_verify(pubkey, signature, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
+    # A key-bound (desktop) account must prove ownership to finalize.
+    if rec.get("pubkey"):
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=401)
+        canonical = ("forkmesh-finalize-v1\n" + name + "\n" + email + "\n" +
+                     ts).encode()
+        if not await ed25519_verify(rec["pubkey"], signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+    elif pubkey:
+        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
 
-    name_bi, existing = await _account_row(env, name)
-    if existing and existing.get("pubkey") != pubkey:
-        return json_response({"error": "node_name_taken"}, status=409)
+    email_bi = await blind_index(env, email)
+    dup = await d1_first(
+        env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+    if dup and dup.get("name_bi") != name_bi:
+        return json_response({"error": "email_taken"}, status=409)
 
     salt, phash = await hash_password(password)
-    # Preserve an existing operator's TOTP/verification across a re-signup.
-    totp_secret = existing.get("totp_secret") if existing else gen_totp_secret()
-    totp_enrolled = bool(existing.get("totp_enrolled")) if existing else False
-    bch_verified = bool(existing.get("bch_verified")) if existing else False
-    created = existing.get("created_at") if existing else int(Date.now())
-
-    record = {
-        "name": name, "pubkey": pubkey, "email": email, "bch": bch,
-        "pass_salt": salt, "pass_hash": phash, "totp_secret": totp_secret,
-        "totp_enrolled": totp_enrolled, "bch_verified": bch_verified,
-        "created_at": int(created),
-    }
-    await d1_run(
-        env,
-        """INSERT INTO accounts (name_bi, data) VALUES (?,?)
-           ON CONFLICT(name_bi) DO UPDATE SET data=excluded.data""",
-        name_bi, await encrypt_row(env, record),
-    )
-    resp = {"ok": True, "nodeName": name, "totpEnrolled": totp_enrolled}
-    if not totp_enrolled:
-        resp["totpSecret"] = totp_secret
-        resp["totpUri"] = ("otpauth://totp/ForkMesh:" + name + "?secret=" +
-                           totp_secret + "&issuer=ForkMesh&digits=6&period=30")
-    return json_response(resp, status=201)
+    rec["email"] = email
+    rec["pass_salt"] = salt
+    rec["pass_hash"] = phash
+    rec["status"] = "active"
+    # Optional payout address (where this node receives its share of the split).
+    if bch and BCH_RE.match(bch.lower()):
+        rec["bch"] = bch
+    rec.setdefault("created_at", int(Date.now()))
+    await _save_account(env, name_bi, rec, email_bi=email_bi)
+    return json_response(
+        {"ok": True, "nodeName": name, "email": email, "status": "active"},
+        status=201)
 
 
 async def _account_login(env, request):
@@ -804,109 +1034,201 @@ async def _account_login(env, request):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
 
-    name = clean_string(data.get("nodeName", ""), 32).lower()
+    # Log in by email or node name (the "universal access" credential).
+    identifier = clean_string(
+        data.get("nodeName", "") or data.get("identifier", "") or
+        data.get("email", ""), 254).strip().lower()
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
-    name_bi, rec = await _account_row(env, name)
+
+    rec = None
+    if "@" in identifier:
+        email_bi = await blind_index(env, identifier)
+        row = await d1_first(
+            env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+        if row:
+            rec = await decrypt_row(env, row["data"])
+    elif valid_node_name(identifier):
+        _, rec = await _account_row(env, identifier)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
-
+    if rec.get("status") != "active" or not rec.get("pass_hash"):
+        return json_response({"error": "account_not_active"}, status=403)
     if not await verify_password(password, rec.get("pass_salt", ""),
                                  rec.get("pass_hash", "")):
         return json_response({"error": "bad_password"}, status=401)
-    if not await totp_verify(rec.get("totp_secret", ""), totp):
-        return json_response({"error": "bad_totp"}, status=401)
-
-    if not rec.get("totp_enrolled"):
-        rec["totp_enrolled"] = True
-        await d1_run(
-            env, "UPDATE accounts SET data=? WHERE name_bi=?",
-            await encrypt_row(env, rec), name_bi,
-        )
+    # TOTP is only enforced for accounts that have enrolled it.
+    if rec.get("totp_enrolled"):
+        if not await totp_verify(rec.get("totp_secret", ""), totp):
+            return json_response({"error": "bad_totp"}, status=401)
     return json_response({
-        "ok": True, "nodeName": name, "email": rec.get("email", ""),
-        "bch": rec.get("bch", ""), "bchVerified": bool(rec.get("bch_verified")),
+        "ok": True, "nodeName": rec.get("name", ""),
+        "email": rec.get("email", ""), "status": rec.get("status", "active"),
+        "pubkey": rec.get("pubkey", ""),
     })
 
 
-async def _bch_total_received(bch):
+def _random_bytes(n):
+    return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
+
+
+def _treasury_address(env):
+    # All donations sweep here. The 50/50 ForkMesh/airdrop split happens later,
+    # off this treasury, once the reward engine ships.
+    addr = (getattr(env, "TREASURY_BCH_ADDRESS", "") or
+            getattr(env, "NODE_BCH_ADDRESS", "") or "").strip()
+    return addr if BCH_RE.match(addr.lower()) else ""
+
+
+async def _bch_address_state(addr):
+    # One Blockchair call → cumulative received, current balance, and the UTXO
+    # set used to build the sweep. Returns None if the explorer is unreachable.
     from js import fetch as js_fetch
-    addr = bch.split(":")[-1]
+    a = addr.split(":")[-1]
     try:
         resp = await js_fetch(
-            "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + addr
+            "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + a +
+            "?limit=1000"
         )
         obj = json.loads(await resp.text())
-        for _, value in (obj.get("data", {}) or {}).items():
-            address = value.get("address", {}) if isinstance(value, dict) else {}
-            if "received" in address:
-                return int(address.get("received", 0))
-        return 0
+        data = obj.get("data", {}) or {}
+        entry = data.get(a)
+        if entry is None and data:
+            entry = next(iter(data.values()))
+        entry = entry or {}
+        address = entry.get("address", {}) if isinstance(entry, dict) else {}
+        utxos = []
+        for u in (entry.get("utxo", []) or []):
+            utxos.append({
+                "txid": u.get("transaction_hash", ""),
+                "vout": int(u.get("index", 0) or 0),
+                "value": int(u.get("value", 0) or 0),
+            })
+        return {
+            "received": int(address.get("received", 0) or 0),
+            "balance": int(address.get("balance", 0) or 0),
+            "utxos": utxos,
+        }
     except Exception:
         return None
 
 
-async def _account_verify_bch(env, request):
+async def _bch_broadcast(raw_hex):
+    from js import fetch as js_fetch
+    try:
+        resp = await js_fetch(
+            "https://api.blockchair.com/bitcoin-cash/push/transaction",
+            to_js({
+                "method": "POST",
+                "headers": {"content-type": "application/x-www-form-urlencoded"},
+                "body": "data=" + raw_hex,
+            }),
+        )
+        return 200 <= int(getattr(resp, "status", 0)) < 300
+    except Exception:
+        return False
+
+
+# A running node calls this on an interval to stay eligible for the reward
+# split. Signed with the account's key so only the key holder can mark its node
+# online; optionally updates the payout BCH address.
+async def _account_heartbeat(env, request):
     try:
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("nodeName", ""), 32).lower()
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    bch = clean_string(data.get("bch", ""), 160)
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
     name_bi, rec = await _account_row(env, name)
-    if not rec:
-        return json_response({"error": "no_such_account"}, status=404)
-    try:
-        skew = abs(int(Date.now()) - int(ts))
-    except (TypeError, ValueError):
-        skew = LOGIN_MAX_SKEW_MS + 1
-    if skew > LOGIN_MAX_SKEW_MS:
-        return json_response({"error": "stale_timestamp"}, status=401)
-    canonical = ("forkmesh-verify-bch-v1\n" + name + "\n" + ts).encode()
-    if not await ed25519_verify(rec.get("pubkey", ""), signature, canonical):
+    if not rec or rec.get("status") != "active":
+        return json_response({"ok": True, "online": False})
+    pubkey = rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
-    bch = rec.get("bch", "")
-    if not bch:
-        return json_response({"error": "no_bch_address"}, status=400)
-    received = await _bch_total_received(bch)
-    if received is None:
-        return json_response({"error": "explorer_unavailable"}, status=502)
-    verified = received >= MIN_ACTIVE_SATS
-    if verified and not rec.get("bch_verified"):
-        rec["bch_verified"] = True
-        await d1_run(
-            env, "UPDATE accounts SET data=? WHERE name_bi=?",
-            await encrypt_row(env, rec), name_bi,
-        )
-    return json_response({"ok": True, "bchVerified": verified,
-                          "receivedSats": received,
-                          "requiredSats": MIN_ACTIVE_SATS})
+    # Keep the payout address current if the node sent a valid one.
+    if bch and BCH_RE.match(bch.lower()) and rec.get("bch") != bch:
+        rec["bch"] = bch
+        await _save_account(env, name_bi, rec)
+
+    await d1_run(
+        env,
+        "INSERT INTO account_presence (name_bi, ts) VALUES (?, ?) "
+        "ON CONFLICT(name_bi) DO UPDATE SET ts=excluded.ts",
+        name_bi, int(Date.now()),
+    )
+    return json_response({"ok": True, "online": True,
+                          "hasPayoutAddress": bool(rec.get("bch"))})
+
+
+async def _online_payout_addresses(env):
+    # Deduplicated payout addresses of currently-online, active accounts. Stale
+    # presence rows self-heal here so the table stays bounded.
+    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
+    try:
+        await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    rows = await d1_all(
+        env, "SELECT name_bi FROM account_presence WHERE ts >= ? ORDER BY ts DESC",
+        cutoff,
+    )
+    seen = set()
+    addresses = []
+    for r in rows:
+        row = await d1_first(
+            env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            continue
+        rec = await decrypt_row(env, row["data"])
+        if not rec or rec.get("status") != "active":
+            continue
+        bch = (rec.get("bch") or "").strip()
+        if not bch or not BCH_RE.match(bch.lower()) or bch in seen:
+            continue
+        seen.add(bch)
+        addresses.append(bch)
+        if len(addresses) >= MAX_PAYEES:
+            break
+    return addresses
 
 
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
     method = method_name(request)
-    if url.path == "/api/accounts/signup" and method == "POST":
-        return await _account_signup(env, request)
+    if url.path == "/api/accounts/reserve" and method == "POST":
+        return await _account_reserve(env, request)
+    if url.path == "/api/accounts/donation-address" and method == "POST":
+        return await _account_donation_address(env, request)
+    if url.path == "/api/accounts/donation-status" and method == "GET":
+        return await _account_donation_status(env, request)
+    if url.path == "/api/accounts/finalize" and method == "POST":
+        return await _account_finalize(env, request)
+    if url.path == "/api/accounts/heartbeat" and method == "POST":
+        return await _account_heartbeat(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
-    if url.path == "/api/accounts/verify-bch" and method == "POST":
-        return await _account_verify_bch(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
-        name = match.group(1)
-        _, rec = await _account_row(env, clean_string(name, 32).lower())
+        name = clean_string(match.group(1), MAX_NODE_NAME).lower()
+        _, rec = await _account_row(env, name)
         if not rec:
-            return json_response({"ok": True, "exists": False, "name": name})
-        # Public lookup never returns email/secret material.
+            return json_response(
+                {"ok": True, "exists": False, "available": True, "name": name})
+        # Public lookup never returns email/secret material. A name is only
+        # unavailable once it has been paid for / finalized.
+        taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
         return json_response(
-            {"ok": True, "exists": True, "name": rec.get("name", name),
+            {"ok": True, "exists": True, "available": not taken,
+             "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
-             "createdAt": rec.get("created_at", 0),
-             "bchVerified": bool(rec.get("bch_verified"))}
+             "createdAt": rec.get("created_at", 0)}
         )
     return json_response({"error": "not_found"}, status=404)
 
@@ -1326,8 +1648,10 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/repositories", "/api/repositories/"):
             return await catalog_handler(self.env, request)
 
-        if url.path in ("/api/accounts/signup", "/api/accounts/login") or \
-                ACCOUNTS_RE.match(url.path):
+        # All /api/accounts/* paths (reserve, donation-address, donation-status,
+        # finalize, login, and GET /api/accounts/{name}) are single-segment, so
+        # ACCOUNTS_RE matches them and accounts_handler dispatches by path.
+        if ACCOUNTS_RE.match(url.path):
             return await accounts_handler(self.env, request)
 
         issues_match = REPO_ISSUES_RE.match(url.path)

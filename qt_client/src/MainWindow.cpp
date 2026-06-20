@@ -236,19 +236,36 @@ QString repoNameFromUrl(QString url)
     return repoSegment(name, QStringLiteral("repository"));
 }
 
+// Public node name = username: a single DNS-like label — lowercase letters,
+// digits and hyphens, starting with a letter and ending with a letter or digit,
+// max 63 chars. Mirrors valid_node_name in the worker and NAME_RE on the website.
+bool isValidNodeName(const QString &value)
+{
+    static const QRegularExpression re(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    return re.match(value).hasMatch();
+}
+
 QString accountNameFromInput(QString value, const QString &fallback = QStringLiteral("node"))
 {
     value = value.trimmed().toLower();
     QString out;
     for (const QChar &c : value) {
-        if (c.isLetterOrNumber() && c.unicode() < 128)
+        if (c.unicode() >= 128)
+            continue;
+        if ((c >= QChar('a') && c <= QChar('z')) ||
+            (c >= QChar('0') && c <= QChar('9')) || c == QChar('-'))
             out.append(c);
     }
-    while (!out.isEmpty() && !out.at(0).isLetter())
+    // Must start with a letter and not end with a hyphen; cap at 63 chars.
+    while (!out.isEmpty() && !(out.at(0) >= QChar('a') && out.at(0) <= QChar('z')))
         out.remove(0, 1);
+    out = out.left(63);
+    while (!out.isEmpty() && out.endsWith(QChar('-')))
+        out.chop(1);
     if (out.isEmpty())
         out = fallback;
-    return out.left(32);
+    return out;
 }
 
 QString savedProfileName()
@@ -1470,11 +1487,16 @@ QWidget *MainWindow::buildSetupPage()
     versionLabel->setAlignment(Qt::AlignHCenter);
 
     m_nameEdit = new QLineEdit;
-    m_nameEdit->setPlaceholderText("Name (e.g. alice)");
-    m_nameEdit->setMaxLength(32);
+    m_nameEdit->setPlaceholderText("Node name (e.g. ada-lovelace)");
+    m_nameEdit->setMaxLength(63);
     m_nameEdit->setText(savedProfileName());
+    auto *nameHint = new QLabel(
+        "Your public node name: lowercase letters, numbers and hyphens. "
+        "Start with a letter; up to 63 characters.");
+    nameHint->setObjectName("modeHint");
+    nameHint->setWordWrap(true);
     m_bchEdit = new QLineEdit;
-    m_bchEdit->setPlaceholderText("Bitcoin Cash address (required to join)");
+    m_bchEdit->setPlaceholderText("Your Bitcoin Cash address (for payouts, optional)");
     m_bchEdit->setMaxLength(160);
     m_bchEdit->setText(QSettings().value(kBchSetting).toString());
     m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
@@ -1516,6 +1538,13 @@ QWidget *MainWindow::buildSetupPage()
     startButton->setObjectName("primaryButton");
     startButton->setMinimumHeight(40);
 
+    auto *joinButton = new QPushButton("Join the network (donate \xE2\x89\xA5 $1)");
+    joinButton->setObjectName("ghostButton");
+    joinButton->setCursor(Qt::PointingHandCursor);
+    joinButton->setToolTip("Reserve your node name, pick repos to mirror, and "
+                           "donate to become an active member. You can also keep "
+                           "using ForkMesh free (view-only) by just starting the node.");
+
     m_updateButton = new QPushButton("Quick update");
     m_updateButton->setObjectName("ghostButton");
     m_updateButton->setCursor(Qt::PointingHandCursor);
@@ -1535,6 +1564,7 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addWidget(versionLabel);
     cardLayout->addSpacing(14);
     cardLayout->addWidget(m_nameEdit);
+    cardLayout->addWidget(nameHint);
     cardLayout->addWidget(m_bchEdit);
     cardLayout->addWidget(m_pubkeyLabel);
     cardLayout->addSpacing(8);
@@ -1547,6 +1577,7 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addWidget(m_setupError);
     cardLayout->addSpacing(10);
     cardLayout->addWidget(startButton);
+    cardLayout->addWidget(joinButton);
     cardLayout->addWidget(m_updateButton, 0, Qt::AlignHCenter);
     cardLayout->addWidget(m_updateStatus);
 
@@ -1556,6 +1587,19 @@ QWidget *MainWindow::buildSetupPage()
     layout->addStretch();
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
+    connect(joinButton, &QPushButton::clicked, this, [this]() {
+        // Make sure the identity + session are ready, then run the staged join.
+        startSession();
+        const QString name = accountNameFromInput(m_nameEdit->text(), QString());
+        if (name.isEmpty()) {
+            if (m_setupError) {
+                m_setupError->setText("Choose a node name first.");
+                m_setupError->show();
+            }
+            return;
+        }
+        ensureNodeAccount(name, m_bchEdit->text().trimmed());
+    });
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
         saveProfileName(name);
@@ -1675,10 +1719,41 @@ void MainWindow::startSession()
         loadChatHistory();
         // Serve already-mirrored repos live to the web for this session.
         startRepoHosts();
+        // Heartbeat so an active, online node stays eligible for the reward
+        // split. The server ignores it unless the account is active.
+        if (!m_heartbeatTimer) {
+            m_heartbeatTimer = new QTimer(this);
+            m_heartbeatTimer->setInterval(60000);
+            connect(m_heartbeatTimer, &QTimer::timeout, this,
+                    &MainWindow::sendNodeHeartbeat);
+        }
+        m_heartbeatTimer->start();
+        sendNodeHeartbeat();
     }
 }
 
-// ---- Account / node registration (password + TOTP, BCH-gated) --------------
+// ---- Account / node registration (staged join + reward heartbeat) ----------
+
+void MainWindow::sendNodeHeartbeat()
+{
+    const QString name = m_accountName.isEmpty()
+                             ? QSettings().value(kAccountNameSetting).toString().trimmed()
+                             : m_accountName;
+    if (name.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).toUtf8();
+    const QString bch = QSettings().value(kBchSetting).toString().trimmed();
+    const QJsonObject body{{"nodeName", name}, {"bch", bch}, {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("heartbeat"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
 
 QString MainWindow::accountOwner() const
 {
@@ -1736,42 +1811,110 @@ QJsonObject MainWindow::getAccountSync(const QString &leaf, int *status)
     return QJsonDocument::fromJson(data).object();
 }
 
+QJsonArray MainWindow::fetchCatalogRepos()
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repositories"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    return obj.value("repositories").toArray();
+}
+
+int MainWindow::fetchNodesOnline()
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/network/stats"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    return obj.value("hosts").toInt();
+}
+
+void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
+                                   const QString &cloneUrl)
+{
+    if (owner.isEmpty() || name.isEmpty() || cloneUrl.isEmpty())
+        return;
+    for (const RepositoryRecord &r : std::as_const(m_repositories))
+        if (r.owner == owner && r.name == name)
+            return; // already mirroring this repo
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.cloneUrl = cloneUrl;
+    repo.publishToNetwork = true;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                      repoSegment(owner, QStringLiteral("owner")) + "-" +
+                      repoSegment(name, QStringLiteral("repository")) + ".git";
+    m_repositories.append(repo);
+    saveRepositories();
+    if (m_backend)
+        m_backend->addChannel(repositoryChannel(repo));
+    refreshRepositoryList();
+    logSystem("Mirroring " + owner + "/" + name + " from " + cloneUrl);
+    syncRepository(m_repositories.size() - 1);
+}
+
 bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &bch)
 {
+    Q_UNUSED(bch);
     if (m_accountAuthenticated && m_accountName == accountName)
         return true;
+    if (!isValidNodeName(accountName)) {
+        QMessageBox::warning(this, "Join the network",
+                             "Choose a valid node name first (lowercase letters, "
+                             "numbers and hyphens; start with a letter).");
+        return false;
+    }
 
     int status = 0;
     const QJsonObject lookup = getAccountSync(accountName, &status);
-    const bool exists = lookup.value("exists").toBool();
-    if (exists)
+    // An account that has already been finalized logs in; anything else (new,
+    // reserved, or mid-donation) runs the staged join.
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == "active")
         return runLoginFlow(accountName);
     return runSignupFlow(accountName, bch);
 }
 
+// POST /api/accounts/login — log in by node name or email (+ optional TOTP).
 bool MainWindow::verifyTotpLogin(const QString &accountName,
                                  const QString &password, const QString &totp)
 {
     int status = 0;
     const QJsonObject resp = postAccountSync(
         "login",
-        QJsonObject{{"nodeName", accountName}, {"password", password},
+        QJsonObject{{"identifier", accountName}, {"password", password},
                     {"totp", totp}},
         &status);
     if (status == 200 && resp.value("ok").toBool()) {
         m_accountAuthenticated = true;
-        m_accountName = accountName;
-        m_accountBchVerified = resp.value("bchVerified").toBool();
+        m_accountName = resp.value("nodeName").toString(accountName);
+        m_accountTier = QStringLiteral("active");
+        m_accountBchVerified = true; // joined = active network member
         return true;
     }
-    QString err = resp.value("error").toString();
+    const QString err = resp.value("error").toString();
     QMessageBox::warning(this, "Log in",
                          err == "bad_totp"
                              ? "Incorrect authenticator code."
                              : err == "bad_password"
                                    ? "Incorrect password."
-                                   : "Login failed" +
-                                         (err.isEmpty() ? QString() : ": " + err) + ".");
+                                   : err == "account_not_active"
+                                         ? "That account hasn't finished signup yet."
+                                         : "Login failed" +
+                                               (err.isEmpty() ? QString() : ": " + err) +
+                                               ".");
     return false;
 }
 
@@ -1784,7 +1927,7 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     auto *passEdit = new QLineEdit;
     passEdit->setEchoMode(QLineEdit::Password);
     auto *totpEdit = new QLineEdit;
-    totpEdit->setPlaceholderText("6-digit authenticator code");
+    totpEdit->setPlaceholderText("6-digit code (only if you enabled 2FA)");
     totpEdit->setMaxLength(6);
     form->addRow("Password", passEdit);
     form->addRow("2FA code", totpEdit);
@@ -1797,20 +1940,62 @@ bool MainWindow::runLoginFlow(const QString &accountName)
         if (verifyTotpLogin(accountName, passEdit->text(), totpEdit->text().trimmed()))
             return true;
     }
-    m_setupError->setText("Account login is required to join the network.");
-    m_setupError->show();
+    if (m_setupError) {
+        m_setupError->setText("Account login is required to join the network.");
+        m_setupError->show();
+    }
     return false;
 }
 
+// Staged "join the network" flow: reserve the node name (signed) → pick at
+// least one repo to mirror → donate to the per-signup BCH address → set the
+// email + password that unlock universal login. Replaces the old one-shot
+// signup. Returns true once the account is finalized (active).
 bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
 {
-    // Collect email + password, then register and enrol TOTP.
+    Q_UNUSED(bch);
+
+    // Step 1 — reserve the node name, signed with the local identity so the
+    // name is bound to this key.
+    {
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-reserve-v1\n" + accountName + "\n" + ts).toUtf8();
+        int status = 0;
+        const QJsonObject resp = postAccountSync(
+            "reserve",
+            QJsonObject{{"nodeName", accountName},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", ts},
+                        {"sig", m_profileIdentity.signData(canonical)}},
+            &status);
+        if (!resp.value("ok").toBool()) {
+            const QString err = resp.value("error").toString();
+            QMessageBox::warning(this, "Join the network",
+                                 err == "node_name_taken"
+                                     ? "That node name is already taken — pick another."
+                                     : "Could not reserve that name" +
+                                           (err.isEmpty() ? QString() : ": " + err) + ".");
+            return false;
+        }
+    }
+
+    // Step 2 — choose at least one repository to mirror.
+    if (!runRepoPickStep())
+        return false;
+
+    // Step 3 — donate to the generated address and wait for confirmation.
+    if (!runDonationStep(accountName))
+        return false;
+
+    // Step 4 — set email + password (universal login), signed to prove key
+    // ownership of the reserved name.
     QDialog dialog(this);
-    dialog.setWindowTitle("Create node account " + accountName);
+    dialog.setWindowTitle("Finish creating " + accountName);
     auto *form = new QFormLayout(&dialog);
     auto *intro = new QLabel(
-        QStringLiteral("Register <b>%1</b> to join. Your BCH address is <code>%2</code>.")
-            .arg(accountName.toHtmlEscaped(), bch.toHtmlEscaped()));
+        QStringLiteral("Donation received. Set the email and password that log you "
+                       "into <b>%1</b> from any device.").arg(accountName.toHtmlEscaped()));
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     auto *emailEdit = new QLineEdit;
@@ -1848,102 +2033,220 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
         }
         const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
         const QByteArray canonical =
-            ("forkmesh-account-v1\n" + accountName + "\n" + email + "\n" + ts).toUtf8();
-        const QJsonObject body{
-            {"nodeName", accountName}, {"bch", bch}, {"email", email},
-            {"password", password}, {"pubkey", m_profileIdentity.publicKey()},
-            {"ts", ts}, {"sig", m_profileIdentity.signData(canonical)}};
+            ("forkmesh-finalize-v1\n" + accountName + "\n" + email + "\n" + ts).toUtf8();
         int status = 0;
-        const QJsonObject resp = postAccountSync("signup", body, &status);
+        const QJsonObject resp = postAccountSync(
+            "finalize",
+            QJsonObject{{"nodeName", accountName}, {"email", email},
+                        {"password", password},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", ts}, {"sig", m_profileIdentity.signData(canonical)}},
+            &status);
         if (status != 201 || !resp.value("ok").toBool()) {
             const QString err = resp.value("error").toString();
             QMessageBox::warning(this, "Create account",
-                                 err == "node_name_taken"
-                                     ? "That name is already registered."
-                                     : "Could not create the account" +
-                                           (err.isEmpty() ? QString() : ": " + err) + ".");
+                                 err == "email_taken"
+                                     ? "That email is already registered."
+                                     : err == "donation_required"
+                                           ? "We haven't confirmed your donation yet."
+                                           : "Could not create the account" +
+                                                 (err.isEmpty() ? QString() : ": " + err) +
+                                                 ".");
             continue;
         }
-        // Enrol TOTP: show the secret + QR, then verify with a code (= first login).
-        if (runTotpEnroll(accountName, password, resp.value("totpSecret").toString(),
-                          resp.value("totpUri").toString()))
-            return true;
-        return false; // user cancelled enrolment
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountBchVerified = true;
+        QMessageBox::information(this, "Welcome to ForkMesh",
+                                 "You're in — your node is registered.");
+        return true;
     }
-    m_setupError->setText("Account registration is required to join the network.");
-    m_setupError->show();
+    if (m_setupError) {
+        m_setupError->setText("Set an email and password to finish joining.");
+        m_setupError->show();
+    }
     return false;
 }
 
-bool MainWindow::runTotpEnroll(const QString &accountName, const QString &password,
-                               const QString &secret, const QString &uri)
+// Step 2 of the join: show the catalog of repositories across connected servers
+// with a payout estimate, and require the user to pick at least one to mirror.
+bool MainWindow::runRepoPickStep()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Set up two-factor authentication");
+    dialog.setWindowTitle("Pick repositories to mirror");
+    dialog.resize(560, 460);
+    auto *outer = new QHBoxLayout(&dialog);
+
+    // Left: catalog list with checkboxes.
+    auto *leftCol = new QVBoxLayout;
+    leftCol->addWidget(new QLabel("Choose at least one repository to mirror:"));
+    auto *list = new QListWidget;
+    leftCol->addWidget(list, 1);
+
+    const QJsonArray repos = fetchCatalogRepos();
+    for (const QJsonValue &v : repos) {
+        const QJsonObject r = v.toObject();
+        const QString owner = r.value("owner").toString();
+        const QString name = r.value("name").toString();
+        if (owner.isEmpty() || name.isEmpty())
+            continue;
+        auto *item = new QListWidgetItem(owner + "/" + name, list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        item->setData(Qt::UserRole, r.value("cloneUrl").toString());
+        item->setData(Qt::UserRole + 1, owner);
+        item->setData(Qt::UserRole + 2, name);
+    }
+    if (list->count() == 0)
+        leftCol->addWidget(new QLabel(
+            "<i>No repositories are published yet — you can add one later from "
+            "the Repos tab.</i>"));
+    outer->addLayout(leftCol, 2);
+
+    // Right: payout estimate (illustrative only — the reward engine is WIP).
+    auto *rightCol = new QVBoxLayout;
+    auto *calc = new QLabel;
+    calc->setWordWrap(true);
+    calc->setTextFormat(Qt::RichText);
+    const int nodes = qMax(1, fetchNodesOnline());
+    const double payoutPerJoin = 0.0001;
+    calc->setText(QStringLiteral(
+        "<b style='color:#3fb950'>Live earnings estimate</b><br><br>"
+        "Nodes online: <b>%1</b><br>Payout per join: <b>%2 BCH</b><br><br>"
+        "Est. earnings: <b>%3 BCH</b><br>"
+        "<span style='color:#8b949e'>Illustrative only — the reward system is in "
+        "progress. Roughly half of each join funds ForkMesh; the rest is shared "
+        "across nodes by data mirrored and uptime.</span>")
+        .arg(nodes)
+        .arg(payoutPerJoin, 0, 'f', 4)
+        .arg(nodes * payoutPerJoin, 0, 'f', 8));
+    rightCol->addWidget(calc);
+    rightCol->addStretch();
+    outer->addLayout(rightCol, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Continue");
+    auto *bottom = new QVBoxLayout;
+    bottom->addWidget(buttons);
+    rightCol->addLayout(bottom);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        QList<QListWidgetItem *> chosen;
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->checkState() == Qt::Checked)
+                chosen.append(list->item(i));
+        if (chosen.isEmpty() && list->count() > 0) {
+            QMessageBox::warning(this, "Pick repositories",
+                                 "Select at least one repository to mirror.");
+            continue;
+        }
+        for (QListWidgetItem *item : chosen)
+            mirrorCatalogRepo(item->data(Qt::UserRole + 1).toString(),
+                              item->data(Qt::UserRole + 2).toString(),
+                              item->data(Qt::UserRole).toString());
+        return true;
+    }
+    return false;
+}
+
+// Step 3 of the join: fetch a one-time BCH address for this signup, show it
+// with a QR code, and poll until the donation confirms.
+bool MainWindow::runDonationStep(const QString &accountName)
+{
+    int status = 0;
+    const QJsonObject addr = postAccountSync(
+        "donation-address", QJsonObject{{"nodeName", accountName}}, &status);
+    if (!addr.value("ok").toBool()) {
+        QMessageBox::warning(this, "Join the network",
+                             "Could not generate a donation address. Try again.");
+        return false;
+    }
+    const QString address = addr.value("address").toString();
+    const QString uri = addr.value("uri").toString(address);
+    const QString amountBch = addr.value("amountBch").toString("0.00500000");
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Join ForkMesh — donate to activate");
     auto *layout = new QVBoxLayout(&dialog);
     auto *info = new QLabel(
-        "Scan this QR code with an authenticator app (Google Authenticator, "
-        "Authy, etc.), then enter the 6-digit code to finish.");
+        QStringLiteral("Send at least <b>%1 BCH</b> to the one-time address below "
+                       "to join the network. This address is generated and "
+                       "monitored by ForkMesh.").arg(amountBch));
     info->setWordWrap(true);
+    info->setTextFormat(Qt::RichText);
     layout->addWidget(info);
+
     auto *qrLabel = new QLabel;
     qrLabel->setAlignment(Qt::AlignCenter);
     const QImage qr = QrCode::encodeToImage(uri, 5, 3);
     if (!qr.isNull())
         qrLabel->setPixmap(QPixmap::fromImage(qr));
     layout->addWidget(qrLabel);
-    auto *secretLabel = new QLabel("Or enter this key manually: " + secret);
-    secretLabel->setWordWrap(true);
-    secretLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    secretLabel->setStyleSheet("font-family:monospace;");
-    layout->addWidget(secretLabel);
-    auto *codeEdit = new QLineEdit;
-    codeEdit->setPlaceholderText("6-digit code");
-    codeEdit->setMaxLength(6);
-    layout->addWidget(codeEdit);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    buttons->button(QDialogButtonBox::Ok)->setText("Verify & finish");
+
+    auto *addrLabel = new QLabel(address);
+    addrLabel->setWordWrap(true);
+    addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    addrLabel->setStyleSheet("font-family:monospace;");
+    layout->addWidget(addrLabel);
+
+    auto *statusLabel = new QLabel("Waiting for your donation…");
+    statusLabel->setStyleSheet("color:#d29922;");
+    layout->addWidget(statusLabel);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-    while (dialog.exec() == QDialog::Accepted) {
-        if (verifyTotpLogin(accountName, password, codeEdit->text().trimmed()))
-            return true;
-    }
-    return false;
+    bool paid = false;
+    QTimer poll;
+    poll.setInterval(4000);
+    connect(&poll, &QTimer::timeout, &dialog, [&]() {
+        QUrl url = accountsApiUrl("donation-status");
+        url.setQuery("nodeName=" + QString::fromUtf8(QUrl::toPercentEncoding(accountName)));
+        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        const QJsonObject st =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (st.value("paid").toBool()) {
+            paid = true;
+            statusLabel->setText("Donation received!");
+            statusLabel->setStyleSheet("color:#3fb950;");
+            poll.stop();
+            dialog.accept();
+        } else {
+            const qint64 got = st.value("receivedSats").toVariant().toLongLong();
+            statusLabel->setText(
+                QStringLiteral("Waiting for your donation… (received %1 BCH)")
+                    .arg(got / 100000000.0, 0, 'f', 8));
+        }
+    });
+    poll.start();
+    dialog.exec();
+    poll.stop();
+    return paid;
 }
 
 void MainWindow::verifyWallet()
 {
+    // Repurposed: the "join / verify" button now drives the staged join flow,
+    // which both registers the account and marks it an active network member.
     const QString name = accountOwner();
-    if (name.isEmpty())
+    if (name.isEmpty()) {
+        QMessageBox::information(this, "Join the network",
+                                 "Set your node name on the setup screen first.");
         return;
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-    const QByteArray canonical =
-        ("forkmesh-verify-bch-v1\n" + name + "\n" + ts).toUtf8();
-    int status = 0;
-    const QJsonObject resp = postAccountSync(
-        "verify-bch",
-        QJsonObject{{"nodeName", name}, {"ts", ts},
-                    {"sig", m_profileIdentity.signData(canonical)}},
-        &status);
-    if (status == 200 && resp.value("ok").toBool()) {
-        m_accountBchVerified = resp.value("bchVerified").toBool();
-        const qint64 received = resp.value("receivedSats").toVariant().toLongLong();
-        if (m_accountBchVerified)
-            QMessageBox::information(
-                this, "Wallet verified",
-                "Your wallet is active and revenue-sharing eligible.");
-        else
-            QMessageBox::information(
-                this, "Wallet not yet active",
-                QStringLiteral("This address has received %1 BCH; deposit at least "
-                               "0.001 BCH total to unlock revenue sharing.")
-                    .arg(received / 100000000.0, 0, 'f', 8));
-    } else {
-        QMessageBox::warning(this, "Verify wallet",
-                             "Could not verify the wallet right now. Try again later.");
+    }
+    if (ensureNodeAccount(name, m_bchEdit ? m_bchEdit->text().trimmed() : QString())) {
+        if (m_profileEligibility)
+            m_profileEligibility->setText(
+                QStringLiteral("<span style='color:#3fb950'>Active "
+                               "\xC2\xB7 network member</span>"));
     }
 }
 

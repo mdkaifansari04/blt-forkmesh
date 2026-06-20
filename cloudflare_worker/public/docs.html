@@ -255,18 +255,31 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
           </div>
           <div class="doc-body">
             <p>
-              The account registry is early. It maps node names to public keys
-              and verifies signed login/signup messages. Treat this as protocol
-              scaffolding, not final product auth.
+              Signup is a staged funnel: reserve a public node name, donate to a
+              one-time generated BCH address to join, then set an email and
+              password for universal login. Treat this as protocol scaffolding,
+              not final product auth.
             </p>
             <div class="route-table" role="table" aria-label="Account routes">
               <div role="row">
-                <strong>POST</strong><code>/api/accounts/signup</code
-                ><span>Create node identity record</span>
+                <strong>POST</strong><code>/api/accounts/reserve</code
+                ><span>Claim a node name (optionally key-signed)</span>
+              </div>
+              <div role="row">
+                <strong>POST</strong><code>/api/accounts/donation-address</code
+                ><span>Get a one-time BCH join address</span>
+              </div>
+              <div role="row">
+                <strong>GET</strong><code>/api/accounts/donation-status</code
+                ><span>Poll for the donation; sweeps on confirm</span>
+              </div>
+              <div role="row">
+                <strong>POST</strong><code>/api/accounts/finalize</code
+                ><span>Set email + password (active account)</span>
               </div>
               <div role="row">
                 <strong>POST</strong><code>/api/accounts/login</code
-                ><span>Signed login check</span>
+                ><span>Log in by node name or email</span>
               </div>
               <div role="row">
                 <strong>GET</strong><code>/api/accounts/&lt;nodeName&gt;</code
