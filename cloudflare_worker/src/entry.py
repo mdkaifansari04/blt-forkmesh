@@ -1268,6 +1268,8 @@ async def _bch_address_state(addr):
             "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + a +
             "?limit=1000"
         )
+        print("response is")
+        print(resp)
         obj = json.loads(await resp.text())
         data = obj.get("data", {}) or {}
         entry = data.get(a)
