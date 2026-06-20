@@ -5,3 +5,4 @@ cloudflare_worker/python_modules/
 .env
 .env.*
 !.env.*.example
+build-forkmesh/

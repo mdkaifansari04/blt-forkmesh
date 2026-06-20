@@ -252,6 +252,8 @@ QString IssueStore::contentForSigning(const IssueEvent &ev)
         return ev.title + nul + ev.body + nul + ev.attachments.join(",");
     if (ev.type == "comment" || ev.type == "edit")
         return ev.body + nul + ev.attachments.join(",");
+    if (ev.type == "title")
+        return ev.title;
     if (ev.type == "status")
         return ev.status;
     if (ev.type == "labels")
@@ -308,6 +310,8 @@ void appendEventFields(QStringList &lines, const IssueEvent &ev)
     lines << "ts: " + QString::number(ev.ts);
     if (ev.type == "edit" || ev.type == "delete")
         lines << "target: " + ev.target;
+    if (ev.type == "title")
+        lines << "title: " + ev.title;
     if (ev.type == "status")
         lines << "status: " + ev.status;
     if (ev.type == "labels")
@@ -611,6 +615,8 @@ void IssueStore::recomputeMetadata(Issue &issue) const
     for (const IssueEvent &ev : issue.events) {
         if (ev.type == "open")
             issue.title = ev.title;
+        else if (ev.type == "title" && !ev.title.isEmpty())
+            issue.title = ev.title;  // later title events rename the issue
         else if (ev.type == "status")
             issue.status = ev.status;
         else if (ev.type == "labels")
@@ -781,7 +787,8 @@ bool IssueStore::addVote(int number, QString *error)
 }
 
 bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
-                           QString *error)
+                           const QStringList &keepAttachments,
+                           const QStringList &newAttachmentSrcPaths, QString *error)
 {
     if (!canWrite())
         return false;
@@ -792,11 +799,34 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
     ev.type = "edit";
     ev.target = eventId;
     ev.body = stripEdgeNewlines(newBody);
+    // An edit overwrites the target's attachment set, so carry forward the ones
+    // being kept (already in the issue folder) and copy in any newly added.
+    ev.attachments = keepAttachments;
+    if (!newAttachmentSrcPaths.isEmpty())
+        ev.attachments += copyAttachments(number, newAttachmentSrcPaths);
     ev = makeSignedEvent(number, ev);
     issue.events.append(ev);
     if (!writeIssueFile(issue, error))
         return false;
     return commit(QStringLiteral("issue #%1: edit").arg(number), error);
+}
+
+bool IssueStore::setTitle(int number, const QString &newTitle, QString *error)
+{
+    if (!canWrite())
+        return false;
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "title";
+    ev.title = newTitle.trimmed();
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    recomputeMetadata(issue);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: retitle").arg(number), error);
 }
 
 bool IssueStore::setStatus(int number, const QString &status, QString *error)

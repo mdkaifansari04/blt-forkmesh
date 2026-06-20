@@ -475,6 +475,110 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     max-height: 28px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#issuePageTitle {
+    font-size: 26px;
+    font-weight: 400;
+    color: #e6edf3;
+    background: transparent;
+}
+#issueDivider { background-color: #30363d; }
+QPushButton#issueIconButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px;
+}
+QPushButton#issueIconButton:hover { background-color: #21262d; }
+#issuePageScroll {
+    background: transparent;
+    border: none;
+}
+#issuePageScroll QWidget { background: transparent; }
+#issueAvatar {
+    background-color: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 18px;
+    color: #e6edf3;
+    font-size: 11px;
+    font-weight: 800;
+}
+#issueCommentTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: #e6edf3;
+    background: transparent;
+}
+#issueCommentEditor { background: transparent; }
+#issueTimelineRow { background: transparent; }
+#issueTimelineCard {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+}
+#issueTimelineCard QLabel { background: transparent; }
+#issueTimelineHeader {
+    background-color: #0d419d;
+    border-bottom: 1px solid #1f6feb;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+#issueTimelineHeader QLabel {
+    background: transparent;
+    color: #c9d1d9;
+}
+#issueAttachmentPreview {
+    background-color: #010409;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 6px;
+}
+QToolButton#issueActionButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-weight: 800;
+    padding: 4px 8px;
+}
+QToolButton#issueActionButton:hover { background-color: rgba(255,255,255,24); }
+QToolButton#issueActionButton::menu-indicator { image: none; width: 0; }
+#issueSidebar { background: transparent; }
+#issueSidebar QLabel { background: transparent; }
+#issueSidebarHeading {
+    color: #8b949e;
+    font-size: 12px;
+    font-weight: 700;
+    background: transparent;
+}
+#issueSidebarDivider { background-color: #30363d; }
+QPushButton#issueSidebarAction, QPushButton#issueDangerLink {
+    background: transparent;
+    border: none;
+    color: #c9d1d9;
+    font-weight: 500;
+    padding: 6px 2px;
+    text-align: left;
+}
+QPushButton#issueSidebarAction:hover { color: #e6edf3; }
+QPushButton#issueDangerLink { color: #f85149; }
+QPushButton#issueDangerLink:hover { color: #ff7b72; }
+QMenu {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 6px;
+    color: #e6edf3;
+}
+QMenu::item {
+    padding: 7px 26px 7px 22px;
+    border-radius: 6px;
+}
+QMenu::item:selected { background-color: #21262d; }
+QMenu::separator {
+    height: 1px;
+    background: #30363d;
+    margin: 6px 0;
+}
 QLineEdit#issueSearch, QComboBox#issueControlSm {
     background-color: #0d1117;
     border: 1px solid #30363d;
@@ -494,6 +598,40 @@ QPlainTextEdit#issueComposerSm {
     selection-background-color: rgba(46, 160, 67, 46);
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #58a6ff; }
+#issueComposeSidebar { background: transparent; }
+QPushButton#markdownTab {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-bottom: none;
+    border-radius: 0;
+    color: #8b949e;
+    padding: 8px 16px;
+}
+QPushButton#markdownTab:checked {
+    background-color: #0d1117;
+    color: #e6edf3;
+}
+QToolButton#markdownTool {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #8b949e;
+    padding: 5px 7px;
+    font-weight: 700;
+}
+QToolButton#markdownTool:hover {
+    background-color: #21262d;
+    color: #e6edf3;
+}
+QPlainTextEdit#markdownSource, QTextBrowser#markdownPreview {
+    background-color: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 16px;
+    selection-background-color: #1f6feb;
+}
+QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
 #issueTable {
     background-color: #0d1117;
     alternate-background-color: #161b22;
@@ -1001,6 +1139,110 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     max-height: 28px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#issuePageTitle {
+    font-size: 26px;
+    font-weight: 400;
+    color: #1f2328;
+    background: transparent;
+}
+#issueDivider { background-color: #d0d7de; }
+QPushButton#issueIconButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px;
+}
+QPushButton#issueIconButton:hover { background-color: #eaeef2; }
+#issuePageScroll {
+    background: transparent;
+    border: none;
+}
+#issuePageScroll QWidget { background: transparent; }
+#issueAvatar {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 18px;
+    color: #1f2328;
+    font-size: 11px;
+    font-weight: 800;
+}
+#issueCommentTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1f2328;
+    background: transparent;
+}
+#issueCommentEditor { background: transparent; }
+#issueTimelineRow { background: transparent; }
+#issueTimelineCard {
+    background-color: #ffffff;
+    border: 1px solid #0969da;
+    border-radius: 6px;
+}
+#issueTimelineCard QLabel { background: transparent; }
+#issueTimelineHeader {
+    background-color: #ddf4ff;
+    border-bottom: 1px solid #80ccff;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+#issueTimelineHeader QLabel {
+    background: transparent;
+    color: #1f2328;
+}
+#issueAttachmentPreview {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 6px;
+}
+QToolButton#issueActionButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #656d76;
+    font-weight: 800;
+    padding: 4px 8px;
+}
+QToolButton#issueActionButton:hover { background-color: #cceaff; }
+QToolButton#issueActionButton::menu-indicator { image: none; width: 0; }
+#issueSidebar { background: transparent; }
+#issueSidebar QLabel { background: transparent; }
+#issueSidebarHeading {
+    color: #57606a;
+    font-size: 12px;
+    font-weight: 700;
+    background: transparent;
+}
+#issueSidebarDivider { background-color: #d0d7de; }
+QPushButton#issueSidebarAction, QPushButton#issueDangerLink {
+    background: transparent;
+    border: none;
+    color: #1f2328;
+    font-weight: 500;
+    padding: 6px 2px;
+    text-align: left;
+}
+QPushButton#issueSidebarAction:hover { color: #0969da; }
+QPushButton#issueDangerLink { color: #cf222e; }
+QPushButton#issueDangerLink:hover { color: #a40e26; }
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 6px;
+    color: #1f2328;
+}
+QMenu::item {
+    padding: 7px 26px 7px 22px;
+    border-radius: 6px;
+}
+QMenu::item:selected { background-color: #f6f8fa; }
+QMenu::separator {
+    height: 1px;
+    background: #d0d7de;
+    margin: 6px 0;
+}
 QLineEdit#issueSearch, QComboBox#issueControlSm {
     background-color: #ffffff;
     border: 1px solid #d0d7de;
@@ -1020,6 +1262,41 @@ QPlainTextEdit#issueComposerSm {
     selection-background-color: rgba(46, 160, 67, 46);
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #0969da; }
+#issueComposeSidebar { background: transparent; }
+QPushButton#markdownTab {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-bottom: none;
+    border-radius: 0;
+    color: #656d76;
+    padding: 8px 16px;
+}
+QPushButton#markdownTab:checked {
+    background-color: #ffffff;
+    color: #1f2328;
+}
+QToolButton#markdownTool {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #656d76;
+    padding: 5px 7px;
+    font-weight: 700;
+}
+QToolButton#markdownTool:hover {
+    background-color: #eaeef2;
+    color: #1f2328;
+}
+QPlainTextEdit#markdownSource, QTextBrowser#markdownPreview {
+    background-color: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px 16px;
+    selection-background-color: #0969da;
+    selection-color: #ffffff;
+}
+QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
 #issueTable {
     background-color: #ffffff;
     alternate-background-color: #ffffff;

@@ -19,6 +19,7 @@
 #include <functional>
 
 class MessageRow;
+class MarkdownEditor;
 class RepoHost;
 class ActionRunner;
 class QButtonGroup;
@@ -97,6 +98,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Image drag-and-drop onto the inline issue comment composer.
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
     // Setup page
@@ -272,6 +275,12 @@ private:
                           const QHash<QString, QString> &labelColors) const;
     void showIssue(int number); // render the selected issue's thread
     void renderIssueThread(const Issue &issue);
+    void showIssueComposePage(QWidget *page);
+    void removeIssueComposePage();
+    void setIssueInlineNotice(const QString &message, bool error = false);
+    void promptEditIssueTitle();
+    void saveIssueTitleEdit();
+    void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
     void copyIssueToClipboard();
@@ -281,11 +290,16 @@ private:
     void updateVoteUi();
     void addIssueComment();
     void attachIssueImage();
+    void queueIssueAttachment(const QString &path); // dedupe + reference + count
     void toggleIssueStatus();
     void deleteCurrentIssue();
     void editIssueLabels();
     void editIssueMilestone();
     void editIssueAssignees();
+    void saveIssueLabelsInline();
+    void saveIssueMilestoneInline();
+    void saveIssueAssigneesInline();
+    void cancelIssueSidebarEditors();
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     void submitIssueCommentToInbox(const QString &body);
@@ -459,6 +473,8 @@ private:
     QComboBox *m_issueMilestoneFilter = nullptr;
     QTableWidget *m_issueTable = nullptr;
     QWidget *m_issueDetail = nullptr;          // collapsible detail panel
+    QStackedWidget *m_issueDetailStack = nullptr;
+    QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
 
@@ -571,15 +587,26 @@ private:
     QTimer *m_refreshSpinTimer = nullptr;
     int m_refreshAngle = 0;
     QLabel *m_issueTitle = nullptr;
+    QLineEdit *m_issueTitleEditor = nullptr;
+    QPushButton *m_issueTitleEditButton = nullptr;
+    QPushButton *m_issueTitleSaveButton = nullptr;
+    QPushButton *m_issueTitleCancelButton = nullptr;
     QLabel *m_issueMeta = nullptr;
     QLabel *m_issueReadonlyNote = nullptr;
+    QLabel *m_issueInlineNotice = nullptr;
     QLabel *m_issueAssigneesValue = nullptr;
     QLabel *m_issueLabelsValue = nullptr;
     QLabel *m_issueMilestoneValue = nullptr;
+    QStackedWidget *m_issueAssigneesStack = nullptr;
+    QStackedWidget *m_issueLabelsStack = nullptr;
+    QStackedWidget *m_issueMilestoneStack = nullptr;
+    QLineEdit *m_issueAssigneesEdit = nullptr;
+    QLineEdit *m_issueLabelsEdit = nullptr;
+    QComboBox *m_issueMilestoneEdit = nullptr;
     QScrollArea *m_issueThreadScroll = nullptr;
     QWidget *m_issueThreadContainer = nullptr;
     QVBoxLayout *m_issueThreadLayout = nullptr;
-    QPlainTextEdit *m_issueComposer = nullptr;
+    MarkdownEditor *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issueCopyButton = nullptr;
@@ -596,6 +623,7 @@ private:
     QList<IssueLabel> m_currentLabels;
     QList<IssueMilestone> m_currentMilestones;
     int m_currentIssueNumber = -1;
+    bool m_issueDeleteConfirmPending = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.

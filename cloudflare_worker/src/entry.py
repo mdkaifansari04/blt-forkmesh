@@ -115,6 +115,8 @@ def issue_event_content(ev):
         return "\x00".join([ev.get("title", ""), ev.get("body", ""), attachments])
     if t in ("comment", "edit"):
         return "\x00".join([ev.get("body", ""), attachments])
+    if t == "title":
+        return ev.get("title", "")
     if t == "status":
         return ev.get("status", "")
     if t == "labels":

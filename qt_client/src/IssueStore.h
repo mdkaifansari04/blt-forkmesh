@@ -92,8 +92,14 @@ public:
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
     // Cast a vote on an issue (one vote per author). Owner-side write path.
     bool addVote(int number, QString *error = nullptr);
+    // Edit an event's body. keepAttachments are existing issue-folder-relative
+    // names to retain; newAttachmentSrcPaths are absolute images to copy in.
     bool editEvent(int number, const QString &eventId, const QString &newBody,
+                   const QStringList &keepAttachments = {},
+                   const QStringList &newAttachmentSrcPaths = {},
                    QString *error = nullptr);
+    // Rename an issue via a signed "title" event (folds into Issue::title).
+    bool setTitle(int number, const QString &newTitle, QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
