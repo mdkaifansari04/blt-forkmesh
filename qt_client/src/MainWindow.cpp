@@ -3710,36 +3710,6 @@ QWidget *MainWindow::buildReposPanel()
     m_repoList->setToolTip(
         "Repositories this node is preserving locally, grouped by node");
 
-    // The bare mirror doubles as a local git remote: a fork can push here to
-    // publish into the mirror. Show its path so the user can wire it up.
-    auto *remoteLabel = new QLabel("LOCAL REMOTE \xC2\xB7 PUSH YOUR FORK HERE");
-    remoteLabel->setObjectName("sectionLabel");
-    m_repoRemoteEdit = new QLineEdit;
-    m_repoRemoteEdit->setReadOnly(true);
-    m_repoRemoteEdit->setPlaceholderText("Select a repository");
-    m_repoRemoteEdit->setToolTip(
-        "Add this as a remote in your fork, then push to publish into the mirror.");
-    auto *copyRemoteButton = new QPushButton("Copy");
-    copyRemoteButton->setObjectName("ghostButton");
-    copyRemoteButton->setCursor(Qt::PointingHandCursor);
-    auto *remoteRow = new QHBoxLayout;
-    remoteRow->setContentsMargins(0, 0, 0, 0);
-    remoteRow->addWidget(m_repoRemoteEdit, 1);
-    remoteRow->addWidget(copyRemoteButton);
-    m_repoRemoteHint = new QLabel;
-    m_repoRemoteHint->setObjectName("statusLine");
-    m_repoRemoteHint->setWordWrap(true);
-    m_repoRemoteHint->setTextFormat(Qt::RichText);
-    m_repoRemoteHint->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-    // Live web status for the selected repository: a green "online" indicator
-    // and a clickable link to browse it on the website once it is published.
-    m_repoWebLink = new QLabel("Select a repository to see its web status.");
-    m_repoWebLink->setObjectName("statusLine");
-    m_repoWebLink->setWordWrap(true);
-    m_repoWebLink->setOpenExternalLinks(true);
-    m_repoWebLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
-
     auto *addRepoButton = new QPushButton("+ Add");
     addRepoButton->setObjectName("ghostButton");
     addRepoButton->setCursor(Qt::PointingHandCursor);
@@ -3762,23 +3732,8 @@ QWidget *MainWindow::buildReposPanel()
     layout->addWidget(heading);
     layout->addSpacing(8);
     layout->addWidget(m_repoList, 1);
-    layout->addWidget(remoteLabel);
-    layout->addLayout(remoteRow);
-    layout->addWidget(m_repoRemoteHint);
-    layout->addWidget(m_repoWebLink);
     layout->addLayout(repoButtonRow);
 
-    connect(m_repoList, &QListWidget::currentRowChanged, this, [this](int) {
-        updateRepoWebLink();
-        updateRepoRemoteInfo();
-    });
-    connect(copyRemoteButton, &QPushButton::clicked, this, [this] {
-        const QString path = m_repoRemoteEdit->text();
-        if (!path.isEmpty()) {
-            QApplication::clipboard()->setText(path);
-            logSystem("Copied local remote path to clipboard: " + path);
-        }
-    });
     connect(m_repoList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 if (!item)
@@ -4343,13 +4298,17 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(notifyButton, "bell", 16);
     m_forkButton = new QPushButton("Fork 0");
     m_mirrorButton = new QPushButton("Mirror 1");
+    m_downloadZipButton = new QPushButton("Download ZIP");
     m_starButton = new QPushButton("Star 0");
-    for (QPushButton *b : {notifyButton, m_forkButton, m_mirrorButton, m_starButton}) {
+    for (QPushButton *b :
+         {notifyButton, m_forkButton, m_mirrorButton, m_downloadZipButton,
+          m_starButton}) {
         b->setObjectName("repoAction");
         b->setCursor(Qt::PointingHandCursor);
     }
     setOcticon(m_forkButton, "repo-forked", 16);
     setOcticon(m_mirrorButton, "sync", 16);
+    setOcticon(m_downloadZipButton, "package", 16);
     setOcticon(m_starButton, "star", 16);
     m_mirrorButton->setToolTip("Sync this repository's mirror now");
     connect(m_mirrorButton, &QPushButton::clicked, this, [this] {
@@ -4359,6 +4318,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_forkButton->setToolTip("Fork this repository into your own node");
     connect(m_forkButton, &QPushButton::clicked, this,
             &MainWindow::forkCurrentRepo);
+    m_downloadZipButton->setToolTip("Download this repository as a ZIP archive");
+    connect(m_downloadZipButton, &QPushButton::clicked, this,
+            &MainWindow::downloadCurrentRepoZip);
 
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(16, 12, 16, 4);
@@ -4369,7 +4331,64 @@ QWidget *MainWindow::buildRepoDetailSection()
     headerRow->addWidget(notifyButton);
     headerRow->addWidget(m_forkButton);
     headerRow->addWidget(m_mirrorButton);
+    headerRow->addWidget(m_downloadZipButton);
     headerRow->addWidget(m_starButton);
+
+    m_repoDetailNotice = new QLabel;
+    m_repoDetailNotice->setObjectName("repoInlineNotice");
+    m_repoDetailNotice->setWordWrap(true);
+    m_repoDetailNotice->hide();
+
+    auto *metaBand = new QWidget;
+    metaBand->setObjectName("repoDetailMeta");
+    m_repoDetailStatus = new QLabel;
+    m_repoDetailStatus->setObjectName("statusLine");
+    m_repoDetailStatus->setWordWrap(true);
+    m_repoDetailStatus->setTextFormat(Qt::RichText);
+
+    m_repoWebLink = new QLabel;
+    m_repoWebLink->setObjectName("statusLine");
+    m_repoWebLink->setWordWrap(true);
+    m_repoWebLink->setOpenExternalLinks(true);
+    m_repoWebLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+
+    auto *remoteLabel = new QLabel("LOCAL REMOTE \xC2\xB7 PUSH YOUR FORK HERE");
+    remoteLabel->setObjectName("sectionLabel");
+    m_repoRemoteEdit = new QLineEdit;
+    m_repoRemoteEdit->setReadOnly(true);
+    m_repoRemoteEdit->setPlaceholderText("Sync this repository to create a mirror");
+    m_repoRemoteEdit->setToolTip(
+        "Add this as a remote in your fork, then push to publish into the mirror.");
+    auto *copyRemoteButton = new QPushButton("Copy");
+    copyRemoteButton->setObjectName("ghostButton");
+    copyRemoteButton->setCursor(Qt::PointingHandCursor);
+    connect(copyRemoteButton, &QPushButton::clicked, this, [this] {
+        const QString path = m_repoRemoteEdit ? m_repoRemoteEdit->text() : QString();
+        if (!path.isEmpty()) {
+            QApplication::clipboard()->setText(path);
+            setRepoDetailNotice("Copied local remote path.");
+            logSystem("Copied local remote path to clipboard: " + path);
+        }
+    });
+    auto *remoteRow = new QHBoxLayout;
+    remoteRow->setContentsMargins(0, 0, 0, 0);
+    remoteRow->setSpacing(8);
+    remoteRow->addWidget(m_repoRemoteEdit, 1);
+    remoteRow->addWidget(copyRemoteButton);
+    m_repoRemoteHint = new QLabel;
+    m_repoRemoteHint->setObjectName("statusLine");
+    m_repoRemoteHint->setWordWrap(true);
+    m_repoRemoteHint->setTextFormat(Qt::RichText);
+    m_repoRemoteHint->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *metaLayout = new QVBoxLayout(metaBand);
+    metaLayout->setContentsMargins(16, 4, 16, 8);
+    metaLayout->setSpacing(6);
+    metaLayout->addWidget(m_repoDetailStatus);
+    metaLayout->addWidget(m_repoWebLink);
+    metaLayout->addWidget(remoteLabel);
+    metaLayout->addLayout(remoteRow);
+    metaLayout->addWidget(m_repoRemoteHint);
 
     // --- Tab bar (GitHub order; Commits gets its own tab).
     struct TabDef {
@@ -4434,6 +4453,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
     layout->addLayout(headerRow);
+    layout->addWidget(m_repoDetailNotice);
+    layout->addWidget(metaBand);
     layout->addWidget(tabBar);
     layout->addWidget(m_repoDetailStack, 1);
     return page;
@@ -5548,6 +5569,30 @@ QString MainWindow::repoGitDir() const
     return {};
 }
 
+void MainWindow::setRepoDetailNotice(const QString &message, bool error)
+{
+    if (!m_repoDetailNotice)
+        return;
+    if (message.trimmed().isEmpty()) {
+        m_repoDetailNotice->clear();
+        m_repoDetailNotice->hide();
+        return;
+    }
+    const bool dark = currentThemeIsDark();
+    const QString bg = error ? (dark ? "#3d1f21" : "#ffebe9")
+                             : (dark ? "#11251a" : "#dafbe1");
+    const QString border = error ? (dark ? "#f85149" : "#cf222e")
+                                 : (dark ? "#2ea043" : "#1f883d");
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    m_repoDetailNotice->setStyleSheet(
+        QStringLiteral("QLabel#repoInlineNotice { background-color:%1; color:%2; "
+                       "border:1px solid %3; border-radius:6px; padding:8px 10px; "
+                       "margin-left:16px; margin-right:16px; }")
+            .arg(bg, fg, border));
+    m_repoDetailNotice->setText(message.toHtmlEscaped());
+    m_repoDetailNotice->show();
+}
+
 void MainWindow::forkCurrentRepo()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -5672,6 +5717,85 @@ void MainWindow::forkCurrentRepo()
                     fork.mirrorPath});
 }
 
+void MainWindow::downloadCurrentRepoZip()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        setRepoDetailNotice(
+            "Sync this repository first; there is no local mirror to archive yet.",
+            true);
+        return;
+    }
+
+    const QString downloads =
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    const QString outDir = downloads.isEmpty() ? QDir::homePath() : downloads;
+    QDir().mkpath(outDir);
+
+    const QString safeOwner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString safeName = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString safeRef = repoSegment(currentRef(), QStringLiteral("head"));
+    const QString base = safeOwner + "-" + safeName + "-" + safeRef;
+    QString target = QDir(outDir).filePath(base + ".zip");
+    for (int i = 2; QFileInfo::exists(target); ++i)
+        target = QDir(outDir).filePath(base + "-" + QString::number(i) + ".zip");
+
+    if (m_downloadZipButton) {
+        m_downloadZipButton->setEnabled(false);
+        m_downloadZipButton->setText("Zipping...");
+    }
+    setRepoDetailNotice("Creating ZIP archive in Downloads...");
+
+    auto *process = new QProcess(this);
+    auto handled = std::make_shared<bool>(false);
+    auto finishButton = [this] {
+        if (m_downloadZipButton) {
+            m_downloadZipButton->setEnabled(true);
+            m_downloadZipButton->setText("Download ZIP");
+            setOcticon(m_downloadZipButton, "package", 16);
+        }
+    };
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, handled, finishButton](QProcess::ProcessError) {
+                if (*handled)
+                    return;
+                *handled = true;
+                finishButton();
+                setRepoDetailNotice("Could not start git archive.", true);
+                process->deleteLater();
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, handled, finishButton, target](int code,
+                                                           QProcess::ExitStatus status) {
+                if (*handled)
+                    return;
+                *handled = true;
+                const QString err =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                finishButton();
+                if (status != QProcess::NormalExit || code != 0) {
+                    setRepoDetailNotice(
+                        "Could not create ZIP archive" +
+                            (err.isEmpty() ? QString() : ": " + err.left(240)),
+                        true);
+                    return;
+                }
+                setRepoDetailNotice("Saved ZIP archive to " +
+                                    QFileInfo(target).absoluteFilePath());
+                logSystem("Saved repository ZIP to " + target);
+            });
+    process->start(
+        QStringLiteral("git"),
+        {QStringLiteral("-C"), dir, QStringLiteral("archive"),
+         QStringLiteral("--format=zip"), QStringLiteral("-o"), target,
+         QStringLiteral("--prefix=") + safeOwner + "-" + safeName + "/",
+         currentRef()});
+}
+
 void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
@@ -5682,6 +5806,7 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_repoHeaderTitle->setText(
             QStringLiteral("%1 / <b>%2</b>")
                 .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
+    setRepoDetailNotice(QString());
 
     // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
     m_repoInfo = RepoInfo();
@@ -5695,6 +5820,9 @@ void MainWindow::openRepoDetail(int repoIndex)
             QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
     if (m_starButton)
         m_starButton->setText(QStringLiteral("Star %1").arg(m_repoInfo.stars));
+    updateRepoDetailStatus();
+    updateRepoWebLink();
+    updateRepoRemoteInfo();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -9806,19 +9934,6 @@ void MainWindow::refreshRepositoryList()
             QString label = "    " + repo.name; // indent under the node
             if (m_syncingRepos.contains(i))
                 label += "  \xC2\xB7 syncing";
-            else if (repo.lastSyncMs > 0)
-                label += "  \xC2\xB7 mirrored";
-            if (online)
-                label += "  \xC2\xB7 online";
-            else if (repo.publishToNetwork)
-                label += "  \xC2\xB7 publishing\xE2\x80\xA6";
-            const QPair<int, int> stats =
-                m_repoStats.value(repo.owner + "/" + repo.name);
-            if (stats.first > 0)
-                label += "\n       served " + QString::number(stats.first) +
-                         "\xC3\x97 through the mainnode \xC2\xB7 " +
-                         QString::number(stats.second) + " clone" +
-                         (stats.second == 1 ? "" : "s");
             auto *item = new QListWidgetItem(label);
             item->setData(Qt::UserRole, i);
             // A repo glyph distinguishes repositories from nodes; it's green when
@@ -9827,17 +9942,7 @@ void MainWindow::refreshRepositoryList()
                 "repo", repo.publishToNetwork && online ? QColor("#2ea043")
                                                         : QColor("#6e7681"),
                 14));
-            item->setToolTip(
-                "Source: " + repositorySource(repo) +
-                "\nMirror path: " + repo.mirrorPath +
-                "\nHosted since: " + formatRepoDate(repo.hostedSinceMs) +
-                "\nLast sync: " + formatRepoDate(repo.lastSyncMs) +
-                "\nWeb: " +
-                (online ? "online at " + repositoryWebUrl(repo)
-                        : (repo.publishToNetwork ? "publishing\xE2\x80\xA6"
-                                                 : "local only")) +
-                (repo.bchAddress.isEmpty() ? QString() :
-                                           "\nDonations: " + repo.bchAddress));
+            item->setToolTip("Open " + repo.owner + "/" + repo.name);
             m_repoList->addItem(item);
             if (i == selectedRepo)
                 itemToSelect = item;
@@ -9861,6 +9966,7 @@ void MainWindow::refreshRepositoryList()
     }
     if (itemToSelect)
         m_repoList->setCurrentItem(itemToSelect);
+    updateRepoDetailStatus();
     updateRepoWebLink();
     updateRepoRemoteInfo();
     updateHomeStats();
@@ -9990,15 +10096,11 @@ void MainWindow::updateRepoWebLink()
 {
     if (!m_repoWebLink)
         return;
-    QListWidgetItem *item = m_repoList ? m_repoList->currentItem() : nullptr;
-    if (!item) {
-        m_repoWebLink->setText("Select a repository to see its web status.");
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoWebLink->clear();
         return;
     }
-    const int index = item->data(Qt::UserRole).toInt();
-    if (index < 0 || index >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(index);
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (repo.publishedAtMs > 0) {
         const QString url = repositoryWebUrl(repo);
         m_repoWebLink->setText(
@@ -10012,21 +10114,51 @@ void MainWindow::updateRepoWebLink()
     }
 }
 
+void MainWindow::updateRepoDetailStatus()
+{
+    if (!m_repoDetailStatus)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoDetailStatus->clear();
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoKey = repo.owner + "/" + repo.name;
+    const QPair<int, int> stats = m_repoStats.value(repoKey);
+    const bool mirrored = repo.lastSyncMs > 0 ||
+                          (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists());
+    const bool online = repo.publishedAtMs > 0;
+    QStringList bits;
+    bits << (mirrored ? QStringLiteral("<b>Mirrored</b>")
+                      : QStringLiteral("<b>Not mirrored yet</b>"));
+    bits << (online ? QStringLiteral("<b>Online</b>")
+                    : (repo.publishToNetwork
+                           ? QStringLiteral("<b>Publishing...</b>")
+                           : QStringLiteral("<b>Local only</b>")));
+    bits << QStringLiteral("<b>%1</b> served").arg(stats.first);
+    bits << QStringLiteral("<b>%1</b> clone%2")
+                .arg(stats.second)
+                .arg(stats.second == 1 ? QString() : QStringLiteral("s"));
+
+    QString details = bits.join(QStringLiteral(" \xC2\xB7 "));
+    details += QStringLiteral("<br><span style='color:#8b949e'>Hosted since %1 "
+                              "\xC2\xB7 Last sync %2</span>")
+                   .arg(formatRepoDate(repo.hostedSinceMs),
+                        formatRepoDate(repo.lastSyncMs));
+    m_repoDetailStatus->setText(details);
+}
+
 void MainWindow::updateRepoRemoteInfo()
 {
     if (!m_repoRemoteEdit)
         return;
-    QListWidgetItem *item = m_repoList ? m_repoList->currentItem() : nullptr;
-    if (!item) {
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_repoRemoteEdit->clear();
         if (m_repoRemoteHint)
             m_repoRemoteHint->clear();
         return;
     }
-    const int index = item->data(Qt::UserRole).toInt();
-    if (index < 0 || index >= m_repositories.size())
-        return;
-    const QString path = m_repositories.at(index).mirrorPath;
+    const QString path = m_repositories.at(m_repoDetailIndex).mirrorPath;
     m_repoRemoteEdit->setText(path);
     if (!m_repoRemoteHint)
         return;
@@ -10197,6 +10329,11 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
         stats.second += 1; // git clone
     saveRepoStats();
     refreshRepositoryList();
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        if (repo.owner == owner && repo.name == name)
+            updateRepoDetailStatus();
+    }
 }
 
 void MainWindow::loadRepoStats()
@@ -10826,6 +10963,9 @@ void MainWindow::refreshOpenRepoDetail()
     loadAboutSidebar();
     if (m_insightsSummary)
         loadRepoInsights();
+    updateRepoDetailStatus();
+    updateRepoWebLink();
+    updateRepoRemoteInfo();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
 }

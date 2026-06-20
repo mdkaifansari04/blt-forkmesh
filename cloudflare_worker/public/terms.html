@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ForkMesh Terms</title>
+    <meta
+      name="description"
+      content="Simple terms for using ForkMesh, joining the network, and hosting mirrored repositories."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="static-page.js" defer></script>
+    <style>
+      .legal-wrap { max-width: 820px; margin: 0 auto; padding: 42px 20px 80px; }
+      .legal-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .legal-wrap h2 { font-size: 20px; margin: 28px 0 8px; }
+      .legal-wrap p, .legal-wrap li { color: var(--muted); }
+      .legal-wrap ul { padding-left: 22px; }
+      .legal-note {
+        border: 1px solid var(--border); background: var(--card);
+        border-radius: 12px; padding: 16px; margin: 20px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span>ForkMesh</span>
+        </a>
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/signup.html">Join</a>
+          <a href="/privacy.html">Privacy</a>
+        </nav>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="legal-wrap">
+      <p class="eyebrow">Plain-language terms</p>
+      <h1>ForkMesh Terms</h1>
+      <p>Last updated June 20, 2026.</p>
+
+      <div class="legal-note">
+        <strong>Short version:</strong>
+        ForkMesh is experimental distributed code-hosting software. Use it for
+        public repositories you have the right to mirror, keep your keys safe,
+        and do not send BCH to an expired join address.
+      </div>
+
+      <h2>Using ForkMesh</h2>
+      <p>
+        You are responsible for the repositories, messages, issues, pull
+        requests, profile data, and payment addresses you publish through
+        ForkMesh. Do not use ForkMesh to host or distribute content you do not
+        have permission to share.
+      </p>
+
+      <h2>Joining the network</h2>
+      <p>
+        The join flow may ask you to donate Bitcoin Cash (BCH) to a one-time
+        address. That address expires after one hour if it receives no
+        transactions. When it expires, ForkMesh hides it, warns you not to send
+        funds, and removes the unpaid address from the system after five more
+        minutes. Generate a fresh address instead.
+      </p>
+
+      <h2>Rewards and availability</h2>
+      <p>
+        Any payout, reward, uptime, or earnings display is experimental and may
+        change. Running a node does not guarantee payment, availability, or data
+        recovery. You are responsible for backing up your own repositories and
+        keys.
+      </p>
+
+      <h2>Third parties</h2>
+      <p>
+        We try our best not to use third parties. The current public service
+        still involves a few:
+      </p>
+      <ul>
+        <li>Cloudflare for hosting, Workers, D1 storage, caching, and relay infrastructure.</li>
+        <li>Blockchair for Bitcoin Cash address lookups and transaction broadcast support.</li>
+        <li>Bundled open-source font files served locally by ForkMesh; no remote font service is used.</li>
+        <li>Tailwind Play CDN on the current home page.</li>
+        <li>The Bitcoin Cash network for payment settlement.</li>
+        <li>Any Git hosting provider or remote repository you choose to mirror.</li>
+      </ul>
+
+      <h2>No warranty</h2>
+      <p>
+        ForkMesh is provided as-is. The software and network may have bugs,
+        outages, incomplete features, or data loss. Use it at your own risk.
+      </p>
+
+      <p class="row-links"><a href="/privacy.html">Privacy</a> · <a href="/signup.html">Back to signup</a></p>
+    </main>
+  </body>
+</html>

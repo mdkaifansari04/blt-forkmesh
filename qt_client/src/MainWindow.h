@@ -258,6 +258,8 @@ private:
 
     void openRepoDetail(int repoIndex);
     void forkCurrentRepo();       // clone the open repo into your own node
+    void downloadCurrentRepoZip();
+    void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
     void updateRepoIssueCount();
     void loadRepoOverview(const QString &path);
@@ -383,6 +385,7 @@ private:
     void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
     void updateRepoRemoteInfo();
+    void updateRepoDetailStatus();
     QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
     void stopRepoHosts();
@@ -453,9 +456,6 @@ private:
     QLabel *m_encryptionLabel;
     QListWidget *m_channelList;
     QListWidget *m_repoList;
-    QLabel *m_repoWebLink = nullptr;
-    QLineEdit *m_repoRemoteEdit = nullptr; // local mirror path = push remote
-    QLabel *m_repoRemoteHint = nullptr;
     QPushButton *m_syncRepoButton;
     QPushButton *m_publishRepoButton;
     QListWidget *m_dmList;
@@ -506,8 +506,14 @@ private:
     QString m_repoBranch;
     RepoInfo m_repoInfo;
     QLabel *m_repoHeaderTitle = nullptr;
+    QLabel *m_repoDetailNotice = nullptr;
+    QLabel *m_repoDetailStatus = nullptr;
+    QLabel *m_repoWebLink = nullptr;
+    QLineEdit *m_repoRemoteEdit = nullptr; // local mirror path = push remote
+    QLabel *m_repoRemoteHint = nullptr;
     QPushButton *m_forkButton = nullptr;
     QPushButton *m_mirrorButton = nullptr;
+    QPushButton *m_downloadZipButton = nullptr;
     QPushButton *m_starButton = nullptr;
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
