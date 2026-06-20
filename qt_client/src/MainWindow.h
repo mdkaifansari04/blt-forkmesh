@@ -9,6 +9,7 @@
 
 #include <QHash>
 #include <QIcon>
+#include <QJsonArray>
 #include <QList>
 #include <QMainWindow>
 #include <QMap>
@@ -110,10 +111,18 @@ private:
     bool ensureNodeAccount(const QString &accountName, const QString &bch);
     bool runSignupFlow(const QString &accountName, const QString &bch);
     bool runLoginFlow(const QString &accountName);
-    bool runTotpEnroll(const QString &accountName, const QString &password,
-                       const QString &secret, const QString &uri);
+    // Staged-join helpers: pick repos to mirror, then donate + poll.
+    bool runRepoPickStep();
+    bool runDonationStep(const QString &accountName);
+    QJsonArray fetchCatalogRepos();
+    int fetchNodesOnline();
+    void mirrorCatalogRepo(const QString &owner, const QString &name,
+                           const QString &cloneUrl);
     bool verifyTotpLogin(const QString &accountName, const QString &password,
                          const QString &totp);
+    // Periodic signed heartbeat that keeps this node eligible for the reward
+    // split and refreshes its payout BCH address.
+    void sendNodeHeartbeat();
     void verifyWallet(); // POST /verify-bch for the logged-in account
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -680,4 +689,8 @@ private:
     bool m_accountAuthenticated = false;
     QString m_accountName;
     bool m_accountBchVerified = false;
+    // "free" = view-only (must mirror >=1 repo) until the user joins by
+    // donating; "active" = donated + email/password set.
+    QString m_accountTier = QStringLiteral("free");
+    QTimer *m_heartbeatTimer = nullptr;
 };

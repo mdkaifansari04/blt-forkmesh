@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Log in · ForkMesh</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="static-page.js" defer></script>
+    <script src="login.js" defer></script>
+    <style>
+      .auth-wrap { max-width: 420px; margin: 0 auto; padding: 56px 20px 80px; }
+      .auth-wrap h1 { font-size: 28px; font-weight: 800; text-align: center; margin: 0 0 6px; }
+      .auth-sub { color: var(--muted); text-align: center; margin: 0 0 26px; }
+      .field { margin: 0 0 16px; }
+      .field label { display: block; font-weight: 600; margin-bottom: 6px; }
+      .field input {
+        width: 100%; padding: 12px 14px; border-radius: 10px;
+        border: 1px solid var(--border); background: var(--card-soft);
+        color: var(--foreground); font: inherit;
+      }
+      .field input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+      .btn-primary {
+        width: 100%; padding: 13px 18px; border-radius: 10px; border: 0;
+        background: var(--accent-bright); color: #04130a; font-weight: 700;
+        font-size: 16px; cursor: pointer;
+      }
+      .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+      .hint { font-size: 13px; color: var(--muted); margin: 6px 0 16px; min-height: 18px; }
+      .hint.bad { color: var(--danger); }
+      .hint.good { color: var(--accent-bright); }
+      .row-links { text-align: center; margin-top: 20px; color: var(--muted); }
+      .row-links a { color: var(--accent-bright); }
+      #totp-field { display: none; }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span>ForkMesh</span>
+        </a>
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/signup.html">Sign up</a>
+        </nav>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path>
+            </svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="auth-wrap">
+      <h1>Welcome back</h1>
+      <p class="auth-sub">Log in with your node name or email.</p>
+      <div class="field">
+        <label for="identifier">Node name or email</label>
+        <input id="identifier" type="text" autocomplete="username" placeholder="ada-lovelace or you@example.com" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" placeholder="Your password" />
+      </div>
+      <div class="field" id="totp-field">
+        <label for="totp">Authenticator code</label>
+        <input id="totp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" />
+      </div>
+      <div class="hint" id="login-hint"></div>
+      <button class="btn-primary" id="login-btn">Log in</button>
+      <p class="row-links">New to ForkMesh? <a href="/signup.html">Create an account</a></p>
+    </main>
+  </body>
+</html>
