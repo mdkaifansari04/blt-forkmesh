@@ -52,9 +52,11 @@
 #include <QSslSocket>
 #include <QSslError>
 #include <QImage>
+#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QRandomGenerator>
 #include <QEventLoop>
 #include <QFileSystemWatcher>
 #include <QProcess>
@@ -413,33 +415,6 @@ QString platformEmoji(const QString &platform)
 
 // Crisp vector icons for the server-rail footer (glyph fonts render these
 // inconsistently across platforms, so we draw them).
-QPixmap gearPixmap(const QColor &color, int size)
-{
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.translate(size / 2.0, size / 2.0);
-    p.setPen(Qt::NoPen);
-    p.setBrush(color);
-    const double rBody = size * 0.28;
-    const double toothW = size * 0.12;
-    const double toothH = size * 0.16;
-    for (int i = 0; i < 8; ++i) {
-        p.save();
-        p.rotate(i * 45.0);
-        p.drawRoundedRect(QRectF(-toothW / 2, -rBody - toothH * 0.55, toothW, toothH),
-                          1.0, 1.0);
-        p.restore();
-    }
-    QPainterPath body;
-    body.addEllipse(QPointF(0, 0), rBody, rBody);
-    QPainterPath hole;
-    hole.addEllipse(QPointF(0, 0), size * 0.11, size * 0.11);
-    p.drawPath(body.subtracted(hole));
-    return pm;
-}
-
 QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 {
     QPixmap pm(size, size);
@@ -465,6 +440,87 @@ QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
     tri.closeSubpath();
     p.drawPath(tri);
     return pm;
+}
+
+// A modern, deterministic "mesh constellation" identicon (gravatar-style, but
+// on-brand): nodes connected by edges over a green→cyan gradient tile, evoking
+// ForkMesh's decentralized, networked ethos. Same seed → same avatar.
+QByteArray forkMeshAvatarPng(const QString &seed)
+{
+    const QByteArray h =
+        QCryptographicHash::hash(seed.toUtf8(), QCryptographicHash::Sha256);
+    auto b = [&](int i) { return static_cast<quint8>(h.at(i % h.size())); };
+
+    const int S = 128;
+    QImage img(S, S, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    // On-brand hue family: green → teal → blue.
+    const int hue = 120 + (b(0) % 80); // 120..199
+    QLinearGradient grad(0, 0, S, S);
+    grad.setColorAt(0.0, QColor::fromHsv(hue, 130, 72));
+    grad.setColorAt(1.0, QColor::fromHsv((hue + 25) % 360, 165, 40));
+    QPainterPath tile;
+    tile.addRoundedRect(0, 0, S, S, 30, 30);
+    p.fillPath(tile, grad);
+    p.setClipPath(tile);
+
+    // Node positions seeded from the hash, padded inside the tile.
+    const int n = 5 + (b(1) % 3); // 5..7 nodes
+    const qreal pad = 26.0;
+    QList<QPointF> pts;
+    for (int i = 0; i < n; ++i)
+        pts.append(QPointF(pad + (b(2 + i * 2) / 255.0) * (S - 2 * pad),
+                           pad + (b(3 + i * 2) / 255.0) * (S - 2 * pad)));
+
+    // Edges: a connected loop through the nodes.
+    QColor edge = QColor::fromHsv(hue, 60, 235);
+    edge.setAlpha(140);
+    QPen edgePen(edge, 2.2);
+    edgePen.setCapStyle(Qt::RoundCap);
+    p.setPen(edgePen);
+    for (int i = 0; i < pts.size(); ++i)
+        p.drawLine(pts.at(i), pts.at((i + 1) % pts.size()));
+
+    // Nodes: a soft glow plus a bright dot; the first node is the larger hub.
+    const QColor node = QColor::fromHsv(hue, 35, 255);
+    for (int i = 0; i < pts.size(); ++i) {
+        const qreal r = (i == 0 ? 11.0 : 6.0 + (b(10 + i) % 4));
+        QColor glow = QColor::fromHsv(hue, 80, 255);
+        glow.setAlpha(70);
+        p.setPen(Qt::NoPen);
+        p.setBrush(glow);
+        p.drawEllipse(pts.at(i), r + 5, r + 5);
+        p.setBrush(node);
+        p.drawEllipse(pts.at(i), r, r);
+    }
+    p.end();
+
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    img.save(&buffer, "PNG");
+    return png;
+}
+
+// Clip avatar PNG bytes into a circular pixmap for the nav button.
+QPixmap circularAvatar(const QByteArray &png, int side)
+{
+    QPixmap src;
+    if (png.isEmpty() || !src.loadFromData(png))
+        return QPixmap();
+    QPixmap out(side, side);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath clip;
+    clip.addEllipse(0, 0, side, side);
+    p.setClipPath(clip);
+    p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
+                                  Qt::SmoothTransformation));
+    return out;
 }
 
 QString defaultDisplayName(const ForkMeshIdentity &identity)
@@ -1656,10 +1712,12 @@ void MainWindow::startSession()
     persistProfile();
     m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
 
-    // Seed the Settings section's profile controls.
+    // Seed the Settings section's profile controls and the avatar nav button
+    // (which now stands in for the old settings gear).
     if (m_settingsNameEdit)
         m_settingsNameEdit->setText(m_userName);
     setSettingsAvatar(m_userAvatar);
+    updateAvatarButton();
 
     // Reset chat state.
     m_channels.clear();
@@ -1695,8 +1753,9 @@ void MainWindow::startSession()
     if (m_backend) {
         if (m_connectedAtMs <= 0)
             m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
-        if (!m_userAvatar.isEmpty())
-            m_backend->setAvatar(m_userAvatar);
+        // Broadcast the generated identicon when no custom avatar is set, so
+        // peers always see something on-brand for this node.
+        m_backend->setAvatar(effectiveAvatar());
         for (const RepositoryRecord &repo : std::as_const(m_repositories))
             m_backend->addChannel(repositoryChannel(repo));
         m_encryptionLabel->setText("Mainnode encrypted");
@@ -1752,7 +1811,164 @@ void MainWindow::sendNodeHeartbeat()
                       QStringLiteral("application/json"));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        // The server tells us whether this node is an admin; if so, start
+        // watching for newly-joined users that need email verification.
+        m_isAdmin = resp.value("isAdmin").toBool();
+        if (m_isAdmin) {
+            if (!m_adminPollTimer) {
+                m_adminPollTimer = new QTimer(this);
+                m_adminPollTimer->setInterval(90000);
+                connect(m_adminPollTimer, &QTimer::timeout, this,
+                        &MainWindow::pollPendingUsers);
+            }
+            if (!m_adminPollTimer->isActive()) {
+                m_adminPollTimer->start();
+                pollPendingUsers();
+            }
+        }
+    });
+}
+
+void MainWindow::pollPendingUsers()
+{
+    if (!m_isAdmin)
+        return;
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-pending-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-pending");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (!resp.value("ok").toBool())
+            return;
+        QStringList current, fresh;
+        for (const QJsonValue &v : resp.value("pending").toArray()) {
+            const QString name = v.toObject().value("name").toString();
+            if (name.isEmpty())
+                continue;
+            current.append(name);
+            if (!m_seenPendingUsers.contains(name))
+                fresh.append(name);
+        }
+        m_seenPendingUsers = current;
+        if (fresh.isEmpty())
+            return;
+        const QString msg =
+            QStringLiteral("%1 new user(s) joined and need email verification:\n\n%2")
+                .arg(fresh.size())
+                .arg(fresh.join(", "));
+        if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+            m_trayIcon->showMessage("ForkMesh — new user", msg,
+                                    QSystemTrayIcon::Information, 8000);
+        if (QMessageBox::information(this, "New user joined",
+                                     msg + "\n\nReview and verify now?",
+                                     QMessageBox::Yes | QMessageBox::No) ==
+            QMessageBox::Yes)
+            showAdminVerifyDialog();
+    });
+}
+
+void MainWindow::showAdminVerifyDialog()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-pending-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-pending");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    const QJsonArray pending = resp.value("pending").toArray();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Verify new users");
+    dialog.resize(480, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(
+        "New users awaiting manual email verification (placeholder until an "
+        "email service such as Amazon SES is connected):"));
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget;
+    auto *rows = new QVBoxLayout(inner);
+    if (pending.isEmpty())
+        rows->addWidget(new QLabel("<i>No users awaiting verification.</i>"));
+    for (const QJsonValue &v : pending) {
+        const QJsonObject obj = v.toObject();
+        const QString name = obj.value("name").toString();
+        const QString email = obj.value("email").toString();
+        if (name.isEmpty())
+            continue;
+        auto *row = new QHBoxLayout;
+        auto *label = new QLabel(
+            QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>%2</span>")
+                .arg(name.toHtmlEscaped(), email.toHtmlEscaped()));
+        label->setTextFormat(Qt::RichText);
+        row->addWidget(label, 1);
+        auto *btn = new QPushButton("Verify email");
+        btn->setObjectName("ghostButton");
+        btn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(btn);
+        rows->addLayout(row);
+        connect(btn, &QPushButton::clicked, &dialog, [this, name, btn]() {
+            btn->setEnabled(false);
+            btn->setText(adminVerifyEmail(name) ? "Verified \xE2\x9C\x93" : "Failed");
+        });
+    }
+    rows->addStretch();
+    scroll->setWidget(inner);
+    layout->addWidget(scroll, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+bool MainWindow::adminVerifyEmail(const QString &target)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || target.isEmpty() || !m_profileIdentity.isValid())
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-verify-email-v1\n" + node + "\n" + target + "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-verify-email",
+        QJsonObject{{"node", node}, {"target", target}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    if (status == 200 && resp.value("ok").toBool()) {
+        m_seenPendingUsers.removeAll(target);
+        logSystem("Admin: verified email for " + target);
+        return true;
+    }
+    return false;
 }
 
 QString MainWindow::accountOwner() const
@@ -2525,32 +2741,18 @@ void MainWindow::refreshServerRail()
     layout->addWidget(addButton, 0, Qt::AlignHCenter);
     layout->addStretch();
 
-    // Footer pinned to the bottom: rebuild/restart and Settings (the nav bar is
-    // gone, so Settings lives here as an icon).
-    const QColor footerColor(Theme::kTextTertiary);
-    auto *rebuildBtn = new QPushButton;
-    rebuildBtn->setObjectName("serverFooterButton");
-    rebuildBtn->setCursor(Qt::PointingHandCursor);
-    rebuildBtn->setFixedSize(40, 32);
-    rebuildBtn->setIconSize(QSize(22, 22));
-    rebuildBtn->setIcon(QIcon(refreshPixmap(footerColor, 0, 22)));
-    rebuildBtn->setToolTip("Rebuild and restart ForkMesh");
-    m_refreshButton = rebuildBtn;
-    connect(rebuildBtn, &QPushButton::clicked, this, [this] {
-        startRefreshSpin();
-        quickRebuildRestart();
-    });
-    layout->addWidget(rebuildBtn, 0, Qt::AlignHCenter);
-
-    auto *settingsBtn = new QPushButton;
-    settingsBtn->setObjectName("serverFooterButton");
-    settingsBtn->setCursor(Qt::PointingHandCursor);
-    settingsBtn->setFixedSize(40, 40);
-    settingsBtn->setIconSize(QSize(22, 22));
-    settingsBtn->setIcon(QIcon(gearPixmap(footerColor, 22)));
-    settingsBtn->setToolTip("Settings");
-    connect(settingsBtn, &QPushButton::clicked, this, [this] { showSection(2); });
-    layout->addWidget(settingsBtn, 0, Qt::AlignHCenter);
+    // Footer pinned to the bottom: the user's avatar opens Settings (the nav bar
+    // is gone, and rebuild/restart now lives in Settings next to Leave node).
+    m_avatarNavButton = new QPushButton;
+    m_avatarNavButton->setObjectName("serverFooterButton");
+    m_avatarNavButton->setCursor(Qt::PointingHandCursor);
+    m_avatarNavButton->setFixedSize(40, 40);
+    m_avatarNavButton->setIconSize(QSize(34, 34));
+    m_avatarNavButton->setToolTip("You · Settings");
+    connect(m_avatarNavButton, &QPushButton::clicked, this,
+            [this] { showSection(2); });
+    updateAvatarButton();
+    layout->addWidget(m_avatarNavButton, 0, Qt::AlignHCenter);
 
     connect(m_serverGroup, &QButtonGroup::idClicked, this,
             &MainWindow::switchToServer, Qt::UniqueConnection);
@@ -8291,14 +8493,25 @@ QWidget *MainWindow::buildSettingsSection()
     m_settingsAvatarPreview->setObjectName("avatarPreview");
     m_settingsAvatarPreview->setFixedSize(64, 64);
     m_settingsAvatarPreview->setAlignment(Qt::AlignCenter);
-    auto *uploadButton = new QPushButton("Upload avatar…");
+    auto *uploadButton = new QPushButton("Upload…");
     uploadButton->setObjectName("ghostButton");
     uploadButton->setCursor(Qt::PointingHandCursor);
     connect(uploadButton, &QPushButton::clicked, this, &MainWindow::chooseAvatar);
+    auto *generateButton = new QPushButton("Generate");
+    generateButton->setObjectName("ghostButton");
+    generateButton->setCursor(Qt::PointingHandCursor);
+    generateButton->setToolTip("Generate a fresh ForkMesh mesh-identicon avatar");
+    connect(generateButton, &QPushButton::clicked, this, [this] {
+        const QByteArray png = forkMeshAvatarPng(
+            QString::number(QRandomGenerator::global()->generate64()));
+        setSettingsAvatar(png);
+        onAvatarChosen(png);
+    });
     auto *avatarRow = new QHBoxLayout;
     avatarRow->setSpacing(12);
     avatarRow->addWidget(m_settingsAvatarPreview);
     avatarRow->addWidget(uploadButton);
+    avatarRow->addWidget(generateButton);
     avatarRow->addStretch();
 
     auto *form = new QFormLayout;
@@ -8421,9 +8634,35 @@ QWidget *MainWindow::buildSettingsSection()
     leaveButton->setCursor(Qt::PointingHandCursor);
     setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
+
+    // Rebuild & restart now lives here, next to Leave node, rather than in the
+    // server rail.
+    m_rebuildButton = new QPushButton("Rebuild & restart");
+    m_rebuildButton->setObjectName("ghostButton");
+    m_rebuildButton->setCursor(Qt::PointingHandCursor);
+    m_rebuildButton->setToolTip("Pull the latest version, rebuild, and relaunch");
+    setOcticon(m_rebuildButton, "sync", 16);
+    connect(m_rebuildButton, &QPushButton::clicked, this,
+            [this] { quickRebuildRestart(); });
+
+    // Log out clears the signed-in account so you can log back in (as the same
+    // or a different account).
+    auto *logoutButton = new QPushButton("Log out");
+    logoutButton->setObjectName("ghostButton");
+    logoutButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(logoutButton, "sign-out", 16);
+    connect(logoutButton, &QPushButton::clicked, this, [this] { logout(); });
+
+    m_rebuildStatus = new QLabel;
+    m_rebuildStatus->setObjectName("modeHint");
+    m_rebuildStatus->setWordWrap(true);
+    m_rebuildStatus->hide();
+
     auto *footerRow = new QHBoxLayout;
     footerRow->setContentsMargins(0, 0, 0, 0);
     footerRow->addWidget(leaveButton);
+    footerRow->addWidget(m_rebuildButton);
+    footerRow->addWidget(logoutButton);
     footerRow->addStretch();
 
     auto *layout = new QVBoxLayout(page);
@@ -8451,17 +8690,43 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(m_varsTable);
     layout->addLayout(varButtonRow);
     layout->addStretch();
+    layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
     reloadVariablesTable();
+    setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
+}
+
+QByteArray MainWindow::effectiveAvatar()
+{
+    if (!m_userAvatar.isEmpty())
+        return m_userAvatar;
+    QString seed = !m_accountName.isEmpty()
+                       ? m_accountName
+                       : (!m_userName.isEmpty() ? m_userName
+                                                : m_profileIdentity.publicKey());
+    if (seed.isEmpty())
+        seed = QStringLiteral("forkmesh");
+    return forkMeshAvatarPng(seed);
+}
+
+void MainWindow::updateAvatarButton()
+{
+    if (!m_avatarNavButton)
+        return;
+    const QPixmap pm = circularAvatar(effectiveAvatar(), 34);
+    if (!pm.isNull())
+        m_avatarNavButton->setIcon(QIcon(pm));
 }
 
 void MainWindow::setSettingsAvatar(const QByteArray &pngData)
 {
-    if (!m_settingsAvatarPreview || pngData.isEmpty())
+    if (!m_settingsAvatarPreview)
         return;
+    // Fall back to the deterministic generated avatar when none is set.
+    const QByteArray data = pngData.isEmpty() ? effectiveAvatar() : pngData;
     QPixmap pixmap;
-    if (!pixmap.loadFromData(pngData))
+    if (!pixmap.loadFromData(data))
         return;
     constexpr int side = 64;
     QPixmap rounded(side, side);
@@ -10167,6 +10432,25 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
     QSettings().setValue(kAvatarSetting, pngData);
     if (m_backend)
         m_backend->setAvatar(pngData);
+    updateAvatarButton();
+}
+
+void MainWindow::logout()
+{
+    // Drop the signed-in account (admin/heartbeat state) so the user can log
+    // back in, then tear the session down to the setup screen.
+    if (m_heartbeatTimer)
+        m_heartbeatTimer->stop();
+    if (m_adminPollTimer)
+        m_adminPollTimer->stop();
+    m_accountAuthenticated = false;
+    m_accountTier = QStringLiteral("free");
+    m_accountBchVerified = false;
+    m_isAdmin = false;
+    m_seenPendingUsers.clear();
+    m_accountName.clear();
+    QSettings().remove(kAccountNameSetting);
+    leaveSession();
 }
 
 // ---- Actions (CI on push to the mirror) -----------------------------------

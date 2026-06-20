@@ -123,6 +123,11 @@ private:
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout BCH address.
     void sendNodeHeartbeat();
+    // Admin: poll for newly-joined users and verify their email by hand (until a
+    // real email service is wired up). Only active for accounts in ADMIN_NODES.
+    void pollPendingUsers();
+    void showAdminVerifyDialog();
+    bool adminVerifyEmail(const QString &target);
     void verifyWallet(); // POST /verify-bch for the logged-in account
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -315,6 +320,11 @@ private:
     void syncIssuesInbox();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
+    // Effective avatar bytes: the uploaded/generated one, or a deterministic
+    // generated identicon when the user hasn't set one.
+    QByteArray effectiveAvatar();
+    void updateAvatarButton();
+    void logout();
     void rebuildAndRelaunch();
     void showSection(int index);
     void updateHomeStats();
@@ -693,4 +703,10 @@ private:
     // donating; "active" = donated + email/password set.
     QString m_accountTier = QStringLiteral("free");
     QTimer *m_heartbeatTimer = nullptr;
+    bool m_isAdmin = false;
+    QTimer *m_adminPollTimer = nullptr;
+    QStringList m_seenPendingUsers;
+    // Avatar shown in the server rail (in place of the old settings gear); a
+    // click opens Settings.
+    QPushButton *m_avatarNavButton = nullptr;
 };

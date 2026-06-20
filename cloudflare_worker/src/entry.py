@@ -328,6 +328,54 @@ async def network_stats(env):
     return resp
 
 
+# --- Online-activity history (24h graph on /network/) -----------------------
+# A per-minute cron records how many nodes are online into the current hour's
+# bucket, so each hour's value is "node-minutes online" that hour.
+
+ONLINE_SAMPLE_WINDOW_MS = 2 * 60 * 1000  # treat a node seen in the last 2 min as online
+ONLINE_HISTORY_RETAIN_MS = 48 * 60 * 60 * 1000
+
+
+async def record_online_sample(env):
+    # Called once a minute by the scheduled (cron) handler.
+    await ensure_schema(env)
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM account_presence WHERE ts >= ?",
+        now - ONLINE_SAMPLE_WINDOW_MS,
+    )
+    online = int((row or {}).get("n", 0) or 0)
+    hour_ts = (now // 3600000) * 3600000
+    await d1_run(
+        env,
+        "INSERT INTO online_hourly (hour_ts, node_minutes) VALUES (?, ?) "
+        "ON CONFLICT(hour_ts) DO UPDATE SET node_minutes = node_minutes + ?",
+        hour_ts, online, online,
+    )
+    await d1_run(
+        env, "DELETE FROM online_hourly WHERE hour_ts < ?",
+        hour_ts - ONLINE_HISTORY_RETAIN_MS,
+    )
+
+
+async def online_history(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    cur_hour = (now // 3600000) * 3600000
+    start = cur_hour - 23 * 3600000  # last 24 hourly buckets, oldest first
+    rows = await d1_all(
+        env,
+        "SELECT hour_ts, node_minutes FROM online_hourly WHERE hour_ts >= ? "
+        "ORDER BY hour_ts",
+        start,
+    )
+    by_hour = {int(r["hour_ts"]): int(r["node_minutes"]) for r in rows}
+    series = [{"hourTs": start + i * 3600000,
+               "nodeMinutes": by_hour.get(start + i * 3600000, 0)}
+              for i in range(24)]
+    return json_response({"ok": True, "hours": series}, cache_seconds=30)
+
+
 def method_name(request):
     method = getattr(request, "method", "GET")
     return str(method).upper()
@@ -441,8 +489,11 @@ _schema_ready = False
 
 SCHEMA_STATEMENTS = [
     # email_bi (blind index of the email) lets users log in by email, not just
-    # node name. Migration 0003 adds it to already-deployed databases.
-    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, email_bi TEXT)",
+    # node name (migration 0003). is_admin is an operator-settable flag and name
+    # is the public node name in plaintext, so an admin can be granted directly
+    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='alice' (migration 0006).
+    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, "
+    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
@@ -470,6 +521,15 @@ SCHEMA_STATEMENTS = [
     # be included in the reward split. Keyed by the account blind index.
     "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_account_presence_ts ON account_presence(ts)",
+    # Email-verification queue: newly finalized accounts land here until an admin
+    # manually verifies them (placeholder until a real email service like SES is
+    # wired up). data = encrypted {name, email, joinedAt}.
+    "CREATE TABLE IF NOT EXISTS pending_verifications (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL)",
+    # Hourly online-activity samples for the /network/ graph. A per-minute cron
+    # adds the current online-node count into the current hour's bucket, so
+    # node_minutes is "node-minutes online" that hour (one node online all hour
+    # = 60). hour_ts is the epoch-ms start of the hour.
+    "CREATE TABLE IF NOT EXISTS online_hourly (hour_ts INTEGER PRIMARY KEY, node_minutes INTEGER NOT NULL DEFAULT 0)",
 ]
 
 
@@ -781,20 +841,26 @@ def _ts_ok(ts):
 
 async def _save_account(env, name_bi, rec, email_bi=None):
     # Persist the encrypted record; pass email_bi to (re)index for email login.
+    # The plaintext `name` column mirrors the (public) node name so an operator
+    # can grant admin in the DB by name; is_admin is never written here, so a
+    # value set directly in the DB survives ordinary account updates.
+    enc = await encrypt_row(env, rec)
+    name = rec.get("name", "")
     if email_bi is None:
         await d1_run(
             env,
-            """INSERT INTO accounts (name_bi, data) VALUES (?,?)
-               ON CONFLICT(name_bi) DO UPDATE SET data=excluded.data""",
-            name_bi, await encrypt_row(env, rec),
+            """INSERT INTO accounts (name_bi, data, name) VALUES (?,?,?)
+               ON CONFLICT(name_bi) DO UPDATE SET
+                 data=excluded.data, name=excluded.name""",
+            name_bi, enc, name,
         )
     else:
         await d1_run(
             env,
-            """INSERT INTO accounts (name_bi, data, email_bi) VALUES (?,?,?)
+            """INSERT INTO accounts (name_bi, data, email_bi, name) VALUES (?,?,?,?)
                ON CONFLICT(name_bi) DO UPDATE SET
-                 data=excluded.data, email_bi=excluded.email_bi""",
-            name_bi, await encrypt_row(env, rec), email_bi,
+                 data=excluded.data, email_bi=excluded.email_bi, name=excluded.name""",
+            name_bi, enc, email_bi, name,
         )
 
 
@@ -1021,10 +1087,17 @@ async def _account_finalize(env, request):
     # Optional payout address (where this node receives its share of the split).
     if bch and BCH_RE.match(bch.lower()):
         rec["bch"] = bch
+    rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
     await _save_account(env, name_bi, rec, email_bi=email_bi)
+    # Until a real email service exists, an admin verifies the email by hand:
+    # enqueue the new account so admins are notified and can verify it.
+    if not rec["email_verified"]:
+        await _enqueue_verification(env, name_bi, name, email)
     return json_response(
-        {"ok": True, "nodeName": name, "email": email, "status": "active"},
+        {"ok": True, "nodeName": name, "email": email, "status": "active",
+         "emailVerified": rec["email_verified"],
+         "isAdmin": await _is_admin(env, name)},
         status=201)
 
 
@@ -1065,6 +1138,8 @@ async def _account_login(env, request):
         "ok": True, "nodeName": rec.get("name", ""),
         "email": rec.get("email", ""), "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
+        "emailVerified": bool(rec.get("email_verified")),
+        "isAdmin": await _is_admin(env, rec.get("name", "")),
     })
 
 
@@ -1073,8 +1148,8 @@ def _random_bytes(n):
 
 
 def _treasury_address(env):
-    # All donations sweep here. The 50/50 ForkMesh/airdrop split happens later,
-    # off this treasury, once the reward engine ships.
+    # Receives ~50% of each confirmed donation; the rest is split among online
+    # nodes (see _reward_outputs). Falls back to NODE_BCH_ADDRESS.
     addr = (getattr(env, "TREASURY_BCH_ADDRESS", "") or
             getattr(env, "NODE_BCH_ADDRESS", "") or "").strip()
     return addr if BCH_RE.match(addr.lower()) else ""
@@ -1163,7 +1238,8 @@ async def _account_heartbeat(env, request):
         name_bi, int(Date.now()),
     )
     return json_response({"ok": True, "online": True,
-                          "hasPayoutAddress": bool(rec.get("bch"))})
+                          "hasPayoutAddress": bool(rec.get("bch")),
+                          "isAdmin": await _is_admin(env, name)})
 
 
 async def _online_payout_addresses(env):
@@ -1198,6 +1274,91 @@ async def _online_payout_addresses(env):
     return addresses
 
 
+# --- Admins + manual email verification -------------------------------------
+# A user is "set as administrator" via the accounts.is_admin column in the DB
+# (UPDATE accounts SET is_admin=1 WHERE name='<node>'). Admins' clients are
+# notified when a new user joins and can verify the new user's email by hand
+# until an email service (e.g. SES) is wired up.
+
+async def _is_admin(env, name):
+    # Admin status lives entirely in the accounts table's is_admin column. Grant
+    # it directly in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    name_bi = await blind_index(env, name)
+    try:
+        row = await d1_first(
+            env, "SELECT is_admin FROM accounts WHERE name_bi=?", name_bi)
+    except Exception:
+        return False  # column may predate migration 0006
+    return bool(row and int(row.get("is_admin", 0) or 0))
+
+
+async def _admin_authorized(env, node, ts, sig, canonical):
+    # The requesting admin proves control of their node's key, and the account
+    # must have is_admin set. Returns the admin's record on success, else None.
+    node = (node or "").strip().lower()
+    if not await _is_admin(env, node) or not _ts_ok(ts):
+        return None
+    _, rec = await _account_row(env, node)
+    if not rec or rec.get("status") != "active":
+        return None
+    pubkey = rec.get("pubkey", "")
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return None
+    return rec
+
+
+async def _enqueue_verification(env, name_bi, name, email):
+    blob = await encrypt_row(
+        env, {"name": name, "email": email, "joinedAt": int(Date.now())})
+    await d1_run(
+        env,
+        "INSERT INTO pending_verifications (name_bi, data) VALUES (?,?) "
+        "ON CONFLICT(name_bi) DO UPDATE SET data=excluded.data",
+        name_bi, blob,
+    )
+
+
+async def _admin_pending(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    canonical = ("forkmesh-admin-pending-v1\n" + node + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    rows = await d1_all(env, "SELECT data FROM pending_verifications")
+    pending = [rec for rec in
+               [await decrypt_row(env, r["data"]) for r in rows] if rec]
+    pending.sort(key=lambda x: x.get("joinedAt", 0))
+    return json_response({"ok": True, "pending": pending})
+
+
+async def _admin_verify_email(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    canonical = ("forkmesh-admin-verify-email-v1\n" + node + "\n" + target +
+                 "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+
+    target_bi, trec = await _account_row(env, target)
+    if not trec:
+        return json_response({"error": "no_such_account"}, status=404)
+    trec["email_verified"] = True
+    await _save_account(env, target_bi, trec)
+    await d1_run(env, "DELETE FROM pending_verifications WHERE name_bi=?", target_bi)
+    return json_response({"ok": True, "target": target, "emailVerified": True})
+
+
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
@@ -1212,6 +1373,10 @@ async def accounts_handler(env, request):
         return await _account_finalize(env, request)
     if url.path == "/api/accounts/heartbeat" and method == "POST":
         return await _account_heartbeat(env, request)
+    if url.path == "/api/accounts/admin-pending" and method == "GET":
+        return await _admin_pending(env, request)
+    if url.path == "/api/accounts/admin-verify-email" and method == "POST":
+        return await _admin_verify_email(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     match = ACCOUNTS_RE.match(url.path)
@@ -1541,6 +1706,15 @@ def render_admin_html(rows, stats=None):
 
 
 class Default(WorkerEntrypoint):
+    async def scheduled(self, event):
+        # Cron trigger (every minute, see [triggers] in wrangler.toml): sample how
+        # many nodes are online and fold it into the current hour's bucket for the
+        # /network/ activity graph. Best-effort — never raise from the cron.
+        try:
+            await record_online_sample(self.env)
+        except Exception:
+            pass
+
     async def fetch(self, request):
         url = urlparse(request.url)
 
@@ -1643,6 +1817,10 @@ class Default(WorkerEntrypoint):
         # per colo per TTL instead of a Durable Object fan-out per page view.
         if url.path in ("/api/network/stats", "/api/network/stats/"):
             return await network_stats(self.env)
+
+        # 24-hour online-activity series for the /network/ graph.
+        if url.path in ("/api/network/online-history", "/api/network/online-history/"):
+            return await online_history(self.env)
 
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):

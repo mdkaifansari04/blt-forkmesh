@@ -7,6 +7,28 @@
     <meta name="description" content="ForkMesh network architecture, relay status, and host tunnel model.">
     <link rel="stylesheet" href="../styles.css">
     <script src="../static-page.js" defer></script>
+    <style>
+      .online-graph {
+        display: flex; align-items: flex-end; gap: 4px;
+        height: 160px; padding: 12px 4px 0;
+      }
+      .online-graph .bar-col {
+        flex: 1 1 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: flex-end; height: 100%;
+        min-width: 0;
+      }
+      .online-graph .bar {
+        width: 70%; min-height: 2px; border-radius: 4px 4px 2px 2px;
+        background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+        transition: height .3s ease;
+      }
+      .online-graph .bar.empty { background: var(--border); opacity: .5; }
+      .online-graph .bar-label {
+        margin-top: 6px; font-size: 10px; color: var(--muted-2);
+        white-space: nowrap;
+      }
+      .online-graph-empty { color: var(--muted); padding: 24px 4px; }
+    </style>
   </head>
   <body>
     <header class="site-header">
@@ -84,6 +106,18 @@
         </article>
       </section>
 
+      <section class="panel doc-panel" aria-labelledby="activity-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="activity-title">Online activity · last 24 hours</h2>
+            <p>Node-minutes online per hour, sampled every minute. Taller bars mean nodes were online longer that hour.</p>
+          </div>
+        </div>
+        <div id="online-graph" class="online-graph" aria-label="Node online activity over the last 24 hours">
+          <div class="online-graph-empty">Loading activity…</div>
+        </div>
+      </section>
+
       <section class="panel doc-panel" aria-labelledby="architecture-title">
         <div class="panel-header">
           <div>
@@ -146,5 +180,53 @@
         </article>
       </section>
     </main>
+    <script>
+      (() => {
+        const root = document.getElementById("online-graph");
+        if (!root) return;
+        if (location.protocol === "file:") {
+          root.innerHTML = '<div class="online-graph-empty">Preview only.</div>';
+          return;
+        }
+        async function render() {
+          let hours;
+          try {
+            const res = await fetch("/api/network/online-history", {
+              headers: { accept: "application/json" },
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            hours = (await res.json()).hours || [];
+          } catch (_) {
+            root.innerHTML =
+              '<div class="online-graph-empty">Activity unavailable right now.</div>';
+            return;
+          }
+          const max = Math.max(1, ...hours.map((h) => Number(h.nodeMinutes) || 0));
+          root.innerHTML = "";
+          hours.forEach((h, i) => {
+            const minutes = Number(h.nodeMinutes) || 0;
+            const hour = new Date(Number(h.hourTs)).getHours();
+            const col = document.createElement("div");
+            col.className = "bar-col";
+            const bar = document.createElement("div");
+            bar.className = "bar" + (minutes === 0 ? " empty" : "");
+            bar.style.height = Math.round((minutes / max) * 100) + "%";
+            bar.title = minutes + " node-minutes online · " +
+              String(hour).padStart(2, "0") + ":00";
+            col.appendChild(bar);
+            // Label every 6 hours to avoid crowding.
+            if (i % 6 === 0) {
+              const label = document.createElement("div");
+              label.className = "bar-label";
+              label.textContent = String(hour).padStart(2, "0") + "h";
+              col.appendChild(label);
+            }
+            root.appendChild(col);
+          });
+        }
+        render();
+        setInterval(render, 60000);
+      })();
+    </script>
   </body>
 </html>
