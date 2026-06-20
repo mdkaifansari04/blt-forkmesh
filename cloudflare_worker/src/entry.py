@@ -1271,7 +1271,9 @@ async def _bch_address_state(addr):
         print("response is")
         print(resp)
         obj = json.loads(await resp.text())
+        print(obj)
         data = obj.get("data", {}) or {}
+        print(data)
         entry = data.get(a)
         if entry is None and data:
             entry = next(iter(data.values()))
