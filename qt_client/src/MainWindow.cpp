@@ -407,12 +407,6 @@ QStringList splitIssueFieldList(const QString &text)
 }
 
 // A small platform emoji for a node's operating system.
-QString platformEmoji(const QString &platform)
-{
-    Q_UNUSED(platform);
-    return QString();
-}
-
 // Crisp vector icons for the server-rail footer (glyph fonts render these
 // inconsistently across platforms, so we draw them).
 QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
@@ -505,8 +499,8 @@ QByteArray forkMeshAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a circular pixmap for the nav button.
-QPixmap circularAvatar(const QByteArray &png, int side)
+// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button.
+QPixmap roundedAvatar(const QByteArray &png, int side)
 {
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
@@ -516,11 +510,75 @@ QPixmap circularAvatar(const QByteArray &png, int side)
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath clip;
-    clip.addEllipse(0, 0, side, side);
+    clip.addRoundedRect(0, 0, side, side, side * 0.28, side * 0.28);
     p.setClipPath(clip);
     p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                   Qt::SmoothTransformation));
     return out;
+}
+
+// OS badge for a node row: a small Linux / Windows / macOS mark, tinted by the
+// OS when the node is online and grey when offline so it still signals presence.
+QIcon osBadgeIcon(const QString &platform, bool online, int size)
+{
+    const QString p = platform.toLower();
+    const QColor grey("#6e7681");
+    auto col = [&](const QColor &c) { return online ? c : grey; };
+
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter g(&pm);
+    g.setRenderHint(QPainter::Antialiasing);
+    g.setPen(Qt::NoPen);
+
+    if (p.contains("win")) {
+        // Four panes.
+        g.setBrush(col(QColor("#3fa0ef")));
+        const qreal m = size * 0.18, gap = size * 0.12;
+        const qreal cell = (size - 2 * m - gap) / 2.0;
+        g.drawRect(QRectF(m, m, cell, cell));
+        g.drawRect(QRectF(m + cell + gap, m, cell, cell));
+        g.drawRect(QRectF(m, m + cell + gap, cell, cell));
+        g.drawRect(QRectF(m + cell + gap, m + cell + gap, cell, cell));
+    } else if (p.contains("mac") || p.contains("ios") || p.contains("darwin") ||
+               p.contains("os x")) {
+        // Apple silhouette: a bitten body plus a leaf.
+        g.setBrush(col(QColor("#c7ccd1")));
+        QPainterPath body;
+        body.addEllipse(QPointF(size * 0.46, size * 0.60), size * 0.30, size * 0.33);
+        QPainterPath bite;
+        bite.addEllipse(QPointF(size * 0.88, size * 0.52), size * 0.17, size * 0.20);
+        g.drawPath(body.subtracted(bite));
+        g.save();
+        g.translate(size * 0.56, size * 0.22);
+        g.rotate(-35);
+        g.drawEllipse(QPointF(0, 0), size * 0.13, size * 0.07);
+        g.restore();
+    } else if (p.contains("linux") || p.contains("bsd") || p.contains("unix")) {
+        // Minimal penguin: dark body, light belly, orange beak.
+        g.setBrush(col(QColor("#2b2b2b")));
+        g.drawEllipse(QPointF(size * 0.5, size * 0.54), size * 0.30, size * 0.40);
+        g.setBrush(online ? QColor("#f5f5f5") : QColor("#cfcfcf"));
+        g.drawEllipse(QPointF(size * 0.5, size * 0.62), size * 0.17, size * 0.26);
+        g.setBrush(col(QColor("#f0a020")));
+        QPainterPath beak;
+        beak.moveTo(size * 0.5, size * 0.32);
+        beak.lineTo(size * 0.40, size * 0.40);
+        beak.lineTo(size * 0.60, size * 0.40);
+        beak.closeSubpath();
+        g.drawPath(beak);
+    } else {
+        // Unknown OS → a generic desktop monitor.
+        g.setBrush(col(QColor("#8b949e")));
+        const qreal m = size * 0.16;
+        g.drawRoundedRect(QRectF(m, m, size - 2 * m, size * 0.5),
+                          size * 0.06, size * 0.06);
+        g.drawRect(QRectF(size * 0.44, m + size * 0.5, size * 0.12, size * 0.14));
+        g.drawRoundedRect(QRectF(size * 0.30, size * 0.80, size * 0.40, size * 0.07),
+                          size * 0.03, size * 0.03);
+    }
+    g.end();
+    return QIcon(pm);
 }
 
 QString defaultDisplayName(const ForkMeshIdentity &identity)
@@ -3223,6 +3281,10 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors = new QLabel;
     m_profileMirrors->setObjectName("statusLine");
     m_profileMirrors->setWordWrap(true);
+    m_profileStats = new QLabel;
+    m_profileStats->setObjectName("statusLine");
+    m_profileStats->setWordWrap(true);
+    m_profileStats->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_profileNote = new QLabel;
     m_profileNote->setObjectName("statusLine");
     m_profileNote->setWordWrap(true);
@@ -3326,6 +3388,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileNote, 0, Qt::AlignHCenter);
     layout->addWidget(m_profilePlatform);
     layout->addWidget(m_profileMirrors);
+    layout->addWidget(m_profileStats);
     layout->addWidget(nodeKeyLabel);
     layout->addWidget(m_profileNodeKey);
     layout->addWidget(copyKey, 0, Qt::AlignLeft);
@@ -3401,6 +3464,18 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
             QStringLiteral("Mirrors (%1): %2")
                 .arg(info.mirrors.size())
                 .arg(info.mirrors.join(", ").toHtmlEscaped()));
+    }
+
+    // Detailed node stats (repos/mirrored/online/chats, uptime, key) — moved
+    // here from under the node in the list. Only meaningful for your own node.
+    if (m_profileStats) {
+        if (info.self) {
+            m_profileStats->setText(selfNodeStats());
+            m_profileStats->setVisible(true);
+        } else {
+            m_profileStats->clear();
+            m_profileStats->setVisible(false);
+        }
     }
 
     // Discovery note (e.g. "(discovered)"), shown only when present.
@@ -8466,7 +8541,7 @@ QString MainWindow::selfNodeStats() const
                .arg(mirrored)
                .arg(online)
                .arg(m_channels.size()) +
-           "\n       uptime " + formatDuration(sessionMs) + " \xC2\xB7 total " +
+           "\nuptime " + formatDuration(sessionMs) + " \xC2\xB7 total " +
            formatDuration(totalMs) +
            (key.isEmpty() ? QString() : " \xC2\xB7 key " + key);
 }
@@ -8714,7 +8789,7 @@ void MainWindow::updateAvatarButton()
 {
     if (!m_avatarNavButton)
         return;
-    const QPixmap pm = circularAvatar(effectiveAvatar(), 34);
+    const QPixmap pm = roundedAvatar(effectiveAvatar(), 34);
     if (!pm.isNull())
         m_avatarNavButton->setIcon(QIcon(pm));
 }
@@ -9700,50 +9775,30 @@ void MainWindow::refreshRepositoryList()
     QListWidgetItem *itemToSelect = nullptr;
     for (const QString &node : std::as_const(nodeOrder)) {
         const NodeInfo info = nodes.value(node);
-        // Node header row: bold, not selectable, with a status dot + platform.
+        // Node header row: bold, not selectable. The OS badge (Linux/Windows/mac)
+        // both identifies the node as a node and signals online (tinted) vs
+        // offline (grey). The detailed node stats now live in the node profile
+        // window (click the row), not inline under the node.
         QString headerText = node;
         if (info.self)
             headerText += " (you)";
-        const QString emoji = platformEmoji(info.platform);
-        if (!emoji.isEmpty())
-            headerText += "  " + emoji;
         auto *header = new QListWidgetItem(headerText);
         // -3 marks a node header row; the node name rides in UserRole+1 so the
         // list's click handler can open that node's profile.
         header->setData(Qt::UserRole, -3);
         header->setData(Qt::UserRole + 1, node);
         header->setFlags(Qt::ItemIsEnabled);
-        header->setToolTip("Click to view this node's profile");
-        if (info.inRoster)
-            header->setIcon(statusDotIcon(info.online));
-        else
+        if (!info.inRoster)
             header->setText(QStringLiteral("Desktop node ") + headerText);
-        if (!info.platform.isEmpty())
-            header->setToolTip("Platform: " + info.platform);
+        header->setIcon(osBadgeIcon(info.platform, info.inRoster && info.online, 16));
+        header->setToolTip(
+            (info.platform.isEmpty() ? QStringLiteral("Platform: unknown")
+                                     : "Platform: " + info.platform) +
+            "\nClick to view this node's profile");
         QFont headerFont = header->font();
         headerFont.setBold(true);
         header->setFont(headerFont);
         m_repoList->addItem(header);
-
-        // Inline node stats (this is the info the quest board used to show).
-        QString infoText;
-        if (info.self) {
-            infoText = "       " + selfNodeStats();
-        } else if (info.inRoster) {
-            infoText = QString::fromUtf8("       %1")
-                           .arg(info.online ? "online" : "offline");
-            if (!info.bch.isEmpty())
-                infoText += " \xC2\xB7 BCH " + compactAddress(info.bch);
-            if (!info.balance.isEmpty())
-                infoText += " \xC2\xB7 " + info.balance;
-        }
-        if (!infoText.isEmpty()) {
-            auto *infoItem = new QListWidgetItem(infoText);
-            infoItem->setData(Qt::UserRole, -1);
-            infoItem->setFlags(Qt::ItemIsEnabled);
-            infoItem->setForeground(QColor(Theme::kTextTertiary));
-            m_repoList->addItem(infoItem);
-        }
 
         for (int i : reposByNode.value(node)) {
             const RepositoryRecord &repo = m_repositories.at(i);
@@ -9766,9 +9821,12 @@ void MainWindow::refreshRepositoryList()
                          (stats.second == 1 ? "" : "s");
             auto *item = new QListWidgetItem(label);
             item->setData(Qt::UserRole, i);
-            // Green dot = published and browsable on the web; grey = local/pending.
-            if (repo.publishToNetwork)
-                item->setIcon(statusDotIcon(online));
+            // A repo glyph distinguishes repositories from nodes; it's green when
+            // published+online on the web and grey when local/pending.
+            item->setIcon(themedOcticon(
+                "repo", repo.publishToNetwork && online ? QColor("#2ea043")
+                                                        : QColor("#6e7681"),
+                14));
             item->setToolTip(
                 "Source: " + repositorySource(repo) +
                 "\nMirror path: " + repo.mirrorPath +

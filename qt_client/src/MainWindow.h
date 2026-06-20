@@ -653,6 +653,7 @@ private:
     QLabel *m_profilePlatform = nullptr;
     QLabel *m_profileMirrors = nullptr;
     QLabel *m_profileNote = nullptr;
+    QLabel *m_profileStats = nullptr; // node stats, moved here from the node list
     QLabel *m_profileNodeKey = nullptr;
     QLabel *m_profileBchAddr = nullptr;
     QLabel *m_profileQr = nullptr;
