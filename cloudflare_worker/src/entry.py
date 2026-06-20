@@ -1808,7 +1808,7 @@ def render_admin_html(rows, stats=None):
 
 
 class Default(WorkerEntrypoint):
-    async def scheduled(self, event):
+    async def scheduled(self, controller, env, ctx):
         # Cron trigger (every minute, see [triggers] in wrangler.toml): sample how
         # many nodes are online and fold it into the current hour's bucket for the
         # /network/ activity graph. Best-effort — never raise from the cron.
