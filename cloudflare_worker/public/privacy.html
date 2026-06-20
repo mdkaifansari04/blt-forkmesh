@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ForkMesh Privacy</title>
+    <meta
+      name="description"
+      content="Simple privacy notes for ForkMesh accounts, public node data, and third-party services."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="static-page.js" defer></script>
+    <style>
+      .legal-wrap { max-width: 820px; margin: 0 auto; padding: 42px 20px 80px; }
+      .legal-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .legal-wrap h2 { font-size: 20px; margin: 28px 0 8px; }
+      .legal-wrap p, .legal-wrap li { color: var(--muted); }
+      .legal-wrap ul { padding-left: 22px; }
+      .legal-note {
+        border: 1px solid var(--border); background: var(--card);
+        border-radius: 12px; padding: 16px; margin: 20px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span>ForkMesh</span>
+        </a>
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/signup.html">Join</a>
+          <a href="/terms.html">Terms</a>
+        </nav>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="legal-wrap">
+      <p class="eyebrow">Privacy</p>
+      <h1>ForkMesh Privacy</h1>
+      <p>Last updated June 20, 2026.</p>
+
+      <div class="legal-note">
+        <strong>Short version:</strong>
+        We try our best not to use third parties or collect extra data. ForkMesh
+        still needs some account, node, repository, and payment data to run the
+        network.
+      </div>
+
+      <h2>What is public</h2>
+      <p>
+        Your node name, public key, advertised repositories, public profile
+        details, issue and pull-request records, online presence, and any payout
+        BCH address you publish may be visible to other users or visitors.
+      </p>
+
+      <h2>What is stored</h2>
+      <p>
+        ForkMesh stores account records, encrypted account details, repository
+        catalog data, relay presence data, pending verification records, and
+        operational logs needed to keep the service working. Join payment
+        addresses are temporary: unpaid addresses expire after one hour, are
+        hidden with a warning, and are removed after a five-minute grace period.
+      </p>
+
+      <h2>Payments</h2>
+      <p>
+        Bitcoin Cash transactions are public on the BCH network. ForkMesh checks
+        whether a one-time join address has received enough BCH to activate the
+        next signup step. Do not send funds to an address once the signup page
+        says it is expiring.
+      </p>
+
+      <h2>Third parties</h2>
+      <p>We try our best not to use third parties. Today, these are involved:</p>
+      <ul>
+        <li>Cloudflare hosts the public website, Worker APIs, D1 data, cache, and relay infrastructure.</li>
+        <li>Blockchair is queried for BCH address state and used for transaction broadcast support.</li>
+        <li>Bundled open-source font files are served locally by ForkMesh; no remote font service is used.</li>
+        <li>Tailwind Play CDN is loaded by the current home page.</li>
+        <li>The Bitcoin Cash network processes payment transactions.</li>
+        <li>Git remotes you choose may receive network requests when you mirror or sync repositories.</li>
+      </ul>
+
+      <h2>Your choices</h2>
+      <p>
+        You can avoid adding optional profile fields, avoid publishing a payout
+        address, stop running the desktop node, or use your own repository
+        mirrors. Public blockchain transactions cannot be made private by
+        ForkMesh after they are sent.
+      </p>
+
+      <p class="row-links"><a href="/terms.html">Terms</a> · <a href="/signup.html">Back to signup</a></p>
+    </main>
+  </body>
+</html>

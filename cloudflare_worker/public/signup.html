@@ -8,10 +8,9 @@
       name="description"
       content="Join the ForkMesh network — pick your public node name, donate to bootstrap a resilient Git mirror network, and create your account."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="styles.css" />
     <script src="static-page.js" defer></script>
+    <script src="qr.js" defer></script>
     <script src="signup.js" defer></script>
     <style>
       /* Funnel-specific styling — the dark, green "get paid to mirror" look. */
@@ -89,6 +88,26 @@
         background: var(--card-soft); border: 1px solid var(--border-subtle);
         border-radius: 10px; padding: 12px; margin: 12px 0;
       }
+      .pay-qr canvas {
+        width: min(220px, 82vw); height: min(220px, 82vw);
+        border: 1px solid var(--border-subtle); border-radius: 10px;
+      }
+      .pay-actions {
+        display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
+        margin-top: 10px;
+      }
+      .btn-secondary {
+        display: inline-flex; align-items: center; justify-content: center;
+        padding: 9px 14px; border-radius: 10px; border: 1px solid var(--border);
+        background: var(--card-soft); color: var(--foreground); font-weight: 700;
+        font-size: 14px; cursor: pointer;
+      }
+      .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
+      .pay-expiry {
+        color: var(--muted); font-size: 13px; margin: 10px 0 0;
+      }
+      .pay-expiry.warn { color: var(--warning); font-weight: 600; }
+      .pay-expiry.danger { color: var(--danger); font-weight: 700; }
       .pay-status { font-weight: 600; }
       .pay-status.waiting { color: var(--warning); }
       .pay-status.paid { color: var(--accent-bright); }
@@ -176,6 +195,10 @@
           </div>
         </div>
         <button class="btn-primary" id="name-continue" disabled>Continue</button>
+        <p class="row-links">
+          By continuing, you agree to the <a href="/terms.html">Terms</a> and
+          <a href="/privacy.html">Privacy</a>.
+        </p>
         <p class="row-links">Already have an account? <a href="/login.html">Log in</a></p>
       </section>
 
@@ -218,12 +241,18 @@
 
         <div class="pay-box">
           <p>Send at least <strong id="pay-amount">0.005 BCH</strong> to your one-time join address:</p>
-          <div class="pay-addr" id="pay-addr">generating…</div>
-          <div id="pay-qr" style="margin: 10px auto;"></div>
-          <button class="btn-primary" id="pay-copy" style="width:auto;padding:8px 16px;font-size:14px;">Copy address</button>
+          <div id="pay-visible">
+            <div class="pay-addr" id="pay-addr">generating…</div>
+            <div class="pay-qr" id="pay-qr" style="margin: 10px auto;" aria-label="Payment QR code"></div>
+            <div class="pay-actions">
+              <button class="btn-primary" id="pay-copy" style="width:auto;padding:8px 16px;font-size:14px;">Copy address</button>
+            </div>
+          </div>
           <p style="margin-top:14px;">
             <span class="pay-status waiting" id="pay-status">Waiting for your donation…</span>
           </p>
+          <p class="pay-expiry" id="pay-expiry"></p>
+          <button class="btn-secondary" id="pay-renew" type="button" hidden>Generate a new address</button>
           <p class="hint">This address is generated and monitored by ForkMesh. Once your donation confirms, you can finish creating your account.</p>
         </div>
       </section>

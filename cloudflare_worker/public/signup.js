@@ -4,12 +4,19 @@
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   const PAYOUT_PER_JOIN_BCH = 0.0001; // illustrative only — reward engine WIP
   const POLL_MS = 5000;
+  const ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000;
 
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
   let nodeName = "";
   let payAddress = "";
+  let payUri = "";
+  let expiresAt = 0;
+  let deleteAt = 0;
+  let lastReceivedSats = 0;
+  let addressHidden = false;
   let statusTimer = null;
+  let expiryTimer = null;
 
   function showStep(id) {
     for (const el of document.querySelectorAll(".step")) {
@@ -110,21 +117,154 @@
   }
 
   // --- Step 2: donation ------------------------------------------------------
-  async function loadDonationAddress() {
-    const { ok, body } = await api("/api/accounts/donation-address", {
-      method: "POST",
-      body: JSON.stringify({ nodeName }),
-    });
-    if (!ok) {
-      $("#pay-addr").textContent = "Could not generate an address. Reload and retry.";
+  function stopStatusPolling() {
+    if (!statusTimer) return;
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+
+  function stopExpiryTimer() {
+    if (!expiryTimer) return;
+    clearInterval(expiryTimer);
+    expiryTimer = null;
+  }
+
+  function setPayStatus(text, cls) {
+    const el = $("#pay-status");
+    el.textContent = text;
+    el.className = "pay-status " + (cls || "waiting");
+  }
+
+  function setAddressVisible(visible) {
+    const wrap = $("#pay-visible");
+    if (wrap) wrap.hidden = !visible;
+    const copy = $("#pay-copy");
+    if (copy) copy.disabled = !visible || !payAddress;
+  }
+
+  function formatDuration(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = total % 60;
+    if (hours > 0) return hours + "h " + String(minutes).padStart(2, "0") + "m";
+    return minutes + ":" + String(seconds).padStart(2, "0");
+  }
+
+  function renderQr() {
+    const qr = $("#pay-qr");
+    if (!qr) return;
+    qr.innerHTML = "";
+    if (!payUri && !payAddress) return;
+    if (window.ForkMeshQR) {
+      window.ForkMeshQR.render(payUri || payAddress, qr, 236);
+    } else {
+      qr.textContent = "QR unavailable";
+    }
+  }
+
+  function renderAddress(body) {
+    payAddress = body.address || "";
+    payUri = body.uri || payAddress;
+    addressHidden = false;
+    setAddressVisible(true);
+    $("#pay-renew").hidden = true;
+    $("#pay-addr").textContent = "";
+    const link = document.createElement("a");
+    link.href = payUri || "#";
+    link.style.color = "inherit";
+    link.textContent = payAddress;
+    $("#pay-addr").append(link);
+    renderQr();
+  }
+
+  function hideExpiredAddress(deleted) {
+    addressHidden = true;
+    payAddress = "";
+    payUri = "";
+    setAddressVisible(false);
+    const qr = $("#pay-qr");
+    if (qr) qr.innerHTML = "";
+    $("#pay-renew").hidden = false;
+    setPayStatus(
+      deleted
+        ? "This address was removed. Generate a new address to continue."
+        : "This address is expiring. Do not send BCH to it.",
+      "waiting"
+    );
+    updateExpiryText();
+  }
+
+  function updateExpiryText() {
+    const el = $("#pay-expiry");
+    if (!el) return;
+    if (!expiresAt) {
+      el.textContent = "";
+      el.className = "pay-expiry";
       return;
     }
-    payAddress = body.address || "";
-    $("#pay-addr").textContent = payAddress;
+    const now = Date.now();
+    if (!addressHidden && lastReceivedSats <= 0 && now >= expiresAt) {
+      hideExpiredAddress(false);
+      return;
+    }
+    if (addressHidden) {
+      const remaining = Math.max(0, (deleteAt || now) - now);
+      el.className = "pay-expiry danger";
+      el.textContent = remaining > 0
+        ? "We are expiring this address. Do not send BCH to it. It will be deleted in " + formatDuration(remaining) + "."
+        : "This address has been removed from the page. Generate a new address to continue.";
+      return;
+    }
+    const remaining = expiresAt - now;
+    el.className = remaining <= 10 * 60 * 1000 ? "pay-expiry warn" : "pay-expiry";
+    el.textContent = remaining > 0
+      ? "This address expires in " + formatDuration(remaining) + " if it receives no transactions."
+      : "";
+  }
+
+  function applyExpiry(body) {
+    expiresAt = Number(body.expiresAt) || 0;
+    deleteAt = Number(body.deleteAt) ||
+      (expiresAt ? expiresAt + ADDRESS_DELETE_GRACE_MS : 0);
+    updateExpiryText();
+    if (expiresAt && !expiryTimer) expiryTimer = setInterval(updateExpiryText, 1000);
+    if (!expiresAt) stopExpiryTimer();
+  }
+
+  async function loadDonationAddress(renewExpired) {
+    const renew = Boolean(renewExpired);
+    const renewBtn = $("#pay-renew");
+    if (renewBtn) {
+      renewBtn.disabled = true;
+      renewBtn.textContent = "Generating…";
+    }
+    setPayStatus(renew ? "Generating a new address…" : "Generating address…", "waiting");
+    const payload = { nodeName };
+    if (renew) payload.renewExpired = true;
+    const { ok, body } = await api("/api/accounts/donation-address", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (renewBtn) {
+      renewBtn.disabled = false;
+      renewBtn.textContent = "Generate a new address";
+    }
+    if (!ok) {
+      setAddressVisible(false);
+      setPayStatus("Could not generate an address. Reload and retry.", "waiting");
+      return;
+    }
+    lastReceivedSats = Number(body.receivedSats) || 0;
     $("#pay-amount").textContent = (body.amountBch || "0.00500000") + " BCH";
-    // Linkify so a wallet app can pick it up.
-    $("#pay-addr").innerHTML =
-      '<a href="' + body.uri + '" style="color:inherit;">' + payAddress + "</a>";
+    applyExpiry(body);
+    if (body.hidden || body.expired || body.deleted) {
+      hideExpiredAddress(Boolean(body.deleted));
+      startStatusPolling();
+      return;
+    }
+    renderAddress(body);
+    setPayStatus("Waiting for your donation…", "waiting");
     startStatusPolling();
   }
 
@@ -138,15 +278,26 @@
     const { ok, body } = await api(
       "/api/accounts/donation-status?nodeName=" + encodeURIComponent(nodeName));
     if (!ok) return;
+    lastReceivedSats = Number(body.receivedSats) || 0;
+    applyExpiry(body);
+    if (body.deleted) {
+      hideExpiredAddress(true);
+      stopStatusPolling();
+      return;
+    }
+    if (body.hidden || body.expired) {
+      hideExpiredAddress(false);
+      return;
+    }
     if (body.paid) {
-      clearInterval(statusTimer);
-      statusTimer = null;
+      stopStatusPolling();
+      stopExpiryTimer();
       $("#pay-status").textContent = "Donation received!";
       $("#pay-status").className = "pay-status paid";
       setTimeout(() => showStep("step-account"), 600);
     } else {
-      const got = ((Number(body.receivedSats) || 0) / 1e8).toFixed(8);
-      $("#pay-status").textContent = "Waiting for your donation… (received " + got + " BCH)";
+      const got = (lastReceivedSats / 1e8).toFixed(8);
+      setPayStatus("Waiting for your donation… (received " + got + " BCH)", "waiting");
     }
   }
 
@@ -194,12 +345,14 @@
   });
   nameContinue.addEventListener("click", reserveName);
   $("#pay-copy").addEventListener("click", async () => {
+    if (!payAddress) return;
     try { await navigator.clipboard.writeText(payAddress); } catch (_) {}
     const b = $("#pay-copy");
     const t = b.textContent;
     b.textContent = "Copied";
     setTimeout(() => (b.textContent = t), 1500);
   });
+  $("#pay-renew").addEventListener("click", () => loadDonationAddress(true));
   $("#acct-create").addEventListener("click", createAccount);
 
   loadStats();

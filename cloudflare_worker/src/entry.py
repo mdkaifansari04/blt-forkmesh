@@ -470,6 +470,8 @@ BCH_RE = re.compile(r"^(bitcoincash:)?[qp][a-z0-9]{41}$")
 # generated address; when it receives at least this much the account can be
 # finalized, the balance is split (see below), and the ephemeral key is forgotten.
 MIN_JOIN_SATS = 500000  # 0.005 BCH
+DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
+DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
 # Rough sat/byte fee model for the sweep/payout tx: a base plus a bit per output.
 BCH_BASE_FEE_SATS = 300
 BCH_FEE_PER_OUTPUT_SATS = 50
@@ -864,6 +866,50 @@ async def _save_account(env, name_bi, rec, email_bi=None):
         )
 
 
+def _donation_expiry_fields(rec, now):
+    try:
+        created = int(rec.get("donation_created_at") or rec.get("created_at") or now)
+    except (TypeError, ValueError):
+        created = now
+    try:
+        expires = int(rec.get("donation_expires_at") or
+                      created + DONATION_ADDRESS_TTL_MS)
+    except (TypeError, ValueError):
+        expires = created + DONATION_ADDRESS_TTL_MS
+    try:
+        delete_after = int(rec.get("donation_delete_after") or
+                           expires + DONATION_ADDRESS_DELETE_GRACE_MS)
+    except (TypeError, ValueError):
+        delete_after = expires + DONATION_ADDRESS_DELETE_GRACE_MS
+    return created, expires, delete_after
+
+
+def _ensure_donation_expiry_fields(rec, now):
+    if not rec.get("donation_address"):
+        return False
+    created, expires, delete_after = _donation_expiry_fields(rec, now)
+    before = (
+        rec.get("donation_created_at"),
+        rec.get("donation_expires_at"),
+        rec.get("donation_delete_after"),
+    )
+    rec["donation_created_at"] = created
+    rec["donation_expires_at"] = expires
+    rec["donation_delete_after"] = delete_after
+    return before != (created, expires, delete_after)
+
+
+def _clear_donation_address(rec):
+    for key in (
+        "donation_address", "donation_privkey", "donation_required_sats",
+        "donation_confirmed", "swept", "donation_created_at",
+        "donation_expires_at", "donation_delete_after",
+    ):
+        rec.pop(key, None)
+    if rec.get("status") != "active":
+        rec["status"] = "reserved"
+
+
 # Step 1 of the funnel: claim a public node name. The desktop client signs the
 # claim with its Ed25519 identity (binding the name to a key); the website may
 # reserve without a key. A name is only "taken" once it is finalized/paid.
@@ -927,6 +973,37 @@ async def _account_donation_address(env, request):
     if rec.get("status") == "active":
         return json_response({"error": "already_active"}, status=409)
 
+    now = int(Date.now())
+    renew_expired = bool(data.get("renewExpired") or data.get("generateNew"))
+    if rec.get("donation_address") and not rec.get("donation_confirmed"):
+        changed = _ensure_donation_expiry_fields(rec, now)
+        required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+        _, expires_at, delete_at = _donation_expiry_fields(rec, now)
+        if now >= expires_at:
+            state = await _bch_address_state(rec["donation_address"])
+            if state is None:
+                return json_response({"error": "explorer_unavailable"}, status=502)
+            received = int(state.get("received", 0) or 0)
+            if received == 0:
+                if renew_expired or now >= delete_at:
+                    _clear_donation_address(rec)
+                    changed = True
+                else:
+                    if changed:
+                        await _save_account(env, name_bi, rec)
+                    return json_response({
+                        "ok": True, "expired": True, "hidden": True,
+                        "canRenew": True, "receivedSats": 0,
+                        "requiredSats": required,
+                        "amountBch": "%.8f" % (required / 1e8),
+                        "expiresAt": expires_at, "deleteAt": delete_at,
+                    })
+            elif received >= required:
+                rec["donation_confirmed"] = True
+                changed = True
+        if changed:
+            await _save_account(env, name_bi, rec)
+
     if not rec.get("donation_address"):
         priv_int, priv_hex = bch_wallet.gen_privkey(_random_bytes(32))
         addr = bch_wallet.pubkey_to_cashaddr(
@@ -936,15 +1013,21 @@ async def _account_donation_address(env, request):
         rec["donation_required_sats"] = max(amount, MIN_JOIN_SATS)
         rec["donation_confirmed"] = False
         rec["swept"] = False
+        rec["donation_created_at"] = now
+        rec["donation_expires_at"] = now + DONATION_ADDRESS_TTL_MS
+        rec["donation_delete_after"] = (
+            rec["donation_expires_at"] + DONATION_ADDRESS_DELETE_GRACE_MS)
         rec["status"] = "pending_payment"
         await _save_account(env, name_bi, rec)
 
     addr = rec["donation_address"]
     required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+    _, expires_at, delete_at = _donation_expiry_fields(rec, int(Date.now()))
     amount_bch = "%.8f" % (required / 1e8)
     return json_response({
         "ok": True, "address": addr, "uri": addr + "?amount=" + amount_bch,
         "requiredSats": required, "amountBch": amount_bch,
+        "expiresAt": expires_at, "deleteAt": delete_at,
     })
 
 
@@ -995,12 +1078,24 @@ async def _account_donation_status(env, request):
     if not addr:
         return json_response({"error": "no_donation_address"}, status=400)
     required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+    now = int(Date.now())
+    changed = _ensure_donation_expiry_fields(rec, now)
+    _, expires_at, delete_at = _donation_expiry_fields(rec, now)
 
     state = await _bch_address_state(addr)
     if state is None:
         return json_response({"error": "explorer_unavailable"}, status=502)
     received = state["received"]
-    changed = False
+    if (not rec.get("donation_confirmed") and received == 0 and
+            now >= delete_at):
+        _clear_donation_address(rec)
+        await _save_account(env, name_bi, rec)
+        return json_response({
+            "ok": True, "paid": False, "expired": True, "hidden": True,
+            "deleted": True, "canRenew": True, "receivedSats": 0,
+            "requiredSats": required, "expiresAt": expires_at,
+            "deleteAt": delete_at,
+        })
     if received >= required and not rec.get("donation_confirmed"):
         rec["donation_confirmed"] = True
         changed = True
@@ -1034,6 +1129,13 @@ async def _account_donation_status(env, request):
         "ok": True, "paid": bool(rec.get("donation_confirmed")),
         "receivedSats": received, "requiredSats": required,
         "swept": bool(rec.get("swept")),
+        "expired": (not rec.get("donation_confirmed") and received == 0 and
+                    now >= expires_at),
+        "hidden": (not rec.get("donation_confirmed") and received == 0 and
+                   now >= expires_at),
+        "canRenew": (not rec.get("donation_confirmed") and received == 0 and
+                     now >= expires_at),
+        "expiresAt": expires_at, "deleteAt": delete_at,
     })
 
 
