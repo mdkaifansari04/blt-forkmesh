@@ -1262,32 +1262,29 @@ async def _bch_address_state(addr):
     # set used to build the sweep. Returns None if the explorer is unreachable.
     from js import fetch as js_fetch
     a = addr.split(":")[-1]
-    try:
-        resp = await js_fetch(
-            "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + a +
-            "?limit=1000"
-        )
-        obj = json.loads(await resp.text())
-        data = obj.get("data", {}) or {}
-        entry = data.get(a)
-        if entry is None and data:
-            entry = next(iter(data.values()))
-        entry = entry or {}
-        address = entry.get("address", {}) if isinstance(entry, dict) else {}
-        utxos = []
-        for u in (entry.get("utxo", []) or []):
-            utxos.append({
-                "txid": u.get("transaction_hash", ""),
-                "vout": int(u.get("index", 0) or 0),
-                "value": int(u.get("value", 0) or 0),
-            })
-        return {
-            "received": int(address.get("received", 0) or 0),
-            "balance": int(address.get("balance", 0) or 0),
-            "utxos": utxos,
-        }
-    except Exception:
-        return None
+    resp = await js_fetch(
+        "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + a +
+        "?limit=1000"
+    )
+    obj = json.loads(await resp.text())
+    data = obj.get("data", {}) or {}
+    entry = data.get(a)
+    if entry is None and data:
+        entry = next(iter(data.values()))
+    entry = entry or {}
+    address = entry.get("address", {}) if isinstance(entry, dict) else {}
+    utxos = []
+    for u in (entry.get("utxo", []) or []):
+        utxos.append({
+            "txid": u.get("transaction_hash", ""),
+            "vout": int(u.get("index", 0) or 0),
+            "value": int(u.get("value", 0) or 0),
+        })
+    return {
+        "received": int(address.get("received", 0) or 0),
+        "balance": int(address.get("balance", 0) or 0),
+        "utxos": utxos,
+    }
 
 
 async def _bch_broadcast(raw_hex):
