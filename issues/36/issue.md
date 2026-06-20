@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 36
-title: Have a waitlist signup
+title: Have a signup sheet to request funding to join
 status: open
 labels: []
 milestone: 
