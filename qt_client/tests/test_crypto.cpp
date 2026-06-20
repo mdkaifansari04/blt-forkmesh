@@ -113,6 +113,19 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(1, vector) == expected,
           "issue-event canonical string matches the cross-language vector");
 
+    // "title" event (issue rename): content is just the title. Pin it so the
+    // client and the worker's issue_event_content stay byte-identical.
+    IssueEvent titleVec;
+    titleVec.type = "title";
+    titleVec.author = "TESTPUB";
+    titleVec.ts = 2000;
+    titleVec.title = "Renamed issue";
+    const QByteArray expectedTitle =
+        "forkmesh-issue-event-v1\ntitle\n3\nTESTPUB\n2000\n"
+        "37f2b6516c608aafe45958eabd5bb4c20b9c6765d1eb39a5c27b4588e566ec97";
+    check(IssueStore::canonicalString(3, titleVec) == expectedTitle,
+          "title-event canonical string matches the cross-language vector");
+
     // Sign a real event with the node identity and verify it independently.
     IssueStore store(QString(), QString(), &identity, "tester");
     IssueEvent open;

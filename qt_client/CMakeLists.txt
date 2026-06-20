@@ -43,6 +43,7 @@ qt_add_executable(forkmesh
     src/QrCode.cpp
     src/MessageRow.h
     src/MessageRow.cpp
+    src/MarkdownEditor.cpp
     src/MainWindow.h
     src/MainWindow.cpp
 )

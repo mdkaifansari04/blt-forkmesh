@@ -4,11 +4,13 @@
 #include "ActionRunner.h"
 #include "QrCode.h"
 
+#include "MarkdownEditor.h"
 #include "MessageRow.h"
 #include "RepoHost.h"
 #include "ServerNode.h"
 #include "Theme.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QBuffer>
 #include <QButtonGroup>
@@ -25,7 +27,10 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFileInfo>
+#include <QMimeData>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -74,6 +79,7 @@
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QSystemTrayIcon>
 #include <QSvgRenderer>
@@ -261,6 +267,35 @@ QString formatRepoDate(qint64 timestampMs)
     return QDateTime::fromMSecsSinceEpoch(timestampMs).toString("yyyy-MM-dd hh:mm");
 }
 
+QString formatIssueRelativeTime(qint64 timestampMs)
+{
+    if (timestampMs <= 0)
+        return QStringLiteral("just now");
+    const qint64 secs =
+        QDateTime::fromMSecsSinceEpoch(timestampMs).secsTo(QDateTime::currentDateTime());
+    if (secs < 60)
+        return QStringLiteral("just now");
+    const qint64 mins = secs / 60;
+    if (mins < 60)
+        return mins == 1 ? QStringLiteral("1 minute ago")
+                         : QStringLiteral("%1 minutes ago").arg(mins);
+    const qint64 hours = mins / 60;
+    if (hours < 24)
+        return hours == 1 ? QStringLiteral("1 hour ago")
+                          : QStringLiteral("%1 hours ago").arg(hours);
+    const qint64 days = hours / 24;
+    if (days < 30)
+        return days == 1 ? QStringLiteral("yesterday")
+                         : QStringLiteral("%1 days ago").arg(days);
+    const qint64 months = days / 30;
+    if (months < 12)
+        return months == 1 ? QStringLiteral("last month")
+                           : QStringLiteral("%1 months ago").arg(months);
+    const qint64 years = days / 365;
+    return years <= 1 ? QStringLiteral("last year")
+                      : QStringLiteral("%1 years ago").arg(years);
+}
+
 QString formatInsightBytes(qint64 bytes)
 {
     if (bytes < 1024)
@@ -336,6 +371,20 @@ QString compactAddress(QString address)
     if (address.size() <= 30)
         return address;
     return address.left(18) + QStringLiteral("...") + address.right(8);
+}
+
+QStringList splitIssueFieldList(const QString &text)
+{
+    QStringList values;
+    QSet<QString> seen;
+    for (const QString &part : text.split(',', Qt::SkipEmptyParts)) {
+        const QString value = part.trimmed();
+        if (value.isEmpty() || seen.contains(value))
+            continue;
+        values << value;
+        seen.insert(value);
+    }
+    return values;
 }
 
 // A small platform emoji for a node's operating system.
@@ -3211,7 +3260,7 @@ QWidget *MainWindow::buildIssuesSection()
     filterRow->addWidget(m_issueMilestoneFilter);
 
     m_issueNewButton = new QPushButton("New issue");
-    m_issueNewButton->setObjectName("ghostButton");
+    m_issueNewButton->setObjectName("primaryButton");
     m_issueNewButton->setProperty("buttonSize", "sm");
     m_issueNewButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueNewButton, "plus", 16);
@@ -3231,7 +3280,6 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueCreditsLabel->setToolTip("Voting credits — earn 1 per hour online");
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->addWidget(m_issueNewButton);
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addStretch();
     actionRow->addWidget(m_issueCreditsLabel);
@@ -3276,12 +3324,35 @@ QWidget *MainWindow::buildIssuesSection()
     listLayout->addWidget(m_issueTable, 1);
     listLayout->addWidget(m_issueQuickAdd);
 
-    // Center: the selected issue's title, status badge, thread and composer.
+    // Center: GitHub-style selected issue page: title header, status, timeline and
+    // comment composer.
     m_issueTitle = new QLabel("Select an issue");
-    m_issueTitle->setObjectName("channelTitle");
+    m_issueTitle->setObjectName("issuePageTitle");
+    m_issueTitle->setTextFormat(Qt::RichText);
     m_issueTitle->setWordWrap(true);
-    m_issueCopyButton = new QPushButton("Copy");
-    m_issueCopyButton->setObjectName("ghostButton");
+    m_issueTitleEditor = new QLineEdit;
+    m_issueTitleEditor->setObjectName("issueTitleEditor");
+    m_issueTitleEditor->setPlaceholderText("Issue title");
+    m_issueTitleEditor->hide();
+    m_issueTitleEditButton = new QPushButton;
+    m_issueTitleEditButton->setObjectName("issueIconButton");
+    m_issueTitleEditButton->setFixedSize(30, 30);
+    m_issueTitleEditButton->setCursor(Qt::PointingHandCursor);
+    m_issueTitleEditButton->setToolTip("Edit title");
+    setOcticon(m_issueTitleEditButton, "pencil", 15);
+    m_issueTitleSaveButton = new QPushButton("Save");
+    m_issueTitleSaveButton->setObjectName("primaryButton");
+    m_issueTitleSaveButton->setProperty("buttonSize", "sm");
+    m_issueTitleSaveButton->setCursor(Qt::PointingHandCursor);
+    m_issueTitleSaveButton->hide();
+    m_issueTitleCancelButton = new QPushButton("Cancel");
+    m_issueTitleCancelButton->setObjectName("ghostButton");
+    m_issueTitleCancelButton->setProperty("buttonSize", "sm");
+    m_issueTitleCancelButton->setCursor(Qt::PointingHandCursor);
+    m_issueTitleCancelButton->hide();
+    m_issueCopyButton = new QPushButton;
+    m_issueCopyButton->setObjectName("issueIconButton");
+    m_issueCopyButton->setFixedSize(30, 30);
     m_issueCopyButton->setCursor(Qt::PointingHandCursor);
     m_issueCopyButton->setToolTip("Copy this issue (title and thread) to the clipboard");
     setOcticon(m_issueCopyButton, "copy", 16);
@@ -3292,8 +3363,14 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueVoteButton->setToolTip("Upvote this issue (spends 1 voting credit)");
     auto *issueTitleRow = new QHBoxLayout;
     issueTitleRow->setContentsMargins(0, 0, 0, 0);
+    issueTitleRow->setSpacing(8);
     issueTitleRow->addWidget(m_issueTitle, 1);
-    issueTitleRow->addWidget(m_issueVoteButton, 0, Qt::AlignTop);
+    issueTitleRow->addWidget(m_issueTitleEditor, 1);
+    issueTitleRow->addWidget(m_issueTitleSaveButton, 0, Qt::AlignTop);
+    issueTitleRow->addWidget(m_issueTitleCancelButton, 0, Qt::AlignTop);
+    issueTitleRow->addWidget(m_issueTitleEditButton, 0, Qt::AlignTop);
+    issueTitleRow->addStretch();
+    issueTitleRow->addWidget(m_issueNewButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
     m_issueMeta = new QLabel; // status badge
     m_issueMeta->setObjectName("statusLine");
@@ -3303,6 +3380,10 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueReadonlyNote->setObjectName("statusLine");
     m_issueReadonlyNote->setWordWrap(true);
     m_issueReadonlyNote->hide();
+    m_issueInlineNotice = new QLabel;
+    m_issueInlineNotice->setObjectName("issueInlineNotice");
+    m_issueInlineNotice->setWordWrap(true);
+    m_issueInlineNotice->hide();
 
     m_issueThreadContainer = new QWidget;
     m_issueThreadLayout = new QVBoxLayout(m_issueThreadContainer);
@@ -3312,86 +3393,269 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueThreadScroll = new QScrollArea;
     m_issueThreadScroll->setWidgetResizable(true);
     m_issueThreadScroll->setWidget(m_issueThreadContainer);
-    m_issueThreadScroll->setObjectName("messageScroll");
+    m_issueThreadScroll->setObjectName("issuePageScroll");
+    m_issueThreadScroll->setFrameShape(QFrame::NoFrame);
 
-    m_issueComposer = new QPlainTextEdit;
-    m_issueComposer->setObjectName("issueComposerSm");
-    m_issueComposer->setPlaceholderText("Write a comment\xE2\x80\xA6");
-    m_issueComposer->setFixedHeight(80);
-    m_issueAttachButton = new QPushButton("Attach image");
+    auto *commentAvatar = new QLabel("FM");
+    commentAvatar->setObjectName("issueAvatar");
+    commentAvatar->setAlignment(Qt::AlignCenter);
+    commentAvatar->setFixedSize(36, 36);
+    auto *commentTitle = new QLabel("Add a comment");
+    commentTitle->setObjectName("issueCommentTitle");
+    m_issueComposer = new MarkdownEditor;
+    m_issueComposer->setObjectName("issueCommentEditor");
+    m_issueComposer->setMinimumHeight(190);
+    m_issueComposer->setPlaceholderText("Use Markdown to format your comment");
+    m_issueAttachButton = new QPushButton("Paste, drop, or click to add files");
     m_issueCloseButton = new QPushButton("Close issue");
     m_issueCommentButton = new QPushButton("Comment");
     m_issueCommentButton->setObjectName("primaryButton");
     m_issueCommentButton->setCursor(Qt::PointingHandCursor);
-    for (QPushButton *b : {m_issueAttachButton, m_issueCloseButton}) {
+    for (QPushButton *b : {m_issueAttachButton, m_issueCloseButton, m_issueVoteButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
     }
-    auto *composerButtons = new QVBoxLayout;
-    composerButtons->addWidget(m_issueAttachButton);
-    composerButtons->addWidget(m_issueCommentButton);
-    composerButtons->addWidget(m_issueCloseButton);
+    setOcticon(m_issueAttachButton, "paperclip", 16);
+    auto *commentButtonRow = new QHBoxLayout;
+    commentButtonRow->setContentsMargins(0, 0, 0, 0);
+    commentButtonRow->addWidget(m_issueAttachButton, 0, Qt::AlignLeft);
+    commentButtonRow->addStretch();
+    commentButtonRow->addWidget(m_issueVoteButton);
+    commentButtonRow->addWidget(m_issueCloseButton);
+    commentButtonRow->addWidget(m_issueCommentButton);
+    auto *commentColumn = new QVBoxLayout;
+    commentColumn->setContentsMargins(0, 0, 0, 0);
+    commentColumn->setSpacing(8);
+    commentColumn->addWidget(commentTitle);
+    commentColumn->addWidget(m_issueComposer);
+    commentColumn->addLayout(commentButtonRow);
     auto *composerRow = new QHBoxLayout;
     composerRow->setContentsMargins(0, 0, 0, 0);
-    composerRow->addWidget(m_issueComposer, 1);
-    composerRow->addLayout(composerButtons);
+    composerRow->setSpacing(14);
+    composerRow->addWidget(commentAvatar, 0, Qt::AlignTop);
+    composerRow->addLayout(commentColumn, 1);
 
     auto *center = new QWidget;
     auto *centerLayout = new QVBoxLayout(center);
-    centerLayout->setContentsMargins(22, 18, 16, 18);
-    centerLayout->setSpacing(8);
+    centerLayout->setContentsMargins(24, 22, 22, 22);
+    centerLayout->setSpacing(12);
     centerLayout->addLayout(issueTitleRow);
     centerLayout->addWidget(m_issueMeta);
     centerLayout->addWidget(m_issueReadonlyNote);
+    centerLayout->addWidget(m_issueInlineNotice);
+    auto *issueDivider = new QWidget;
+    issueDivider->setObjectName("issueDivider");
+    issueDivider->setFixedHeight(1);
+    centerLayout->addWidget(issueDivider);
     centerLayout->addWidget(m_issueThreadScroll, 1);
     centerLayout->addLayout(composerRow);
 
-    // Right: GitHub-style metadata sidebar (assignees, labels, milestone).
+    // Right: GitHub-style metadata sidebar.
     auto *meta = new QWidget;
-    meta->setObjectName("sidebar");
-    meta->setMinimumWidth(180);
-    m_issueAssigneesValue = new QLabel("No one assigned");
-    m_issueLabelsValue = new QLabel("None yet");
+    meta->setObjectName("issueSidebar");
+    meta->setMinimumWidth(265);
+    meta->setMaximumWidth(315);
+    m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
+    m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
     for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue, m_issueMilestoneValue}) {
         v->setObjectName("statusLine");
         v->setWordWrap(true);
         v->setTextFormat(Qt::RichText);
+        v->setOpenExternalLinks(false);
+        v->setTextInteractionFlags(Qt::TextBrowserInteraction);
     }
-    m_issueLabelsButton = new QPushButton("Edit");
-    m_issueMilestoneButton = new QPushButton("Edit");
-    m_issueAssigneesButton = new QPushButton("Edit");
+    connect(m_issueAssigneesValue, &QLabel::linkActivated, this, [this] {
+        editIssueAssignees();
+        if (!m_issueAssigneesEdit)
+            return;
+        const QString who = m_userName.trimmed();
+        if (who.isEmpty()) {
+            setIssueInlineNotice("Set your profile name before assigning yourself.", true);
+            return;
+        }
+        QStringList assignees = splitIssueFieldList(m_issueAssigneesEdit->text());
+        if (!assignees.contains(who))
+            assignees << who;
+        m_issueAssigneesEdit->setText(assignees.join(", "));
+    });
+    m_issueLabelsButton = new QPushButton;
+    m_issueMilestoneButton = new QPushButton;
+    m_issueAssigneesButton = new QPushButton;
     m_issueDeleteButton = new QPushButton("Delete issue");
     for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
-                           m_issueAssigneesButton, m_issueDeleteButton}) {
-        b->setObjectName("ghostButton");
+                           m_issueAssigneesButton}) {
+        b->setObjectName("issueIconButton");
+        b->setFixedSize(28, 28);
         b->setCursor(Qt::PointingHandCursor);
+        setOcticon(b, "gear", 15);
     }
+    m_issueDeleteButton->setObjectName("issueDangerLink");
+    m_issueDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueDeleteButton, "trash", 15);
+    auto makeValue = [](const QString &text) {
+        auto *label = new QLabel(text);
+        label->setObjectName("statusLine");
+        label->setWordWrap(true);
+        label->setTextFormat(Qt::RichText);
+        return label;
+    };
+    auto makeGear = [&]() {
+        auto *button = new QPushButton;
+        button->setObjectName("issueIconButton");
+        button->setFixedSize(28, 28);
+        button->setEnabled(false);
+        setOcticon(button, "gear", 15);
+        return button;
+    };
+    auto makeAction = [&](const QString &text, const QString &icon = QString()) {
+        auto *button = new QPushButton(text);
+        button->setObjectName("issueSidebarAction");
+        button->setCursor(Qt::PointingHandCursor);
+        if (!icon.isEmpty())
+            setOcticon(button, icon, 15);
+        return button;
+    };
+    auto makeEditorButton = [&](const QString &text, const char *objectName) {
+        auto *button = new QPushButton(text, meta);
+        button->setObjectName(objectName);
+        button->setProperty("buttonSize", "sm");
+        button->setCursor(Qt::PointingHandCursor);
+        return button;
+    };
+    auto makeInlineButtonRow = [&](QPushButton *save, QPushButton *cancel) {
+        auto *rowWidget = new QWidget(meta);
+        auto *row = new QHBoxLayout(rowWidget);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(6);
+        row->addStretch();
+        row->addWidget(cancel);
+        row->addWidget(save);
+        return rowWidget;
+    };
+
+    m_issueAssigneesStack = new QStackedWidget(meta);
+    m_issueAssigneesStack->addWidget(m_issueAssigneesValue);
+    auto *assigneesEditBox = new QWidget(meta);
+    auto *assigneesEditLayout = new QVBoxLayout(assigneesEditBox);
+    assigneesEditLayout->setContentsMargins(0, 0, 0, 0);
+    assigneesEditLayout->setSpacing(6);
+    m_issueAssigneesEdit = new QLineEdit(meta);
+    m_issueAssigneesEdit->setPlaceholderText("No one");
+    auto *assignSelf = makeEditorButton("Assign yourself", "ghostButton");
+    auto *assigneesSave = makeEditorButton("Save", "primaryButton");
+    auto *assigneesCancel = makeEditorButton("Cancel", "ghostButton");
+    assigneesEditLayout->addWidget(m_issueAssigneesEdit);
+    assigneesEditLayout->addWidget(assignSelf, 0, Qt::AlignLeft);
+    assigneesEditLayout->addWidget(makeInlineButtonRow(assigneesSave, assigneesCancel));
+    m_issueAssigneesStack->addWidget(assigneesEditBox);
+    connect(assignSelf, &QPushButton::clicked, this, [this] {
+        if (!m_issueAssigneesEdit)
+            return;
+        const QString who = m_userName.trimmed();
+        if (who.isEmpty()) {
+            setIssueInlineNotice("Set your profile name before assigning yourself.", true);
+            return;
+        }
+        QStringList assignees = splitIssueFieldList(m_issueAssigneesEdit->text());
+        if (!assignees.contains(who))
+            assignees << who;
+        m_issueAssigneesEdit->setText(assignees.join(", "));
+    });
+    connect(assigneesSave, &QPushButton::clicked, this,
+            &MainWindow::saveIssueAssigneesInline);
+    connect(assigneesCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+    connect(m_issueAssigneesEdit, &QLineEdit::returnPressed, this,
+            &MainWindow::saveIssueAssigneesInline);
+
+    m_issueLabelsStack = new QStackedWidget(meta);
+    m_issueLabelsStack->addWidget(m_issueLabelsValue);
+    auto *labelsEditBox = new QWidget(meta);
+    auto *labelsEditLayout = new QVBoxLayout(labelsEditBox);
+    labelsEditLayout->setContentsMargins(0, 0, 0, 0);
+    labelsEditLayout->setSpacing(6);
+    m_issueLabelsEdit = new QLineEdit(meta);
+    m_issueLabelsEdit->setPlaceholderText("No labels");
+    auto *labelsSave = makeEditorButton("Save", "primaryButton");
+    auto *labelsCancel = makeEditorButton("Cancel", "ghostButton");
+    labelsEditLayout->addWidget(m_issueLabelsEdit);
+    labelsEditLayout->addWidget(makeInlineButtonRow(labelsSave, labelsCancel));
+    m_issueLabelsStack->addWidget(labelsEditBox);
+    connect(labelsSave, &QPushButton::clicked, this,
+            &MainWindow::saveIssueLabelsInline);
+    connect(labelsCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+    connect(m_issueLabelsEdit, &QLineEdit::returnPressed, this,
+            &MainWindow::saveIssueLabelsInline);
+
+    m_issueMilestoneStack = new QStackedWidget(meta);
+    m_issueMilestoneStack->addWidget(m_issueMilestoneValue);
+    auto *milestoneEditBox = new QWidget(meta);
+    auto *milestoneEditLayout = new QVBoxLayout(milestoneEditBox);
+    milestoneEditLayout->setContentsMargins(0, 0, 0, 0);
+    milestoneEditLayout->setSpacing(6);
+    m_issueMilestoneEdit = new QComboBox(meta);
+    auto *milestoneSave = makeEditorButton("Save", "primaryButton");
+    auto *milestoneCancel = makeEditorButton("Cancel", "ghostButton");
+    milestoneEditLayout->addWidget(m_issueMilestoneEdit);
+    milestoneEditLayout->addWidget(makeInlineButtonRow(milestoneSave, milestoneCancel));
+    m_issueMilestoneStack->addWidget(milestoneEditBox);
+    connect(milestoneSave, &QPushButton::clicked, this,
+            &MainWindow::saveIssueMilestoneInline);
+    connect(milestoneCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+
     auto *metaLayout = new QVBoxLayout(meta);
-    metaLayout->setContentsMargins(16, 18, 16, 18);
-    metaLayout->setSpacing(6);
-    auto addMetaSection = [&](const QString &label, QLabel *value, QPushButton *btn) {
+    metaLayout->setContentsMargins(22, 22, 10, 22);
+    metaLayout->setSpacing(0);
+    auto addDivider = [&] {
+        auto *line = new QWidget(meta);
+        line->setObjectName("issueSidebarDivider");
+        line->setFixedHeight(1);
+        metaLayout->addWidget(line);
+    };
+    auto addMetaSection = [&](const QString &label, QWidget *value,
+                              QPushButton *btn = nullptr) {
         auto *header = new QHBoxLayout;
         header->setContentsMargins(0, 0, 0, 0);
         auto *l = new QLabel(label);
-        l->setObjectName("sectionLabel");
+        l->setObjectName("issueSidebarHeading");
         header->addWidget(l);
         header->addStretch();
-        btn->setMaximumWidth(60);
-        header->addWidget(btn);
+        if (btn)
+            header->addWidget(btn);
         metaLayout->addLayout(header);
         metaLayout->addWidget(value);
-        metaLayout->addSpacing(10);
+        metaLayout->addSpacing(14);
+        addDivider();
+        metaLayout->addSpacing(14);
     };
-    addMetaSection("ASSIGNEES", m_issueAssigneesValue, m_issueAssigneesButton);
-    addMetaSection("LABELS", m_issueLabelsValue, m_issueLabelsButton);
-    addMetaSection("MILESTONE", m_issueMilestoneValue, m_issueMilestoneButton);
+    addMetaSection("Assignees", m_issueAssigneesStack, m_issueAssigneesButton);
+    addMetaSection("Labels", m_issueLabelsStack, m_issueLabelsButton);
+    addMetaSection("Type", makeValue("No type"), makeGear());
+    addMetaSection("Fields", makeValue("Priority <span style='float:right'>Choose an option</span>"));
+    addMetaSection("Projects", makeValue("No projects"), makeGear());
+    addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
+    addMetaSection("Relationships", makeValue("None yet"), makeGear());
+    addMetaSection("Development",
+                   makeValue("<a href='#'>Create a branch</a> for this issue or link a pull request."));
+    addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
+    addMetaSection("Participants", makeValue("No participants"));
+    auto *transferIssue = makeAction("Transfer issue", "arrow-left");
+    auto *cloneIssue = makeAction("Clone issue", "copy");
+    auto *lockIssue = makeAction("Lock conversation", "lock");
+    auto *pinIssue = makeAction("Pin issue", "tag");
+    auto *feedbackIssue = makeAction("Give feedback", "comment");
+    for (QPushButton *action :
+         {transferIssue, cloneIssue, lockIssue, pinIssue, m_issueDeleteButton,
+          feedbackIssue})
+        metaLayout->addWidget(action);
     metaLayout->addStretch();
-    metaLayout->addWidget(m_issueDeleteButton);
 
     // Collapsible detail panel: the issue thread (center) + metadata sidebar,
     // sharing their own draggable divider.
-    m_issueDetail = new QWidget;
+    auto *issueDetailView = new QWidget;
     auto *detailSplit = new QSplitter(Qt::Horizontal);
     detailSplit->setChildrenCollapsible(false);
     detailSplit->addWidget(center);
@@ -3399,9 +3663,13 @@ QWidget *MainWindow::buildIssuesSection()
     detailSplit->setStretchFactor(0, 1);
     detailSplit->setStretchFactor(1, 0);
     detailSplit->setSizes({520, 220});
-    auto *detailLayout = new QVBoxLayout(m_issueDetail);
+    auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);
     detailLayout->addWidget(detailSplit);
+
+    m_issueDetailStack = new QStackedWidget;
+    m_issueDetailStack->addWidget(issueDetailView);
+    m_issueDetail = m_issueDetailStack;
 
     // The table and the detail panel share a draggable divider; hiding the
     // detail lets the table use the full width.
@@ -3447,6 +3715,14 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::quickAddIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
+    connect(m_issueTitleEditButton, &QPushButton::clicked, this,
+            &MainWindow::promptEditIssueTitle);
+    connect(m_issueTitleSaveButton, &QPushButton::clicked, this,
+            &MainWindow::saveIssueTitleEdit);
+    connect(m_issueTitleCancelButton, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueTitleEdit);
+    connect(m_issueTitleEditor, &QLineEdit::returnPressed, this,
+            &MainWindow::saveIssueTitleEdit);
     connect(m_issueCopyButton, &QPushButton::clicked, this,
             &MainWindow::copyIssueToClipboard);
     connect(m_issueVoteButton, &QPushButton::clicked, this,
@@ -6215,6 +6491,8 @@ void MainWindow::showIssue(int number)
 {
     for (const Issue &issue : m_currentIssues) {
         if (issue.number == number) {
+            removeIssueComposePage();
+            m_issueDeleteConfirmPending = false;
             m_currentIssueNumber = number;
             renderIssueThread(issue);
             updateIssueActionState();
@@ -6234,24 +6512,29 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     if (issue.number == 0) {
         m_issueTitle->setText("Select an issue");
+        cancelIssueTitleEdit();
         m_issueMeta->clear();
         if (m_issueAssigneesValue)
-            m_issueAssigneesValue->setText("No one assigned");
+            m_issueAssigneesValue->setText("No one - <a href='#'>Assign yourself</a>");
         if (m_issueLabelsValue)
-            m_issueLabelsValue->setText("None yet");
+            m_issueLabelsValue->setText("No labels");
         if (m_issueMilestoneValue)
             m_issueMilestoneValue->setText("No milestone");
+        cancelIssueSidebarEditors();
         m_issueThreadLayout->addStretch();
         return;
     }
 
-    m_issueTitle->setText(QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title));
+    m_issueTitle->setText(
+        QStringLiteral("%1 <span style='color:#656d76;font-weight:400'>#%2</span>")
+            .arg(issue.title.toHtmlEscaped())
+            .arg(issue.number));
+    if (m_issueTitleEditor)
+        m_issueTitleEditor->setText(issue.title);
 
-    // Status badge stays next to the title; labels/milestone/assignees live in
-    // the GitHub-style right sidebar.
     m_issueMeta->setText(issue.status == "closed"
-                             ? QString::fromUtf8("<b style='color:#ef4444'>\xE2\x97\x8F closed</b>")
-                             : QString::fromUtf8("<b style='color:#22c55e'>\xE2\x97\x8F open</b>"));
+                             ? QStringLiteral("<span style='background-color:#cf222e;color:white;padding:4px 11px;border-radius:12px;font-weight:700'>Closed</span>")
+                             : QStringLiteral("<span style='background-color:#1f883d;color:white;padding:4px 11px;border-radius:12px;font-weight:700'>Open</span>"));
 
     auto colorFor = [this](const QString &name) -> QString {
         for (const IssueLabel &l : m_currentLabels)
@@ -6260,7 +6543,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         return QStringLiteral("#94a3b8");
     };
     if (issue.assignees.isEmpty()) {
-        m_issueAssigneesValue->setText("No one assigned");
+        m_issueAssigneesValue->setText("No one - <a href='#'>Assign yourself</a>");
     } else {
         QStringList shown;
         for (const QString &a : issue.assignees)
@@ -6268,7 +6551,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         m_issueAssigneesValue->setText(shown.join("<br>"));
     }
     if (issue.labels.isEmpty()) {
-        m_issueLabelsValue->setText("None yet");
+        m_issueLabelsValue->setText("No labels");
     } else {
         QStringList chips;
         for (const QString &name : issue.labels)
@@ -6280,6 +6563,21 @@ void MainWindow::renderIssueThread(const Issue &issue)
         issue.milestone.isEmpty()
             ? QStringLiteral("No milestone")
             : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+    if (m_issueAssigneesEdit)
+        m_issueAssigneesEdit->setText(issue.assignees.join(", "));
+    if (m_issueLabelsEdit)
+        m_issueLabelsEdit->setText(issue.labels.join(", "));
+    if (m_issueMilestoneEdit) {
+        QSignalBlocker blocker(m_issueMilestoneEdit);
+        m_issueMilestoneEdit->clear();
+        m_issueMilestoneEdit->addItem("No milestone", QString());
+        for (const IssueMilestone &ms : m_currentMilestones)
+            m_issueMilestoneEdit->addItem(ms.title, ms.title);
+        const int selected = m_issueMilestoneEdit->findData(issue.milestone);
+        if (selected >= 0)
+            m_issueMilestoneEdit->setCurrentIndex(selected);
+    }
+    cancelIssueSidebarEditors();
 
     // Pre-compute edits (target -> latest edit) and deletions.
     QHash<QString, IssueEvent> edits;
@@ -6298,6 +6596,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
                  : QString();
     const bool haveLocalFiles = !imageBase.isEmpty() &&
                                 QFileInfo::exists(imageBase + "issue.md");
+    const bool writable = issueStoreForCurrentRepo().canWrite();
 
     auto addCard = [&](const IssueEvent &ev, bool isOpen) {
         IssueEvent shown = ev;
@@ -6305,44 +6604,210 @@ void MainWindow::renderIssueThread(const Issue &issue)
             shown.body = edits.value(ev.id).body;
             shown.attachments = edits.value(ev.id).attachments;
         }
-        auto *card = new QWidget;
-        card->setObjectName("homeCard");
-        auto *cardLayout = new QVBoxLayout(card);
-        cardLayout->setContentsMargins(14, 10, 14, 12);
-        cardLayout->setSpacing(6);
+        const int num = issue.number;
+        const QString eid = ev.id;
+        const QString eventBody = shown.body;
+        const QStringList eventAttachments = shown.attachments;
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
-        const QString when =
-            QDateTime::fromMSecsSinceEpoch(ev.ts).toString("yyyy-MM-dd HH:mm");
+        const QString when = formatIssueRelativeTime(ev.ts);
+
+        auto *row = new QWidget;
+        row->setObjectName("issueTimelineRow");
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(14);
+        auto *avatar = new QLabel(who.left(2).toUpper());
+        avatar->setObjectName("issueAvatar");
+        avatar->setAlignment(Qt::AlignCenter);
+        avatar->setFixedSize(36, 36);
+        rowLayout->addWidget(avatar, 0, Qt::AlignTop);
+
+        auto *card = new QWidget;
+        card->setObjectName("issueTimelineCard");
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(0, 0, 0, 0);
+        cardLayout->setSpacing(0);
+        auto *headerBox = new QWidget(card);
+        headerBox->setObjectName("issueTimelineHeader");
+        auto *headerRow = new QHBoxLayout(headerBox);
+        headerRow->setContentsMargins(16, 8, 10, 8);
+        headerRow->setSpacing(8);
         auto *header = new QLabel(
-            QStringLiteral("<b style='color:%1'>%2</b> <span style='color:#94a3b8'>%3%4</span>")
-                .arg(senderColor(who), who.toHtmlEscaped(), when,
-                     isOpen ? QString::fromUtf8(" \xC2\xB7 opened") : QString()));
+            QStringLiteral("<b>%1</b> <span>%2 %3</span>")
+                .arg(who.toHtmlEscaped(), isOpen ? "opened" : "commented", when));
         header->setTextFormat(Qt::RichText);
-        cardLayout->addWidget(header);
-        auto *body = new QLabel;
-        body->setTextFormat(Qt::MarkdownText);
-        body->setText(shown.body);
-        body->setWordWrap(true);
-        body->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        body->setOpenExternalLinks(true);
-        cardLayout->addWidget(body);
-        for (const QString &rel : shown.attachments) {
-            if (haveLocalFiles) {
-                QPixmap pix(imageBase + rel);
-                if (!pix.isNull()) {
-                    auto *img = new QLabel;
-                    img->setPixmap(pix.width() > 420
-                                       ? pix.scaledToWidth(420, Qt::SmoothTransformation)
-                                       : pix);
-                    cardLayout->addWidget(img);
-                    continue;
+        headerRow->addWidget(header);
+        headerRow->addStretch();
+
+        auto *bodyContainer = new QWidget(card);
+        auto *bodyLayout = new QVBoxLayout(bodyContainer);
+        bodyLayout->setContentsMargins(16, 16, 16, 16);
+        bodyLayout->setSpacing(10);
+
+        auto clearBody = [bodyLayout]() {
+            while (QLayoutItem *item = bodyLayout->takeAt(0)) {
+                if (QWidget *w = item->widget()) {
+                    w->hide();
+                    w->deleteLater();
                 }
+                delete item;
             }
-            auto *placeholder = new QLabel(QStringLiteral("Image: %1").arg(rel));
-            placeholder->setObjectName("statusLine");
-            cardLayout->addWidget(placeholder);
+        };
+        auto renderBody = [=]() {
+            clearBody();
+            auto *body = new QLabel;
+            body->setTextFormat(Qt::MarkdownText);
+            body->setText(eventBody);
+            body->setWordWrap(true);
+            body->setTextInteractionFlags(Qt::TextBrowserInteraction);
+            body->setOpenExternalLinks(true);
+            bodyLayout->addWidget(body);
+            for (const QString &rel : eventAttachments) {
+                if (haveLocalFiles) {
+                    QPixmap pix(imageBase + rel);
+                    if (!pix.isNull()) {
+                        auto *img = new QLabel;
+                        img->setObjectName("issueAttachmentPreview");
+                        img->setPixmap(pix.width() > 640
+                                           ? pix.scaledToWidth(640, Qt::SmoothTransformation)
+                                           : pix);
+                        bodyLayout->addWidget(img);
+                        continue;
+                    }
+                }
+                auto *placeholder =
+                    new QLabel(QStringLiteral("Image: %1").arg(rel));
+                placeholder->setObjectName("statusLine");
+                bodyLayout->addWidget(placeholder);
+            }
+        };
+        auto showBodyEditor = [=]() {
+            clearBody();
+            auto *editor = new MarkdownEditor(bodyContainer);
+            editor->setMarkdown(eventBody);
+            editor->setMinimumHeight(250);
+            editor->setPlaceholderText(isOpen ? "Type your description here..."
+                                              : "Type your comment here...");
+            const int repoIdx = issuesRepoIndex();
+            if (repoIdx >= 0)
+                editor->setPreviewBasePath(m_repositories.at(repoIdx).localPath +
+                                           "/issues/" + QString::number(num));
+            bodyLayout->addWidget(editor);
+            auto *attach = new QPushButton("Paste, drop, or click to add files");
+            attach->setObjectName("ghostButton");
+            attach->setCursor(Qt::PointingHandCursor);
+            setOcticon(attach, "paperclip", 16);
+            connect(attach, &QPushButton::clicked, this, [editor]() {
+                const QStringList files = QFileDialog::getOpenFileNames(
+                    editor, "Attach images", QString(),
+                    "Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.svg);;All files (*)");
+                for (const QString &file : files)
+                    editor->addImageFile(file);
+            });
+            bodyLayout->addWidget(attach, 0, Qt::AlignLeft);
+            auto *buttonRow = new QHBoxLayout;
+            buttonRow->setContentsMargins(0, 0, 0, 0);
+            auto *cancel = new QPushButton("Cancel");
+            cancel->setObjectName("ghostButton");
+            cancel->setCursor(Qt::PointingHandCursor);
+            auto *save = new QPushButton("Save");
+            save->setObjectName("primaryButton");
+            save->setCursor(Qt::PointingHandCursor);
+            buttonRow->addStretch();
+            buttonRow->addWidget(cancel);
+            buttonRow->addWidget(save);
+            bodyLayout->addLayout(buttonRow);
+            connect(cancel, &QPushButton::clicked, this, [this, num]() { showIssue(num); });
+            connect(save, &QPushButton::clicked, this,
+                    [this, num, eid, eventAttachments, editor]() {
+                        IssueStore store = issueStoreForCurrentRepo();
+                        QString error;
+                        if (!store.editEvent(num, eid, editor->markdown(),
+                                             eventAttachments,
+                                             editor->pendingAttachments(), &error)) {
+                            setIssueInlineNotice(
+                                error.isEmpty() ? "Could not update the issue body."
+                                                : error,
+                                true);
+                            return;
+                        }
+                        setIssueInlineNotice("Issue body updated.");
+                        reloadIssues();
+                    });
+            editor->focusEditor();
+        };
+
+        QMenu *menu = new QMenu(card);
+        menu->setAttribute(Qt::WA_TranslucentBackground, false);
+        menu->setAutoFillBackground(true);
+        menu->setWindowOpacity(1.0);
+        const bool darkMenu = currentThemeIsDark();
+        menu->setStyleSheet(
+            QStringLiteral(
+                "QMenu { background-color:%1; color:%2; border:1px solid %3; "
+                "border-radius:8px; padding:6px; }"
+                "QMenu::item { background-color:%1; padding:7px 26px 7px 22px; "
+                "border-radius:6px; }"
+                "QMenu::item:selected { background-color:%4; }"
+                "QMenu::separator { height:1px; background:%3; margin:6px 0; }")
+                .arg(darkMenu ? "#161b22" : "#ffffff",
+                     darkMenu ? "#e6edf3" : "#1f2328",
+                     darkMenu ? "#30363d" : "#d0d7de",
+                     darkMenu ? "#21262d" : "#f6f8fa"));
+        QAction *copyLink = menu->addAction("Copy link");
+        QAction *copyMarkdown = menu->addAction("Copy Markdown");
+        QAction *quoteReply = menu->addAction("Quote reply");
+        if (writable) {
+            menu->addSeparator();
+            QAction *editBody = menu->addAction("Edit");
+            connect(editBody, &QAction::triggered, this, showBodyEditor);
         }
-        m_issueThreadLayout->addWidget(card);
+        connect(copyLink, &QAction::triggered, this, [this, num, eid]() {
+            QString owner = "repo";
+            QString repo = "issue";
+            const int repoIdx = issuesRepoIndex();
+            if (repoIdx >= 0) {
+                owner = m_repositories.at(repoIdx).owner;
+                repo = m_repositories.at(repoIdx).name;
+            }
+            QApplication::clipboard()->setText(
+                QStringLiteral("forkmesh://issue/%1/%2/%3#%4")
+                    .arg(owner, repo)
+                    .arg(num)
+                    .arg(eid));
+            setIssueInlineNotice("Issue link copied.");
+        });
+        connect(copyMarkdown, &QAction::triggered, this, [this, eventBody]() {
+            QApplication::clipboard()->setText(eventBody);
+            setIssueInlineNotice("Markdown copied.");
+        });
+        connect(quoteReply, &QAction::triggered, this, [this, eventBody]() {
+            if (!m_issueComposer)
+                return;
+            QStringList quoted;
+            for (const QString &line : eventBody.split('\n'))
+                quoted << QStringLiteral("> %1").arg(line);
+            QString text = m_issueComposer->markdown();
+            if (!text.isEmpty() && !text.endsWith('\n'))
+                text += '\n';
+            text += quoted.join('\n') + "\n\n";
+            m_issueComposer->setMarkdown(text);
+            m_issueComposer->focusEditor();
+            setIssueInlineNotice("Quoted into the comment box.");
+        });
+        auto *actionsButton = new QToolButton(headerBox);
+        actionsButton->setObjectName("issueActionButton");
+        actionsButton->setText("...");
+        actionsButton->setCursor(Qt::PointingHandCursor);
+        actionsButton->setPopupMode(QToolButton::InstantPopup);
+        actionsButton->setMenu(menu);
+        headerRow->addWidget(actionsButton);
+
+        cardLayout->addWidget(headerBox);
+        renderBody();
+        cardLayout->addWidget(bodyContainer);
+        rowLayout->addWidget(card, 1);
+        m_issueThreadLayout->addWidget(row);
     };
 
     auto addActivity = [&](const QString &text, qint64 ts, const QString &who) {
@@ -6375,6 +6840,127 @@ void MainWindow::renderIssueThread(const Issue &issue)
     m_issueThreadLayout->addStretch();
 }
 
+void MainWindow::showIssueComposePage(QWidget *page)
+{
+    if (!m_issueDetailStack || !page)
+        return;
+    removeIssueComposePage();
+    m_issueComposePage = page;
+    m_issueDetailStack->addWidget(page);
+    m_issueDetailStack->setCurrentWidget(page);
+    if (m_issueDetail)
+        m_issueDetail->setVisible(true);
+    if (m_issueDetailToggle)
+        m_issueDetailToggle->setText("Hide detail");
+}
+
+void MainWindow::removeIssueComposePage()
+{
+    if (!m_issueDetailStack)
+        return;
+    if (m_issueComposePage) {
+        QWidget *old = m_issueComposePage;
+        m_issueComposePage = nullptr;
+        m_issueDetailStack->setCurrentIndex(0);
+        m_issueDetailStack->removeWidget(old);
+        old->deleteLater();
+    } else {
+        m_issueDetailStack->setCurrentIndex(0);
+    }
+}
+
+void MainWindow::setIssueInlineNotice(const QString &message, bool error)
+{
+    if (!m_issueInlineNotice)
+        return;
+    if (message.trimmed().isEmpty()) {
+        m_issueInlineNotice->clear();
+        m_issueInlineNotice->hide();
+        return;
+    }
+    const bool dark = currentThemeIsDark();
+    const QString bg = error ? (dark ? "#3d1f21" : "#ffebe9")
+                             : (dark ? "#11251a" : "#dafbe1");
+    const QString border = error ? (dark ? "#f85149" : "#cf222e")
+                                 : (dark ? "#2ea043" : "#1f883d");
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    m_issueInlineNotice->setStyleSheet(
+        QStringLiteral("QLabel#issueInlineNotice { background-color:%1; color:%2; "
+                       "border:1px solid %3; border-radius:6px; padding:8px 10px; }")
+            .arg(bg, fg, border));
+    m_issueInlineNotice->setText(message.toHtmlEscaped());
+    m_issueInlineNotice->show();
+}
+
+void MainWindow::promptEditIssueTitle()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    QString currentTitle;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.number == m_currentIssueNumber) {
+            currentTitle = issue.title;
+            break;
+        }
+    }
+    if (currentTitle.isEmpty() || !m_issueTitleEditor)
+        return;
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    m_issueTitleEditor->setText(currentTitle);
+    m_issueTitle->hide();
+    m_issueTitleEditButton->hide();
+    m_issueTitleEditor->show();
+    m_issueTitleSaveButton->show();
+    m_issueTitleCancelButton->show();
+    m_issueTitleEditor->setFocus();
+    m_issueTitleEditor->selectAll();
+}
+
+void MainWindow::saveIssueTitleEdit()
+{
+    if (m_currentIssueNumber < 0 || !m_issueTitleEditor)
+        return;
+    const QString trimmed = m_issueTitleEditor->text().trimmed();
+    if (trimmed.isEmpty()) {
+        setIssueInlineNotice("A title is required.", true);
+        return;
+    }
+    QString currentTitle;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number == m_currentIssueNumber)
+            currentTitle = issue.title;
+    if (trimmed == currentTitle) {
+        cancelIssueTitleEdit();
+        return;
+    }
+
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setTitle(m_currentIssueNumber, trimmed, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update the title." : error,
+                             true);
+        return;
+    }
+    cancelIssueTitleEdit();
+    setIssueInlineNotice("Title updated.");
+    reloadIssues();
+}
+
+void MainWindow::cancelIssueTitleEdit()
+{
+    if (m_issueTitle)
+        m_issueTitle->show();
+    if (m_issueTitleEditButton)
+        m_issueTitleEditButton->show();
+    if (m_issueTitleEditor)
+        m_issueTitleEditor->hide();
+    if (m_issueTitleSaveButton)
+        m_issueTitleSaveButton->hide();
+    if (m_issueTitleCancelButton)
+        m_issueTitleCancelButton->hide();
+}
+
 void MainWindow::updateIssueActionState()
 {
     const IssueStore store = issueStoreForCurrentRepo();
@@ -6385,6 +6971,16 @@ void MainWindow::updateIssueActionState()
         m_issueNewButton->setEnabled(writable);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    if (m_issueTitleEditButton)
+        m_issueTitleEditButton->setEnabled(writable && haveIssue);
+    if (m_issueTitleEditor)
+        m_issueTitleEditor->setEnabled(writable && haveIssue);
+    if (m_issueTitleSaveButton)
+        m_issueTitleSaveButton->setEnabled(writable && haveIssue);
+    if (m_issueTitleCancelButton)
+        m_issueTitleCancelButton->setEnabled(haveIssue);
+    if (!haveIssue || !writable)
+        m_issueDeleteConfirmPending = false;
     // Owner-only structural edits.
     for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
                            m_issueMilestoneButton, m_issueAssigneesButton,
@@ -6428,55 +7024,208 @@ void MainWindow::promptNewIssue()
     if (!probe.canWrite())
         return;
 
-    QDialog dialog(this);
-    dialog.setWindowTitle("New issue");
-    auto *titleEdit = new QLineEdit(&dialog);
+    auto *page = new QWidget;
+
+    auto *titleLabel = new QLabel("Add a title <span style='color:#cf222e'>*</span>",
+                                  page);
+    titleLabel->setTextFormat(Qt::RichText);
+    titleLabel->setObjectName("sectionLabel");
+    auto *titleEdit = new QLineEdit(page);
     titleEdit->setPlaceholderText("Title");
-    auto *bodyEdit = new QPlainTextEdit(&dialog);
-    bodyEdit->setPlaceholderText("Describe the issue (markdown supported)\xE2\x80\xA6");
-    auto *labelsEdit = new QLineEdit(&dialog);
-    labelsEdit->setPlaceholderText("labels (comma separated)");
-    auto *milestoneCombo = new QComboBox(&dialog);
-    milestoneCombo->addItem("(no milestone)", QString());
+    auto *bodyEdit = new MarkdownEditor(page);
+    bodyEdit->setMinimumHeight(430);
+    bodyEdit->setPlaceholderText("Type your description here...");
+
+    auto *left = new QWidget(page);
+    auto *leftLayout = new QVBoxLayout(left);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(8);
+    leftLayout->addWidget(titleLabel);
+    leftLayout->addWidget(titleEdit);
+    auto *descriptionLabel = new QLabel("Add a description", page);
+    descriptionLabel->setObjectName("sectionLabel");
+    leftLayout->addSpacing(8);
+    leftLayout->addWidget(descriptionLabel);
+    leftLayout->addWidget(bodyEdit, 1);
+    auto *attachHint = new QLabel("Paste, drop, or click Image to add files", page);
+    attachHint->setObjectName("statusLine");
+    leftLayout->addWidget(attachHint);
+
+    auto *sidebar = new QWidget(page);
+    sidebar->setObjectName("issueComposeSidebar");
+    sidebar->setFixedWidth(285);
+    auto *sideLayout = new QVBoxLayout(sidebar);
+    sideLayout->setContentsMargins(18, 2, 0, 0);
+    sideLayout->setSpacing(8);
+
+    auto addDivider = [&]() {
+        auto *line = new QWidget(sidebar);
+        line->setFixedHeight(1);
+        line->setStyleSheet(QStringLiteral("background:%1;")
+                                .arg(currentThemeIsDark() ? "#30363d" : "#d0d7de"));
+        sideLayout->addWidget(line);
+    };
+    auto addSection = [&](const QString &label, QWidget *field) {
+        auto *header = new QHBoxLayout;
+        header->setContentsMargins(0, 0, 0, 0);
+        auto *title = new QLabel(label, sidebar);
+        title->setObjectName("sectionLabel");
+        auto *gear = new QPushButton(sidebar);
+        gear->setObjectName("ghostButton");
+        gear->setProperty("buttonSize", "sm");
+        gear->setFixedSize(28, 28);
+        gear->setEnabled(false);
+        setOcticon(gear, "gear", 14);
+        header->addWidget(title);
+        header->addStretch();
+        header->addWidget(gear);
+        sideLayout->addLayout(header);
+        sideLayout->addWidget(field);
+        sideLayout->addSpacing(6);
+        addDivider();
+        sideLayout->addSpacing(6);
+    };
+
+    auto *assigneeBox = new QWidget(sidebar);
+    auto *assigneeLayout = new QVBoxLayout(assigneeBox);
+    assigneeLayout->setContentsMargins(0, 0, 0, 0);
+    assigneeLayout->setSpacing(6);
+    auto *assigneesEdit = new QLineEdit(sidebar);
+    assigneesEdit->setPlaceholderText("No one");
+    auto *assignSelf = new QPushButton("Assign yourself", sidebar);
+    assignSelf->setObjectName("ghostButton");
+    assignSelf->setProperty("buttonSize", "sm");
+    assignSelf->setCursor(Qt::PointingHandCursor);
+    connect(assignSelf, &QPushButton::clicked, this, [this, assigneesEdit] {
+        const QString who = m_userName.trimmed();
+        if (who.isEmpty())
+            return;
+        QStringList assignees = splitIssueFieldList(assigneesEdit->text());
+        if (!assignees.contains(who))
+            assignees << who;
+        assigneesEdit->setText(assignees.join(", "));
+    });
+    assigneeLayout->addWidget(assigneesEdit);
+    assigneeLayout->addWidget(assignSelf, 0, Qt::AlignLeft);
+    addSection("Assignees", assigneeBox);
+
+    auto *labelsEdit = new QLineEdit(sidebar);
+    labelsEdit->setPlaceholderText("No labels");
+    addSection("Labels", labelsEdit);
+
+    auto *typeValue = new QLabel("No type", sidebar);
+    typeValue->setObjectName("statusLine");
+    addSection("Type", typeValue);
+
+    auto *fieldsBox = new QWidget(sidebar);
+    auto *fieldsLayout = new QHBoxLayout(fieldsBox);
+    fieldsLayout->setContentsMargins(0, 0, 0, 0);
+    auto *priority = new QLabel("Priority", fieldsBox);
+    priority->setObjectName("statusLine");
+    auto *priorityValue = new QLabel("Choose an option", fieldsBox);
+    priorityValue->setObjectName("statusLine");
+    fieldsLayout->addWidget(priority);
+    fieldsLayout->addStretch();
+    fieldsLayout->addWidget(priorityValue);
+    addSection("Fields", fieldsBox);
+
+    auto *projectsValue = new QLabel("No projects", sidebar);
+    projectsValue->setObjectName("statusLine");
+    addSection("Projects", projectsValue);
+
+    auto *milestoneCombo = new QComboBox(sidebar);
+    milestoneCombo->addItem("No milestone", QString());
     for (const IssueMilestone &ms : m_currentMilestones)
         milestoneCombo->addItem(ms.title, ms.title);
+    addSection("Milestone", milestoneCombo);
+    sideLayout->addStretch();
 
-    auto *form = new QFormLayout;
-    form->addRow("Title", titleEdit);
-    form->addRow("Body", bodyEdit);
-    form->addRow("Labels", labelsEdit);
-    form->addRow("Milestone", milestoneCombo);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    auto *dialogLayout = new QVBoxLayout(&dialog);
-    dialogLayout->addLayout(form);
-    dialogLayout->addWidget(buttons);
-    dialog.resize(520, 420);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
+    auto *content = new QHBoxLayout;
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(22);
+    content->addWidget(left, 1);
+    content->addWidget(sidebar);
 
-    const QString title = titleEdit->text().trimmed();
-    if (title.isEmpty()) {
-        QMessageBox::warning(this, "New issue", "A title is required.");
-        return;
-    }
-    QStringList labels;
-    for (const QString &part : labelsEdit->text().split(',', Qt::SkipEmptyParts))
-        labels << part.trimmed();
+    auto *createMore = new QCheckBox("Create more", page);
+    auto *cancelButton = new QPushButton("Cancel", page);
+    cancelButton->setObjectName("ghostButton");
+    cancelButton->setCursor(Qt::PointingHandCursor);
+    auto *createButton = new QPushButton("Create", page);
+    createButton->setObjectName("primaryButton");
+    createButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(createButton, "issue-opened", 16);
+    auto *pageNotice = new QLabel(page);
+    pageNotice->setObjectName("issueInlineNotice");
+    pageNotice->setWordWrap(true);
+    pageNotice->hide();
+    auto setPageNotice = [pageNotice](const QString &message, bool error = false) {
+        if (message.trimmed().isEmpty()) {
+            pageNotice->clear();
+            pageNotice->hide();
+            return;
+        }
+        const bool dark = currentThemeIsDark();
+        const QString bg = error ? (dark ? "#3d1f21" : "#ffebe9")
+                                 : (dark ? "#11251a" : "#dafbe1");
+        const QString border = error ? (dark ? "#f85149" : "#cf222e")
+                                     : (dark ? "#2ea043" : "#1f883d");
+        const QString fg = dark ? "#e6edf3" : "#1f2328";
+        pageNotice->setStyleSheet(
+            QStringLiteral("QLabel#issueInlineNotice { background-color:%1; color:%2; "
+                           "border:1px solid %3; border-radius:6px; padding:8px 10px; }")
+                .arg(bg, fg, border));
+        pageNotice->setText(message.toHtmlEscaped());
+        pageNotice->show();
+    };
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addStretch();
+    buttonRow->addWidget(createMore);
+    buttonRow->addSpacing(18);
+    buttonRow->addWidget(cancelButton);
+    buttonRow->addWidget(createButton);
 
-    IssueStore store = issueStoreForCurrentRepo();
-    QString error;
-    const int number = store.createIssue(title, bodyEdit->toPlainText(), labels,
-                                         milestoneCombo->currentData().toString(),
-                                         {}, {}, &error);
-    if (number < 0) {
-        QMessageBox::warning(this, "New issue", error);
-        return;
-    }
-    m_currentIssueNumber = number;
-    reloadIssues();
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(22, 18, 16, 14);
+    pageLayout->setSpacing(14);
+    pageLayout->addLayout(content, 1);
+    pageLayout->addWidget(pageNotice);
+    pageLayout->addLayout(buttonRow);
+    connect(cancelButton, &QPushButton::clicked, this,
+            &MainWindow::removeIssueComposePage);
+    connect(createButton, &QPushButton::clicked, this, [=] {
+        if (titleEdit->text().trimmed().isEmpty()) {
+            setPageNotice("A title is required.", true);
+            return;
+        }
+
+        const QString title = titleEdit->text().trimmed();
+        const QStringList labels = splitIssueFieldList(labelsEdit->text());
+        const QStringList assignees = splitIssueFieldList(assigneesEdit->text());
+
+        IssueStore store = issueStoreForCurrentRepo();
+        QString error;
+        const int number = store.createIssue(title, bodyEdit->markdown(), labels,
+                                             milestoneCombo->currentData().toString(),
+                                             assignees,
+                                             bodyEdit->pendingAttachments(),
+                                             &error);
+        if (number < 0) {
+            setPageNotice(error.isEmpty() ? "Could not create the issue." : error,
+                          true);
+            return;
+        }
+        m_currentIssueNumber = number;
+        const bool more = createMore->isChecked();
+        removeIssueComposePage();
+        reloadIssues();
+        setIssueInlineNotice("Issue created.");
+        if (more)
+            promptNewIssue();
+    });
+
+    showIssueComposePage(page);
+    titleEdit->setFocus();
 }
 
 void MainWindow::quickAddIssue()
@@ -6488,23 +7237,24 @@ void MainWindow::quickAddIssue()
         return;
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
-        QMessageBox::warning(this, "Quick issue",
-                             issuesRepoIndex() < 0
+        setIssueInlineNotice(issuesRepoIndex() < 0
                                  ? "Pick a repository you host to add issues."
-                                 : "You don't host this repository, so new issues "
-                                   "are owner-only.");
+                                 : "You don't host this repository, so new issues are owner-only.",
+                             true);
         return;
     }
     QString error;
     const int number = store.createIssue(title, QString(), {}, QString(), {}, {},
                                          &error);
     if (number < 0) {
-        QMessageBox::warning(this, "Quick issue", error);
+        setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
+                             true);
         return;
     }
     m_issueQuickAdd->clear();
     m_currentIssueNumber = number;
     reloadIssues();
+    setIssueInlineNotice("Issue created.");
 }
 
 void MainWindow::copyIssueToClipboard()
@@ -6552,19 +7302,17 @@ void MainWindow::copyIssueToClipboard()
     }
 
     QApplication::clipboard()->setText(lines.join('\n'));
-    if (m_issueCopyButton) {
-        m_issueCopyButton->setText("Copied");
-        QTimer::singleShot(1500, m_issueCopyButton,
-                           [this] { m_issueCopyButton->setText("Copy"); });
-    }
+    setIssueInlineNotice("Issue copied.");
 }
 
 void MainWindow::addIssueComment()
 {
     if (m_currentIssueNumber < 0)
         return;
-    const QString body = m_issueComposer ? m_issueComposer->toPlainText() : QString();
-    if (body.trimmed().isEmpty() && m_pendingIssueAttachments.isEmpty())
+    const QString body = m_issueComposer ? m_issueComposer->markdown() : QString();
+    const QStringList attachments =
+        m_issueComposer ? m_issueComposer->pendingAttachments() : m_pendingIssueAttachments;
+    if (body.trimmed().isEmpty() && attachments.isEmpty())
         return;
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
@@ -6573,15 +7321,20 @@ void MainWindow::addIssueComment()
         return;
     }
     QString error;
-    if (!store.addComment(m_currentIssueNumber, body, m_pendingIssueAttachments, &error)) {
-        QMessageBox::warning(this, "Comment", error);
+    if (!store.addComment(m_currentIssueNumber, body, attachments, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
+                             true);
         return;
     }
-    m_issueComposer->clear();
+    if (m_issueComposer) {
+        m_issueComposer->setMarkdown(QString());
+        m_issueComposer->clearPendingAttachments();
+    }
     m_pendingIssueAttachments.clear();
     if (m_issueAttachButton)
-        m_issueAttachButton->setText("Attach image");
+        m_issueAttachButton->setText("Paste, drop, or click to add files");
     reloadIssues();
+    setIssueInlineNotice("Comment added.");
 }
 
 void MainWindow::attachIssueImage()
@@ -6591,10 +7344,25 @@ void MainWindow::attachIssueImage()
         "Images (*.png *.jpg *.jpeg *.gif *.webp);;All files (*)");
     if (files.isEmpty())
         return;
-    m_pendingIssueAttachments += files;
+    for (const QString &f : files)
+        queueIssueAttachment(f);
+}
+
+void MainWindow::queueIssueAttachment(const QString &path)
+{
+    if (path.isEmpty() || m_pendingIssueAttachments.contains(path))
+        return;
+    m_pendingIssueAttachments += path;
+    if (m_issueComposer)
+        m_issueComposer->addImageFile(path);
     if (m_issueAttachButton)
         m_issueAttachButton->setText(
             QStringLiteral("Attached: %1").arg(m_pendingIssueAttachments.size()));
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+{
+    return QMainWindow::eventFilter(obj, event);
 }
 
 void MainWindow::toggleIssueStatus()
@@ -6609,67 +7377,66 @@ void MainWindow::toggleIssueStatus()
     QString error;
     if (!store.setStatus(m_currentIssueNumber, status == "open" ? "closed" : "open",
                          &error)) {
-        QMessageBox::warning(this, "Issue", error);
+        setIssueInlineNotice(error.isEmpty() ? "Could not update issue status." : error,
+                             true);
         return;
     }
     reloadIssues();
+    setIssueInlineNotice(status == "open" ? "Issue closed." : "Issue reopened.");
 }
 
 void MainWindow::deleteCurrentIssue()
 {
     if (m_currentIssueNumber < 0)
         return;
-    if (QMessageBox::question(
-            this, "Delete issue",
-            QStringLiteral("Delete issue #%1? This removes its folder and commits.")
-                .arg(m_currentIssueNumber)) != QMessageBox::Yes)
+    if (!m_issueDeleteConfirmPending) {
+        m_issueDeleteConfirmPending = true;
+        setIssueInlineNotice(
+            QStringLiteral("Delete issue #%1? Click Delete issue again to confirm.")
+                .arg(m_currentIssueNumber),
+            true);
         return;
+    }
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
     if (!store.deleteIssue(m_currentIssueNumber, &error)) {
-        QMessageBox::warning(this, "Delete issue", error);
+        setIssueInlineNotice(error.isEmpty() ? "Could not delete the issue." : error,
+                             true);
         return;
     }
+    m_issueDeleteConfirmPending = false;
     m_currentIssueNumber = -1;
     reloadIssues();
+    setIssueInlineNotice("Issue deleted.");
 }
 
 void MainWindow::editIssueLabels()
 {
     if (m_currentIssueNumber < 0)
         return;
-    QStringList current;
-    for (const Issue &issue : m_currentIssues)
-        if (issue.number == m_currentIssueNumber)
-            current = issue.labels;
-
-    QDialog dialog(this);
-    dialog.setWindowTitle("Labels");
-    auto *list = new QListWidget(&dialog);
-    for (const IssueLabel &label : m_currentLabels) {
-        auto *item = new QListWidgetItem(label.name, list);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(current.contains(label.name) ? Qt::Checked : Qt::Unchecked);
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issueLabelsStack)
+        m_issueLabelsStack->setCurrentIndex(1);
+    if (m_issueLabelsEdit) {
+        m_issueLabelsEdit->setFocus();
+        m_issueLabelsEdit->selectAll();
     }
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    auto *dialogLayout = new QVBoxLayout(&dialog);
-    dialogLayout->addWidget(new QLabel("Select labels for this issue:"));
-    dialogLayout->addWidget(list);
-    dialogLayout->addWidget(buttons);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
+}
 
-    QStringList chosen;
-    for (int i = 0; i < list->count(); ++i)
-        if (list->item(i)->checkState() == Qt::Checked)
-            chosen << list->item(i)->text();
+void MainWindow::saveIssueLabelsInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issueLabelsEdit)
+        return;
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.setLabels(m_currentIssueNumber, chosen, &error))
-        QMessageBox::warning(this, "Labels", error);
+    const QStringList labels = splitIssueFieldList(m_issueLabelsEdit->text());
+    if (!store.setLabels(m_currentIssueNumber, labels, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update labels." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice("Labels updated.");
     reloadIssues();
 }
 
@@ -6677,26 +7444,27 @@ void MainWindow::editIssueMilestone()
 {
     if (m_currentIssueNumber < 0)
         return;
-    QStringList options{"(no milestone)"};
-    for (const IssueMilestone &ms : m_currentMilestones)
-        options << ms.title;
-    QString current;
-    for (const Issue &issue : m_currentIssues)
-        if (issue.number == m_currentIssueNumber)
-            current = issue.milestone;
-    int currentIndex = current.isEmpty() ? 0 : options.indexOf(current);
-    if (currentIndex < 0)
-        currentIndex = 0;
-    bool ok = false;
-    const QString choice = QInputDialog::getItem(this, "Milestone", "Milestone:",
-                                                 options, currentIndex, false, &ok);
-    if (!ok)
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issueMilestoneStack)
+        m_issueMilestoneStack->setCurrentIndex(1);
+    if (m_issueMilestoneEdit)
+        m_issueMilestoneEdit->setFocus();
+}
+
+void MainWindow::saveIssueMilestoneInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issueMilestoneEdit)
         return;
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.setMilestone(m_currentIssueNumber,
-                            choice == "(no milestone)" ? QString() : choice, &error))
-        QMessageBox::warning(this, "Milestone", error);
+    const QString milestone = m_issueMilestoneEdit->currentData().toString();
+    if (!store.setMilestone(m_currentIssueNumber, milestone, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update milestone." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice("Milestone updated.");
     reloadIssues();
 }
 
@@ -6704,24 +7472,40 @@ void MainWindow::editIssueAssignees()
 {
     if (m_currentIssueNumber < 0)
         return;
-    QString current;
-    for (const Issue &issue : m_currentIssues)
-        if (issue.number == m_currentIssueNumber)
-            current = issue.assignees.join(", ");
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-        this, "Assignees", "Assignees (comma separated names or pubkeys):",
-        QLineEdit::Normal, current, &ok);
-    if (!ok)
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issueAssigneesStack)
+        m_issueAssigneesStack->setCurrentIndex(1);
+    if (m_issueAssigneesEdit) {
+        m_issueAssigneesEdit->setFocus();
+        m_issueAssigneesEdit->selectAll();
+    }
+}
+
+void MainWindow::saveIssueAssigneesInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issueAssigneesEdit)
         return;
-    QStringList assignees;
-    for (const QString &part : text.split(',', Qt::SkipEmptyParts))
-        assignees << part.trimmed();
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.setAssignees(m_currentIssueNumber, assignees, &error))
-        QMessageBox::warning(this, "Assignees", error);
+    const QStringList assignees = splitIssueFieldList(m_issueAssigneesEdit->text());
+    if (!store.setAssignees(m_currentIssueNumber, assignees, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update assignees." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice("Assignees updated.");
     reloadIssues();
+}
+
+void MainWindow::cancelIssueSidebarEditors()
+{
+    if (m_issueAssigneesStack)
+        m_issueAssigneesStack->setCurrentIndex(0);
+    if (m_issueLabelsStack)
+        m_issueLabelsStack->setCurrentIndex(0);
+    if (m_issueMilestoneStack)
+        m_issueMilestoneStack->setCurrentIndex(0);
 }
 
 QUrl MainWindow::issuesApiUrl(const RepositoryRecord &repo) const
@@ -6767,14 +7551,15 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
-            if (m_issueComposer)
-                m_issueComposer->clear();
-            QMessageBox::information(
-                this, "Comment sent",
+            if (m_issueComposer) {
+                m_issueComposer->setMarkdown(QString());
+                m_issueComposer->clearPendingAttachments();
+            }
+            setIssueInlineNotice(
                 "Your signed comment was delivered to the maintainer's inbox.");
         } else {
-            QMessageBox::warning(this, "Comment",
-                                 "Could not send the comment: " + reply->errorString());
+            setIssueInlineNotice("Could not send the comment: " + reply->errorString(),
+                                 true);
         }
     });
 }
@@ -6809,8 +7594,8 @@ void MainWindow::submitIssueVoteToInbox()
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError)
-            QMessageBox::warning(this, "Vote",
-                                 "Could not send your vote: " + reply->errorString());
+            setIssueInlineNotice("Could not send your vote: " + reply->errorString(),
+                                 true);
     });
 }
 
@@ -6824,13 +7609,13 @@ void MainWindow::voteOnCurrentIssue()
                         QString::number(m_currentIssueNumber);
     QStringList voted = QSettings().value(kVotedSetting).toStringList();
     if (voted.contains(key)) {
-        QMessageBox::information(this, "Vote", "You have already voted on this issue.");
+        setIssueInlineNotice("You have already voted on this issue.", true);
         return;
     }
     if (availableCredits() <= 0) {
-        QMessageBox::information(
-            this, "Vote",
-            "No voting credits yet — you earn 1 credit for every hour online.");
+        setIssueInlineNotice(
+            "No voting credits yet. You earn 1 credit for every hour online.",
+            true);
         return;
     }
 
@@ -6838,12 +7623,14 @@ void MainWindow::voteOnCurrentIssue()
     if (store.canWrite()) {
         QString error;
         if (!store.addVote(m_currentIssueNumber, &error)) {
-            QMessageBox::warning(this, "Vote", error);
+            setIssueInlineNotice(error.isEmpty() ? "Could not record your vote." : error,
+                                 true);
             return;
         }
     } else {
         // Not the host: submit a signed vote to the maintainer's inbox.
         submitIssueVoteToInbox();
+        setIssueInlineNotice("Your signed vote was sent to the maintainer's inbox.");
     }
 
     // Spend a credit and record the vote locally (blocks double-voting).
@@ -6852,6 +7639,7 @@ void MainWindow::voteOnCurrentIssue()
     voted << key;
     s.setValue(kVotedSetting, voted);
     reloadIssues();
+    setIssueInlineNotice("Vote recorded.");
     updateVoteUi();
 }
 
@@ -6912,15 +7700,15 @@ void MainWindow::syncIssuesInbox()
     connect(reply, &QNetworkReply::finished, this, [this, reply, repo, url] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(this, "Sync inbox",
-                                 "Could not reach the inbox: " + reply->errorString());
+            setIssueInlineNotice("Could not reach the inbox: " + reply->errorString(),
+                                 true);
             return;
         }
         const QJsonObject root =
             QJsonDocument::fromJson(reply->readAll()).object();
         const QJsonArray pending = root.value("pending").toArray();
         if (pending.isEmpty()) {
-            QMessageBox::information(this, "Sync inbox", "No pending submissions.");
+            setIssueInlineNotice("No pending submissions.");
             return;
         }
         IssueStore store = issueStoreForCurrentRepo();
@@ -6938,8 +7726,7 @@ void MainWindow::syncIssuesInbox()
         // Acknowledge so the inbox clears the merged submissions.
         m_networkAccess->deleteResource(QNetworkRequest(url));
         reloadIssues();
-        QMessageBox::information(
-            this, "Sync inbox",
+        setIssueInlineNotice(
             QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
     });
 }
