@@ -7,6 +7,11 @@ compatibility_date = "2026-06-14"
 [build]
 command = "./migrate.sh"
 
+# Per-minute cron: the Worker's scheduled() handler samples how many nodes are
+# online and records it for the /network/ 24-hour activity graph.
+[triggers]
+crons = ["* * * * *"]
+
 [assets]
 directory = "./public"
 # Clean repo URLs (/owner/name, /owner/name/tree/..., /owner/name/blob/...) are
@@ -21,6 +26,12 @@ run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_BCH_ADDRESS = ""
+# TREASURY_BCH_ADDRESS (receives ~50% of each join donation; the rest is split
+# among online nodes) is NOT here — it lives in .env.production and is pushed as
+# a Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
+# deploy. Falls back to NODE_BCH_ADDRESS when unset.
+# Admins are set in the database, not here: the accounts table has an is_admin
+# column. Grant one with: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
 # Encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the blind-index
 # HMAC key. Security-critical — override in production with a real secret:
 #   uvx --from workers-py pywrangler secret put DATA_KEY
