@@ -14,13 +14,10 @@
 namespace {
 
 constexpr int kSeenCacheLimit = 4096;
-// How many past members to remember per room so a rejoin can show them as
-// offline. Bounded so the stored roster can't grow without limit.
-constexpr int kKnownPeerLimit = 256;
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
 constexpr int kMaxDisplayNameChars = 32;
-constexpr int kMaxBchAddressChars = 160;
+constexpr int kMaxSolanaAddressChars = 64;
 constexpr int kMaxTextChars = 16000;
 constexpr int kMaxFileNameChars = 180;
 constexpr int kMaxMimeChars = 100;
@@ -97,26 +94,35 @@ bool messageHasSafePayload(const QJsonObject &message)
 {
     return message.value("text").toString().size() <= kMaxTextChars &&
            message.value("sender").toString().size() <= kMaxDisplayNameChars &&
-           message.value("bch").toString().size() <= kMaxBchAddressChars &&
+           message.value("solana").toString().size() <= kMaxSolanaAddressChars &&
            message.value("fileName").toString().size() <= kMaxFileNameChars &&
            message.value("fileMime").toString().size() <= kMaxMimeChars &&
            message.value("file").toString().size() <= kMaxBase64FileChars &&
            message.value("png").toString().size() <= 4 * kMaxAvatarBytes / 3 + 8;
 }
 
+QString stableOrRandomNodeId(const QString &stableNodeId)
+{
+    const QString trimmed = stableNodeId.trimmed();
+    if (!trimmed.isEmpty())
+        return trimmed.left(160);
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
 } // namespace
 
-ServerNode::ServerNode(const QString &userName, const QUrl &serverUrl,
+ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
+                       const QUrl &serverUrl,
                        const QString &roomName, const QString &passphrase,
-                       const QString &bchAddress,
+                       const QString &solanaAddress,
                        QObject *parent)
     : ChatBackend(parent),
       m_userName(userName),
       m_url(serverUrl),
       m_roomName(roomName.trimmed()),
-      m_bchAddress(bchAddress.trimmed().left(kMaxBchAddressChars)),
+      m_solanaAddress(solanaAddress.trimmed().left(kMaxSolanaAddressChars)),
       m_platform(currentPlatform()),
-      m_nodeId(QUuid::createUuid().toString(QUuid::WithoutBraces)),
+      m_nodeId(stableOrRandomNodeId(stableNodeId)),
       m_crypto(m_roomName, passphrase)
 {
     const QByteArray material = m_url.toString().toUtf8() + '\n' +
@@ -221,8 +227,7 @@ void ServerNode::connectSocketSignals()
         if (m_pingTimer)
             m_pingTimer->stop();
         m_wsReady = false;
-        for (auto it = m_peers.begin(); it != m_peers.end(); ++it)
-            it->online = false;
+        m_peers.clear();
         updateRosterAndStatus();
         scheduleReconnect();
     });
@@ -417,8 +422,8 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
                         {"senderId", m_nodeId},
                         {"sender", m_userName.left(kMaxDisplayNameChars)},
                         {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
-    if (!m_bchAddress.isEmpty())
-        message.insert("bch", m_bchAddress);
+    if (!m_solanaAddress.isEmpty())
+        message.insert("solana", m_solanaAddress);
     if (!m_platform.isEmpty())
         message.insert("platform", m_platform);
     return message;
@@ -596,7 +601,7 @@ void ServerNode::forgetMember(const QString &peerId)
         return;
     persistKnownPeers();
     updateRosterAndStatus();
-    emit systemMessage("Removed stale member from the remembered roster.");
+    emit systemMessage("Removed member from the live roster.");
 }
 
 void ServerNode::sendTyping(const QString &conversation, bool active)
@@ -651,10 +656,10 @@ void ServerNode::handlePlain(const QJsonObject &message)
         return;
     const QString senderId = message.value("senderId").toString();
     const QString sender = message.value("sender").toString();
-    const QString bchAddress = boundedText(message, "bch", kMaxBchAddressChars);
+    const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
     const QString platform = message.value("platform").toString().left(16);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, bchAddress, platform);
+        rememberPeer(senderId, sender, solanaAddress, platform);
 
     if (type == "hello") {
         bool changed = false;
@@ -753,9 +758,7 @@ void ServerNode::handlePlain(const QJsonObject &message)
         }
     } else if (type == "bye") {
         if (m_peers.contains(senderId)) {
-            m_peers[senderId].online = false;
-            m_peers[senderId].lastSeenMs = QDateTime::currentMSecsSinceEpoch();
-            persistKnownPeers();
+            m_peers.remove(senderId);
             emit systemMessage(sender + " left");
             updateRosterAndStatus();
         }
@@ -824,99 +827,57 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
 }
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
-                              const QString &bchAddress, const QString &platform,
+                              const QString &solanaAddress, const QString &platform,
                               bool online)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
         return;
-    const bool isNew = !m_peers.contains(peerId);
     Peer &peer = m_peers[peerId];
-    const QString previousName = peer.name;
-    const QString previousBch = peer.bchAddress;
     peer.name = name.isEmpty() ? peer.name : name;
-    if (!bchAddress.trimmed().isEmpty())
-        peer.bchAddress = bchAddress.trimmed().left(kMaxBchAddressChars);
+    if (!solanaAddress.trimmed().isEmpty())
+        peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
     if (!platform.isEmpty())
         peer.platform = platform;
     peer.online = online;
     peer.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
-    // Only touch persistent storage when the durable identity changes, not on
-    // every incoming frame.
-    if (isNew || peer.name != previousName || peer.bchAddress != previousBch)
-        persistKnownPeers();
     updateRosterAndStatus();
 }
 
 void ServerNode::updateRosterAndStatus()
 {
-    MemberInfo self{m_nodeId,    m_userName, QString(), true, m_wsReady, m_bchAddress,
+    MemberInfo self{m_nodeId,    m_userName, QString(), true, m_wsReady, m_solanaAddress,
                     QString(),   m_platform, m_mirroredRepos};
     QList<MemberInfo> members{self};
     int onlineCount = 0;
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
+        if (!it->online)
+            continue;
         MemberInfo member;
         member.id = it.key();
         member.name = it->name;
-        member.note = it->online ? QString() : QStringLiteral("(offline)");
+        member.note = QString();
         member.online = it->online;
-        member.bchAddress = it->bchAddress;
+        member.solanaAddress = it->solanaAddress;
         member.platform = it->platform;
         member.mirrors = it->mirrors;
         members.append(member);
-        if (it->online)
-            ++onlineCount;
+        ++onlineCount;
     }
     emit rosterChanged(members);
-    emit statusChanged(QString::number(onlineCount) + " of " +
-                       QString::number(m_peers.size()) +
-                       " known peer(s) online · encrypted room " + m_roomName);
+    emit statusChanged(QString::number(onlineCount) +
+                       " peer(s) online · encrypted room " + m_roomName);
 }
 
 void ServerNode::loadKnownPeers()
 {
     QSettings settings;
-    const QByteArray stored =
-        settings.value(kKnownRosterGroup + "/" + m_rosterStorageKey).toByteArray();
-    const QJsonDocument doc = QJsonDocument::fromJson(stored);
-    if (!doc.isArray())
-        return;
-    for (const auto &value : doc.array()) {
-        const QJsonObject entry = value.toObject();
-        const QString id = entry.value("id").toString();
-        if (id.isEmpty() || id == m_nodeId)
-            continue;
-        Peer &peer = m_peers[id];
-        peer.name = entry.value("name").toString().left(kMaxDisplayNameChars);
-        peer.bchAddress = entry.value("bch").toString().left(kMaxBchAddressChars);
-        peer.lastSeenMs = qint64(entry.value("lastSeen").toDouble());
-        peer.online = false; // Recalled members start offline until they speak.
-    }
+    settings.remove(kKnownRosterGroup + "/" + m_rosterStorageKey);
 }
 
 void ServerNode::persistKnownPeers() const
 {
-    // Keep the most recently seen members within the cap.
-    QList<QPair<QString, Peer>> ordered;
-    ordered.reserve(m_peers.size());
-    for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it)
-        ordered.append({it.key(), it.value()});
-    std::sort(ordered.begin(), ordered.end(),
-              [](const auto &a, const auto &b) {
-                  return a.second.lastSeenMs > b.second.lastSeenMs;
-              });
-    if (ordered.size() > kKnownPeerLimit)
-        ordered.erase(ordered.begin() + kKnownPeerLimit, ordered.end());
-
-    QJsonArray entries;
-    for (const auto &pair : std::as_const(ordered)) {
-        entries.append(QJsonObject{{"id", pair.first},
-                                   {"name", pair.second.name},
-                                   {"bch", pair.second.bchAddress},
-                                   {"lastSeen", double(pair.second.lastSeenMs)}});
-    }
     QSettings settings;
-    settings.setValue(kKnownRosterGroup + "/" + m_rosterStorageKey,
-                      QJsonDocument(entries).toJson(QJsonDocument::Compact));
+    settings.remove(kKnownRosterGroup + "/" + m_rosterStorageKey);
 }
 
 void ServerNode::storeHistory(const QJsonObject &message)

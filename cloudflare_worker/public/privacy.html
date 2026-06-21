@@ -61,7 +61,7 @@
       <p>
         Your node name, public key, advertised repositories, public profile
         details, issue and pull-request records, online presence, and any payout
-        BCH address you publish may be visible to other users or visitors.
+        Solana address you publish may be visible to other users or visitors.
       </p>
 
       <h2>What is stored</h2>
@@ -75,20 +75,20 @@
 
       <h2>Payments</h2>
       <p>
-        Bitcoin Cash transactions are public on the BCH network. ForkMesh checks
-        whether a one-time join address has received enough BCH to activate the
-        next signup step. Do not send funds to an address once the signup page
-        says it is expiring.
+        Solana transactions are public on the Solana network. ForkMesh checks
+        whether a join payment reference has received enough SOL to activate the
+        next signup step. Do not send funds once the signup page says the payment
+        request is expiring.
       </p>
 
       <h2>Third parties</h2>
       <p>We try our best not to use third parties. Today, these are involved:</p>
       <ul>
         <li>Cloudflare hosts the public website, Worker APIs, D1 data, cache, and relay infrastructure.</li>
-        <li>Blockchair is queried for BCH address state and used for transaction broadcast support.</li>
+        <li>A Solana JSON-RPC endpoint is queried for payment-reference status.</li>
         <li>Bundled open-source font files are served locally by ForkMesh; no remote font service is used.</li>
         <li>Tailwind Play CDN is loaded by the current home page.</li>
-        <li>The Bitcoin Cash network processes payment transactions.</li>
+        <li>The Solana network processes payment transactions.</li>
         <li>Git remotes you choose may receive network requests when you mirror or sync repositories.</li>
       </ul>
 

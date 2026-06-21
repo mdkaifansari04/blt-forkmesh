@@ -54,7 +54,7 @@
         <strong>Short version:</strong>
         ForkMesh is experimental distributed code-hosting software. Use it for
         public repositories you have the right to mirror, keep your keys safe,
-        and do not send BCH to an expired join address.
+        and do not send SOL to an expired payment request.
       </div>
 
       <h2>Using ForkMesh</h2>
@@ -67,11 +67,11 @@
 
       <h2>Joining the network</h2>
       <p>
-        The join flow may ask you to donate Bitcoin Cash (BCH) to a one-time
-        address. That address expires after one hour if it receives no
+        The join flow may ask you to donate Solana (SOL) using a payment
+        reference. That request expires after one hour if it receives no
         transactions. When it expires, ForkMesh hides it, warns you not to send
-        funds, and removes the unpaid address from the system after five more
-        minutes. Generate a fresh address instead.
+        funds, and removes the unpaid request from the system after five more
+        minutes. Generate a fresh request instead.
       </p>
 
       <h2>Rewards and availability</h2>
@@ -89,10 +89,10 @@
       </p>
       <ul>
         <li>Cloudflare for hosting, Workers, D1 storage, caching, and relay infrastructure.</li>
-        <li>Blockchair for Bitcoin Cash address lookups and transaction broadcast support.</li>
+        <li>A Solana JSON-RPC endpoint for payment-reference lookups.</li>
         <li>Bundled open-source font files served locally by ForkMesh; no remote font service is used.</li>
         <li>Tailwind Play CDN on the current home page.</li>
-        <li>The Bitcoin Cash network for payment settlement.</li>
+        <li>The Solana network for payment settlement.</li>
         <li>Any Git hosting provider or remote repository you choose to mirror.</li>
       </ul>
 

@@ -4,7 +4,7 @@ import hmac
 import json
 import re
 import struct
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from js import Date
 from js import Object
@@ -15,8 +15,6 @@ from js import caches as js_caches
 from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
-
-import bch_wallet
 
 MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
@@ -459,7 +457,7 @@ def safe_catalog_record(data):
         "name": name,
         "description": clean_string(data.get("description", ""), 240),
         "cloneUrl": clean_string(data.get("cloneUrl", ""), 2048),
-        "bch": clean_string(data.get("bch", ""), 160),
+        "solana": clean_string(data.get("solana", ""), 64),
         "channel": clean_string(data.get("channel", f"#{owner}-{name}"), 120),
         "hostedSince": clean_string(data.get("hostedSince", ""), 32),
         "lastSync": clean_string(data.get("lastSync", ""), 32),
@@ -478,23 +476,19 @@ def safe_catalog_record(data):
 # holds DATA_KEY, so this protects data at rest but is not zero-knowledge.
 
 PBKDF2_ITERS = 150000
-MIN_ACTIVE_SATS = 100000  # 0.001 BCH — proves the wallet is active/funded
-BCH_RE = re.compile(r"^(bitcoincash:)?[qp][a-z0-9]{41}$")
+MIN_ACTIVE_LAMPORTS = 1000000  # 0.001 SOL proves the wallet is active/funded
+SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
-# Donation funnel: minimum "join" donation (~$1). Each signup gets a freshly
-# generated address; when it receives at least this much the account can be
-# finalized, the balance is split (see below), and the ephemeral key is forgotten.
-MIN_JOIN_SATS = 500000  # 0.005 BCH
+# Donation funnel: minimum "join" donation. Each signup gets a Solana Pay
+# reference, and the treasury address receives the payment directly.
+MIN_JOIN_LAMPORTS = 5000000  # 0.005 SOL
+LAMPORTS_PER_SOL = 1000000000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
-# Rough sat/byte fee model for the sweep/payout tx: a base plus a bit per output.
-BCH_BASE_FEE_SATS = 300
-BCH_FEE_PER_OUTPUT_SATS = 50
-BCH_DUST_SATS = 546  # below this an output is unspendable dust
 # Foundational reward split: half of each confirmed donation goes to the
-# treasury, the other half is divided equally among nodes that are currently
-# online and have a payout BCH address on file. Capped so the payout tx stays a
-# sane size; the split is intentionally simple and will be refined later.
+# treasury, the other half is accounted to online nodes that have a payout
+# Solana address on file. On-chain payout batching is intentionally separate
+# from signup confirmation now that signup payments go directly to treasury.
 TREASURY_SPLIT_NUMERATOR = 1
 TREASURY_SPLIT_DENOMINATOR = 2
 MAX_PAYEES = 50
@@ -843,7 +837,7 @@ async def catalog_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
-# --- Accounts (accounts table) — name + bch + password + TOTP ---------------
+# --- Accounts (accounts table) — name + solana + password + TOTP ------------
 
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
@@ -925,9 +919,9 @@ def _ensure_donation_expiry_fields(rec, now):
 
 def _clear_donation_address(rec):
     for key in (
-        "donation_address", "donation_privkey", "donation_required_sats",
-        "donation_confirmed", "swept", "donation_created_at",
-        "donation_expires_at", "donation_delete_after",
+        "donation_address", "donation_reference", "donation_required_lamports",
+        "donation_confirmed", "donation_created_at", "donation_expires_at",
+        "donation_delete_after", "donation_received_lamports",
     ):
         rec.pop(key, None)
     if rec.get("status") != "active":
@@ -978,9 +972,105 @@ async def _account_reserve(env, request):
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
 
-# Step 2 (the "Join" step): mint a fresh, single-use BCH address for this
-# signup. The private key is generated here, stored encrypted in the row, and
-# swept + forgotten once the donation lands (see _account_donation_status).
+# Step 2 (the "Join" step): create a Solana payment request for this signup.
+# The treasury address receives funds directly; a unique Solana Pay reference
+# lets the worker identify this account's transfer without custodying a key.
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _base58_encode(data):
+    n = int.from_bytes(data, "big")
+    out = ""
+    while n:
+        n, rem = divmod(n, 58)
+        out = BASE58_ALPHABET[rem] + out
+    pad = 0
+    for b in data:
+        if b == 0:
+            pad += 1
+        else:
+            break
+    return "1" * pad + (out or "1")
+
+
+def _new_solana_reference():
+    return _base58_encode(_random_bytes(32))
+
+
+def _amount_sol(lamports):
+    return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
+
+
+def _solana_pay_uri(address, amount_lamports, reference):
+    return (
+        "solana:" + address +
+        "?amount=" + _amount_sol(amount_lamports) +
+        "&reference=" + reference +
+        "&label=" + quote("ForkMesh") +
+        "&message=" + quote("Join ForkMesh")
+    )
+
+
+async def _solana_rpc(env, method, params):
+    from js import fetch as js_fetch
+    endpoint = (getattr(env, "SOLANA_RPC_URL", "") or
+                "https://api.mainnet-beta.solana.com").strip()
+    try:
+        resp = await js_fetch(
+            endpoint,
+            to_js({
+                "method": "POST",
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": method,
+                    "params": params,
+                }),
+            }),
+        )
+        if not (200 <= int(getattr(resp, "status", 0)) < 300):
+            return None
+        return json.loads(await resp.text())
+    except Exception:
+        return None
+
+
+async def _solana_reference_received(env, reference, treasury):
+    if not reference or not SOLANA_RE.match(reference):
+        return None
+    sigs = await _solana_rpc(
+        env, "getSignaturesForAddress", [reference, {"limit": 20}])
+    if sigs is None or not isinstance(sigs.get("result"), list):
+        return None
+    received = 0
+    for item in sigs.get("result", []):
+        sig = item.get("signature", "") if isinstance(item, dict) else ""
+        if not sig:
+            continue
+        tx = await _solana_rpc(
+            env,
+            "getTransaction",
+            [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+        )
+        result = tx.get("result") if isinstance(tx, dict) else None
+        if not isinstance(result, dict):
+            continue
+        meta = result.get("meta") or {}
+        if meta.get("err"):
+            continue
+        message = ((result.get("transaction") or {}).get("message") or {})
+        for ix in message.get("instructions", []) or []:
+            parsed = ix.get("parsed") if isinstance(ix, dict) else None
+            if not isinstance(parsed, dict):
+                continue
+            info = parsed.get("info") or {}
+            if (parsed.get("type") == "transfer" and
+                    info.get("destination") == treasury):
+                received += int(info.get("lamports") or 0)
+    return received
+
+
 async def _account_donation_address(env, request):
     try:
         data = await request.json()
@@ -988,7 +1078,7 @@ async def _account_donation_address(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
     try:
-        amount = int(data.get("amountSats", 0) or 0)
+        amount = int(data.get("amountLamports", 0) or 0)
     except (TypeError, ValueError):
         amount = 0
     name_bi, rec = await _account_row(env, name)
@@ -996,18 +1086,21 @@ async def _account_donation_address(env, request):
         return json_response({"error": "reserve_node_name_first"}, status=404)
     if rec.get("status") == "active":
         return json_response({"error": "already_active"}, status=409)
+    treasury = _treasury_address(env)
+    if not treasury:
+        return json_response({"error": "treasury_not_configured"}, status=503)
 
     now = int(Date.now())
     renew_expired = bool(data.get("renewExpired") or data.get("generateNew"))
     if rec.get("donation_address") and not rec.get("donation_confirmed"):
         changed = _ensure_donation_expiry_fields(rec, now)
-        required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+        required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
         _, expires_at, delete_at = _donation_expiry_fields(rec, now)
         if now >= expires_at:
-            state = await _bch_address_state(rec["donation_address"])
-            if state is None:
-                return json_response({"error": "explorer_unavailable"}, status=502)
-            received = int(state.get("received", 0) or 0)
+            received = await _solana_reference_received(
+                env, rec.get("donation_reference", ""), treasury)
+            if received is None:
+                return json_response({"error": "solana_rpc_unavailable"}, status=502)
             if received == 0:
                 if renew_expired or now >= delete_at:
                     _clear_donation_address(rec)
@@ -1017,26 +1110,25 @@ async def _account_donation_address(env, request):
                         await _save_account(env, name_bi, rec)
                     return json_response({
                         "ok": True, "expired": True, "hidden": True,
-                        "canRenew": True, "receivedSats": 0,
-                        "requiredSats": required,
-                        "amountBch": "%.8f" % (required / 1e8),
+                        "canRenew": True, "receivedLamports": 0,
+                        "requiredLamports": required,
+                        "amountSol": _amount_sol(required),
                         "expiresAt": expires_at, "deleteAt": delete_at,
                     })
             elif received >= required:
                 rec["donation_confirmed"] = True
+                rec["donation_received_lamports"] = received
                 changed = True
         if changed:
             await _save_account(env, name_bi, rec)
 
     if not rec.get("donation_address"):
-        priv_int, priv_hex = bch_wallet.gen_privkey(_random_bytes(32))
-        addr = bch_wallet.pubkey_to_cashaddr(
-            bch_wallet.privkey_to_pubkey(priv_int))
+        addr = treasury
+        reference = _new_solana_reference()
         rec["donation_address"] = addr
-        rec["donation_privkey"] = priv_hex
-        rec["donation_required_sats"] = max(amount, MIN_JOIN_SATS)
+        rec["donation_reference"] = reference
+        rec["donation_required_lamports"] = max(amount, MIN_JOIN_LAMPORTS)
         rec["donation_confirmed"] = False
-        rec["swept"] = False
         rec["donation_created_at"] = now
         rec["donation_expires_at"] = now + DONATION_ADDRESS_TTL_MS
         rec["donation_delete_after"] = (
@@ -1045,53 +1137,21 @@ async def _account_donation_address(env, request):
         await _save_account(env, name_bi, rec)
 
     addr = rec["donation_address"]
-    required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+    reference = rec.get("donation_reference", "")
+    required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     _, expires_at, delete_at = _donation_expiry_fields(rec, int(Date.now()))
-    amount_bch = "%.8f" % (required / 1e8)
+    amount_sol = _amount_sol(required)
     return json_response({
-        "ok": True, "address": addr, "uri": addr + "?amount=" + amount_bch,
-        "requiredSats": required, "amountBch": amount_bch,
+        "ok": True, "address": addr,
+        "reference": reference,
+        "uri": _solana_pay_uri(addr, required, reference),
+        "requiredLamports": required, "amountSol": amount_sol,
         "expiresAt": expires_at, "deleteAt": delete_at,
     })
 
 
-async def _reward_outputs(env, treasury, total_in):
-    """Compute the payout outputs for a confirmed donation.
-
-    Foundational reward split: ~50% to the treasury, the rest divided equally
-    among online nodes with a payout address. If there are no eligible nodes (or
-    each share would be dust), everything goes to the treasury. Returns a list of
-    (address, sats) for bch_wallet.build_tx, or None if the inputs can't even
-    cover the fee.
-    """
-    payees = await _online_payout_addresses(env)
-    num_outputs = 1 + len(payees)
-    fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS * num_outputs
-    distributable = total_in - fee
-    if distributable <= 0:
-        return None
-
-    treasury_share = (distributable * TREASURY_SPLIT_NUMERATOR
-                      ) // TREASURY_SPLIT_DENOMINATOR
-    remainder = distributable - treasury_share
-    if payees and remainder // len(payees) >= BCH_DUST_SATS:
-        per = remainder // len(payees)
-        leftover = remainder - per * len(payees)  # rounding dust → treasury
-        outputs = [(treasury, treasury_share + leftover)]
-        outputs += [(addr, per) for addr in payees]
-        return outputs
-    # No eligible payees (or shares too small): treasury takes the lot. Recompute
-    # the fee for the single-output case so we don't overpay miners.
-    fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS
-    distributable = total_in - fee
-    if distributable <= 0:
-        return None
-    return [(treasury, distributable)]
-
-
-# Polled while the user waits to pay. When the address has received enough, the
-# account is marked confirmed; we then split the balance (treasury + online
-# nodes) and, once the balance is zero, delete the ephemeral private key.
+# Polled while the user waits to pay. When the Solana reference has a matching
+# transfer to the treasury, the account is marked confirmed.
 async def _account_donation_status(env, request):
     params = parse_qs(urlparse(request.url).query)
     name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
@@ -1101,58 +1161,38 @@ async def _account_donation_status(env, request):
     addr = rec.get("donation_address", "")
     if not addr:
         return json_response({"error": "no_donation_address"}, status=400)
-    required = int(rec.get("donation_required_sats", MIN_JOIN_SATS))
+    treasury = _treasury_address(env)
+    if not treasury:
+        return json_response({"error": "treasury_not_configured"}, status=503)
+    reference = rec.get("donation_reference", "")
+    required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     now = int(Date.now())
     changed = _ensure_donation_expiry_fields(rec, now)
     _, expires_at, delete_at = _donation_expiry_fields(rec, now)
 
-    state = await _bch_address_state(addr)
-    if state is None:
-        return json_response({"error": "explorer_unavailable"}, status=502)
-    received = state["received"]
+    received = await _solana_reference_received(env, reference, treasury)
+    if received is None:
+        return json_response({"error": "solana_rpc_unavailable"}, status=502)
     if (not rec.get("donation_confirmed") and received == 0 and
             now >= delete_at):
         _clear_donation_address(rec)
         await _save_account(env, name_bi, rec)
         return json_response({
             "ok": True, "paid": False, "expired": True, "hidden": True,
-            "deleted": True, "canRenew": True, "receivedSats": 0,
-            "requiredSats": required, "expiresAt": expires_at,
+            "deleted": True, "canRenew": True, "receivedLamports": 0,
+            "requiredLamports": required, "expiresAt": expires_at,
             "deleteAt": delete_at,
         })
     if received >= required and not rec.get("donation_confirmed"):
         rec["donation_confirmed"] = True
-        changed = True
-
-    swept = bool(rec.get("swept"))
-    treasury = _treasury_address(env)
-    if (rec.get("donation_confirmed") and not swept and
-            rec.get("donation_privkey") and treasury and state["utxos"]):
-        try:
-            outputs = await _reward_outputs(env, treasury, sum(
-                u["value"] for u in state["utxos"]))
-            if outputs:
-                priv_int = int(rec["donation_privkey"], 16)
-                raw_hex, _, _ = bch_wallet.build_tx(
-                    priv_int, state["utxos"], outputs)
-                if await _bch_broadcast(raw_hex):
-                    rec["swept"] = True
-                    swept = True
-                    changed = True
-        except Exception:
-            pass  # retried on the next poll
-
-    # Forget the spendable key once the swept balance has confirmed to zero.
-    if swept and rec.get("donation_privkey") and state["balance"] == 0:
-        rec.pop("donation_privkey", None)
+        rec["donation_received_lamports"] = received
         changed = True
 
     if changed:
         await _save_account(env, name_bi, rec)
     return json_response({
         "ok": True, "paid": bool(rec.get("donation_confirmed")),
-        "receivedSats": received, "requiredSats": required,
-        "swept": bool(rec.get("swept")),
+        "receivedLamports": received, "requiredLamports": required,
         "expired": (not rec.get("donation_confirmed") and received == 0 and
                     now >= expires_at),
         "hidden": (not rec.get("donation_confirmed") and received == 0 and
@@ -1174,7 +1214,7 @@ async def _account_finalize(env, request):
     email = clean_string(data.get("email", ""), 254)
     password = (data.get("password", "") or "")[:256]
     pubkey = clean_string(data.get("pubkey", ""), 120)
-    bch = clean_string(data.get("bch", ""), 160)
+    solana = clean_string(data.get("solana", ""), 64)
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
 
@@ -1211,8 +1251,8 @@ async def _account_finalize(env, request):
     rec["pass_hash"] = phash
     rec["status"] = "active"
     # Optional payout address (where this node receives its share of the split).
-    if bch and BCH_RE.match(bch.lower()):
-        rec["bch"] = bch
+    if solana and SOLANA_RE.match(solana):
+        rec["solana"] = solana
     rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
     await _save_account(env, name_bi, rec, email_bi=email_bi)
@@ -1274,78 +1314,21 @@ def _random_bytes(n):
 
 
 def _treasury_address(env):
-    # Receives ~50% of each confirmed donation; the rest is split among online
-    # nodes (see _reward_outputs). Falls back to NODE_BCH_ADDRESS.
-    addr = (getattr(env, "TREASURY_BCH_ADDRESS", "") or
-            getattr(env, "NODE_BCH_ADDRESS", "") or "").strip()
-    return addr if BCH_RE.match(addr.lower()) else ""
-
-
-async def _bch_address_state(addr):
-    print("calling bch_address state")
-    # One Blockchair call → cumulative received, current balance, and the UTXO
-    # set used to build the sweep. Returns None if the explorer is unreachable.
-    from js import fetch as js_fetch
-    a = addr.split(":")[-1]
-    try:
-        resp = await js_fetch(
-            "https://api.blockchair.com/bitcoin-cash/dashboards/address/" + a +
-            "?limit=1000"
-        )
-        print("response is")
-        print(resp)
-        obj = json.loads(await resp.text())
-        print(obj)
-        data = obj.get("data", {}) or {}
-        print(data)
-        entry = data.get(a)
-        if entry is None and data:
-            entry = next(iter(data.values()))
-        entry = entry or {}
-        address = entry.get("address", {}) if isinstance(entry, dict) else {}
-        utxos = []
-        for u in (entry.get("utxo", []) or []):
-            utxos.append({
-                "txid": u.get("transaction_hash", ""),
-                "vout": int(u.get("index", 0) or 0),
-                "value": int(u.get("value", 0) or 0),
-            })
-        return {
-            "received": int(address.get("received", 0) or 0),
-            "balance": int(address.get("balance", 0) or 0),
-            "utxos": utxos,
-        }
-    except Exception as e:
-        print("error"+e)
-        return None
-
-
-async def _bch_broadcast(raw_hex):
-    from js import fetch as js_fetch
-    try:
-        resp = await js_fetch(
-            "https://api.blockchair.com/bitcoin-cash/push/transaction",
-            to_js({
-                "method": "POST",
-                "headers": {"content-type": "application/x-www-form-urlencoded"},
-                "body": "data=" + raw_hex,
-            }),
-        )
-        return 200 <= int(getattr(resp, "status", 0)) < 300
-    except Exception:
-        return False
+    addr = (getattr(env, "TREASURY_SOLANA_ADDRESS", "") or
+            getattr(env, "NODE_SOLANA_ADDRESS", "") or "").strip()
+    return addr if SOLANA_RE.match(addr) else ""
 
 
 # A running node calls this on an interval to stay eligible for the reward
 # split. Signed with the account's key so only the key holder can mark its node
-# online; optionally updates the payout BCH address.
+# online; optionally updates the payout Solana address.
 async def _account_heartbeat(env, request):
     try:
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-    bch = clean_string(data.get("bch", ""), 160)
+    solana = clean_string(data.get("solana", ""), 64)
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
     name_bi, rec = await _account_row(env, name)
@@ -1359,8 +1342,8 @@ async def _account_heartbeat(env, request):
         return json_response({"error": "bad_signature"}, status=401)
 
     # Keep the payout address current if the node sent a valid one.
-    if bch and BCH_RE.match(bch.lower()) and rec.get("bch") != bch:
-        rec["bch"] = bch
+    if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
+        rec["solana"] = solana
         await _save_account(env, name_bi, rec)
 
     await d1_run(
@@ -1370,7 +1353,7 @@ async def _account_heartbeat(env, request):
         name_bi, int(Date.now()),
     )
     return json_response({"ok": True, "online": True,
-                          "hasPayoutAddress": bool(rec.get("bch")),
+                          "hasPayoutAddress": bool(rec.get("solana")),
                           "isAdmin": await _is_admin(env, name)})
 
 
@@ -1396,11 +1379,11 @@ async def _online_payout_addresses(env):
         rec = await decrypt_row(env, row["data"])
         if not rec or rec.get("status") != "active":
             continue
-        bch = (rec.get("bch") or "").strip()
-        if not bch or not BCH_RE.match(bch.lower()) or bch in seen:
+        solana = (rec.get("solana") or "").strip()
+        if not solana or not SOLANA_RE.match(solana) or solana in seen:
             continue
-        seen.add(bch)
-        addresses.append(bch)
+        seen.add(solana)
+        addresses.append(solana)
         if len(addresses) >= MAX_PAYEES:
             break
     return addresses
@@ -1904,15 +1887,14 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<title>forkmesh · admin</title><style>" + ADMIN_STYLE + "</style></head><body>"
         "<header><h1>forkmesh · admin</h1>"
-        "<div class=\"meta\">Live Durable Object load, every D1 table, and BCH "
-        "disbursement of any held account wallet keys.</div></header>"
+        "<div class=\"meta\">Live Durable Object load, every D1 table, and "
+        "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
         + '<div class="tools"><form method="post" action="?action=disburse" '
-          'onsubmit="return confirm(\'Sweep all held account-wallet BCH to the '
-          'treasury address?\')">'
-          '<button type="submit">Disburse held BCH → treasury</button></form>'
-          '<span class="meta">Sweeps every account that still holds a spendable '
-          'donation key with a non-zero balance.</span></div>'
+          'onsubmit="return confirm(\'Check Solana payment custody status?\')">'
+          '<button type="submit">Check Solana custody</button></form>'
+          '<span class="meta">Solana signup payments go directly to the treasury; '
+          'ForkMesh no longer stores spendable join-wallet keys.</span></div>'
         + banner_html
         + '<div class="layout">'
         + _render_admin_nav(tables, active_table)
@@ -1926,60 +1908,12 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
 
 
 async def _admin_disburse(env):
-    # Sweep every account that still holds a spendable donation key (the worker
-    # generated and kept it during signup) to the treasury address. Normally the
-    # donation poll auto-sweeps, so this is the manual fallback for funds that got
-    # stuck (e.g. the explorer was down when the donation confirmed).
     treasury = _treasury_address(env)
     if not treasury:
-        return ("No treasury address configured "
-                "(set TREASURY_BCH_ADDRESS or NODE_BCH_ADDRESS).")
-    await ensure_schema(env)
-    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
-    swept_total = 0
-    checked = 0
-    lines = []
-    for row in rows:
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec:
-            continue
-        priv = rec.get("donation_privkey")
-        addr = rec.get("donation_address")
-        if not priv or not addr:
-            continue  # nothing spendable held for this account
-        checked += 1
-        if checked > 50:
-            lines.append("… stopped after 50 wallets; run again to continue.")
-            break
-        state = await _bch_address_state(addr)
-        if state is None:
-            lines.append("%s: explorer unavailable, skipped." % rec.get("name", "?"))
-            continue
-        utxos = state.get("utxos") or []
-        total_in = sum(int(u["value"]) for u in utxos)
-        fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS
-        if not utxos or total_in - fee <= 0:
-            continue  # empty or dust-only
-        try:
-            raw_hex, _, sent = bch_wallet.build_sweep_tx(
-                int(priv, 16), utxos, treasury, fee)
-            ok = await _bch_broadcast(raw_hex)
-        except Exception as error:
-            lines.append("%s: build/broadcast error (%s)."
-                         % (rec.get("name", "?"), repr(error)[:80]))
-            continue
-        if ok:
-            rec["swept"] = True
-            await _save_account(env, row.get("name_bi"), rec)
-            swept_total += sent
-            lines.append("%s: swept %.8f BCH → treasury."
-                         % (rec.get("name", "?"), sent / 1e8))
-        else:
-            lines.append("%s: broadcast failed (retry later)." % rec.get("name", "?"))
-    head = ("Disbursed %.8f BCH to %s." % (swept_total / 1e8, treasury)
-            if swept_total else
-            "No held wallets with a spendable balance were found.")
-    return head + ("\n" + "\n".join(lines) if lines else "")
+        return ("No Solana treasury address configured "
+                "(set TREASURY_SOLANA_ADDRESS or NODE_SOLANA_ADDRESS).")
+    return ("No held Solana wallets to disburse. Signup payments are sent "
+            "directly to %s with per-account payment references." % treasury)
 
 
 class Default(WorkerEntrypoint):
@@ -2094,7 +2028,7 @@ class Default(WorkerEntrypoint):
                     "ok": True,
                     "service": "forkmesh-mainnode",
                     "node": getattr(self.env, "NODE_NAME", "forkmesh"),
-                    "nodeBchAddress": getattr(self.env, "NODE_BCH_ADDRESS", ""),
+                    "nodeSolanaAddress": getattr(self.env, "NODE_SOLANA_ADDRESS", ""),
                     "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
                     "compatWebsocket": "/api/room/{room}/ws",
                     "capabilities": [

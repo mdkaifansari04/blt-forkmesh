@@ -16,9 +16,10 @@ class ServerNode : public ChatBackend
 {
     Q_OBJECT
 public:
-    ServerNode(const QString &userName, const QUrl &serverUrl,
+    ServerNode(const QString &userName, const QString &stableNodeId,
+               const QUrl &serverUrl,
                const QString &roomName, const QString &passphrase,
-               const QString &bchAddress,
+               const QString &solanaAddress,
                QObject *parent = nullptr);
 
     bool start();
@@ -44,7 +45,7 @@ public:
 private:
     struct Peer {
         QString name;
-        QString bchAddress;
+        QString solanaAddress;
         QString platform;
         QStringList mirrors;
         qint64 lastSeenMs = 0;
@@ -69,7 +70,7 @@ private:
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
     void rememberPeer(const QString &peerId, const QString &name,
-                      const QString &bchAddress = QString(),
+                      const QString &solanaAddress = QString(),
                       const QString &platform = QString(), bool online = true);
     void updateRosterAndStatus();
     void storeHistory(const QJsonObject &message);
@@ -85,7 +86,7 @@ private:
     QString m_userName;
     QUrl m_url;
     QString m_roomName;
-    QString m_bchAddress;
+    QString m_solanaAddress;
     QString m_platform;
     QStringList m_mirroredRepos; // "owner/name" advertised to other nodes
     QString m_nodeId;

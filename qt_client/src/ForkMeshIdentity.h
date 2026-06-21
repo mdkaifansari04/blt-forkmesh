@@ -25,11 +25,11 @@ public:
     QString shortPublicKey() const;
 
     QJsonObject profileObject(const QString &name, const QString &handle,
-                              const QString &bchAddress,
+                              const QString &solanaAddress,
                               const QString &bio = QString(),
                               const QString &website = QString()) const;
     QJsonObject signedProfile(const QString &name, const QString &handle,
-                              const QString &bchAddress,
+                              const QString &solanaAddress,
                               const QString &bio = QString(),
                               const QString &website = QString()) const;
     QString signJson(const QJsonObject &object) const;

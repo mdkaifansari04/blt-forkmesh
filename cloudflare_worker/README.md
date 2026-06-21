@@ -64,7 +64,7 @@ one deploy:
 This wraps `uvx --from workers-py pywrangler deploy`. Run it directly if you
 prefer.
 
-Set `NODE_NAME` and `NODE_BCH_ADDRESS` in `wrangler.toml` or as dashboard
+Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.
 
 ## Mainnode Binding

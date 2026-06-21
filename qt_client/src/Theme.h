@@ -331,11 +331,11 @@ QPushButton#memberDeleteButton:hover {
 #firewallBannerLabel {
     color: #f0b72f; font-size: 13px; background: transparent;
 }
-#bchBanner {
+#solanaBanner {
     background-color: #12261a;
     border-bottom: 1px solid #2ea043;
 }
-#bchBannerLabel {
+#solanaBannerLabel {
     color: #56d364; font-size: 13px; font-weight: 600; background: transparent;
 }
 #messageView, #messageContainer {
@@ -997,11 +997,11 @@ QPushButton#memberDeleteButton:hover {
 #firewallBannerLabel {
     color: #7d4e00; font-size: 13px; background: transparent;
 }
-#bchBanner {
+#solanaBanner {
     background-color: #dafbe1;
     border-bottom: 1px solid #1f883d;
 }
-#bchBannerLabel {
+#solanaBannerLabel {
     color: #1a7f37; font-size: 13px; font-weight: 600; background: transparent;
 }
 #messageView, #messageContainer {

@@ -14,8 +14,8 @@ struct MemberInfo {
     QString note;     // e.g. "(discovered)"
     bool self = false;
     bool online = false; // live link right now (green dot)
-    QString bchAddress;
-    QString bchBalance;  // reserved for a later balance indexer/API
+    QString solanaAddress;
+    QString solanaBalance;  // reserved for a later balance indexer/API
     QString platform;    // linux | macos | windows | android | ios | web
     QStringList mirrors; // "owner/name" of repos this node mirrors
 };

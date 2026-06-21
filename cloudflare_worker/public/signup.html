@@ -161,7 +161,7 @@
 
       <div class="join-banner">
         <strong>You earn a share every time someone joins</strong>
-        <span>Paid in Bitcoin Cash (BCH) · estimate only — reward system in progress</span>
+        <span>Paid in Solana (SOL) · estimate only — reward system in progress</span>
       </div>
 
       <div class="stat-grid">
@@ -179,7 +179,7 @@
         </div>
         <div class="stat-card">
           <div class="label">Min. donation</div>
-          <div class="value">0.005 BCH</div>
+          <div class="value">0.005 SOL</div>
         </div>
       </div>
 
@@ -214,7 +214,7 @@
             <div class="op">×</div>
             <div class="calc-cell">
               <div class="cap">Payout per join</div>
-              <div class="big">0.0001 BCH</div>
+              <div class="big">0.0001 SOL</div>
               <div class="small">illustrative</div>
             </div>
             <div class="op">=</div>
@@ -233,27 +233,27 @@
 
         <div class="flow">
           <div><strong>You mirror code</strong>Your node stores and serves Git repositories, keeping the network decentralized.</div>
-          <div><strong>You get paid</strong>Earn BCH as the network grows and people use the data you host.</div>
+          <div><strong>You get paid</strong>Earn SOL as the network grows and people use the data you host.</div>
         </div>
         <div class="diagram">
           <img src="/assets/repo-network.svg" alt="" aria-hidden="true" />
         </div>
 
         <div class="pay-box">
-          <p>Send at least <strong id="pay-amount">0.005 BCH</strong> to your one-time join address:</p>
+          <p>Send at least <strong id="pay-amount">0.005 SOL</strong> using this Solana payment request:</p>
           <div id="pay-visible">
             <div class="pay-addr" id="pay-addr">generating…</div>
             <div class="pay-qr" id="pay-qr" style="margin: 10px auto;" aria-label="Payment QR code"></div>
             <div class="pay-actions">
-              <button class="btn-primary" id="pay-copy" style="width:auto;padding:8px 16px;font-size:14px;">Copy address</button>
+              <button class="btn-primary" id="pay-copy" style="width:auto;padding:8px 16px;font-size:14px;">Copy payment link</button>
             </div>
           </div>
           <p style="margin-top:14px;">
             <span class="pay-status waiting" id="pay-status">Waiting for your donation…</span>
           </p>
           <p class="pay-expiry" id="pay-expiry"></p>
-          <button class="btn-secondary" id="pay-renew" type="button" hidden>Generate a new address</button>
-          <p class="hint">This address is generated and monitored by ForkMesh. Once your donation confirms, you can finish creating your account.</p>
+          <button class="btn-secondary" id="pay-renew" type="button" hidden>Generate a new request</button>
+          <p class="hint">This Solana payment request is generated and monitored by ForkMesh. Once your donation confirms, you can finish creating your account.</p>
         </div>
       </section>
 

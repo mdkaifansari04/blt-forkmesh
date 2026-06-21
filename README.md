@@ -16,7 +16,7 @@ one central code-hosting company.
 - Cloudflare Durable Object room relay with no npm/npx project dependencies
 - Cloudflare Durable Object repository catalog surfaced on the public website
 - Per-repository chat channels derived from mirrored repository names
-- Bitcoin Cash address fields on profiles and repositories
+- Solana address fields on profiles and repositories
 
 This is an MVP. It does not yet replace a full forge like GitHub or GitLab,
 but it lays down the working identity, mirroring, encrypted chat, and relay
@@ -121,12 +121,12 @@ ForkMesh is built around these concepts:
 - Mirrors: any node can host a bare mirror of any repository.
 - Chat: repository communities talk through Matrix-like encrypted mainnode
   relay rooms.
-- Funding: profiles and repositories can publish Bitcoin Cash donation
+- Funding: profiles and repositories can publish Solana donation
   addresses.
 - Federation: relay nodes can be operated independently, similar in spirit to
   Matrix or Mastodon.
 - Mainnodes: hosted nodes can provide encrypted relay rooms, repository
-  catalogs, mirror-health indexing, BCH metadata, and contributor, host, and
+  catalogs, mirror-health indexing, Solana metadata, and contributor, host, and
   node leaderboards.
 
 ## Direction
@@ -167,7 +167,7 @@ client's **Issues** tab and editable across nodes. See
   metadata.
 - Added local bare Git mirroring through `git clone --mirror` and
   `git fetch --prune`.
-- Added profile and repository Bitcoin Cash address fields.
+- Added profile and repository Solana address fields.
 - Added per-repository chat channels in the Qt client.
 - Added a Python Cloudflare Worker relay with a Durable Object room class.
 - Removed npm, npx, TypeScript, package-lock, and node_modules from the worker
@@ -195,7 +195,7 @@ client's **Issues** tab and editable across nodes. See
 - What exact route should identify a repository across federated mainnodes:
   `domain:owner/repo`, `owner@domain/repo`, or another shape?
 - Which metrics should power the first leaderboards: hosted time, mirror count,
-  uptime, synced bytes, BCH earnings, or accepted contributions?
+  uptime, synced bytes, SOL earnings, or accepted contributions?
 
 ## Mainnode Model
 
@@ -205,7 +205,7 @@ identity or repository history, but they can provide useful network services:
 - encrypted repo-room relay through Durable Objects
 - repository catalogs and search indexes
 - mirror-health report ingestion
-- BCH donation metadata and optional community faucet support
+- Solana donation metadata and optional community faucet support
 - project, contributor, host, and mainnode leaderboards
 - compatibility routes while the protocol evolves
 
