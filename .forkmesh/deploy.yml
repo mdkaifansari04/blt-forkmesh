@@ -29,6 +29,7 @@ jobs:
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
           TREASURY_SOLANA_ADDRESS: ${{ secrets.TREASURY_SOLANA_ADDRESS }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
           cat > cloudflare_worker/.env.production <<EOF
@@ -38,6 +39,7 @@ jobs:
           ADMIN_USER=${ADMIN_USER}
           ADMIN_PASS=${ADMIN_PASS}
           TREASURY_SOLANA_ADDRESS=${TREASURY_SOLANA_ADDRESS}
+          CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
           EOF
       - name: Deploy worker
         run: |
