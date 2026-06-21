@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 107
 title: add the ability to delete a pr
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
