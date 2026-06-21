@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 74
 title: the scan to send solana qr code is not working on the join page please fix it
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
