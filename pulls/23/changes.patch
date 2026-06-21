@@ -1,0 +1,20 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 39dcd92..f33d3df 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -3233,7 +3233,6 @@ QWidget *MainWindow::buildBreadcrumb()
+     layout->addSpacing(10);
+     layout->addWidget(m_nodeLabel);
+     layout->addWidget(m_nodeMenuButton);
+-    layout->addWidget(m_navSolanaBalance);
+     layout->addSpacing(10);
+     layout->addWidget(m_repoLabel);
+     layout->addWidget(m_repoMenuButton);
+@@ -3245,6 +3244,7 @@ QWidget *MainWindow::buildBreadcrumb()
+     layout->addWidget(m_chatButton);
+     layout->addWidget(m_notificationButton);
+     layout->addWidget(m_connectionStatus);
++    layout->addWidget(m_navSolanaBalance);
+     layout->addWidget(m_avatarNavButton);
+     updateBreadcrumb();
+     updateConnectionStatus();
