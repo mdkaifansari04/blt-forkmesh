@@ -1,0 +1,20 @@
+diff --git a/cloudflare_worker/public/qr.js b/cloudflare_worker/public/qr.js
+index 6c4a7e5..2215972 100644
+--- a/cloudflare_worker/public/qr.js
++++ b/cloudflare_worker/public/qr.js
+@@ -220,11 +220,11 @@
+     const bits = formatBits(mask);
+     const bit = (i) => ((bits >> i) & 1) === 1;
+     // Around the top-left finder.
+-    for (let i = 0; i <= 5; i++) m[8][i] = bit(i);
+-    m[8][7] = bit(6);
++    for (let i = 0; i <= 5; i++) m[i][8] = bit(i);
++    m[7][8] = bit(6);
+     m[8][8] = bit(7);
+-    m[7][8] = bit(8);
+-    for (let i = 9; i <= 14; i++) m[14 - i][8] = bit(i);
++    m[8][7] = bit(8);
++    for (let i = 9; i <= 14; i++) m[8][14 - i] = bit(i);
+     // Around the other two finders.
+     for (let i = 0; i <= 7; i++) m[size - 1 - i][8] = bit(i);
+     for (let i = 8; i <= 14; i++) m[8][size - 15 + i] = bit(i);
