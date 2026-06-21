@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 56
 title: support SOL
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
