@@ -1,0 +1,79 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index b9ae622..41d01c6 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -11564,6 +11564,41 @@ void MainWindow::refreshActionsTable()
+     updateActionsTabIndicator();
+ }
+ 
++void MainWindow::showLatestVisibleActionRun()
++{
++    if (!m_actionsTable || m_actionsTable->rowCount() == 0) {
++        showRun(-1);
++        return;
++    }
++
++    int targetRow = 0;
++    int targetRunId = -1;
++    for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
++        QTableWidgetItem *item = m_actionsTable->item(row, 0);
++        if (!item)
++            continue;
++        const int runId = item->data(Qt::UserRole).toInt();
++        if (targetRunId < 0) {
++            targetRow = row;
++            targetRunId = runId;
++        }
++        const ActionRun *run = findRun(runId);
++        if (run && run->status == ActionStatus::Running) {
++            targetRow = row;
++            targetRunId = runId;
++            break;
++        }
++    }
++
++    if (targetRunId < 0) {
++        showRun(-1);
++        return;
++    }
++
++    m_actionsTable->selectRow(targetRow);
++    showRun(targetRunId);
++}
++
+ int MainWindow::commitStatusCode(const QString &sha) const
+ {
+     if (sha.isEmpty() || m_repoDetailIndex < 0 ||
+@@ -11762,11 +11797,7 @@ void MainWindow::refreshRepoActions()
+ 
+     m_selectedWorkflowFilter.clear();
+     refreshActionsTable();
+-
+-    // If the detail pane is showing a run from another repo, reset it.
+-    const ActionRun *selected = findRun(m_selectedRunId);
+-    if (!selected || selected->owner != repo.owner || selected->name != repo.name)
+-        showRun(-1);
++    showLatestVisibleActionRun();
+ }
+ 
+ void MainWindow::showRun(int runId)
+@@ -11885,6 +11916,7 @@ QWidget *MainWindow::buildRepoActionsTab()
+                 m_selectedWorkflowFilter =
+                     item ? item->data(Qt::UserRole).toString() : QString();
+                 refreshActionsTable();
++                showLatestVisibleActionRun();
+             });
+ 
+     // Enable/disable actions for this repo, right here on the Actions tab.
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 348b4ef..a03ea1e 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -248,6 +248,7 @@ private:
+     void onRunStatusChanged(int runId, const QString &status);
+     void onRunFinished(int runId, bool ok);
+     void refreshActionsTable();
++    void showLatestVisibleActionRun();
+     void showRun(int runId);
+     void approveSelectedRun();
+     void rejectSelectedRun();
