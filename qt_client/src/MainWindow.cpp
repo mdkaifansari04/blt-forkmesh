@@ -7444,18 +7444,7 @@ void MainWindow::reloadAgents()
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
-    if (m_repoAgentsTab) {
-        QString owner, name;
-        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-            owner = m_repositories.at(m_repoDetailIndex).owner;
-            name = m_repositories.at(m_repoDetailIndex).name;
-        }
-        int n = 0;
-        for (const AgentSession &s : std::as_const(m_agentSessions))
-            if (s.owner == owner && s.name == name)
-                ++n;
-        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
-    }
+    updateAgentsTabIndicator();
 }
 
 void MainWindow::refreshAgentTable()
@@ -15830,12 +15819,69 @@ void MainWindow::updateActionsTabIndicator()
                                            "\xE2\xA0\xA6", "\xE2\xA0\xA7",
                                            "\xE2\xA0\x87", "\xE2\xA0\x8F"};
             m_actionsSpinFrame = (m_actionsSpinFrame + 1) % 10;
-            t->setText(QString::fromUtf8("Actions ") +
+            const int wfCount = m_actionWorkflowList
+                                    ? qMax(0, m_actionWorkflowList->count() - 1)
+                                    : 0;
+            t->setText(QStringLiteral("Actions (%1) ").arg(wfCount) +
                        QString::fromUtf8(frames[m_actionsSpinFrame]));
         });
     }
     if (!m_actionsSpinTimer->isActive())
         m_actionsSpinTimer->start(110);
+}
+
+void MainWindow::updateAgentsTabIndicator()
+{
+    if (!m_repoAgentsTab)
+        return;
+
+    // Count agent sessions for the currently-open repo.
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name  = m_repositories.at(m_repoDetailIndex).name;
+    }
+    int n = 0;
+    for (const AgentSession &s : std::as_const(m_agentSessions))
+        if (s.owner == owner && s.name == name)
+            ++n;
+
+    // Is any agent running right now?
+    bool active = anyAgentRunning();
+
+    if (!active) {
+        if (m_agentsSpinTimer)
+            m_agentsSpinTimer->stop();
+        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
+        return;
+    }
+
+    if (!m_agentsSpinTimer) {
+        m_agentsSpinTimer = new QTimer(this);
+        connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
+            if (!m_repoAgentsTab)
+                return;
+            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
+                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
+                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+            m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
+            QString owner2, name2;
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+                owner2 = m_repositories.at(m_repoDetailIndex).owner;
+                name2  = m_repositories.at(m_repoDetailIndex).name;
+            }
+            int cnt = 0;
+            for (const AgentSession &s : std::as_const(m_agentSessions))
+                if (s.owner == owner2 && s.name == name2)
+                    ++cnt;
+            m_repoAgentsTab->setText(QStringLiteral("Agents (%1) ").arg(cnt) +
+                                     QString::fromUtf8(frames[m_agentsSpinFrame]));
+        });
+    }
+    if (!m_agentsSpinTimer->isActive())
+        m_agentsSpinTimer->start(110);
 }
 
 QList<ActionWorkflow>
