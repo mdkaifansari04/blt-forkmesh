@@ -14,6 +14,7 @@
         <file alias="copy.svg">icons/octicons/copy.svg</file>
         <file alias="device-desktop.svg">icons/octicons/device-desktop.svg</file>
         <file alias="diff.svg">icons/octicons/diff.svg</file>
+        <file alias="download.svg">icons/octicons/download.svg</file>
         <file alias="file.svg">icons/octicons/file.svg</file>
         <file alias="file-diff.svg">icons/octicons/file-diff.svg</file>
         <file alias="file-directory.svg">icons/octicons/file-directory.svg</file>

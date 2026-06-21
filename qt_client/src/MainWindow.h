@@ -211,6 +211,7 @@ private:
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
+    void downloadCommitPatch();           // save the open commit as a .patch file
     QWidget *buildAboutSidebar();
     QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
@@ -223,6 +224,7 @@ private:
     void showPull(int number);
     void renderPullDiff(const QString &filePath);
     void promptNewPull();
+    void importPatchAsPull(); // read a .patch/.diff file and open it as a PR
     void promptNewPullFromDirectory();
     void promptNewPullFromSource(const QString &sourceDir,
                                  const QString &preferredBase = QString(),
@@ -688,6 +690,8 @@ private:
     QTextBrowser *m_commitDiffView = nullptr;
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
+    QPushButton *m_commitDownloadButton = nullptr;
+    QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
@@ -708,6 +712,7 @@ private:
     QLineEdit *m_pullSearch = nullptr;
     QPushButton *m_pullNewButton = nullptr;
     QPushButton *m_pullChooseDirButton = nullptr;
+    QPushButton *m_pullImportButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
     QWidget *m_pullDetail = nullptr;
     QLabel *m_pullTitle = nullptr;
