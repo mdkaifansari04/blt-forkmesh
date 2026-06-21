@@ -33,6 +33,7 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGuiApplication>
