@@ -3,19 +3,16 @@ on: [push]
 jobs:
   deploy:
     steps:
-      - name: Skip unless only worker files changed
+      - name: Skip unless worker files changed
         run: |
           changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
-          if [ -z "$changed_files" ]; then
-            echo "Skipping deploy; no changed files."
+          worker_changes="$(printf '%s\n' "$changed_files" | sed -n '/^cloudflare_worker\//p')"
+          if [ -z "$worker_changes" ]; then
+            echo "Skipping deploy; no cloudflare_worker/ changes in this commit."
             touch .forkmesh-skip-deploy
-            exit 0
-          fi
-          outside_worker="$(printf '%s\n' "$changed_files" | sed '/^cloudflare_worker\//d')"
-          if [ -n "$outside_worker" ]; then
-            echo "Skipping deploy; changed files outside cloudflare_worker/:"
-            printf '%s\n' "$outside_worker"
-            touch .forkmesh-skip-deploy
+          else
+            echo "Deploying; cloudflare_worker/ changes detected:"
+            printf '%s\n' "$worker_changes"
           fi
       # CI/CD gate: run the crypto tests first; a failure aborts before deploy. they are set now
       - name: Run tests
