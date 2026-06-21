@@ -2,6 +2,7 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QIcon>
 #include <QMessageBox>
 #include <QStyleFactory>
 #include <QStyleHints>
@@ -15,6 +16,8 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName("ForkMesh");
     app.setOrganizationName("ForkMesh");
+    // App icon: the cube cropped out of the ForkMesh logo.
+    app.setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     app.setStyle(QStyleFactory::create("Fusion"));
 
     // Refuse to run as root: ForkMesh runs git, action workflows and shell
