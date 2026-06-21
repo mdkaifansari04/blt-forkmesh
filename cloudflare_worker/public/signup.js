@@ -268,7 +268,9 @@
     }
     if (!ok) {
       setAddressVisible(false);
-      setPayStatus("Could not generate a payment request. Reload and retry.", "waiting");
+      setPayStatus(body.error === "solana_rpc_unavailable"
+        ? "Signup is temporarily unavailable because Solana payment verification is offline. Please try again later."
+        : "Could not generate a payment request. Reload and retry.", "waiting");
       return;
     }
     lastReceivedLamports = Number(body.receivedLamports) || 0;
@@ -295,7 +297,12 @@
   async function pollStatus() {
     const { ok, body } = await api(
       "/api/accounts/donation-status?nodeName=" + encodeURIComponent(nodeName));
-    if (!ok) return;
+    if (!ok) {
+      if (body.error === "solana_rpc_unavailable") {
+        setPayStatus("Solana payment verification is temporarily offline. Please wait before sending SOL.", "waiting");
+      }
+      return;
+    }
     lastReceivedLamports = Number(body.receivedLamports) || 0;
     applyExpiry(body);
     if (body.deleted) {

@@ -1134,6 +1134,11 @@ async def _solana_rpc(env, method, params):
         return None
 
 
+async def _solana_rpc_available(env):
+    health = await _solana_rpc(env, "getHealth", [])
+    return isinstance(health, dict) and health.get("result") == "ok"
+
+
 async def _solana_reference_received(env, reference, treasury):
     if not reference or not SOLANA_RE.match(reference):
         return None
@@ -1187,6 +1192,8 @@ async def _account_donation_address(env, request):
     treasury = _treasury_address(env)
     if not treasury:
         return json_response({"error": "treasury_not_configured"}, status=503)
+    if not rec.get("donation_confirmed") and not await _solana_rpc_available(env):
+        return json_response({"error": "solana_rpc_unavailable"}, status=502)
 
     now = int(Date.now())
     renew_expired = bool(data.get("renewExpired") or data.get("generateNew"))
