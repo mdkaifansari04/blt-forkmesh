@@ -6226,7 +6226,10 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 {
     reloadAgents();
     AgentSession *session = findAgentSession(sessionId);
-    if (ok && session && session->createPr && m_agentStore) {
+    // Guard against opening a second PR for the same session: onAgentFinished can
+    // be reached more than once (signal re-fire, requeue), and the session may
+    // already carry a prNumber from a previous pass.
+    if (ok && session && session->createPr && session->prNumber <= 0 && m_agentStore) {
         const QString patch = m_agentStore->readPatch(*session);
         if (!patch.trimmed().isEmpty()) {
             const int repoIndex = repoIndexFor(session->owner, session->name);

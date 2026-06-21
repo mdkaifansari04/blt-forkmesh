@@ -43,6 +43,8 @@
       .stat-card .label { color: var(--muted-2); font-size: 11px;
         text-transform: uppercase; letter-spacing: .06em; }
       .stat-card .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
+      .usd { color: var(--muted-2); font-weight: 400; font-size: 0.8em; }
+      .stat-card .value .usd { display: block; margin-top: 2px; }
       .calc {
         border: 1px solid var(--border); background: var(--card);
         border-radius: 14px; padding: 20px; margin-bottom: 28px;
@@ -179,7 +181,7 @@
         </div>
         <div class="stat-card">
           <div class="label">Min. donation</div>
-          <div class="value">0.005 SOL</div>
+          <div class="value">0.005 SOL <span class="usd" id="min-donation-usd"></span></div>
         </div>
       </div>
 
@@ -240,7 +242,7 @@
         </div>
 
         <div class="pay-box">
-          <p>Send at least <strong id="pay-amount">0.005 SOL</strong> using this Solana payment request:</p>
+          <p>Send at least <strong id="pay-amount">0.005 SOL</strong> <span class="usd" id="pay-amount-usd"></span> using this Solana payment request:</p>
           <div id="pay-visible">
             <div class="pay-addr" id="pay-addr">generating…</div>
             <div class="pay-qr" id="pay-qr" style="margin: 10px auto;" aria-label="Payment QR code"></div>
