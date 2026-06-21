@@ -246,6 +246,8 @@ private:
     void reloadAgents();
     void refreshAgentTable();
     void showAgentSession(int sessionId);
+    // Parse "==> [net]" markers from a session log into the traffic graphic.
+    void updateAgentNetworkPanel(const QString &log, const QString &status);
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
     void assignIssueToAgent(const QString &provider);
@@ -771,8 +773,11 @@ private:
     int m_selectedAgentSessionId = -1;
     QTableWidget *m_agentTable = nullptr;
     QLabel *m_agentTitle = nullptr;
+    QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentUsage = nullptr;
+    QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
+    QPushButton *m_agentViewPrButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
