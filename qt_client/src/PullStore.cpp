@@ -304,6 +304,121 @@ bool PullStore::setStatus(int number, const QString &status, QString *error)
     return commit(QStringLiteral("pull #%1: %2").arg(number).arg(status), error);
 }
 
+bool PullStore::isBranchBehindBase(int number, bool *behind, QString *error) const
+{
+    if (behind)
+        *behind = false;
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.base.isEmpty() || pr.head.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("This pull request does not name a base and head branch.");
+        return false;
+    }
+    QByteArray output;
+    QString err;
+    if (!runGit(m_workTree, {"rev-list", "--count", pr.head + ".." + pr.base},
+                &output, &err)) {
+        if (error)
+            *error = QStringLiteral("Could not compare branches: %1").arg(err);
+        return false;
+    }
+    if (behind)
+        *behind = QString::fromUtf8(output).trimmed().toInt() > 0;
+    return true;
+}
+
+bool PullStore::updateBranchFromBase(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Updating needs a local working tree.");
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+
+    bool behind = false;
+    if (!isBranchBehindBase(number, &behind, error))
+        return false;
+    if (!behind)
+        return true;
+
+    QString err;
+    QByteArray status;
+    if (!runGit(m_workTree, {"status", "--porcelain"}, &status, &err) ||
+        !status.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Commit or stash local changes before updating the branch.");
+        return false;
+    }
+
+    QByteArray originalBranch;
+    QByteArray originalCommit;
+    runGit(m_workTree, {"rev-parse", "--abbrev-ref", "HEAD"}, &originalBranch, nullptr);
+    runGit(m_workTree, {"rev-parse", "--verify", "HEAD"}, &originalCommit, nullptr);
+    const QString current = QString::fromUtf8(originalBranch).trimmed();
+    const QString restoreRef =
+        current.isEmpty() || current == QLatin1String("HEAD")
+            ? QString::fromUtf8(originalCommit).trimmed()
+            : current;
+
+    if (!runGit(m_workTree, {"checkout", pr.head}, nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("Could not check out %1: %2").arg(pr.head, err);
+        return false;
+    }
+    if (!runGit(m_workTree, {"merge", "--no-edit", pr.base}, nullptr, &err)) {
+        runGit(m_workTree, {"merge", "--abort"}, nullptr, nullptr);
+        if (!restoreRef.isEmpty() && restoreRef != pr.head)
+            runGit(m_workTree, {"checkout", restoreRef}, nullptr, nullptr);
+        if (error)
+            *error = QStringLiteral("Could not merge %1 into %2: %3")
+                         .arg(pr.base, pr.head, err);
+        return false;
+    }
+    if (!restoreRef.isEmpty() && restoreRef != pr.head &&
+        !runGit(m_workTree, {"checkout", restoreRef}, nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("Updated %1, but could not return to %2: %3")
+                         .arg(pr.head, restoreRef, err);
+        return false;
+    }
+
+    QByteArray diff;
+    if (!runGit(m_workTree, {"diff", pr.base + ".." + pr.head}, &diff, &err)) {
+        if (error)
+            *error = QStringLiteral("Could not refresh the pull request patch: %1").arg(err);
+        return false;
+    }
+    pr.patch = QString::fromUtf8(diff);
+    computeStats(pr);
+    if (!writePull(pr, error))
+        return false;
+    return commit(QStringLiteral("pull #%1: update branch from %2")
+                      .arg(number)
+                      .arg(pr.base),
+                  error);
+}
+
 bool PullStore::mergePull(int number, QString *error)
 {
     if (!canWrite()) {

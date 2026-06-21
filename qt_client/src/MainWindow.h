@@ -219,6 +219,7 @@ private:
     void showPull(int number);
     void renderPullDiff(const QString &filePath);
     void promptNewPull();
+    void updateCurrentPullBranch();
     void mergeCurrentPull();
     void closeCurrentPull();
     void syncPullsInbox();
@@ -663,6 +664,7 @@ private:
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
     QLabel *m_pullDesc = nullptr;
+    QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullCloseButton = nullptr;
     QListWidget *m_pullFiles = nullptr;
