@@ -716,6 +716,29 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     padding: 12px;
     color: #e6edf3;
 }
+/* Agent detail: log terminal + status pill + API-traffic panel */
+QPlainTextEdit#actionLog {
+    background-color: #010409;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    color: #c9d1d9;
+    padding: 10px 12px;
+    selection-background-color: #1f6feb;
+}
+#agentStatusPill {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 11px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+#agentNetPanel {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
 
 )";
 
@@ -1410,6 +1433,30 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     border-radius: 8px;
     padding: 12px;
     color: #1f2328;
+}
+/* Agent detail: log terminal + status pill + API-traffic panel */
+QPlainTextEdit#actionLog {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    color: #1f2328;
+    padding: 10px 12px;
+    selection-background-color: #0969da;
+    selection-color: #ffffff;
+}
+#agentStatusPill {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 11px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+#agentNetPanel {
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 8px 12px;
 }
 
 )";

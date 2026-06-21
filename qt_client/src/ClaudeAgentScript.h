@@ -103,6 +103,25 @@ def call_api(api_key, model, max_tokens, messages):
         return json.loads(response.read().decode("utf-8"))
 
 
+# Network-traffic markers. ForkMesh's agent detail page parses lines beginning
+# with "==> [net]" to draw a live graphic of API calls and token flow, so keep
+# the in=/out= fields machine-readable.
+def net_request(turn, model, msg_count):
+    log("==> [net] \U0001F310 request #%d → POST api.anthropic.com/v1/messages "
+        "(model=%s, messages=%d)" % (turn, model, msg_count))
+
+
+def net_response(turn, usage, stop_reason):
+    inp = int(usage.get("input_tokens") or 0)
+    out = int(usage.get("output_tokens") or 0)
+    log("==> [net] \U0001F310 response #%d ← in=%d out=%d stop=%s"
+        % (turn, inp, out, stop_reason or "end"))
+
+
+def net_error(turn, code):
+    log("==> [net] \U0001F310 error #%d ← HTTP %s" % (turn, code))
+
+
 def main():
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
@@ -124,26 +143,30 @@ def main():
     log("==> Claude agent (model %s) talking to the Anthropic API directly." % model)
     messages = [{"role": "user", "content": prompt}]
 
-    for _ in range(MAX_TURNS):
+    for turn in range(1, MAX_TURNS + 1):
+        net_request(turn, model, len(messages))
         try:
             data = call_api(api_key, model, max_tokens, messages)
         except urllib.error.HTTPError as err:
+            net_error(turn, err.code)
             detail = err.read().decode("utf-8", "replace")
             log("!! Anthropic API error %d: %s" % (err.code, detail))
             if err.code in (401, 403):
                 log("!! The API key was rejected; rotate it and re-enter it in Settings.")
             return 1
         except urllib.error.URLError as err:
+            net_error(turn, "unreachable")
             log("!! Could not reach the Anthropic API: %s" % err.reason)
             return 1
 
+        net_response(turn, data.get("usage", {}), data.get("stop_reason"))
         content = data.get("content", [])
         tool_results = []
         for block in content:
             if block.get("type") == "text":
                 text = block.get("text", "").strip()
                 if text:
-                    log(text)
+                    log("\n● %s" % text)  # ● assistant message
             elif block.get("type") == "tool_use":
                 command = block.get("input", {}).get("command", "")
                 log("\n$ %s" % command)

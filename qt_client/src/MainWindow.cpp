@@ -1173,6 +1173,95 @@ private:
     QTextCharFormat m_removedFormat;
 };
 
+// Apply a true fixed-width font to a log/terminal view and, crucially, register
+// a colour-emoji fallback family. On Linux a bare QFont("monospace") both fails
+// to guarantee a real monospace face (causing the ASCII-table misalignment seen
+// in tool output) and disables the colour-emoji fallback, so emoji render as
+// flat black-and-white glyphs. Building the family list explicitly fixes both.
+inline void applyLogFont(QPlainTextEdit *view)
+{
+    if (!view)
+        return;
+    QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    QStringList families;
+    families << mono.family();
+    // Common Linux fixed faces, then the colour-emoji font so 🎉/✅/🌐 paint in
+    // colour while text stays monospaced.
+    for (const QString &fallback :
+         {QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Noto Sans Mono"),
+          QStringLiteral("Noto Color Emoji"), QStringLiteral("Apple Color Emoji"),
+          QStringLiteral("Segoe UI Emoji")}) {
+        if (!families.contains(fallback))
+            families << fallback;
+    }
+    mono.setFamilies(families);
+    mono.setStyleHint(QFont::Monospace);
+    mono.setFixedPitch(true);
+    view->setFont(mono);
+    // Consistent tab stops so any tab-aligned tool output lines up.
+    view->setTabStopDistance(4 * QFontMetricsF(mono).horizontalAdvance(QLatin1Char(' ')));
+}
+
+// Colourises agent / workflow logs so streamed Claude & Codex output reads like
+// a modern editor terminal: system markers, shell commands, tool results,
+// network traffic, and errors each get a distinct style. Works incrementally as
+// lines stream in (one QTextBlock at a time), so it's safe on a live log.
+class AgentLogHighlighter : public QSyntaxHighlighter
+{
+public:
+    explicit AgentLogHighlighter(QTextDocument *document)
+        : QSyntaxHighlighter(document)
+    {
+        const bool dark = currentThemeIsDark();
+        auto fmt = [](const QColor &c, bool bold = false, bool italic = false) {
+            QTextCharFormat f;
+            f.setForeground(c);
+            if (bold)
+                f.setFontWeight(QFont::Bold);
+            f.setFontItalic(italic);
+            return f;
+        };
+        m_net = fmt(QColor(dark ? "#d2a8ff" : "#8250df"), true);     // network traffic
+        m_system = fmt(QColor(dark ? "#58a6ff" : "#0969da"), true);  // ==> markers
+        m_success = fmt(QColor(dark ? "#3fb950" : "#1a7f37"), true); // success
+        m_error = fmt(QColor(dark ? "#ff7b72" : "#cf222e"), true);   // !! errors
+        m_command = fmt(QColor(dark ? "#79c0ff" : "#0550ae"), true); // $ shell command
+        m_muted = fmt(QColor(dark ? "#8b949e" : "#6e7781"), false, true); // tool output
+        m_tool = fmt(QColor(dark ? "#e3b341" : "#9a6700"), true);    // tool-use headers
+    }
+
+protected:
+    void highlightBlock(const QString &text) override
+    {
+        const QString trimmed = text.trimmed();
+        const int len = text.length();
+        if (trimmed.startsWith(QLatin1String("==> [net]")) ||
+            trimmed.startsWith(QLatin1String("[net]"))) {
+            setFormat(0, len, m_net);
+        } else if (trimmed.startsWith(QLatin1String("==> SUCCESS")) ||
+                   trimmed.startsWith(QLatin1String("==> Agent finished")) ||
+                   trimmed.startsWith(QLatin1String("==> Created pull request"))) {
+            setFormat(0, len, m_success);
+        } else if (trimmed.startsWith(QLatin1String("==>"))) {
+            setFormat(0, len, m_system);
+        } else if (trimmed.startsWith(QLatin1String("!!")) ||
+                   trimmed.contains(QLatin1String("Traceback"))) {
+            setFormat(0, len, m_error);
+        } else if (trimmed.startsWith(QLatin1String("$ "))) {
+            setFormat(0, len, m_command);
+        } else if (trimmed.startsWith(QLatin1String("(exit code")) ||
+                   trimmed.startsWith(QLatin1String("...[output"))) {
+            setFormat(0, len, m_muted);
+        } else if (trimmed.startsWith(QString::fromUtf8("\xE2\x97\x8F ")) ||  // ●
+                   trimmed.startsWith(QString::fromUtf8("\xE2\x8F\xBA"))) {   // ⏺
+            setFormat(0, len, m_tool);
+        }
+    }
+
+private:
+    QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
+};
+
 class CodePreviewEditor;
 
 class CodeLineNumberArea : public QWidget
@@ -6924,9 +7013,34 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteSelectedAgentSession);
 
+    // "View PR" — appears once the session produced a pull request.
+    m_agentViewPrButton = new QPushButton("View PR");
+    m_agentViewPrButton->setObjectName("primaryButton");
+    m_agentViewPrButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentViewPrButton, "git-pull-request", 16);
+    m_agentViewPrButton->hide();
+    connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (s && s->prNumber > 0)
+            switchToPullTab(s->prNumber);
+    });
+
+    // Connected/working status pill next to the title.
+    m_agentStatusPill = new QLabel;
+    m_agentStatusPill->setObjectName("agentStatusPill");
+    m_agentStatusPill->setTextFormat(Qt::RichText);
+    m_agentStatusPill->setAlignment(Qt::AlignCenter);
+
+    auto *titleCol = new QVBoxLayout;
+    titleCol->setContentsMargins(0, 0, 0, 0);
+    titleCol->setSpacing(4);
+    titleCol->addWidget(m_agentTitle);
+    titleCol->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
+
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
-    topRow->addWidget(m_agentTitle, 1);
+    topRow->addLayout(titleCol, 1);
+    topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
@@ -6934,9 +7048,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
     m_agentLog->setObjectName("actionLog");
-    QFont mono(QStringLiteral("monospace"));
-    mono.setStyleHint(QFont::Monospace);
-    m_agentLog->setFont(mono);
+    applyLogFont(m_agentLog);
+    new AgentLogHighlighter(m_agentLog->document());
     m_agentLog->setMaximumBlockCount(30000);
 
     m_agentPromptEdit = new QPlainTextEdit;
@@ -6970,12 +7083,19 @@ QWidget *MainWindow::buildAgentsTab()
     promptRow->addWidget(m_agentPromptEdit, 1);
     promptRow->addWidget(m_agentSendPromptButton, 0, Qt::AlignBottom);
 
+    m_agentNetPanel = new QLabel;
+    m_agentNetPanel->setObjectName("agentNetPanel");
+    m_agentNetPanel->setTextFormat(Qt::RichText);
+    m_agentNetPanel->setWordWrap(true);
+    m_agentNetPanel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
     auto *detailLayout = new QVBoxLayout(detailPane);
     detailLayout->setContentsMargins(12, 18, 22, 18);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentUsage);
+    detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentLog, 1);
     detailLayout->addLayout(promptRow);
 
@@ -7379,10 +7499,16 @@ void MainWindow::showAgentSession(int sessionId)
     if (!session) {
         if (m_agentTitle)
             m_agentTitle->setText("Select a session");
+        if (m_agentStatusPill)
+            m_agentStatusPill->clear();
         if (m_agentMeta)
             m_agentMeta->clear();
         if (m_agentUsage)
             m_agentUsage->clear();
+        if (m_agentNetPanel)
+            m_agentNetPanel->clear();
+        if (m_agentViewPrButton)
+            m_agentViewPrButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
         updateAgentActionState();
@@ -7425,12 +7551,122 @@ void MainWindow::showAgentSession(int sessionId)
                 .arg(maxOutput)
                 .arg(session->estimatedCredits));
     }
+    // Connected / working status pill.
+    if (m_agentStatusPill) {
+        const QString s = session->status;
+        QString dotColor = agentStatusColor(s).name();
+        QString label;
+        if (s == AgentStatus::Running)
+            label = "Connected \xC2\xB7 working on the task\xE2\x80\xA6";
+        else if (s == AgentStatus::Queued)
+            label = "Queued";
+        else if (s == AgentStatus::Waiting)
+            label = "Waiting";
+        else if (s == AgentStatus::Success)
+            label = "Completed";
+        else if (s == AgentStatus::Failed)
+            label = "Failed";
+        else
+            label = agentStatusText(s);
+        m_agentStatusPill->setText(
+            QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
+                              "<span style='color:#8b949e'>%2</span>")
+                .arg(dotColor, label.toHtmlEscaped()));
+    }
+
+    // View PR button appears once a pull request exists for this session.
+    if (m_agentViewPrButton) {
+        m_agentViewPrButton->setVisible(session->prNumber > 0);
+        if (session->prNumber > 0)
+            m_agentViewPrButton->setText(
+                QStringLiteral("View PR #%1").arg(session->prNumber));
+    }
+
+    const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
+    updateAgentNetworkPanel(log, session->status);
     if (m_agentLog) {
-        m_agentLog->setPlainText(m_agentStore ? m_agentStore->readLog(*session)
-                                              : QString());
+        m_agentLog->setPlainText(log);
         m_agentLog->moveCursor(QTextCursor::End);
     }
     updateAgentActionState();
+}
+
+void MainWindow::updateAgentNetworkPanel(const QString &log, const QString &status)
+{
+    if (!m_agentNetPanel)
+        return;
+    int requests = 0, responses = 0, errors = 0;
+    long long inTokens = 0, outTokens = 0;
+    static const QRegularExpression tokenRe(
+        QStringLiteral("in=(\\d+)\\s+out=(\\d+)"));
+    const auto lines = QStringView(log).split(QLatin1Char('\n'));
+    for (const auto &lineView : lines) {
+        const QString line = lineView.toString();
+        if (!line.contains(QLatin1String("[net]")))
+            continue;
+        if (line.contains(QLatin1String("request #")))
+            ++requests;
+        else if (line.contains(QLatin1String("response #"))) {
+            ++responses;
+            const auto m = tokenRe.match(line);
+            if (m.hasMatch()) {
+                inTokens += m.captured(1).toLongLong();
+                outTokens += m.captured(2).toLongLong();
+            }
+        } else if (line.contains(QLatin1String("error #")))
+            ++errors;
+    }
+
+    // Codex (external CLI) sessions don't emit our markers — keep the panel out
+    // of the way rather than showing an empty graphic.
+    if (requests == 0 && responses == 0) {
+        m_agentNetPanel->hide();
+        return;
+    }
+    m_agentNetPanel->show();
+
+    const bool live = status == AgentStatus::Running;
+    const QString dot = live ? "#3fb950" : "#8b949e";
+    auto fmtTokens = [](long long n) {
+        if (n >= 1000)
+            return QStringLiteral("%1k").arg(n / 1000.0, 0, 'f', 1);
+        return QString::number(n);
+    };
+    // Proportional bars (▇) for input vs output token volume.
+    const long long maxTok = qMax<long long>(1, qMax(inTokens, outTokens));
+    auto bar = [&](long long n, const QString &color) {
+        const int width = int((double(n) / double(maxTok)) * 22.0 + 0.5);
+        return QStringLiteral("<span style='color:%1'>%2</span>")
+            .arg(color, QString(qMax(n > 0 ? 1 : 0, width),
+                                QChar(0x2587))); // ▇
+    };
+    const QString errText =
+        errors > 0 ? QString::fromUtf8(
+                         " \xC2\xB7 <span style='color:#f85149'>%1 error%2</span>")
+                         .arg(errors)
+                         .arg(errors == 1 ? "" : "s")
+                   : QString();
+    m_agentNetPanel->setText(
+        QString::fromUtf8(
+            "<table cellspacing='0' cellpadding='0' style='font-size:12px'>"
+            "<tr><td style='padding-bottom:3px'>"
+            "<span style='color:%1'>\xE2\x97\x8F</span> "
+            "<b style='color:#8b949e'>\xF0\x9F\x8C\x90 API traffic</b> "
+            "<span style='color:#8b949e'>\xC2\xB7 %2 request%3 \xC2\xB7 %4 response%5%6</span>"
+            "</td></tr>"
+            "<tr><td><span style='color:#8b949e'>\xE2\x86\x91 in&nbsp;</span>"
+            "%7 <span style='color:#8b949e'>&nbsp;%8</span></td></tr>"
+            "<tr><td><span style='color:#8b949e'>\xE2\x86\x93 out</span>&nbsp;"
+            "%9 <span style='color:#8b949e'>&nbsp;%10</span></td></tr>"
+            "</table>")
+            .arg(dot)
+            .arg(requests)
+            .arg(requests == 1 ? "" : "s")
+            .arg(responses)
+            .arg(responses == 1 ? "" : "s")
+            .arg(errText)
+            .arg(bar(inTokens, "#58a6ff"), fmtTokens(inTokens))
+            .arg(bar(outTokens, "#d2a8ff"), fmtTokens(outTokens)));
 }
 
 AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) const
@@ -7716,6 +7952,11 @@ void MainWindow::onAgentLog(int sessionId, const QString &text)
     if (!text.endsWith(QLatin1Char('\n')))
         m_agentLog->insertPlainText(QStringLiteral("\n"));
     m_agentLog->moveCursor(QTextCursor::End);
+    // Refresh the live traffic graphic when a network marker streams in.
+    if (text.contains(QLatin1String("[net]")) && m_agentStore) {
+        if (AgentSession *session = findAgentSession(sessionId))
+            updateAgentNetworkPanel(m_agentStore->readLog(*session), session->status);
+    }
 }
 
 void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
@@ -15843,9 +16084,8 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionLog = new QPlainTextEdit;
     m_actionLog->setReadOnly(true);
     m_actionLog->setObjectName("actionLog");
-    QFont mono(QStringLiteral("monospace"));
-    mono.setStyleHint(QFont::Monospace);
-    m_actionLog->setFont(mono);
+    applyLogFont(m_actionLog);
+    new AgentLogHighlighter(m_actionLog->document());
     m_actionLog->setMaximumBlockCount(20000);
 
     auto *detailLayout = new QVBoxLayout(detailPane);
