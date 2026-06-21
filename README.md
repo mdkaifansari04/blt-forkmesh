@@ -153,10 +153,12 @@ folder per issue with signed, append-only history, surfaced in the desktop
 client's **Issues** tab and editable across nodes. See
 [`issues/README.md`](issues/README.md) for the format.
 
-> **Design note (important):** File browsing and clone are **pure live** — data
-> is served on demand from a connected host and nothing is stored on the relay.
-> If no host is online the repo is unavailable (the website caches what you've
-> browsed in localStorage). This keeps the relay lean and free-plan-hostable.
+> **Design note (important):** File browsing and clone are served on demand from
+> a connected host and nothing is stored on the relay. The website caches what
+> you've browsed in localStorage, and the desktop client can keep temporary
+> preview mirrors in the Settings-configured preview cache so you can inspect
+> code, issues, commits, and pull requests before choosing to mirror or fork.
+> This keeps the relay lean and free-plan-hostable.
 
 ## Done
 
