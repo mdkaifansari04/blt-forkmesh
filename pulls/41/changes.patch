@@ -1,0 +1,119 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 13617d0..d1bc85c 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -7408,18 +7408,7 @@ void MainWindow::reloadAgents()
+     refreshAgentTable();
+     if (m_selectedAgentSessionId > 0)
+         showAgentSession(m_selectedAgentSessionId);
+-    if (m_repoAgentsTab) {
+-        QString owner, name;
+-        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+-            owner = m_repositories.at(m_repoDetailIndex).owner;
+-            name = m_repositories.at(m_repoDetailIndex).name;
+-        }
+-        int n = 0;
+-        for (const AgentSession &s : std::as_const(m_agentSessions))
+-            if (s.owner == owner && s.name == name)
+-                ++n;
+-        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
+-    }
++    updateAgentsTabIndicator();
+ }
+ 
+ void MainWindow::refreshAgentTable()
+@@ -15794,7 +15783,10 @@ void MainWindow::updateActionsTabIndicator()
+                                            "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+                                            "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+             m_actionsSpinFrame = (m_actionsSpinFrame + 1) % 10;
+-            t->setText(QString::fromUtf8("Actions ") +
++            const int wfCount = m_actionWorkflowList
++                                    ? qMax(0, m_actionWorkflowList->count() - 1)
++                                    : 0;
++            t->setText(QStringLiteral("Actions (%1) ").arg(wfCount) +
+                        QString::fromUtf8(frames[m_actionsSpinFrame]));
+         });
+     }
+@@ -15802,6 +15794,60 @@ void MainWindow::updateActionsTabIndicator()
+         m_actionsSpinTimer->start(110);
+ }
+ 
++void MainWindow::updateAgentsTabIndicator()
++{
++    if (!m_repoAgentsTab)
++        return;
++
++    // Count agent sessions for the currently-open repo.
++    QString owner, name;
++    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
++        owner = m_repositories.at(m_repoDetailIndex).owner;
++        name  = m_repositories.at(m_repoDetailIndex).name;
++    }
++    int n = 0;
++    for (const AgentSession &s : std::as_const(m_agentSessions))
++        if (s.owner == owner && s.name == name)
++            ++n;
++
++    // Is any agent running right now?
++    bool active = anyAgentRunning();
++
++    if (!active) {
++        if (m_agentsSpinTimer)
++            m_agentsSpinTimer->stop();
++        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
++        return;
++    }
++
++    if (!m_agentsSpinTimer) {
++        m_agentsSpinTimer = new QTimer(this);
++        connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
++            if (!m_repoAgentsTab)
++                return;
++            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
++                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
++                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
++                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
++                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
++            m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
++            QString owner2, name2;
++            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
++                owner2 = m_repositories.at(m_repoDetailIndex).owner;
++                name2  = m_repositories.at(m_repoDetailIndex).name;
++            }
++            int cnt = 0;
++            for (const AgentSession &s : std::as_const(m_agentSessions))
++                if (s.owner == owner2 && s.name == name2)
++                    ++cnt;
++            m_repoAgentsTab->setText(QStringLiteral("Agents (%1) ").arg(cnt) +
++                                     QString::fromUtf8(frames[m_agentsSpinFrame]));
++        });
++    }
++    if (!m_agentsSpinTimer->isActive())
++        m_agentsSpinTimer->start(110);
++}
++
+ QList<ActionWorkflow>
+ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+ {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 35e3e88..15d4df1 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -353,6 +353,8 @@ private:
+     QString commitStatusGlyph(const QString &sha) const;
+     // Spin the Actions tab label while a run for the open repo is active.
+     void updateActionsTabIndicator();
++    // Spin the Agents tab label while any agent session is running.
++    void updateAgentsTabIndicator();
+     // Re-render commit check glyphs in whichever repo-detail tab is visible.
+     void refreshCommitStatusGlyphs();
+     void loadRepoInsights();
+@@ -755,6 +757,8 @@ private:
+     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
+     QTimer *m_actionsSpinTimer = nullptr;        // animates the Actions tab while running
+     int m_actionsSpinFrame = 0;
++    QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
++    int m_agentsSpinFrame = 0;
+     QTableWidget *m_actionsTable = nullptr;
+     QLabel *m_actionRunTitle = nullptr;
+     QLabel *m_actionRunMeta = nullptr;
