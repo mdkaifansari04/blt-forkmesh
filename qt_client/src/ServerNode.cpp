@@ -265,7 +265,17 @@ void ServerNode::onSocketReadyRead()
         const QByteArray header = m_readBuffer.left(headerEnd);
         m_readBuffer.remove(0, headerEnd + 4);
         if (!header.startsWith("HTTP/1.1 101") && !header.startsWith("HTTP/1.0 101")) {
-            emit fatalError("Mainnode did not accept the WebSocket upgrade.");
+            // A non-101 here is almost always transient — the mainnode is
+            // redeploying or briefly returning an error/HTML page. Treat it like
+            // any other dropped link and reconnect with backoff instead of a
+            // fatal error, which would kick the user all the way back to the
+            // onboarding screen every time the relay is deployed.
+            emit systemMessage(
+                "Mainnode did not accept the WebSocket upgrade; reconnecting\xE2\x80\xA6");
+            m_wsReady = false;
+            if (m_socket)
+                m_socket->abort();
+            scheduleReconnect();
             return;
         }
         m_wsReady = true;
