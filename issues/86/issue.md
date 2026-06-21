@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 86
 title: have the ability to create a pr by adding a directory have an choose directory button on the pr page and then if they are the same repo then create the PR
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
