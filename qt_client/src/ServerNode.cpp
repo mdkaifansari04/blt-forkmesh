@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRandomGenerator>
+#include <QSet>
 #include <QSettings>
 #include <QSslSocket>
 #include <QTimer>
@@ -420,6 +421,15 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
         emit systemMessage("Mainnode encryption failed; message was not sent.");
         return;
     }
+    // Tag durable conversation messages so the relay can retain them (still
+    // encrypted) and replay them to nodes that join later — giving new users
+    // some recent history even when no other node is online. Ephemeral frames
+    // (typing/presence/hello/history/avatar) and private DMs are never retained.
+    static const QSet<QString> kDurableTypes = {
+        QStringLiteral("chat"), QStringLiteral("edit"),
+        QStringLiteral("delete"), QStringLiteral("reaction")};
+    if (kDurableTypes.contains(plain.value("type").toString()))
+        envelope.insert("persist", true);
     sendTextFrame(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
     if (showActivity)
         emit systemMessage("Network: sent encrypted " + plain.value("type").toString() +

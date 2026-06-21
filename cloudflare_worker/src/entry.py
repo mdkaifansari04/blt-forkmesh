@@ -22,6 +22,10 @@ MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
 MAX_CONNECTIONS = 128
 MAX_TEXT_BYTES = 96 * 1024 * 1024
+# Retained chat history (encrypted) so late-joining nodes see some backlog.
+CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
+CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
+CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
 MAX_FILES = 5000
@@ -532,6 +536,15 @@ SCHEMA_STATEMENTS = [
     # node_minutes is "node-minutes online" that hour (one node online all hour
     # = 60). hour_ts is the epoch-ms start of the hour.
     "CREATE TABLE IF NOT EXISTS online_hourly (hour_ts INTEGER PRIMARY KEY, node_minutes INTEGER NOT NULL DEFAULT 0)",
+    # Retained chat history: the relay keeps the last few days of *encrypted*
+    # durable messages per room so a node joining later sees some history even
+    # when no peer is online to replay it. body is the opaque encrypted envelope
+    # exactly as relayed; the server never sees plaintext. room_key is the same
+    # key used to address the room Durable Object.
+    """CREATE TABLE IF NOT EXISTS chat_history (
+        room_key TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL,
+        body TEXT NOT NULL, PRIMARY KEY (room_key, msg_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_history_room_ts ON chat_history(room_key, ts)",
 ]
 
 
@@ -1984,6 +1997,45 @@ class Default(WorkerEntrypoint):
         return await host_object.fetch(request)
 
 
+async def chat_history_recent(env, room_key):
+    # The last few days of retained (encrypted) messages for a room, oldest
+    # first, so a joining client can replay them in order.
+    await ensure_schema(env)
+    cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
+    rows = await d1_all(
+        env,
+        "SELECT body FROM chat_history WHERE room_key=? AND ts>=? "
+        "ORDER BY ts ASC, msg_id ASC LIMIT ?",
+        room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
+    )
+    return [str(r["body"]) for r in rows]
+
+
+async def chat_history_store(env, room_key, msg_id, ts, body):
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "INSERT INTO chat_history (room_key, msg_id, ts, body) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(room_key, msg_id) DO NOTHING",
+        room_key, msg_id, ts, body,
+    )
+
+
+async def chat_history_prune(env, room_key):
+    # Drop anything past the retention window, then enforce the per-room cap by
+    # keeping only the newest CHAT_HISTORY_MAX_PER_ROOM rows.
+    cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
+    await d1_run(env, "DELETE FROM chat_history WHERE room_key=? AND ts<?",
+                 room_key, cutoff)
+    await d1_run(
+        env,
+        "DELETE FROM chat_history WHERE room_key=? AND msg_id NOT IN ("
+        "SELECT msg_id FROM chat_history WHERE room_key=? "
+        "ORDER BY ts DESC LIMIT ?)",
+        room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
+    )
+
+
 class ForkMeshRoom(DurableObject):
     # Encrypted chat relay on the WebSocket Hibernation API. Sockets are accepted
     # via ctx.acceptWebSocket and serviced by the webSocketMessage/Close handlers
@@ -2007,9 +2059,28 @@ class ForkMeshRoom(DurableObject):
         if self._client_count() >= MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
 
+        # The room key identifies this room across hibernation; stash it on the
+        # socket so webSocketMessage can scope retained history to this room.
+        info = room_key_from_path(path)
+        room_key = info["key"] if info else None
+
         client, server = WebSocketPair.new().object_values()
         self.ctx.acceptWebSocket(server, to_js(["chat"]))
-        server.serializeAttachment(to_js({"id": new_socket_id()}))
+        server.serializeAttachment(to_js({"id": new_socket_id(), "room": room_key}))
+
+        # Replay retained (still-encrypted) history to the joining client so new
+        # users see some recent backlog even when no peer is online to send it.
+        if room_key:
+            try:
+                await chat_history_prune(self.env, room_key)
+                for body in await chat_history_recent(self.env, room_key):
+                    try:
+                        server.send(body)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
 
     def _client_count(self):
@@ -2033,6 +2104,30 @@ class ForkMeshRoom(DurableObject):
                 peer.send(message)
             except Exception:
                 pass
+
+        # Retain durable conversation messages (still encrypted) for late joiners.
+        await self._maybe_retain(ws, message)
+
+    async def _maybe_retain(self, ws, message):
+        room_key = _ws_attr(ws, "room")
+        if not room_key:
+            return
+        if len(message.encode("utf-8")) > CHAT_HISTORY_MAX_BODY:
+            return  # don't retain very large frames (e.g. file transfers)
+        try:
+            envelope = json.loads(message)
+        except Exception:
+            return
+        if not (isinstance(envelope, dict) and envelope.get("persist")):
+            return
+        try:
+            # The message id lives inside the ciphertext, so key retention on a
+            # hash of the opaque frame (dedupes accidental re-relays).
+            msg_id = (await sha256_hex(message))[:40]
+            await chat_history_store(self.env, room_key, msg_id,
+                                     int(Date.now()), message)
+        except Exception:
+            pass
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")
