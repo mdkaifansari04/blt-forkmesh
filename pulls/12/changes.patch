@@ -1,0 +1,185 @@
+diff --git a/qt_client/src/ChatBackend.h b/qt_client/src/ChatBackend.h
+index 438467a..5c491db 100644
+--- a/qt_client/src/ChatBackend.h
++++ b/qt_client/src/ChatBackend.h
+@@ -17,6 +17,7 @@ struct MemberInfo {
+     QString solanaAddress;
+     QString solanaBalance;  // reserved for a later balance indexer/API
+     QString platform;    // linux | macos | windows | android | ios | web
++    QString version;     // ForkMesh app version advertised by the node
+     QStringList mirrors; // "owner/name" of repos this node mirrors
+ };
+ 
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 6f65280..1bfcafb 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -3635,6 +3635,8 @@ QWidget *MainWindow::buildNodeProfilePanel()
+     m_profileStatus->setTextFormat(Qt::RichText);
+     m_profilePlatform = new QLabel;
+     m_profilePlatform->setObjectName("statusLine");
++    m_profileVersion = new QLabel;
++    m_profileVersion->setObjectName("statusLine");
+     m_profileMirrors = new QLabel;
+     m_profileMirrors->setObjectName("statusLine");
+     m_profileMirrors->setWordWrap(true);
+@@ -3744,6 +3746,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
+     layout->addWidget(m_profileStatus, 0, Qt::AlignHCenter);
+     layout->addWidget(m_profileNote, 0, Qt::AlignHCenter);
+     layout->addWidget(m_profilePlatform);
++    layout->addWidget(m_profileVersion);
+     layout->addWidget(m_profileMirrors);
+     layout->addWidget(m_profileStats);
+     layout->addWidget(nodeKeyLabel);
+@@ -3814,6 +3817,12 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+             : QStringLiteral("Platform: %1").arg(info.platform));
+     m_profilePlatform->setVisible(!info.platform.isEmpty());
+ 
++    m_profileVersion->setText(
++        info.version.isEmpty()
++            ? QStringLiteral("Version: unknown")
++            : QStringLiteral("Version: v%1").arg(info.version.toHtmlEscaped()));
++    m_profileVersion->setVisible(!info.version.isEmpty());
++
+     if (info.mirrors.isEmpty()) {
+         m_profileMirrors->setText("Mirrors: none advertised");
+     } else {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 4056a30..a820613 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -780,6 +780,7 @@ private:
+     QLabel *m_profileName = nullptr;
+     QLabel *m_profileStatus = nullptr;
+     QLabel *m_profilePlatform = nullptr;
++    QLabel *m_profileVersion = nullptr;
+     QLabel *m_profileMirrors = nullptr;
+     QLabel *m_profileNote = nullptr;
+     QLabel *m_profileStats = nullptr; // node stats, moved here from the node list
+diff --git a/qt_client/src/ServerNode.cpp b/qt_client/src/ServerNode.cpp
+index 544b9dd..c1581c5 100644
+--- a/qt_client/src/ServerNode.cpp
++++ b/qt_client/src/ServerNode.cpp
+@@ -11,6 +11,10 @@
+ #include <QTimer>
+ #include <QUuid>
+ 
++#ifndef FORKMESH_VERSION
++#define FORKMESH_VERSION "dev"
++#endif
++
+ namespace {
+ 
+ constexpr int kSeenCacheLimit = 4096;
+@@ -18,6 +22,7 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
+ constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
+ constexpr int kMaxDisplayNameChars = 32;
+ constexpr int kMaxSolanaAddressChars = 64;
++constexpr int kMaxVersionChars = 32;
+ constexpr int kMaxTextChars = 16000;
+ constexpr int kMaxFileNameChars = 180;
+ constexpr int kMaxMimeChars = 100;
+@@ -95,6 +100,7 @@ bool messageHasSafePayload(const QJsonObject &message)
+     return message.value("text").toString().size() <= kMaxTextChars &&
+            message.value("sender").toString().size() <= kMaxDisplayNameChars &&
+            message.value("solana").toString().size() <= kMaxSolanaAddressChars &&
++           message.value("version").toString().size() <= kMaxVersionChars &&
+            message.value("fileName").toString().size() <= kMaxFileNameChars &&
+            message.value("fileMime").toString().size() <= kMaxMimeChars &&
+            message.value("file").toString().size() <= kMaxBase64FileChars &&
+@@ -122,6 +128,7 @@ ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
+       m_roomName(roomName.trimmed()),
+       m_solanaAddress(solanaAddress.trimmed().left(kMaxSolanaAddressChars)),
+       m_platform(currentPlatform()),
++      m_version(QStringLiteral(FORKMESH_VERSION).left(kMaxVersionChars)),
+       m_nodeId(stableOrRandomNodeId(stableNodeId)),
+       m_crypto(m_roomName, passphrase)
+ {
+@@ -426,6 +433,8 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
+         message.insert("solana", m_solanaAddress);
+     if (!m_platform.isEmpty())
+         message.insert("platform", m_platform);
++    if (!m_version.isEmpty())
++        message.insert("version", m_version);
+     return message;
+ }
+ 
+@@ -671,8 +680,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
+     const QString sender = message.value("sender").toString();
+     const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
+     const QString platform = message.value("platform").toString().left(16);
++    const QString version = boundedText(message, "version", kMaxVersionChars);
+     if (!senderId.isEmpty())
+-        rememberPeer(senderId, sender, solanaAddress, platform);
++        rememberPeer(senderId, sender, solanaAddress, platform, version);
+ 
+     if (type == "hello") {
+         bool changed = false;
+@@ -845,7 +855,7 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
+ 
+ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
+                               const QString &solanaAddress, const QString &platform,
+-                              bool online)
++                              const QString &version, bool online)
+ {
+     if (peerId.isEmpty() || peerId == m_nodeId)
+         return;
+@@ -855,6 +865,8 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
+         peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
+     if (!platform.isEmpty())
+         peer.platform = platform;
++    if (!version.isEmpty())
++        peer.version = version;
+     peer.online = online;
+     peer.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
+     updateRosterAndStatus();
+@@ -862,8 +874,9 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
+ 
+ void ServerNode::updateRosterAndStatus()
+ {
+-    MemberInfo self{m_nodeId,    m_userName, QString(), true, m_wsReady, m_solanaAddress,
+-                    QString(),   m_platform, m_mirroredRepos};
++    MemberInfo self{m_nodeId,  m_userName, QString(), true,      m_wsReady,
++                    m_solanaAddress, QString(),   m_platform, m_version,
++                    m_mirroredRepos};
+     QList<MemberInfo> members{self};
+     int onlineCount = 0;
+     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
+@@ -876,6 +889,7 @@ void ServerNode::updateRosterAndStatus()
+         member.online = it->online;
+         member.solanaAddress = it->solanaAddress;
+         member.platform = it->platform;
++        member.version = it->version;
+         member.mirrors = it->mirrors;
+         members.append(member);
+         ++onlineCount;
+diff --git a/qt_client/src/ServerNode.h b/qt_client/src/ServerNode.h
+index 9963add..f62f457 100644
+--- a/qt_client/src/ServerNode.h
++++ b/qt_client/src/ServerNode.h
+@@ -48,6 +48,7 @@ private:
+         QString name;
+         QString solanaAddress;
+         QString platform;
++        QString version;
+         QStringList mirrors;
+         qint64 lastSeenMs = 0;
+         bool online = true;
+@@ -72,7 +73,8 @@ private:
+     void emitDm(const QJsonObject &message, const QString &conversationPeer);
+     void rememberPeer(const QString &peerId, const QString &name,
+                       const QString &solanaAddress = QString(),
+-                      const QString &platform = QString(), bool online = true);
++                      const QString &platform = QString(),
++                      const QString &version = QString(), bool online = true);
+     void updateRosterAndStatus();
+     void storeHistory(const QJsonObject &message);
+     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
+@@ -89,6 +91,7 @@ private:
+     QString m_roomName;
+     QString m_solanaAddress;
+     QString m_platform;
++    QString m_version;
+     QStringList m_mirroredRepos; // "owner/name" advertised to other nodes
+     QString m_nodeId;
+     // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so
