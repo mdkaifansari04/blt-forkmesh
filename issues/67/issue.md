@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 67
 title: make it so that when the mirrors update from the source of truth they get an alert
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
