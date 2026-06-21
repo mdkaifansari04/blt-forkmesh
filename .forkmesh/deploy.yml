@@ -3,7 +3,7 @@ on: [push]
 jobs:
   deploy:
     steps:
-      # CI/CD gate: run the crypto tests first; a failure aborts before deploy.
+      # CI/CD gate: run the crypto tests first; a failure aborts before deploy. they are set now
       - name: Run tests
         run: python3 cloudflare_worker/tests/test_crypto.py
       # .env.production is gitignored, so materialize it from CI secrets. deploy.sh
