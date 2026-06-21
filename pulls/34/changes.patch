@@ -1,0 +1,20 @@
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 7312bac..02b636f 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -333,6 +333,7 @@ private:
+     void loadBranchesPanel();
+     void promptNewBranch();
+     void deleteBranch(const QString &branch);
++    void deleteSelectedBranches();
+     QWidget *buildReleasesTab();
+     void loadReleasesPanel();
+     void promptNewRelease();
+@@ -647,6 +648,7 @@ private:
+     int m_releasesTabIndex = -1; // index of the Releases page
+     QTableWidget *m_branchesTable = nullptr;
+     QLabel *m_branchesSummary = nullptr;
++    QPushButton *m_branchesDeleteSelBtn = nullptr;
+     QTableWidget *m_releasesTable = nullptr;
+     QLabel *m_releasesSummary = nullptr;
+     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
