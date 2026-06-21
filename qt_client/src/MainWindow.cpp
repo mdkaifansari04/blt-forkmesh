@@ -5095,19 +5095,23 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTitle = new QLabel("Select a pull request");
     m_pullTitle->setObjectName("channelTitle");
     m_pullTitle->setWordWrap(true);
+    m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
     m_pullCloseButton = new QPushButton("Close");
-    for (QPushButton *b : {m_pullMergeButton, m_pullCloseButton}) {
+    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
     m_pullMergeButton->setObjectName("primaryButton");
+    setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
+    m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
+    pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
@@ -5171,6 +5175,8 @@ QWidget *MainWindow::buildPullsTab()
     });
     connect(m_pullNewButton, &QPushButton::clicked, this, &MainWindow::promptNewPull);
     connect(m_pullSyncButton, &QPushButton::clicked, this, &MainWindow::syncPullsInbox);
+    connect(m_pullUpdateButton, &QPushButton::clicked,
+            this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     return page;
@@ -5351,10 +5357,17 @@ void MainWindow::updatePullActionState()
     for (const PullRequest &pr : m_currentPulls)
         if (pr.number == m_currentPullNumber)
             open = pr.status == "open";
+    bool behind = false;
+    if (writable && have && open)
+        store.isBranchBehindBase(m_currentPullNumber, &behind);
     if (m_pullNewButton)
         m_pullNewButton->setEnabled(m_repoDetailIndex >= 0);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
+    if (m_pullUpdateButton) {
+        m_pullUpdateButton->setVisible(writable && have && open && behind);
+        m_pullUpdateButton->setEnabled(writable && have && open && behind);
+    }
     if (m_pullMergeButton)
         m_pullMergeButton->setEnabled(writable && have && open);
     if (m_pullCloseButton)
@@ -5449,6 +5462,25 @@ void MainWindow::promptNewPull()
     } else {
         submitPullToInbox(store.makeSignedPull(pr));
     }
+}
+
+void MainWindow::updateCurrentPullBranch()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    if (QMessageBox::question(this, "Update branch",
+                              QStringLiteral("Merge the base branch into pull request #%1?")
+                                  .arg(m_currentPullNumber)) != QMessageBox::Yes)
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.updateBranchFromBase(m_currentPullNumber, &error)) {
+        QMessageBox::warning(this, "Update branch", error);
+        return;
+    }
+    logSystem(QStringLiteral("Updated pull request #%1 from its base branch.")
+                  .arg(m_currentPullNumber));
+    reloadPulls();
 }
 
 void MainWindow::mergeCurrentPull()

@@ -48,6 +48,8 @@ public:
                    const QString &base, const QString &head, const QString &patch,
                    QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
+    bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr) const;
+    bool updateBranchFromBase(int number, QString *error = nullptr);
     // Apply the PR's patch into the working tree, commit, mark merged.
     bool mergePull(int number, QString *error = nullptr);
     // Merge a signed PR received from the relay inbox into pulls/.
