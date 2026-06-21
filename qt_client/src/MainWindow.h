@@ -224,7 +224,10 @@ private:
     void renderPullDiff(const QString &filePath);
     void promptNewPull();
     void promptNewPullFromDirectory();
-    void promptNewPullFromSource(const QString &sourceDir);
+    void promptNewPullFromSource(const QString &sourceDir,
+                                 const QString &preferredBase = QString(),
+                                 const QString &preferredHead = QString());
+    void switchToPullTab(int pullNumber);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void closeIssuesLinkedFromPull(const PullRequest &pr);
@@ -314,6 +317,9 @@ private:
     void openRepoFile(const QString &path);
     void loadRepoInfo();
     void loadBranchesAndTags();
+    QStringList repoBranches() const;
+    QString repoDefaultBranch(const QStringList &branches) const;
+    void showBranchesMenu();
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
@@ -349,6 +355,7 @@ private:
                           const QHash<QString, QString> &labelColors) const;
     void showIssue(int number); // render the selected issue's thread
     void renderIssueThread(const Issue &issue);
+    void showIssueBurnupChart();
     void showIssueComposePage(QWidget *page);
     void removeIssueComposePage();
     void setIssueInlineNotice(const QString &message, bool error = false);
@@ -631,6 +638,7 @@ private:
     QPushButton *m_downloadZipButton = nullptr;
     QPushButton *m_starButton = nullptr;
     QPushButton *m_branchButton = nullptr;
+    QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;

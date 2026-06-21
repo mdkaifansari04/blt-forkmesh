@@ -1,4 +1,5 @@
 #include "../src/ForkMeshIdentity.h"
+#include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/RoomCrypto.h"
 
@@ -125,6 +126,35 @@ int main(int argc, char *argv[])
         "37f2b6516c608aafe45958eabd5bb4c20b9c6765d1eb39a5c27b4588e566ec97";
     check(IssueStore::canonicalString(3, titleVec) == expectedTitle,
           "title-event canonical string matches the cross-language vector");
+
+    // A burn-up series must reconstruct historical state, including a close
+    // and a later reopening, rather than repeating today's status backwards.
+    Issue firstIssue;
+    firstIssue.createdAt = 1000;
+    IssueEvent firstClosed;
+    firstClosed.type = "status";
+    firstClosed.status = "closed";
+    firstClosed.ts = 3000;
+    firstIssue.events.append(firstClosed);
+    Issue secondIssue;
+    secondIssue.createdAt = 2000;
+    IssueEvent secondClosed = firstClosed;
+    secondClosed.ts = 4000;
+    IssueEvent secondReopened;
+    secondReopened.type = "status";
+    secondReopened.status = "open";
+    secondReopened.ts = 5000;
+    secondIssue.events = {secondReopened, secondClosed}; // intentionally unsorted
+    const QList<IssueBurnupPoint> burnup =
+        buildIssueBurnupSeries({firstIssue, secondIssue}, 1000, 5000, 4);
+    check(burnup.size() == 5 && burnup.at(0).openCount == 1 &&
+              burnup.at(0).closedCount == 0 && burnup.at(2).openCount == 1 &&
+              burnup.at(2).closedCount == 1 && burnup.at(3).openCount == 0 &&
+              burnup.at(3).closedCount == 2 && burnup.at(4).openCount == 1 &&
+              burnup.at(4).closedCount == 1,
+          "issue burn-up reconstructs close and reopen history");
+    check(firstIssueHistoryTimestamp({firstIssue, secondIssue}, 9999) == 1000,
+          "issue burn-up finds the all-time starting point");
 
     // Sign a real event with the node identity and verify it independently.
     IssueStore store(QString(), QString(), &identity, "tester");
