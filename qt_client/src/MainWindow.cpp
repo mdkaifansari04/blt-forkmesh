@@ -4642,7 +4642,6 @@ QWidget *MainWindow::buildIssuesSection()
     auto *filterRow = new QHBoxLayout;
     filterRow->setContentsMargins(0, 0, 0, 0);
     filterRow->addWidget(m_issueSearch, 1);
-    filterRow->addWidget(m_issueStatusFilter);
     filterRow->addWidget(m_issueLabelFilter);
     filterRow->addWidget(m_issueMilestoneFilter);
 
@@ -4676,6 +4675,7 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
+    actionRow->addWidget(m_issueStatusFilter);
     actionRow->addStretch();
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
@@ -8463,9 +8463,15 @@ void MainWindow::updateRepoCommitCount()
 
 void MainWindow::updateRepoIssueCount()
 {
-    if (m_repoIssuesTab)
+    if (m_repoIssuesTab) {
+        int openCount = 0;
+        for (const Issue &issue : std::as_const(m_currentIssues)) {
+            if (issue.status != "closed")
+                ++openCount;
+        }
         m_repoIssuesTab->setText(
-            QStringLiteral("Issues (%1)").arg(m_currentIssues.size()));
+            QStringLiteral("Issues (%1)").arg(openCount));
+    }
 }
 
 void MainWindow::updateRepoPullCount()
