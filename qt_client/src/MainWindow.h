@@ -299,6 +299,8 @@ private:
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
+    void updateRepoCodeSize();
+    void updateRepoCommitCount();
     void updateRepoIssueCount();
     void updateRepoPullCount();
     void loadRepoOverview(const QString &path);
@@ -594,11 +596,14 @@ private:
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
+    QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
 
     // Repo detail view
     int m_repoDetailIndex = -1;
     QButtonGroup *m_repoDetailTabs = nullptr;
+    QPushButton *m_repoCodeTab = nullptr;
+    QPushButton *m_repoCommitsTab = nullptr;
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoAgentsTab = nullptr;
@@ -628,7 +633,7 @@ private:
     QLabel *m_langLegend = nullptr;
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
-    QListWidget *m_commitsList = nullptr;
+    QTableWidget *m_commitsTable = nullptr;
     QLabel *m_insightsSummary = nullptr;
     QLabel *m_insightsTraffic = nullptr;
     QLabel *m_insightsLanguageBar = nullptr;
@@ -647,7 +652,7 @@ private:
     QTextBrowser *m_commitDiffView = nullptr;
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
-    int m_currentCommitRow = -1; // row in m_commitsList the detail view is showing
+    int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
