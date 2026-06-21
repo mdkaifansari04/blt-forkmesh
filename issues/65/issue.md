@@ -2,7 +2,6 @@
 schema: forkmesh-issue-v1
 number: 65
 title: Could not apply the patch cleanly: error: qt_client/src/MainWindow.cpp: does not match index
-error: qt_client/src/MainWindow.h: does not match index
 status: open
 labels: []
 milestone: 
