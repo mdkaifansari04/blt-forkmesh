@@ -48,6 +48,7 @@ private:
         QString name;
         QString solanaAddress;
         QString platform;
+        QString version;
         QStringList mirrors;
         qint64 lastSeenMs = 0;
         bool online = true;
@@ -72,7 +73,8 @@ private:
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
     void rememberPeer(const QString &peerId, const QString &name,
                       const QString &solanaAddress = QString(),
-                      const QString &platform = QString(), bool online = true);
+                      const QString &platform = QString(),
+                      const QString &version = QString(), bool online = true);
     void updateRosterAndStatus();
     void storeHistory(const QJsonObject &message);
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
@@ -89,6 +91,7 @@ private:
     QString m_roomName;
     QString m_solanaAddress;
     QString m_platform;
+    QString m_version;
     QStringList m_mirroredRepos; // "owner/name" advertised to other nodes
     QString m_nodeId;
     // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so

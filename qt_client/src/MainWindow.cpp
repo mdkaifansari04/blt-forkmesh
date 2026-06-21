@@ -3635,6 +3635,8 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileStatus->setTextFormat(Qt::RichText);
     m_profilePlatform = new QLabel;
     m_profilePlatform->setObjectName("statusLine");
+    m_profileVersion = new QLabel;
+    m_profileVersion->setObjectName("statusLine");
     m_profileMirrors = new QLabel;
     m_profileMirrors->setObjectName("statusLine");
     m_profileMirrors->setWordWrap(true);
@@ -3744,6 +3746,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileStatus, 0, Qt::AlignHCenter);
     layout->addWidget(m_profileNote, 0, Qt::AlignHCenter);
     layout->addWidget(m_profilePlatform);
+    layout->addWidget(m_profileVersion);
     layout->addWidget(m_profileMirrors);
     layout->addWidget(m_profileStats);
     layout->addWidget(nodeKeyLabel);
@@ -3813,6 +3816,12 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
             ? QStringLiteral("Platform: unknown")
             : QStringLiteral("Platform: %1").arg(info.platform));
     m_profilePlatform->setVisible(!info.platform.isEmpty());
+
+    m_profileVersion->setText(
+        info.version.isEmpty()
+            ? QStringLiteral("Version: unknown")
+            : QStringLiteral("Version: v%1").arg(info.version.toHtmlEscaped()));
+    m_profileVersion->setVisible(!info.version.isEmpty());
 
     if (info.mirrors.isEmpty()) {
         m_profileMirrors->setText("Mirrors: none advertised");
