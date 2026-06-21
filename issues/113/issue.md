@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 113
 title: on the /network/ page show the balance of each node's wallets and if it's eligible for payouts, make sure payouts go 50% to treasury and 50% to all online nodes
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
