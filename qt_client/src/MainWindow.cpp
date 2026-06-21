@@ -44,6 +44,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QWidgetAction>
 #include <QMessageBox>
 #include <QMimeDatabase>
 #include <QNetworkAccessManager>
@@ -2866,19 +2867,8 @@ void MainWindow::refreshServerRail()
     layout->addWidget(addButton, 0, Qt::AlignHCenter);
     layout->addStretch();
 
-    // Footer pinned to the bottom: the user's avatar opens Settings (the nav bar
-    // is gone, and rebuild/restart now lives in Settings next to Leave node).
-    m_avatarNavButton = new QPushButton;
-    m_avatarNavButton->setObjectName("serverFooterButton");
-    m_avatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_avatarNavButton->setFixedSize(40, 40);
-    m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setToolTip("You · Settings");
-    connect(m_avatarNavButton, &QPushButton::clicked, this,
-            [this] { showSection(1); }); // Settings
-    updateAvatarButton();
-    layout->addWidget(m_avatarNavButton, 0, Qt::AlignHCenter);
-
+    // The user avatar now lives top-right in the breadcrumb bar (see
+    // buildBreadcrumb), with a dropdown for Settings / Rebuild / Logout.
     connect(m_serverGroup, &QButtonGroup::idClicked, this,
             &MainWindow::switchToServer, Qt::UniqueConnection);
     updateBreadcrumb();
@@ -3089,9 +3079,35 @@ QWidget *MainWindow::buildBreadcrumb()
 {
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
-    m_breadcrumbServerIcon = new QLabel;
-    m_breadcrumbServerIcon->setFixedSize(18, 18);
-    m_breadcrumbServerIcon->setScaledContents(true);
+
+    // --- Relay switcher: bigger favicon (shows that relay's nodes when
+    // clicked), a "domain ▾ count" dropdown (search / switch / add), and an
+    // open-in-browser icon. ---------------------------------------------------
+    m_relayIconButton = new QPushButton;
+    m_relayIconButton->setObjectName("relayIconButton");
+    m_relayIconButton->setCursor(Qt::PointingHandCursor);
+    m_relayIconButton->setFixedSize(30, 30);
+    m_relayIconButton->setIconSize(QSize(24, 24));
+    m_relayIconButton->setToolTip("Show this relay's nodes");
+    connect(m_relayIconButton, &QPushButton::clicked, this,
+            [this] { showSection(0); });
+
+    m_relayMenuButton = new QPushButton;
+    m_relayMenuButton->setObjectName("relayMenuButton");
+    m_relayMenuButton->setCursor(Qt::PointingHandCursor);
+    m_relayMenuButton->setToolTip("Switch, search, or add relays");
+    connect(m_relayMenuButton, &QPushButton::clicked, this,
+            &MainWindow::showRelayMenu);
+
+    m_relayOpenButton = new QPushButton;
+    m_relayOpenButton->setObjectName("relayOpenButton");
+    m_relayOpenButton->setCursor(Qt::PointingHandCursor);
+    m_relayOpenButton->setFixedSize(26, 26);
+    setOcticon(m_relayOpenButton, "link", 14);
+    m_relayOpenButton->setToolTip("Open this relay in your browser");
+    connect(m_relayOpenButton, &QPushButton::clicked, this,
+            [this] { openServerWebsite(m_activeServer); });
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -3100,19 +3116,7 @@ QWidget *MainWindow::buildBreadcrumb()
         if (href == "repos") {
             showSection(0);
         } else if (href == "server") {
-            // Open the active mainnode's website in the system browser.
-            if (m_activeServer >= 0 && m_activeServer < m_servers.size()) {
-                QUrl url(m_servers.at(m_activeServer).url);
-                if (url.scheme() == "ws")
-                    url.setScheme(QStringLiteral("http"));
-                else if (url.scheme() == "wss")
-                    url.setScheme(QStringLiteral("https"));
-                url.setPath(QStringLiteral("/"));
-                url.setQuery(QString());
-                url.setFragment(QString());
-                if (url.isValid() && !url.host().isEmpty())
-                    QDesktopServices::openUrl(url);
-            }
+            openServerWebsite(m_activeServer);
         }
     });
     // Live connection indicator, pinned to the top-right of the window.
@@ -3138,8 +3142,30 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setAlignment(Qt::AlignCenter);
     m_topMessage->hide();
 
+    // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
+    // dropdown with account-level actions.
+    m_avatarNavButton = new QPushButton;
+    m_avatarNavButton->setObjectName("serverFooterButton");
+    m_avatarNavButton->setCursor(Qt::PointingHandCursor);
+    m_avatarNavButton->setFixedSize(40, 40);
+    m_avatarNavButton->setIconSize(QSize(34, 34));
+    m_avatarNavButton->setToolTip("You");
+    connect(m_avatarNavButton, &QPushButton::clicked, this, [this] {
+        QMenu menu(this);
+        menu.addAction(QStringLiteral("Settings"), this, [this] { showSection(1); });
+        menu.addAction(QStringLiteral("Rebuild & Restart"), this,
+                       [this] { quickRebuildRestart(); });
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("Logout"), this, [this] { leaveSession(); });
+        // Drop down from the avatar, right-aligned to its right edge.
+        const QPoint corner = m_avatarNavButton->mapToGlobal(
+            QPoint(m_avatarNavButton->width(), m_avatarNavButton->height()));
+        menu.exec(corner - QPoint(menu.sizeHint().width(), 0));
+    });
+    updateAvatarButton();
+
     auto *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(14, 6, 14, 6);
+    layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
     layout->addWidget(m_breadcrumbServerIcon);
     layout->addWidget(m_breadcrumb);
@@ -3148,6 +3174,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addStretch();
     layout->addWidget(m_notificationButton);
     layout->addWidget(m_connectionStatus);
+    layout->addWidget(m_avatarNavButton);
     updateBreadcrumb();
     updateConnectionStatus();
     updateNotificationButton();

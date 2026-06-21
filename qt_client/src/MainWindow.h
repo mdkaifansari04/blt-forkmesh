@@ -162,6 +162,9 @@ private:
     // Top breadcrumb: active server > current section.
     QWidget *buildBreadcrumb();
     void updateBreadcrumb();
+    void showRelayMenu();          // searchable dropdown to switch/add relays
+    void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
+    void openServerWebsite(int index); // open a relay's site in the browser
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Persistent network log docked at the bottom of the app.
     QWidget *buildNetworkLogDock();
@@ -484,6 +487,12 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     QLabel *m_breadcrumbServerIcon = nullptr;
+    // Top-bar relay switcher: a clickable favicon (shows that relay's nodes), a
+    // "domain ▾ count" dropdown button (search/switch/add relays), and an
+    // open-in-browser icon.
+    QPushButton *m_relayIconButton = nullptr;
+    QPushButton *m_relayMenuButton = nullptr;
+    QPushButton *m_relayOpenButton = nullptr;
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
