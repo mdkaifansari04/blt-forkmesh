@@ -5351,10 +5351,18 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsTable->setWordWrap(false);
     m_commitsTable->setSortingEnabled(true);
     m_commitsTable->setToolTip("Click a column header to sort");
+    m_commitsTable->setTextElideMode(Qt::ElideRight);
+    // Fixed default column widths instead of ResizeToContents: the latter
+    // rescans every row on each resize, which makes dragging the splitter
+    // beside a 300-row table choppy. Interactive sections stay smooth.
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
-    for (int i = 0; i < kCommitSummaryCol; ++i)
-        commitHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    commitHeader->setSectionResizeMode(QHeaderView::Interactive);
+    const int commitColWidths[kCommitSummaryCol] = {150, 72, 60, 66, 66};
+    for (int i = 0; i < kCommitSummaryCol; ++i) {
+        commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
+        commitHeader->resizeSection(i, commitColWidths[i]);
+    }
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
@@ -5403,6 +5411,15 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitTitle->setTextFormat(Qt::RichText);
     m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
+    m_commitDownloadButton = new QPushButton("Download patch");
+    m_commitDownloadButton->setObjectName("ghostButton");
+    m_commitDownloadButton->setCursor(Qt::PointingHandCursor);
+    m_commitDownloadButton->setToolTip(
+        "Save this commit as a .patch file you can re-import as a pull request");
+    setOcticon(m_commitDownloadButton, "download", 16);
+    connect(m_commitDownloadButton, &QPushButton::clicked, this,
+            &MainWindow::downloadCommitPatch);
+
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
     navCol->setSpacing(4);
@@ -5411,6 +5428,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->setContentsMargins(0, 0, 0, 0);
     prevNextRow->setSpacing(4);
     prevNextRow->addStretch();
+    prevNextRow->addWidget(m_commitDownloadButton);
     prevNextRow->addWidget(m_commitPrevButton);
     prevNextRow->addWidget(m_commitNextButton);
     navCol->addLayout(prevNextRow);
@@ -5661,21 +5679,28 @@ QWidget *MainWindow::buildPullsTab()
     heading->setObjectName("channelTitle");
     m_pullNewButton = new QPushButton("New pull request");
     m_pullChooseDirButton = new QPushButton("Choose directory");
+    m_pullImportButton = new QPushButton("Import patch");
     m_pullSyncButton = new QPushButton("Sync inbox");
-    for (QPushButton *b : {m_pullNewButton, m_pullChooseDirButton, m_pullSyncButton}) {
+    for (QPushButton *b : {m_pullNewButton, m_pullChooseDirButton, m_pullImportButton,
+                           m_pullSyncButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
     setOcticon(m_pullNewButton, "plus", 16);
     setOcticon(m_pullChooseDirButton, "file-directory", 16);
+    setOcticon(m_pullImportButton, "download", 16);
     setOcticon(m_pullSyncButton, "sync", 16);
     m_pullChooseDirButton->setToolTip("Create a pull request from another local checkout of this repository");
+    m_pullImportButton->setToolTip("Open a .patch/.diff file (e.g. a downloaded commit) as a pull request");
     m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
+    connect(m_pullImportButton, &QPushButton::clicked, this,
+            &MainWindow::importPatchAsPull);
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->addWidget(m_pullNewButton);
     toolbar->addWidget(m_pullChooseDirButton);
+    toolbar->addWidget(m_pullImportButton);
     toolbar->addWidget(m_pullSyncButton);
     toolbar->addStretch();
 
@@ -6016,6 +6041,8 @@ void MainWindow::updatePullActionState()
         m_pullNewButton->setEnabled(m_repoDetailIndex >= 0);
     if (m_pullChooseDirButton)
         m_pullChooseDirButton->setEnabled(m_repoDetailIndex >= 0);
+    if (m_pullImportButton)
+        m_pullImportButton->setEnabled(writable);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
     if (m_pullUpdateButton) {
@@ -6033,6 +6060,96 @@ void MainWindow::updatePullActionState()
 void MainWindow::promptNewPull()
 {
     promptNewPullFromSource(QString());
+}
+
+void MainWindow::importPatchAsPull()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString dir = repoGitDir();
+    PullStore store = pullStoreForCurrentRepo();
+    if (dir.isEmpty() || !store.canWrite()) {
+        setRepoDetailNotice(
+            "Importing a patch needs a writable local checkout of this repo.", true);
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Import patch as pull request", QDir::homePath(),
+        "Patch files (*.patch *.diff);;All files (*)");
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setRepoDetailNotice("Could not read the patch file.", true);
+        return;
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+    const QString patch = QString::fromUtf8(raw);
+    if (patch.trimmed().isEmpty()) {
+        setRepoDetailNotice("That patch file is empty.", true);
+        return;
+    }
+
+    // Derive a title: prefer the format-patch "Subject:" line (minus the
+    // [PATCH] prefix), else fall back to the file name.
+    QString title;
+    for (const QString &line : patch.split(QLatin1Char('\n'))) {
+        if (line.startsWith(QLatin1String("Subject:"))) {
+            title = line.mid(8).trimmed();
+            title.remove(QRegularExpression(QStringLiteral("^\\[PATCH[^\\]]*\\]\\s*")));
+            break;
+        }
+        if (line.startsWith(QLatin1String("diff --git ")))
+            break; // reached the diff with no Subject
+    }
+    if (title.isEmpty())
+        title = QFileInfo(path).completeBaseName();
+
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+
+    // Sanity-check that the patch applies to the base before opening the PR.
+    QString applyErr;
+    QProcess check;
+    check.setProgram("git");
+    check.setArguments({"-C", dir, "apply", "--check", "--3way", path});
+    check.start();
+    check.waitForFinished(8000);
+    if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0) {
+        const QString detail =
+            QString::fromUtf8(check.readAllStandardError()).trimmed();
+        if (QMessageBox::warning(
+                this, "Import patch",
+                QStringLiteral("This patch does not apply cleanly onto %1:\n\n%2\n\n"
+                               "Open the pull request anyway?")
+                    .arg(base, detail.isEmpty() ? "(no details)" : detail),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+    }
+
+    // Synthesize a head label from the title; the patch itself carries the change.
+    QString head = QStringLiteral("imported/") +
+                   title.toLower().replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+                                           QStringLiteral("-"));
+    head = head.left(60);
+    if (head.endsWith(QLatin1Char('-')))
+        head.chop(1);
+
+    QString error;
+    const int number = store.createPull(
+        title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
+        base, head, patch, &error);
+    if (number < 0) {
+        setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
+                                            : error,
+                            true);
+        return;
+    }
+    logSystem(QStringLiteral("Imported patch %1 as pull #%2.").arg(path).arg(number));
+    setRepoDetailNotice(QStringLiteral("Imported patch as pull #%1.").arg(number));
+    m_currentPullNumber = number;
+    switchToPullTab(number);
 }
 
 void MainWindow::promptNewPullFromDirectory()
@@ -8233,8 +8350,9 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadFileSearchIndex();
     loadAboutSidebar();
     loadCommits();
-    if (m_insightsSummary)
-        loadRepoInsights();
+    // Insights (contributor stats, git shortlog) are computed lazily when the
+    // Insights tab is opened — see the tab-switch handler — so opening a repo
+    // doesn't pay for them up front.
     // Land on the GitHub-style overview (no explorer until a file is opened).
     loadRepoOverview(QString());
     if (m_filesStack)
@@ -8691,6 +8809,39 @@ void MainWindow::showCommitList()
         m_commitsStack->setCurrentIndex(0);
 }
 
+void MainWindow::downloadCommitPatch()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || m_currentCommitHash.isEmpty())
+        return;
+    // format-patch produces a self-describing patch (author, message, diff) that
+    // is still apply-able via git apply, so it round-trips through Import as PR.
+    QByteArray patch;
+    QString err;
+    if (!runGitCapture(dir,
+                       {"format-patch", "-1", "--stdout", m_currentCommitHash},
+                       &patch, &err) ||
+        patch.trimmed().isEmpty()) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not generate the patch." : err, true);
+        return;
+    }
+    const QString shortHash = m_currentCommitHash.left(8);
+    const QString suggested =
+        QDir::homePath() + "/" + shortHash + QStringLiteral(".patch");
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Download patch", suggested, "Patch files (*.patch *.diff)");
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(patch) < 0) {
+        setRepoDetailNotice("Could not write the patch file.", true);
+        return;
+    }
+    file.close();
+    setRepoDetailNotice(QStringLiteral("Saved patch to %1.").arg(path));
+    logSystem(QStringLiteral("Saved commit %1 as patch %2.").arg(shortHash, path));
+}
+
 void MainWindow::applyCommitIssueClosures()
 {
     // Closing an issue authors signed events into the repo's issues/ folder, so
@@ -8810,6 +8961,7 @@ struct DiffFileEntry {
     QString anchor;
     int adds = 0;
     int dels = 0;
+    QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
 };
 
 QString diffImageMimeForPath(const QString &path)
@@ -8880,12 +9032,48 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     static const QRegularExpression hunkRe(
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
     QString html;
+    html.reserve(patch.size() * 3); // avoid repeated reallocation on big diffs
+    QString fileBody;
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
     bool inFile = false;
+
+    // Per-file header is emitted lazily: we buffer the rows so the header can
+    // report final +/- counts (read from the hunks), then prepend the styled
+    // header block before the table.
+    auto emitFileHeader = [&](int idx) {
+        const DiffFileEntry &f = files[idx];
+        QString badgeClass = QStringLiteral("st-mod");
+        QString badgeText = QStringLiteral("MODIFIED");
+        if (f.status == QLatin1String("added")) {
+            badgeClass = QStringLiteral("st-add");
+            badgeText = QStringLiteral("ADDED");
+        } else if (f.status == QLatin1String("deleted")) {
+            badgeClass = QStringLiteral("st-del");
+            badgeText = QStringLiteral("DELETED");
+        } else if (f.status == QLatin1String("renamed")) {
+            badgeClass = QStringLiteral("st-ren");
+            badgeText = QStringLiteral("RENAMED");
+        }
+        const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
+        html += QStringLiteral(
+                    "<a name=\"%1\"></a><div class='fileblock'>"
+                    "<div class='fileheader'>"
+                    "<span class='stbadge %2'>%3</span>"
+                    "<span class='fpath'>%4</span>"
+                    "<span class='fstat'><span class='sadd'>+%5</span> "
+                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>"
+                    "%7<table class='difftable' cellspacing='0' cellpadding='0'>")
+                    .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
+                         QString::number(f.adds), QString::number(f.dels),
+                         imagePreview);
+    };
     auto closeFile = [&] {
         if (inFile) {
+            emitFileHeader(fileIdx);
+            html += fileBody;
             html += QStringLiteral("</table></div>");
+            fileBody.clear();
             inFile = false;
         }
     };
@@ -8902,18 +9090,21 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             f.anchor = QStringLiteral("file-%1").arg(files.size());
             files.append(f);
             fileIdx = files.size() - 1;
-            const QString imagePreview =
-                diffImagePreviewHtml(dir, base, head, path);
-            html += QStringLiteral("<a name=\"%1\"></a><div class='fileblock'>"
-                                   "<div class='fileheader'>%2</div>"
-                                   "%3<table class='difftable' width='100%' "
-                                   "cellspacing='0' cellpadding='0'>")
-                        .arg(f.anchor, path.toHtmlEscaped(), imagePreview);
             inFile = true;
             continue;
         }
         if (!inFile)
             continue;
+        // Status detection (header lines come before the first hunk).
+        if (fileIdx >= 0) {
+            if (line.startsWith(QLatin1String("new file")))
+                files[fileIdx].status = QStringLiteral("added");
+            else if (line.startsWith(QLatin1String("deleted file")))
+                files[fileIdx].status = QStringLiteral("deleted");
+            else if (line.startsWith(QLatin1String("rename ")) ||
+                     line.startsWith(QLatin1String("similarity ")))
+                files[fileIdx].status = QStringLiteral("renamed");
+        }
         if (line.startsWith(QLatin1String("index ")) ||
             line.startsWith(QLatin1String("--- ")) ||
             line.startsWith(QLatin1String("+++ ")) ||
@@ -8930,10 +9121,10 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 oldNo = m.captured(1).toInt();
                 newNo = m.captured(2).toInt();
             }
-            html += QStringLiteral(
-                        "<tr><td class='ln hunk'></td><td class='ln hunk'></td>"
-                        "<td class='code hunk'>%1</td></tr>")
-                        .arg(line.toHtmlEscaped());
+            fileBody += QStringLiteral(
+                            "<tr><td class='ln hunk'></td><td class='ln hunk'></td>"
+                            "<td class='code hunk'>%1</td></tr>")
+                            .arg(line.toHtmlEscaped());
             continue;
         }
 
@@ -8958,12 +9149,12 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             oldCell = QString::number(oldNo++);
             newCell = QString::number(newNo++);
         }
-        html += QStringLiteral("<tr><td class='ln %1'>%2</td>"
-                               "<td class='ln %1'>%3</td>"
-                               "<td class='code %1'>%4</td></tr>")
-                    .arg(cls, oldCell, newCell,
-                         text.isEmpty() ? QStringLiteral("&nbsp;")
-                                        : text.toHtmlEscaped());
+        fileBody += QStringLiteral("<tr><td class='ln %1'>%2</td>"
+                                   "<td class='ln %1'>%3</td>"
+                                   "<td class='code %1'>%4</td></tr>")
+                        .arg(cls, oldCell, newCell,
+                             text.isEmpty() ? QStringLiteral("&nbsp;")
+                                            : text.toHtmlEscaped());
     }
     closeFile();
     return html;
@@ -9016,6 +9207,9 @@ void MainWindow::showCommit(const QString &hash)
     const QString emptyTree =
         QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
     const QString base = parents.isEmpty() ? emptyTree : parents.first();
+    m_currentCommitHash = full.isEmpty() ? hash : full;
+    if (m_commitDownloadButton)
+        m_commitDownloadButton->setEnabled(true);
     QByteArray patchRaw;
     runGitCapture(dir, {"diff", "-M", base, full.isEmpty() ? hash : full},
                   &patchRaw, nullptr);
@@ -9067,11 +9261,27 @@ void MainWindow::showCommit(const QString &hash)
         QSignalBlocker block(m_commitFileList);
         m_commitFileList->clear();
         for (const DiffFileEntry &f : files) {
+            // Show the basename prominently with the +/- counts; full path on
+            // hover. A status-coloured octicon leads each row.
+            const QString name = f.path.section(QLatin1Char('/'), -1);
             auto *item = new QListWidgetItem(
                 QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                    .arg(f.path, QString::number(f.adds), QString::number(f.dels)));
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QString icon = "file-diff";
+            QColor tint("#d29922"); // modified
+            if (f.status == QLatin1String("added")) {
+                icon = "diff";
+                tint = QColor("#3fb950");
+            } else if (f.status == QLatin1String("deleted")) {
+                icon = "trash";
+                tint = QColor("#f85149");
+            } else if (f.status == QLatin1String("renamed")) {
+                icon = "file-diff";
+                tint = QColor("#58a6ff");
+            }
+            item->setIcon(themedOcticon(icon, tint, 14));
             item->setData(Qt::UserRole, f.anchor);
-            item->setToolTip(f.path);
+            item->setToolTip(QStringLiteral("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_commitFileList->addItem(item);
         }
     }
@@ -9086,24 +9296,37 @@ void MainWindow::showCommit(const QString &hash)
         const QString hunkFg = dark ? "#58a6ff" : "#0969da";
         const QString lnFg = "#8b949e";
         const QString headBg = dark ? "#161b22" : "#f6f8fa";
+        const QString border = dark ? "#30363d" : "#d0d7de";
+        const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
+        const QString fg = dark ? "#e6edf3" : "#1f2328";
         const QString css =
             QStringLiteral(
-                ".fileblock { margin-bottom:16px; }"
-                ".fileheader { background:%1; padding:6px 10px; font-family:"
-                "monospace; font-weight:600; border:1px solid #30363d; }"
-                ".difftable { font-family:monospace; font-size:12px; }"
-                ".imagetable { border-left:1px solid #30363d; "
-                "border-right:1px solid #30363d; }"
+                ".fileblock { margin-bottom:18px; }"
+                ".fileheader { background:%1; padding:8px 12px; font-family:"
+                "monospace; border:1px solid %7; }"
+                // Status word + path + counts on the header line.
+                ".stbadge { font-weight:700; font-size:10px; margin-right:10px; }"
+                ".st-add { color:#3fb950; } .st-del { color:#f85149; }"
+                ".st-mod { color:#d29922; } .st-ren { color:#58a6ff; }"
+                ".fpath { font-weight:600; color:%8; }"
+                ".fstat { color:%2; font-size:11px; }"
+                ".sadd { color:#3fb950; font-weight:700; }"
+                ".sdel { color:#f85149; font-weight:700; }"
+                ".difftable { font-family:monospace; font-size:12px; width:100%; }"
+                ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
                 ".imgcell { width:50%; padding:10px; text-align:center; }"
                 ".imgcell img { max-width:100%; max-height:360px; }"
-                ".imgempty { color:%2; padding:60px 0; border:1px solid #30363d; }"
+                ".imgempty { color:%2; padding:60px 0; border:1px solid %7; }"
                 ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
-                "td.ln { color:%2; text-align:right; padding:0 8px; }"
-                "td.code { white-space:pre; padding:0 6px; }"
-                ".add { background:%3; }"
-                ".del { background:%4; }"
-                ".hunk { color:%5; background:%6; }")
-                .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg);
+                // Two equal-width line-number gutters, right-aligned, with a
+                // separator rule so old/new numbers line up evenly on each side.
+                "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
+                "white-space:nowrap; background:%9; border-right:1px solid %7; }"
+                "td.code { white-space:pre; padding:0 10px; color:%8; }"
+                ".add { background:%3; } .del { background:%4; }"
+                ".hunk { color:%5; background:%6; }"
+                "td.ln.hunk { background:%6; border-right:1px solid %7; }")
+                .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg);
         m_commitDiffView->document()->setDefaultStyleSheet(css);
         m_commitDiffView->setHtml(diffHtml.isEmpty()
                                       ? QStringLiteral("<p style='color:#8b949e'>"
@@ -9564,9 +9787,17 @@ void MainWindow::loadBranchesAndTags()
         m_tagsButton->setText(QStringLiteral("Tags %1").arg(count));
     }
 
-    // Keep the Branches / Releases panels in sync whenever refs change.
-    loadBranchesPanel();
-    loadReleasesPanel();
+    // Only refresh the Branches / Releases panels if one is actually on screen.
+    // They run a git command per branch/tag, so eagerly refreshing them on every
+    // ref change (including at startup) would needlessly slow things down — the
+    // tab-switch handler refreshes them when the user opens them.
+    if (m_repoDetailStack) {
+        const int current = m_repoDetailStack->currentIndex();
+        if (current == m_branchesTabIndex)
+            loadBranchesPanel();
+        else if (current == m_releasesTabIndex)
+            loadReleasesPanel();
+    }
 }
 
 bool MainWindow::repoHasWorkingTree() const
