@@ -228,6 +228,7 @@ private:
     void closeCurrentPull();
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
+    void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
     // Agent sessions tab: local Codex/Claude Code runs assigned from issues.
