@@ -234,6 +234,7 @@ private:
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
     void assignIssueToAgent(const QString &provider);
+    void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
     void testOpenAiAgentKey();
     void openAgentSessionFromIssue();
@@ -585,6 +586,7 @@ private:
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
+    QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
 
     // Repo detail view
     int m_repoDetailIndex = -1;
@@ -715,6 +717,7 @@ private:
     QPlainTextEdit *m_agentLog = nullptr;
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
+    QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
