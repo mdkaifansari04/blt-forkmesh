@@ -575,7 +575,7 @@ def safe_catalog_record(data):
 # and uniqueness) plus a single AES-GCM-encrypted JSON `data` blob. The worker
 # holds DATA_KEY, so this protects data at rest but is not zero-knowledge.
 
-PBKDF2_ITERS = 150000
+PBKDF2_ITERS = 100000
 MIN_ACTIVE_LAMPORTS = 1000000  # 0.001 SOL proves the wallet is active/funded
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
