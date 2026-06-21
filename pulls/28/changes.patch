@@ -1,0 +1,47 @@
+diff --git a/.forkmesh/deploy.yml b/.forkmesh/deploy.yml
+index c3c8c29..ccd0cc2 100644
+--- a/.forkmesh/deploy.yml
++++ b/.forkmesh/deploy.yml
+@@ -3,9 +3,25 @@ on: [push]
+ jobs:
+   deploy:
+     steps:
++      - name: Skip unless only worker files changed
++        run: |
++          changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
++          if [ -z "$changed_files" ]; then
++            echo "Skipping deploy; no changed files."
++            touch .forkmesh-skip-deploy
++            exit 0
++          fi
++          outside_worker="$(printf '%s\n' "$changed_files" | sed '/^cloudflare_worker\//d')"
++          if [ -n "$outside_worker" ]; then
++            echo "Skipping deploy; changed files outside cloudflare_worker/:"
++            printf '%s\n' "$outside_worker"
++            touch .forkmesh-skip-deploy
++          fi
+       # CI/CD gate: run the crypto tests first; a failure aborts before deploy. they are set now
+       - name: Run tests
+-        run: python3 cloudflare_worker/tests/test_crypto.py
++        run: |
++          [ -f .forkmesh-skip-deploy ] && exit 0
++          python3 cloudflare_worker/tests/test_crypto.py
+       # .env.production is gitignored, so materialize it from CI secrets. deploy.sh
+       # reads it and passes the values to wrangler as --var overrides.
+       - name: Write production env (admin dashboard vars)
+@@ -15,6 +31,7 @@ jobs:
+           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+           TREASURY_SOLANA_ADDRESS: ${{ secrets.TREASURY_SOLANA_ADDRESS }}
+         run: |
++          [ -f .forkmesh-skip-deploy ] && exit 0
+           cat > cloudflare_worker/.env.production <<EOF
+           ADMIN_PATH=${ADMIN_PATH}
+           ADMIN_USER=${ADMIN_USER}
+@@ -22,4 +39,6 @@ jobs:
+           TREASURY_SOLANA_ADDRESS=${TREASURY_SOLANA_ADDRESS}
+           EOF
+       - name: Deploy worker
+-        run: cd cloudflare_worker && ./deploy.sh
++        run: |
++          [ -f .forkmesh-skip-deploy ] && exit 0
++          cd cloudflare_worker && ./deploy.sh
