@@ -170,6 +170,8 @@ private:
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
+    void updateRepoPushButton();   // show pending local commits for the open repo
+    void pushCurrentRepoUpstream();
     void showChatView();           // open the chat view from the top-bar button
     void updateChatButton();       // refresh the top-bar chat unread indicator
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
@@ -545,6 +547,7 @@ private:
     QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
+    QPushButton *m_repoPushButton = nullptr; // top-bar push for commits ahead of upstream
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
         QString label;
@@ -822,6 +825,7 @@ private:
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
+    QSet<int> m_pushingRepos;
     QString m_currentConversation;
     // Per-conversation message log and the live rows for the open conversation.
     QHash<QString, QList<ChatMessage>> m_history;

@@ -3240,6 +3240,14 @@ QWidget *MainWindow::buildBreadcrumb()
     m_repoMenuButton->setToolTip("Open a repository, or add a local repo to mirror");
     connect(m_repoMenuButton, &QPushButton::clicked, this, &MainWindow::showRepoMenu);
 
+    m_repoPushButton = new QPushButton;
+    m_repoPushButton->setObjectName("primaryButton");
+    m_repoPushButton->setCursor(Qt::PointingHandCursor);
+    m_repoPushButton->hide();
+    setOcticon(m_repoPushButton, "upload", 16);
+    connect(m_repoPushButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -3327,6 +3335,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addSpacing(10);
     layout->addWidget(m_repoLabel);
     layout->addWidget(m_repoMenuButton);
+    layout->addWidget(m_repoPushButton);
     layout->addSpacing(6);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
@@ -3342,6 +3351,7 @@ QWidget *MainWindow::buildBreadcrumb()
     updateNotificationButton();
     updateChatButton();
     updateNavSolanaBalance();
+    updateRepoPushButton();
     return bar;
 }
 
@@ -3387,6 +3397,7 @@ void MainWindow::updateBreadcrumb()
 {
     // The active relay (favicon + domain) now lives in the relay switcher.
     updateRelaySwitcher();
+    updateRepoPushButton();
     if (!m_breadcrumb)
         return;
     static const char *kSections[] = {"Home", "Settings"};
@@ -3684,6 +3695,153 @@ void MainWindow::updateRepoSwitcher()
         label = m_repositories.at(m_repoDetailIndex).name;
     m_repoMenuButton->setText(label + "  " + caret + "  " +
                               QString::number(m_repoMenuEntries.size()));
+}
+
+void MainWindow::updateRepoPushButton()
+{
+    if (!m_repoPushButton)
+        return;
+    m_repoPushButton->hide();
+    m_repoPushButton->setEnabled(false);
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
+        return;
+
+    if (m_pushingRepos.contains(m_repoDetailIndex)) {
+        m_repoPushButton->setText(QStringLiteral("Pushing..."));
+        m_repoPushButton->setToolTip(QStringLiteral("Pushing local commits upstream"));
+        m_repoPushButton->show();
+        return;
+    }
+
+    QByteArray upstreamOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("--symbolic-full-name"),
+                        QStringLiteral("@{upstream}")},
+                       &upstreamOut, nullptr))
+        return;
+    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
+    if (upstream.isEmpty())
+        return;
+
+    QByteArray countOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                        QStringLiteral("@{upstream}..HEAD")},
+                       &countOut, nullptr))
+        return;
+    const int ahead = QString::fromUtf8(countOut).trimmed().toInt();
+    if (ahead <= 0)
+        return;
+
+    m_repoPushButton->setText(
+        QStringLiteral("Push %1 commit%2 to %3")
+            .arg(ahead)
+            .arg(ahead == 1 ? QString() : QStringLiteral("s"),
+                 upstream));
+    m_repoPushButton->setToolTip(
+        QStringLiteral("Push local commits from %1/%2 to %3")
+            .arg(repo.owner, repo.name, upstream));
+    m_repoPushButton->setEnabled(true);
+    m_repoPushButton->show();
+}
+
+void MainWindow::pushCurrentRepoUpstream()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+        m_pushingRepos.contains(m_repoDetailIndex))
+        return;
+
+    const int index = m_repoDetailIndex;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
+        return;
+
+    QByteArray upstreamOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("--symbolic-full-name"),
+                        QStringLiteral("@{upstream}")},
+                       &upstreamOut, nullptr)) {
+        flashMessage(QStringLiteral("No upstream branch is configured for %1/%2.")
+                         .arg(repo.owner, repo.name),
+                     true);
+        updateRepoPushButton();
+        return;
+    }
+    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
+
+    QByteArray countOut;
+    runGitCapture(repo.localPath,
+                  {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                   QStringLiteral("@{upstream}..HEAD")},
+                  &countOut, nullptr);
+    const int ahead = QString::fromUtf8(countOut).trimmed().toInt();
+
+    m_pushingRepos.insert(index);
+    updateRepoPushButton();
+    logSystem(QStringLiteral("Git: pushing %1/%2 to %3.")
+                  .arg(repo.owner, repo.name, upstream));
+
+    auto *process = new QProcess(this);
+    connect(process, &QProcess::finished, this,
+            [this, process, index, repo, upstream, ahead](int exitCode,
+                                                          QProcess::ExitStatus status) {
+                if (process->property("handled").toBool())
+                    return;
+                process->setProperty("handled", true);
+                const QString errors =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                m_pushingRepos.remove(index);
+
+                if (status == QProcess::NormalExit && exitCode == 0) {
+                    const QString count =
+                        ahead > 0 ? QString::number(ahead) + QLatin1Char(' ') : QString();
+                    logSystem(QStringLiteral("Git: pushed %1commit%2 from %3/%4 to %5.")
+                                  .arg(count,
+                                       ahead == 1 ? QString() : QStringLiteral("s"),
+                                       repo.owner, repo.name, upstream));
+                    flashMessage(QStringLiteral("Pushed %1/%2 to %3.")
+                                     .arg(repo.owner, repo.name, upstream));
+                    if (index >= 0 && index < m_repositories.size()) {
+                        if (!m_repositories.at(index).mirrorPath.isEmpty())
+                            syncRepository(index, /*quiet=*/true);
+                        else if (index == m_repoDetailIndex)
+                            refreshOpenRepoDetail();
+                    }
+                } else {
+                    const QString detail =
+                        errors.isEmpty() ? QStringLiteral("git push failed")
+                                         : errors.right(300);
+                    logSystem(QStringLiteral("Git: push failed for %1/%2: %3")
+                                  .arg(repo.owner, repo.name, detail));
+                    flashMessage(QStringLiteral("Push failed for %1/%2: %3")
+                                     .arg(repo.owner, repo.name, detail.left(160)),
+                                 true);
+                }
+                updateRepoPushButton();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, index, repo](QProcess::ProcessError) {
+                if (process->property("handled").toBool())
+                    return;
+                process->setProperty("handled", true);
+                process->deleteLater();
+                m_pushingRepos.remove(index);
+                logSystem(QStringLiteral("Git: could not start push for %1/%2.")
+                              .arg(repo.owner, repo.name));
+                flashMessage(QStringLiteral("Could not run git push for %1/%2.")
+                                 .arg(repo.owner, repo.name),
+                             true);
+                updateRepoPushButton();
+            });
+    process->start(QStringLiteral("git"),
+                   {QStringLiteral("-C"), repo.localPath, QStringLiteral("push")});
 }
 
 void MainWindow::showRepoMenu()
@@ -12447,6 +12605,7 @@ void MainWindow::refreshRepositoryList()
         m_repoMenuEntries.append(entry);
     }
     updateRepoSwitcher();
+    updateRepoPushButton();
     updateRepoDetailStatus();
     updateRepoWebLink();
     updateRepoRemoteInfo();
@@ -13678,6 +13837,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoWebLink();
     updateRepoRemoteInfo();
     updateRepoCodeSize();
+    updateRepoPushButton();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
 }
