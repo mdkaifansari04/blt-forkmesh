@@ -114,6 +114,10 @@ namespace {
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
 
+// Column in the commits list that carries the Summary text + the commit hash
+// (Qt::UserRole). The metadata columns sit to its left.
+constexpr int kCommitSummaryCol = 5;
+
 class SortTableWidgetItem : public QTableWidgetItem
 {
 public:
@@ -160,7 +164,12 @@ protected:
     void mousePressEvent(QMouseEvent *event) override
     {
         if (event->button() == Qt::LeftButton && onClicked) {
-            onClicked();
+            // The callback may reassign or clear onClicked (e.g. swapping the
+            // body for an inline editor). Copy it to a local first so the
+            // closure—and everything it captured—stays alive for the duration
+            // of the call instead of being freed mid-execution.
+            auto callback = onClicked;
+            callback();
             event->accept();
             return;
         }
@@ -446,6 +455,35 @@ QString formatIssueRelativeTime(qint64 timestampMs)
     const qint64 years = days / 365;
     return years <= 1 ? QStringLiteral("last year")
                       : QStringLiteral("%1 years ago").arg(years);
+}
+
+// Compact "time ago" for table cells: 29s, 7m, 5h, 3d, 2w, 4mo, 1y.
+QString formatShortRelativeTime(qint64 timestampSecs)
+{
+    if (timestampSecs <= 0)
+        return QString();
+    const qint64 secs = QDateTime::fromSecsSinceEpoch(timestampSecs)
+                            .secsTo(QDateTime::currentDateTime());
+    if (secs < 0)
+        return QStringLiteral("now");
+    if (secs < 60)
+        return QStringLiteral("%1s").arg(secs);
+    const qint64 mins = secs / 60;
+    if (mins < 60)
+        return QStringLiteral("%1m").arg(mins);
+    const qint64 hours = mins / 60;
+    if (hours < 24)
+        return QStringLiteral("%1h").arg(hours);
+    const qint64 days = hours / 24;
+    if (days < 7)
+        return QStringLiteral("%1d").arg(days);
+    const qint64 weeks = days / 7;
+    if (days < 30)
+        return QStringLiteral("%1w").arg(weeks);
+    const qint64 months = days / 30;
+    if (months < 12)
+        return QStringLiteral("%1mo").arg(months);
+    return QStringLiteral("%1y").arg(days / 365);
 }
 
 QString formatInsightBytes(qint64 bytes)
@@ -1645,6 +1683,7 @@ void setAutostartEnabled(bool enabled)
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
+    setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     resize(1060, 700);
     // Restore the last window size/position so it reopens where it was left.
     const QByteArray savedGeometry =
@@ -4668,10 +4707,11 @@ QWidget *MainWindow::buildIssuesSection()
     issueTitleRow->addStretch();
     issueTitleRow->addWidget(m_issueNewButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
-    m_issueMeta = new QLabel; // status badge
-    m_issueMeta->setObjectName("statusLine");
-    m_issueMeta->setWordWrap(true);
-    m_issueMeta->setTextFormat(Qt::RichText);
+    m_issueMeta = new QLabel; // Open/Closed status pill
+    m_issueMeta->setObjectName("issueStatusPill");
+    m_issueMeta->setTextFormat(Qt::PlainText);
+    m_issueMeta->setAlignment(Qt::AlignCenter);
+    m_issueMeta->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_issueReadonlyNote = new QLabel;
     m_issueReadonlyNote->setObjectName("statusLine");
     m_issueReadonlyNote->setWordWrap(true);
@@ -4696,6 +4736,9 @@ QWidget *MainWindow::buildIssuesSection()
     commentAvatar->setObjectName("issueAvatar");
     commentAvatar->setAlignment(Qt::AlignCenter);
     commentAvatar->setFixedSize(36, 36);
+    commentAvatar->setScaledContents(true);
+    m_issueComposerAvatar = commentAvatar;
+    refreshIssueComposerAvatar();
     auto *commentTitle = new QLabel("Add a comment");
     commentTitle->setObjectName("issueCommentTitle");
     m_issueComposer = new MarkdownEditor;
@@ -5192,6 +5235,9 @@ QWidget *MainWindow::buildRepoDetailSection()
         const char *label;
         const char *icon;
     };
+    // Note: existing pages are index-addressed in several places (idClicked,
+    // switchTo*). Branches/Releases are appended after Insights so those indices
+    // stay valid; Chat is added last and tracked via m_chatStackIndex.
     const QList<TabDef> tabs = {{"Code", "code"},
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
@@ -5199,7 +5245,9 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Pull requests", "git-pull-request"},
                                 {"Actions", "workflow"},
                                 {"Security and quality", "shield-check"},
-                                {"Insights", "graph"}};
+                                {"Insights", "graph"},
+                                {"Branches", "repo-forked"},
+                                {"Releases", "tag"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -5244,9 +5292,13 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
+    m_branchesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
+    m_releasesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildReleasesTab());                    // 9 Releases
     // Chat has no repo tab any more — it's reached from the top-bar Chat button.
     m_chatStackIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildChatSection());                    // 8 Chat
+    m_repoDetailStack->addWidget(buildChatSection());                    // 10 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
@@ -5259,6 +5311,10 @@ QWidget *MainWindow::buildRepoDetailSection()
             refreshRepoActions();
         else if (id == 7)
             loadRepoInsights();
+        else if (id == m_branchesTabIndex)
+            loadBranchesPanel();
+        else if (id == m_releasesTabIndex)
+            loadReleasesPanel();
     });
 
     // Before any repository is opened the Code/Commits/… tabs have nothing to
@@ -5286,7 +5342,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsTable = new QTableWidget(0, 6);
     m_commitsTable->setObjectName("commitsList");
     m_commitsTable->setHorizontalHeaderLabels(
-        {"Summary", "Author", "Date", "Files", "+adds", "-dels"});
+        {"Author", "Date", "Files", "+adds", "-dels", "Summary"});
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -5297,12 +5353,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsTable->setToolTip("Click a column header to sort");
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
-    commitHeader->setSectionResizeMode(0, QHeaderView::Stretch);
-    for (int i = 1; i < 6; ++i)
+    for (int i = 0; i < kCommitSummaryCol; ++i)
         commitHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
-                QTableWidgetItem *item = m_commitsTable->item(row, 0);
+                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
                 if (item)
                     showCommit(item->data(Qt::UserRole).toString());
             });
@@ -5333,7 +5389,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto goToCommitRow = [this](int row) {
         if (!m_commitsTable || row < 0 || row >= m_commitsTable->rowCount())
             return;
-        QTableWidgetItem *it = m_commitsTable->item(row, 0);
+        QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
         if (it)
             showCommit(it->data(Qt::UserRole).toString());
     };
@@ -5416,13 +5472,26 @@ QWidget *MainWindow::buildRepoCommitsTab()
     detailLayout->addWidget(m_commitMeta);
     detailLayout->addWidget(split, 1);
 
-    m_commitsStack->addWidget(listPage);   // 0
-    m_commitsStack->addWidget(detailPage); // 1
+    // Right side: a placeholder until a commit is picked, then the diff view.
+    // The commit list (listPage) stays visible in the left splitter pane the
+    // whole time, so clicking a commit no longer hides it.
+    auto *placeholder = new QLabel("Select a commit to view its diff.");
+    placeholder->setObjectName("statusLine");
+    placeholder->setAlignment(Qt::AlignCenter);
+    m_commitsStack->addWidget(placeholder); // 0
+    m_commitsStack->addWidget(detailPage);  // 1
+
+    auto *outerSplit = new QSplitter(Qt::Horizontal);
+    outerSplit->addWidget(listPage);
+    outerSplit->addWidget(m_commitsStack);
+    outerSplit->setStretchFactor(0, 0);
+    outerSplit->setStretchFactor(1, 1);
+    outerSplit->setSizes({360, 720});
 
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(m_commitsStack);
+    layout->addWidget(outerSplit);
     return page;
 }
 
@@ -6653,9 +6722,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentStopButton, "circle-slash", 16);
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
-        if (m_agentRunner && m_agentRunner->busy() &&
-            m_agentRunner->currentSessionId() == m_selectedAgentSessionId)
-            m_agentRunner->stop();
+        if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
+            runner->stop();
     });
 
     m_agentContinueButton = new QPushButton("Continue");
@@ -6701,9 +6769,8 @@ QWidget *MainWindow::buildAgentsTab()
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
             return;
-        if (m_agentRunner && m_agentRunner->busy() &&
-            m_agentRunner->currentSessionId() == m_selectedAgentSessionId) {
-            m_agentRunner->steer(prompt);
+        if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+            runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
             m_agentStore->appendLog(
                 *session,
@@ -6977,12 +7044,8 @@ void MainWindow::initAgents()
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
         QStringLiteral("/agents");
     m_agentStore = new AgentStore(root);
-    m_agentRunner = new AgentRunner(m_agentStore, this);
-    connect(m_agentRunner, &AgentRunner::logLine, this, &MainWindow::onAgentLog);
-    connect(m_agentRunner, &AgentRunner::statusChanged, this,
-            &MainWindow::onAgentStatusChanged);
-    connect(m_agentRunner, &AgentRunner::finished, this,
-            &MainWindow::onAgentFinished);
+    // Runners are created lazily by acquireAgentRunner() so multiple sessions
+    // can run concurrently.
 
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
@@ -7280,15 +7343,14 @@ void MainWindow::continueSelectedAgentSession()
 {
     if (!m_agentStore || m_selectedAgentSessionId <= 0)
         return;
-    if (m_agentRunner && m_agentRunner->busy()) {
-        flashMessage("Another agent session is already running.", true);
-        return;
-    }
     AgentSession *session = findAgentSession(m_selectedAgentSessionId);
     if (!session)
         return;
+    // Already running (in its own runner) or queued — nothing to do. Other
+    // sessions may run in parallel, so we don't block on a global "busy".
     if (session->status == AgentStatus::Running ||
-        session->status == AgentStatus::Queued)
+        session->status == AgentStatus::Queued ||
+        runnerForSession(session->id))
         return;
 
     session->status = AgentStatus::Queued;
@@ -7314,10 +7376,9 @@ void MainWindow::deleteSelectedAgentSession()
         return;
 
     const AgentSession snapshot = *session;
-    if (m_agentRunner && m_agentRunner->busy() &&
-        m_agentRunner->currentSessionId() == snapshot.id) {
-        m_agentRunner->stop();
-        if (m_agentRunner->busy()) {
+    if (AgentRunner *runner = runnerForSession(snapshot.id)) {
+        runner->stop();
+        if (runner->busy()) {
             flashMessage("Stopping agent session. Delete it again once it exits.");
             return;
         }
@@ -7380,14 +7441,51 @@ void MainWindow::switchToAgentsTab(int sessionId)
     showAgentSession(sessionId);
 }
 
+AgentRunner *MainWindow::runnerForSession(int sessionId) const
+{
+    for (AgentRunner *runner : m_agentRunners)
+        if (runner->busy() && runner->currentSessionId() == sessionId)
+            return runner;
+    return nullptr;
+}
+
+bool MainWindow::anyAgentRunning() const
+{
+    for (AgentRunner *runner : m_agentRunners)
+        if (runner->busy())
+            return true;
+    return false;
+}
+
+AgentRunner *MainWindow::acquireAgentRunner()
+{
+    // Reuse an idle runner from the pool when possible.
+    for (AgentRunner *runner : m_agentRunners)
+        if (!runner->busy())
+            return runner;
+    // Otherwise grow the pool. Signals carry the session id, so handlers route
+    // correctly no matter which runner emits.
+    auto *runner = new AgentRunner(m_agentStore, this);
+    connect(runner, &AgentRunner::logLine, this, &MainWindow::onAgentLog);
+    connect(runner, &AgentRunner::statusChanged, this,
+            &MainWindow::onAgentStatusChanged);
+    connect(runner, &AgentRunner::finished, this, &MainWindow::onAgentFinished);
+    m_agentRunners.append(runner);
+    return runner;
+}
+
 void MainWindow::processAgentQueue()
 {
-    if (!m_agentRunner || m_agentRunner->busy() || !m_agentStore)
+    if (!m_agentStore)
         return;
+    // Start every queued session immediately in its own runner — no serial
+    // queue. (Sessions already running stay put.)
     while (!m_agentQueue.isEmpty()) {
         const int sessionId = m_agentQueue.takeFirst();
         AgentSession *session = findAgentSession(sessionId);
         if (!session || session->status != AgentStatus::Queued)
+            continue;
+        if (runnerForSession(sessionId)) // already running somewhere
             continue;
         const int repoIndex = repoIndexFor(session->owner, session->name);
         if (repoIndex < 0) {
@@ -7421,9 +7519,8 @@ void MainWindow::processAgentQueue()
             continue;
         }
         const AgentSession snapshot = *session;
-        m_agentRunner->start(snapshot, issue, repo.localPath,
-                             agentConfigForProvider(session->provider));
-        return;
+        acquireAgentRunner()->start(snapshot, issue, repo.localPath,
+                                    agentConfigForProvider(session->provider));
     }
     reloadAgents();
 }
@@ -7499,16 +7596,16 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 void MainWindow::updateAgentActionState()
 {
     const bool selected = m_selectedAgentSessionId > 0;
-    const bool running = selected && m_agentRunner && m_agentRunner->busy() &&
-                         m_agentRunner->currentSessionId() == m_selectedAgentSessionId;
+    const bool running = selected && runnerForSession(m_selectedAgentSessionId);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
+    // Sessions run in parallel, so Continue only depends on this session's own
+    // state, not whether other sessions are busy.
     if (m_agentContinueButton)
         m_agentContinueButton->setEnabled(
-            session && !running && (!m_agentRunner || !m_agentRunner->busy()) &&
-            session->status != AgentStatus::Queued);
+            session && !running && session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled(selected);
     if (m_agentSendPromptButton)
@@ -7611,14 +7708,29 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_branchesButton->setObjectName("ghostButton");
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
-        "List branches, compare them, and open or create pull requests");
+        "Open the Branches panel to view, compare, switch and delete branches");
     setOcticon(m_branchesButton, "git-branch", 16);
-    connect(m_branchesButton, &QPushButton::clicked, this,
-            &MainWindow::showBranchesMenu);
+    connect(m_branchesButton, &QPushButton::clicked, this, [this] {
+        if (m_branchesTabIndex >= 0 && m_repoDetailTabs &&
+            m_repoDetailTabs->button(m_branchesTabIndex)) {
+            m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
+            m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
+            loadBranchesPanel();
+        }
+    });
     m_tagsButton = new QPushButton("Tags");
     m_tagsButton->setObjectName("ghostButton");
     m_tagsButton->setCursor(Qt::PointingHandCursor);
+    m_tagsButton->setToolTip("Open the Releases panel to create and manage tagged releases");
     setOcticon(m_tagsButton, "tag", 16);
+    connect(m_tagsButton, &QPushButton::clicked, this, [this] {
+        if (m_releasesTabIndex >= 0 && m_repoDetailTabs &&
+            m_repoDetailTabs->button(m_releasesTabIndex)) {
+            m_repoDetailTabs->button(m_releasesTabIndex)->setChecked(true);
+            m_repoDetailStack->setCurrentIndex(m_releasesTabIndex);
+            loadReleasesPanel();
+        }
+    });
     m_fileSearch = new QLineEdit;
     m_fileSearch->setPlaceholderText("Go to file\xE2\x80\xA6");
     m_fileSearch->setClearButtonEnabled(true);
@@ -8541,26 +8653,30 @@ void MainWindow::loadCommits()
                 QStringLiteral("Click to view the diff for %1").arg(f.at(1)));
             break;
         }
-        m_commitsTable->setItem(row, 0, summary);
+        // Summary (with the commit hash on UserRole) sits last; the metadata
+        // columns are to its left.
+        m_commitsTable->setItem(row, kCommitSummaryCol, summary);
 
         auto *author = new SortTableWidgetItem(f.at(2));
         author->setData(kTableSortRole, f.at(2).toLower());
-        m_commitsTable->setItem(row, 1, author);
-        auto *date = new SortTableWidgetItem(f.at(3));
-        date->setData(kTableSortRole, f.at(4).toLongLong());
-        m_commitsTable->setItem(row, 2, date);
+        m_commitsTable->setItem(row, 0, author);
+        const qint64 commitTs = f.at(4).toLongLong();
+        auto *date = new SortTableWidgetItem(formatShortRelativeTime(commitTs));
+        date->setData(kTableSortRole, commitTs);
+        date->setToolTip(f.at(3)); // full "x ago" form on hover
+        m_commitsTable->setItem(row, 1, date);
         auto *fileItem = new SortTableWidgetItem(QString::number(files));
         fileItem->setData(kTableSortRole, files);
-        m_commitsTable->setItem(row, 3, fileItem);
+        m_commitsTable->setItem(row, 2, fileItem);
         auto *addsItem = new SortTableWidgetItem(QStringLiteral("+%1").arg(adds));
         addsItem->setForeground(QColor("#2ea043"));
         addsItem->setData(kTableSortRole, adds);
-        m_commitsTable->setItem(row, 4, addsItem);
+        m_commitsTable->setItem(row, 3, addsItem);
         auto *delsItem =
             new SortTableWidgetItem(QString::fromUtf8("\xE2\x88\x92%1").arg(dels));
         delsItem->setForeground(QColor("#f85149"));
         delsItem->setData(kTableSortRole, dels);
-        m_commitsTable->setItem(row, 5, delsItem);
+        m_commitsTable->setItem(row, 4, delsItem);
     }
     m_commitsTable->setSortingEnabled(true);
 
@@ -8866,7 +8982,9 @@ void MainWindow::showCommit(const QString &hash)
     m_currentCommitRow = -1;
     if (m_commitsTable)
         for (int i = 0; i < m_commitsTable->rowCount(); ++i)
-            if (m_commitsTable->item(i, 0)->data(Qt::UserRole).toString() == hash) {
+            if (m_commitsTable->item(i, kCommitSummaryCol)
+                    ->data(Qt::UserRole)
+                    .toString() == hash) {
                 m_currentCommitRow = i;
                 break;
             }
@@ -9395,148 +9513,6 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
     return branches.isEmpty() ? QString() : branches.first();
 }
 
-void MainWindow::showBranchesMenu()
-{
-    if (!m_branchesButton)
-        return;
-    const QString dir = repoGitDir();
-    const QStringList branches = repoBranches();
-    const QString base = repoDefaultBranch(branches);
-    const QString selectedBranch = m_repoBranch.isEmpty() ? base : m_repoBranch;
-    const QList<PullRequest> pulls = pullStoreForCurrentRepo().loadAll();
-
-    QMenu menu(this);
-    menu.setObjectName("branchesMenu");
-    QAction *header =
-        menu.addAction(QStringLiteral("Branches (%1)").arg(branches.size()));
-    header->setEnabled(false);
-    if (!base.isEmpty()) {
-        QAction *baseHeader = menu.addAction(
-            QStringLiteral("Comparing with %1").arg(base));
-        baseHeader->setEnabled(false);
-    }
-    menu.addSeparator();
-
-    if (branches.isEmpty()) {
-        menu.addAction("No branches")->setEnabled(false);
-    } else {
-        for (const QString &branch : branches) {
-            int behind = 0;
-            int ahead = 0;
-            bool compared = branch == base;
-            if (!base.isEmpty() && branch != base) {
-                QByteArray counts;
-                if (runGitCapture(
-                        dir,
-                        {"rev-list", "--left-right", "--count",
-                         base + "..." + branch},
-                        &counts, nullptr)) {
-                    const QStringList parts =
-                        QString::fromUtf8(counts)
-                            .trimmed()
-                            .split(QRegularExpression(QStringLiteral("\\s+")));
-                    if (parts.size() >= 2) {
-                        behind = parts.at(0).toInt();
-                        ahead = parts.at(1).toInt();
-                        compared = true;
-                    }
-                }
-            }
-
-            const PullRequest *related = nullptr;
-            for (const PullRequest &pull : pulls) {
-                if (pull.head == branch &&
-                    (!related || pull.number > related->number))
-                    related = &pull;
-            }
-
-            auto *row = new QWidget(&menu);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(8, 3, 8, 3);
-            rowLayout->setSpacing(8);
-
-            auto *branchButton = new QPushButton(branch, row);
-            branchButton->setObjectName("ghostButton");
-            branchButton->setCursor(Qt::PointingHandCursor);
-            branchButton->setMinimumWidth(180);
-            branchButton->setToolTip("View this branch on the Code tab");
-            setOcticon(branchButton,
-                       branch == selectedBranch ? "check-circle" : "git-branch", 15);
-            rowLayout->addWidget(branchButton);
-
-            auto *comparison = new QLabel(row);
-            comparison->setObjectName("statusLine");
-            comparison->setMinimumWidth(145);
-            if (branch == base) {
-                comparison->setText("Default branch");
-            } else if (compared) {
-                comparison->setText(
-                    QStringLiteral("%1 behind · %2 ahead")
-                        .arg(behind)
-                        .arg(ahead));
-            } else {
-                comparison->setText("Comparison unavailable");
-            }
-            rowLayout->addWidget(comparison);
-            rowLayout->addStretch();
-
-            if (related) {
-                const QString status =
-                    related->status.left(1).toUpper() + related->status.mid(1);
-                auto *pullButton = new QPushButton(
-                    QStringLiteral("PR #%1 · %2")
-                        .arg(related->number)
-                        .arg(status),
-                    row);
-                pullButton->setObjectName("ghostButton");
-                pullButton->setCursor(Qt::PointingHandCursor);
-                pullButton->setToolTip("Open the related pull request");
-                setOcticon(pullButton, "git-pull-request", 15);
-                rowLayout->addWidget(pullButton);
-                const int pullNumber = related->number;
-                connect(pullButton, &QPushButton::clicked, this,
-                        [this, &menu, pullNumber] {
-                            menu.close();
-                            QTimer::singleShot(
-                                0, this,
-                                [this, pullNumber] { switchToPullTab(pullNumber); });
-                        });
-            }
-
-            const bool activePull = related && related->status == QLatin1String("open");
-            const bool canCreate = branch != base && compared && ahead > 0 &&
-                                   !activePull;
-            if (canCreate) {
-                auto *createButton = new QPushButton("Create PR", row);
-                createButton->setObjectName("primaryButton");
-                createButton->setProperty("buttonSize", "sm");
-                createButton->setCursor(Qt::PointingHandCursor);
-                setOcticon(createButton, "git-pull-request", 15);
-                rowLayout->addWidget(createButton);
-                connect(createButton, &QPushButton::clicked, this,
-                        [this, &menu, base, branch] {
-                            menu.close();
-                            QTimer::singleShot(0, this, [this, base, branch] {
-                                promptNewPullFromSource(QString(), base, branch);
-                            });
-                        });
-            }
-
-            auto *rowAction = new QWidgetAction(&menu);
-            rowAction->setDefaultWidget(row);
-            menu.addAction(rowAction);
-            connect(branchButton, &QPushButton::clicked, this,
-                    [this, &menu, branch] {
-                        menu.close();
-                        setRepoBranch(branch);
-                    });
-        }
-    }
-
-    menu.exec(m_branchesButton->mapToGlobal(
-        QPoint(0, m_branchesButton->height())));
-}
-
 void MainWindow::loadBranchesAndTags()
 {
     const QString dir = repoGitDir();
@@ -9575,26 +9551,425 @@ void MainWindow::loadBranchesAndTags()
         m_branchButton->setMenu(menu);
     }
 
-    // Tags menu.
+    // Tags count (clicking the button opens the Releases panel, not a menu).
     if (m_tagsButton) {
-        auto *menu = new QMenu(m_tagsButton);
         QByteArray out;
         int count = 0;
         if (!dir.isEmpty() && runGitCapture(dir, {"tag", "--sort=-creatordate"}, &out,
                                             nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString t = line.trimmed();
-                if (t.isEmpty())
-                    continue;
-                ++count;
-                menu->addAction(t, this, [this, t] { setRepoBranch(t); });
-            }
+            for (const QString &line : QString::fromUtf8(out).split('\n'))
+                if (!line.trimmed().isEmpty())
+                    ++count;
         }
-        if (menu->isEmpty())
-            menu->addAction("No tags")->setEnabled(false);
-        m_tagsButton->setMenu(menu);
         m_tagsButton->setText(QStringLiteral("Tags %1").arg(count));
     }
+
+    // Keep the Branches / Releases panels in sync whenever refs change.
+    loadBranchesPanel();
+    loadReleasesPanel();
+}
+
+bool MainWindow::repoHasWorkingTree() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    return !repo.previewOnly && !repo.localPath.isEmpty() &&
+           QDir(repo.localPath).exists(".git");
+}
+
+// ---- Branches panel --------------------------------------------------------
+
+QWidget *MainWindow::buildBranchesTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    auto *heading = new QLabel("Branches");
+    heading->setObjectName("channelTitle");
+    m_branchesSummary = new QLabel;
+    m_branchesSummary->setObjectName("statusLine");
+    auto *newBranchButton = new QPushButton("New branch");
+    newBranchButton->setObjectName("primaryButton");
+    newBranchButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(newBranchButton, "git-branch", 16);
+    connect(newBranchButton, &QPushButton::clicked, this, &MainWindow::promptNewBranch);
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadBranchesPanel);
+    headerRow->addWidget(heading);
+    headerRow->addWidget(m_branchesSummary);
+    headerRow->addStretch();
+    headerRow->addWidget(refreshButton);
+    headerRow->addWidget(newBranchButton);
+    layout->addLayout(headerRow);
+
+    m_branchesTable = new QTableWidget(0, 4);
+    m_branchesTable->setObjectName("issueTable");
+    m_branchesTable->setHorizontalHeaderLabels(
+        {"Branch", "Status", "Updated", ""});
+    m_branchesTable->verticalHeader()->setVisible(false);
+    m_branchesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_branchesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_branchesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_branchesTable->setShowGrid(false);
+    m_branchesTable->setWordWrap(false);
+    QHeaderView *bh = m_branchesTable->horizontalHeader();
+    bh->setHighlightSections(false);
+    bh->setSectionResizeMode(0, QHeaderView::Stretch);
+    bh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    bh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                if (it)
+                    setRepoBranch(it->text());
+            });
+    layout->addWidget(m_branchesTable, 1);
+    return page;
+}
+
+void MainWindow::loadBranchesPanel()
+{
+    if (!m_branchesTable)
+        return;
+    m_branchesTable->setRowCount(0);
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
+    const bool writable = repoHasWorkingTree();
+
+    if (m_branchesSummary)
+        m_branchesSummary->setText(
+            QStringLiteral("\xC2\xB7 %1 total \xC2\xB7 default: %2")
+                .arg(branches.size())
+                .arg(base.isEmpty() ? "none" : base));
+
+    for (const QString &branch : branches) {
+        const int row = m_branchesTable->rowCount();
+        m_branchesTable->insertRow(row);
+
+        auto *name = new QTableWidgetItem(branch);
+        if (branch == selected)
+            name->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
+        else
+            name->setIcon(themedOcticon("git-branch", QColor("#8b949e"), 14));
+        m_branchesTable->setItem(row, 0, name);
+
+        // Ahead/behind vs the default branch.
+        QString status = branch == base ? QStringLiteral("Default branch") : QString();
+        qint64 ts = 0;
+        if (!dir.isEmpty()) {
+            if (branch != base) {
+                QByteArray counts;
+                if (runGitCapture(dir,
+                                  {"rev-list", "--left-right", "--count",
+                                   base + "..." + branch},
+                                  &counts, nullptr)) {
+                    const QStringList parts =
+                        QString::fromUtf8(counts).trimmed().split(
+                            QRegularExpression(QStringLiteral("\\s+")));
+                    if (parts.size() >= 2)
+                        status = QStringLiteral("%1 behind \xC2\xB7 %2 ahead")
+                                     .arg(parts.at(0), parts.at(1));
+                }
+            }
+            QByteArray when;
+            if (runGitCapture(dir,
+                              {"log", "-1", "--format=%ct", branch}, &when, nullptr))
+                ts = QString::fromUtf8(when).trimmed().toLongLong();
+        }
+        m_branchesTable->setItem(row, 1, new QTableWidgetItem(status));
+        auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
+        m_branchesTable->setItem(row, 2, updated);
+
+        // Delete button (disabled for the default/checked-out branch).
+        auto *del = new QPushButton;
+        del->setObjectName("issueIconButton");
+        del->setFlat(true);
+        del->setCursor(Qt::PointingHandCursor);
+        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+        del->setIconSize(QSize(15, 15));
+        del->setToolTip(QStringLiteral("Delete branch %1").arg(branch));
+        const bool canDelete = writable && branch != base && branch != selected;
+        del->setEnabled(canDelete);
+        if (!canDelete)
+            del->setToolTip(writable
+                                ? "Can't delete the default or current branch"
+                                : "Read-only mirror — no working tree to delete from");
+        connect(del, &QPushButton::clicked, this,
+                [this, branch] { deleteBranch(branch); });
+        m_branchesTable->setCellWidget(row, 3, del);
+    }
+    if (branches.isEmpty()) {
+        m_branchesTable->insertRow(0);
+        auto *empty = new QTableWidgetItem("No branches in this repository.");
+        empty->setForeground(QColor("#8b949e"));
+        m_branchesTable->setItem(0, 0, empty);
+    }
+}
+
+void MainWindow::promptNewBranch()
+{
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice("This is a read-only mirror; branches can't be created here.",
+                            true);
+        return;
+    }
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString base = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
+                                                : m_repoBranch;
+    bool ok = false;
+    const QString name =
+        QInputDialog::getText(this, "New branch",
+                              QStringLiteral("Create a branch from %1:").arg(base),
+                              QLineEdit::Normal, QString(), &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    QString err;
+    if (!runGitCapture(dir, {"branch", name, base}, nullptr, &err)) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not create the branch." : err, true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: created branch %1 from %2.").arg(name, base));
+    setRepoDetailNotice(QStringLiteral("Created branch %1.").arg(name));
+    loadBranchesAndTags();
+    setRepoBranch(name);
+}
+
+void MainWindow::deleteBranch(const QString &branch)
+{
+    if (branch.isEmpty() || !repoHasWorkingTree())
+        return;
+    const QString dir = repoGitDir();
+    if (QMessageBox::question(
+            this, "Delete branch",
+            QStringLiteral("Delete branch \"%1\"? This cannot be undone.").arg(branch),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    QString err;
+    // -D force-deletes even if not merged; the user explicitly confirmed.
+    if (!runGitCapture(dir, {"branch", "-D", branch}, nullptr, &err)) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not delete the branch." : err, true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
+    setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+    loadBranchesAndTags();
+}
+
+// ---- Releases panel --------------------------------------------------------
+
+QWidget *MainWindow::buildReleasesTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    auto *heading = new QLabel("Releases");
+    heading->setObjectName("channelTitle");
+    m_releasesSummary = new QLabel;
+    m_releasesSummary->setObjectName("statusLine");
+    auto *newButton = new QPushButton("Draft a release");
+    newButton->setObjectName("primaryButton");
+    newButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(newButton, "tag", 16);
+    connect(newButton, &QPushButton::clicked, this, &MainWindow::promptNewRelease);
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadReleasesPanel);
+    headerRow->addWidget(heading);
+    headerRow->addWidget(m_releasesSummary);
+    headerRow->addStretch();
+    headerRow->addWidget(refreshButton);
+    headerRow->addWidget(newButton);
+    layout->addLayout(headerRow);
+
+    m_releasesTable = new QTableWidget(0, 4);
+    m_releasesTable->setObjectName("issueTable");
+    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", ""});
+    m_releasesTable->verticalHeader()->setVisible(false);
+    m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_releasesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_releasesTable->setShowGrid(false);
+    m_releasesTable->setWordWrap(false);
+    QHeaderView *rh = m_releasesTable->horizontalHeader();
+    rh->setHighlightSections(false);
+    rh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(2, QHeaderView::Stretch);
+    rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    connect(m_releasesTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *it = m_releasesTable->item(row, 0);
+                if (it)
+                    setRepoBranch(it->text()); // browse the repo at the tag
+            });
+    layout->addWidget(m_releasesTable, 1);
+    return page;
+}
+
+void MainWindow::loadReleasesPanel()
+{
+    if (!m_releasesTable)
+        return;
+    m_releasesTable->setRowCount(0);
+    const QString dir = repoGitDir();
+    const bool writable = repoHasWorkingTree();
+
+    int count = 0;
+    QByteArray out;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir,
+                      {"for-each-ref", "--sort=-creatordate", "refs/tags",
+                       "--format=%(refname:short)%x1f%(creatordate:short)%x1f"
+                       "%(contents:subject)"},
+                      &out, nullptr)) {
+        for (const QByteArray &line : out.split('\n')) {
+            const QString text = QString::fromUtf8(line);
+            if (text.trimmed().isEmpty())
+                continue;
+            const QStringList f = text.split(QLatin1Char('\x1f'));
+            if (f.isEmpty())
+                continue;
+            const QString tag = f.value(0).trimmed();
+            if (tag.isEmpty())
+                continue;
+            const int row = m_releasesTable->rowCount();
+            m_releasesTable->insertRow(row);
+            auto *tagItem = new QTableWidgetItem(tag);
+            tagItem->setIcon(themedOcticon("tag", QColor("#a371f7"), 14));
+            m_releasesTable->setItem(row, 0, tagItem);
+            m_releasesTable->setItem(row, 1, new QTableWidgetItem(f.value(1).trimmed()));
+            m_releasesTable->setItem(row, 2, new QTableWidgetItem(f.value(2).trimmed()));
+
+            auto *del = new QPushButton;
+            del->setObjectName("issueIconButton");
+            del->setFlat(true);
+            del->setCursor(Qt::PointingHandCursor);
+            del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+            del->setIconSize(QSize(15, 15));
+            del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
+            del->setEnabled(writable);
+            connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
+            m_releasesTable->setCellWidget(row, 3, del);
+            ++count;
+        }
+    }
+    if (m_releasesSummary)
+        m_releasesSummary->setText(
+            QStringLiteral("\xC2\xB7 %1 release%2")
+                .arg(count)
+                .arg(count == 1 ? "" : "s"));
+    if (count == 0) {
+        m_releasesTable->insertRow(0);
+        auto *empty = new QTableWidgetItem(
+            "No releases yet. Draft one to tag a commit in the repository.");
+        empty->setForeground(QColor("#8b949e"));
+        m_releasesTable->setItem(0, 0, empty);
+    }
+}
+
+void MainWindow::promptNewRelease()
+{
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice("This is a read-only mirror; releases can't be created here.",
+                            true);
+        return;
+    }
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString target = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
+                                                  : m_repoBranch;
+
+    // GitHub-style "draft a release": tag name, target ref, and release notes.
+    QDialog dialog(this);
+    dialog.setWindowTitle("Draft a new release");
+    auto *form = new QFormLayout(&dialog);
+    auto *tagEdit = new QLineEdit;
+    tagEdit->setPlaceholderText("v1.0.0");
+    auto *targetEdit = new QComboBox;
+    targetEdit->addItems(branches);
+    const int targetIdx = targetEdit->findText(target);
+    if (targetIdx >= 0)
+        targetEdit->setCurrentIndex(targetIdx);
+    auto *titleEdit = new QLineEdit;
+    titleEdit->setPlaceholderText("Release title (optional)");
+    auto *notesEdit = new QPlainTextEdit;
+    notesEdit->setPlaceholderText("Describe this release...");
+    notesEdit->setMinimumHeight(120);
+    form->addRow("Tag", tagEdit);
+    form->addRow("Target", targetEdit);
+    form->addRow("Title", titleEdit);
+    form->addRow("Notes", notesEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Publish release");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString tag = tagEdit->text().trimmed();
+    const QString targetRef = targetEdit->currentText().trimmed();
+    if (tag.isEmpty()) {
+        setRepoDetailNotice("A release needs a tag name.", true);
+        return;
+    }
+    QString message = titleEdit->text().trimmed();
+    const QString notes = notesEdit->toPlainText().trimmed();
+    if (message.isEmpty())
+        message = tag;
+    if (!notes.isEmpty())
+        message += "\n\n" + notes;
+
+    // Annotated tag so the release notes live in the repo's git history.
+    QString err;
+    if (!runGitCapture(dir, {"tag", "-a", tag, targetRef, "-m", message}, nullptr,
+                       &err)) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not create the release tag." : err,
+                            true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: tagged release %1 at %2.").arg(tag, targetRef));
+    setRepoDetailNotice(QStringLiteral("Published release %1.").arg(tag));
+    loadBranchesAndTags();
+}
+
+void MainWindow::deleteTag(const QString &tag)
+{
+    if (tag.isEmpty() || !repoHasWorkingTree())
+        return;
+    const QString dir = repoGitDir();
+    if (QMessageBox::question(
+            this, "Delete release",
+            QStringLiteral("Delete release tag \"%1\"? This cannot be undone.").arg(tag),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    QString err;
+    if (!runGitCapture(dir, {"tag", "-d", tag}, nullptr, &err)) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not delete the tag." : err, true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: deleted tag %1.").arg(tag));
+    setRepoDetailNotice(QStringLiteral("Deleted release %1.").arg(tag));
+    loadBranchesAndTags();
 }
 
 void MainWindow::loadFileSearchIndex()
@@ -9958,13 +10333,24 @@ void MainWindow::refreshIssueList()
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 6, created);
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
-            auto *button = new QPushButton("View");
-            button->setObjectName("ghostButton");
-            button->setProperty("buttonSize", "sm");
+            // Brand icon for the agent that worked the issue: Claude uses the
+            // "code" octicon (clay), Codex/OpenAI the "terminal" octicon (green).
+            const bool isClaude = session->provider == QLatin1String("claude");
+            const QString iconName = isClaude ? "code" : "terminal";
+            const QColor iconColor(isClaude ? "#d97757" : "#10a37f");
+            auto *button = new QPushButton;
+            button->setObjectName("issueIconButton");
+            button->setFlat(true);
             button->setCursor(Qt::PointingHandCursor);
+            button->setIcon(themedOcticon(iconName, iconColor, 16));
+            button->setIconSize(QSize(16, 16));
+            button->setFocusPolicy(Qt::NoFocus); // don't steal the row selection
             button->setToolTip(agentProviderName(session->provider) +
-                               QStringLiteral(" session #%1").arg(session->id));
+                               QStringLiteral(" session #%1 \xC2\xB7 click to view")
+                                   .arg(session->id));
             const int sessionId = session->id;
+            // Clicking the icon opens the session; because the button consumes
+            // the click it doesn't reselect the row or refresh the issue pane.
             connect(button, &QPushButton::clicked, this,
                     [this, sessionId] { switchToAgentsTab(sessionId); });
             m_issueTable->setCellWidget(row, 7, button);
@@ -10023,6 +10409,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         m_issueTitle->setText("Select an issue");
         cancelIssueTitleEdit();
         m_issueMeta->clear();
+        m_issueMeta->hide();
         if (m_issueAssigneesValue)
             m_issueAssigneesValue->setText("No one - <a href='#'>Assign yourself</a>");
         if (m_issueLabelsValue)
@@ -10042,9 +10429,14 @@ void MainWindow::renderIssueThread(const Issue &issue)
     if (m_issueTitleEditor)
         m_issueTitleEditor->setText(issue.title);
 
-    m_issueMeta->setText(issue.status == "closed"
-                             ? QStringLiteral("<span style='background-color:#cf222e;color:white;padding:4px 11px;border-radius:12px;font-weight:700'>Closed</span>")
-                             : QStringLiteral("<span style='background-color:#1f883d;color:white;padding:4px 11px;border-radius:12px;font-weight:700'>Open</span>"));
+    // Status pill: rounded corners come from QSS (QLabel rich text can't render
+    // border-radius), switched by the dynamic "status" property.
+    const bool issueClosed = issue.status == "closed";
+    m_issueMeta->show();
+    m_issueMeta->setText(issueClosed ? "Closed" : "Open");
+    m_issueMeta->setProperty("status", issueClosed ? "closed" : "open");
+    m_issueMeta->style()->unpolish(m_issueMeta);
+    m_issueMeta->style()->polish(m_issueMeta);
 
     auto colorFor = [this](const QString &name) -> QString {
         for (const IssueLabel &l : m_currentLabels)
@@ -10262,10 +10654,12 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     });
             editor->focusEditor();
         };
-        bodyContainer->onClicked = [=]() {
-            if (writable && isOpen && eventBody.trimmed().isEmpty())
-                showBodyEditor();
-        };
+        // Only intercept clicks when the body is an empty, editable description
+        // (click-to-add-a-description). For real comment text, leave onClicked
+        // unset so clicks reach the label and the text stays selectable —
+        // including word (double-click) and paragraph (triple-click) selection.
+        if (writable && isOpen && eventBody.trimmed().isEmpty())
+            bodyContainer->onClicked = [=]() { showBodyEditor(); };
 
         QMenu *menu = new QMenu(card);
         menu->setAttribute(Qt::WA_TranslucentBackground, false);
@@ -12034,6 +12428,23 @@ void MainWindow::updateAvatarButton()
     const QPixmap pm = roundedAvatar(effectiveAvatar(), 34);
     if (!pm.isNull())
         m_avatarNavButton->setIcon(QIcon(pm));
+    refreshIssueComposerAvatar();
+}
+
+void MainWindow::refreshIssueComposerAvatar()
+{
+    if (!m_issueComposerAvatar)
+        return;
+    // Show this node's avatar next to the comment composer so it's clear who is
+    // about to post.
+    const QPixmap pm = roundedAvatar(effectiveAvatar(), 36);
+    if (pm.isNull()) {
+        m_issueComposerAvatar->setPixmap(QPixmap());
+        m_issueComposerAvatar->setText("FM");
+    } else {
+        m_issueComposerAvatar->setText(QString());
+        m_issueComposerAvatar->setPixmap(pm);
+    }
 }
 
 void MainWindow::setSettingsAvatar(const QByteArray &pngData)

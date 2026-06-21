@@ -253,6 +253,12 @@ private:
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
     void processAgentQueue();
+    // Returns the pooled runner currently executing sessionId, or nullptr.
+    AgentRunner *runnerForSession(int sessionId) const;
+    // Returns an idle pooled runner, creating (and wiring) a new one if needed.
+    AgentRunner *acquireAgentRunner();
+    // True while any pooled runner is executing a session.
+    bool anyAgentRunning() const;
     void onAgentLog(int sessionId, const QString &text);
     void onAgentStatusChanged(int sessionId, const QString &status);
     void onAgentFinished(int sessionId, bool ok);
@@ -319,7 +325,15 @@ private:
     void loadBranchesAndTags();
     QStringList repoBranches() const;
     QString repoDefaultBranch(const QStringList &branches) const;
-    void showBranchesMenu();
+    QWidget *buildBranchesTab();
+    void loadBranchesPanel();
+    void promptNewBranch();
+    void deleteBranch(const QString &branch);
+    QWidget *buildReleasesTab();
+    void loadReleasesPanel();
+    void promptNewRelease();
+    void deleteTag(const QString &tag);
+    bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
@@ -391,6 +405,7 @@ private:
     // generated identicon when the user hasn't set one.
     QByteArray effectiveAvatar();
     void updateAvatarButton();
+    void refreshIssueComposerAvatar();
     void logout();
     void rebuildAndRelaunch();
     void showSection(int index);
@@ -624,6 +639,12 @@ private:
     QPushButton *m_repoActionsTab = nullptr;
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
+    int m_branchesTabIndex = -1; // index of the Branches page
+    int m_releasesTabIndex = -1; // index of the Releases page
+    QTableWidget *m_branchesTable = nullptr;
+    QLabel *m_branchesSummary = nullptr;
+    QTableWidget *m_releasesTable = nullptr;
+    QLabel *m_releasesSummary = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
@@ -737,7 +758,9 @@ private:
     QCheckBox *m_actionsEnabledCheck = nullptr;
     // Agent sessions assigned from issues.
     AgentStore *m_agentStore = nullptr;
-    AgentRunner *m_agentRunner = nullptr;
+    // Pool of agent runners so sessions execute in parallel (one process each)
+    // instead of being serialized through a single runner.
+    QList<AgentRunner *> m_agentRunners;
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
     int m_selectedAgentSessionId = -1;
@@ -764,6 +787,7 @@ private:
     QPushButton *m_issueTitleSaveButton = nullptr;
     QPushButton *m_issueTitleCancelButton = nullptr;
     QLabel *m_issueMeta = nullptr;
+    QLabel *m_issueComposerAvatar = nullptr;
     QLabel *m_issueReadonlyNote = nullptr;
     QLabel *m_issueInlineNotice = nullptr;
     QLabel *m_issueAssigneesValue = nullptr;

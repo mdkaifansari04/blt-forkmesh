@@ -124,8 +124,8 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 /* --- Repo files: explorer tree + editor tabs --- */
 #fileTree { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #c9d1d9; }
-#fileTree::item:hover { background-color: #161b22; }
-#fileTree::item:selected { background-color: #1f6feb; color: #ffffff; }
+#fileTree::item:hover { background-color: #161b22; padding: 3px 2px; }
+#fileTree::item:selected { background-color: #1f6feb; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 6px 12px;
@@ -149,8 +149,8 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #e6edf3; }
 #overviewList { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #c9d1d9; }
-#overviewList::item:hover { background-color: #161b22; }
-#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; }
+#overviewList::item:hover { background-color: #161b22; padding: 6px 8px; }
+#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #readmeView {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
     padding: 8px; color: #e6edf3;
@@ -161,6 +161,12 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     color: #8b949e; border: 1px solid #30363d; border-radius: 10px;
     padding: 0 8px; font-size: 11px;
 }
+#issueStatusPill {
+    color: #ffffff; border-radius: 13px; padding: 5px 16px;
+    font-size: 12px; font-weight: 700;
+}
+#issueStatusPill[status="open"] { background-color: #1f883d; }
+#issueStatusPill[status="closed"] { background-color: #8250df; }
 QPushButton#repoAction {
     background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
     padding: 4px 10px; font-size: 12px; font-weight: 600; color: #e6edf3;
@@ -176,7 +182,8 @@ QPushButton#repoAction::menu-indicator { width: 0; }
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
 #commitsList::item { padding: 8px; color: #e6edf3; border-bottom: 1px solid #21262d; }
-#commitsList::item:hover { background-color: #161b22; }
+#commitsList::item:hover { background-color: #161b22; padding: 8px; border-bottom: 1px solid #21262d; }
+#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; border-bottom: 1px solid #21262d; }
 #placeholderPanel { color: #e6edf3; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -294,9 +301,11 @@ QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 #sidebar QListWidget::item {
     color: #c9d1d9; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
-#sidebar QListWidget::item:hover { background-color: #161b22; }
+#sidebar QListWidget::item:hover {
+    background-color: #161b22; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
+}
 #sidebar QListWidget::item:selected {
-    background-color: #1f6feb; color: #ffffff;
+    background-color: #1f6feb; color: #ffffff; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
 QWidget#memberRow { background: transparent; }
 QPushButton#memberNameButton {
@@ -328,7 +337,8 @@ QPushButton#memberDeleteButton:hover {
     gridline-color: #21262d;
 }
 #issueTable::item { padding: 4px 8px; color: #c9d1d9; }
-#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; }
+#issueTable::item:hover { background-color: #161b22; color: #e6edf3; padding: 4px 8px; }
+#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22; color: #8b949e; padding: 6px 8px;
     border: none; border-bottom: 1px solid #30363d; font-weight: 700;
@@ -662,8 +672,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     selection-color: #ffffff;
 }
 #issueTable::item { padding: 6px 8px; color: #c9d1d9; }
-#issueTable::item:hover { background-color: #161b22; color: #e6edf3; }
-#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; }
+#issueTable::item:hover { background-color: #161b22; color: #e6edf3; padding: 6px 8px; }
+#issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22;
     color: #8b949e;
@@ -808,8 +818,8 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 /* --- Repo files: explorer tree + editor tabs --- */
 #fileTree { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #1f2328; }
-#fileTree::item:hover { background-color: #f6f8fa; }
-#fileTree::item:selected { background-color: #0969da; color: #ffffff; }
+#fileTree::item:hover { background-color: #f6f8fa; padding: 3px 2px; }
+#fileTree::item:selected { background-color: #0969da; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 6px 12px;
@@ -833,8 +843,8 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #1f2328; }
 #overviewList { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #1f2328; }
-#overviewList::item:hover { background-color: #f6f8fa; }
-#overviewList::item:selected { background-color: #0969da; color: #ffffff; }
+#overviewList::item:hover { background-color: #f6f8fa; padding: 6px 8px; }
+#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #readmeView {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 8px; color: #1f2328;
@@ -845,6 +855,12 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     color: #656d76; border: 1px solid #d0d7de; border-radius: 10px;
     padding: 0 8px; font-size: 11px;
 }
+#issueStatusPill {
+    color: #ffffff; border-radius: 13px; padding: 5px 16px;
+    font-size: 12px; font-weight: 700;
+}
+#issueStatusPill[status="open"] { background-color: #1a7f37; }
+#issueStatusPill[status="closed"] { background-color: #8250df; }
 QPushButton#repoAction {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 4px 10px; font-size: 12px; font-weight: 600; color: #1f2328;
@@ -860,7 +876,8 @@ QPushButton#repoAction::menu-indicator { width: 0; }
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
 #commitsList::item { padding: 8px; color: #1f2328; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:hover { background-color: #f6f8fa; }
+#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; border-bottom: 1px solid #d8dee4; }
+#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; border-bottom: 1px solid #d8dee4; }
 #placeholderPanel { color: #1f2328; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -978,9 +995,11 @@ QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 #sidebar QListWidget::item {
     color: #1f2328; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
-#sidebar QListWidget::item:hover { background-color: #f6f8fa; }
+#sidebar QListWidget::item:hover {
+    background-color: #f6f8fa; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
+}
 #sidebar QListWidget::item:selected {
-    background-color: #0969da; color: #ffffff;
+    background-color: #0969da; color: #ffffff; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
 QWidget#memberRow { background: transparent; }
 QPushButton#memberNameButton {
@@ -1012,7 +1031,8 @@ QPushButton#memberDeleteButton:hover {
     gridline-color: #d8dee4;
 }
 #issueTable::item { padding: 4px 8px; color: #1f2328; }
-#issueTable::item:selected { background-color: #0969da; color: #ffffff; }
+#issueTable::item:hover { background-color: #f6f8fa; color: #1f2328; padding: 4px 8px; }
+#issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
     border: none; border-bottom: 1px solid #d0d7de; font-weight: 700;
@@ -1347,8 +1367,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     selection-color: #ffffff;
 }
 #issueTable::item { padding: 6px 8px; color: #1f2328; }
-#issueTable::item:hover { background-color: #ffffff; color: #1f2328; }
-#issueTable::item:selected { background-color: #0969da; color: #ffffff; }
+#issueTable::item:hover { background-color: #f6f8fa; color: #1f2328; padding: 6px 8px; }
+#issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #issueTable QHeaderView::section {
     background-color: #ffffff;
     color: #656d76;

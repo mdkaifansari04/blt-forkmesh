@@ -51,4 +51,7 @@
         <file alias="workflow.svg">icons/octicons/workflow.svg</file>
         <file alias="x.svg">icons/octicons/x.svg</file>
     </qresource>
+    <qresource prefix="/app">
+        <file alias="forkmesh.png">icons/forkmesh.png</file>
+    </qresource>
 </RCC>
