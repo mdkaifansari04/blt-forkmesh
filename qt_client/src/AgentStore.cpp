@@ -49,6 +49,7 @@ QJsonObject AgentSession::toJson() const
     obj["totalTokens"] = totalTokens;
     obj["contextTokens"] = contextTokens;
     obj["contextWindow"] = contextWindow;
+    obj["maxOutputTokens"] = maxOutputTokens;
     obj["estimatedCredits"] = estimatedCredits;
     obj["lastError"] = lastError;
     return obj;
@@ -76,6 +77,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.totalTokens = obj.value("totalTokens").toInt();
     session.contextTokens = obj.value("contextTokens").toInt();
     session.contextWindow = obj.value("contextWindow").toInt();
+    session.maxOutputTokens = obj.value("maxOutputTokens").toInt();
     session.estimatedCredits = obj.value("estimatedCredits").toInt();
     session.lastError = obj.value("lastError").toString();
     return session;
