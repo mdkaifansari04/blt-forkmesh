@@ -3016,8 +3016,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayIconButton = new QPushButton;
     m_relayIconButton->setObjectName("relayIconButton");
     m_relayIconButton->setCursor(Qt::PointingHandCursor);
-    m_relayIconButton->setFixedSize(30, 30);
-    m_relayIconButton->setIconSize(QSize(24, 24));
+    m_relayIconButton->setFixedSize(38, 38);
+    m_relayIconButton->setIconSize(QSize(30, 30));
     m_relayIconButton->setToolTip("Show this relay's nodes");
     connect(m_relayIconButton, &QPushButton::clicked, this,
             [this] { showSection(0); });
@@ -3032,8 +3032,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayOpenButton = new QPushButton;
     m_relayOpenButton->setObjectName("relayOpenButton");
     m_relayOpenButton->setCursor(Qt::PointingHandCursor);
-    m_relayOpenButton->setFixedSize(26, 26);
-    setOcticon(m_relayOpenButton, "link", 14);
+    m_relayOpenButton->setFixedSize(30, 30);
+    setOcticon(m_relayOpenButton, "link", 16);
     m_relayOpenButton->setToolTip("Open this relay in your browser");
     connect(m_relayOpenButton, &QPushButton::clicked, this,
             [this] { openServerWebsite(m_activeServer); });
@@ -3044,6 +3044,13 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setCursor(Qt::PointingHandCursor);
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
+
+    // Repo switcher, to the right of the node switcher: "repo ▾ count".
+    m_repoMenuButton = new QPushButton;
+    m_repoMenuButton->setObjectName("repoMenuButton");
+    m_repoMenuButton->setCursor(Qt::PointingHandCursor);
+    m_repoMenuButton->setToolTip("Open a repository, or add a local repo to mirror");
+    connect(m_repoMenuButton, &QPushButton::clicked, this, &MainWindow::showRepoMenu);
 
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
@@ -3109,6 +3116,8 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addWidget(m_relayOpenButton);
     layout->addSpacing(10);
     layout->addWidget(m_nodeMenuButton);
+    layout->addSpacing(10);
+    layout->addWidget(m_repoMenuButton);
     layout->addSpacing(6);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
@@ -3357,6 +3366,78 @@ void MainWindow::showNodeMenu()
 
     menu.exec(m_nodeMenuButton->mapToGlobal(
         QPoint(0, m_nodeMenuButton->height())));
+}
+
+void MainWindow::updateRepoSwitcher()
+{
+    if (!m_repoMenuButton)
+        return;
+    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
+    QString label = QStringLiteral("Repos");
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+        label = m_repositories.at(m_repoDetailIndex).name;
+    m_repoMenuButton->setText(label + "  " + caret + "  " +
+                              QString::number(m_repoMenuEntries.size()));
+}
+
+void MainWindow::showRepoMenu()
+{
+    if (!m_repoMenuButton)
+        return;
+    QMenu menu(this);
+
+    QAction *header = menu.addAction(
+        QStringLiteral("Repositories (%1)").arg(m_repoMenuEntries.size()));
+    header->setEnabled(false);
+
+    auto *searchEdit = new QLineEdit(&menu);
+    searchEdit->setPlaceholderText(QStringLiteral("Search repositories") +
+                                   QString::fromUtf8("\xE2\x80\xA6"));
+    searchEdit->setClearButtonEnabled(true);
+    searchEdit->setMinimumWidth(260);
+    auto *searchAction = new QWidgetAction(&menu);
+    searchAction->setDefaultWidget(searchEdit);
+    menu.addAction(searchAction);
+    menu.addSeparator();
+
+    if (m_repoMenuEntries.isEmpty()) {
+        QAction *empty = menu.addAction(QStringLiteral("No repositories yet"));
+        empty->setEnabled(false);
+    }
+
+    QList<QAction *> repoActions;
+    QStringList repoNames;
+    for (const RepoMenuEntry &e : std::as_const(m_repoMenuEntries)) {
+        QAction *act = menu.addAction(e.icon, e.label);
+        const int index = e.index;
+        const QString advertised = e.advertised;
+        connect(act, &QAction::triggered, this, [this, index, advertised] {
+            if (index >= 0 && index < m_repositories.size())
+                openRepoDetail(index); // files + issues for this repo
+            else if (index == -2)      // advertised mirror: temporary preview
+                previewAdvertisedRepo(advertised);
+            updateRepoSwitcher();
+        });
+        repoActions.append(act);
+        repoNames.append(e.label.toLower());
+    }
+
+    menu.addSeparator();
+    QAction *addAct = menu.addAction(QStringLiteral("Add local repo") +
+                                     QString::fromUtf8("\xE2\x80\xA6"));
+    connect(addAct, &QAction::triggered, this, &MainWindow::promptAddRepository);
+
+    connect(searchEdit, &QLineEdit::textChanged, &menu,
+            [repoActions, repoNames](const QString &text) {
+                const QString needle = text.trimmed().toLower();
+                for (int i = 0; i < repoActions.size(); ++i)
+                    repoActions.at(i)->setVisible(needle.isEmpty() ||
+                                                  repoNames.at(i).contains(needle));
+            });
+    QTimer::singleShot(0, searchEdit, [searchEdit] { searchEdit->setFocus(); });
+
+    menu.exec(m_repoMenuButton->mapToGlobal(
+        QPoint(0, m_repoMenuButton->height())));
 }
 
 QWidget *MainWindow::buildSolanaNotice()
@@ -3815,62 +3896,6 @@ void MainWindow::querySolanaBalance(const QString &addr, int endpointIndex)
         m_profileBalance->setText(
             QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9));
     });
-}
-
-QWidget *MainWindow::buildReposPanel()
-{
-    auto *page = new QWidget;
-    page->setObjectName("sidebar"); // reuse list/label styling
-    page->setMinimumWidth(220);
-    page->setMaximumWidth(360);
-
-    auto *heading = new QLabel("Repositories");
-    heading->setObjectName("channelTitle");
-    m_repoList = new QListWidget;
-    m_repoList->setToolTip(
-        "Repositories preserved by the selected node");
-
-    auto *addRepoButton = new QPushButton("+ Add");
-    addRepoButton->setObjectName("ghostButton");
-    addRepoButton->setCursor(Qt::PointingHandCursor);
-    m_syncRepoButton = new QPushButton("Sync");
-    m_syncRepoButton->setObjectName("ghostButton");
-    m_syncRepoButton->setCursor(Qt::PointingHandCursor);
-    m_publishRepoButton = new QPushButton("Publish");
-    m_publishRepoButton->setObjectName("ghostButton");
-    m_publishRepoButton->setCursor(Qt::PointingHandCursor);
-    auto *repoButtonRow = new QHBoxLayout;
-    repoButtonRow->setContentsMargins(0, 0, 0, 0);
-    repoButtonRow->addWidget(addRepoButton);
-    repoButtonRow->addWidget(m_syncRepoButton);
-    repoButtonRow->addWidget(m_publishRepoButton);
-    repoButtonRow->addStretch();
-
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 22, 20, 22);
-    layout->setSpacing(8);
-    layout->addWidget(heading);
-    layout->addSpacing(8);
-    layout->addWidget(m_repoList, 1);
-    layout->addLayout(repoButtonRow);
-
-    connect(m_repoList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                if (!item)
-                    return;
-                const int index = item->data(Qt::UserRole).toInt();
-                if (index >= 0 && index < m_repositories.size())
-                    openRepoDetail(index); // files + issues for this repo
-                else if (index == -2) // advertised mirror: temporary preview
-                    previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
-            });
-    connect(addRepoButton, &QPushButton::clicked, this,
-            &MainWindow::promptAddRepository);
-    connect(m_syncRepoButton, &QPushButton::clicked, this,
-            &MainWindow::syncSelectedRepository);
-    connect(m_publishRepoButton, &QPushButton::clicked, this,
-            &MainWindow::publishSelectedRepository);
-    return page;
 }
 
 void MainWindow::selectNode(const QString &node)
@@ -11376,18 +11401,7 @@ void MainWindow::saveRepositories() const
 
 void MainWindow::refreshRepositoryList()
 {
-    if (!m_repoList)
-        return;
-
-    QSignalBlocker blocker(m_repoList);
-    // Preserve the selected repository across the rebuild.
-    int selectedRepo = -1;
-    if (QListWidgetItem *current = m_repoList->currentItem()) {
-        const int idx = current->data(Qt::UserRole).toInt();
-        if (idx >= 0)
-            selectedRepo = idx;
-    }
-    m_repoList->clear();
+    m_repoMenuEntries.clear();
     m_nodeMenuEntries.clear();
 
     // Repos grouped by node (owner).
@@ -11485,9 +11499,8 @@ void MainWindow::refreshRepositoryList()
         m_selectedNode = nodeOrder.isEmpty() ? QString() : nodeOrder.first();
     updateNodeSwitcher();
 
-    // --- Repositories column: just the repos owned by the selected node, plus
-    // any repos that node advertises mirroring that we don't already have.
-    QListWidgetItem *itemToSelect = nullptr;
+    // --- Repositories dropdown: the repos owned by the selected node, plus any
+    // repos that node advertises mirroring that we don't already have.
     const NodeInfo selInfo = nodes.value(m_selectedNode);
     for (int i : reposByNode.value(m_selectedNode)) {
         const RepositoryRecord &repo = m_repositories.at(i);
@@ -11497,40 +11510,32 @@ void MainWindow::refreshRepositoryList()
             label += "  \xC2\xB7 preview";
         if (m_syncingRepos.contains(i))
             label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
-        auto *item = new QListWidgetItem(label);
-        item->setData(Qt::UserRole, i);
+        RepoMenuEntry entry;
+        entry.label = label;
+        entry.index = i;
         // A repo glyph: green when published+online on the web, grey otherwise.
-        item->setIcon(themedOcticon(
+        entry.icon = themedOcticon(
             repo.previewOnly ? QStringLiteral("cloud") : QStringLiteral("repo"),
             repo.previewOnly ? QColor("#58a6ff")
                              : (repo.publishToNetwork && online ? QColor("#2ea043")
                                                                 : QColor("#6e7681")),
-            14));
-        item->setToolTip(repo.previewOnly
-                             ? "Open temporary preview of " + repo.owner + "/" + repo.name
-                             : "Open " + repo.owner + "/" + repo.name);
-        m_repoList->addItem(item);
-        if (i == selectedRepo)
-            itemToSelect = item;
+            14);
+        m_repoMenuEntries.append(entry);
     }
     for (const QString &ownerName : selInfo.mirrors) {
         if (shownLocalRepoKeys.contains(ownerName) ||
             shownAdvertised.contains(ownerName))
             continue;
         shownAdvertised.insert(ownerName);
-        auto *item = new QListWidgetItem(
-            QString::fromUtf8("\xE2\x86\x93 ") + ownerName +
-            QString::fromUtf8("   \xC2\xB7 browse"));
-        item->setData(Qt::UserRole, -2); // advertised mirror marker
-        item->setData(Qt::UserRole + 1, ownerName);
-        item->setForeground(QColor("#58a6ff"));
-        item->setIcon(themedOcticon("cloud", QColor("#58a6ff"), 14));
-        item->setToolTip(
-            "Open a temporary preview from this node before mirroring or forking");
-        m_repoList->addItem(item);
+        RepoMenuEntry entry;
+        entry.label = QString::fromUtf8("\xE2\x86\x93 ") + ownerName +
+                      QString::fromUtf8("   \xC2\xB7 browse");
+        entry.index = -2; // advertised mirror marker
+        entry.advertised = ownerName;
+        entry.icon = themedOcticon("cloud", QColor("#58a6ff"), 14);
+        m_repoMenuEntries.append(entry);
     }
-    if (itemToSelect)
-        m_repoList->setCurrentItem(itemToSelect);
+    updateRepoSwitcher();
     updateRepoDetailStatus();
     updateRepoWebLink();
     updateRepoRemoteInfo();
@@ -11937,23 +11942,6 @@ void MainWindow::updateRepoRemoteInfo()
     m_repoRemoteHint->setText(hint);
 }
 
-void MainWindow::syncSelectedRepository()
-{
-    if (!m_repoList)
-        return;
-    QListWidgetItem *item = m_repoList->currentItem();
-    if (!item) {
-        flashMessage("Select a repository first.", /*error=*/true);
-        return;
-    }
-    const int index = item->data(Qt::UserRole).toInt();
-    if (index == -2) {
-        previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
-        return;
-    }
-    syncRepository(index);
-}
-
 QUrl MainWindow::catalogApiUrl() const
 {
     QUrl url(m_serverUrlEdit ? m_serverUrlEdit->text().trimmed() : kDefaultServerUrl);
@@ -12128,32 +12116,6 @@ void MainWindow::saveRepoStats() const
     }
     QSettings().setValue(QStringLiteral("repositories/stats"),
                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
-}
-
-void MainWindow::publishSelectedRepository()
-{
-    if (!m_repoList)
-        return;
-    QListWidgetItem *item = m_repoList->currentItem();
-    if (!item) {
-        flashMessage("Select a repository first.", /*error=*/true);
-        return;
-    }
-    const int index = item->data(Qt::UserRole).toInt();
-    if (index == -2) {
-        previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
-        return;
-    }
-    if (index >= 0 && index < m_repositories.size()) {
-        if (m_repositories.at(index).previewOnly) {
-            mirrorPreviewRepository(index);
-            return;
-        }
-        m_repositories[index].publishToNetwork = true;
-        saveRepositories();
-        refreshRepositoryList();
-    }
-    publishRepository(index);
 }
 
 void MainWindow::publishRepository(int index, bool showDialogOnError)
