@@ -65,6 +65,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTextCursor>
+#include <QTimeZone>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -6450,7 +6451,7 @@ QWidget *MainWindow::buildAgentsTab()
     setOcticon(m_agentTestApiKeyButton, "key", 15);
     connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
             &MainWindow::testOpenAiAgentKey);
-    m_agentOpenAiSpend = new QLabel("OpenAI spend: not refreshed");
+    m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not refreshed");
     m_agentOpenAiSpend->setObjectName("channelTitle");
     m_agentOpenAiSpend->setWordWrap(true);
     m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -6626,8 +6627,13 @@ void MainWindow::testOpenAiAgentKey()
         QString costsError;
     };
     auto state = std::make_shared<KeyTestState>();
-    const qint64 end = QDateTime::currentDateTimeUtc().toSecsSinceEpoch();
-    const qint64 start = end - 24 * 60 * 60;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const qint64 end = now.toSecsSinceEpoch();
+    const qint64 usageStart = end - 24 * 60 * 60;
+    const qint64 costsStart =
+        QDate(now.date().year(), now.date().month(), 1)
+            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .toSecsSinceEpoch();
 
     auto finish = [this, state] {
         if (m_agentTestApiKeyButton)
@@ -6646,7 +6652,7 @@ void MainWindow::testOpenAiAgentKey()
         if (m_agentOpenAiSpend) {
             if (state->costsOk) {
                 m_agentOpenAiSpend->setText(
-                    QStringLiteral("OpenAI spend, last 24h: %1")
+                    QStringLiteral("OpenAI spend, month to date: %1")
                         .arg(moneyString(state->costs, state->currency)));
             } else {
                 m_agentOpenAiSpend->setText("OpenAI spend: unavailable");
@@ -6684,33 +6690,34 @@ void MainWindow::testOpenAiAgentKey()
         m_agentApiKeyStatus->setText(lines.join(QStringLiteral("<br>")));
     };
 
-    auto requestCosts = [this, usageKey, start, end, state, finish] {
+    auto requestCosts = [this, usageKey, costsStart, end, state, finish] {
         QUrl url(QStringLiteral("https://api.openai.com/v1/organization/costs"));
         QUrlQuery query;
-        query.addQueryItem(QStringLiteral("start_time"), QString::number(start));
+        query.addQueryItem(QStringLiteral("start_time"),
+                           QString::number(costsStart));
         query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
         query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+        query.addQueryItem(QStringLiteral("limit"), QStringLiteral("31"));
         url.setQuery(query);
         QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, usageKey));
         connect(reply, &QNetworkReply::finished, this, [reply, state, finish] {
             const QByteArray body = reply->readAll();
             if (reply->error() == QNetworkReply::NoError) {
+                // A successful response with empty result arrays means the
+                // organization spent zero in this period, not that cost data
+                // is unavailable.
+                state->costsOk = true;
                 const QJsonArray buckets =
                     QJsonDocument::fromJson(body).object().value("data").toArray();
                 for (const QJsonValue &bucketValue : buckets) {
                     const QJsonArray results =
                         bucketValue.toObject().value("results").toArray();
                     for (const QJsonValue &resultValue : results) {
-                        bool foundAmount = false;
                         state->costs += costResultTotal(resultValue.toObject(),
                                                         &state->currency,
-                                                        &foundAmount);
-                        state->costsOk = state->costsOk || foundAmount;
+                                                        nullptr);
                     }
                 }
-                if (!state->costsOk)
-                    state->costsError =
-                        QStringLiteral("No cost amount was returned by OpenAI.");
             } else {
                 state->costsError = apiErrorSummary(reply, body);
             }
@@ -6719,11 +6726,12 @@ void MainWindow::testOpenAiAgentKey()
         });
     };
 
-    auto requestUsage = [this, usageKey, start, end, state, requestCosts] {
+    auto requestUsage = [this, usageKey, usageStart, end, state, requestCosts] {
         QUrl url(QStringLiteral(
             "https://api.openai.com/v1/organization/usage/completions"));
         QUrlQuery query;
-        query.addQueryItem(QStringLiteral("start_time"), QString::number(start));
+        query.addQueryItem(QStringLiteral("start_time"),
+                           QString::number(usageStart));
         query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
         query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
         url.setQuery(query);
