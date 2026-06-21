@@ -2504,6 +2504,16 @@ void MainWindow::showAdminVerifyDialog()
     rows->addStretch();
     scroll->setWidget(inner);
     layout->addWidget(scroll, 1);
+    auto *sweepBtn = new QPushButton("Sweep deposits to treasury && nodes");
+    sweepBtn->setToolTip("Transfer confirmed join deposits to the treasury and online node payout addresses.");
+    layout->addWidget(sweepBtn);
+    connect(sweepBtn, &QPushButton::clicked, &dialog, [this, sweepBtn]() {
+        sweepBtn->setEnabled(false);
+        sweepBtn->setText("Sweeping\xe2\x80\xa6");
+        adminSweepDeposits();
+        sweepBtn->setText("Sweep deposits to treasury && nodes");
+        sweepBtn->setEnabled(true);
+    });
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -2532,6 +2542,32 @@ bool MainWindow::adminVerifyEmail(const QString &target)
         return true;
     }
     return false;
+}
+
+void MainWindow::adminSweepDeposits()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-sweep-v1\n" + node + "\n" + ts).toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-sweep",
+        QJsonObject{{"node", node}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    const QString result = resp.value("result").toString();
+    if (status == 200 && resp.value("ok").toBool()) {
+        logSystem("Admin sweep: " + (result.isEmpty() ? "done" : result));
+        QMessageBox::information(this, "Sweep complete",
+                                 result.isEmpty() ? "Sweep finished." : result);
+    } else {
+        const QString err = resp.value("error").toString();
+        QMessageBox::warning(this, "Sweep failed",
+                             err.isEmpty() ? "Sweep request failed." : err);
+    }
 }
 
 QString MainWindow::accountOwner() const
