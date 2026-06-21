@@ -3443,14 +3443,12 @@ QWidget *MainWindow::buildHomeSection()
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("homeSplitter");
     splitter->setChildrenCollapsible(false);
-    // Nodes are now a top-bar dropdown (see buildBreadcrumb); the Repositories
-    // column shows the selected node's repos.
-    splitter->addWidget(buildReposPanel());
+    // Nodes and repositories are now top-bar dropdowns (see buildBreadcrumb);
+    // the repo detail panel fills the page, with the node profile sliding in.
     splitter->addWidget(buildRepoDetailSection());
     splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 0);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
     splitter->setSizes({220, 260, 760, 320});
 
     auto *layout = new QHBoxLayout(page);
