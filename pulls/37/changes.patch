@@ -1,0 +1,33 @@
+From 407a3695ab3e7c427f4f74a91ed01e04849309c3 Mon Sep 17 00:00:00 2001
+From: quiet-pixel-987 <quiet.pixel.987667@local.dev>
+Date: Sun, 21 Jun 2026 19:07:10 -0400
+Subject: [PATCH] issue #106: assign agent
+
+---
+ issues/106/0002-agent.md | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+ create mode 100644 issues/106/0002-agent.md
+
+diff --git a/issues/106/0002-agent.md b/issues/106/0002-agent.md
+new file mode 100644
+index 0000000..697e48c
+--- /dev/null
++++ b/issues/106/0002-agent.md
+@@ -0,0 +1,14 @@
++---
++type: agent
++id: 6f040c78-c0fd-4a40-b062-aa8e0a6cb1c0
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++ts: 1782083230693
++agentProvider: claude
++agentSessionId: 37
++agentStatus: queued
++agentCreatePr: true
++sig: 1pvBMTQAH4a_fpEGG-Go9Ij-LaufByCrXNKjQFFT6agHi3P3Kcq6T_64E_pUOxJqwg5s2P8LZ10c8GUCeQkUAA
++---
++
++
+-- 
+2.47.3
+
