@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 40
 title: show binary diffs if they are images show images side by side in the diff viewer / commits
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
