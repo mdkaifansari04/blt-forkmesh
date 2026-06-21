@@ -109,8 +109,8 @@
       <section class="panel doc-panel" aria-labelledby="activity-title">
         <div class="panel-header">
           <div>
-            <h2 id="activity-title">Online activity · last 24 hours</h2>
-            <p>Node-minutes online per hour, sampled every minute. Taller bars mean nodes were online longer that hour.</p>
+            <h2 id="activity-title">Host activity · last 24 hours</h2>
+            <p>Host-minutes online per hour, sampled every minute. Taller bars mean more nodes were hosting (or hosting longer) that hour.</p>
           </div>
         </div>
         <div id="online-graph" class="online-graph" aria-label="Node online activity over the last 24 hours">
@@ -211,7 +211,7 @@
             const bar = document.createElement("div");
             bar.className = "bar" + (minutes === 0 ? " empty" : "");
             bar.style.height = Math.round((minutes / max) * 100) + "%";
-            bar.title = minutes + " node-minutes online · " +
+            bar.title = minutes + " host-minutes online · " +
               String(hour).padStart(2, "0") + ":00";
             col.appendChild(bar);
             // Label every 6 hours to avoid crowding.

@@ -58,10 +58,12 @@
   const STATS_INTERVAL_MS = 30000;
   let statsTimer = null;
 
-  function renderClients(online) {
-    const label = online === 1 ? "1 client online" : `${online} clients online`;
+  // The header pill reflects everything that is live on the network — open host
+  // tunnels plus chat clients — so it doesn't read "0 online" while a host is
+  // clearly up. The per-metric breakdown stays in the network stat cards.
+  function renderOnline(online) {
+    const label = online === 1 ? "1 node online" : `${online} nodes online`;
     if (clientsCount) clientsCount.textContent = label;
-    setText("#network-clients", String(online));
     if (clientsDot) clientsDot.classList.toggle("online", online > 0);
   }
 
@@ -79,9 +81,12 @@
       const response = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      renderClients(Number(data.clients) || 0);
+      const clients = Number(data.clients) || 0;
+      const hosts = Number(data.hosts) || 0;
+      renderOnline(clients + hosts);
+      setText("#network-clients", String(clients));
       if (reposEl) reposEl.textContent = String(Number(data.repos) || 0);
-      if (hostsEl) hostsEl.textContent = String(Number(data.hosts) || 0);
+      if (hostsEl) hostsEl.textContent = String(hosts);
     } catch (error) {
       if (clientsCount) clientsCount.textContent = "Reconnecting…";
       if (clientsDot) clientsDot.classList.remove("online");
