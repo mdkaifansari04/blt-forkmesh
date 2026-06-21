@@ -1735,42 +1735,127 @@ def _check_basic_auth(env, request):
     return ok_user and ok_pass
 
 
-ADMIN_TEMPLATE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>forkmesh · error log</title>
-<style>
+ADMIN_STYLE = """
+ *{box-sizing:border-box}
  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
  header{padding:16px 24px;border-bottom:1px solid #21262d}
  h1{font-size:18px;margin:0}
  .meta{color:#8b949e;font-size:13px;margin-top:4px}
- table{border-collapse:collapse;width:100%%}
- th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
- th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
- td.msg{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:520px}
- .s5{color:#f85149;font-weight:600}
- tr:hover{background:#161b22}
- .empty{padding:32px 24px;color:#8b949e}
- .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px}
+ a{color:#58a6ff;text-decoration:none}
+ a:hover{text-decoration:underline}
+ .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px 0}
  .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 18px;min-width:120px}
  .card .n{font-size:24px;font-weight:600}
  .card .l{color:#8b949e;font-size:12px;margin-top:2px}
  .card.warn .n{color:#f85149}
-</style></head><body>
-<header><h1>forkmesh · admin</h1>
-<div class="meta">Live Durable Object load (hosts + clients are what hold a DO
-open). %(count)d most recent error(s) below. True Cloudflare edge errors
-(520–526) never reach the worker — cross-reference the CF-Ray
-in the Cloudflare dashboard.</div></header>
-%(stats)s
-%(table)s
-<script>
- for (const el of document.querySelectorAll('[data-ts]')) {
-   const ms = Number(el.getAttribute('data-ts'));
-   if (ms) el.textContent = new Date(ms).toLocaleString();
- }
-</script>
-</body></html>"""
+ .tools{padding:12px 24px;display:flex;gap:12px;align-items:center}
+ button{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;
+        padding:8px 14px;font:600 13px system-ui;cursor:pointer}
+ button:hover{background:#2ea043}
+ .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #2ea043;
+         background:#11251a;color:#aff5c2;white-space:pre-wrap;font:13px ui-monospace,monospace}
+ .layout{display:flex;align-items:flex-start}
+ nav{width:220px;flex:none;border-right:1px solid #21262d;min-height:60vh;padding:8px 0}
+ nav a{display:block;padding:7px 20px;color:#c9d1d9}
+ nav a.active{background:#161b22;border-left:3px solid #58a6ff;font-weight:600}
+ nav .sec{padding:10px 20px 4px;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
+ table{border-collapse:collapse;width:100%}
+ th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
+ th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
+ td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
+ .s5{color:#f85149;font-weight:600}
+ tr:hover{background:#161b22}
+ .empty{padding:32px 24px;color:#8b949e}
+ .title{padding:14px 24px 4px;font-weight:600}
+"""
+
+# Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
+ADMIN_HIDDEN_TABLES = ("_cf_KV",)
+
+
+async def _admin_list_tables(env):
+    rows = await d1_all(
+        env,
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name",
+    )
+    return [str(r.get("name", "")) for r in rows
+            if r.get("name") and r.get("name") not in ADMIN_HIDDEN_TABLES]
+
+
+def _admin_cell(column, value, env_unused=None):
+    text = "" if value is None else str(value)
+    if len(text) > 4000:
+        text = text[:4000] + "…"
+    return _html_escape(text)
+
+
+async def _render_table_view(env, table):
+    # Generic "show all rows" view for one D1 table. The encrypted `data` column
+    # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
+    # so the admin can actually read it. The table name is validated by the
+    # caller against the live table list, so it is safe to interpolate.
+    rows = await d1_all(env, "SELECT * FROM " + table + " LIMIT 500")
+    count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
+    total = int((count_row or {}).get("n", 0) or 0)
+
+    if table == "error_log":
+        # Keep the purpose-built, time-formatted error view.
+        body = []
+        for r in rows:
+            status = r.get("status", "")
+            cls = "s5" if str(status).startswith("5") else ""
+            body.append(
+                "<tr>"
+                '<td data-ts="%s">%s</td>'
+                '<td class="%s">%s</td>'
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   cls, _html_escape(status),
+                   _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
+                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")))
+            )
+        if not body:
+            inner = '<div class="empty">No errors recorded yet.</div>'
+        else:
+            inner = ("<table><thead><tr><th>Time</th><th>Status</th><th>Method</th>"
+                     "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
+                     + "".join(body) + "</tbody></table>")
+        return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
+
+    if not rows:
+        return ('<div class="title">%s · 0 rows</div>'
+                '<div class="empty">This table is empty.</div>'
+                % _html_escape(table))
+
+    # Column order: union of keys, first row's order first.
+    columns = list(rows[0].keys())
+    for r in rows:
+        for k in r.keys():
+            if k not in columns:
+                columns.append(k)
+
+    body = []
+    for r in rows:
+        cells = []
+        for col in columns:
+            value = r.get(col)
+            if col == "data" and isinstance(value, str) and value:
+                decoded = await decrypt_row(env, value)
+                if decoded is not None:
+                    value = json.dumps(decoded, indent=2, sort_keys=True)
+            cells.append("<td>%s</td>" % _admin_cell(col, value))
+        body.append("<tr>" + "".join(cells) + "</tr>")
+
+    head = "".join("<th>%s</th>" % _html_escape(c) for c in columns)
+    return (
+        '<div class="title">%s · %d row(s)%s</div>'
+        % (_html_escape(table), total,
+           " (showing 500)" if total > 500 else "")
+        + "<table><thead><tr>" + head + "</tr></thead><tbody>"
+        + "".join(body) + "</tbody></table>"
+    )
 
 
 def _render_admin_stats(stats):
@@ -1791,39 +1876,99 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
-def render_admin_html(rows, stats=None):
-    if not rows:
-        table = '<div class="empty">No errors recorded yet.</div>'
-    else:
-        body = []
-        for r in rows:
-            status = r.get("status", "")
-            cls = "s5" if str(status).startswith("5") else ""
-            body.append(
-                "<tr>"
-                '<td data-ts="%s">%s</td>'
-                '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td>"
-                '<td class="msg">%s</td><td>%s</td>'
-                "</tr>"
-                % (
-                    _html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
-                    cls, _html_escape(status),
-                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                    _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")),
-                )
-            )
-        table = (
-            "<table><thead><tr><th>Time</th><th>Status</th><th>Method</th>"
-            "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
-            + "".join(body)
-            + "</tbody></table>"
-        )
-    return ADMIN_TEMPLATE % {
-        "count": len(rows),
-        "table": table,
-        "stats": _render_admin_stats(stats),
-    }
+def _render_admin_nav(tables, active):
+    links = ['<div class="sec">Tables</div>']
+    for t in tables:
+        label = "Error logs" if t == "error_log" else t
+        cls = ' class="active"' if t == active else ""
+        links.append('<a href="?table=%s"%s>%s</a>'
+                     % (_html_escape(t), cls, _html_escape(label)))
+    return "<nav>" + "".join(links) + "</nav>"
+
+
+def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
+    banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>forkmesh · admin</title><style>" + ADMIN_STYLE + "</style></head><body>"
+        "<header><h1>forkmesh · admin</h1>"
+        "<div class=\"meta\">Live Durable Object load, every D1 table, and BCH "
+        "disbursement of any held account wallet keys.</div></header>"
+        + _render_admin_stats(env_stats)
+        + '<div class="tools"><form method="post" action="?action=disburse" '
+          'onsubmit="return confirm(\'Sweep all held account-wallet BCH to the '
+          'treasury address?\')">'
+          '<button type="submit">Disburse held BCH → treasury</button></form>'
+          '<span class="meta">Sweeps every account that still holds a spendable '
+          'donation key with a non-zero balance.</span></div>'
+        + banner_html
+        + '<div class="layout">'
+        + _render_admin_nav(tables, active_table)
+        + "<main>" + table_html + "</main>"
+        + "</div>"
+        "<script>for (const el of document.querySelectorAll('[data-ts]')){"
+        "const ms=Number(el.getAttribute('data-ts'));"
+        "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
+        "</body></html>"
+    )
+
+
+async def _admin_disburse(env):
+    # Sweep every account that still holds a spendable donation key (the worker
+    # generated and kept it during signup) to the treasury address. Normally the
+    # donation poll auto-sweeps, so this is the manual fallback for funds that got
+    # stuck (e.g. the explorer was down when the donation confirmed).
+    treasury = _treasury_address(env)
+    if not treasury:
+        return ("No treasury address configured "
+                "(set TREASURY_BCH_ADDRESS or NODE_BCH_ADDRESS).")
+    await ensure_schema(env)
+    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    swept_total = 0
+    checked = 0
+    lines = []
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        priv = rec.get("donation_privkey")
+        addr = rec.get("donation_address")
+        if not priv or not addr:
+            continue  # nothing spendable held for this account
+        checked += 1
+        if checked > 50:
+            lines.append("… stopped after 50 wallets; run again to continue.")
+            break
+        state = await _bch_address_state(addr)
+        if state is None:
+            lines.append("%s: explorer unavailable, skipped." % rec.get("name", "?"))
+            continue
+        utxos = state.get("utxos") or []
+        total_in = sum(int(u["value"]) for u in utxos)
+        fee = BCH_BASE_FEE_SATS + BCH_FEE_PER_OUTPUT_SATS
+        if not utxos or total_in - fee <= 0:
+            continue  # empty or dust-only
+        try:
+            raw_hex, _, sent = bch_wallet.build_sweep_tx(
+                int(priv, 16), utxos, treasury, fee)
+            ok = await _bch_broadcast(raw_hex)
+        except Exception as error:
+            lines.append("%s: build/broadcast error (%s)."
+                         % (rec.get("name", "?"), repr(error)[:80]))
+            continue
+        if ok:
+            rec["swept"] = True
+            await _save_account(env, row.get("name_bi"), rec)
+            swept_total += sent
+            lines.append("%s: swept %.8f BCH → treasury."
+                         % (rec.get("name", "?"), sent / 1e8))
+        else:
+            lines.append("%s: broadcast failed (retry later)." % rec.get("name", "?"))
+    head = ("Disbursed %.8f BCH to %s." % (swept_total / 1e8, treasury)
+            if swept_total else
+            "No held wallets with a spendable balance were found.")
+    return head + ("\n" + "\n".join(lines) if lines else "")
 
 
 class Default(WorkerEntrypoint):
@@ -1874,15 +2019,32 @@ class Default(WorkerEntrypoint):
                 headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
             )
         await ensure_schema(self.env)
-        rows = await d1_all(
-            self.env,
-            "SELECT ts, status, method, path, message, ray FROM error_log "
-            "ORDER BY id DESC LIMIT ?",
-            MAX_ERROR_LOG,
-        )
+        params = parse_qs(urlparse(request.url).query)
+
+        # POST ?action=disburse → sweep held account wallets to the treasury.
+        banner = ""
+        if method_name(request) == "POST" and \
+                params.get("action", [""])[0] == "disburse":
+            try:
+                banner = await _admin_disburse(self.env)
+            except Exception as error:
+                banner = "Disburse failed: " + repr(error)
+
+        # Left-nav table browser: pick the requested table (validated against the
+        # live list), defaulting to the error log.
+        tables = await _admin_list_tables(self.env)
+        requested = params.get("table", [""])[0]
+        if requested in tables:
+            active = requested
+        elif "error_log" in tables:
+            active = "error_log"
+        else:
+            active = tables[0] if tables else ""
+        table_html = (await _render_table_view(self.env, active) if active
+                      else '<div class="empty">No tables found.</div>')
         stats = await admin_stats(self.env)
         return Response(
-            render_admin_html(rows, stats),
+            render_admin_html(stats, tables, active, table_html, banner),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
