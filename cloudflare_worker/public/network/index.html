@@ -9,25 +9,69 @@
     <script src="../static-page.js" defer></script>
     <style>
       .online-graph {
-        display: flex; align-items: flex-end; gap: 4px;
-        height: 160px; padding: 12px 4px 0;
+        display: grid;
+        gap: 12px;
+        padding: 12px 0 0;
       }
-      .online-graph .bar-col {
-        flex: 1 1 0; display: flex; flex-direction: column;
-        align-items: center; justify-content: flex-end; height: 100%;
+      .online-node-row {
+        display: grid;
+        grid-template-columns: minmax(88px, 140px) 1fr minmax(42px, auto);
+        gap: 10px;
+        align-items: center;
+      }
+      .online-node-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .online-node-cells {
+        display: grid;
+        grid-template-columns: repeat(24, minmax(4px, 1fr));
+        gap: 3px;
         min-width: 0;
       }
-      .online-graph .bar {
-        width: 70%; min-height: 2px; border-radius: 4px 4px 2px 2px;
-        background: linear-gradient(180deg, var(--accent-bright), var(--accent));
-        transition: height .3s ease;
+      .online-cell {
+        height: 22px;
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--border) 72%, transparent);
+        border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
       }
-      .online-graph .bar.empty { background: var(--border); opacity: .5; }
-      .online-graph .bar-label {
-        margin-top: 6px; font-size: 10px; color: var(--muted-2);
+      .online-cell[data-level="1"] { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+      .online-cell[data-level="2"] { background: color-mix(in srgb, var(--accent) 58%, transparent); }
+      .online-cell[data-level="3"] { background: var(--accent); }
+      .online-node-total {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: right;
         white-space: nowrap;
       }
+      .online-axis {
+        display: grid;
+        grid-template-columns: minmax(88px, 140px) 1fr minmax(42px, auto);
+        gap: 10px;
+        align-items: center;
+        color: var(--muted-2);
+        font-size: 10px;
+      }
+      .online-axis-hours {
+        display: grid;
+        grid-template-columns: repeat(24, minmax(4px, 1fr));
+        gap: 3px;
+      }
       .online-graph-empty { color: var(--muted); padding: 24px 4px; }
+      @media (max-width: 720px) {
+        .online-node-row,
+        .online-axis {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+        .online-node-total {
+          text-align: left;
+        }
+      }
     </style>
   </head>
   <body>
@@ -189,39 +233,86 @@
           return;
         }
         async function render() {
-          let hours;
+          let data;
           try {
             const res = await fetch("/api/network/online-history", {
               headers: { accept: "application/json" },
             });
             if (!res.ok) throw new Error("HTTP " + res.status);
-            hours = (await res.json()).hours || [];
+            data = await res.json();
           } catch (_) {
             root.innerHTML =
               '<div class="online-graph-empty">Activity unavailable right now.</div>';
             return;
           }
-          const max = Math.max(1, ...hours.map((h) => Number(h.nodeMinutes) || 0));
-          root.innerHTML = "";
-          hours.forEach((h, i) => {
-            const minutes = Number(h.nodeMinutes) || 0;
-            const hour = new Date(Number(h.hourTs)).getHours();
-            const col = document.createElement("div");
-            col.className = "bar-col";
-            const bar = document.createElement("div");
-            bar.className = "bar" + (minutes === 0 ? " empty" : "");
-            bar.style.height = Math.round((minutes / max) * 100) + "%";
-            bar.title = minutes + " host-minutes online · " +
-              String(hour).padStart(2, "0") + ":00";
-            col.appendChild(bar);
-            // Label every 6 hours to avoid crowding.
-            if (i % 6 === 0) {
-              const label = document.createElement("div");
-              label.className = "bar-label";
-              label.textContent = String(hour).padStart(2, "0") + "h";
-              col.appendChild(label);
+          const hours = Array.isArray(data.hours) ? data.hours : [];
+          let nodes = Array.isArray(data.nodes) ? data.nodes : [];
+          if (!nodes.length) {
+            const total = hours.reduce(
+              (sum, h) => sum + (Number(h.nodeMinutes) || 0),
+              0,
+            );
+            if (!total) {
+              root.innerHTML =
+                '<div class="online-graph-empty">No node activity sampled yet.</div>';
+              return;
             }
-            root.appendChild(col);
+            nodes = [{
+              label: "all nodes",
+              totalMinutes: total,
+              hours: hours.map((h) => ({
+                hourTs: h.hourTs,
+                minutes: Number(h.nodeMinutes) || 0,
+              })),
+            }];
+          }
+
+          root.innerHTML = "";
+          const axis = document.createElement("div");
+          axis.className = "online-axis";
+          axis.appendChild(document.createElement("span"));
+          const axisHours = document.createElement("div");
+          axisHours.className = "online-axis-hours";
+          hours.forEach((h, i) => {
+            const tick = document.createElement("span");
+            tick.textContent = i % 6 === 0
+              ? String(new Date(Number(h.hourTs)).getHours()).padStart(2, "0")
+              : "";
+            axisHours.appendChild(tick);
+          });
+          axis.appendChild(axisHours);
+          const axisTotal = document.createElement("span");
+          axisTotal.textContent = "min";
+          axis.appendChild(axisTotal);
+          root.appendChild(axis);
+
+          nodes.forEach((node) => {
+            const row = document.createElement("div");
+            row.className = "online-node-row";
+            const label = document.createElement("div");
+            label.className = "online-node-label";
+            label.textContent = node.label || "node";
+            row.appendChild(label);
+
+            const cells = document.createElement("div");
+            cells.className = "online-node-cells";
+            (node.hours || []).forEach((h) => {
+              const minutes = Number(h.minutes) || 0;
+              const cell = document.createElement("div");
+              cell.className = "online-cell";
+              cell.dataset.level = minutes >= 45 ? "3" : minutes >= 20 ? "2" :
+                minutes > 0 ? "1" : "0";
+              const hour = new Date(Number(h.hourTs)).getHours();
+              cell.title = `${node.label || "node"} · ${minutes} min · ${String(hour).padStart(2, "0")}:00`;
+              cells.appendChild(cell);
+            });
+            row.appendChild(cells);
+
+            const total = document.createElement("div");
+            total.className = "online-node-total";
+            total.textContent = `${Number(node.totalMinutes) || 0}`;
+            row.appendChild(total);
+            root.appendChild(row);
           });
         }
         render();

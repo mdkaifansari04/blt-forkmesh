@@ -152,7 +152,6 @@ private:
 
     // Chat page
     QWidget *buildChatPage();
-    QWidget *buildServerRail();
 
     // Global donation nudge shown until this node sets a Solana address.
     QWidget *buildSolanaNotice();
@@ -165,14 +164,17 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void openServerWebsite(int index); // open a relay's site in the browser
+    void showNodeMenu();           // searchable dropdown to pick a node
+    void updateNodeSwitcher();     // refresh top-bar node label / count
+    void showRepoMenu();           // dropdown to open repos / add a local repo
+    void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Persistent network log docked at the bottom of the app.
     QWidget *buildNetworkLogDock();
 
-    // Mainnode servers (favicon rail)
+    // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();
     void saveServers();
-    void refreshServerRail();
     void switchToServer(int index);
     void promptAddServer();
     void removeServer(int index);
@@ -189,8 +191,6 @@ private:
     void checkNodeBalance();
     // Query the Solana network for a balance via public JSON-RPC endpoints.
     void querySolanaBalance(const QString &addr, int endpointIndex);
-    QWidget *buildNodesPanel(); // left column: just the nodes
-    QWidget *buildReposPanel(); // column: repos for the selected node
     // Fill the repositories column with the repos owned by the selected node.
     void selectNode(const QString &node);
     QWidget *buildIssuesSection();
@@ -424,7 +424,6 @@ private:
     void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
-    void syncSelectedRepository();
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
     // A peer announced it refreshed "owner/name" from source; notify if we
@@ -433,7 +432,6 @@ private:
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
-    void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
     void updateRepoRemoteInfo();
     void updateRepoDetailStatus();
@@ -473,9 +471,7 @@ private:
     QButtonGroup *m_navGroup = nullptr;
     QSystemTrayIcon *m_trayIcon;
 
-    // Mainnode favicon rail (far left of the chat page).
-    QWidget *m_serverRail = nullptr;
-    QButtonGroup *m_serverGroup = nullptr;
+    // Configured mainnode relays (switched via the top-bar relay dropdown).
     QList<ServerConfig> m_servers;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
@@ -486,7 +482,6 @@ private:
 
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
-    QLabel *m_breadcrumbServerIcon = nullptr;
     // Top-bar relay switcher: a clickable favicon (shows that relay's nodes), a
     // "domain ▾ count" dropdown button (search/switch/add relays), and an
     // open-in-browser icon.
@@ -517,8 +512,16 @@ private:
     QLabel *m_channelTitle;
     QLabel *m_encryptionLabel;
     QListWidget *m_channelList;
-    QListWidget *m_repoList;             // repos for the selected node
-    QListWidget *m_nodeList = nullptr;   // left column: the nodes themselves
+    QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
+    // One row per node, populated by refreshRepositoryList and shown in the
+    // node dropdown (showNodeMenu).
+    struct NodeMenuEntry {
+        QString name;
+        QString platform;
+        bool online = false;
+        bool self = false;
+    };
+    QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_syncRepoButton;
     QPushButton *m_publishRepoButton;
