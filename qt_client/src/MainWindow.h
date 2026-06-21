@@ -221,6 +221,7 @@ private:
     void promptNewPull();
     void updateCurrentPullBranch();
     void mergeCurrentPull();
+    void closeIssuesLinkedFromPull(const PullRequest &pr);
     bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
     void syncPullsInbox();
