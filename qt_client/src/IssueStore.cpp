@@ -158,6 +158,12 @@ QJsonObject IssueEvent::toJson() const
         obj.insert("milestone", milestone);
     if (type == "assignees")
         obj.insert("assignees", fromStringList(assignees));
+    if (type == "agent") {
+        obj.insert("agentProvider", agentProvider);
+        obj.insert("agentSessionId", agentSessionId);
+        obj.insert("agentStatus", agentStatus);
+        obj.insert("agentCreatePr", agentCreatePr);
+    }
     obj.insert("sig", sig);
     return obj;
 }
@@ -177,6 +183,10 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     ev.labels = toStringList(obj.value("labels").toArray());
     ev.milestone = obj.value("milestone").toString();
     ev.assignees = toStringList(obj.value("assignees").toArray());
+    ev.agentProvider = obj.value("agentProvider").toString();
+    ev.agentSessionId = obj.value("agentSessionId").toInt();
+    ev.agentStatus = obj.value("agentStatus").toString();
+    ev.agentCreatePr = obj.value("agentCreatePr").toBool();
     ev.sig = obj.value("sig").toString();
     return ev;
 }
@@ -262,6 +272,9 @@ QString IssueStore::contentForSigning(const IssueEvent &ev)
         return ev.milestone;
     if (ev.type == "assignees")
         return ev.assignees.join(",");
+    if (ev.type == "agent")
+        return ev.agentProvider + nul + QString::number(ev.agentSessionId) + nul +
+               ev.agentStatus + nul + (ev.agentCreatePr ? "pr" : "no-pr");
     if (ev.type == "delete")
         return ev.target;
     return QString();
@@ -320,6 +333,12 @@ void appendEventFields(QStringList &lines, const IssueEvent &ev)
         lines << "milestone: " + ev.milestone;
     if (ev.type == "assignees")
         lines << "assignees: " + serializeList(ev.assignees);
+    if (ev.type == "agent") {
+        lines << "agentProvider: " + ev.agentProvider;
+        lines << "agentSessionId: " + QString::number(ev.agentSessionId);
+        lines << "agentStatus: " + ev.agentStatus;
+        lines << "agentCreatePr: " + QString(ev.agentCreatePr ? "true" : "false");
+    }
     if (ev.type == "open" || ev.type == "comment" || ev.type == "edit")
         lines << "attachments: " + serializeList(ev.attachments);
     lines << "sig: " + ev.sig;
@@ -339,6 +358,10 @@ IssueEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.labels = fm.list("labels");
     ev.milestone = fm.get("milestone");
     ev.assignees = fm.list("assignees");
+    ev.agentProvider = fm.get("agentProvider");
+    ev.agentSessionId = fm.num("agentSessionId");
+    ev.agentStatus = fm.get("agentStatus");
+    ev.agentCreatePr = fm.get("agentCreatePr") == QLatin1String("true");
     ev.attachments = fm.list("attachments");
     ev.sig = fm.get("sig");
     ev.body = fm.body;
@@ -895,6 +918,30 @@ bool IssueStore::setAssignees(int number, const QStringList &assignees, QString 
     if (!writeIssueFile(issue, error))
         return false;
     return commit(QStringLiteral("issue #%1: assignees").arg(number), error);
+}
+
+bool IssueStore::assignAgent(int number, const QString &provider, int sessionId,
+                             bool createPr, const QString &status, QString *error)
+{
+    if (!canWrite())
+        return false;
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "agent";
+    ev.agentProvider = provider;
+    ev.agentSessionId = sessionId;
+    ev.agentCreatePr = createPr;
+    ev.agentStatus = status;
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    if (!writeIssueFile(issue, error))
+        return false;
+    const QString action = (sessionId <= 0 || status == QLatin1String("cleared"))
+                               ? QStringLiteral("clear agent")
+                               : QStringLiteral("assign agent");
+    return commit(QStringLiteral("issue #%1: %2").arg(number).arg(action), error);
 }
 
 bool IssueStore::deleteEvent(int number, const QString &eventId, QString *error)

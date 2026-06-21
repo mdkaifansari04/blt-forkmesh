@@ -6,6 +6,8 @@
 #include "PullStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
+#include "AgentStore.h"
+#include "AgentRunner.h"
 
 #include <QHash>
 #include <QIcon>
@@ -218,6 +220,27 @@ private:
     void submitPullToInbox(const PullRequest &pr);
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
+    // Agent sessions tab: local Codex/Claude Code runs assigned from issues.
+    QWidget *buildAgentsTab();
+    void initAgents();
+    void reloadAgents();
+    void refreshAgentTable();
+    void showAgentSession(int sessionId);
+    AgentSession *findAgentSession(int sessionId);
+    const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
+    void assignIssueToAgent(const QString &provider);
+    void deleteSelectedAgentSession();
+    void testOpenAiAgentKey();
+    void openAgentSessionFromIssue();
+    void switchToAgentsTab(int sessionId);
+    void processAgentQueue();
+    void onAgentLog(int sessionId, const QString &text);
+    void onAgentStatusChanged(int sessionId, const QString &status);
+    void onAgentFinished(int sessionId, bool ok);
+    void updateAgentActionState();
+    void updateIssueAgentUi(const Issue &issue);
+    AgentRunner::Config agentConfigForProvider(const QString &provider) const;
+    QString agentProviderName(const QString &provider) const;
     // Actions (CI on push to the mirror) — lives as a tab inside the repo detail.
     QWidget *buildRepoActionsTab();
     void refreshRepoActions();           // workflows column + runs for the open repo
@@ -504,6 +527,13 @@ private:
     QLineEdit *m_mirrorRootEdit = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
     QComboBox *m_themeCombo = nullptr;
+    QLineEdit *m_codexApiKeyEdit = nullptr;
+    QLineEdit *m_codexModelEdit = nullptr;
+    QLineEdit *m_claudeApiKeyEdit = nullptr;
+    QLineEdit *m_codexCommandEdit = nullptr;
+    QLineEdit *m_claudeCommandEdit = nullptr;
+    QLineEdit *m_agentContextEdit = nullptr;
+    QLineEdit *m_agentMaxOutputEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
 
     // Issues section widgets
@@ -631,6 +661,23 @@ private:
     QTableWidget *m_varsTable = nullptr;
     // Repos panel: per-repo "run actions on push" toggle for the selection.
     QCheckBox *m_actionsEnabledCheck = nullptr;
+    // Agent sessions assigned from issues.
+    AgentStore *m_agentStore = nullptr;
+    AgentRunner *m_agentRunner = nullptr;
+    QList<AgentSession> m_agentSessions;
+    QList<int> m_agentQueue;
+    int m_selectedAgentSessionId = -1;
+    QTableWidget *m_agentTable = nullptr;
+    QLabel *m_agentTitle = nullptr;
+    QLabel *m_agentMeta = nullptr;
+    QLabel *m_agentUsage = nullptr;
+    QPlainTextEdit *m_agentLog = nullptr;
+    QPlainTextEdit *m_agentPromptEdit = nullptr;
+    QPushButton *m_agentStopButton = nullptr;
+    QPushButton *m_agentDeleteButton = nullptr;
+    QPushButton *m_agentTestApiKeyButton = nullptr;
+    QLabel *m_agentApiKeyStatus = nullptr;
+    QPushButton *m_agentSendPromptButton = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
@@ -668,6 +715,11 @@ private:
     QPushButton *m_issueMilestoneButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;
     QPushButton *m_issueDeleteButton = nullptr;
+    QLabel *m_issueAgentValue = nullptr;
+    QCheckBox *m_issueAgentCreatePrCheck = nullptr;
+    QPushButton *m_issueAssignCodexButton = nullptr;
+    QPushButton *m_issueAssignClaudeButton = nullptr;
+    QPushButton *m_issueAgentViewButton = nullptr;
     QList<Issue> m_currentIssues;
     QList<IssueLabel> m_currentLabels;
     QList<IssueMilestone> m_currentMilestones;
