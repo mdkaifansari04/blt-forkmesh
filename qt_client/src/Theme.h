@@ -223,6 +223,10 @@ QPushButton#repoMenuButton:hover {
     background-color: #161b22; color: #e6edf3;
 }
 #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
+#navSolanaBalance {
+    background: transparent; border: 1px solid #30363d; border-radius: 8px;
+    color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
+}
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
@@ -903,6 +907,10 @@ QPushButton#repoMenuButton:hover {
     background-color: #eaeef2; color: #1f2328;
 }
 #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
+#navSolanaBalance {
+    background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
+    color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
+}
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
