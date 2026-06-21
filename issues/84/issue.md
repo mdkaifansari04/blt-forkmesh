@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 84
 title: have the ability to do a pull request from one node to another on the same repo please
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
