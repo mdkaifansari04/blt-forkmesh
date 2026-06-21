@@ -730,6 +730,7 @@ private:
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentTestApiKeyButton = nullptr;
+    QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
     QPushButton *m_agentSendPromptButton = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.

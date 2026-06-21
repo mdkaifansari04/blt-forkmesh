@@ -34,6 +34,7 @@ struct AgentSession {
     int totalTokens = 0;
     int contextTokens = 0;
     int contextWindow = 0;
+    int maxOutputTokens = 0;
     int estimatedCredits = 0;
     QString lastError;
 

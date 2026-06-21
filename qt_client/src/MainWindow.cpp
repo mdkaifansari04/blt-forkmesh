@@ -5978,9 +5978,10 @@ QString moneyString(double amount, QString currency)
 {
     if (currency.isEmpty())
         currency = QStringLiteral("usd");
-    return QStringLiteral("%1 %2")
-        .arg(amount, 0, 'f', amount < 1.0 ? 4 : 2)
-        .arg(currency.toUpper());
+    const QString formatted = QString::number(amount, 'f', amount < 1.0 ? 4 : 2);
+    if (currency.compare(QStringLiteral("usd"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("$%1 USD").arg(formatted);
+    return QStringLiteral("%1 %2").arg(formatted, currency.toUpper());
 }
 
 } // namespace
@@ -6025,18 +6026,27 @@ QWidget *MainWindow::buildAgentsTab()
     auto *keyTestRow = new QHBoxLayout;
     keyTestRow->setContentsMargins(0, 0, 0, 0);
     keyTestRow->setSpacing(8);
-    m_agentTestApiKeyButton = new QPushButton("Test OpenAI key");
+    m_agentTestApiKeyButton = new QPushButton("Refresh OpenAI usage");
     m_agentTestApiKeyButton->setObjectName("ghostButton");
     m_agentTestApiKeyButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentTestApiKeyButton, "key", 15);
     connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
             &MainWindow::testOpenAiAgentKey);
-    m_agentApiKeyStatus = new QLabel("OpenAI key not tested");
+    m_agentOpenAiSpend = new QLabel("OpenAI spend: not refreshed");
+    m_agentOpenAiSpend->setObjectName("channelTitle");
+    m_agentOpenAiSpend->setWordWrap(true);
+    m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentApiKeyStatus = new QLabel("Refresh to show OpenAI requests, tokens, models, organization, and request ID.");
     m_agentApiKeyStatus->setObjectName("statusLine");
     m_agentApiKeyStatus->setWordWrap(true);
     m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *usageText = new QVBoxLayout;
+    usageText->setContentsMargins(0, 0, 0, 0);
+    usageText->setSpacing(2);
+    usageText->addWidget(m_agentOpenAiSpend);
+    usageText->addWidget(m_agentApiKeyStatus);
     keyTestRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
-    keyTestRow->addWidget(m_agentApiKeyStatus, 1);
+    keyTestRow->addLayout(usageText, 1);
     listLayout->addLayout(keyTestRow);
     listLayout->addWidget(m_agentTable, 1);
 
@@ -6204,33 +6214,45 @@ void MainWindow::testOpenAiAgentKey()
             return;
 
         if (!state->modelsOk) {
+            if (m_agentOpenAiSpend)
+                m_agentOpenAiSpend->setText("OpenAI spend: unavailable");
             m_agentApiKeyStatus->setText(
                 QStringLiteral("OpenAI key rejected. %1").arg(state->modelsError));
             return;
         }
 
+        if (m_agentOpenAiSpend) {
+            if (state->costsOk) {
+                m_agentOpenAiSpend->setText(
+                    QStringLiteral("OpenAI spend, last 24h: %1")
+                        .arg(moneyString(state->costs, state->currency)));
+            } else {
+                m_agentOpenAiSpend->setText("OpenAI spend: unavailable");
+            }
+        }
+
+        const qint64 totalTokens = state->inputTokens + state->outputTokens;
         QStringList lines;
+        if (state->usageOk) {
+            lines << QStringLiteral(
+                         "Last 24h OpenAI usage: %1 requests, %2 total tokens (%3 input, %4 cached input, %5 output).")
+                         .arg(state->requests)
+                         .arg(totalTokens)
+                         .arg(state->inputTokens)
+                         .arg(state->cachedTokens)
+                         .arg(state->outputTokens);
+        }
         lines << QStringLiteral("OpenAI key works. %1 models visible.")
                      .arg(state->modelCount);
         if (!state->organization.isEmpty())
             lines << QStringLiteral("Organization: %1").arg(state->organization);
         if (!state->requestId.isEmpty())
             lines << QStringLiteral("Request ID: %1").arg(state->requestId);
-        if (state->usageOk) {
-            lines << QStringLiteral(
-                         "Last 24h usage: %1 requests, %2 input tokens (%3 cached), %4 output tokens.")
-                         .arg(state->requests)
-                         .arg(state->inputTokens)
-                         .arg(state->cachedTokens)
-                         .arg(state->outputTokens);
-        } else {
+        if (!state->usageOk) {
             lines << QStringLiteral("Usage stats unavailable: %1")
                          .arg(state->usageError);
         }
-        if (state->costsOk) {
-            lines << QStringLiteral("Last 24h cost: %1")
-                         .arg(moneyString(state->costs, state->currency));
-        } else {
+        if (!state->costsOk) {
             lines << QStringLiteral("Cost stats unavailable: %1")
                          .arg(state->costsError);
         }
@@ -6534,15 +6556,20 @@ void MainWindow::showAgentSession(int sessionId)
     }
     if (m_agentUsage) {
         const int window = session->contextWindow > 0 ? session->contextWindow : 32000;
+        const int maxOutput =
+            session->maxOutputTokens > 0
+                ? session->maxOutputTokens
+                : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
         const int pct = window > 0 ? qMin(100, session->contextTokens * 100 / window) : 0;
         m_agentUsage->setText(
-            QStringLiteral("Usage estimate: %1 tokens (%2 prompt, %3 transcript) · context %4/%5 (%6%) · credits ~%7")
+            QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8")
                 .arg(session->totalTokens)
                 .arg(session->promptTokens)
                 .arg(session->completionTokens)
                 .arg(session->contextTokens)
                 .arg(window)
                 .arg(pct)
+                .arg(maxOutput)
                 .arg(session->estimatedCredits));
     }
     if (m_agentLog) {
