@@ -19,7 +19,8 @@
   let statusTimer = null;
   let expiryTimer = null;
   let solUsd = 0;                 // SOL→USD spot price, 0 until fetched
-  let currentDonationSol = 0.005; // required donation for this signup, in SOL
+  let currentDonationSol = 0;     // required donation for this signup, in SOL
+  let currentDonationUsd = 0;     // server-computed USD value of the requirement
 
   function showStep(id) {
     for (const el of document.querySelectorAll(".step")) {
@@ -50,6 +51,19 @@
       $("#calc-nodes").textContent = String(nodes);
       const earn = (Math.max(nodes, 1) * PAYOUT_PER_JOIN_SOL).toFixed(9);
       $("#calc-earn").textContent = earn + " SOL";
+      // Live minimum donation (~$1), computed server-side from the SOL price.
+      const minSol = Number(body.minSol) || 0;
+      const minUsd = Number(body.minUsd) || 0;
+      if (Number(body.solUsd) > 0) solUsd = Number(body.solUsd);
+      const minSolEl = $("#min-donation-sol");
+      if (minSolEl && minSol > 0) minSolEl.textContent = trimAmount(minSol.toFixed(9)) + " SOL";
+      const minUsdEl = $("#min-donation-usd");
+      if (minUsdEl) {
+        minUsdEl.textContent = minUsd > 0
+          ? "≈ $" + minUsd.toLocaleString(undefined,
+              { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : "";
+      }
     } catch (_) { /* leave placeholders */ }
   }
 
@@ -274,8 +288,10 @@
       return;
     }
     lastReceivedLamports = Number(body.receivedLamports) || 0;
-    $("#pay-amount").textContent = (body.amountSol || "0.005000000") + " SOL";
-    currentDonationSol = Number(body.amountSol) || 0.005;
+    $("#pay-amount").textContent = trimAmount(body.amountSol || "0") + " SOL";
+    currentDonationSol = Number(body.amountSol) || 0;
+    currentDonationUsd = Number(body.amountUsd) || 0;
+    if (Number(body.solUsd) > 0) solUsd = Number(body.solUsd);
     renderUsd();
     applyExpiry(body);
     if (body.hidden || body.expired || body.deleted) {
@@ -312,6 +328,11 @@
     }
     if (body.hidden || body.expired) {
       hideExpiredAddress(false);
+      return;
+    }
+    if (body.checking && !body.paid) {
+      // RPC was momentarily unreachable; keep the address up and keep polling.
+      setPayStatus("Checking the network for your donation…", "waiting");
       return;
     }
     if (body.paid) {
@@ -372,12 +393,20 @@
   }
 
   function renderUsd() {
-    const min = $("#min-donation-usd");
-    if (min) min.textContent = fmtUsd(0.005);
+    // Prefer the server's authoritative USD value (derived from the live rate
+    // and rounded up to ~$1); fall back to the client spot price for display.
+    const usd = currentDonationUsd > 0
+      ? "≈ $" + currentDonationUsd.toLocaleString(undefined,
+          { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : fmtUsd(currentDonationSol);
+    // The "Min. donation" stat card is owned by loadStats; here we only set the
+    // USD value next to the amount the user is being asked to send.
     const pay = $("#pay-amount-usd");
-    if (pay) pay.textContent = fmtUsd(currentDonationSol);
+    if (pay) pay.textContent = usd;
   }
 
+  // The minimum is computed and enforced server-side; this is best-effort and
+  // only used to show a $ value before the deposit address has been requested.
   async function loadSolPrice() {
     try {
       const res = await fetch(

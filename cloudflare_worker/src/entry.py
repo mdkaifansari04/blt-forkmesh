@@ -322,8 +322,15 @@ async def network_stats(env):
 
     clients = await _flagship_client_count(env)
 
+    # Live minimum join donation (~$1, from the on-chain price) so the signup
+    # page can show the real figure before requesting a deposit address.
+    min_lamports = await _min_join_lamports(env)
+    price = await _sol_usd_price(env)
     resp = json_response(
-        {"ok": True, "repos": repos, "hosts": hosts, "clients": clients},
+        {"ok": True, "repos": repos, "hosts": hosts, "clients": clients,
+         "minLamports": min_lamports, "minSol": _amount_sol(min_lamports),
+         "minUsd": round((min_lamports / LAMPORTS_PER_SOL) * price, 2) if price else 0,
+         "solUsd": price or 0},
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(NETWORK_STATS_CACHE_KEY, resp)
@@ -572,10 +579,29 @@ PBKDF2_ITERS = 150000
 MIN_ACTIVE_LAMPORTS = 1000000  # 0.001 SOL proves the wallet is active/funded
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
-# Donation funnel: minimum "join" donation. Each signup gets a Solana Pay
-# reference, and the treasury address receives the payment directly.
-MIN_JOIN_LAMPORTS = 5000000  # 0.005 SOL
+# Donation funnel: each signup gets its OWN freshly generated Solana deposit
+# address so we can watch that single address go from a zero balance to the
+# required amount (low-level getBalance, no transaction indexer needed). The
+# worker holds the deposit key (encrypted at rest) so funds can later be swept
+# to the treasury.
 LAMPORTS_PER_SOL = 1000000000
+# The minimum join donation targets ~$1, derived from the live SOL/USD rate and
+# rounded up (see _min_join_lamports). These bound that calculation so a bad
+# price read can never set an absurd minimum, and act as the fallback when no
+# price is available.
+MIN_JOIN_USD = 1.0
+MIN_JOIN_LAMPORTS_FLOOR = 2_000_000      # 0.002 SOL — never ask for less
+MIN_JOIN_LAMPORTS_CEILING = 200_000_000  # 0.2 SOL — never ask for more
+MIN_JOIN_LAMPORTS = 5_000_000            # 0.005 SOL — used only if pricing fails
+# Sane bounds for a fetched SOL/USD price (USD per 1 SOL).
+SOL_USD_MIN = 1.0
+SOL_USD_MAX = 100_000.0
+# Pyth SOL/USD price account on Solana mainnet (read on-chain via our own RPC so
+# the price doesn't depend on a third-party HTTP price API). Overridable via env.
+PYTH_SOL_USD_ACCOUNT_DEFAULT = "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"
+# Process-local price cache so we don't refetch on every signup poll.
+_SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
+_SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
 # Foundational reward split: half of each confirmed donation goes to the
@@ -1019,7 +1045,7 @@ def _clear_donation_address(rec):
     for key in (
         "donation_address", "donation_reference", "donation_required_lamports",
         "donation_confirmed", "donation_created_at", "donation_expires_at",
-        "donation_delete_after", "donation_received_lamports",
+        "donation_delete_after", "donation_received_lamports", "donation_secret",
     ):
         rec.pop(key, None)
     if rec.get("status") != "active":
@@ -1091,22 +1117,18 @@ def _base58_encode(data):
     return "1" * pad + (out or "1")
 
 
-def _new_solana_reference():
-    return _base58_encode(_random_bytes(32))
-
-
 def _amount_sol(lamports):
     return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
 
 
-def _solana_pay_uri(address, amount_lamports, reference):
-    return (
-        "solana:" + address +
-        "?amount=" + _amount_sol(amount_lamports) +
-        "&reference=" + reference +
-        "&label=" + quote("ForkMesh") +
-        "&message=" + quote("Join ForkMesh")
-    )
+def _solana_pay_uri(address, amount_lamports, reference=""):
+    uri = ("solana:" + address +
+           "?amount=" + _amount_sol(amount_lamports))
+    if reference:
+        uri += "&reference=" + reference
+    uri += ("&label=" + quote("ForkMesh") +
+            "&message=" + quote("Join ForkMesh"))
+    return uri
 
 
 async def _solana_rpc(env, method, params):
@@ -1134,44 +1156,126 @@ async def _solana_rpc(env, method, params):
         return None
 
 
-async def _solana_rpc_available(env):
-    health = await _solana_rpc(env, "getHealth", [])
-    return isinstance(health, dict) and health.get("result") == "ok"
+# --- Low-level balance check ------------------------------------------------
+# Returns the address balance in lamports, or None if the RPC call failed (so
+# callers can distinguish "zero balance" from "couldn't check"). This is the
+# lowest-level on-chain read available: a single getBalance, no transaction
+# history scan or third-party indexer.
+async def _solana_balance_lamports(env, address):
+    if not address or not SOLANA_RE.match(address):
+        return None
+    resp = await _solana_rpc(env, "getBalance", [address])
+    if not isinstance(resp, dict):
+        return None
+    result = resp.get("result")
+    if not isinstance(result, dict):
+        return None
+    try:
+        return int(result.get("value"))
+    except (TypeError, ValueError):
+        return None
 
 
-async def _solana_reference_received(env, reference, treasury):
-    if not reference or not SOLANA_RE.match(reference):
-        return None
-    sigs = await _solana_rpc(
-        env, "getSignaturesForAddress", [reference, {"limit": 20}])
-    if sigs is None or not isinstance(sigs.get("result"), list):
-        return None
-    received = 0
-    for item in sigs.get("result", []):
-        sig = item.get("signature", "") if isinstance(item, dict) else ""
-        if not sig:
-            continue
-        tx = await _solana_rpc(
-            env,
-            "getTransaction",
-            [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
-        )
-        result = tx.get("result") if isinstance(tx, dict) else None
-        if not isinstance(result, dict):
-            continue
-        meta = result.get("meta") or {}
-        if meta.get("err"):
-            continue
-        message = ((result.get("transaction") or {}).get("message") or {})
-        for ix in message.get("instructions", []) or []:
-            parsed = ix.get("parsed") if isinstance(ix, dict) else None
-            if not isinstance(parsed, dict):
-                continue
-            info = parsed.get("info") or {}
-            if (parsed.get("type") == "transfer" and
-                    info.get("destination") == treasury):
-                received += int(info.get("lamports") or 0)
-    return received
+# --- Per-node deposit keypair -----------------------------------------------
+# A Solana address is an Ed25519 public key. We generate a fresh keypair per
+# signup with the runtime's WebCrypto so each node gets a unique deposit
+# address; the 32-byte seed (base64url, from the JWK "d" field) is stored
+# encrypted so the funds can later be swept to the treasury.
+async def _new_solana_keypair():
+    pair = await js_crypto.subtle.generateKey(
+        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
+    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
+    pub = bytes(Uint8Array.new(pub_raw).to_py())
+    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
+    seed_b64url = str(getattr(jwk, "d", "") or "")
+    if len(pub) != 32 or not seed_b64url:
+        return None, None
+    return _base58_encode(pub), seed_b64url
+
+
+# --- SOL/USD price + dynamic minimum ----------------------------------------
+def _parse_pyth_price(raw_bytes):
+    # Pyth v2 price account: exponent (i32 LE) at offset 20, aggregate price
+    # (i64 LE) at offset 208. price = agg_price * 10**expo. Guarded so a layout
+    # mismatch falls through to the bounds check rather than returning garbage.
+    try:
+        if len(raw_bytes) < 216:
+            return 0.0
+        expo = int.from_bytes(raw_bytes[20:24], "little", signed=True)
+        agg = int.from_bytes(raw_bytes[208:216], "little", signed=True)
+        if agg <= 0 or expo < -18 or expo > 0:
+            return 0.0
+        return agg * (10.0 ** expo)
+    except Exception:
+        return 0.0
+
+
+async def _sol_usd_from_pyth(env):
+    account = (getattr(env, "PYTH_SOL_USD_ACCOUNT", "") or
+               PYTH_SOL_USD_ACCOUNT_DEFAULT).strip()
+    resp = await _solana_rpc(
+        env, "getAccountInfo", [account, {"encoding": "base64"}])
+    if not isinstance(resp, dict):
+        return 0.0
+    value = (resp.get("result") or {}).get("value") if isinstance(
+        resp.get("result"), dict) else None
+    data = value.get("data") if isinstance(value, dict) else None
+    if not isinstance(data, list) or not data:
+        return 0.0
+    try:
+        raw = base64.b64decode(data[0])
+    except Exception:
+        return 0.0
+    return _parse_pyth_price(raw)
+
+
+async def _sol_usd_from_http(env):
+    # Fallback only: a configurable HTTP price source (default CoinGecko).
+    from js import fetch as js_fetch
+    url = (getattr(env, "SOL_PRICE_URL", "") or
+           "https://api.coingecko.com/api/v3/simple/price"
+           "?ids=solana&vs_currencies=usd").strip()
+    try:
+        resp = await js_fetch(url, to_js({"method": "GET"}))
+        if not (200 <= int(getattr(resp, "status", 0)) < 300):
+            return 0.0
+        body = json.loads(await resp.text())
+        return float((body.get("solana") or {}).get("usd") or 0.0)
+    except Exception:
+        return 0.0
+
+
+async def _sol_usd_price(env):
+    now = int(Date.now())
+    if (_SOL_USD_CACHE["usd"] > 0 and
+            now - _SOL_USD_CACHE["ts"] < _SOL_USD_CACHE_TTL_MS):
+        return _SOL_USD_CACHE["usd"]
+    # Prefer the on-chain Pyth oracle (no third party beyond the RPC we already
+    # use); fall back to an HTTP price API only if that fails.
+    price = await _sol_usd_from_pyth(env)
+    if not (SOL_USD_MIN <= price <= SOL_USD_MAX):
+        price = await _sol_usd_from_http(env)
+    if not (SOL_USD_MIN <= price <= SOL_USD_MAX):
+        return 0.0
+    _SOL_USD_CACHE["usd"] = price
+    _SOL_USD_CACHE["ts"] = now
+    return price
+
+
+async def _min_join_lamports(env):
+    # Target ~$1, rounded UP. Falls back to a fixed floor if no price is known,
+    # and is always clamped to [FLOOR, CEILING].
+    price = await _sol_usd_price(env)
+    if price <= 0:
+        return MIN_JOIN_LAMPORTS
+    exact = (MIN_JOIN_USD / price) * LAMPORTS_PER_SOL  # lamports for ~$1
+    lamports = int(exact)
+    if exact > lamports:  # ceil
+        lamports += 1
+    # Round up to the nearest 0.0001 SOL so the displayed amount stays tidy.
+    step = 100_000
+    lamports = ((lamports + step - 1) // step) * step
+    return max(MIN_JOIN_LAMPORTS_FLOOR, min(MIN_JOIN_LAMPORTS_CEILING, lamports))
 
 
 async def _account_donation_address(env, request):
@@ -1189,51 +1293,64 @@ async def _account_donation_address(env, request):
         return json_response({"error": "reserve_node_name_first"}, status=404)
     if rec.get("status") == "active":
         return json_response({"error": "already_active"}, status=409)
+    # The treasury is where per-node deposits are later swept; require it so we
+    # never collect funds we have nowhere to forward.
     treasury = _treasury_address(env)
     if not treasury:
         return json_response({"error": "treasury_not_configured"}, status=503)
-    if not rec.get("donation_confirmed") and not await _solana_rpc_available(env):
-        return json_response({"error": "solana_rpc_unavailable"}, status=502)
 
     now = int(Date.now())
     renew_expired = bool(data.get("renewExpired") or data.get("generateNew"))
+    # Migration guard: records created before per-node deposits used the shared
+    # treasury address (no donation_secret). Never balance-check that — the
+    # treasury's own balance would falsely confirm everyone. Recycle it so the
+    # user gets a fresh dedicated address below.
+    if (rec.get("donation_address") and not rec.get("donation_confirmed") and
+            not rec.get("donation_secret")):
+        _clear_donation_address(rec)
+        await _save_account(env, name_bi, rec)
+
     if rec.get("donation_address") and not rec.get("donation_confirmed"):
         changed = _ensure_donation_expiry_fields(rec, now)
         required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
         _, expires_at, delete_at = _donation_expiry_fields(rec, now)
-        if now >= expires_at:
-            received = await _solana_reference_received(
-                env, rec.get("donation_reference", ""), treasury)
-            if received is None:
-                return json_response({"error": "solana_rpc_unavailable"}, status=502)
-            if received == 0:
-                if renew_expired or now >= delete_at:
-                    _clear_donation_address(rec)
-                    changed = True
-                else:
-                    if changed:
-                        await _save_account(env, name_bi, rec)
-                    return json_response({
-                        "ok": True, "expired": True, "hidden": True,
-                        "canRenew": True, "receivedLamports": 0,
-                        "requiredLamports": required,
-                        "amountSol": _amount_sol(required),
-                        "expiresAt": expires_at, "deleteAt": delete_at,
-                    })
-            elif received >= required:
-                rec["donation_confirmed"] = True
-                rec["donation_received_lamports"] = received
+        # Low-level balance read of this node's own deposit address. None means
+        # the RPC was unreachable — we keep the address rather than blocking the
+        # whole signup, and just let the user keep paying / polling.
+        balance = await _solana_balance_lamports(env, rec.get("donation_address", ""))
+        if balance is not None and balance >= required:
+            rec["donation_confirmed"] = True
+            rec["donation_received_lamports"] = balance
+            changed = True
+        elif now >= expires_at and balance == 0:
+            # Expired with nothing received: hide it, and recycle the address
+            # once the user asks to renew or the delete grace passes.
+            if renew_expired or now >= delete_at:
+                _clear_donation_address(rec)
                 changed = True
+            else:
+                if changed:
+                    await _save_account(env, name_bi, rec)
+                return json_response({
+                    "ok": True, "expired": True, "hidden": True,
+                    "canRenew": True, "receivedLamports": 0,
+                    "requiredLamports": required,
+                    "amountSol": _amount_sol(required),
+                    "expiresAt": expires_at, "deleteAt": delete_at,
+                })
         if changed:
             await _save_account(env, name_bi, rec)
 
     if not rec.get("donation_address"):
-        addr = treasury
-        reference = _new_solana_reference()
+        addr, secret = await _new_solana_keypair()
+        if not addr:
+            return json_response({"error": "keypair_failed"}, status=500)
         rec["donation_address"] = addr
-        rec["donation_reference"] = reference
-        rec["donation_required_lamports"] = max(amount, MIN_JOIN_LAMPORTS)
+        rec["donation_secret"] = secret  # encrypted at rest via _save_account
+        rec["donation_reference"] = ""    # a unique address needs no reference
+        rec["donation_required_lamports"] = max(amount, await _min_join_lamports(env))
         rec["donation_confirmed"] = False
+        rec["donation_received_lamports"] = 0
         rec["donation_created_at"] = now
         rec["donation_expires_at"] = now + DONATION_ADDRESS_TTL_MS
         rec["donation_delete_after"] = (
@@ -1242,15 +1359,17 @@ async def _account_donation_address(env, request):
         await _save_account(env, name_bi, rec)
 
     addr = rec["donation_address"]
-    reference = rec.get("donation_reference", "")
     required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     _, expires_at, delete_at = _donation_expiry_fields(rec, int(Date.now()))
     amount_sol = _amount_sol(required)
+    price = await _sol_usd_price(env)
     return json_response({
         "ok": True, "address": addr,
-        "reference": reference,
-        "uri": _solana_pay_uri(addr, required, reference),
+        "reference": "",
+        "uri": _solana_pay_uri(addr, required),
         "requiredLamports": required, "amountSol": amount_sol,
+        "solUsd": price or 0,
+        "amountUsd": round((required / LAMPORTS_PER_SOL) * price, 2) if price else 0,
         "expiresAt": expires_at, "deleteAt": delete_at,
     })
 
@@ -1266,20 +1385,36 @@ async def _account_donation_status(env, request):
     addr = rec.get("donation_address", "")
     if not addr:
         return json_response({"error": "no_donation_address"}, status=400)
-    treasury = _treasury_address(env)
-    if not treasury:
-        return json_response({"error": "treasury_not_configured"}, status=503)
-    reference = rec.get("donation_reference", "")
     required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     now = int(Date.now())
     changed = _ensure_donation_expiry_fields(rec, now)
     _, expires_at, delete_at = _donation_expiry_fields(rec, now)
+    already_confirmed = bool(rec.get("donation_confirmed"))
 
-    received = await _solana_reference_received(env, reference, treasury)
-    if received is None:
-        return json_response({"error": "solana_rpc_unavailable"}, status=502)
-    if (not rec.get("donation_confirmed") and received == 0 and
-            now >= delete_at):
+    # Migration guard: a legacy shared-treasury address (no donation_secret) must
+    # not be balance-checked — ask the client to generate a fresh per-node one.
+    if not already_confirmed and not rec.get("donation_secret"):
+        return json_response({
+            "ok": True, "paid": False, "hidden": True, "canRenew": True,
+            "receivedLamports": 0, "requiredLamports": required,
+            "expiresAt": expires_at, "deleteAt": delete_at,
+        })
+
+    # Low-level balance check on this node's own deposit address.
+    balance = await _solana_balance_lamports(env, addr)
+    if balance is None:
+        # RPC unreachable: report a soft "still checking" state instead of a hard
+        # error so the user can keep waiting (and paying) rather than being told
+        # signup is broken. Fall back to the last balance we recorded.
+        received = int(rec.get("donation_received_lamports", 0) or 0)
+        return json_response({
+            "ok": True, "paid": already_confirmed, "checking": True,
+            "receivedLamports": received, "requiredLamports": required,
+            "expiresAt": expires_at, "deleteAt": delete_at,
+        })
+
+    received = int(balance)
+    if not already_confirmed and received == 0 and now >= delete_at:
         _clear_donation_address(rec)
         await _save_account(env, name_bi, rec)
         return json_response({
@@ -1288,22 +1423,23 @@ async def _account_donation_status(env, request):
             "requiredLamports": required, "expiresAt": expires_at,
             "deleteAt": delete_at,
         })
-    if received >= required and not rec.get("donation_confirmed"):
-        rec["donation_confirmed"] = True
+    if received != rec.get("donation_received_lamports"):
         rec["donation_received_lamports"] = received
+        changed = True
+    if received >= required and not already_confirmed:
+        rec["donation_confirmed"] = True
         changed = True
 
     if changed:
         await _save_account(env, name_bi, rec)
+    # Only "expire" an address that received nothing — once any SOL lands we keep
+    # waiting for the rest rather than recycling under the user's payment.
+    expired = (not rec.get("donation_confirmed") and received == 0 and
+               now >= expires_at)
     return json_response({
         "ok": True, "paid": bool(rec.get("donation_confirmed")),
         "receivedLamports": received, "requiredLamports": required,
-        "expired": (not rec.get("donation_confirmed") and received == 0 and
-                    now >= expires_at),
-        "hidden": (not rec.get("donation_confirmed") and received == 0 and
-                   now >= expires_at),
-        "canRenew": (not rec.get("donation_confirmed") and received == 0 and
-                     now >= expires_at),
+        "expired": expired, "hidden": expired, "canRenew": expired,
         "expiresAt": expires_at, "deleteAt": delete_at,
     })
 
@@ -2017,8 +2153,29 @@ async def _admin_disburse(env):
     if not treasury:
         return ("No Solana treasury address configured "
                 "(set TREASURY_SOLANA_ADDRESS or NODE_SOLANA_ADDRESS).")
-    return ("No held Solana wallets to disburse. Signup payments are sent "
-            "directly to %s with per-account payment references." % treasury)
+    # Each signup now receives into its own deposit address whose key the worker
+    # holds (encrypted). Report what those addresses are holding so an operator
+    # can see funds awaiting a sweep to the treasury. The actual on-chain sweep
+    # (sign + submit a transfer from each deposit key) is intentionally NOT
+    # automated yet — it must be exercised on devnet before mainnet.
+    rows = await d1_all(env, "SELECT data FROM accounts")
+    held = 0
+    total = 0
+    for row in (rows or []):
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or not rec.get("donation_address") or not rec.get("donation_secret"):
+            continue
+        bal = await _solana_balance_lamports(env, rec.get("donation_address"))
+        if bal and bal > 0:
+            held += 1
+            total += bal
+    if held == 0:
+        return ("No held per-node deposits awaiting sweep. "
+                "Sweep destination (treasury): %s." % treasury)
+    return ("%d per-node deposit address(es) hold %s SOL total, awaiting sweep to "
+            "treasury %s. Automated sweeping is not enabled yet — build and test "
+            "it on devnet before running on mainnet." %
+            (held, _amount_sol(total), treasury))
 
 
 class Default(WorkerEntrypoint):
