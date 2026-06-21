@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 30
 title: d1 will hold the user's bch address so that someone can make it rain to all users of forkmesk either on individual servfers or across the federation
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
