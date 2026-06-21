@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 82
 title: show the api key usage in dollars very clearly in the agent screen show token useage / budget and all stats from open ai please
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
