@@ -341,14 +341,25 @@ ONLINE_HISTORY_RETAIN_MS = 48 * 60 * 60 * 1000
 
 
 async def record_online_sample(env):
-    # Called once a minute by the scheduled (cron) handler.
+    # Called once a minute by the scheduled (cron) handler. "Online nodes" is the
+    # number of live host tunnels (host_presence) — the signal that actually
+    # reflects desktop nodes being up — taken together with any account
+    # heartbeats. The account funnel is currently disabled, so sampling only
+    # account_presence left the activity graph permanently empty even while a
+    # host was online; counting hosts fixes that.
     await ensure_schema(env)
     now = int(Date.now())
-    row = await d1_first(
+    host_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?",
+        now - HOST_PRESENCE_STALE_MS,
+    )
+    acct_row = await d1_first(
         env, "SELECT COUNT(*) AS n FROM account_presence WHERE ts >= ?",
         now - ONLINE_SAMPLE_WINDOW_MS,
     )
-    online = int((row or {}).get("n", 0) or 0)
+    hosts = int((host_row or {}).get("n", 0) or 0)
+    accounts = int((acct_row or {}).get("n", 0) or 0)
+    online = max(hosts, accounts)
     hour_ts = (now // 3600000) * 3600000
     await d1_run(
         env,
@@ -2391,7 +2402,11 @@ class ForkMeshHost(DurableObject):
                 return json_response({"ok": True, "hosts": self._host_count()})
             client, server = WebSocketPair.new().object_values()
             self.ctx.acceptWebSocket(server, to_js(["host"]))
-            server.serializeAttachment(to_js({"rtt": None}))
+            # Stash the repo blind index on the socket so a "ping" heartbeat can
+            # refresh host presence even after the Durable Object hibernated (when
+            # the cached self._repo_bi has been reset).
+            repo_bi = await self._repo_blind_index(path)
+            server.serializeAttachment(to_js({"rtt": None, "repo_bi": repo_bi}))
             await self._mark_present(path)
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
