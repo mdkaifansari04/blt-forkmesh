@@ -2,6 +2,7 @@
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
+#include "IssueBurnup.h"
 #include "QrCode.h"
 
 #include "MarkdownEditor.h"
@@ -502,6 +503,124 @@ bool currentThemeIsDark()
     return true;
 #endif
 }
+
+class IssueBurnupChart final : public QWidget
+{
+public:
+    explicit IssueBurnupChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumHeight(340);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    void setSeries(QList<IssueBurnupPoint> series)
+    {
+        m_series = std::move(series);
+        update();
+    }
+
+    QSize sizeHint() const override { return QSize(760, 420); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        const QColor grid(dark ? "#30363d" : "#d8dee4");
+        const QColor openColor(dark ? "#58a6ff" : "#0969da");
+        const QColor closedColor(dark ? "#3fb950" : "#1a7f37");
+        const QRectF plot = QRectF(rect()).adjusted(54, 18, -20, -46);
+
+        if (plot.width() <= 0 || plot.height() <= 0)
+            return;
+        if (m_series.isEmpty()) {
+            painter.setPen(muted);
+            painter.drawText(plot, Qt::AlignCenter,
+                             QStringLiteral("No issue history in this range"));
+            return;
+        }
+
+        int maximum = 1;
+        for (const IssueBurnupPoint &point : m_series)
+            maximum = qMax(maximum, qMax(point.openCount, point.closedCount));
+        const int roundedMaximum = qMax(4, ((maximum + 3) / 4) * 4);
+
+        painter.setFont(font());
+        for (int i = 0; i <= 4; ++i) {
+            const qreal y = plot.bottom() - plot.height() * i / 4.0;
+            painter.setPen(QPen(grid, 1));
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+            painter.setPen(muted);
+            painter.drawText(QRectF(0, y - 10, plot.left() - 8, 20),
+                             Qt::AlignRight | Qt::AlignVCenter,
+                             QString::number(roundedMaximum * i / 4));
+        }
+
+        const qint64 firstTs = m_series.first().timestampMs;
+        const qint64 lastTs = m_series.last().timestampMs;
+        const qint64 duration = qMax<qint64>(1, lastTs - firstTs);
+        auto position = [&](int index, int count) {
+            const IssueBurnupPoint &point = m_series.at(index);
+            const qreal x = plot.left() +
+                            plot.width() * (point.timestampMs - firstTs) / duration;
+            const qreal y = plot.bottom() -
+                            plot.height() * count / roundedMaximum;
+            return QPointF(x, y);
+        };
+
+        const QString dateFormat =
+            duration <= 2 * 24 * 60 * 60 * 1000LL
+                ? QStringLiteral("h AP")
+                : (duration <= 14 * 24 * 60 * 60 * 1000LL
+                       ? QStringLiteral("ddd")
+                       : QStringLiteral("MMM d"));
+        for (int tick = 0; tick <= 4; ++tick) {
+            const int index = (m_series.size() - 1) * tick / 4;
+            const qreal x = position(index, 0).x();
+            painter.setPen(muted);
+            painter.drawText(
+                QRectF(x - 46, plot.bottom() + 10, 92, 24),
+                Qt::AlignHCenter | Qt::AlignTop,
+                QDateTime::fromMSecsSinceEpoch(m_series.at(index).timestampMs)
+                    .toString(dateFormat));
+        }
+
+        auto drawSeries = [&](const QColor &color, auto countFor) {
+            QPainterPath path;
+            for (int i = 0; i < m_series.size(); ++i) {
+                const QPointF point = position(i, countFor(m_series.at(i)));
+                if (i == 0)
+                    path.moveTo(point);
+                else
+                    path.lineTo(point);
+            }
+            painter.setPen(QPen(color, 3, Qt::SolidLine, Qt::RoundCap,
+                                Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(path);
+            const QPointF last =
+                position(m_series.size() - 1, countFor(m_series.last()));
+            painter.setBrush(color);
+            painter.setPen(QPen(dark ? QColor("#0d1117") : QColor("#ffffff"), 2));
+            painter.drawEllipse(last, 5, 5);
+        };
+
+        drawSeries(openColor,
+                   [](const IssueBurnupPoint &point) { return point.openCount; });
+        drawSeries(closedColor,
+                   [](const IssueBurnupPoint &point) { return point.closedCount; });
+
+        painter.setPen(text);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(plot);
+    }
+
+private:
+    QList<IssueBurnupPoint> m_series;
+};
 
 QString formatDuration(qint64 ms)
 {
@@ -4445,6 +4564,13 @@ QWidget *MainWindow::buildIssuesSection()
     setOcticon(m_issueSyncButton, "sync", 16);
     m_issueSyncButton->setToolTip(
         "Pull issue/comment submissions filed by other nodes and merge them");
+    auto *issueBurnupButton = new QPushButton("Burn-up chart");
+    issueBurnupButton->setObjectName("ghostButton");
+    issueBurnupButton->setProperty("buttonSize", "sm");
+    issueBurnupButton->setCursor(Qt::PointingHandCursor);
+    issueBurnupButton->setToolTip(
+        "Show open and closed issue totals over time");
+    setOcticon(issueBurnupButton, "graph", 16);
     m_issueDetailToggle = new QPushButton("Hide detail");
     m_issueDetailToggle->setObjectName("ghostButton");
     m_issueDetailToggle->setCursor(Qt::PointingHandCursor);
@@ -4455,6 +4581,7 @@ QWidget *MainWindow::buildIssuesSection()
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->addWidget(m_issueSyncButton);
+    actionRow->addWidget(issueBurnupButton);
     actionRow->addStretch();
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
@@ -4914,6 +5041,8 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
+    connect(issueBurnupButton, &QPushButton::clicked, this,
+            &MainWindow::showIssueBurnupChart);
     connect(m_issueTitleEditButton, &QPushButton::clicked, this,
             &MainWindow::promptEditIssueTitle);
     connect(m_issueTitleSaveButton, &QPushButton::clicked, this,
@@ -5755,6 +5884,27 @@ void MainWindow::showPull(int number)
     updatePullActionState();
 }
 
+void MainWindow::switchToPullTab(int pullNumber)
+{
+    if (m_repoDetailTabs && m_repoDetailTabs->button(4))
+        m_repoDetailTabs->button(4)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(4);
+    m_currentPullNumber = pullNumber;
+    reloadPulls();
+    if (!m_pullTable)
+        return;
+    for (int row = 0; row < m_pullTable->rowCount(); ++row) {
+        QTableWidgetItem *number = m_pullTable->item(row, 0);
+        if (number && number->data(Qt::UserRole).toInt() == pullNumber) {
+            m_pullTable->selectRow(row);
+            showPull(pullNumber);
+            return;
+        }
+    }
+    showPull(pullNumber);
+}
+
 void MainWindow::renderPullDiff(const QString &filePath)
 {
     const QString diff = m_pullFileDiffs.value(filePath);
@@ -5831,7 +5981,9 @@ void MainWindow::promptNewPullFromDirectory()
     promptNewPullFromSource(chosen);
 }
 
-void MainWindow::promptNewPullFromSource(const QString &sourceDir)
+void MainWindow::promptNewPullFromSource(const QString &sourceDir,
+                                         const QString &preferredBase,
+                                         const QString &preferredHead)
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -5900,20 +6052,34 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir)
     auto *headCombo = new QComboBox(&dialog);
     baseCombo->addItems(branches);
     headCombo->addItems(branches);
-    QByteArray currentBranchOut;
-    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &currentBranchOut,
-                      nullptr)) {
-        const int currentIndex =
-            headCombo->findText(QString::fromUtf8(currentBranchOut).trimmed());
-        if (currentIndex >= 0)
-            headCombo->setCurrentIndex(currentIndex);
-        else if (branches.size() > 1)
+    const int preferredBaseIndex = baseCombo->findText(preferredBase);
+    if (preferredBaseIndex >= 0)
+        baseCombo->setCurrentIndex(preferredBaseIndex);
+    const int preferredHeadIndex = headCombo->findText(preferredHead);
+    if (preferredHeadIndex >= 0) {
+        headCombo->setCurrentIndex(preferredHeadIndex);
+    } else {
+        QByteArray currentBranchOut;
+        if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"},
+                          &currentBranchOut, nullptr)) {
+            const int currentIndex = headCombo->findText(
+                QString::fromUtf8(currentBranchOut).trimmed());
+            if (currentIndex >= 0)
+                headCombo->setCurrentIndex(currentIndex);
+            else if (branches.size() > 1)
+                headCombo->setCurrentIndex(1);
+        } else if (branches.size() > 1) {
             headCombo->setCurrentIndex(1);
-    } else if (branches.size() > 1) {
-        headCombo->setCurrentIndex(1);
+        }
     }
     auto *titleEdit = new QLineEdit(&dialog);
     titleEdit->setPlaceholderText("Title");
+    if (!preferredHead.isEmpty()) {
+        QByteArray subject;
+        if (runGitCapture(dir, {"log", "-1", "--format=%s", preferredHead},
+                          &subject, nullptr))
+            titleEdit->setText(QString::fromUtf8(subject).trimmed());
+    }
     auto *bodyEdit = new QPlainTextEdit(&dialog);
     bodyEdit->setPlaceholderText("Describe the change\xE2\x80\xA6");
     auto *form = new QFormLayout;
@@ -5982,7 +6148,7 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir)
             return;
         }
         m_currentPullNumber = number;
-        reloadPulls();
+        switchToPullTab(number);
     } else {
         RepositoryRecord targetRepo = currentRepo;
         targetRepo.owner = targetOwner;
@@ -7441,6 +7607,14 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_branchButton->setCursor(Qt::PointingHandCursor);
     m_branchButton->setToolTip("Switch branch");
     setOcticon(m_branchButton, "git-branch", 16);
+    m_branchesButton = new QPushButton("0 branches");
+    m_branchesButton->setObjectName("ghostButton");
+    m_branchesButton->setCursor(Qt::PointingHandCursor);
+    m_branchesButton->setToolTip(
+        "List branches, compare them, and open or create pull requests");
+    setOcticon(m_branchesButton, "git-branch", 16);
+    connect(m_branchesButton, &QPushButton::clicked, this,
+            &MainWindow::showBranchesMenu);
     m_tagsButton = new QPushButton("Tags");
     m_tagsButton->setObjectName("ghostButton");
     m_tagsButton->setCursor(Qt::PointingHandCursor);
@@ -7463,6 +7637,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
     toolbar->addWidget(m_branchButton);
+    toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
 
@@ -9177,6 +9352,191 @@ void MainWindow::setRepoBranch(const QString &branch)
         loadRepoInsights();
 }
 
+QStringList MainWindow::repoBranches() const
+{
+    QStringList branches;
+    const QString dir = repoGitDir();
+    QByteArray out;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir,
+                      {"branch", "--sort=-committerdate",
+                       "--format=%(refname:short)"},
+                      &out, nullptr)) {
+        for (const QString &line : QString::fromUtf8(out).split('\n')) {
+            const QString branch = line.trimmed();
+            if (!branch.isEmpty() && !branches.contains(branch))
+                branches.append(branch);
+        }
+    }
+    return branches;
+}
+
+QString MainWindow::repoDefaultBranch(const QStringList &branches) const
+{
+    const QString configured = m_repoInfo.defaultBranch.trimmed();
+    if (!configured.isEmpty() && branches.contains(configured))
+        return configured;
+
+    QByteArray head;
+    const QString dir = repoGitDir();
+    if (!dir.isEmpty() &&
+        runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head,
+                      nullptr)) {
+        const QString branch = QString::fromUtf8(head).trimmed();
+        if (branches.contains(branch))
+            return branch;
+    }
+    if (branches.contains(QStringLiteral("main")))
+        return QStringLiteral("main");
+    if (branches.contains(QStringLiteral("master")))
+        return QStringLiteral("master");
+    if (!m_repoBranch.isEmpty() && branches.contains(m_repoBranch))
+        return m_repoBranch;
+    return branches.isEmpty() ? QString() : branches.first();
+}
+
+void MainWindow::showBranchesMenu()
+{
+    if (!m_branchesButton)
+        return;
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    const QString selectedBranch = m_repoBranch.isEmpty() ? base : m_repoBranch;
+    const QList<PullRequest> pulls = pullStoreForCurrentRepo().loadAll();
+
+    QMenu menu(this);
+    menu.setObjectName("branchesMenu");
+    QAction *header =
+        menu.addAction(QStringLiteral("Branches (%1)").arg(branches.size()));
+    header->setEnabled(false);
+    if (!base.isEmpty()) {
+        QAction *baseHeader = menu.addAction(
+            QStringLiteral("Comparing with %1").arg(base));
+        baseHeader->setEnabled(false);
+    }
+    menu.addSeparator();
+
+    if (branches.isEmpty()) {
+        menu.addAction("No branches")->setEnabled(false);
+    } else {
+        for (const QString &branch : branches) {
+            int behind = 0;
+            int ahead = 0;
+            bool compared = branch == base;
+            if (!base.isEmpty() && branch != base) {
+                QByteArray counts;
+                if (runGitCapture(
+                        dir,
+                        {"rev-list", "--left-right", "--count",
+                         base + "..." + branch},
+                        &counts, nullptr)) {
+                    const QStringList parts =
+                        QString::fromUtf8(counts)
+                            .trimmed()
+                            .split(QRegularExpression(QStringLiteral("\\s+")));
+                    if (parts.size() >= 2) {
+                        behind = parts.at(0).toInt();
+                        ahead = parts.at(1).toInt();
+                        compared = true;
+                    }
+                }
+            }
+
+            const PullRequest *related = nullptr;
+            for (const PullRequest &pull : pulls) {
+                if (pull.head == branch &&
+                    (!related || pull.number > related->number))
+                    related = &pull;
+            }
+
+            auto *row = new QWidget(&menu);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(8, 3, 8, 3);
+            rowLayout->setSpacing(8);
+
+            auto *branchButton = new QPushButton(branch, row);
+            branchButton->setObjectName("ghostButton");
+            branchButton->setCursor(Qt::PointingHandCursor);
+            branchButton->setMinimumWidth(180);
+            branchButton->setToolTip("View this branch on the Code tab");
+            setOcticon(branchButton,
+                       branch == selectedBranch ? "check-circle" : "git-branch", 15);
+            rowLayout->addWidget(branchButton);
+
+            auto *comparison = new QLabel(row);
+            comparison->setObjectName("statusLine");
+            comparison->setMinimumWidth(145);
+            if (branch == base) {
+                comparison->setText("Default branch");
+            } else if (compared) {
+                comparison->setText(
+                    QStringLiteral("%1 behind · %2 ahead")
+                        .arg(behind)
+                        .arg(ahead));
+            } else {
+                comparison->setText("Comparison unavailable");
+            }
+            rowLayout->addWidget(comparison);
+            rowLayout->addStretch();
+
+            if (related) {
+                const QString status =
+                    related->status.left(1).toUpper() + related->status.mid(1);
+                auto *pullButton = new QPushButton(
+                    QStringLiteral("PR #%1 · %2")
+                        .arg(related->number)
+                        .arg(status),
+                    row);
+                pullButton->setObjectName("ghostButton");
+                pullButton->setCursor(Qt::PointingHandCursor);
+                pullButton->setToolTip("Open the related pull request");
+                setOcticon(pullButton, "git-pull-request", 15);
+                rowLayout->addWidget(pullButton);
+                const int pullNumber = related->number;
+                connect(pullButton, &QPushButton::clicked, this,
+                        [this, &menu, pullNumber] {
+                            menu.close();
+                            QTimer::singleShot(
+                                0, this,
+                                [this, pullNumber] { switchToPullTab(pullNumber); });
+                        });
+            }
+
+            const bool activePull = related && related->status == QLatin1String("open");
+            const bool canCreate = branch != base && compared && ahead > 0 &&
+                                   !activePull;
+            if (canCreate) {
+                auto *createButton = new QPushButton("Create PR", row);
+                createButton->setObjectName("primaryButton");
+                createButton->setProperty("buttonSize", "sm");
+                createButton->setCursor(Qt::PointingHandCursor);
+                setOcticon(createButton, "git-pull-request", 15);
+                rowLayout->addWidget(createButton);
+                connect(createButton, &QPushButton::clicked, this,
+                        [this, &menu, base, branch] {
+                            menu.close();
+                            QTimer::singleShot(0, this, [this, base, branch] {
+                                promptNewPullFromSource(QString(), base, branch);
+                            });
+                        });
+            }
+
+            auto *rowAction = new QWidgetAction(&menu);
+            rowAction->setDefaultWidget(row);
+            menu.addAction(rowAction);
+            connect(branchButton, &QPushButton::clicked, this,
+                    [this, &menu, branch] {
+                        menu.close();
+                        setRepoBranch(branch);
+                    });
+        }
+    }
+
+    menu.exec(m_branchesButton->mapToGlobal(
+        QPoint(0, m_branchesButton->height())));
+}
+
 void MainWindow::loadBranchesAndTags()
 {
     const QString dir = repoGitDir();
@@ -9194,19 +9554,22 @@ void MainWindow::loadBranchesAndTags()
     if (m_branchButton)
         m_branchButton->setText(m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch);
 
+    const QStringList branches = repoBranches();
+    if (m_branchesButton) {
+        m_branchesButton->setText(
+            QStringLiteral("%1 %2")
+                .arg(branches.size())
+                .arg(branches.size() == 1 ? QStringLiteral("branch")
+                                          : QStringLiteral("branches")));
+        m_branchesButton->setEnabled(!branches.isEmpty());
+    }
+
     // Branch menu.
     if (m_branchButton) {
         auto *menu = new QMenu(m_branchButton);
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"branch", "--format=%(refname:short)"}, &out, nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString b = line.trimmed();
-                if (b.isEmpty())
-                    continue;
-                menu->addAction(b, this, [this, b] { setRepoBranch(b); });
-            }
-        }
+        for (const QString &branchName : branches)
+            menu->addAction(branchName, this,
+                            [this, branchName] { setRepoBranch(branchName); });
         if (menu->isEmpty())
             menu->addAction("No branches")->setEnabled(false);
         m_branchButton->setMenu(menu);
@@ -10025,6 +10388,140 @@ void MainWindow::renderIssueThread(const Issue &issue)
         }
     }
     m_issueThreadLayout->addStretch();
+}
+
+void MainWindow::showIssueBurnupChart()
+{
+    if (!m_issueDetailStack)
+        return;
+
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(28, 24, 28, 24);
+    layout->setSpacing(14);
+
+    auto *title = new QLabel("Issue burn-up");
+    title->setObjectName("issuePageTitle");
+    auto *back = new QPushButton("Back to issue");
+    back->setObjectName("ghostButton");
+    back->setCursor(Qt::PointingHandCursor);
+    setOcticon(back, "arrow-left", 16);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->addWidget(title);
+    titleRow->addStretch();
+    titleRow->addWidget(back);
+    layout->addLayout(titleRow);
+
+    auto *description = new QLabel(
+        "Open and closed totals reconstructed from issue creation and status "
+        "events. List filters do not change the chart.");
+    description->setObjectName("statusLine");
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto *rangeGroup = new QButtonGroup(page);
+    rangeGroup->setExclusive(true);
+    auto *rangeRow = new QHBoxLayout;
+    rangeRow->setContentsMargins(0, 0, 0, 0);
+    rangeRow->setSpacing(4);
+    const QStringList rangeLabels{
+        QStringLiteral("Day"), QStringLiteral("Week"),
+        QStringLiteral("2 weeks"), QStringLiteral("Month"),
+        QStringLiteral("All time")};
+    for (int i = 0; i < rangeLabels.size(); ++i) {
+        auto *button = new QPushButton(rangeLabels.at(i));
+        button->setObjectName("repoTab");
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        rangeGroup->addButton(button, i);
+        rangeRow->addWidget(button);
+    }
+    rangeRow->addStretch();
+    layout->addLayout(rangeRow);
+
+    auto *summary = new QLabel;
+    summary->setTextFormat(Qt::RichText);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    auto *legend = new QLabel(
+        "<span style='color:#58a6ff;font-weight:700'>\xE2\x97\x8F Open</span>"
+        "&nbsp;&nbsp;&nbsp;"
+        "<span style='color:#3fb950;font-weight:700'>\xE2\x97\x8F Closed</span>");
+    legend->setTextFormat(Qt::RichText);
+    layout->addWidget(legend);
+
+    auto *chart = new IssueBurnupChart(page);
+    layout->addWidget(chart, 1);
+
+    auto refreshChart = [this, chart, summary](int range) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 start = now - 24LL * 60 * 60 * 1000;
+        int intervals = 24;
+        QString rangeName = QStringLiteral("past day");
+        if (range == 1) {
+            start = now - 7LL * 24 * 60 * 60 * 1000;
+            intervals = 28;
+            rangeName = QStringLiteral("past week");
+        } else if (range == 2) {
+            start = now - 14LL * 24 * 60 * 60 * 1000;
+            intervals = 28;
+            rangeName = QStringLiteral("past 2 weeks");
+        } else if (range == 3) {
+            start = now - 30LL * 24 * 60 * 60 * 1000;
+            intervals = 30;
+            rangeName = QStringLiteral("past month");
+        } else if (range == 4) {
+            start = firstIssueHistoryTimestamp(
+                m_currentIssues, now - 24LL * 60 * 60 * 1000);
+            if (start >= now)
+                start = now - 24LL * 60 * 60 * 1000;
+            intervals = 60;
+            rangeName = QStringLiteral("all time");
+        }
+
+        if (m_currentIssues.isEmpty()) {
+            chart->setSeries({});
+            summary->setText(
+                QStringLiteral("No issues are available for the %1 range.")
+                    .arg(rangeName));
+            return;
+        }
+
+        const QList<IssueBurnupPoint> series =
+            buildIssueBurnupSeries(m_currentIssues, start, now, intervals);
+        chart->setSeries(series);
+        const IssueBurnupPoint &first = series.first();
+        const IssueBurnupPoint &last = series.last();
+        const int firstTotal = first.openCount + first.closedCount;
+        const int lastTotal = last.openCount + last.closedCount;
+        auto signedNumber = [](int value) {
+            return value > 0 ? QStringLiteral("+%1").arg(value)
+                             : QString::number(value);
+        };
+        summary->setText(
+            QStringLiteral(
+                "<span style='font-size:22px;font-weight:800'>%1</span> open"
+                "&nbsp;&nbsp;&nbsp;"
+                "<span style='font-size:22px;font-weight:800'>%2</span> closed"
+                "&nbsp;&nbsp;&nbsp;"
+                "<span style='color:#8b949e'>%3 total &middot; %4 total and %5 "
+                "net closed over the %6</span>")
+                .arg(last.openCount)
+                .arg(last.closedCount)
+                .arg(lastTotal)
+                .arg(signedNumber(lastTotal - firstTotal))
+                .arg(signedNumber(last.closedCount - first.closedCount),
+                     rangeName));
+    };
+
+    connect(rangeGroup, &QButtonGroup::idClicked, this, refreshChart);
+    connect(back, &QPushButton::clicked, this,
+            &MainWindow::removeIssueComposePage);
+    rangeGroup->button(1)->setChecked(true);
+    refreshChart(1);
+    showIssueComposePage(page);
 }
 
 void MainWindow::showIssueComposePage(QWidget *page)
