@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 112
 title: the deployments to cloudflare stopped working around commit ce2c07e2 - please fix it so it deploys properly
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
