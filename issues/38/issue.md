@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 38
 title: do not allow it to run as root
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
