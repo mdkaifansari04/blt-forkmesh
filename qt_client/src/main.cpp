@@ -18,10 +18,11 @@ int main(int argc, char *argv[])
     app.setStyle(QStyleFactory::create("Fusion"));
 
     // Refuse to run as root: ForkMesh runs git, action workflows and shell
-    // steps, so running privileged is dangerous and unnecessary. (Set
-    // FORKMESH_ALLOW_ROOT=1 only if you really know what you are doing.)
+    // steps, so running privileged is dangerous and unnecessary. This is a hard
+    // refusal with no opt-out — including under sudo, where the real uid is 0
+    // even though the effective uid may have been dropped.
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
-    if (geteuid() == 0 && qEnvironmentVariableIntValue("FORKMESH_ALLOW_ROOT") != 1) {
+    if (geteuid() == 0 || getuid() == 0) {
         QMessageBox::critical(
             nullptr, "ForkMesh",
             "ForkMesh must not be run as root. It runs git and workflow commands "
