@@ -2,6 +2,7 @@
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
+#include "ClaudeAgentScript.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
 
@@ -234,9 +235,63 @@ const QString kOlderCodexCommand =
     QStringLiteral("codex exec --sandbox workspace-write - < {promptFile}");
 const QString kLegacyCodexCommand =
     QStringLiteral("codex exec --sandbox workspace-write --ask-for-approval never \"$(cat {promptFile})\"");
-const QString kDefaultClaudeCommand =
+// Legacy default that required the `claude` CLI to be installed. Kept only so
+// stored settings using it can be migrated to the API-key based runner below.
+const QString kLegacyClaudeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 constexpr int kNetworkLogLimit = 2000;
+
+// Materialize the bundled Claude agent script into the app data dir and return
+// its path. The script talks to the Anthropic API directly using
+// ANTHROPIC_API_KEY, so no `claude` binary is required.
+QString claudeAgentScriptPath()
+{
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/agents");
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/forkmesh_claude_agent.py");
+    const QByteArray wanted = forkmeshClaudeAgentScript().toUtf8();
+    QFile file(path);
+    bool needsWrite = true;
+    if (file.open(QIODevice::ReadOnly)) {
+        needsWrite = file.readAll() != wanted;
+        file.close();
+    }
+    if (needsWrite && file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(wanted);
+        file.close();
+    }
+    return path;
+}
+
+// Default Claude command: run the bundled script with python3, feeding it the
+// prompt file. {promptFile} is expanded by AgentRunner before execution.
+QString defaultClaudeCommand()
+{
+    QString quoted = claudeAgentScriptPath();
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QStringLiteral("python3 '%1' {promptFile}").arg(quoted);
+}
+
+// Read the Claude command, migrating any legacy `claude` CLI command (or a stale
+// script path) to the current python-based default.
+QString claudeCommandSetting()
+{
+    QSettings settings;
+    const QString current = defaultClaudeCommand();
+    QString command =
+        settings.value(kClaudeCommandSetting, current).toString();
+    const bool isLegacy = command.trimmed().isEmpty() ||
+                          command == kLegacyClaudeCommand ||
+                          command.contains(QStringLiteral("claude -p")) ||
+                          command.contains(QStringLiteral("forkmesh_claude_agent.py"));
+    if (isLegacy && command != current) {
+        command = current;
+        settings.setValue(kClaudeCommandSetting, command);
+    }
+    return command;
+}
 
 QString codexCommandSetting()
 {
@@ -7375,8 +7430,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     if (provider == QLatin1String("claude")) {
-        config.command =
-            QSettings().value(kClaudeCommandSetting, kDefaultClaudeCommand).toString();
+        config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
     } else {
@@ -12451,8 +12505,7 @@ QWidget *MainWindow::buildSettingsSection()
     });
 
     m_claudeCommandEdit = new QLineEdit;
-    m_claudeCommandEdit->setText(
-        QSettings().value(kClaudeCommandSetting, kDefaultClaudeCommand).toString());
+    m_claudeCommandEdit->setText(claudeCommandSetting());
     connect(m_claudeCommandEdit, &QLineEdit::editingFinished, this, [this] {
         QSettings().setValue(kClaudeCommandSetting, m_claudeCommandEdit->text());
     });
