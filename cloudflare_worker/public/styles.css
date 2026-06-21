@@ -305,20 +305,27 @@ html.dark .brand-mark {
   white-space: nowrap;
 }
 
-.clients-dot,
+.clients-relay-icon,
 .status-pill span {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--muted-2);
-  display: inline-block;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  color: var(--muted-2);
 }
 
-.clients-dot.online,
+.clients-relay-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.clients-relay-icon.online,
 .status-pill.online span {
-  background: var(--accent-bright);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-bright) 22%, transparent);
+  color: var(--accent-bright);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent-bright) 40%, transparent));
 }
 
 .icon-button {
