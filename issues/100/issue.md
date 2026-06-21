@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 100
 title: have the aiblity to multi select and ddelete in the branches view - also show if there was a related PR if it wsa closed open or merged please
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
