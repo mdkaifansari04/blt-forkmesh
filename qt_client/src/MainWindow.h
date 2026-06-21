@@ -354,6 +354,8 @@ private:
     QString commitStatusGlyph(const QString &sha) const;
     // Spin the Actions tab label while a run for the open repo is active.
     void updateActionsTabIndicator();
+    // Spin the Agents tab label while any agent session is running.
+    void updateAgentsTabIndicator();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void loadRepoInsights();
@@ -756,6 +758,8 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QTimer *m_actionsSpinTimer = nullptr;        // animates the Actions tab while running
     int m_actionsSpinFrame = 0;
+    QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
+    int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
