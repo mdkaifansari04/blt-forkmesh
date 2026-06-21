@@ -51,19 +51,24 @@
     return res.slice(data.length); // the ecLen remainder bytes
   }
 
-  // --- Per-version capacity at EC level L (single block) --------------------
-  // { dataCodewords, ecCodewords } indexed by version (1..5).
+  // --- Per-version capacity at EC level L -----------------------------------
+  // { data: total data codewords, ec: EC codewords PER BLOCK, blocks }.
+  // v1-5 are a single block; v6 (level L) is two equal blocks, so we interleave.
+  // Versions >=7 are intentionally out of scope (they'd need version-info
+  // modules and multiple alignment patterns).
   const CAP_L = {
-    1: { data: 19, ec: 7 },
-    2: { data: 34, ec: 10 },
-    3: { data: 55, ec: 15 },
-    4: { data: 80, ec: 20 },
-    5: { data: 108, ec: 26 },
+    1: { data: 19, ec: 7, blocks: 1 },
+    2: { data: 34, ec: 10, blocks: 1 },
+    3: { data: 55, ec: 15, blocks: 1 },
+    4: { data: 80, ec: 20, blocks: 1 },
+    5: { data: 108, ec: 26, blocks: 1 },
+    6: { data: 136, ec: 18, blocks: 2 },
   };
-  const ALIGN = { 2: 18, 3: 22, 4: 26, 5: 30 }; // single alignment-pattern center
+  // Single alignment-pattern center (only one for v2-6 at these sizes).
+  const ALIGN = { 2: 18, 3: 22, 4: 26, 5: 30, 6: 34 };
 
   function chooseVersion(byteLen) {
-    for (let v = 1; v <= 5; v++) {
+    for (let v = 1; v <= 6; v++) {
       // 4-bit mode + 8-bit count + 8*len bits must fit in dataCodewords*8.
       if (4 + 8 + byteLen * 8 <= CAP_L[v].data * 8) return v;
     }
@@ -94,7 +99,24 @@
     const pads = [0xec, 0x11];
     let p = 0;
     while (codewords.length < cap.data) codewords.push(pads[p++ % 2]);
-    return codewords.concat(rsEncode(codewords, cap.ec));
+
+    // Split into equal blocks, RS-encode each, then interleave data then EC.
+    // For a single block (v1-5) this is just data followed by its EC bytes.
+    const nBlocks = cap.blocks;
+    const perBlock = cap.data / nBlocks;
+    const dataBlocks = [];
+    const ecBlocks = [];
+    for (let b = 0; b < nBlocks; b++) {
+      const block = codewords.slice(b * perBlock, (b + 1) * perBlock);
+      dataBlocks.push(block);
+      ecBlocks.push(rsEncode(block, cap.ec));
+    }
+    const out = [];
+    for (let i = 0; i < perBlock; i++)
+      for (let b = 0; b < nBlocks; b++) out.push(dataBlocks[b][i]);
+    for (let i = 0; i < cap.ec; i++)
+      for (let b = 0; b < nBlocks; b++) out.push(ecBlocks[b][i]);
+    return out;
   }
 
   // --- Matrix ---------------------------------------------------------------

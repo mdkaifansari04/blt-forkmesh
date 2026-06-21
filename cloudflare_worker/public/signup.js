@@ -10,13 +10,16 @@
   const isLive = location.protocol !== "file:";
   let nodeName = "";
   let payAddress = "";
-  let payUri = "";
+  let payUri = "";       // full Solana Pay URI (with label/message) for the copy link
+  let payQrUri = "";     // compact URI for the QR, so it fits a small QR version
   let expiresAt = 0;
   let deleteAt = 0;
   let lastReceivedLamports = 0;
   let addressHidden = false;
   let statusTimer = null;
   let expiryTimer = null;
+  let solUsd = 0;                 // SOL→USD spot price, 0 until fetched
+  let currentDonationSol = 0.005; // required donation for this signup, in SOL
 
   function showStep(id) {
     for (const el of document.querySelectorAll(".step")) {
@@ -155,17 +158,29 @@
     const qr = $("#pay-qr");
     if (!qr) return;
     qr.innerHTML = "";
-    if (!payUri && !payAddress) return;
+    if (!payQrUri && !payUri && !payAddress) return;
     if (window.ForkMeshQR) {
-      window.ForkMeshQR.render(payUri || payAddress, qr, 236);
+      // Encode the compact URI: label/message bloat the payload past the QR's
+      // capacity, and a wallet shows its own label anyway.
+      window.ForkMeshQR.render(payQrUri || payUri || payAddress, qr, 236);
     } else {
       qr.textContent = "QR unavailable";
     }
   }
 
+  // Drop trailing zeros from a decimal SOL amount ("0.005000000" -> "0.005").
+  function trimAmount(s) {
+    s = String(s || "");
+    return s.indexOf(".") >= 0 ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+  }
+
   function renderAddress(body) {
     payAddress = body.address || "";
     payUri = body.uri || payAddress;
+    payQrUri = (payAddress && body.reference)
+      ? "solana:" + payAddress + "?amount=" + trimAmount(body.amountSol) +
+        "&reference=" + body.reference
+      : payUri;
     addressHidden = false;
     setAddressVisible(true);
     $("#pay-renew").hidden = true;
@@ -182,6 +197,7 @@
     addressHidden = true;
     payAddress = "";
     payUri = "";
+    payQrUri = "";
     setAddressVisible(false);
     const qr = $("#pay-qr");
     if (qr) qr.innerHTML = "";
@@ -257,6 +273,8 @@
     }
     lastReceivedLamports = Number(body.receivedLamports) || 0;
     $("#pay-amount").textContent = (body.amountSol || "0.005000000") + " SOL";
+    currentDonationSol = Number(body.amountSol) || 0.005;
+    renderUsd();
     applyExpiry(body);
     if (body.hidden || body.expired || body.deleted) {
       hideExpiredAddress(Boolean(body.deleted));
@@ -338,6 +356,31 @@
     showStep("step-done");
   }
 
+  // --- SOL→USD price ---------------------------------------------------------
+  function fmtUsd(sol) {
+    if (!solUsd || !sol) return "";
+    return "≈ $" + (sol * solUsd).toLocaleString(undefined, {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    });
+  }
+
+  function renderUsd() {
+    const min = $("#min-donation-usd");
+    if (min) min.textContent = fmtUsd(0.005);
+    const pay = $("#pay-amount-usd");
+    if (pay) pay.textContent = fmtUsd(currentDonationSol);
+  }
+
+  async function loadSolPrice() {
+    try {
+      const res = await fetch(
+        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+      const j = await res.json();
+      const p = Number(j && j.solana && j.solana.usd);
+      if (p > 0) { solUsd = p; renderUsd(); }
+    } catch (_) { /* price is best-effort; leave blank on failure */ }
+  }
+
   // --- Wiring ----------------------------------------------------------------
   nameInput.addEventListener("input", validateName);
   nameInput.addEventListener("keydown", (e) => {
@@ -357,4 +400,6 @@
 
   loadStats();
   setInterval(loadStats, 30000);
+  loadSolPrice();
+  setInterval(loadSolPrice, 60000);
 })();

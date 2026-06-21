@@ -264,6 +264,15 @@ int PullStore::createPull(const QString &title, const QString &description,
             *error = QStringLiteral("This repository is read-only on this node.");
         return -1;
     }
+    // Don't open a second PR for a head branch that already has an open one.
+    // Agents derive a unique branch per session, so a match means this exact
+    // change was already submitted — return the existing number instead.
+    if (!head.isEmpty()) {
+        for (const PullRequest &existing : loadAll()) {
+            if (existing.status == QLatin1String("open") && existing.head == head)
+                return existing.number;
+        }
+    }
     PullRequest pr;
     pr.title = title;
     pr.description = description;
