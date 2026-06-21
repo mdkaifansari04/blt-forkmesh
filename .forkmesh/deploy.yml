@@ -20,9 +20,11 @@ jobs:
           [ -f .forkmesh-skip-deploy ] && exit 0
           python3 cloudflare_worker/tests/test_crypto.py
       # .env.production is gitignored, so materialize it from CI secrets. deploy.sh
-      # reads it and passes the values to wrangler as --var overrides.
+      # reads it, exports CLOUDFLARE_* for wrangler, and pushes Worker secrets.
       - name: Write production env (admin dashboard vars)
         env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ADMIN_PATH: ${{ secrets.ADMIN_PATH }}
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
@@ -30,6 +32,8 @@ jobs:
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
           cat > cloudflare_worker/.env.production <<EOF
+          CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+          CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
           ADMIN_PATH=${ADMIN_PATH}
           ADMIN_USER=${ADMIN_USER}
           ADMIN_PASS=${ADMIN_PASS}
