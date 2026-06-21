@@ -72,6 +72,9 @@ public:
     virtual void addChannel(const QString &channel) = 0;
     // Advertise to other nodes which repos ("owner/name") this node mirrors.
     virtual void setMirroredRepos(const QStringList &ownerNames) { Q_UNUSED(ownerNames); }
+    // Announce that this node just refreshed a repo's mirror from its source of
+    // truth, so peers mirroring the same repo can be notified (and refresh).
+    virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 
@@ -100,6 +103,8 @@ signals:
     void firewallHealthy();
     void channelsChanged(const QStringList &channels);
     void rosterChanged(const QList<MemberInfo> &members);
+    // A peer refreshed its mirror of "owner/name" from the source of truth.
+    void mirrorUpdated(const QString &ownerName, const QString &peerName);
     // Short status line for the UI.
     void statusChanged(const QString &status);
     // Unrecoverable failure; the UI returns to the setup screen.

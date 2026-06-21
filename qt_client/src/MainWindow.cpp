@@ -10365,6 +10365,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::systemMessage, this, &MainWindow::logSystem);
     connect(backend, &ChatBackend::channelsChanged, this, &MainWindow::setChannels);
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
+    connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
     connect(backend, &ChatBackend::statusChanged, this, [this](const QString &status) {
         const QString summary = status.section(" · ", 0, 0);
         m_statusLine->setText(summary);
@@ -12185,6 +12186,32 @@ void MainWindow::autoSyncMirrors()
     }
 }
 
+void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
+                                     const QString &peerName)
+{
+    // Only surface it if we keep a real mirror of this repo (browse-only
+    // previews don't count) — otherwise the peer's update isn't relevant here.
+    bool relevant = false;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (!repo.previewOnly && (repo.owner + "/" + repo.name) == ownerName) {
+            relevant = true;
+            break;
+        }
+    }
+    if (!relevant)
+        return;
+
+    const QString who =
+        peerName.trimmed().isEmpty() ? QStringLiteral("A peer") : peerName.trimmed();
+    const QString msg = who + " updated the mirror of " + ownerName +
+                        " from its source.";
+    logSystem(msg);
+    flashMessage(msg);
+    if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+        m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
+                                QSystemTrayIcon::Information, 6000);
+}
+
 void MainWindow::syncRepository(int index, bool quiet)
 {
     if (index < 0 || index >= m_repositories.size() ||
@@ -12253,6 +12280,11 @@ void MainWindow::syncRepository(int index, bool quiet)
                     // If this repo's detail is open, reflect the new commits.
                     if (changed && index == m_repoDetailIndex)
                         refreshOpenRepoDetail();
+                    // Tell connected peers that also mirror this repo that it
+                    // advanced from its source of truth. Only for real mirrors
+                    // that already existed (an actual update, not a first clone).
+                    if (changed && hasMirror && !stillPreview && m_backend)
+                        m_backend->notifyMirrorUpdated(repo.owner + "/" + repo.name);
                     // Quiet auto-syncs only speak up when something changed.
                     if (!quiet || changed) {
                         logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")

@@ -474,6 +474,19 @@ void ServerNode::setMirroredRepos(const QStringList &ownerNames)
         sendHello(); // re-advertise so peers see the updated mirror set
 }
 
+void ServerNode::notifyMirrorUpdated(const QString &ownerName)
+{
+    if (ownerName.trimmed().isEmpty() || !m_wsReady)
+        return;
+    QJsonObject message = makeMessage("mirror-update");
+    message.insert("repo", ownerName.trimmed().left(160));
+    // Pre-mark our own id so the relay's echo back to us isn't surfaced as a
+    // self-notification. This is an ephemeral frame (not in kDurableTypes), so
+    // the relay won't retain or replay it.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
 void ServerNode::sendChat(const QString &channel, const QString &text)
 {
     if (text.trimmed().isEmpty())
@@ -714,6 +727,10 @@ void ServerNode::handlePlain(const QJsonObject &message)
             m_channels.append(name);
             emit channelsChanged(m_channels);
         }
+    } else if (type == "mirror-update") {
+        const QString repo = message.value("repo").toString().left(160);
+        if (!repo.isEmpty())
+            emit mirrorUpdated(repo, sender);
     } else if (type == "reaction") {
         const QString target = message.value("target").toString();
         const QString emoji = message.value("emoji").toString();
