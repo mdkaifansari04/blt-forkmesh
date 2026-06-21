@@ -1,0 +1,98 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 199531b..c94defd 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -207,6 +207,7 @@ const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
+ const QString kVotesSpentSetting = QStringLiteral("votes/spent");
+ const QString kVotedSetting = QStringLiteral("votes/voted");
+ const QString kCodexApiKeySetting = QStringLiteral("agents/codexApiKey");
++const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
+ const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
+ const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
+ const QString kCodexCommandSetting = QStringLiteral("agents/codexCommand");
+@@ -6383,7 +6384,11 @@ QWidget *MainWindow::buildAgentsTab()
+ 
+ void MainWindow::testOpenAiAgentKey()
+ {
+-    const QString apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
++    QSettings settings;
++    const QString apiKey = settings.value(kCodexApiKeySetting).toString().trimmed();
++    const QString adminKey =
++        settings.value(kOpenAiAdminKeySetting).toString().trimmed();
++    const QString usageKey = adminKey.isEmpty() ? apiKey : adminKey;
+     if (apiKey.isEmpty()) {
+         if (m_agentApiKeyStatus)
+             m_agentApiKeyStatus->setText("No OpenAI API key saved in Settings.");
+@@ -6476,14 +6481,14 @@ void MainWindow::testOpenAiAgentKey()
+         m_agentApiKeyStatus->setText(lines.join(QStringLiteral("<br>")));
+     };
+ 
+-    auto requestCosts = [this, apiKey, start, end, state, finish] {
++    auto requestCosts = [this, usageKey, start, end, state, finish] {
+         QUrl url(QStringLiteral("https://api.openai.com/v1/organization/costs"));
+         QUrlQuery query;
+         query.addQueryItem(QStringLiteral("start_time"), QString::number(start));
+         query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
+         query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+         url.setQuery(query);
+-        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, apiKey));
++        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, usageKey));
+         connect(reply, &QNetworkReply::finished, this, [reply, state, finish] {
+             const QByteArray body = reply->readAll();
+             if (reply->error() == QNetworkReply::NoError) {
+@@ -6509,7 +6514,7 @@ void MainWindow::testOpenAiAgentKey()
+         });
+     };
+ 
+-    auto requestUsage = [this, apiKey, start, end, state, requestCosts] {
++    auto requestUsage = [this, usageKey, start, end, state, requestCosts] {
+         QUrl url(QStringLiteral(
+             "https://api.openai.com/v1/organization/usage/completions"));
+         QUrlQuery query;
+@@ -6517,7 +6522,7 @@ void MainWindow::testOpenAiAgentKey()
+         query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
+         query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+         url.setQuery(query);
+-        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, apiKey));
++        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, usageKey));
+         connect(reply, &QNetworkReply::finished, this,
+                 [reply, state, requestCosts] {
+                     const QByteArray body = reply->readAll();
+@@ -11065,6 +11070,17 @@ QWidget *MainWindow::buildSettingsSection()
+         QSettings().setValue(kCodexApiKeySetting, key);
+     });
+ 
++    m_openAiAdminKeyEdit = new QLineEdit;
++    m_openAiAdminKeyEdit->setEchoMode(QLineEdit::Password);
++    m_openAiAdminKeyEdit->setPlaceholderText("Optional Admin API key for usage and costs");
++    m_openAiAdminKeyEdit->setText(
++        QSettings().value(kOpenAiAdminKeySetting).toString().trimmed());
++    connect(m_openAiAdminKeyEdit, &QLineEdit::editingFinished, this, [this] {
++        const QString key = m_openAiAdminKeyEdit->text().trimmed();
++        m_openAiAdminKeyEdit->setText(key);
++        QSettings().setValue(kOpenAiAdminKeySetting, key);
++    });
++
+     m_codexModelEdit = new QLineEdit;
+     m_codexModelEdit->setPlaceholderText("Optional, e.g. gpt-5.1-codex");
+     m_codexModelEdit->setText(QSettings().value(kCodexModelSetting).toString().trimmed());
+@@ -11119,6 +11135,7 @@ QWidget *MainWindow::buildSettingsSection()
+     agentForm->setLabelAlignment(Qt::AlignLeft);
+     agentForm->setSpacing(8);
+     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
++    agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
+     agentForm->addRow("Codex model", m_codexModelEdit);
+     agentForm->addRow("Claude API key", m_claudeApiKeyEdit);
+     agentForm->addRow("Codex command", m_codexCommandEdit);
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 3bf1932..f83ead7 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -578,6 +578,7 @@ private:
+     QCheckBox *m_autostartCheck = nullptr;
+     QComboBox *m_themeCombo = nullptr;
+     QLineEdit *m_codexApiKeyEdit = nullptr;
++    QLineEdit *m_openAiAdminKeyEdit = nullptr;
+     QLineEdit *m_codexModelEdit = nullptr;
+     QLineEdit *m_claudeApiKeyEdit = nullptr;
+     QLineEdit *m_codexCommandEdit = nullptr;
