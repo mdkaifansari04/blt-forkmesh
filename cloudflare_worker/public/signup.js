@@ -2,7 +2,7 @@
   // Must match valid_node_name in cloudflare_worker/src/entry.py and the Qt
   // client: a single DNS-like label, lowercase, hyphens allowed, no underscores.
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-  const PAYOUT_PER_JOIN_BCH = 0.0001; // illustrative only — reward engine WIP
+  const PAYOUT_PER_JOIN_SOL = 0.0001; // illustrative only — reward engine WIP
   const POLL_MS = 5000;
   const ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000;
 
@@ -13,7 +13,7 @@
   let payUri = "";
   let expiresAt = 0;
   let deleteAt = 0;
-  let lastReceivedSats = 0;
+  let lastReceivedLamports = 0;
   let addressHidden = false;
   let statusTimer = null;
   let expiryTimer = null;
@@ -45,8 +45,8 @@
       $("#stat-repos").textContent = String(Number(body.repos) || 0);
       $("#stat-clients").textContent = String(Number(body.clients) || 0);
       $("#calc-nodes").textContent = String(nodes);
-      const earn = (Math.max(nodes, 1) * PAYOUT_PER_JOIN_BCH).toFixed(8);
-      $("#calc-earn").textContent = earn + " BCH";
+      const earn = (Math.max(nodes, 1) * PAYOUT_PER_JOIN_SOL).toFixed(9);
+      $("#calc-earn").textContent = earn + " SOL";
     } catch (_) { /* leave placeholders */ }
   }
 
@@ -188,8 +188,8 @@
     $("#pay-renew").hidden = false;
     setPayStatus(
       deleted
-        ? "This address was removed. Generate a new address to continue."
-        : "This address is expiring. Do not send BCH to it.",
+        ? "This payment request was removed. Generate a new request to continue."
+        : "This payment request is expiring. Do not send SOL to it.",
       "waiting"
     );
     updateExpiryText();
@@ -204,7 +204,7 @@
       return;
     }
     const now = Date.now();
-    if (!addressHidden && lastReceivedSats <= 0 && now >= expiresAt) {
+    if (!addressHidden && lastReceivedLamports <= 0 && now >= expiresAt) {
       hideExpiredAddress(false);
       return;
     }
@@ -212,14 +212,14 @@
       const remaining = Math.max(0, (deleteAt || now) - now);
       el.className = "pay-expiry danger";
       el.textContent = remaining > 0
-        ? "We are expiring this address. Do not send BCH to it. It will be deleted in " + formatDuration(remaining) + "."
-        : "This address has been removed from the page. Generate a new address to continue.";
+        ? "We are expiring this payment request. Do not send SOL to it. It will be deleted in " + formatDuration(remaining) + "."
+        : "This payment request has been removed from the page. Generate a new request to continue.";
       return;
     }
     const remaining = expiresAt - now;
     el.className = remaining <= 10 * 60 * 1000 ? "pay-expiry warn" : "pay-expiry";
     el.textContent = remaining > 0
-      ? "This address expires in " + formatDuration(remaining) + " if it receives no transactions."
+      ? "This payment request expires in " + formatDuration(remaining) + " if it receives no transactions."
       : "";
   }
 
@@ -239,7 +239,7 @@
       renewBtn.disabled = true;
       renewBtn.textContent = "Generating…";
     }
-    setPayStatus(renew ? "Generating a new address…" : "Generating address…", "waiting");
+    setPayStatus(renew ? "Generating a new payment request…" : "Generating payment request…", "waiting");
     const payload = { nodeName };
     if (renew) payload.renewExpired = true;
     const { ok, body } = await api("/api/accounts/donation-address", {
@@ -248,15 +248,15 @@
     });
     if (renewBtn) {
       renewBtn.disabled = false;
-      renewBtn.textContent = "Generate a new address";
+      renewBtn.textContent = "Generate a new request";
     }
     if (!ok) {
       setAddressVisible(false);
-      setPayStatus("Could not generate an address. Reload and retry.", "waiting");
+      setPayStatus("Could not generate a payment request. Reload and retry.", "waiting");
       return;
     }
-    lastReceivedSats = Number(body.receivedSats) || 0;
-    $("#pay-amount").textContent = (body.amountBch || "0.00500000") + " BCH";
+    lastReceivedLamports = Number(body.receivedLamports) || 0;
+    $("#pay-amount").textContent = (body.amountSol || "0.005000000") + " SOL";
     applyExpiry(body);
     if (body.hidden || body.expired || body.deleted) {
       hideExpiredAddress(Boolean(body.deleted));
@@ -278,7 +278,7 @@
     const { ok, body } = await api(
       "/api/accounts/donation-status?nodeName=" + encodeURIComponent(nodeName));
     if (!ok) return;
-    lastReceivedSats = Number(body.receivedSats) || 0;
+    lastReceivedLamports = Number(body.receivedLamports) || 0;
     applyExpiry(body);
     if (body.deleted) {
       hideExpiredAddress(true);
@@ -296,8 +296,8 @@
       $("#pay-status").className = "pay-status paid";
       setTimeout(() => showStep("step-account"), 600);
     } else {
-      const got = (lastReceivedSats / 1e8).toFixed(8);
-      setPayStatus("Waiting for your donation… (received " + got + " BCH)", "waiting");
+      const got = (lastReceivedLamports / 1e9).toFixed(9);
+      setPayStatus("Waiting for your donation… (received " + got + " SOL)", "waiting");
     }
   }
 
@@ -345,8 +345,8 @@
   });
   nameContinue.addEventListener("click", reserveName);
   $("#pay-copy").addEventListener("click", async () => {
-    if (!payAddress) return;
-    try { await navigator.clipboard.writeText(payAddress); } catch (_) {}
+    if (!payUri && !payAddress) return;
+    try { await navigator.clipboard.writeText(payUri || payAddress); } catch (_) {}
     const b = $("#pay-copy");
     const t = b.textContent;
     b.textContent = "Copied";

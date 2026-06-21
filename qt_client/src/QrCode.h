@@ -8,7 +8,7 @@
 // A small, self-contained QR Code generator (byte mode). No third-party
 // dependency: implements the QR spec directly — version auto-selection,
 // Reed–Solomon error correction, the standard function patterns, and data-mask
-// selection by penalty score. Sufficient for short payloads like BCH addresses.
+// selection by penalty score. Sufficient for short payloads like wallet addresses.
 namespace QrCode {
 
 enum class Ecl { Low, Medium, Quartile, High };

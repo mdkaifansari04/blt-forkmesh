@@ -77,7 +77,7 @@ struct RepositoryRecord {
     QString description;
     QString cloneUrl;
     QString localPath;
-    QString bchAddress;
+    QString solanaAddress;
     QString mirrorPath;
     bool publishToNetwork = false;
     // Run .forkmesh/ workflows when a fork pushes to this repo's bare mirror.
@@ -111,10 +111,10 @@ private:
     // Setup page
     QWidget *buildSetupPage();
     void startSession();
-    // Account = node identity. Registration (name + BCH + password + TOTP) gates
+    // Account = node identity. Registration (name + Solana + password + TOTP) gates
     // joining the network; the account name is the canonical repo owner.
-    bool ensureNodeAccount(const QString &accountName, const QString &bch);
-    bool runSignupFlow(const QString &accountName, const QString &bch);
+    bool ensureNodeAccount(const QString &accountName, const QString &solana);
+    bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     // Staged-join helpers: pick repos to mirror, then donate + poll.
     bool runRepoPickStep();
@@ -126,14 +126,14 @@ private:
     bool verifyTotpLogin(const QString &accountName, const QString &password,
                          const QString &totp);
     // Periodic signed heartbeat that keeps this node eligible for the reward
-    // split and refreshes its payout BCH address.
+    // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
-    void verifyWallet(); // POST /verify-bch for the logged-in account
+    void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
                                 int *status);
@@ -154,10 +154,10 @@ private:
     QWidget *buildChatPage();
     QWidget *buildServerRail();
 
-    // Global donation nudge shown until this node sets a BCH address.
-    QWidget *buildBchNotice();
-    void updateBchNotice();
-    void promptSetBchAddress();
+    // Global donation nudge shown until this node sets a Solana address.
+    QWidget *buildSolanaNotice();
+    void updateSolanaNotice();
+    void promptSetSolanaAddress();
 
     // Top breadcrumb: active server > current section.
     QWidget *buildBreadcrumb();
@@ -184,11 +184,8 @@ private:
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void hideNodeProfile();
     void checkNodeBalance();
-    // Query the BCH network for a balance via the public Electrum/Fulcrum server
-    // pool, trying servers in order and falling back on any failure.
-    void queryBalanceFromElectrum(const QString &addr,
-                                  const QByteArray &scriptHashHex,
-                                  int serverIndex);
+    // Query the Solana network for a balance via public JSON-RPC endpoints.
+    void querySolanaBalance(const QString &addr, int endpointIndex);
     QWidget *buildNodesPanel(); // left column: just the nodes
     QWidget *buildReposPanel(); // column: repos for the selected node
     // Fill the repositories column with the repos owned by the selected node.
@@ -476,9 +473,9 @@ private:
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
 
-    // Donation nudge banner (no BCH address yet).
-    QWidget *m_bchBanner = nullptr;
-    QLabel *m_bchBannerLabel = nullptr;
+    // Donation nudge banner (no Solana address yet).
+    QWidget *m_solanaBanner = nullptr;
+    QLabel *m_solanaBannerLabel = nullptr;
 
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
@@ -489,7 +486,7 @@ private:
 
     // Setup widgets
     QLineEdit *m_nameEdit;
-    QLineEdit *m_bchEdit;
+    QLineEdit *m_solanaEdit;
     QLabel *m_pubkeyLabel;
     QLineEdit *m_serverUrlEdit;
     QLineEdit *m_roomNameEdit;
@@ -747,9 +744,9 @@ private:
     QLabel *m_profileNote = nullptr;
     QLabel *m_profileStats = nullptr; // node stats, moved here from the node list
     QLabel *m_profileNodeKey = nullptr;
-    QLabel *m_profileBchAddr = nullptr;
+    QLabel *m_profileSolanaAddr = nullptr;
     QLabel *m_profileQr = nullptr;
-    QWidget *m_profileBchSection = nullptr;
+    QWidget *m_profileSolanaSection = nullptr;
     QLabel *m_profileBalance = nullptr;
     QPushButton *m_profileBalanceButton = nullptr;
     QPushButton *m_profileVerifyButton = nullptr;
@@ -757,7 +754,7 @@ private:
     QPushButton *m_profileMessageButton = nullptr;
     QString m_profileNodeId;
     QString m_profileNodeName;
-    QString m_profileBchValue;
+    QString m_profileSolanaValue;
 
     QStringList m_channels;
     QList<RepositoryRecord> m_repositories;
@@ -791,7 +788,7 @@ private:
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;
     QString m_accountName;
-    bool m_accountBchVerified = false;
+    bool m_accountSolanaVerified = false;
     // "free" = view-only (must mirror >=1 repo) until the user joins by
     // donating; "active" = donated + email/password set.
     QString m_accountTier = QStringLiteral("free");

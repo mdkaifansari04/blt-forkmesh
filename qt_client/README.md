@@ -6,7 +6,7 @@ and communicating with peers.
 ## Features
 
 - Generates a local Ed25519 ForkMesh identity
-- Stores one profile/account name and Bitcoin Cash donation address
+- Stores one profile/account name and Solana donation address
 - Mirrors repositories locally as bare Git repositories
 - Publishes selected local mirrors to the ForkMesh web catalog
 - Creates per-repository chat channels

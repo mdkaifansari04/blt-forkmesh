@@ -108,7 +108,7 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
-const QString kBchSetting = QStringLiteral("profile/bch");
+const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
 const QString kLocalServerUrl =
@@ -123,6 +123,16 @@ const QString kDefaultRoomName = QStringLiteral("general");
 const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
+
+QString savedSolanaAddress()
+{
+    return QSettings().value(kSolanaSetting).toString().trimmed();
+}
+
+void saveSolanaAddress(const QString &address)
+{
+    QSettings().setValue(kSolanaSetting, address.trimmed());
+}
 const QString kPreviewCacheRootSetting = QStringLiteral("repositories/previewCacheRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
@@ -1659,10 +1669,10 @@ QWidget *MainWindow::buildSetupPage()
         "Start with a letter; up to 63 characters.");
     nameHint->setObjectName("modeHint");
     nameHint->setWordWrap(true);
-    m_bchEdit = new QLineEdit;
-    m_bchEdit->setPlaceholderText("Your Bitcoin Cash address (for payouts, optional)");
-    m_bchEdit->setMaxLength(160);
-    m_bchEdit->setText(QSettings().value(kBchSetting).toString());
+    m_solanaEdit = new QLineEdit;
+    m_solanaEdit->setPlaceholderText("Your Solana address (for payouts, optional)");
+    m_solanaEdit->setMaxLength(64);
+    m_solanaEdit->setText(savedSolanaAddress());
     m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
     m_pubkeyLabel->setObjectName("modeHint");
     m_pubkeyLabel->setWordWrap(true);
@@ -1729,7 +1739,7 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addSpacing(14);
     cardLayout->addWidget(m_nameEdit);
     cardLayout->addWidget(nameHint);
-    cardLayout->addWidget(m_bchEdit);
+    cardLayout->addWidget(m_solanaEdit);
     cardLayout->addWidget(m_pubkeyLabel);
     cardLayout->addSpacing(8);
     cardLayout->addWidget(m_serverUrlEdit);
@@ -1762,15 +1772,15 @@ QWidget *MainWindow::buildSetupPage()
             }
             return;
         }
-        ensureNodeAccount(name, m_bchEdit->text().trimmed());
+        ensureNodeAccount(name, m_solanaEdit->text().trimmed());
     });
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
         saveProfileName(name);
     });
-    connect(m_bchEdit, &QLineEdit::textEdited, this, [this](const QString &address) {
-        QSettings().setValue(kBchSetting, address.trimmed());
-        updateBchNotice();
+    connect(m_solanaEdit, &QLineEdit::textEdited, this, [this](const QString &address) {
+        saveSolanaAddress(address);
+        updateSolanaNotice();
     });
     connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &url) {
         QSettings().setValue(kServerUrlSetting, url.trimmed());
@@ -1851,9 +1861,10 @@ void MainWindow::startSession()
     QSettings().setValue(kPassphraseSetting, m_passphraseEdit->text());
     persistEditsToActiveServer();
     const QUrl url(m_serverUrlEdit->text().trimmed());
-    auto *server = new ServerNode(name, url, m_roomNameEdit->text().trimmed(),
+    auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
+                                  m_roomNameEdit->text().trimmed(),
                                   m_passphraseEdit->text(),
-                                  m_bchEdit->text().trimmed(), this);
+                                  m_solanaEdit->text().trimmed(), this);
     attachBackend(server);
     if (!server->start())
         return;
@@ -1871,7 +1882,7 @@ void MainWindow::startSession()
         const QJsonObject signedProfile =
             m_profileIdentity.signedProfile(m_userName,
                                             m_userName,
-                                            m_bchEdit->text());
+                                            m_solanaEdit->text());
         const QString profileBytes = QString::fromUtf8(
             QJsonDocument(signedProfile).toJson(QJsonDocument::Compact));
         logSystem("Identity: signed profile for " +
@@ -1880,7 +1891,7 @@ void MainWindow::startSession()
         m_stack->setCurrentIndex(1);
         showSection(0); // land on the Home overview after connecting
         refreshServerRail();
-        updateBchNotice();
+        updateSolanaNotice();
         // Restore locally-saved chat history for this server/room so past
         // conversations are visible right away (deduped against any replay).
         loadChatHistory();
@@ -1911,8 +1922,8 @@ void MainWindow::sendNodeHeartbeat()
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
         ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).toUtf8();
-    const QString bch = QSettings().value(kBchSetting).toString().trimmed();
-    const QJsonObject body{{"nodeName", name}, {"bch", bch}, {"ts", ts},
+    const QString solana = savedSolanaAddress();
+    const QJsonObject body{{"nodeName", name}, {"solana", solana}, {"ts", ts},
                            {"sig", m_profileIdentity.signData(canonical)}};
     QNetworkRequest request(accountsApiUrl("heartbeat"));
     request.setHeader(QNetworkRequest::ContentTypeHeader,
@@ -2196,9 +2207,9 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     syncRepository(m_repositories.size() - 1);
 }
 
-bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &bch)
+bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &solana)
 {
-    Q_UNUSED(bch);
+    Q_UNUSED(solana);
     if (m_accountAuthenticated && m_accountName == accountName)
         return true;
     if (!isValidNodeName(accountName)) {
@@ -2215,7 +2226,7 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &bc
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == "active")
         return runLoginFlow(accountName);
-    return runSignupFlow(accountName, bch);
+    return runSignupFlow(accountName, solana);
 }
 
 // POST /api/accounts/login — log in by node name or email (+ optional TOTP).
@@ -2232,7 +2243,7 @@ bool MainWindow::verifyTotpLogin(const QString &accountName,
         m_accountAuthenticated = true;
         m_accountName = resp.value("nodeName").toString(accountName);
         m_accountTier = QStringLiteral("active");
-        m_accountBchVerified = true; // joined = active network member
+        m_accountSolanaVerified = true; // joined = active network member
         return true;
     }
     const QString err = resp.value("error").toString();
@@ -2279,12 +2290,12 @@ bool MainWindow::runLoginFlow(const QString &accountName)
 }
 
 // Staged "join the network" flow: reserve the node name (signed) → pick at
-// least one repo to mirror → donate to the per-signup BCH address → set the
-// email + password that unlock universal login. Replaces the old one-shot
-// signup. Returns true once the account is finalized (active).
-bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
+// least one repo to mirror → donate with Solana → set the email + password that
+// unlock universal login. Replaces the old one-shot signup. Returns true once
+// the account is finalized (active).
+bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
 {
-    Q_UNUSED(bch);
+    Q_UNUSED(solana);
 
     // Step 1 — reserve the node name, signed with the local identity so the
     // name is bound to this key.
@@ -2388,7 +2399,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &bch)
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
-        m_accountBchVerified = true;
+        m_accountSolanaVerified = true;
         QMessageBox::information(this, "Welcome to ForkMesh",
                                  "You're in — your node is registered.");
         return true;
@@ -2444,8 +2455,8 @@ bool MainWindow::runRepoPickStep()
     const double payoutPerJoin = 0.0001;
     calc->setText(QStringLiteral(
         "<b style='color:#3fb950'>Live earnings estimate</b><br><br>"
-        "Nodes online: <b>%1</b><br>Payout per join: <b>%2 BCH</b><br><br>"
-        "Est. earnings: <b>%3 BCH</b><br>"
+        "Nodes online: <b>%1</b><br>Payout per join: <b>%2 SOL</b><br><br>"
+        "Est. earnings: <b>%3 SOL</b><br>"
         "<span style='color:#8b949e'>Illustrative only — the reward system is in "
         "progress. Roughly half of each join funds ForkMesh; the rest is shared "
         "across nodes by data mirrored and uptime.</span>")
@@ -2483,7 +2494,7 @@ bool MainWindow::runRepoPickStep()
     return false;
 }
 
-// Step 3 of the join: fetch a one-time BCH address for this signup, show it
+// Step 3 of the join: fetch a Solana payment request for this signup, show it
 // with a QR code, and poll until the donation confirms.
 bool MainWindow::runDonationStep(const QString &accountName)
 {
@@ -2497,15 +2508,15 @@ bool MainWindow::runDonationStep(const QString &accountName)
     }
     const QString address = addr.value("address").toString();
     const QString uri = addr.value("uri").toString(address);
-    const QString amountBch = addr.value("amountBch").toString("0.00500000");
+    const QString amountSol = addr.value("amountSol").toString("0.005000000");
 
     QDialog dialog(this);
     dialog.setWindowTitle("Join ForkMesh — donate to activate");
     auto *layout = new QVBoxLayout(&dialog);
     auto *info = new QLabel(
-        QStringLiteral("Send at least <b>%1 BCH</b> to the one-time address below "
-                       "to join the network. This address is generated and "
-                       "monitored by ForkMesh.").arg(amountBch));
+        QStringLiteral("Send at least <b>%1 SOL</b> to the Solana payment request "
+                       "below to join the network. ForkMesh monitors the payment "
+                       "reference for confirmation.").arg(amountSol));
     info->setWordWrap(true);
     info->setTextFormat(Qt::RichText);
     layout->addWidget(info);
@@ -2551,10 +2562,10 @@ bool MainWindow::runDonationStep(const QString &accountName)
             poll.stop();
             dialog.accept();
         } else {
-            const qint64 got = st.value("receivedSats").toVariant().toLongLong();
+            const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
             statusLabel->setText(
-                QStringLiteral("Waiting for your donation… (received %1 BCH)")
-                    .arg(got / 100000000.0, 0, 'f', 8));
+                QStringLiteral("Waiting for your donation… (received %1 SOL)")
+                    .arg(got / 1000000000.0, 0, 'f', 9));
         }
     });
     poll.start();
@@ -2573,7 +2584,7 @@ void MainWindow::verifyWallet()
                                  "Set your node name on the setup screen first.");
         return;
     }
-    if (ensureNodeAccount(name, m_bchEdit ? m_bchEdit->text().trimmed() : QString())) {
+    if (ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed() : QString())) {
         if (m_profileEligibility)
             m_profileEligibility->setText(
                 QStringLiteral("<span style='color:#3fb950'>Active "
@@ -2586,8 +2597,7 @@ void MainWindow::persistProfile()
     const QString name = accountNameFromInput(m_nameEdit->text(), m_userName);
     m_nameEdit->setText(name);
     saveProfileName(name);
-    QSettings settings;
-    settings.setValue(kBchSetting, m_bchEdit->text().trimmed());
+    saveSolanaAddress(m_solanaEdit->text().trimmed());
 }
 
 // --------------------------------------------------------------- quick update
@@ -3022,12 +3032,12 @@ QWidget *MainWindow::buildChatPage()
     contentLayout->addWidget(m_sectionStack, 1);
 
     // Global donation nudge: shown across the whole app until this node sets a
-    // Bitcoin Cash address, so the network stays open to donations.
+    // Solana address, so the network stays open to donations.
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(buildBreadcrumb());
-    layout->addWidget(buildBchNotice());
+    layout->addWidget(buildSolanaNotice());
     layout->addWidget(content, 1);
     layout->addWidget(buildNetworkLogDock());
     return page;
@@ -3219,65 +3229,64 @@ void MainWindow::updateBreadcrumb()
             .arg(host.toHtmlEscaped(), sep, trail));
 }
 
-QWidget *MainWindow::buildBchNotice()
+QWidget *MainWindow::buildSolanaNotice()
 {
-    m_bchBanner = new QWidget;
-    m_bchBanner->setObjectName("bchBanner");
-    m_bchBannerLabel = new QLabel(
-        "Add a Bitcoin Cash address so others can sponsor this node — it keeps "
+    m_solanaBanner = new QWidget;
+    m_solanaBanner->setObjectName("solanaBanner");
+    m_solanaBannerLabel = new QLabel(
+        "Add a Solana address so others can sponsor this node — it keeps "
         "the network open to donations and more sustainable.");
-    m_bchBannerLabel->setObjectName("bchBannerLabel");
-    m_bchBannerLabel->setWordWrap(true);
+    m_solanaBannerLabel->setObjectName("solanaBannerLabel");
+    m_solanaBannerLabel->setWordWrap(true);
 
-    auto *addButton = new QPushButton("Add BCH address");
+    auto *addButton = new QPushButton("Add Solana address");
     addButton->setObjectName("primaryButton");
     addButton->setCursor(Qt::PointingHandCursor);
     setOcticon(addButton, "plus", 16);
-    connect(addButton, &QPushButton::clicked, this, &MainWindow::promptSetBchAddress);
+    connect(addButton, &QPushButton::clicked, this, &MainWindow::promptSetSolanaAddress);
 
     auto *dismissButton = new QPushButton(QString());
     dismissButton->setObjectName("ghostButton");
     dismissButton->setCursor(Qt::PointingHandCursor);
     dismissButton->setToolTip("Hide for now");
     setOcticon(dismissButton, "x", 16);
-    connect(dismissButton, &QPushButton::clicked, m_bchBanner, &QWidget::hide);
+    connect(dismissButton, &QPushButton::clicked, m_solanaBanner, &QWidget::hide);
 
-    auto *layout = new QHBoxLayout(m_bchBanner);
+    auto *layout = new QHBoxLayout(m_solanaBanner);
     layout->setContentsMargins(16, 10, 12, 10);
     layout->setSpacing(10);
-    layout->addWidget(m_bchBannerLabel, 1);
+    layout->addWidget(m_solanaBannerLabel, 1);
     layout->addWidget(addButton);
     layout->addWidget(dismissButton);
-    m_bchBanner->hide();
-    return m_bchBanner;
+    m_solanaBanner->hide();
+    return m_solanaBanner;
 }
 
-void MainWindow::updateBchNotice()
+void MainWindow::updateSolanaNotice()
 {
-    if (!m_bchBanner)
+    if (!m_solanaBanner)
         return;
-    const bool hasAddress =
-        !QSettings().value(kBchSetting).toString().trimmed().isEmpty();
-    m_bchBanner->setVisible(!hasAddress);
+    const bool hasAddress = !savedSolanaAddress().isEmpty();
+    m_solanaBanner->setVisible(!hasAddress);
 }
 
-void MainWindow::promptSetBchAddress()
+void MainWindow::promptSetSolanaAddress()
 {
     bool ok = false;
-    const QString current = QSettings().value(kBchSetting).toString().trimmed();
+    const QString current = savedSolanaAddress();
     const QString address = QInputDialog::getText(
-        this, "Bitcoin Cash address",
-        "Enter a Bitcoin Cash address to receive donations:", QLineEdit::Normal,
+        this, "Solana address",
+        "Enter a Solana address to receive donations:", QLineEdit::Normal,
         current, &ok);
     if (!ok)
         return;
     const QString trimmed = address.trimmed();
-    QSettings().setValue(kBchSetting, trimmed);
-    if (m_bchEdit)
-        m_bchEdit->setText(trimmed);
+    saveSolanaAddress(trimmed);
+    if (m_solanaEdit)
+        m_solanaEdit->setText(trimmed);
     // The address is shared with peers on the next connect; the sponsor button
     // and donation notice pick it up immediately.
-    updateBchNotice();
+    updateSolanaNotice();
     updateHomeStats();
 }
 
@@ -3391,22 +3400,22 @@ QWidget *MainWindow::buildNodeProfilePanel()
             openDirectChat(m_profileNodeId, m_profileNodeName);
     });
 
-    // --- Bitcoin Cash section: address, QR, on-demand balance.
-    m_profileBchSection = new QWidget;
-    auto *bchLabel = new QLabel("BITCOIN CASH");
-    bchLabel->setObjectName("sectionLabel");
-    m_profileBchAddr = new QLabel;
-    m_profileBchAddr->setObjectName("statusLine");
-    m_profileBchAddr->setWordWrap(true);
-    m_profileBchAddr->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_profileBchAddr->setStyleSheet("font-family:monospace;");
+    // --- Solana section: address, QR, on-demand balance.
+    m_profileSolanaSection = new QWidget;
+    auto *solanaLabel = new QLabel("SOLANA");
+    solanaLabel->setObjectName("sectionLabel");
+    m_profileSolanaAddr = new QLabel;
+    m_profileSolanaAddr->setObjectName("statusLine");
+    m_profileSolanaAddr->setWordWrap(true);
+    m_profileSolanaAddr->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_profileSolanaAddr->setStyleSheet("font-family:monospace;");
     auto *copyAddr = new QPushButton("Copy address");
     copyAddr->setObjectName("ghostButton");
     copyAddr->setCursor(Qt::PointingHandCursor);
     connect(copyAddr, &QPushButton::clicked, this, [this] {
-        if (!m_profileBchValue.isEmpty()) {
-            QApplication::clipboard()->setText(m_profileBchValue);
-            logSystem("Copied BCH address to clipboard.");
+        if (!m_profileSolanaValue.isEmpty()) {
+            QApplication::clipboard()->setText(m_profileSolanaValue);
+            logSystem("Copied Solana address to clipboard.");
         }
     });
     m_profileQr = new QLabel;
@@ -3418,8 +3427,8 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileBalanceButton->setObjectName("ghostButton");
     m_profileBalanceButton->setCursor(Qt::PointingHandCursor);
     m_profileBalanceButton->setToolTip(
-        "Query the BCH network (public Electrum/Fulcrum servers) for this "
-        "wallet's balance. This sends the address to the server it connects to.");
+        "Query the Solana network through public JSON-RPC for this wallet's "
+        "balance. This sends the address to the endpoint it connects to.");
     connect(m_profileBalanceButton, &QPushButton::clicked, this,
             &MainWindow::checkNodeBalance);
     auto *balanceRow = new QHBoxLayout;
@@ -3427,31 +3436,31 @@ QWidget *MainWindow::buildNodeProfilePanel()
     balanceRow->addWidget(m_profileBalance, 1);
     balanceRow->addWidget(m_profileBalanceButton);
 
-    auto *bchLayout = new QVBoxLayout(m_profileBchSection);
-    bchLayout->setContentsMargins(0, 8, 0, 0);
-    bchLayout->setSpacing(6);
-    bchLayout->addWidget(bchLabel);
-    bchLayout->addWidget(m_profileBchAddr);
-    bchLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
-    bchLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
+    auto *solanaLayout = new QVBoxLayout(m_profileSolanaSection);
+    solanaLayout->setContentsMargins(0, 8, 0, 0);
+    solanaLayout->setSpacing(6);
+    solanaLayout->addWidget(solanaLabel);
+    solanaLayout->addWidget(m_profileSolanaAddr);
+    solanaLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
+    solanaLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
     auto *balLabel = new QLabel("BALANCE");
     balLabel->setObjectName("sectionLabel");
-    bchLayout->addWidget(balLabel);
-    bchLayout->addLayout(balanceRow);
+    solanaLayout->addWidget(balLabel);
+    solanaLayout->addLayout(balanceRow);
 
-    // Revenue-sharing eligibility (self only): verify ≥0.001 BCH has reached
+    // Revenue-sharing eligibility (self only): verify >=0.001 SOL has reached
     // this wallet so the network knows the address is active.
     m_profileEligibility = new QLabel;
     m_profileEligibility->setObjectName("statusLine");
     m_profileEligibility->setWordWrap(true);
     m_profileEligibility->setTextFormat(Qt::RichText);
-    m_profileVerifyButton = new QPushButton("Verify wallet (deposit \xE2\x89\xA5 0.001 BCH)");
+    m_profileVerifyButton = new QPushButton("Verify wallet (deposit >= 0.001 SOL)");
     m_profileVerifyButton->setObjectName("ghostButton");
     m_profileVerifyButton->setCursor(Qt::PointingHandCursor);
     connect(m_profileVerifyButton, &QPushButton::clicked, this,
             &MainWindow::verifyWallet);
-    bchLayout->addWidget(m_profileEligibility);
-    bchLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
+    solanaLayout->addWidget(m_profileEligibility);
+    solanaLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
 
     auto *layout = new QVBoxLayout(m_nodeProfilePanel);
     layout->setContentsMargins(16, 16, 16, 16);
@@ -3468,7 +3477,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileNodeKey);
     layout->addWidget(copyKey, 0, Qt::AlignLeft);
     layout->addWidget(m_profileMessageButton, 0, Qt::AlignLeft);
-    layout->addWidget(m_profileBchSection);
+    layout->addWidget(m_profileSolanaSection);
     layout->addStretch();
 
     m_nodeProfilePanel->hide();
@@ -3481,7 +3490,7 @@ void MainWindow::hideNodeProfile()
         m_nodeProfilePanel->hide();
     m_profileNodeId.clear();
     m_profileNodeName.clear();
-    m_profileBchValue.clear();
+    m_profileSolanaValue.clear();
 }
 
 void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
@@ -3504,14 +3513,14 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         info.id = nodeId;
         info.name = nodeName;
     }
-    // Self's BCH address may only live in local settings.
-    QString bch = info.bchAddress.trimmed();
-    if (info.self && bch.isEmpty())
-        bch = QSettings().value(kBchSetting).toString().trimmed();
+    // Self's Solana address may only live in local settings.
+    QString solana = info.solanaAddress.trimmed();
+    if (info.self && solana.isEmpty())
+        solana = savedSolanaAddress();
 
     m_profileNodeId = info.id;
     m_profileNodeName = info.name;
-    m_profileBchValue = bch;
+    m_profileSolanaValue = solana;
 
     // Avatar: real avatar if we have one, else a generated letter tile.
     QPixmap avatar = m_avatars.value(info.id);
@@ -3575,27 +3584,27 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileEligibility->setVisible(info.self);
         if (info.self)
             m_profileEligibility->setText(
-                m_accountBchVerified
+                m_accountSolanaVerified
                     ? QStringLiteral("<span style='color:#3fb950'>Active "
                                      "\xC2\xB7 revenue-sharing eligible</span>")
                     : QStringLiteral("<span style='color:#d29922'>Not yet eligible "
-                                     "\xE2\x80\x94 deposit \xE2\x89\xA5 0.001 BCH and "
+                                     "\xE2\x80\x94 deposit >= 0.001 SOL and "
                                      "verify.</span>"));
     }
 
-    // BCH address + QR + reset balance.
-    if (bch.isEmpty()) {
-        m_profileBchSection->hide();
+    // Solana address + QR + reset balance.
+    if (solana.isEmpty()) {
+        m_profileSolanaSection->hide();
     } else {
-        m_profileBchSection->show();
-        m_profileBchAddr->setText(bch);
-        const QImage qr = QrCode::encodeToImage(bch, 4, 3);
+        m_profileSolanaSection->show();
+        m_profileSolanaAddr->setText(solana);
+        const QImage qr = QrCode::encodeToImage(QStringLiteral("solana:%1").arg(solana), 4, 3);
         if (!qr.isNull())
             m_profileQr->setPixmap(QPixmap::fromImage(qr));
         m_profileQr->setVisible(!qr.isNull());
-        m_profileBalance->setText(info.bchBalance.trimmed().isEmpty()
+        m_profileBalance->setText(info.solanaBalance.trimmed().isEmpty()
                                       ? QString::fromUtf8("\xE2\x80\x94")
-                                      : info.bchBalance.trimmed());
+                                      : info.solanaBalance.trimmed());
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Check balance");
     }
@@ -3603,174 +3612,81 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_nodeProfilePanel->show();
 }
 
-// Public BCH Electrum/Fulcrum servers (SSL, JSON-RPC). Tried in order with
-// fallback; this is the decentralized indexer layer SPV wallets use, so the
-// balance comes from the BCH network rather than a single explorer service.
+// Public Solana JSON-RPC endpoints. Tried in order with fallback so the UI can
+// still show a balance if one public endpoint is unavailable.
 namespace {
-struct ElectrumServer { const char *host; quint16 port; };
-const ElectrumServer kFulcrumServers[] = {
-    {"bch.imaginary.cash", 50002},
-    {"electroncash.dk", 50002},
-    {"bch.loping.net", 50002},
-    {"blackie.c3-soft.com", 50002},
-    {"fulcrum.greyh.at", 50002},
+const char *kSolanaRpcEndpoints[] = {
+    "https://api.mainnet-beta.solana.com",
+    "https://solana-rpc.publicnode.com",
 };
 
-// Decode a CashAddr into the Electrum "scripthash" (SHA-256 of the output
-// script, byte-reversed, hex-encoded). Returns empty on any parse failure.
-QByteArray cashAddrToScriptHash(const QString &address)
+bool isLikelySolanaAddress(const QString &address)
 {
-    QString s = address.trimmed().toLower();
-    const int colon = s.indexOf(':');
-    const QString data = colon >= 0 ? s.mid(colon + 1) : s;
-
-    static const QString charset =
-        QStringLiteral("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
-    QList<int> symbols;
-    for (const QChar c : data) {
-        const int idx = charset.indexOf(c);
-        if (idx < 0)
-            return QByteArray();  // not a cashaddr
-        symbols.append(idx);
-    }
-    if (symbols.size() <= 8)
-        return QByteArray();
-    symbols.resize(symbols.size() - 8);  // drop the 40-bit checksum
-
-    // 5-bit groups -> bytes (no padding kept).
-    QByteArray payload;
-    int acc = 0, bits = 0;
-    for (const int v : symbols) {
-        acc = (acc << 5) | v;
-        bits += 5;
-        while (bits >= 8) {
-            bits -= 8;
-            payload.append(char((acc >> bits) & 0xFF));
-        }
-        acc &= (1 << bits) - 1;  // keep acc bounded to the leftover bits
-    }
-    if (payload.size() != 21)
-        return QByteArray();  // version byte + 20-byte hash only
-
-    const quint8 version = quint8(payload.at(0));
-    const int type = (version >> 3) & 0x1F;  // 0 = P2PKH, 1 = P2SH
-    const QByteArray hash = payload.mid(1);
-
-    QByteArray script;
-    if (type == 0) {  // OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
-        script = QByteArray::fromHex("76a914") + hash + QByteArray::fromHex("88ac");
-    } else if (type == 1) {  // OP_HASH160 <20> OP_EQUAL
-        script = QByteArray::fromHex("a914") + hash + QByteArray::fromHex("87");
-    } else {
-        return QByteArray();
-    }
-
-    QByteArray sha = QCryptographicHash::hash(script, QCryptographicHash::Sha256);
-    std::reverse(sha.begin(), sha.end());
-    return sha.toHex();
+    static const QRegularExpression re(
+        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
+    return re.match(address.trimmed()).hasMatch();
 }
 }  // namespace
 
 void MainWindow::checkNodeBalance()
 {
-    const QString addr = m_profileBchValue.trimmed();
+    const QString addr = m_profileSolanaValue.trimmed();
     if (addr.isEmpty())
         return;
     m_profileBalanceButton->setEnabled(false);
     m_profileBalanceButton->setText("Checking\xE2\x80\xA6");
     m_profileBalance->setText(QString::fromUtf8("\xE2\x80\xA6"));
 
-    const QByteArray scriptHash = cashAddrToScriptHash(addr);
-    if (scriptHash.isEmpty()) {
+    if (!isLikelySolanaAddress(addr)) {
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Check balance");
         m_profileBalance->setText("Invalid address");
         return;
     }
-    queryBalanceFromElectrum(addr, scriptHash, 0);
+    querySolanaBalance(addr, 0);
 }
 
-void MainWindow::queryBalanceFromElectrum(const QString &addr,
-                                          const QByteArray &scriptHashHex,
-                                          int serverIndex)
+void MainWindow::querySolanaBalance(const QString &addr, int endpointIndex)
 {
-    const int count = int(sizeof(kFulcrumServers) / sizeof(kFulcrumServers[0]));
-    if (serverIndex >= count) {  // exhausted the pool
-        if (m_profileBchValue.trimmed() == addr) {
+    const int count = int(sizeof(kSolanaRpcEndpoints) / sizeof(kSolanaRpcEndpoints[0]));
+    if (endpointIndex >= count) {
+        if (m_profileSolanaValue.trimmed() == addr) {
             m_profileBalanceButton->setEnabled(true);
             m_profileBalanceButton->setText("Refresh balance");
             m_profileBalance->setText("Unavailable");
         }
         return;
     }
-    const ElectrumServer &srv = kFulcrumServers[serverIndex];
 
-    auto *sock = new QSslSocket(this);
-    // The public Fulcrum pool uses a mix of CA-signed and self-signed certs, and
-    // the balance is read-only/informational, so we don't hard-fail on cert
-    // validation — the privacy cost (sending the address) is identical to the
-    // previous explorer call.
-    sock->setPeerVerifyMode(QSslSocket::VerifyNone);
-    auto *timer = new QTimer(this);
-    timer->setSingleShot(true);
-    auto handled = std::make_shared<bool>(false);
-    auto buffer = std::make_shared<QByteArray>();
-
-    auto cleanup = [sock, timer]() {
-        timer->stop();
-        timer->deleteLater();
-        sock->abort();
-        sock->deleteLater();
+    QNetworkRequest request(QUrl(QString::fromLatin1(kSolanaRpcEndpoints[endpointIndex])));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    const QJsonObject body{
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "getBalance"},
+        {"params", QJsonArray{addr}},
     };
-    auto next = [this, addr, scriptHashHex, serverIndex, handled, cleanup]() {
-        if (*handled)
-            return;
-        *handled = true;
-        cleanup();
-        queryBalanceFromElectrum(addr, scriptHashHex, serverIndex + 1);
-    };
-    auto succeed = [this, addr, handled, cleanup](double bch) {
-        if (*handled)
-            return;
-        *handled = true;
-        cleanup();
-        if (m_profileBchValue.trimmed() != addr)
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, addr, endpointIndex]() {
+        const QByteArray raw = reply->readAll();
+        const QNetworkReply::NetworkError netError = reply->error();
+        reply->deleteLater();
+        if (m_profileSolanaValue.trimmed() != addr)
             return;  // panel moved to another node meanwhile
-        m_profileBalanceButton->setEnabled(true);
-        m_profileBalanceButton->setText("Refresh balance");
-        m_profileBalance->setText(QStringLiteral("%1 BCH").arg(bch, 0, 'f', 8));
-    };
-
-    connect(timer, &QTimer::timeout, this, [next]() { next(); });
-    connect(sock, &QSslSocket::encrypted, this, [sock, scriptHashHex]() {
-        sock->write("{\"id\":1,\"method\":\"blockchain.scripthash.get_balance\","
-                    "\"params\":[\"" + scriptHashHex + "\"]}\n");
-    });
-    connect(sock, &QSslSocket::readyRead, this, [sock, buffer, succeed, next]() {
-        buffer->append(sock->readAll());
-        const int nl = buffer->indexOf('\n');
-        if (nl < 0)
-            return;  // wait for a full line
-        const QJsonObject root =
-            QJsonDocument::fromJson(buffer->left(nl)).object();
-        if (!root.value("result").isObject()) {
-            next();
+        const QJsonObject root = QJsonDocument::fromJson(raw).object();
+        const QJsonObject result = root.value("result").toObject();
+        if (netError != QNetworkReply::NoError || !result.contains("value")) {
+            querySolanaBalance(addr, endpointIndex + 1);
             return;
         }
-        const QJsonObject result = root.value("result").toObject();
-        const qint64 confirmed =
-            result.value("confirmed").toVariant().toLongLong();
-        const qint64 unconfirmed =
-            result.value("unconfirmed").toVariant().toLongLong();
-        succeed((confirmed + unconfirmed) / 100000000.0);
+        const qint64 lamports = result.value("value").toVariant().toLongLong();
+        m_profileBalanceButton->setEnabled(true);
+        m_profileBalanceButton->setText("Refresh balance");
+        m_profileBalance->setText(
+            QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9));
     });
-    connect(sock, &QSslSocket::errorOccurred, this,
-            [next](QAbstractSocket::SocketError) { next(); });
-    connect(sock, &QSslSocket::sslErrors, this,
-            [sock](const QList<QSslError> &) { sock->ignoreSslErrors(); });
-
-    timer->start(7000);
-    sock->connectToHostEncrypted(QString::fromLatin1(srv.host), srv.port);
 }
 
 QWidget *MainWindow::buildNodesPanel()
@@ -6756,7 +6672,7 @@ void MainWindow::forkCurrentRepo()
     fork.owner = owner;
     fork.name = name;
     fork.description = src.description;
-    fork.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
+    fork.solanaAddress = savedSolanaAddress();
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
     fork.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
@@ -10834,6 +10750,13 @@ void MainWindow::setChannels(const QStringList &channels)
 
 void MainWindow::setRoster(const QList<MemberInfo> &members)
 {
+    QList<MemberInfo> visibleMembers;
+    visibleMembers.reserve(members.size());
+    for (const MemberInfo &member : members) {
+        if (member.self || member.online)
+            visibleMembers.append(member);
+    }
+
     // #33: optionally pop a desktop notification when another node comes online.
     // Capture who was online before this update (m_homeRoster still holds the
     // previous roster), and skip the very first fill so we don't alert for every
@@ -10845,7 +10768,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             previouslyOnline.insert(m.id);
     if (!firstRoster &&
         QSettings().value(kNodeConnectAlertSetting, true).toBool()) {
-        for (const MemberInfo &m : members) {
+        for (const MemberInfo &m : visibleMembers) {
             if (m.self || m.id.isEmpty() || !m.online)
                 continue;
             if (!previouslyOnline.contains(m.id))
@@ -10854,12 +10777,12 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    m_homeRoster = members;
+    m_homeRoster = visibleMembers;
     m_memberList->clear();
     QHash<QString, int> nameCounts;
-    for (const MemberInfo &member : members)
+    for (const MemberInfo &member : visibleMembers)
         ++nameCounts[member.name];
-    for (const MemberInfo &member : members) {
+    for (const MemberInfo &member : visibleMembers) {
         QString label = member.name;
         if (nameCounts.value(member.name) > 1 && !member.id.isEmpty())
             label += " [" + member.id.left(6) + "]";
@@ -11297,7 +11220,7 @@ void MainWindow::loadRepositories()
         repo.description = settings.value("description").toString();
         repo.cloneUrl = settings.value("cloneUrl").toString();
         repo.localPath = settings.value("localPath").toString();
-        repo.bchAddress = settings.value("bchAddress").toString();
+        repo.solanaAddress = settings.value("solanaAddress").toString();
         repo.mirrorPath = settings.value("mirrorPath").toString();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
         repo.actionsEnabled = settings.value("actionsEnabled", true).toBool();
@@ -11331,7 +11254,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("description", repo.description);
         settings.setValue("cloneUrl", repo.cloneUrl);
         settings.setValue("localPath", repo.localPath);
-        settings.setValue("bchAddress", repo.bchAddress);
+        settings.setValue("solanaAddress", repo.solanaAddress);
         settings.setValue("mirrorPath", repo.mirrorPath);
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
@@ -11371,7 +11294,7 @@ void MainWindow::refreshRepositoryList()
         bool inRoster = false;
         bool online = false;
         bool self = false;
-        QString bch;
+        QString solana;
         QString balance;
         QString platform;
         QStringList mirrors;
@@ -11395,10 +11318,10 @@ void MainWindow::refreshRepositoryList()
             ni.inRoster = true;
             ni.online = m.online;
             ni.self = m.self;
-            ni.bch = m.bchAddress.trimmed();
-            if (ni.self && ni.bch.isEmpty())
-                ni.bch = QSettings().value(kBchSetting).toString().trimmed();
-            ni.balance = m.bchBalance.trimmed();
+            ni.solana = m.solanaAddress.trimmed();
+            if (ni.self && ni.solana.isEmpty())
+                ni.solana = savedSolanaAddress();
+            ni.balance = m.solanaBalance.trimmed();
             ni.platform = m.platform;
             ni.mirrors = m.mirrors;
             nodes.insert(m.name, ni);
@@ -11414,8 +11337,11 @@ void MainWindow::refreshRepositoryList()
         }
     }
     for (int i = 0; i < m_repositories.size(); ++i) {
-        const QString owner = m_repositories.at(i).owner;
+        const RepositoryRecord &repo = m_repositories.at(i);
+        const QString owner = repo.owner;
         if (!nodes.contains(owner)) {
+            if (repo.previewOnly)
+                continue;
             nodes.insert(owner, NodeInfo());
             nodeOrder.append(owner);
         }
@@ -11768,7 +11694,7 @@ void MainWindow::promptAddRepository()
     repo.name = repoNameFromUrl(path);
     // Repos are namespaced under the single account name.
     repo.owner = accountOwner();
-    repo.bchAddress = QSettings().value(kBchSetting).toString().trimmed();
+    repo.solanaAddress = savedSolanaAddress();
     // Selecting a local repo publishes it to the website so it shows up online
     // and others can discover and mirror it. No public clone URL is sent.
     repo.publishToNetwork = true;
@@ -12164,7 +12090,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"name", name},
                          {"description", repo.description},
                          {"cloneUrl", repo.cloneUrl},
-                         {"bch", repo.bchAddress},
+                         {"solana", repo.solanaAddress},
                          {"channel", repositoryChannel(repo)},
                          {"hostedSince", QString::number(repo.hostedSinceMs)},
                          {"lastSync", QString::number(repo.lastSyncMs)},
@@ -12431,7 +12357,7 @@ void MainWindow::logout()
         m_adminPollTimer->stop();
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
-    m_accountBchVerified = false;
+    m_accountSolanaVerified = false;
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();

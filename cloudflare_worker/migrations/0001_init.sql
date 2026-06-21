@@ -14,8 +14,8 @@ DROP TABLE IF EXISTS repositories;
 DROP TABLE IF EXISTS issue_inbox;
 DROP TABLE IF EXISTS pull_inbox;
 
--- Accounts = node = user/organization. data = {name, pubkey, email, bch,
--- pass_salt, pass_hash, totp_secret, totp_enrolled, bch_verified, created_at}.
+-- Accounts = node = user/organization. data = {name, pubkey, email, solana,
+-- pass_salt, pass_hash, totp_secret, totp_enrolled, created_at}.
 CREATE TABLE IF NOT EXISTS accounts (
   name_bi TEXT PRIMARY KEY,   -- blind_index(name)
   data    TEXT NOT NULL       -- AES-GCM encrypted JSON

@@ -143,7 +143,7 @@ QString ForkMeshIdentity::shortPublicKey() const
 
 QJsonObject ForkMeshIdentity::profileObject(const QString &name,
                                             const QString &handle,
-                                            const QString &bchAddress,
+                                            const QString &solanaAddress,
                                             const QString &bio,
                                             const QString &website) const
 {
@@ -151,19 +151,19 @@ QJsonObject ForkMeshIdentity::profileObject(const QString &name,
             {"handle", handle.trimmed()},
             {"bio", bio.trimmed()},
             {"website", website.trimmed()},
-            {"bch", bchAddress.trimmed()},
+            {"solana", solanaAddress.trimmed()},
             {"pubkey", m_publicKey},
             {"updatedAt", QString::number(QDateTime::currentMSecsSinceEpoch())}};
 }
 
 QJsonObject ForkMeshIdentity::signedProfile(const QString &name,
                                             const QString &handle,
-                                            const QString &bchAddress,
+                                            const QString &solanaAddress,
                                             const QString &bio,
                                             const QString &website) const
 {
     const QJsonObject profile =
-        profileObject(name, handle, bchAddress, bio, website);
+        profileObject(name, handle, solanaAddress, bio, website);
     return {{"kind", "forkmesh.identity"},
             {"profile", profile},
             {"signature", signJson(profile)}};
