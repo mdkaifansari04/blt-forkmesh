@@ -1,0 +1,327 @@
+diff --git a/cloudflare_worker/public/network/index.html b/cloudflare_worker/public/network/index.html
+index f325afd..9fa5779 100644
+--- a/cloudflare_worker/public/network/index.html
++++ b/cloudflare_worker/public/network/index.html
+@@ -62,6 +62,54 @@
+         gap: 3px;
+       }
+       .online-graph-empty { color: var(--muted); padding: 24px 4px; }
++      .wallet-table {
++        display: grid;
++        gap: 0;
++        padding: 0 18px 18px;
++      }
++      .wallet-row {
++        display: grid;
++        grid-template-columns: minmax(88px, 1fr) minmax(120px, 1.2fr) minmax(86px, 0.7fr) minmax(112px, 0.8fr);
++        gap: 12px;
++        align-items: center;
++        padding: 12px 0;
++        border-top: 1px solid var(--border);
++      }
++      .wallet-row:first-child {
++        border-top: none;
++      }
++      .wallet-heading {
++        color: var(--muted-2);
++        font-size: 11px;
++        font-weight: 700;
++        text-transform: uppercase;
++      }
++      .wallet-node,
++      .wallet-balance {
++        color: var(--text);
++        font-weight: 700;
++      }
++      .wallet-address {
++        overflow: hidden;
++        text-overflow: ellipsis;
++        white-space: nowrap;
++        color: var(--muted);
++        font-family: var(--mono);
++        font-size: 12px;
++      }
++      .wallet-status {
++        justify-self: start;
++        border: 1px solid var(--border);
++        border-radius: 999px;
++        padding: 4px 8px;
++        color: var(--muted);
++        font-size: 12px;
++        font-weight: 700;
++      }
++      .wallet-status[data-eligible="true"] {
++        border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
++        color: var(--accent);
++      }
+       @media (max-width: 720px) {
+         .online-node-row,
+         .online-axis {
+@@ -71,6 +119,13 @@
+         .online-node-total {
+           text-align: left;
+         }
++        .wallet-row {
++          grid-template-columns: 1fr;
++          gap: 6px;
++        }
++        .wallet-heading {
++          display: none;
++        }
+       }
+     </style>
+   </head>
+@@ -150,6 +205,18 @@
+         </article>
+       </section>
+ 
++      <section class="panel doc-panel" aria-labelledby="wallets-title">
++        <div class="panel-header">
++          <div>
++            <h2 id="wallets-title">Node payout wallets</h2>
++            <p>Active nodes, wallet balances, and whether the node is online with a valid payout wallet.</p>
++          </div>
++        </div>
++        <div id="network-wallets" class="wallet-table" aria-live="polite">
++          <div class="online-graph-empty">Loading wallets…</div>
++        </div>
++      </section>
++
+       <section class="panel doc-panel" aria-labelledby="activity-title">
+         <div class="panel-header">
+           <div>
+diff --git a/cloudflare_worker/public/static-page.js b/cloudflare_worker/public/static-page.js
+index 481b23d..feb70bc 100644
+--- a/cloudflare_worker/public/static-page.js
++++ b/cloudflare_worker/public/static-page.js
+@@ -31,6 +31,66 @@
+     if (el) el.textContent = value;
+   }
+ 
++  function shortWallet(address) {
++    if (!address) return "No payout wallet";
++    return address.length > 16 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
++  }
++
++  function eligibilityLabel(node) {
++    if (node.payoutEligible) return "Eligible";
++    if (node.eligibilityReason === "offline") return "Offline";
++    if (node.eligibilityReason === "duplicate_wallet") return "Duplicate wallet";
++    return "No wallet";
++  }
++
++  function renderPayoutNodes(nodes) {
++    const root = document.querySelector("#network-wallets");
++    if (!root) return;
++    const list = Array.isArray(nodes) ? nodes : [];
++    if (!list.length) {
++      root.innerHTML = '<div class="online-graph-empty">No active payout wallets yet.</div>';
++      return;
++    }
++    root.innerHTML = "";
++    const headings = ["Node", "Wallet", "Balance", "Payouts"];
++    const heading = document.createElement("div");
++    heading.className = "wallet-row wallet-heading";
++    headings.forEach((text) => {
++      const cell = document.createElement("div");
++      cell.textContent = text;
++      heading.appendChild(cell);
++    });
++    root.appendChild(heading);
++    list.forEach((node) => {
++      const row = document.createElement("div");
++      row.className = "wallet-row";
++
++      const name = document.createElement("div");
++      name.className = "wallet-node";
++      name.textContent = node.name || "node";
++      row.appendChild(name);
++
++      const wallet = document.createElement("div");
++      wallet.className = "wallet-address";
++      wallet.textContent = shortWallet(node.wallet || "");
++      if (node.wallet) wallet.title = node.wallet;
++      row.appendChild(wallet);
++
++      const balance = document.createElement("div");
++      balance.className = "wallet-balance";
++      balance.textContent = node.balanceSol ? `${node.balanceSol} SOL` : "Unavailable";
++      row.appendChild(balance);
++
++      const status = document.createElement("div");
++      status.className = "wallet-status";
++      status.dataset.eligible = node.payoutEligible ? "true" : "false";
++      status.textContent = eligibilityLabel(node);
++      row.appendChild(status);
++
++      root.appendChild(row);
++    });
++  }
++
+   applyTheme();
+ 
+   const themeToggle = document.querySelector("#theme-toggle");
+@@ -57,6 +117,7 @@
+   const STATS_PATH = "/api/network/stats";
+   const STATS_INTERVAL_MS = 30000;
+   let statsTimer = null;
++  const payoutWalletsEl = document.querySelector("#network-wallets");
+ 
+   // The header pill reflects everything that is live on the network — open host
+   // tunnels plus chat clients — so it doesn't read "0 online" while a host is
+@@ -75,10 +136,12 @@
+       setText("#network-clients", "—");
+       if (reposEl) reposEl.textContent = "—";
+       if (hostsEl) hostsEl.textContent = "—";
++      renderPayoutNodes([]);
+       return;
+     }
+     try {
+-      const response = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
++      const statsPath = payoutWalletsEl ? `${STATS_PATH}?payouts=1` : STATS_PATH;
++      const response = await fetch(statsPath, { headers: { accept: "application/json" } });
+       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+       const data = await response.json();
+       const clients = Number(data.clients) || 0;
+@@ -87,6 +150,7 @@
+       setText("#network-clients", String(clients));
+       if (reposEl) reposEl.textContent = String(Number(data.repos) || 0);
+       if (hostsEl) hostsEl.textContent = String(hosts);
++      renderPayoutNodes(data.payoutNodes);
+     } catch (error) {
+       if (clientsCount) clientsCount.textContent = "Reconnecting…";
+       if (clientsDot) clientsDot.classList.remove("online");
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 9e3a0d9..70eacb8 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -299,10 +299,11 @@ async def _flagship_client_count(env):
+         return 0
+ 
+ 
+-async def network_stats(env):
++async def network_stats(env, include_payouts=False):
+     # Aggregate homepage stats: repo count (D1), live host count (presence table),
+     # and flagship-room client count (one internal request). Cached at the edge.
+-    cached = await edge_cache_match(NETWORK_STATS_CACHE_KEY)
++    cache_key = NETWORK_STATS_CACHE_KEY + ("?payouts=1" if include_payouts else "")
++    cached = await edge_cache_match(cache_key)
+     if cached is not None:
+         return cached
+ 
+@@ -321,6 +322,7 @@ async def network_stats(env):
+     hosts = int((host_row or {}).get("n", 0) or 0)
+ 
+     clients = await _flagship_client_count(env)
++    payout_nodes = await _network_payout_nodes(env) if include_payouts else None
+ 
+     # Live minimum join donation (~$1, from the on-chain price) so the signup
+     # page can show the real figure before requesting a deposit address.
+@@ -330,13 +332,62 @@ async def network_stats(env):
+         {"ok": True, "repos": repos, "hosts": hosts, "clients": clients,
+          "minLamports": min_lamports, "minSol": _amount_sol(min_lamports),
+          "minUsd": round((min_lamports / LAMPORTS_PER_SOL) * price, 2) if price else 0,
+-         "solUsd": price or 0},
++         "solUsd": price or 0,
++         **({"payoutNodes": payout_nodes} if include_payouts else {})},
+         cache_seconds=NETWORK_STATS_TTL,
+     )
+-    await edge_cache_put(NETWORK_STATS_CACHE_KEY, resp)
++    await edge_cache_put(cache_key, resp)
+     return resp
+ 
+ 
++async def _network_payout_nodes(env):
++    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
++    try:
++        await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
++    except Exception:
++        pass
++    rows = await d1_all(
++        env,
++        """SELECT a.name_bi, a.name, a.data, ap.ts AS online_ts
++             FROM accounts a
++             LEFT JOIN account_presence ap
++               ON ap.name_bi = a.name_bi AND ap.ts >= ?
++             ORDER BY COALESCE(ap.ts, 0) DESC, a.name ASC""",
++        cutoff,
++    )
++    nodes = []
++    seen_wallets = set()
++    for row in rows:
++        rec = await decrypt_row(env, row.get("data"))
++        if not rec or rec.get("status") != "active":
++            continue
++        name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
++        wallet = (rec.get("solana") or "").strip()
++        has_wallet = bool(wallet and SOLANA_RE.match(wallet))
++        online = bool(row.get("online_ts"))
++        eligible = bool(online and has_wallet and wallet not in seen_wallets)
++        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
++        if has_wallet:
++            seen_wallets.add(wallet)
++        reason = "eligible"
++        if not online:
++            reason = "offline"
++        elif not has_wallet:
++            reason = "missing_wallet"
++        elif not eligible:
++            reason = "duplicate_wallet"
++        nodes.append({
++            "name": name or _short_presence_label("node", row.get("name_bi")),
++            "wallet": wallet if has_wallet else "",
++            "balanceLamports": balance,
++            "balanceSol": _amount_sol(balance) if balance is not None else "",
++            "online": online,
++            "payoutEligible": eligible,
++            "eligibilityReason": reason,
++        })
++    return nodes
++
++
+ # --- Online-activity history (24h graph on /network/) -----------------------
+ # A per-minute cron records how many nodes are online into the current hour's
+ # bucket, so each hour's value is "node-minutes online" that hour.
+@@ -610,11 +661,8 @@ DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
+ # from signup confirmation now that signup payments go directly to treasury.
+ TREASURY_SPLIT_NUMERATOR = 1
+ TREASURY_SPLIT_DENOMINATOR = 2
+-MAX_PAYEES = 50
+-# A single legacy Solana transaction must fit in the packet limit. With one
+-# signer, treasury, system program, and transfer instructions, 20 node payees
+-# leaves room while still rewarding active nodes promptly.
+-MAX_SWEEP_PAYEES = 20
++# The reward split is over every online node with a payout wallet, not just the
++# first batch returned by the presence table.
+ SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
+ # A node counts as online for payouts if it has sent a heartbeat within this
+ # window (reuses the host-presence staleness window).
+@@ -1793,8 +1841,6 @@ async def _online_payout_addresses(env):
+             continue
+         seen.add(solana)
+         addresses.append(solana)
+-        if len(addresses) >= MAX_PAYEES:
+-            break
+     return addresses
+ 
+ 
+@@ -1826,8 +1872,7 @@ async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
+     if transferable <= 0:
+         return _set_sweep_error(rec, "balance_too_low_for_fee")
+ 
+-    payees = [p for p in (await _online_payout_addresses(env))[:MAX_SWEEP_PAYEES]
+-              if p != from_addr]
++    payees = [p for p in await _online_payout_addresses(env) if p != from_addr]
+     treasury_lamports = transferable
+     transfers = []
+     if payees:
+@@ -2558,7 +2603,8 @@ class Default(WorkerEntrypoint):
+         # per-repo handlers so a burst of visitors collapses to one computation
+         # per colo per TTL instead of a Durable Object fan-out per page view.
+         if url.path in ("/api/network/stats", "/api/network/stats/"):
+-            return await network_stats(self.env)
++            include_payouts = parse_qs(url.query).get("payouts", [""])[0] == "1"
++            return await network_stats(self.env, include_payouts=include_payouts)
+ 
+         # 24-hour online-activity series for the /network/ graph.
+         if url.path in ("/api/network/online-history", "/api/network/online-history/"):
