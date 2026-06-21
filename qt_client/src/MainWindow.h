@@ -221,6 +221,7 @@ private:
     void promptNewPull();
     void updateCurrentPullBranch();
     void mergeCurrentPull();
+    bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
@@ -667,6 +668,7 @@ private:
     QLabel *m_pullDesc = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
+    QCheckBox *m_pullPushMainCheck = nullptr;
     QPushButton *m_pullCloseButton = nullptr;
     QListWidget *m_pullFiles = nullptr;
     QTextEdit *m_pullDiff = nullptr;
