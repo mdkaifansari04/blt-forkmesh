@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 68
 title: show count of PRs in the tab and remove the wiki tab
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
