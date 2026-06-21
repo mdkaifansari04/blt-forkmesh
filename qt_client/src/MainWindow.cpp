@@ -107,6 +107,43 @@
 
 namespace {
 
+constexpr int kTableSortRole = Qt::UserRole + 10;
+
+class SortTableWidgetItem : public QTableWidgetItem
+{
+public:
+    using QTableWidgetItem::QTableWidgetItem;
+
+    bool operator<(const QTableWidgetItem &other) const override
+    {
+        const QVariant left = data(kTableSortRole);
+        const QVariant right = other.data(kTableSortRole);
+        if (left.isValid() && right.isValid()) {
+            bool leftOk = false;
+            bool rightOk = false;
+            const double leftNumber = left.toDouble(&leftOk);
+            const double rightNumber = right.toDouble(&rightOk);
+            if (leftOk && rightOk)
+                return leftNumber < rightNumber;
+            return left.toString().compare(right.toString(), Qt::CaseInsensitive) < 0;
+        }
+        return QTableWidgetItem::operator<(other);
+    }
+};
+
+QString formatByteSize(qint64 bytes)
+{
+    static const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+    double size = bytes;
+    int unit = 0;
+    while (size >= 1024.0 && unit < 4) {
+        size /= 1024.0;
+        ++unit;
+    }
+    return unit == 0 ? QStringLiteral("%1 B").arg(bytes)
+                     : QStringLiteral("%1 %2").arg(size, 0, 'f', 1).arg(units[unit]);
+}
+
 class ClickableIssueBody : public QWidget
 {
 public:
@@ -4207,14 +4244,22 @@ QWidget *MainWindow::buildIssuesSection()
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
+    m_quickAddAgentProvider = new QComboBox;
+    m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), QStringLiteral("codex"));
+    m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                     QStringLiteral("claude"));
+    m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
+    m_quickAddAgentProvider->setEnabled(true);
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
             &QCheckBox::setEnabled);
+    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddAgentProvider,
+            &QComboBox::setEnabled);
     auto *quickAddSendButton = new QPushButton("Send");
     quickAddSendButton->setObjectName("primaryButton");
     quickAddSendButton->setProperty("buttonSize", "sm");
@@ -4225,6 +4270,7 @@ QWidget *MainWindow::buildIssuesSection()
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddAssignAgent);
+    quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -4833,6 +4879,10 @@ QWidget *MainWindow::buildRepoDetailSection()
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
         if (i == 0)
             b->setChecked(true);
+        if (i == 0)
+            m_repoCodeTab = b;
+        if (i == 1)
+            m_repoCommitsTab = b;
         if (i == 2)
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
         if (i == 3)
@@ -4898,17 +4948,32 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
-    m_commitsList = new QListWidget;
-    m_commitsList->setObjectName("commitsList");
-    m_commitsList->setWordWrap(true);
-    connect(m_commitsList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
+    m_commitsTable = new QTableWidget(0, 6);
+    m_commitsTable->setObjectName("commitsList");
+    m_commitsTable->setHorizontalHeaderLabels(
+        {"Summary", "Author", "Date", "Files", "+adds", "-dels"});
+    m_commitsTable->verticalHeader()->setVisible(false);
+    m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_commitsTable->setShowGrid(false);
+    m_commitsTable->setWordWrap(false);
+    m_commitsTable->setSortingEnabled(true);
+    m_commitsTable->setToolTip("Click a column header to sort");
+    QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
+    commitHeader->setHighlightSections(false);
+    commitHeader->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int i = 1; i < 6; ++i)
+        commitHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    connect(m_commitsTable, &QTableWidget::cellClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *item = m_commitsTable->item(row, 0);
                 if (item)
                     showCommit(item->data(Qt::UserRole).toString());
             });
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
-    listLayout->addWidget(m_commitsList);
+    listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
     auto *detailPage = new QWidget;
@@ -4931,9 +4996,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitPrevButton->setToolTip("Show the previous (newer) commit");
     m_commitNextButton->setToolTip("Show the next (older) commit");
     auto goToCommitRow = [this](int row) {
-        if (!m_commitsList || row < 0 || row >= m_commitsList->count())
+        if (!m_commitsTable || row < 0 || row >= m_commitsTable->rowCount())
             return;
-        QListWidgetItem *it = m_commitsList->item(row);
+        QTableWidgetItem *it = m_commitsTable->item(row, 0);
         if (it)
             showCommit(it->data(Qt::UserRole).toString());
     };
@@ -7474,6 +7539,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     updateRepoDetailStatus();
     updateRepoWebLink();
     updateRepoRemoteInfo();
+    updateRepoCodeSize();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -7515,6 +7581,49 @@ void MainWindow::openRepoDetail(int repoIndex)
     showSection(0);
     updateBreadcrumb();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
+}
+
+void MainWindow::updateRepoCodeSize()
+{
+    if (!m_repoCodeTab)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoCodeTab->setText(QStringLiteral("Code (0 B)"));
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+        m_repoCodeTab->setText(QStringLiteral("Code (0 B)"));
+        return;
+    }
+
+    QByteArray out;
+    qint64 sizeKiB = 0;
+    if (runGitCapture(repo.mirrorPath, {"count-objects", "-v"}, &out, nullptr)) {
+        const QString text = QString::fromUtf8(out);
+        for (const QString &line : text.split(QLatin1Char('\n'))) {
+            const int colon = line.indexOf(QLatin1Char(':'));
+            if (colon < 0)
+                continue;
+            const QString key = line.left(colon).trimmed();
+            if (key == QLatin1String("size") || key == QLatin1String("size-pack"))
+                sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
+        }
+    }
+    m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(formatByteSize(sizeKiB * 1024)));
+}
+
+void MainWindow::updateRepoCommitCount()
+{
+    if (!m_repoCommitsTab)
+        return;
+    const QString dir = repoGitDir();
+    QByteArray out;
+    int count = 0;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir, {"rev-list", "--count", currentRef()}, &out, nullptr))
+        count = QString::fromUtf8(out).trimmed().toInt();
+    m_repoCommitsTab->setText(QStringLiteral("Commits (%1)").arg(count));
 }
 
 void MainWindow::updateRepoIssueCount()
@@ -7808,50 +7917,101 @@ QString MainWindow::currentRef() const
 
 void MainWindow::loadCommits()
 {
-    if (!m_commitsList)
+    if (!m_commitsTable)
         return;
-    m_commitsList->clear();
+    QSignalBlocker block(m_commitsTable);
+    m_commitsTable->setSortingEnabled(false);
+    m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
+    updateRepoCommitCount();
     const QString dir = repoGitDir();
-    if (dir.isEmpty())
+    if (dir.isEmpty()) {
+        m_commitsTable->setSortingEnabled(true);
         return;
+    }
     QByteArray out;
-    if (!runGitCapture(dir, {"log", "--format=%h%x1f%an%x1f%ar%x1f%s", "-n", "300",
-                             currentRef()},
-                       &out, nullptr))
+    if (!runGitCapture(dir,
+                       {"log", "--numstat",
+                        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s",
+                        "-n", "300", currentRef()},
+                       &out, nullptr)) {
+        m_commitsTable->setSortingEnabled(true);
         return;
-    for (const QByteArray &record : out.split('\n')) {
+    }
+    for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
-        const QStringList f = QString::fromUtf8(record).split('\x1f');
-        if (f.size() < 4)
+        const QStringList lines =
+            QString::fromUtf8(record).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        if (lines.isEmpty())
             continue;
-        auto *item = new QListWidgetItem(
-            QString::fromUtf8("%1\n%2 \xC2\xB7 %3 \xC2\xB7 %4")
-                .arg(f.at(3), f.at(1), f.at(2), f.at(0)),
-            m_commitsList);
-        item->setData(Qt::UserRole, f.at(0)); // short hash, used to open the diff
+        const QStringList f = lines.first().split(QLatin1Char('\x1f'));
+        if (f.size() < 6)
+            continue;
+        int files = 0;
+        int adds = 0;
+        int dels = 0;
+        for (int i = 1; i < lines.size(); ++i) {
+            const QStringList stats = lines.at(i).split(QLatin1Char('\t'));
+            if (stats.size() < 3)
+                continue;
+            ++files;
+            bool ok = false;
+            const int addCount = stats.at(0).toInt(&ok);
+            if (ok)
+                adds += addCount;
+            const int delCount = stats.at(1).toInt(&ok);
+            if (ok)
+                dels += delCount;
+        }
+
+        const int row = m_commitsTable->rowCount();
+        m_commitsTable->insertRow(row);
+        auto *summary = new SortTableWidgetItem(f.at(5));
+        summary->setData(Qt::UserRole, f.at(0));
+        summary->setData(kTableSortRole, f.at(5).toLower());
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.
         switch (commitStatusCode(f.at(0))) {
         case 1:
-            item->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            item->setToolTip(QStringLiteral("Checks passed \xC2\xB7 %1").arg(f.at(0)));
+            summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
+            summary->setToolTip(QStringLiteral("Checks passed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 2:
-            item->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            item->setToolTip(QStringLiteral("Checks failed \xC2\xB7 %1").arg(f.at(0)));
+            summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
+            summary->setToolTip(QStringLiteral("Checks failed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 3:
-            item->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            item->setToolTip(QStringLiteral("Checks running \xC2\xB7 %1").arg(f.at(0)));
+            summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
+            summary->setToolTip(QStringLiteral("Checks running \xC2\xB7 %1").arg(f.at(1)));
             break;
         default:
-            item->setToolTip(
-                QStringLiteral("Click to view the diff for %1").arg(f.at(0)));
+            summary->setToolTip(
+                QStringLiteral("Click to view the diff for %1").arg(f.at(1)));
             break;
         }
+        m_commitsTable->setItem(row, 0, summary);
+
+        auto *author = new SortTableWidgetItem(f.at(2));
+        author->setData(kTableSortRole, f.at(2).toLower());
+        m_commitsTable->setItem(row, 1, author);
+        auto *date = new SortTableWidgetItem(f.at(3));
+        date->setData(kTableSortRole, f.at(4).toLongLong());
+        m_commitsTable->setItem(row, 2, date);
+        auto *fileItem = new SortTableWidgetItem(QString::number(files));
+        fileItem->setData(kTableSortRole, files);
+        m_commitsTable->setItem(row, 3, fileItem);
+        auto *addsItem = new SortTableWidgetItem(QStringLiteral("+%1").arg(adds));
+        addsItem->setForeground(QColor("#2ea043"));
+        addsItem->setData(kTableSortRole, adds);
+        m_commitsTable->setItem(row, 4, addsItem);
+        auto *delsItem =
+            new SortTableWidgetItem(QString::fromUtf8("\xE2\x88\x92%1").arg(dels));
+        delsItem->setForeground(QColor("#f85149"));
+        delsItem->setData(kTableSortRole, dels);
+        m_commitsTable->setItem(row, 5, delsItem);
     }
+    m_commitsTable->setSortingEnabled(true);
 
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent).
@@ -8153,18 +8313,18 @@ void MainWindow::showCommit(const QString &hash)
     // Track this commit's position so Prev/Next can walk the list, and reflect
     // the available directions on the buttons.
     m_currentCommitRow = -1;
-    if (m_commitsList)
-        for (int i = 0; i < m_commitsList->count(); ++i)
-            if (m_commitsList->item(i)->data(Qt::UserRole).toString() == hash) {
+    if (m_commitsTable)
+        for (int i = 0; i < m_commitsTable->rowCount(); ++i)
+            if (m_commitsTable->item(i, 0)->data(Qt::UserRole).toString() == hash) {
                 m_currentCommitRow = i;
                 break;
             }
     if (m_commitPrevButton)
         m_commitPrevButton->setEnabled(m_currentCommitRow > 0);
     if (m_commitNextButton)
-        m_commitNextButton->setEnabled(m_commitsList &&
+        m_commitNextButton->setEnabled(m_commitsTable &&
                                        m_currentCommitRow >= 0 &&
-                                       m_currentCommitRow < m_commitsList->count() - 1);
+                                       m_currentCommitRow < m_commitsTable->rowCount() - 1);
 
     // --- Metadata (full hash, author, date, parents, subject, body).
     QByteArray meta;
@@ -9914,16 +10074,20 @@ void MainWindow::quickAddIssue()
     setIssueInlineNotice("Issue created.");
     // If requested, hand the freshly-created issue straight to a coding agent.
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
+        const QString provider =
+            m_quickAddAgentProvider
+                ? m_quickAddAgentProvider->currentData().toString()
+                : QStringLiteral("codex");
         const bool oldCreatePr =
             m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
         if (m_issueAgentCreatePrCheck) {
             const QSignalBlocker block(m_issueAgentCreatePrCheck);
             m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
                                                   m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(QStringLiteral("codex"));
+            assignIssueToAgent(provider);
             m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
         } else {
-            assignIssueToAgent(QStringLiteral("codex"));
+            assignIssueToAgent(provider);
         }
     }
 }
@@ -13300,6 +13464,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoDetailStatus();
     updateRepoWebLink();
     updateRepoRemoteInfo();
+    updateRepoCodeSize();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
 }
@@ -13730,7 +13895,10 @@ void MainWindow::updateActionsTabIndicator()
     if (!active) {
         if (m_actionsSpinTimer)
             m_actionsSpinTimer->stop();
-        tab->setText(QStringLiteral("Actions"));
+        const int workflows = m_actionWorkflowList
+                                  ? qMax(0, m_actionWorkflowList->count() - 1)
+                                  : 0;
+        tab->setText(QStringLiteral("Actions (%1)").arg(workflows));
         return;
     }
 
@@ -13839,6 +14007,9 @@ void MainWindow::refreshRepoActions()
     m_selectedWorkflowFilter.clear();
     refreshActionsTable();
     showLatestVisibleActionRun();
+    if (m_repoActionsTab)
+        m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
+                                      .arg(qMax(0, m_actionWorkflowList->count() - 1)));
 }
 
 void MainWindow::showRun(int runId)
