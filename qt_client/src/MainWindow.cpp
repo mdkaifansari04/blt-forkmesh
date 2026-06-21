@@ -4084,10 +4084,15 @@ QWidget *MainWindow::buildIssuesSection()
     m_quickAddCreatePr->setEnabled(false);
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
             &QCheckBox::setEnabled);
+    auto *quickAddSendButton = new QPushButton("Send");
+    quickAddSendButton->setObjectName("primaryButton");
+    quickAddSendButton->setProperty("buttonSize", "sm");
+    quickAddSendButton->setCursor(Qt::PointingHandCursor);
     auto *quickAddRow = new QHBoxLayout;
     quickAddRow->setContentsMargins(0, 0, 0, 0);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
+    quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddCreatePr);
 
@@ -4521,6 +4526,8 @@ QWidget *MainWindow::buildIssuesSection()
     });
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
     connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
+            &MainWindow::quickAddIssue);
+    connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
@@ -5106,6 +5113,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTitle->setWordWrap(true);
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
+    m_pullPushMainCheck = new QCheckBox("Push to main");
     m_pullCloseButton = new QPushButton("Close");
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton}) {
         b->setObjectName("ghostButton");
@@ -5117,11 +5125,14 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullMergeButton, "check-circle", 16);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
+    m_pullPushMainCheck->setToolTip(
+        "After merging, push the merged commit to the pull request's base branch in this repo's mirror.");
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullPushMainCheck, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
     m_pullMeta->setObjectName("statusLine");
@@ -5280,9 +5291,14 @@ void MainWindow::showPull(int number)
         m_pullMeta->clear();
         m_pullDesc->clear();
         m_pullDiff->clear();
+        if (m_pullPushMainCheck)
+            m_pullPushMainCheck->setText("Push to main");
         updatePullActionState();
         return;
     }
+    if (m_pullPushMainCheck)
+        m_pullPushMainCheck->setText(
+            "Push to " + (found->base.isEmpty() ? QStringLiteral("main") : found->base));
     m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
     m_pullMeta->setText(
         QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
@@ -5379,6 +5395,8 @@ void MainWindow::updatePullActionState()
     }
     if (m_pullMergeButton)
         m_pullMergeButton->setEnabled(writable && have && open);
+    if (m_pullPushMainCheck)
+        m_pullPushMainCheck->setEnabled(writable && have && open);
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
 }
@@ -5496,9 +5514,28 @@ void MainWindow::mergeCurrentPull()
 {
     if (m_currentPullNumber < 0)
         return;
+    PullRequest current;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number == m_currentPullNumber) {
+            current = pr;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        return;
+    const bool pushAfterMerge =
+        m_pullPushMainCheck && m_pullPushMainCheck->isChecked();
+    const QString prompt =
+        pushAfterMerge
+            ? QStringLiteral("Apply and merge pull request #%1, then push to %2?")
+                  .arg(m_currentPullNumber)
+                  .arg(current.base.isEmpty() ? QStringLiteral("main") : current.base)
+            : QStringLiteral("Apply and merge pull request #%1?")
+                  .arg(m_currentPullNumber);
     if (QMessageBox::question(this, "Merge pull request",
-                              QStringLiteral("Apply and merge pull request #%1?")
-                                  .arg(m_currentPullNumber)) != QMessageBox::Yes)
+                              prompt) != QMessageBox::Yes)
         return;
     PullStore store = pullStoreForCurrentRepo();
     QString error;
@@ -5507,7 +5544,64 @@ void MainWindow::mergeCurrentPull()
         return;
     }
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
+    if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
+        QMessageBox::warning(this, "Push merged pull request", error);
+        reloadPulls();
+        return;
+    }
     reloadPulls();
+}
+
+bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        if (error)
+            *error = QStringLiteral("No repository is selected.");
+        return false;
+    }
+    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
+    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git")) {
+        if (error)
+            *error = QStringLiteral("Pushing needs a local checkout.");
+        return false;
+    }
+    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+        if (error)
+            *error = QStringLiteral("Sync this repository first to create its mirror.");
+        return false;
+    }
+
+    const QString branch =
+        pr.base.trimmed().isEmpty() ? QStringLiteral("main") : pr.base.trimmed();
+    QString gitError;
+    if (!runGitCapture(repo.localPath,
+                       {"push", repo.mirrorPath,
+                        "HEAD:refs/heads/" + branch},
+                       nullptr, &gitError)) {
+        if (error)
+            *error = QStringLiteral("Could not push to %1: %2")
+                         .arg(branch, gitError.left(500));
+        return false;
+    }
+
+    runGitCapture(repo.mirrorPath,
+                  {"symbolic-ref", "HEAD", "refs/heads/" + branch},
+                  nullptr, nullptr);
+    repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+    saveRepositories();
+    ensurePushHook(repo);
+    refreshRepositoryList();
+    refreshOpenRepoDetail();
+    if (m_backend)
+        m_backend->notifyMirrorUpdated(repo.owner + "/" + repo.name);
+    if (repo.publishToNetwork) {
+        publishRepository(m_repoDetailIndex, false);
+        startRepoHosts();
+    }
+    logSystem(QStringLiteral("Pushed merged pull request #%1 to %2.")
+                  .arg(pr.number)
+                  .arg(branch));
+    return true;
 }
 
 void MainWindow::closeCurrentPull()
