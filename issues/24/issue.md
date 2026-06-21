@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 24
 title: make it so the issue comments are in the json file and not separate md
 status: open
-labels: []
+labels: [issues]
 milestone: 
 assignees: []
 createdAt: 1781663570844
