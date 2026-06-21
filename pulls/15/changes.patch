@@ -1,0 +1,54 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index fa0e692..a9e53d2 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -124,6 +124,7 @@ const QString kDefaultRoomName = QStringLiteral("general");
+ const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
+ const QString kRepositoriesArray = QStringLiteral("repositories/items");
+ const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
++const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+ 
+ QString savedSolanaAddress()
+ {
+@@ -1429,6 +1430,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+     refreshRepositoryList();
+     initActions();
+     initAgents();
++    const QString lastRepository =
++        QSettings().value(kLastRepositorySetting).toString();
++    if (!lastRepository.isEmpty()) {
++        const int slash = lastRepository.indexOf('/');
++        if (slash > 0) {
++            const int index =
++                repoIndexFor(lastRepository.left(slash),
++                             lastRepository.mid(slash + 1));
++            if (index >= 0) {
++                m_selectedNode = m_repositories.at(index).owner;
++                refreshRepositoryList();
++                openRepoDetail(index);
++            }
++        }
++    }
+     loadActiveServerIntoEdits();
+     updateBreadcrumb();
+     for (int i = 0; i < m_servers.size(); ++i)
+@@ -4081,7 +4097,9 @@ QWidget *MainWindow::buildIssuesSection()
+     m_quickAddCreatePr = new QCheckBox("Create PR");
+     m_quickAddCreatePr->setToolTip(
+         "When quick-add assigns an agent, create a pull request from its patch.");
+-    m_quickAddCreatePr->setEnabled(false);
++    m_quickAddAssignAgent->setChecked(true);
++    m_quickAddCreatePr->setChecked(true);
++    m_quickAddCreatePr->setEnabled(true);
+     connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
+             &QCheckBox::setEnabled);
+     auto *quickAddSendButton = new QPushButton("Send");
+@@ -7285,6 +7303,8 @@ void MainWindow::openRepoDetail(int repoIndex)
+         return;
+     m_repoDetailIndex = repoIndex;
+     const RepositoryRecord &repo = m_repositories.at(repoIndex);
++    if (!repo.previewOnly)
++        QSettings().setValue(kLastRepositorySetting, repo.owner + "/" + repo.name);
+     if (m_repoHeaderTitle)
+         m_repoHeaderTitle->setText(
+             QStringLiteral("%1 / <b>%2</b>")
