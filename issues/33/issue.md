@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 33
 title: when nodes connect show a system notification have this setting able to e turned off
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
