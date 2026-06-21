@@ -12406,12 +12406,6 @@ void MainWindow::syncRepository(int index, bool quiet)
                                                (changed ? QString()
                                                         : " (already up to date)"));
                     }
-                    if (changed && !stillPreview && m_backend) {
-                        m_backend->sendChat(
-                            repositoryChannel(repo),
-                            "Mirror synced by " + m_userName + " at " +
-                                formatRepoDate(repo.lastSyncMs));
-                    }
                     if (!stillPreview && repo.publishToNetwork &&
                         (changed || !quiet)) {
                         publishRepository(index, false);
