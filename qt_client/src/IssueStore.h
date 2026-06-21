@@ -11,7 +11,7 @@ class ForkMeshIdentity;
 // different fields (see issues/README.md). Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
-    QString type;          // open | comment | edit | status | labels | milestone | assignees | delete
+    QString type;          // open | comment | edit | status | labels | milestone | assignees | agent | delete
     QString id;
     QString author;        // signer pubkey (base64url)
     QString authorName;
@@ -25,6 +25,10 @@ struct IssueEvent {
     QStringList labels;    // labels
     QString milestone;     // milestone (empty = none)
     QStringList assignees; // assignees
+    QString agentProvider; // agent: codex|claude
+    int agentSessionId = 0; // agent
+    QString agentStatus;   // agent
+    bool agentCreatePr = false; // agent
     QString sig;
 
     QJsonObject toJson() const;
@@ -104,6 +108,8 @@ public:
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
     bool setAssignees(int number, const QStringList &assignees, QString *error = nullptr);
+    bool assignAgent(int number, const QString &provider, int sessionId,
+                     bool createPr, const QString &status, QString *error = nullptr);
     bool deleteEvent(int number, const QString &eventId, QString *error = nullptr);
     bool deleteIssue(int number, QString *error = nullptr);
 

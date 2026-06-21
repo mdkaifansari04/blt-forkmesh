@@ -133,7 +133,45 @@ const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConne
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
+const QString kCodexApiKeySetting = QStringLiteral("agents/codexApiKey");
+const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
+const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
+const QString kCodexCommandSetting = QStringLiteral("agents/codexCommand");
+const QString kClaudeCommandSetting = QStringLiteral("agents/claudeCommand");
+const QString kAgentContextSetting = QStringLiteral("agents/contextWindow");
+const QString kAgentMaxOutputSetting = QStringLiteral("agents/maxOutputTokens");
+const QString kDefaultCodexCommand =
+    QStringLiteral("codex -a never {modelArg} exec --sandbox workspace-write - < {promptFile}");
+const QString kPreviousCodexCommand =
+    QStringLiteral("codex -a never exec --sandbox workspace-write - < {promptFile}");
+const QString kOlderCodexCommand =
+    QStringLiteral("codex exec --sandbox workspace-write - < {promptFile}");
+const QString kLegacyCodexCommand =
+    QStringLiteral("codex exec --sandbox workspace-write --ask-for-approval never \"$(cat {promptFile})\"");
+const QString kDefaultClaudeCommand =
+    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 constexpr int kNetworkLogLimit = 2000;
+
+QString codexCommandSetting()
+{
+    QSettings settings;
+    QString command = settings.value(kCodexCommandSetting, kDefaultCodexCommand).toString();
+    if (command == kLegacyCodexCommand || command == kPreviousCodexCommand ||
+        command == kOlderCodexCommand) {
+        command = kDefaultCodexCommand;
+        settings.setValue(kCodexCommandSetting, command);
+    } else if (command.contains(QStringLiteral("--ask-for-approval"))) {
+        command.replace(QStringLiteral(" --ask-for-approval never"), QString());
+        command.replace(QStringLiteral(" --ask-for-approval=never"), QString());
+        command.replace(QStringLiteral("--ask-for-approval never "), QString());
+        command.replace(QStringLiteral("--ask-for-approval=never "), QString());
+        command = command.trimmed();
+        if (command.isEmpty())
+            command = kDefaultCodexCommand;
+        settings.setValue(kCodexCommandSetting, command);
+    }
+    return command;
+}
 
 // Directory holding client/CMakeLists.txt to update from: the build-time
 // checkout when it still exists, otherwise a persistent clone managed by the
@@ -1376,6 +1414,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     loadRepositories();
     refreshRepositoryList();
     initActions();
+    initAgents();
     loadActiveServerIntoEdits();
     refreshServerRail();
     for (int i = 0; i < m_servers.size(); ++i)
@@ -3887,10 +3926,10 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 7);
+    m_issueTable = new QTableWidget(0, 8);
     m_issueTable->setObjectName("issueTable");
     m_issueTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Status", "Votes", "Labels", "Milestone", "Created"});
+        {"#", "Title", "Status", "Votes", "Labels", "Milestone", "Created", "Agent"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -3910,6 +3949,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Labels
     header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Milestone
     header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Created
+    header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Agent
 
     // Quick-add: a single title field at the bottom, for filing an issue
     // without opening the full dialog.
@@ -4210,6 +4250,37 @@ QWidget *MainWindow::buildIssuesSection()
     connect(milestoneCancel, &QPushButton::clicked, this,
             &MainWindow::cancelIssueSidebarEditors);
 
+    auto *agentBox = new QWidget(meta);
+    auto *agentLayout = new QVBoxLayout(agentBox);
+    agentLayout->setContentsMargins(0, 0, 0, 0);
+    agentLayout->setSpacing(6);
+    m_issueAgentValue = new QLabel("No agent assigned", meta);
+    m_issueAgentValue->setObjectName("statusLine");
+    m_issueAgentValue->setWordWrap(true);
+    m_issueAgentValue->setTextFormat(Qt::RichText);
+    m_issueAssignCodexButton = makeEditorButton("Assign to Codex", "ghostButton");
+    m_issueAssignClaudeButton =
+        makeEditorButton("Assign to Claude Code", "ghostButton");
+    m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
+    m_issueAgentCreatePrCheck->setToolTip(
+        "If the agent produces a patch, create a ForkMesh pull request from it.");
+    m_issueAgentViewButton = makeEditorButton("View session", "primaryButton");
+    m_issueAgentViewButton->hide();
+    setOcticon(m_issueAssignCodexButton, "terminal", 15);
+    setOcticon(m_issueAssignClaudeButton, "code", 15);
+    setOcticon(m_issueAgentViewButton, "chevron-right", 15);
+    agentLayout->addWidget(m_issueAgentValue);
+    agentLayout->addWidget(m_issueAssignCodexButton);
+    agentLayout->addWidget(m_issueAssignClaudeButton);
+    agentLayout->addWidget(m_issueAgentCreatePrCheck);
+    agentLayout->addWidget(m_issueAgentViewButton, 0, Qt::AlignLeft);
+    connect(m_issueAssignCodexButton, &QPushButton::clicked, this,
+            [this] { assignIssueToAgent(QStringLiteral("codex")); });
+    connect(m_issueAssignClaudeButton, &QPushButton::clicked, this,
+            [this] { assignIssueToAgent(QStringLiteral("claude")); });
+    connect(m_issueAgentViewButton, &QPushButton::clicked, this,
+            &MainWindow::openAgentSessionFromIssue);
+
     auto *metaLayout = new QVBoxLayout(meta);
     metaLayout->setContentsMargins(22, 22, 10, 22);
     metaLayout->setSpacing(0);
@@ -4236,6 +4307,7 @@ QWidget *MainWindow::buildIssuesSection()
         metaLayout->addSpacing(14);
     };
     addMetaSection("Assignees", m_issueAssigneesStack, m_issueAssigneesButton);
+    addMetaSection("Assign to agent", agentBox);
     addMetaSection("Labels", m_issueLabelsStack, m_issueLabelsButton);
     addMetaSection("Type", makeValue("No type"), makeGear());
     addMetaSection("Fields", makeValue("Priority <span style='float:right'>Choose an option</span>"));
@@ -4243,7 +4315,7 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
     addMetaSection("Development",
-                   makeValue("<a href='#'>Create a branch</a> for this issue or link a pull request."));
+                   makeValue("Agent sessions and pull requests are linked here."));
     addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
@@ -4467,6 +4539,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     const QList<TabDef> tabs = {{"Code", "code"},
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
+                                {"Agents", "terminal"},
                                 {"Pull requests", "git-pull-request"},
                                 {"Actions", "workflow"},
                                 {"Wiki", "file"},
@@ -4502,21 +4575,24 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
     m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
-    m_repoDetailStack->addWidget(buildPullsTab());                       // 3 Pull requests
-    m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 4 Actions
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
-    m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
-    m_repoDetailStack->addWidget(buildChatSection());                    // 8 Chat
+    m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
+    m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
+    m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 6
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 7
+    m_repoDetailStack->addWidget(buildInsightsTab());                    // 8
+    m_repoDetailStack->addWidget(buildChatSection());                    // 9 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
             loadCommits();
         else if (id == 3)
-            reloadPulls();
+            reloadAgents();
         else if (id == 4)
+            reloadPulls();
+        else if (id == 5)
             refreshRepoActions();
-        else if (id == 7)
+        else if (id == 8)
             loadRepoInsights();
     });
 
@@ -5356,6 +5432,949 @@ void MainWindow::syncPullsInbox()
     });
 }
 
+// ---- Agents ---------------------------------------------------------------
+
+QString MainWindow::agentProviderName(const QString &provider) const
+{
+    if (provider == QLatin1String("claude"))
+        return QStringLiteral("Claude Code");
+    return QStringLiteral("Codex");
+}
+
+namespace {
+
+QString agentStatusText(const QString &status)
+{
+    if (status == AgentStatus::Queued) return QStringLiteral("Queued");
+    if (status == AgentStatus::Running) return QStringLiteral("Running");
+    if (status == AgentStatus::Waiting) return QStringLiteral("Waiting");
+    if (status == AgentStatus::Success) return QStringLiteral("Success");
+    if (status == AgentStatus::Failed) return QStringLiteral("Failed");
+    if (status == AgentStatus::Stopped) return QStringLiteral("Stopped");
+    if (status == AgentStatus::Cleared) return QStringLiteral("Cleared");
+    return status;
+}
+
+QColor agentStatusColor(const QString &status)
+{
+    if (status == AgentStatus::Success) return QColor("#3fb950");
+    if (status == AgentStatus::Failed) return QColor("#f85149");
+    if (status == AgentStatus::Running) return QColor("#58a6ff");
+    if (status == AgentStatus::Queued) return QColor("#d29922");
+    if (status == AgentStatus::Waiting) return QColor("#d29922");
+    if (status == AgentStatus::Stopped) return QColor("#8b949e");
+    if (status == AgentStatus::Cleared) return QColor("#8b949e");
+    return QColor("#8b949e");
+}
+
+QString openAiAuthHeader(const QString &apiKey)
+{
+    return QStringLiteral("Bearer ") + apiKey.trimmed();
+}
+
+QNetworkRequest openAiRequest(const QUrl &url, const QString &apiKey)
+{
+    QNetworkRequest request(url);
+    request.setRawHeader("Authorization", openAiAuthHeader(apiKey).toUtf8());
+    request.setRawHeader("Accept", "application/json");
+    return request;
+}
+
+QString replyHeader(QNetworkReply *reply, const char *name)
+{
+    return QString::fromUtf8(reply->rawHeader(name)).trimmed();
+}
+
+QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body)
+{
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QString message = reply->errorString();
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    const QString apiMessage =
+        doc.object().value("error").toObject().value("message").toString();
+    if (!apiMessage.isEmpty())
+        message = apiMessage;
+    if (status > 0)
+        return QStringLiteral("HTTP %1: %2").arg(status).arg(message);
+    return message;
+}
+
+qint64 jsonCount(const QJsonObject &obj, const QString &key)
+{
+    return static_cast<qint64>(obj.value(key).toDouble());
+}
+
+QString moneyString(double amount, QString currency)
+{
+    if (currency.isEmpty())
+        currency = QStringLiteral("usd");
+    return QStringLiteral("%1 %2")
+        .arg(amount, 0, 'f', amount < 1.0 ? 4 : 2)
+        .arg(currency.toUpper());
+}
+
+} // namespace
+
+QWidget *MainWindow::buildAgentsTab()
+{
+    auto *page = new QWidget;
+
+    auto *listPane = new QWidget;
+    listPane->setMinimumWidth(380);
+    auto *heading = new QLabel("Agent sessions");
+    heading->setObjectName("channelTitle");
+    auto *hint = new QLabel(
+        "Issue-assigned local Codex and Claude Code runs. Usage is estimated "
+        "from prompt and transcript size.");
+    hint->setObjectName("statusLine");
+    hint->setWordWrap(true);
+
+    m_agentTable = new QTableWidget(0, 6);
+    m_agentTable->setObjectName("issueTable");
+    m_agentTable->setHorizontalHeaderLabels(
+        {"#", "Issue", "Agent", "Status", "PR", "When"});
+    m_agentTable->verticalHeader()->setVisible(false);
+    m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_agentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_agentTable->setShowGrid(false);
+    m_agentTable->setWordWrap(false);
+    m_agentTable->setSortingEnabled(true);
+    QHeaderView *agentHeader = m_agentTable->horizontalHeader();
+    agentHeader->setHighlightSections(false);
+    agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+    for (int c = 2; c < 6; ++c)
+        agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+
+    auto *listLayout = new QVBoxLayout(listPane);
+    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setSpacing(8);
+    listLayout->addWidget(heading);
+    listLayout->addWidget(hint);
+    auto *keyTestRow = new QHBoxLayout;
+    keyTestRow->setContentsMargins(0, 0, 0, 0);
+    keyTestRow->setSpacing(8);
+    m_agentTestApiKeyButton = new QPushButton("Test OpenAI key");
+    m_agentTestApiKeyButton->setObjectName("ghostButton");
+    m_agentTestApiKeyButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentTestApiKeyButton, "key", 15);
+    connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
+            &MainWindow::testOpenAiAgentKey);
+    m_agentApiKeyStatus = new QLabel("OpenAI key not tested");
+    m_agentApiKeyStatus->setObjectName("statusLine");
+    m_agentApiKeyStatus->setWordWrap(true);
+    m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    keyTestRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
+    keyTestRow->addWidget(m_agentApiKeyStatus, 1);
+    listLayout->addLayout(keyTestRow);
+    listLayout->addWidget(m_agentTable, 1);
+
+    auto *detailPane = new QWidget;
+    m_agentTitle = new QLabel("Select a session");
+    m_agentTitle->setObjectName("channelTitle");
+    m_agentTitle->setWordWrap(true);
+    m_agentMeta = new QLabel;
+    m_agentMeta->setObjectName("statusLine");
+    m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentMeta->setWordWrap(true);
+    m_agentUsage = new QLabel;
+    m_agentUsage->setObjectName("statusLine");
+    m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentUsage->setWordWrap(true);
+
+    m_agentStopButton = new QPushButton("Stop");
+    m_agentStopButton->setObjectName("dangerButton");
+    m_agentStopButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentStopButton, "circle-slash", 16);
+    connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
+        if (m_agentRunner && m_agentRunner->busy() &&
+            m_agentRunner->currentSessionId() == m_selectedAgentSessionId)
+            m_agentRunner->stop();
+    });
+
+    m_agentDeleteButton = new QPushButton("Delete");
+    m_agentDeleteButton->setObjectName("dangerButton");
+    m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentDeleteButton, "trash", 16);
+    connect(m_agentDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteSelectedAgentSession);
+
+    auto *topRow = new QHBoxLayout;
+    topRow->setContentsMargins(0, 0, 0, 0);
+    topRow->addWidget(m_agentTitle, 1);
+    topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
+    topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
+
+    m_agentLog = new QPlainTextEdit;
+    m_agentLog->setReadOnly(true);
+    m_agentLog->setObjectName("actionLog");
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    m_agentLog->setFont(mono);
+    m_agentLog->setMaximumBlockCount(30000);
+
+    m_agentPromptEdit = new QPlainTextEdit;
+    m_agentPromptEdit->setPlaceholderText("Send an additional prompt to the running agent");
+    m_agentPromptEdit->setMaximumHeight(92);
+    m_agentSendPromptButton = new QPushButton("Send prompt");
+    m_agentSendPromptButton->setObjectName("primaryButton");
+    m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentSendPromptButton, "comment", 16);
+    connect(m_agentSendPromptButton, &QPushButton::clicked, this, [this] {
+        if (!m_agentPromptEdit || m_selectedAgentSessionId < 0)
+            return;
+        const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
+        if (prompt.isEmpty())
+            return;
+        if (m_agentRunner && m_agentRunner->busy() &&
+            m_agentRunner->currentSessionId() == m_selectedAgentSessionId) {
+            m_agentRunner->steer(prompt);
+        } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+            m_agentStore->appendLog(
+                *session,
+                QStringLiteral("\n==> User prompt saved while session was not running\n%1")
+                    .arg(prompt));
+            showAgentSession(session->id);
+        }
+        m_agentPromptEdit->clear();
+    });
+
+    auto *promptRow = new QHBoxLayout;
+    promptRow->setContentsMargins(0, 0, 0, 0);
+    promptRow->setSpacing(8);
+    promptRow->addWidget(m_agentPromptEdit, 1);
+    promptRow->addWidget(m_agentSendPromptButton, 0, Qt::AlignBottom);
+
+    auto *detailLayout = new QVBoxLayout(detailPane);
+    detailLayout->setContentsMargins(12, 18, 22, 18);
+    detailLayout->setSpacing(8);
+    detailLayout->addLayout(topRow);
+    detailLayout->addWidget(m_agentMeta);
+    detailLayout->addWidget(m_agentUsage);
+    detailLayout->addWidget(m_agentLog, 1);
+    detailLayout->addLayout(promptRow);
+
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(listPane);
+    splitter->addWidget(detailPane);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({430, 680});
+
+    auto *layout = new QHBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(splitter);
+
+    connect(m_agentTable, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QModelIndexList rows = m_agentTable->selectionModel()->selectedRows();
+        if (rows.isEmpty())
+            return;
+        QTableWidgetItem *first = m_agentTable->item(rows.first().row(), 0);
+        if (first)
+            showAgentSession(first->data(Qt::UserRole).toInt());
+    });
+    return page;
+}
+
+void MainWindow::testOpenAiAgentKey()
+{
+    const QString apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
+    if (apiKey.isEmpty()) {
+        if (m_agentApiKeyStatus)
+            m_agentApiKeyStatus->setText("No OpenAI API key saved in Settings.");
+        return;
+    }
+    if (!m_networkAccess) {
+        if (m_agentApiKeyStatus)
+            m_agentApiKeyStatus->setText("Network client is not ready.");
+        return;
+    }
+
+    if (m_agentTestApiKeyButton)
+        m_agentTestApiKeyButton->setEnabled(false);
+    if (m_agentApiKeyStatus)
+        m_agentApiKeyStatus->setText("Testing OpenAI key...");
+
+    struct KeyTestState {
+        bool modelsOk = false;
+        bool usageOk = false;
+        bool costsOk = false;
+        int modelCount = 0;
+        qint64 requests = 0;
+        qint64 inputTokens = 0;
+        qint64 cachedTokens = 0;
+        qint64 outputTokens = 0;
+        double costs = 0.0;
+        QString currency;
+        QString requestId;
+        QString organization;
+        QString modelsError;
+        QString usageError;
+        QString costsError;
+    };
+    auto state = std::make_shared<KeyTestState>();
+    const qint64 end = QDateTime::currentDateTimeUtc().toSecsSinceEpoch();
+    const qint64 start = end - 24 * 60 * 60;
+
+    auto finish = [this, state] {
+        if (m_agentTestApiKeyButton)
+            m_agentTestApiKeyButton->setEnabled(true);
+        if (!m_agentApiKeyStatus)
+            return;
+
+        if (!state->modelsOk) {
+            m_agentApiKeyStatus->setText(
+                QStringLiteral("OpenAI key rejected. %1").arg(state->modelsError));
+            return;
+        }
+
+        QStringList lines;
+        lines << QStringLiteral("OpenAI key works. %1 models visible.")
+                     .arg(state->modelCount);
+        if (!state->organization.isEmpty())
+            lines << QStringLiteral("Organization: %1").arg(state->organization);
+        if (!state->requestId.isEmpty())
+            lines << QStringLiteral("Request ID: %1").arg(state->requestId);
+        if (state->usageOk) {
+            lines << QStringLiteral(
+                         "Last 24h usage: %1 requests, %2 input tokens (%3 cached), %4 output tokens.")
+                         .arg(state->requests)
+                         .arg(state->inputTokens)
+                         .arg(state->cachedTokens)
+                         .arg(state->outputTokens);
+        } else {
+            lines << QStringLiteral("Usage stats unavailable: %1")
+                         .arg(state->usageError);
+        }
+        if (state->costsOk) {
+            lines << QStringLiteral("Last 24h cost: %1")
+                         .arg(moneyString(state->costs, state->currency));
+        } else {
+            lines << QStringLiteral("Cost stats unavailable: %1")
+                         .arg(state->costsError);
+        }
+        if (!state->usageOk || !state->costsOk)
+            lines << QStringLiteral(
+                "Organization usage/cost endpoints may require an Admin API key.");
+        m_agentApiKeyStatus->setText(lines.join(QStringLiteral("<br>")));
+    };
+
+    auto requestCosts = [this, apiKey, start, end, state, finish] {
+        QUrl url(QStringLiteral("https://api.openai.com/v1/organization/costs"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("start_time"), QString::number(start));
+        query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
+        query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+        url.setQuery(query);
+        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, apiKey));
+        connect(reply, &QNetworkReply::finished, this, [reply, state, finish] {
+            const QByteArray body = reply->readAll();
+            if (reply->error() == QNetworkReply::NoError) {
+                const QJsonArray buckets =
+                    QJsonDocument::fromJson(body).object().value("data").toArray();
+                for (const QJsonValue &bucketValue : buckets) {
+                    const QJsonArray results =
+                        bucketValue.toObject().value("results").toArray();
+                    for (const QJsonValue &resultValue : results) {
+                        const QJsonObject amount =
+                            resultValue.toObject().value("amount").toObject();
+                        state->costs += amount.value("value").toDouble();
+                        if (state->currency.isEmpty())
+                            state->currency = amount.value("currency").toString();
+                    }
+                }
+                state->costsOk = true;
+            } else {
+                state->costsError = apiErrorSummary(reply, body);
+            }
+            reply->deleteLater();
+            finish();
+        });
+    };
+
+    auto requestUsage = [this, apiKey, start, end, state, requestCosts] {
+        QUrl url(QStringLiteral(
+            "https://api.openai.com/v1/organization/usage/completions"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("start_time"), QString::number(start));
+        query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
+        query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+        url.setQuery(query);
+        QNetworkReply *reply = m_networkAccess->get(openAiRequest(url, apiKey));
+        connect(reply, &QNetworkReply::finished, this,
+                [reply, state, requestCosts] {
+                    const QByteArray body = reply->readAll();
+                    if (reply->error() == QNetworkReply::NoError) {
+                        const QJsonArray buckets =
+                            QJsonDocument::fromJson(body)
+                                .object()
+                                .value("data")
+                                .toArray();
+                        for (const QJsonValue &bucketValue : buckets) {
+                            const QJsonArray results =
+                                bucketValue.toObject().value("results").toArray();
+                            for (const QJsonValue &resultValue : results) {
+                                const QJsonObject result = resultValue.toObject();
+                                state->requests +=
+                                    jsonCount(result, "num_model_requests");
+                                state->inputTokens +=
+                                    jsonCount(result, "input_tokens");
+                                state->cachedTokens +=
+                                    jsonCount(result, "input_cached_tokens");
+                                state->outputTokens +=
+                                    jsonCount(result, "output_tokens");
+                            }
+                        }
+                        state->usageOk = true;
+                    } else {
+                        state->usageError = apiErrorSummary(reply, body);
+                    }
+                    reply->deleteLater();
+                    requestCosts();
+                });
+    };
+
+    QNetworkReply *reply =
+        m_networkAccess->get(openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/models")), apiKey));
+    connect(reply, &QNetworkReply::finished, this,
+            [reply, state, requestUsage, finish] {
+                const QByteArray body = reply->readAll();
+                if (reply->error() == QNetworkReply::NoError) {
+                    state->modelsOk = true;
+                    state->requestId = replyHeader(reply, "x-request-id");
+                    state->organization =
+                        replyHeader(reply, "openai-organization");
+                    state->modelCount = QJsonDocument::fromJson(body)
+                                            .object()
+                                            .value("data")
+                                            .toArray()
+                                            .size();
+                } else {
+                    state->modelsError = apiErrorSummary(reply, body);
+                }
+                reply->deleteLater();
+                if (state->modelsOk)
+                    requestUsage();
+                else
+                    finish();
+            });
+}
+
+void MainWindow::initAgents()
+{
+    const QString root =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/agents");
+    m_agentStore = new AgentStore(root);
+    m_agentRunner = new AgentRunner(m_agentStore, this);
+    connect(m_agentRunner, &AgentRunner::logLine, this, &MainWindow::onAgentLog);
+    connect(m_agentRunner, &AgentRunner::statusChanged, this,
+            &MainWindow::onAgentStatusChanged);
+    connect(m_agentRunner, &AgentRunner::finished, this,
+            &MainWindow::onAgentFinished);
+
+    m_agentSessions = m_agentStore->loadAllSessions();
+    for (AgentSession &session : m_agentSessions) {
+        if (session.status == AgentStatus::Running) {
+            session.status = AgentStatus::Stopped;
+            session.lastError = QStringLiteral("Interrupted by app shutdown.");
+            session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_agentStore->saveSession(session);
+        } else if (session.status == AgentStatus::Queued) {
+            m_agentQueue.append(session.id);
+        }
+    }
+    m_agentSessions = m_agentStore->loadAllSessions();
+    processAgentQueue();
+}
+
+void MainWindow::reloadAgents()
+{
+    if (!m_agentStore)
+        return;
+    m_agentSessions = m_agentStore->loadAllSessions();
+    refreshAgentTable();
+    if (m_selectedAgentSessionId > 0)
+        showAgentSession(m_selectedAgentSessionId);
+}
+
+void MainWindow::refreshAgentTable()
+{
+    if (!m_agentTable)
+        return;
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+
+    const int keep = m_selectedAgentSessionId;
+    QSignalBlocker block(m_agentTable);
+    m_agentTable->setSortingEnabled(false);
+    m_agentTable->setRowCount(0);
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.owner != owner || session.name != name)
+            continue;
+        const int row = m_agentTable->rowCount();
+        m_agentTable->insertRow(row);
+
+        auto *idItem = new QTableWidgetItem;
+        idItem->setData(Qt::DisplayRole, session.id);
+        idItem->setData(Qt::UserRole, session.id);
+        m_agentTable->setItem(row, 0, idItem);
+        m_agentTable->setItem(row, 1,
+                              new QTableWidgetItem(
+                                  QStringLiteral("#%1 %2")
+                                      .arg(session.issueNumber)
+                                      .arg(session.issueTitle)));
+        m_agentTable->setItem(row, 2,
+                              new QTableWidgetItem(agentProviderName(session.provider)));
+        auto *status = new QTableWidgetItem(agentStatusText(session.status));
+        status->setForeground(agentStatusColor(session.status));
+        m_agentTable->setItem(row, 3, status);
+        m_agentTable->setItem(row, 4,
+                              new QTableWidgetItem(
+                                  session.prNumber > 0
+                                      ? QStringLiteral("#%1").arg(session.prNumber)
+                                      : (session.createPr ? QStringLiteral("Requested")
+                                                          : QStringLiteral("-"))));
+        m_agentTable->setItem(
+            row, 5,
+            new QTableWidgetItem(
+                QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
+                    .toString(QStringLiteral("MMM d  hh:mm"))));
+    }
+    m_agentTable->setSortingEnabled(true);
+    block.unblock();
+
+    int selRow = -1;
+    for (int row = 0; row < m_agentTable->rowCount(); ++row) {
+        if (m_agentTable->item(row, 0)->data(Qt::UserRole).toInt() == keep) {
+            selRow = row;
+            break;
+        }
+    }
+    if (selRow < 0 && m_agentTable->rowCount() > 0)
+        selRow = 0;
+    if (selRow >= 0)
+        m_agentTable->selectRow(selRow);
+    else
+        showAgentSession(-1);
+}
+
+AgentSession *MainWindow::findAgentSession(int sessionId)
+{
+    for (AgentSession &session : m_agentSessions)
+        if (session.id == sessionId)
+            return &session;
+    return nullptr;
+}
+
+const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) const
+{
+    if (issueNumber <= 0)
+        return nullptr;
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size())
+        return nullptr;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    for (const Issue &issue : m_currentIssues) {
+        if (issue.number != issueNumber)
+            continue;
+        for (auto it = issue.events.crbegin(); it != issue.events.crend(); ++it) {
+            if (it->type != QLatin1String("agent"))
+                continue;
+            if (it->agentSessionId <= 0 || it->agentStatus == AgentStatus::Cleared)
+                return nullptr;
+            for (const AgentSession &session : m_agentSessions) {
+                if (session.id == it->agentSessionId && session.owner == repo.owner &&
+                    session.name == repo.name && session.issueNumber == issueNumber)
+                    return &session;
+            }
+            return nullptr;
+        }
+        break;
+    }
+    for (const AgentSession &session : m_agentSessions) {
+        if (session.owner == repo.owner && session.name == repo.name &&
+            session.issueNumber == issueNumber)
+            return &session;
+    }
+    return nullptr;
+}
+
+void MainWindow::showAgentSession(int sessionId)
+{
+    m_selectedAgentSessionId = sessionId;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session) {
+        if (m_agentTitle)
+            m_agentTitle->setText("Select a session");
+        if (m_agentMeta)
+            m_agentMeta->clear();
+        if (m_agentUsage)
+            m_agentUsage->clear();
+        if (m_agentLog)
+            m_agentLog->clear();
+        updateAgentActionState();
+        return;
+    }
+
+    if (m_agentTitle)
+        m_agentTitle->setText(QStringLiteral("%1 on issue #%2")
+                                  .arg(agentProviderName(session->provider))
+                                  .arg(session->issueNumber));
+    if (m_agentMeta) {
+        QString meta = QStringLiteral("%1/%2 · %3 · %4")
+                           .arg(session->owner, session->name,
+                                agentStatusText(session->status),
+                                session->branchName);
+        if (session->prNumber > 0)
+            meta += QStringLiteral(" · PR #%1").arg(session->prNumber);
+        else if (session->createPr)
+            meta += QStringLiteral(" · PR requested");
+        if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
+            meta += QStringLiteral(" · %1s")
+                        .arg((session->finishedAtMs - session->startedAtMs) / 1000);
+        m_agentMeta->setText(meta);
+    }
+    if (m_agentUsage) {
+        const int window = session->contextWindow > 0 ? session->contextWindow : 32000;
+        const int pct = window > 0 ? qMin(100, session->contextTokens * 100 / window) : 0;
+        m_agentUsage->setText(
+            QStringLiteral("Usage estimate: %1 tokens (%2 prompt, %3 transcript) · context %4/%5 (%6%) · credits ~%7")
+                .arg(session->totalTokens)
+                .arg(session->promptTokens)
+                .arg(session->completionTokens)
+                .arg(session->contextTokens)
+                .arg(window)
+                .arg(pct)
+                .arg(session->estimatedCredits));
+    }
+    if (m_agentLog) {
+        m_agentLog->setPlainText(m_agentStore ? m_agentStore->readLog(*session)
+                                              : QString());
+        m_agentLog->moveCursor(QTextCursor::End);
+    }
+    updateAgentActionState();
+}
+
+AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) const
+{
+    AgentRunner::Config config;
+    config.contextWindow =
+        qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
+    config.maxOutputTokens =
+        qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
+    if (provider == QLatin1String("claude")) {
+        config.command =
+            QSettings().value(kClaudeCommandSetting, kDefaultClaudeCommand).toString();
+        config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
+        config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    } else {
+        config.command = codexCommandSetting();
+        config.apiKeyName = QStringLiteral("CODEX_API_KEY");
+        config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
+        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
+        if (!config.apiKey.isEmpty()) {
+            config.preferApiKeyAuth = true;
+            config.isolatedHome =
+                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+                QStringLiteral("/agents/codex-api-home");
+        }
+    }
+    return config;
+}
+
+void MainWindow::assignIssueToAgent(const QString &provider)
+{
+    if (!m_agentStore || m_currentIssueNumber < 0)
+        return;
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size())
+        return;
+    IssueStore issueStore = issueStoreForCurrentRepo();
+    if (!issueStore.canWrite()) {
+        setIssueInlineNotice("Only the host can assign coding agents.", true);
+        return;
+    }
+    const Issue *issue = nullptr;
+    for (const Issue &candidate : std::as_const(m_currentIssues))
+        if (candidate.number == m_currentIssueNumber)
+            issue = &candidate;
+    if (!issue)
+        return;
+
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    AgentSession session;
+    session.owner = repo.owner;
+    session.name = repo.name;
+    session.issueNumber = issue->number;
+    session.issueTitle = issue->title;
+    session.provider = provider;
+    session.createPr = m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+    session.contextWindow =
+        qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
+    session = m_agentStore->createSession(session);
+    session.branchName = QStringLiteral("agent/issue-%1-%2-%3")
+                             .arg(session.issueNumber)
+                             .arg(provider)
+                             .arg(session.id);
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue->number));
+
+    QString error;
+    if (!issueStore.assignAgent(issue->number, provider, session.id, session.createPr,
+                                AgentStatus::Queued, &error)) {
+        session.status = AgentStatus::Failed;
+        session.lastError = error.isEmpty() ? QStringLiteral("Could not write issue event.")
+                                            : error;
+        m_agentStore->saveSession(session);
+        setIssueInlineNotice(session.lastError, true);
+        reloadAgents();
+        return;
+    }
+
+    m_agentQueue.append(session.id);
+    reloadAgents();
+    reloadIssues();
+    setIssueInlineNotice(
+        QStringLiteral("Assigned %1 session #%2.")
+            .arg(agentProviderName(provider))
+            .arg(session.id));
+    switchToAgentsTab(session.id);
+    processAgentQueue();
+}
+
+void MainWindow::deleteSelectedAgentSession()
+{
+    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+        return;
+    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (!session)
+        return;
+
+    const AgentSession snapshot = *session;
+    if (m_agentRunner && m_agentRunner->busy() &&
+        m_agentRunner->currentSessionId() == snapshot.id) {
+        m_agentRunner->stop();
+        if (m_agentRunner->busy()) {
+            flashMessage("Stopping agent session. Delete it again once it exits.");
+            return;
+        }
+    }
+    m_agentQueue.removeAll(snapshot.id);
+
+    const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
+    if (repoIndex >= 0) {
+        const RepositoryRecord repo = m_repositories.at(repoIndex);
+        IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                              m_userName);
+        if (!issueStore.canWrite()) {
+            flashMessage("Only the host can delete an agent session from the issue.",
+                         true);
+            return;
+        }
+        QString error;
+        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+                                    AgentStatus::Cleared, &error)) {
+            flashMessage(error.isEmpty()
+                             ? QStringLiteral("Could not clear the issue agent.")
+                             : error,
+                         true);
+            return;
+        }
+    }
+
+    if (!m_agentStore->deleteSession(snapshot)) {
+        flashMessage("Could not delete the agent session.", true);
+        return;
+    }
+
+    m_selectedAgentSessionId = -1;
+    reloadAgents();
+    reloadIssues();
+    refreshIssueList();
+    updateIssueActionState();
+    flashMessage("Agent session deleted.");
+}
+
+void MainWindow::openAgentSessionFromIssue()
+{
+    if (const AgentSession *session = latestAgentSessionForIssue(m_currentIssueNumber))
+        switchToAgentsTab(session->id);
+}
+
+void MainWindow::switchToAgentsTab(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return;
+    const int repoIndex = repoIndexFor(session->owner, session->name);
+    if (repoIndex >= 0 && repoIndex != m_repoDetailIndex)
+        openRepoDetail(repoIndex);
+    if (m_repoDetailTabs && m_repoDetailTabs->button(3))
+        m_repoDetailTabs->button(3)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(3);
+    reloadAgents();
+    showAgentSession(sessionId);
+}
+
+void MainWindow::processAgentQueue()
+{
+    if (!m_agentRunner || m_agentRunner->busy() || !m_agentStore)
+        return;
+    while (!m_agentQueue.isEmpty()) {
+        const int sessionId = m_agentQueue.takeFirst();
+        AgentSession *session = findAgentSession(sessionId);
+        if (!session || session->status != AgentStatus::Queued)
+            continue;
+        const int repoIndex = repoIndexFor(session->owner, session->name);
+        if (repoIndex < 0) {
+            session->status = AgentStatus::Failed;
+            session->lastError = QStringLiteral("Repository not found.");
+            m_agentStore->saveSession(*session);
+            continue;
+        }
+        const RepositoryRecord repo = m_repositories.at(repoIndex);
+        if (repo.localPath.isEmpty()) {
+            session->status = AgentStatus::Failed;
+            session->lastError = QStringLiteral("No local checkout is configured.");
+            m_agentStore->saveSession(*session);
+            continue;
+        }
+        Issue issue;
+        const QList<Issue> issues =
+            IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
+                .loadAll();
+        bool found = false;
+        for (const Issue &candidate : issues)
+            if (candidate.number == session->issueNumber) {
+                issue = candidate;
+                found = true;
+                break;
+            }
+        if (!found) {
+            session->status = AgentStatus::Failed;
+            session->lastError = QStringLiteral("Issue not found.");
+            m_agentStore->saveSession(*session);
+            continue;
+        }
+        const AgentSession snapshot = *session;
+        m_agentRunner->start(snapshot, issue, repo.localPath,
+                             agentConfigForProvider(session->provider));
+        return;
+    }
+    reloadAgents();
+}
+
+void MainWindow::onAgentLog(int sessionId, const QString &text)
+{
+    if (sessionId != m_selectedAgentSessionId || !m_agentLog)
+        return;
+    m_agentLog->moveCursor(QTextCursor::End);
+    m_agentLog->insertPlainText(text);
+    if (!text.endsWith(QLatin1Char('\n')))
+        m_agentLog->insertPlainText(QStringLiteral("\n"));
+    m_agentLog->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
+{
+    reloadAgents();
+    if (sessionId == m_selectedAgentSessionId)
+        showAgentSession(sessionId);
+    refreshIssueList();
+}
+
+void MainWindow::onAgentFinished(int sessionId, bool ok)
+{
+    reloadAgents();
+    AgentSession *session = findAgentSession(sessionId);
+    if (ok && session && session->createPr && m_agentStore) {
+        const QString patch = m_agentStore->readPatch(*session);
+        if (!patch.trimmed().isEmpty()) {
+            const int repoIndex = repoIndexFor(session->owner, session->name);
+            if (repoIndex >= 0) {
+                const RepositoryRecord repo = m_repositories.at(repoIndex);
+                PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                                m_userName);
+                QString error;
+                const int pr = store.createPull(
+                    QStringLiteral("Agent: issue #%1 %2")
+                        .arg(session->issueNumber)
+                        .arg(session->issueTitle),
+                    QStringLiteral("Created from %1 session #%2 for issue #%3.")
+                        .arg(agentProviderName(session->provider))
+                        .arg(session->id)
+                        .arg(session->issueNumber),
+                    session->baseRef, session->branchName, patch, &error);
+                if (pr > 0) {
+                    session->prNumber = pr;
+                    m_agentStore->saveSession(*session);
+                    m_agentStore->appendLog(
+                        *session,
+                        QStringLiteral("==> Created pull request #%1.").arg(pr));
+                    if (repoIndex == m_repoDetailIndex)
+                        reloadPulls();
+                } else {
+                    m_agentStore->appendLog(
+                        *session,
+                        QStringLiteral("!! Could not create pull request: %1")
+                            .arg(error));
+                }
+            }
+        }
+    }
+    reloadAgents();
+    if (sessionId == m_selectedAgentSessionId)
+        showAgentSession(sessionId);
+    refreshIssueList();
+    processAgentQueue();
+}
+
+void MainWindow::updateAgentActionState()
+{
+    const bool selected = m_selectedAgentSessionId > 0;
+    const bool running = selected && m_agentRunner && m_agentRunner->busy() &&
+                         m_agentRunner->currentSessionId() == m_selectedAgentSessionId;
+    if (m_agentStopButton)
+        m_agentStopButton->setEnabled(running);
+    if (m_agentDeleteButton)
+        m_agentDeleteButton->setEnabled(selected);
+    if (m_agentSendPromptButton)
+        m_agentSendPromptButton->setEnabled(selected);
+    if (m_agentPromptEdit)
+        m_agentPromptEdit->setEnabled(selected);
+}
+
+void MainWindow::updateIssueAgentUi(const Issue &issue)
+{
+    const AgentSession *session =
+        issue.number > 0 ? latestAgentSessionForIssue(issue.number) : nullptr;
+    if (m_issueAgentValue) {
+        if (session) {
+            m_issueAgentValue->setText(
+                QStringLiteral("%1 session #%2<br>%3 · ~%4 credits")
+                    .arg(agentProviderName(session->provider))
+                    .arg(session->id)
+                    .arg(agentStatusText(session->status))
+                    .arg(session->estimatedCredits));
+        } else {
+            m_issueAgentValue->setText("No agent assigned");
+        }
+    }
+    if (m_issueAgentViewButton)
+        m_issueAgentViewButton->setVisible(session);
+}
+
 QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Two modes: a GitHub-style overview, and an explorer+editor view shown only
@@ -5899,6 +6918,7 @@ void MainWindow::openRepoDetail(int repoIndex)
             m_issuesRepoCombo->setCurrentIndex(combo);
     }
     reloadIssues();
+    reloadAgents();
     updateRepoIssueCount();
 
     // Default to the Code tab; reset the editor tabs/tree for the new repo.
@@ -7392,6 +8412,23 @@ void MainWindow::refreshIssueList()
                 : QString());
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 6, created);
+        if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
+            auto *button = new QPushButton("View");
+            button->setObjectName("ghostButton");
+            button->setProperty("buttonSize", "sm");
+            button->setCursor(Qt::PointingHandCursor);
+            button->setToolTip(agentProviderName(session->provider) +
+                               QStringLiteral(" session #%1").arg(session->id));
+            const int sessionId = session->id;
+            connect(button, &QPushButton::clicked, this,
+                    [this, sessionId] { switchToAgentsTab(sessionId); });
+            m_issueTable->setCellWidget(row, 7, button);
+            auto *agentItem = new QTableWidgetItem(agentProviderName(session->provider));
+            agentItem->setData(Qt::UserRole, session->id);
+            m_issueTable->setItem(row, 7, agentItem);
+        } else {
+            m_issueTable->setItem(row, 7, new QTableWidgetItem(QString()));
+        }
     }
     m_issueTable->setSortingEnabled(true);
 
@@ -7447,6 +8484,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueLabelsValue->setText("No labels");
         if (m_issueMilestoneValue)
             m_issueMilestoneValue->setText("No milestone");
+        updateIssueAgentUi(Issue());
         cancelIssueSidebarEditors();
         m_issueThreadLayout->addStretch();
         return;
@@ -7490,6 +8528,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         issue.milestone.isEmpty()
             ? QStringLiteral("No milestone")
             : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+    updateIssueAgentUi(issue);
     if (m_issueAssigneesEdit)
         m_issueAssigneesEdit->setText(issue.assignees.join(", "));
     if (m_issueLabelsEdit)
@@ -7763,6 +8802,21 @@ void MainWindow::renderIssueThread(const Issue &issue)
                         ev.ts, who);
         else if (ev.type == "assignees")
             addActivity("set assignees: " + ev.assignees.join(", "), ev.ts, who);
+        else if (ev.type == "agent") {
+            QString text;
+            if (ev.agentSessionId <= 0 || ev.agentStatus == AgentStatus::Cleared) {
+                text = QStringLiteral("cleared the agent assignment");
+            } else {
+                text = QStringLiteral("assigned %1 session #%2")
+                           .arg(agentProviderName(ev.agentProvider))
+                           .arg(ev.agentSessionId);
+                if (ev.agentCreatePr)
+                    text += QStringLiteral(" with PR creation requested");
+                if (!ev.agentStatus.isEmpty())
+                    text += QStringLiteral(" (%1)").arg(agentStatusText(ev.agentStatus));
+            }
+            addActivity(text, ev.ts, who);
+        }
     }
     m_issueThreadLayout->addStretch();
 }
@@ -7911,10 +8965,16 @@ void MainWindow::updateIssueActionState()
     // Owner-only structural edits.
     for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
                            m_issueMilestoneButton, m_issueAssigneesButton,
-                           m_issueDeleteButton, m_issueAttachButton}) {
+                           m_issueDeleteButton, m_issueAttachButton,
+                           m_issueAssignCodexButton, m_issueAssignClaudeButton}) {
         if (b)
             b->setEnabled(writable && haveIssue);
     }
+    if (m_issueAgentCreatePrCheck)
+        m_issueAgentCreatePrCheck->setEnabled(writable && haveIssue);
+    if (m_issueAgentViewButton)
+        m_issueAgentViewButton->setEnabled(haveIssue &&
+                                           latestAgentSessionForIssue(m_currentIssueNumber));
     // Comments work for everyone with an issue selected: owners write locally,
     // others submit a signed comment to the relay inbox.
     if (m_issueCommentButton)
@@ -9000,6 +10060,85 @@ QWidget *MainWindow::buildSettingsSection()
         applyTheme();
     });
 
+    auto *agentsLabel = new QLabel("AGENTS");
+    agentsLabel->setObjectName("sectionLabel");
+    auto *agentsHint = new QLabel(
+        "Stored locally. Command templates run in a temporary worktree with "
+        "{promptFile}, {modelArg}, {contextWindow}, and {maxOutputTokens} available.");
+    agentsHint->setObjectName("statusLine");
+    agentsHint->setWordWrap(true);
+
+    m_codexApiKeyEdit = new QLineEdit;
+    m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
+    m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
+    m_codexApiKeyEdit->setText(QSettings().value(kCodexApiKeySetting).toString().trimmed());
+    connect(m_codexApiKeyEdit, &QLineEdit::editingFinished, this, [this] {
+        const QString key = m_codexApiKeyEdit->text().trimmed();
+        m_codexApiKeyEdit->setText(key);
+        QSettings().setValue(kCodexApiKeySetting, key);
+    });
+
+    m_codexModelEdit = new QLineEdit;
+    m_codexModelEdit->setPlaceholderText("Optional, e.g. gpt-5.1-codex");
+    m_codexModelEdit->setText(QSettings().value(kCodexModelSetting).toString().trimmed());
+    connect(m_codexModelEdit, &QLineEdit::editingFinished, this, [this] {
+        const QString model = m_codexModelEdit->text().trimmed();
+        m_codexModelEdit->setText(model);
+        QSettings().setValue(kCodexModelSetting, model);
+    });
+
+    m_claudeApiKeyEdit = new QLineEdit;
+    m_claudeApiKeyEdit->setEchoMode(QLineEdit::Password);
+    m_claudeApiKeyEdit->setPlaceholderText("ANTHROPIC_API_KEY");
+    m_claudeApiKeyEdit->setText(QSettings().value(kClaudeApiKeySetting).toString().trimmed());
+    connect(m_claudeApiKeyEdit, &QLineEdit::editingFinished, this, [this] {
+        const QString key = m_claudeApiKeyEdit->text().trimmed();
+        m_claudeApiKeyEdit->setText(key);
+        QSettings().setValue(kClaudeApiKeySetting, key);
+    });
+
+    m_codexCommandEdit = new QLineEdit;
+    m_codexCommandEdit->setText(codexCommandSetting());
+    connect(m_codexCommandEdit, &QLineEdit::editingFinished, this, [this] {
+        QSettings().setValue(kCodexCommandSetting, m_codexCommandEdit->text());
+    });
+
+    m_claudeCommandEdit = new QLineEdit;
+    m_claudeCommandEdit->setText(
+        QSettings().value(kClaudeCommandSetting, kDefaultClaudeCommand).toString());
+    connect(m_claudeCommandEdit, &QLineEdit::editingFinished, this, [this] {
+        QSettings().setValue(kClaudeCommandSetting, m_claudeCommandEdit->text());
+    });
+
+    m_agentContextEdit = new QLineEdit;
+    m_agentContextEdit->setPlaceholderText("32000");
+    m_agentContextEdit->setText(
+        QSettings().value(kAgentContextSetting, 32000).toString());
+    connect(m_agentContextEdit, &QLineEdit::editingFinished, this, [this] {
+        QSettings().setValue(kAgentContextSetting,
+                             qMax(1000, m_agentContextEdit->text().toInt()));
+    });
+
+    m_agentMaxOutputEdit = new QLineEdit;
+    m_agentMaxOutputEdit->setPlaceholderText("2000");
+    m_agentMaxOutputEdit->setText(
+        QSettings().value(kAgentMaxOutputSetting, 2000).toString());
+    connect(m_agentMaxOutputEdit, &QLineEdit::editingFinished, this, [this] {
+        QSettings().setValue(kAgentMaxOutputSetting,
+                             qMax(256, m_agentMaxOutputEdit->text().toInt()));
+    });
+
+    auto *agentForm = new QFormLayout;
+    agentForm->setLabelAlignment(Qt::AlignLeft);
+    agentForm->setSpacing(8);
+    agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
+    agentForm->addRow("Codex model", m_codexModelEdit);
+    agentForm->addRow("Claude API key", m_claudeApiKeyEdit);
+    agentForm->addRow("Codex command", m_codexCommandEdit);
+    agentForm->addRow("Claude command", m_claudeCommandEdit);
+    agentForm->addRow("Context window", m_agentContextEdit);
+    agentForm->addRow("Max output", m_agentMaxOutputEdit);
+
     // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
     // as the local "remote" a fork pushes to (see issue: fork from the client).
     auto *storageLabel = new QLabel("MIRROR STORAGE");
@@ -9115,6 +10254,10 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    layout->addSpacing(6);
+    layout->addWidget(agentsLabel);
+    layout->addWidget(agentsHint);
+    layout->addLayout(agentForm);
     layout->addSpacing(6);
     layout->addWidget(varsLabel);
     layout->addWidget(varsHint);
@@ -11255,6 +12398,7 @@ void MainWindow::refreshOpenRepoDetail()
     // view so a freshly pushed commit shows without reopening the repo.
     loadBranchesAndTags();
     loadCommits();
+    reloadAgents();
     loadAboutSidebar();
     if (m_insightsSummary)
         loadRepoInsights();
@@ -11410,10 +12554,10 @@ void MainWindow::openActionRunFromNotification(int runId)
     if (index < 0)
         return;
     openRepoDetail(index);
-    if (m_repoDetailTabs && m_repoDetailTabs->button(4))
-        m_repoDetailTabs->button(4)->setChecked(true);
+    if (m_repoDetailTabs && m_repoDetailTabs->button(5))
+        m_repoDetailTabs->button(5)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(4);
+        m_repoDetailStack->setCurrentIndex(5);
     refreshRepoActions();
     if (m_actionsTable) {
         for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
@@ -11635,7 +12779,7 @@ void MainWindow::refreshCommitStatusGlyphs()
 
 void MainWindow::updateActionsTabIndicator()
 {
-    QAbstractButton *tab = m_repoDetailTabs ? m_repoDetailTabs->button(4) : nullptr;
+    QAbstractButton *tab = m_repoDetailTabs ? m_repoDetailTabs->button(5) : nullptr;
     if (!tab)
         return;
 
@@ -11663,7 +12807,7 @@ void MainWindow::updateActionsTabIndicator()
     if (!m_actionsSpinTimer) {
         m_actionsSpinTimer = new QTimer(this);
         connect(m_actionsSpinTimer, &QTimer::timeout, this, [this] {
-            QAbstractButton *t = m_repoDetailTabs ? m_repoDetailTabs->button(4) : nullptr;
+            QAbstractButton *t = m_repoDetailTabs ? m_repoDetailTabs->button(5) : nullptr;
             if (!t)
                 return;
             static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",

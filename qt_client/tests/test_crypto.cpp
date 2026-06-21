@@ -174,12 +174,28 @@ int main(int argc, char *argv[])
 
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
         check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
+        check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
+              "assignAgent succeeds");
+        check(repo.assignAgent(n, QString(), 0, false, "cleared", &err),
+              "assignAgent clears the issue agent");
         loaded = repo.loadAll();
         bool sawComment = false;
+        bool sawAgentAssign = false;
+        bool sawAgentClear = false;
         for (const IssueEvent &e : loaded.first().events)
             if (e.type == "comment" && e.body == "a comment")
                 sawComment = true;
+            else if (e.type == "agent" && e.agentProvider == "codex" &&
+                     e.agentSessionId == 42 && e.agentCreatePr &&
+                     e.agentStatus == "queued")
+                sawAgentAssign = true;
+            else if (e.type == "agent" && e.agentProvider.isEmpty() &&
+                     e.agentSessionId == 0 && !e.agentCreatePr &&
+                     e.agentStatus == "cleared")
+                sawAgentClear = true;
         check(sawComment, "comment body round-trips from NNNN-comment.md");
+        check(sawAgentAssign, "agent assignment event round-trips");
+        check(sawAgentClear, "agent clear event round-trips");
         check(loaded.first().status == "closed", "status reflects close event");
 
         check(repo.deleteIssue(n, &err), "deleteIssue succeeds");
