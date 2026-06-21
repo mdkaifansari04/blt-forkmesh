@@ -9484,10 +9484,20 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     setIssueInlineNotice("Issue created.");
-    // If requested, hand the freshly-created issue straight to a coding agent
-    // (default provider: OpenAI Codex).
-    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked())
-        assignIssueToAgent(QStringLiteral("codex"));
+    // If requested, hand the freshly-created issue straight to a coding agent.
+    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
+        const bool oldCreatePr =
+            m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+        if (m_issueAgentCreatePrCheck) {
+            const QSignalBlocker block(m_issueAgentCreatePrCheck);
+            m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
+                                                  m_quickAddCreatePr->isChecked());
+            assignIssueToAgent(QStringLiteral("codex"));
+            m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
+        } else {
+            assignIssueToAgent(QStringLiteral("codex"));
+        }
+    }
 }
 
 void MainWindow::copyIssueToClipboard()
