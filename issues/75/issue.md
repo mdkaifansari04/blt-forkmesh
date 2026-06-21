@@ -2,8 +2,6 @@
 schema: forkmesh-issue-v1
 number: 75
 title: {
-  "error": "solana_rpc_unavailable"
-} we got this error, please fix it, also if the rpc is unavailable then don't let the user signup
 status: open
 labels: []
 milestone: 
