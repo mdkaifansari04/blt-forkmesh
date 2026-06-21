@@ -26,9 +26,9 @@ run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_SOLANA_ADDRESS = ""
-# TREASURY_SOLANA_ADDRESS (receives join donations directly with per-account
-# payment references) is NOT here — it lives in .env.production and is pushed as
-# a Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
+# TREASURY_SOLANA_ADDRESS (receives automated sweeps from per-account join
+# deposit wallets) is NOT here — it lives in .env.production and is pushed as a
+# Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
 # deploy. Falls back to NODE_SOLANA_ADDRESS when unset.
 # Admins are set in the database, not here: the accounts table has an is_admin
 # column. Grant one with: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
