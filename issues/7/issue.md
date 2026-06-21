@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 7
 title: @mention alerts
-status: open
+status: closed
 labels: [enhancement]
 milestone: 
 assignees: []
