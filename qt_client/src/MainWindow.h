@@ -84,6 +84,9 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // Temporary, browse-only cache for a repo hosted by another node. Preview
+    // repos are not saved, advertised, published, hosted, or wired for actions.
+    bool previewOnly = false;
     qint64 hostedSinceMs = 0;
     qint64 lastSyncMs = 0;
     qint64 publishedAtMs = 0;
@@ -417,12 +420,15 @@ private:
     void saveRepositories() const;
     void refreshRepositoryList();
     void promptAddRepository();
+    void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
+    void mirrorPreviewRepository(int index);
     void syncSelectedRepository();
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
     void quickRebuildRestart();
     void changeMirrorLocation();
+    void changePreviewCacheLocation();
     void publishSelectedRepository();
     void publishRepository(int index, bool showDialogOnError = true);
     void updateRepoRemoteInfo();
@@ -436,6 +442,9 @@ private:
     QString repositorySource(const RepositoryRecord &repo) const;
     QString repositoryChannel(const RepositoryRecord &repo) const;
     QString repositoryMirrorRoot() const;
+    QString repositoryPreviewRoot() const;
+    QString repositoryPreviewPath(const QString &owner, const QString &name) const;
+    QString repositoryNetworkCloneUrl(const QString &owner, const QString &name) const;
     QString repositoryWebUrl(const RepositoryRecord &repo) const;
     void updateRepoWebLink();
     QUrl catalogApiUrl() const;
@@ -525,6 +534,7 @@ private:
     QPushButton *m_rebuildButton = nullptr;
     QLabel *m_rebuildStatus = nullptr;
     QLineEdit *m_mirrorRootEdit = nullptr;
+    QLineEdit *m_previewCacheRootEdit = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;

@@ -123,6 +123,7 @@ const QString kDefaultRoomName = QStringLiteral("general");
 const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
+const QString kPreviewCacheRootSetting = QStringLiteral("repositories/previewCacheRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 // Show a desktop alert when a push lands on one of this node's mirrors.
@@ -2167,9 +2168,16 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
 {
     if (owner.isEmpty() || name.isEmpty() || cloneUrl.isEmpty())
         return;
-    for (const RepositoryRecord &r : std::as_const(m_repositories))
-        if (r.owner == owner && r.name == name)
-            return; // already mirroring this repo
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &r = m_repositories.at(i);
+        if (r.owner != owner || r.name != name)
+            continue;
+        if (r.previewOnly) {
+            mirrorPreviewRepository(i);
+            return;
+        }
+        return; // already mirroring this repo
+    }
     RepositoryRecord repo;
     repo.owner = owner;
     repo.name = name;
@@ -3842,8 +3850,8 @@ QWidget *MainWindow::buildReposPanel()
                 const int index = item->data(Qt::UserRole).toInt();
                 if (index >= 0 && index < m_repositories.size())
                     openRepoDetail(index); // files + issues for this repo
-                else if (index == -2) // advertised mirror: "mirror it too"
-                    mirrorAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
+                else if (index == -2) // advertised mirror: temporary preview
+                    previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
             });
     connect(addRepoButton, &QPushButton::clicked, this,
             &MainWindow::promptAddRepository);
@@ -4453,7 +4461,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_starButton, "star", 16);
     m_mirrorButton->setToolTip("Sync this repository's mirror now");
     connect(m_mirrorButton, &QPushButton::clicked, this, [this] {
-        if (m_repoDetailIndex >= 0)
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+            return;
+        if (m_repositories.at(m_repoDetailIndex).previewOnly)
+            mirrorPreviewRepository(m_repoDetailIndex);
+        else
             syncRepository(m_repoDetailIndex);
     });
     m_forkButton->setToolTip("Fork this repository into your own node");
@@ -6719,7 +6731,7 @@ void MainWindow::forkCurrentRepo()
     if (owner.isEmpty() || name.isEmpty())
         return;
     for (const RepositoryRecord &r : std::as_const(m_repositories))
-        if (r.owner == owner && r.name == name) {
+        if (!r.previewOnly && r.owner == owner && r.name == name) {
             QMessageBox::information(
                 this, "Fork repository",
                 QStringLiteral("You already have %1/%2.").arg(owner, name));
@@ -6901,9 +6913,17 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadBranchesAndTags();
     if (m_forkButton)
         m_forkButton->setText(QStringLiteral("Fork %1").arg(m_repoInfo.forks));
-    if (m_mirrorButton)
-        m_mirrorButton->setText(
-            QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
+    if (m_mirrorButton) {
+        if (repo.previewOnly) {
+            m_mirrorButton->setText(QStringLiteral("Mirror it"));
+            m_mirrorButton->setToolTip(
+                "Clone this preview into your local mirrors and host it");
+        } else {
+            m_mirrorButton->setText(
+                QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
+            m_mirrorButton->setToolTip("Sync this repository's mirror now");
+        }
+    }
     if (m_starButton)
         m_starButton->setText(QStringLiteral("Star %1").arg(m_repoInfo.stars));
     updateRepoDetailStatus();
@@ -7685,6 +7705,9 @@ void MainWindow::loadRepoInsights()
     QString sourceKind = QStringLiteral("unavailable");
     if (!repo.localPath.isEmpty() && QDir(repo.localPath).exists())
         sourceKind = QStringLiteral("local worktree");
+    else if (repo.previewOnly && !repo.mirrorPath.isEmpty() &&
+             QDir(repo.mirrorPath).exists())
+        sourceKind = QStringLiteral("preview cache");
     else if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
         sourceKind = QStringLiteral("bare mirror");
 
@@ -9930,6 +9953,8 @@ QString MainWindow::selfNodeStats() const
     int mirrored = 0;
     int online = 0;
     for (const RepositoryRecord &repo : m_repositories) {
+        if (repo.previewOnly)
+            continue;
         if (repo.lastSyncMs > 0 ||
             (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()))
             ++mirrored;
@@ -9940,9 +9965,14 @@ QString MainWindow::selfNodeStats() const
         m_connectedAtMs > 0 ? QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs : 0;
     const qint64 totalMs = m_totalConnectionMs + sessionMs;
     const QString key = m_profileIdentity.shortPublicKey();
+    const int permanentRepoCount =
+        int(std::count_if(m_repositories.cbegin(), m_repositories.cend(),
+                          [](const RepositoryRecord &repo) {
+                              return !repo.previewOnly;
+                          }));
     return QStringLiteral(
                "%1 repos \xC2\xB7 %2 mirrored \xC2\xB7 %3 online \xC2\xB7 %4 chats")
-               .arg(m_repositories.size())
+               .arg(permanentRepoCount)
                .arg(mirrored)
                .arg(online)
                .arg(m_channels.size()) +
@@ -10158,6 +10188,23 @@ QWidget *MainWindow::buildSettingsSection()
     mirrorRow->addWidget(m_mirrorRootEdit, 1);
     mirrorRow->addWidget(mirrorChangeButton);
 
+    auto *previewCacheLabel = new QLabel("PREVIEW CACHE");
+    previewCacheLabel->setObjectName("sectionLabel");
+    m_previewCacheRootEdit = new QLineEdit(repositoryPreviewRoot());
+    m_previewCacheRootEdit->setReadOnly(true);
+    m_previewCacheRootEdit->setToolTip(
+        "Folder where temporary browse-only mirrors are stored before you "
+        "choose to mirror or fork a repository.");
+    auto *previewCacheChangeButton = new QPushButton("Change\xE2\x80\xA6");
+    previewCacheChangeButton->setObjectName("ghostButton");
+    previewCacheChangeButton->setCursor(Qt::PointingHandCursor);
+    connect(previewCacheChangeButton, &QPushButton::clicked, this,
+            &MainWindow::changePreviewCacheLocation);
+    auto *previewCacheRow = new QHBoxLayout;
+    previewCacheRow->setContentsMargins(0, 0, 0, 0);
+    previewCacheRow->addWidget(m_previewCacheRootEdit, 1);
+    previewCacheRow->addWidget(previewCacheChangeButton);
+
     // Variables / secrets shared by all action workflows on this node. Values
     // are injected into each run's environment (e.g. CLOUDFLARE_API_TOKEN) and
     // redacted from run logs.
@@ -10243,6 +10290,9 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(storageLabel);
     layout->addLayout(mirrorRow);
+    layout->addSpacing(6);
+    layout->addWidget(previewCacheLabel);
+    layout->addLayout(previewCacheRow);
     layout->addSpacing(6);
     layout->addWidget(startupLabel);
     layout->addWidget(m_autostartCheck);
@@ -11157,6 +11207,35 @@ QString MainWindow::repositoryMirrorRoot() const
            "/mirrors";
 }
 
+QString MainWindow::repositoryPreviewRoot() const
+{
+    const QString configured =
+        QSettings().value(kPreviewCacheRootSetting).toString().trimmed();
+    if (!configured.isEmpty())
+        return configured;
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/repo-preview-cache";
+}
+
+QString MainWindow::repositoryPreviewPath(const QString &owner,
+                                          const QString &name) const
+{
+    return repositoryPreviewRoot() + "/" +
+           repoSegment(owner, QStringLiteral("owner")) + "-" +
+           repoSegment(name, QStringLiteral("repository")) + ".git";
+}
+
+QString MainWindow::repositoryNetworkCloneUrl(const QString &owner,
+                                              const QString &name) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/" + repoSegment(owner, QStringLiteral("owner")) + "/" +
+                repoSegment(name, QStringLiteral("repository")));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url.toString();
+}
+
 void MainWindow::changeMirrorLocation()
 {
     const QString chosen = QFileDialog::getExistingDirectory(
@@ -11174,6 +11253,23 @@ void MainWindow::changeMirrorLocation()
         "New mirrors will be stored in:\n" + chosen +
             "\n\nExisting mirrors stay where they are. A local fork will push "
             "into its repository's mirror here.");
+}
+
+void MainWindow::changePreviewCacheLocation()
+{
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, "Choose where to cache repository previews",
+        repositoryPreviewRoot());
+    if (chosen.isEmpty())
+        return;
+    QSettings().setValue(kPreviewCacheRootSetting, chosen);
+    if (m_previewCacheRootEdit)
+        m_previewCacheRootEdit->setText(chosen);
+    logSystem("Preview cache folder set to " + chosen + ".");
+    QMessageBox::information(
+        this, "Preview cache",
+        "Temporary repository previews will be stored in:\n" + chosen +
+            "\n\nExisting preview caches stay where they are.");
 }
 
 QString MainWindow::repositoryChannel(const RepositoryRecord &repo) const
@@ -11218,10 +11314,18 @@ void MainWindow::loadRepositories()
 void MainWindow::saveRepositories() const
 {
     QSettings settings;
-    settings.beginWriteArray(kRepositoriesArray);
+    const int permanentCount =
+        int(std::count_if(m_repositories.cbegin(), m_repositories.cend(),
+                          [](const RepositoryRecord &repo) {
+                              return !repo.previewOnly;
+                          }));
+    settings.beginWriteArray(kRepositoriesArray, permanentCount);
+    int saved = 0;
     for (int i = 0; i < m_repositories.size(); ++i) {
-        settings.setArrayIndex(i);
         const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.previewOnly)
+            continue;
+        settings.setArrayIndex(saved++);
         settings.setValue("owner", repo.owner);
         settings.setValue("name", repo.name);
         settings.setValue("description", repo.description);
@@ -11317,11 +11421,13 @@ void MainWindow::refreshRepositoryList()
         }
     }
 
-    // Our own repos by "owner/name", so advertised mirrors we already have are
-    // not offered again.
-    QSet<QString> ourRepoKeys;
-    for (const RepositoryRecord &repo : std::as_const(m_repositories))
-        ourRepoKeys.insert(repo.owner + "/" + repo.name);
+    // Repos already shown locally by "owner/name", so advertised mirrors are
+    // not duplicated.
+    QSet<QString> shownLocalRepoKeys;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        const QString key = repo.owner + "/" + repo.name;
+        shownLocalRepoKeys.insert(key);
+    }
     QSet<QString> shownAdvertised; // dedupe a repo advertised by several nodes
 
     // --- Nodes column: one row per node. The OS badge (Linux/Windows/mac) both
@@ -11371,31 +11477,40 @@ void MainWindow::refreshRepositoryList()
         const RepositoryRecord &repo = m_repositories.at(i);
         const bool online = repo.publishedAtMs > 0;
         QString label = repo.name;
+        if (repo.previewOnly)
+            label += "  \xC2\xB7 preview";
         if (m_syncingRepos.contains(i))
-            label += "  \xC2\xB7 syncing";
+            label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
         auto *item = new QListWidgetItem(label);
         item->setData(Qt::UserRole, i);
         // A repo glyph: green when published+online on the web, grey otherwise.
         item->setIcon(themedOcticon(
-            "repo", repo.publishToNetwork && online ? QColor("#2ea043")
-                                                    : QColor("#6e7681"),
+            repo.previewOnly ? QStringLiteral("cloud") : QStringLiteral("repo"),
+            repo.previewOnly ? QColor("#58a6ff")
+                             : (repo.publishToNetwork && online ? QColor("#2ea043")
+                                                                : QColor("#6e7681")),
             14));
-        item->setToolTip("Open " + repo.owner + "/" + repo.name);
+        item->setToolTip(repo.previewOnly
+                             ? "Open temporary preview of " + repo.owner + "/" + repo.name
+                             : "Open " + repo.owner + "/" + repo.name);
         m_repoList->addItem(item);
         if (i == selectedRepo)
             itemToSelect = item;
     }
     for (const QString &ownerName : selInfo.mirrors) {
-        if (ourRepoKeys.contains(ownerName) || shownAdvertised.contains(ownerName))
+        if (shownLocalRepoKeys.contains(ownerName) ||
+            shownAdvertised.contains(ownerName))
             continue;
         shownAdvertised.insert(ownerName);
         auto *item = new QListWidgetItem(
             QString::fromUtf8("\xE2\x86\x93 ") + ownerName +
-            QString::fromUtf8("   \xC2\xB7 mirror it too"));
+            QString::fromUtf8("   \xC2\xB7 browse"));
         item->setData(Qt::UserRole, -2); // advertised mirror marker
         item->setData(Qt::UserRole + 1, ownerName);
         item->setForeground(QColor("#58a6ff"));
-        item->setToolTip("Click to mirror this repository into your own mirror");
+        item->setIcon(themedOcticon("cloud", QColor("#58a6ff"), 14));
+        item->setToolTip(
+            "Open a temporary preview from this node before mirroring or forking");
         m_repoList->addItem(item);
     }
     if (itemToSelect)
@@ -11409,7 +11524,8 @@ void MainWindow::refreshRepositoryList()
     if (m_backend) {
         QStringList ours;
         for (const RepositoryRecord &repo : std::as_const(m_repositories))
-            ours << repo.owner + "/" + repo.name;
+            if (!repo.previewOnly)
+                ours << repo.owner + "/" + repo.name;
         m_backend->setMirroredRepos(ours);
     }
 }
@@ -11421,21 +11537,26 @@ void MainWindow::mirrorAdvertisedRepo(const QString &ownerName)
         return;
     const QString owner = ownerName.left(slash);
     const QString name = ownerName.mid(slash + 1);
-    for (const RepositoryRecord &r : std::as_const(m_repositories))
-        if (r.owner == owner && r.name == name) {
-            QMessageBox::information(this, "Mirror",
-                                     "You already mirror this repository.");
-            return;
+    int previewIndex = -1;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &r = m_repositories.at(i);
+        if (r.owner != owner || r.name != name)
+            continue;
+        if (r.previewOnly) {
+            previewIndex = i;
+            continue;
         }
-    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        QMessageBox::information(this, "Mirror",
+                                 "You already mirror this repository.");
         return;
-    const QUrl serverUrl(m_servers.at(m_activeServer).url);
-    const QString host = serverHost(m_servers.at(m_activeServer).url);
-    if (host.isEmpty())
+    }
+    if (previewIndex >= 0) {
+        mirrorPreviewRepository(previewIndex);
         return;
-    const QString scheme =
-        serverUrl.scheme() == "ws" ? QStringLiteral("http") : QStringLiteral("https");
-    const QString cloneUrl = scheme + "://" + host + "/" + owner + "/" + name;
+    }
+    const QString cloneUrl = repositoryNetworkCloneUrl(owner, name);
+    if (cloneUrl.isEmpty())
+        return;
 
     if (QMessageBox::question(
             this, "Mirror it too",
@@ -11460,6 +11581,166 @@ void MainWindow::mirrorAdvertisedRepo(const QString &ownerName)
     refreshRepositoryList();
     logSystem("Mirroring " + ownerName + " from " + cloneUrl);
     syncRepository(m_repositories.size() - 1); // clone from the network mirror
+}
+
+void MainWindow::previewAdvertisedRepo(const QString &ownerName)
+{
+    const int slash = ownerName.indexOf('/');
+    if (slash <= 0)
+        return;
+    const QString owner = ownerName.left(slash);
+    const QString name = ownerName.mid(slash + 1);
+
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.owner == owner && repo.name == name) {
+            openRepoDetail(i);
+            if (repo.previewOnly && !m_syncingRepos.contains(i) &&
+                !QDir(repo.mirrorPath).exists())
+                syncRepository(i);
+            return;
+        }
+    }
+
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.cloneUrl = repositoryNetworkCloneUrl(owner, name);
+    repo.previewOnly = true;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryPreviewPath(owner, name);
+    m_repositories.append(repo);
+    const int index = m_repositories.size() - 1;
+    refreshRepositoryList();
+    logSystem("Preview: caching " + ownerName + " from " + repo.cloneUrl);
+    openRepoDetail(index);
+    syncRepository(index);
+}
+
+void MainWindow::mirrorPreviewRepository(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    const RepositoryRecord preview = m_repositories.at(index);
+    if (!preview.previewOnly)
+        return;
+
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        if (i == index)
+            continue;
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (!repo.previewOnly && repo.owner == preview.owner &&
+            repo.name == preview.name) {
+            QMessageBox::information(
+                this, "Mirror repository",
+                QStringLiteral("You already mirror %1/%2.")
+                    .arg(preview.owner, preview.name));
+            return;
+        }
+    }
+
+    const QString permanentPath = repositoryMirrorRoot() + "/" +
+                                  repoSegment(preview.owner, QStringLiteral("owner")) +
+                                  "-" +
+                                  repoSegment(preview.name,
+                                              QStringLiteral("repository")) +
+                                  ".git";
+    const QString source =
+        (!preview.mirrorPath.isEmpty() && QDir(preview.mirrorPath).exists())
+            ? preview.mirrorPath
+            : preview.cloneUrl;
+    if (source.isEmpty()) {
+        setRepoDetailNotice("Preview is not cached yet; try again after it loads.",
+                            true);
+        return;
+    }
+
+    if (!QDir().mkpath(QFileInfo(permanentPath).absolutePath())) {
+        QMessageBox::warning(this, "Mirror repository",
+                             "Could not create " +
+                                 QFileInfo(permanentPath).absolutePath());
+        return;
+    }
+
+    if (QDir(permanentPath).exists()) {
+        RepositoryRecord &repo = m_repositories[index];
+        repo.previewOnly = false;
+        repo.publishToNetwork = true;
+        repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+        repo.mirrorPath = permanentPath;
+        if (repo.lastSyncMs <= 0)
+            repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+        saveRepositories();
+        ensurePushHook(repo);
+        if (m_backend)
+            m_backend->addChannel(repositoryChannel(repo));
+        publishRepository(index, false);
+        startRepoHosts();
+        refreshRepositoryList();
+        openRepoDetail(index);
+        setRepoDetailNotice("Mirroring " + repo.owner + "/" + repo.name + ".");
+        return;
+    }
+
+    m_syncingRepos.insert(index);
+    refreshRepositoryList();
+    setRepoDetailNotice("Creating permanent mirror...");
+    logSystem(QStringLiteral("Mirror: promoting preview %1/%2 from %3 to %4.")
+                  .arg(preview.owner, preview.name, source, permanentPath));
+
+    auto *process = new QProcess(this);
+    connect(process, &QProcess::finished, this,
+            [this, process, index, permanentPath](int exitCode,
+                                                  QProcess::ExitStatus status) {
+                const QString errors =
+                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                process->deleteLater();
+                m_syncingRepos.remove(index);
+                if (index < 0 || index >= m_repositories.size()) {
+                    refreshRepositoryList();
+                    return;
+                }
+                RepositoryRecord &repo = m_repositories[index];
+                if (status == QProcess::NormalExit && exitCode == 0) {
+                    repo.previewOnly = false;
+                    repo.publishToNetwork = true;
+                    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+                    repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+                    repo.mirrorPath = permanentPath;
+                    saveRepositories();
+                    ensurePushHook(repo);
+                    if (m_backend)
+                        m_backend->addChannel(repositoryChannel(repo));
+                    publishRepository(index, false);
+                    startRepoHosts();
+                    refreshRepositoryList();
+                    openRepoDetail(index);
+                    logSystem("Mirror: added " + repo.owner + "/" + repo.name +
+                              " from preview cache.");
+                    setRepoDetailNotice("Mirroring " + repo.owner + "/" +
+                                        repo.name + ".");
+                } else {
+                    refreshRepositoryList();
+                    logSystem("Mirror: could not promote preview: " +
+                              errors.right(300));
+                    setRepoDetailNotice(
+                        "Could not create mirror" +
+                            (errors.isEmpty() ? QString() :
+                                                ": " + errors.right(160)),
+                        true);
+                }
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, index](QProcess::ProcessError) {
+                process->deleteLater();
+                m_syncingRepos.remove(index);
+                refreshRepositoryList();
+                setRepoDetailNotice("Could not run git. Install Git and try again.",
+                                    true);
+            });
+    process->start(QStringLiteral("git"),
+                   {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
+                    permanentPath});
 }
 
 void MainWindow::promptAddRepository()
@@ -11535,7 +11816,12 @@ void MainWindow::updateRepoWebLink()
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.publishedAtMs > 0) {
+    if (repo.previewOnly) {
+        const QString url = repositoryWebUrl(repo);
+        m_repoWebLink->setText(
+            "<b>Preview</b> \xC2\xB7 cached locally from the active host. "
+            "<a style='color:#58a6ff' href=\"" + url + "\">Open web view</a>");
+    } else if (repo.publishedAtMs > 0) {
         const QString url = repositoryWebUrl(repo);
         m_repoWebLink->setText(
             "<b>Online</b> \xC2\xB7 browsable at "
@@ -11559,6 +11845,26 @@ void MainWindow::updateRepoDetailStatus()
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     const QString repoKey = repo.owner + "/" + repo.name;
     const QPair<int, int> stats = m_repoStats.value(repoKey);
+    if (repo.previewOnly) {
+        const bool cached =
+            !repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists();
+        QStringList bits;
+        bits << (cached ? QStringLiteral("<b>Preview cached</b>")
+                        : QStringLiteral("<b>Preview cache pending</b>"));
+        bits << QStringLiteral("<b>Temporary</b>");
+        bits << QStringLiteral("<b>%1</b> served").arg(stats.first);
+        bits << QStringLiteral("<b>%1</b> clone%2")
+                    .arg(stats.second)
+                    .arg(stats.second == 1 ? QString()
+                                           : QStringLiteral("s"));
+        QString details = bits.join(QStringLiteral(" \xC2\xB7 "));
+        details += QStringLiteral("<br><span style='color:#8b949e'>Cache %1 "
+                                  "\xC2\xB7 Last refresh %2</span>")
+                       .arg(repo.mirrorPath.toHtmlEscaped(),
+                            formatRepoDate(repo.lastSyncMs));
+        m_repoDetailStatus->setText(details);
+        return;
+    }
     const bool mirrored = repo.lastSyncMs > 0 ||
                           (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists());
     const bool online = repo.publishedAtMs > 0;
@@ -11596,6 +11902,12 @@ void MainWindow::updateRepoRemoteInfo()
     m_repoRemoteEdit->setText(path);
     if (!m_repoRemoteHint)
         return;
+    if (m_repositories.at(m_repoDetailIndex).previewOnly) {
+        m_repoRemoteHint->setText(
+            "Temporary read-only preview cache. Use Mirror it to keep this repo "
+            "as one of your node mirrors, or Fork to create an independent copy.");
+        return;
+    }
     if (path.isEmpty()) {
         m_repoRemoteHint->setText("No mirror configured for this repository yet.");
         return;
@@ -11618,7 +11930,12 @@ void MainWindow::syncSelectedRepository()
         flashMessage("Select a repository first.", /*error=*/true);
         return;
     }
-    syncRepository(item->data(Qt::UserRole).toInt());
+    const int index = item->data(Qt::UserRole).toInt();
+    if (index == -2) {
+        previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
+        return;
+    }
+    syncRepository(index);
 }
 
 QUrl MainWindow::catalogApiUrl() const
@@ -11686,6 +12003,8 @@ void MainWindow::migrateReposForProfileName(const QString &oldOwner,
     bool changed = false;
     for (int i = 0; i < m_repositories.size(); ++i) {
         RepositoryRecord &repo = m_repositories[i];
+        if (repo.previewOnly)
+            continue;
         const QString repoName = repoSegment(repo.name, QStringLiteral("repository"));
         const bool wasPublished = repo.publishToNetwork || repo.publishedAtMs > 0;
         if (wasPublished)
@@ -11742,7 +12061,7 @@ void MainWindow::startRepoHosts()
     // Rebuilt from scratch so adding/removing repos stays simple.
     stopRepoHosts();
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (!repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
+        if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
         auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
@@ -11805,7 +12124,15 @@ void MainWindow::publishSelectedRepository()
         return;
     }
     const int index = item->data(Qt::UserRole).toInt();
+    if (index == -2) {
+        previewAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
+        return;
+    }
     if (index >= 0 && index < m_repositories.size()) {
+        if (m_repositories.at(index).previewOnly) {
+            mirrorPreviewRepository(index);
+            return;
+        }
         m_repositories[index].publishToNetwork = true;
         saveRepositories();
         refreshRepositoryList();
@@ -11816,6 +12143,8 @@ void MainWindow::publishSelectedRepository()
 void MainWindow::publishRepository(int index, bool showDialogOnError)
 {
     if (index < 0 || index >= m_repositories.size())
+        return;
+    if (m_repositories.at(index).previewOnly)
         return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Catalog: could not load identity for repository publishing.");
@@ -11921,6 +12250,7 @@ void MainWindow::autoSyncMirrors()
     // Quietly refresh every repo's mirror so it tracks the owner's repo.
     for (int i = 0; i < m_repositories.size(); ++i) {
         if (!m_syncingRepos.contains(i) &&
+            !m_repositories.at(i).previewOnly &&
             !repositorySource(m_repositories.at(i)).isEmpty())
             syncRepository(i, /*quiet=*/true);
     }
@@ -11933,6 +12263,7 @@ void MainWindow::syncRepository(int index, bool quiet)
         return;
 
     RepositoryRecord &repo = m_repositories[index];
+    const bool preview = repo.previewOnly;
     if (!QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath())) {
         if (!quiet)
             QMessageBox::warning(this, "Sync repository",
@@ -11952,10 +12283,14 @@ void MainWindow::syncRepository(int index, bool quiet)
 
     m_syncingRepos.insert(index);
     refreshRepositoryList();
-    if (!quiet)
-        logSystem(QStringLiteral("Mirror: ") +
+    if (!quiet) {
+        const QString prefix =
+            preview ? QStringLiteral("Preview cache: ")
+                    : QStringLiteral("Mirror: ");
+        logSystem(prefix +
                   (hasMirror ? QStringLiteral("fetching ") : QStringLiteral("cloning ")) +
                   repo.owner + "/" + repo.name + " from " + source + ".");
+    }
 
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
@@ -11973,33 +12308,47 @@ void MainWindow::syncRepository(int index, bool quiet)
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (exitCode == 0) {
+                    const bool stillPreview = repo.previewOnly;
                     // Did the owner's repo actually change?
                     const bool changed =
                         !hasMirror ||
                         mirrorRefsDigest(repo.mirrorPath) != beforeDigest;
                     repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
-                    saveRepositories();
+                    if (!stillPreview)
+                        saveRepositories();
                     refreshRepositoryList();
                     // Now that the bare mirror exists, (re)install the push hook
                     // so local pushes are detected (for actions + live refresh).
-                    ensurePushHook(repo);
+                    if (!stillPreview)
+                        ensurePushHook(repo);
                     // If this repo's detail is open, reflect the new commits.
                     if (changed && index == m_repoDetailIndex)
                         refreshOpenRepoDetail();
                     // Quiet auto-syncs only speak up when something changed.
-                    if (!quiet || changed)
-                        logSystem("Mirror: synced " + repo.owner + "/" +
-                                  repo.name + " into " + repo.mirrorPath + ".");
-                    if (!quiet)
-                        flashMessage("Synced " + repo.owner + "/" + repo.name +
-                                     (changed ? "" : " (already up to date)"));
-                    if (changed && m_backend) {
+                    if (!quiet || changed) {
+                        logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
+                                                : QStringLiteral("Mirror: synced ")) +
+                                  repo.owner + "/" + repo.name + " into " +
+                                  repo.mirrorPath + ".");
+                    }
+                    if (!quiet) {
+                        flashMessage(stillPreview
+                                         ? "Cached preview for " + repo.owner + "/" +
+                                               repo.name +
+                                               (changed ? QString()
+                                                        : " (already up to date)")
+                                         : "Synced " + repo.owner + "/" + repo.name +
+                                               (changed ? QString()
+                                                        : " (already up to date)"));
+                    }
+                    if (changed && !stillPreview && m_backend) {
                         m_backend->sendChat(
                             repositoryChannel(repo),
                             "Mirror synced by " + m_userName + " at " +
                                 formatRepoDate(repo.lastSyncMs));
                     }
-                    if (repo.publishToNetwork && (changed || !quiet)) {
+                    if (!stillPreview && repo.publishToNetwork &&
+                        (changed || !quiet)) {
                         publishRepository(index, false);
                         // Serve this repo's files live to the web now that a
                         // mirror exists (pure live tunnel, nothing uploaded).
@@ -12007,11 +12356,15 @@ void MainWindow::syncRepository(int index, bool quiet)
                     }
                 } else {
                     refreshRepositoryList();
-                    logSystem("Mirror: sync failed for " + repo.owner + "/" +
+                    logSystem((repo.previewOnly ? QStringLiteral("Preview cache: sync failed for ")
+                                                : QStringLiteral("Mirror: sync failed for ")) +
+                              repo.owner + "/" +
                               repo.name + ": " + errors.right(300));
                     if (!quiet)
                         flashMessage(
-                            "Sync failed for " + repo.owner + "/" + repo.name +
+                            (repo.previewOnly ? QStringLiteral("Preview failed for ")
+                                              : QStringLiteral("Sync failed for ")) +
+                                repo.owner + "/" + repo.name +
                                 (errors.isEmpty() ? QString() :
                                                     ": " + errors.right(160)),
                             /*error=*/true);
@@ -12163,6 +12516,8 @@ void MainWindow::initActions()
 
 void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
 {
+    if (repo.previewOnly)
+        return;
     if (!m_actionStore || repo.mirrorPath.isEmpty())
         return;
     if (!QDir(repo.mirrorPath).exists())
@@ -12210,13 +12565,16 @@ void MainWindow::installAllPushHooks() const
     // writes a spool event, which we also use to refresh the open Code view in
     // real time. Workflow execution is still gated on actionsEnabled.
     for (const RepositoryRecord &repo : m_repositories)
-        ensurePushHook(repo);
+        if (!repo.previewOnly)
+            ensurePushHook(repo);
 }
 
 int MainWindow::repoIndexFor(const QString &owner, const QString &name) const
 {
     for (int i = 0; i < m_repositories.size(); ++i)
-        if (m_repositories.at(i).owner == owner && m_repositories.at(i).name == name)
+        if (!m_repositories.at(i).previewOnly &&
+            m_repositories.at(i).owner == owner &&
+            m_repositories.at(i).name == name)
             return i;
     return -1;
 }

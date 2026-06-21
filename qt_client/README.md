@@ -102,4 +102,7 @@ any public clone URL you provide are sent to the mainnode.
 - The client encrypts room traffic before sending it to the mainnode.
 
 
-- File browsing/clone are **pure live**: served on demand from a connected host, nothing stored on relay. No host = unavailable (website caches browsed data in localStorage). Keeps relay lean / free-plan-hostable.
+- File browsing/clone are served on demand from a connected host, with nothing
+  stored on the relay. The website caches browsed data in localStorage; the
+  desktop client can keep temporary preview mirrors in the Settings-configured
+  preview cache before you mirror or fork. Keeps relay lean / free-plan-hostable.
