@@ -39,6 +39,7 @@ public:
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
     void setMirroredRepos(const QStringList &ownerNames) override;
+    void notifyMirrorUpdated(const QString &ownerName) override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
 

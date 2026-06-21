@@ -423,6 +423,9 @@ private:
     void syncSelectedRepository();
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
+    // A peer announced it refreshed "owner/name" from source; notify if we
+    // mirror the same repo.
+    void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName);
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
