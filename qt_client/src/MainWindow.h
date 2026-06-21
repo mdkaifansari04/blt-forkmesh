@@ -235,6 +235,7 @@ private:
     void closeIssuesLinkedFromPull(const PullRequest &pr);
     bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
+    void deleteCurrentPull();
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
     void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
@@ -726,6 +727,8 @@ private:
     QPushButton *m_pullMergeButton = nullptr;
     QCheckBox *m_pullPushMainCheck = nullptr;
     QPushButton *m_pullCloseButton = nullptr;
+    QPushButton *m_pullDeleteButton = nullptr;
+    bool m_pullDeleteConfirmPending = false;
     QListWidget *m_pullFiles = nullptr;
     QTextEdit *m_pullDiff = nullptr;
     QList<PullRequest> m_currentPulls;
