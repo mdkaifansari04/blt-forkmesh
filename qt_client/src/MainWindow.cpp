@@ -1428,7 +1428,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     initActions();
     initAgents();
     loadActiveServerIntoEdits();
-    refreshServerRail();
+    updateBreadcrumb();
     for (int i = 0; i < m_servers.size(); ++i)
         fetchFavicon(i);
 
@@ -1891,7 +1891,7 @@ void MainWindow::startSession()
                   QString::number(profileBytes.toUtf8().size()) + " bytes).");
         m_stack->setCurrentIndex(1);
         showSection(0); // land on the Home overview after connecting
-        refreshServerRail();
+        updateBreadcrumb();
         updateSolanaNotice();
         // Restore locally-saved chat history for this server/room so past
         // conversations are visible right away (deduped against any replay).
@@ -2804,76 +2804,6 @@ QPixmap MainWindow::faviconFor(const ServerConfig &server) const
     return letterFavicon(host); // already drawn as a rounded rect
 }
 
-QWidget *MainWindow::buildServerRail()
-{
-    m_serverRail = new QWidget;
-    m_serverRail->setObjectName("serverRail");
-    m_serverRail->setFixedWidth(56);
-
-    m_serverGroup = new QButtonGroup(this);
-    m_serverGroup->setExclusive(true);
-
-    auto *layout = new QVBoxLayout(m_serverRail);
-    layout->setContentsMargins(8, 14, 8, 14);
-    layout->setSpacing(8);
-    layout->setAlignment(Qt::AlignTop);
-    refreshServerRail();
-    return m_serverRail;
-}
-
-void MainWindow::refreshServerRail()
-{
-    if (!m_serverRail)
-        return;
-    auto *layout = qobject_cast<QVBoxLayout *>(m_serverRail->layout());
-    if (!layout)
-        return;
-
-    // Clear existing buttons.
-    for (QAbstractButton *button : m_serverGroup->buttons())
-        m_serverGroup->removeButton(button);
-    while (QLayoutItem *item = layout->takeAt(0)) {
-        if (QWidget *w = item->widget())
-            w->deleteLater();
-        delete item;
-    }
-
-    for (int i = 0; i < m_servers.size(); ++i) {
-        const ServerConfig &server = m_servers.at(i);
-        auto *button = new QPushButton;
-        button->setObjectName("serverButton");
-        button->setCheckable(true);
-        button->setCursor(Qt::PointingHandCursor);
-        button->setFixedSize(40, 40);
-        button->setIconSize(QSize(28, 28));
-        button->setIcon(QIcon(faviconFor(server)));
-        button->setToolTip(serverHost(server.url));
-        button->setContextMenuPolicy(Qt::CustomContextMenu);
-        if (i == m_activeServer)
-            button->setChecked(true);
-        m_serverGroup->addButton(button, i);
-        connect(button, &QWidget::customContextMenuRequested, this,
-                [this, i](const QPoint &) { removeServer(i); });
-        layout->addWidget(button, 0, Qt::AlignHCenter);
-    }
-
-    auto *addButton = new QPushButton(QString());
-    addButton->setObjectName("serverAddButton");
-    addButton->setCursor(Qt::PointingHandCursor);
-    addButton->setFixedSize(40, 40);
-    addButton->setToolTip("Add a mainnode server");
-    setOcticon(addButton, "plus", 20);
-    connect(addButton, &QPushButton::clicked, this, &MainWindow::promptAddServer);
-    layout->addWidget(addButton, 0, Qt::AlignHCenter);
-    layout->addStretch();
-
-    // The user avatar now lives top-right in the breadcrumb bar (see
-    // buildBreadcrumb), with a dropdown for Settings / Rebuild / Logout.
-    connect(m_serverGroup, &QButtonGroup::idClicked, this,
-            &MainWindow::switchToServer, Qt::UniqueConnection);
-    updateBreadcrumb();
-}
-
 void MainWindow::switchToServer(int index)
 {
     if (index < 0 || index >= m_servers.size())
@@ -2889,7 +2819,7 @@ void MainWindow::switchToServer(int index)
     m_activeServer = index;
     saveServers();
     loadActiveServerIntoEdits();
-    refreshServerRail();
+    updateBreadcrumb();
     startSession(); // tears down the old backend and connects to the new server
 }
 
@@ -2928,7 +2858,7 @@ void MainWindow::promptAddServer()
     m_servers.append(server);
     const int newIndex = m_servers.size() - 1;
     saveServers();
-    refreshServerRail();
+    updateBreadcrumb();
     fetchFavicon(newIndex);
     switchToServer(newIndex);
 }
@@ -2951,7 +2881,7 @@ void MainWindow::removeServer(int index)
         m_activeServer = m_servers.size() - 1;
     saveServers();
     loadActiveServerIntoEdits();
-    refreshServerRail();
+    updateBreadcrumb();
     if (removingActive)
         startSession(); // reconnect to whichever server is now active
 }
@@ -2993,7 +2923,7 @@ void MainWindow::fetchFavicon(int index)
         m_faviconCache.insert(host, pix);
         QDir().mkpath(faviconCacheDir());
         pix.save(faviconCachePath(host), "PNG");
-        refreshServerRail();
+        updateBreadcrumb();
     });
 }
 
@@ -3013,12 +2943,12 @@ QWidget *MainWindow::buildChatPage()
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
     m_sectionStack->addWidget(buildSettingsSection());   // 1 Settings
 
-    // The server rail is the only left strip now; the section fills the rest.
+    // No left rails any more: relays and nodes are top-bar dropdowns, so the
+    // section fills the whole width.
     auto *content = new QWidget;
     auto *contentLayout = new QHBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(0);
-    contentLayout->addWidget(buildServerRail());
     contentLayout->addWidget(m_sectionStack, 1);
 
     // Global donation nudge: shown across the whole app until this node sets a
@@ -3108,6 +3038,13 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayOpenButton, &QPushButton::clicked, this,
             [this] { openServerWebsite(m_activeServer); });
 
+    // Node switcher, to the right of the relay switcher: "node ▾ count".
+    m_nodeMenuButton = new QPushButton;
+    m_nodeMenuButton->setObjectName("nodeMenuButton");
+    m_nodeMenuButton->setCursor(Qt::PointingHandCursor);
+    m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
+    connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -3167,7 +3104,12 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
-    layout->addWidget(m_breadcrumbServerIcon);
+    layout->addWidget(m_relayIconButton);
+    layout->addWidget(m_relayMenuButton);
+    layout->addWidget(m_relayOpenButton);
+    layout->addSpacing(10);
+    layout->addWidget(m_nodeMenuButton);
+    layout->addSpacing(6);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
     layout->addWidget(m_topMessage);
@@ -3221,20 +3163,11 @@ void MainWindow::updateConnectionStatus()
 
 void MainWindow::updateBreadcrumb()
 {
+    // The active relay (favicon + domain) now lives in the relay switcher.
+    updateRelaySwitcher();
     if (!m_breadcrumb)
         return;
     static const char *kSections[] = {"Home", "Settings"};
-    QString host;
-    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
-        host = serverHost(m_servers.at(m_activeServer).url);
-    // Active server favicon, shown next to the breadcrumb at the top of the app.
-    if (m_breadcrumbServerIcon) {
-        const QPixmap fav = m_faviconCache.value(host);
-        m_breadcrumbServerIcon->setPixmap(
-            fav.isNull() ? letterFavicon(host) : roundedRectPixmap(fav, 18, 5));
-    }
-    if (host.isEmpty())
-        host = "ForkMesh";
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
     const QString sep =
         QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
@@ -3247,13 +3180,183 @@ void MainWindow::updateBreadcrumb()
         trail = QStringLiteral("Home%1%2")
                     .arg(sep, (repo.owner + "/" + repo.name).toHtmlEscaped());
     }
-    // No hardcoded text colors here: the section/separator inherit the
-    // #breadcrumb stylesheet color so it stays readable in light and dark.
-    m_breadcrumb->setText(
-        QStringLiteral(
-            "<a href=\"server\" style=\"text-decoration:none; "
-            "color:inherit\"><b>%1</b></a>%2%3")
-            .arg(host.toHtmlEscaped(), sep, trail));
+    // The section/separator inherit the #breadcrumb stylesheet color so it
+    // stays readable in light and dark.
+    m_breadcrumb->setText(trail);
+}
+
+void MainWindow::updateRelaySwitcher()
+{
+    if (!m_relayMenuButton)
+        return;
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+
+    if (m_relayIconButton) {
+        m_relayIconButton->setIcon(
+            (m_activeServer >= 0 && m_activeServer < m_servers.size())
+                ? QIcon(faviconFor(m_servers.at(m_activeServer)))
+                : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
+                                                     : host)));
+    }
+    if (m_relayOpenButton)
+        m_relayOpenButton->setEnabled(!host.isEmpty());
+
+    if (host.isEmpty())
+        host = QStringLiteral("ForkMesh");
+    // "domain ▾ count": the caret signals it drops down; the count is the
+    // number of configured relays.
+    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
+    m_relayMenuButton->setText(host + "  " + caret + "  " +
+                               QString::number(m_servers.size()));
+}
+
+void MainWindow::openServerWebsite(int index)
+{
+    if (index < 0 || index >= m_servers.size())
+        return;
+    // Open the relay's website in the system browser (ws/wss -> http/https).
+    QUrl url(m_servers.at(index).url);
+    if (url.scheme() == "ws")
+        url.setScheme(QStringLiteral("http"));
+    else if (url.scheme() == "wss")
+        url.setScheme(QStringLiteral("https"));
+    url.setPath(QStringLiteral("/"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    if (url.isValid() && !url.host().isEmpty())
+        QDesktopServices::openUrl(url);
+}
+
+void MainWindow::showRelayMenu()
+{
+    if (!m_relayMenuButton)
+        return;
+    QMenu menu(this);
+
+    // Header showing the relay count.
+    QAction *header =
+        menu.addAction(QStringLiteral("Relays (%1)").arg(m_servers.size()));
+    header->setEnabled(false);
+
+    // Search box at the top; filters the relay list live.
+    auto *searchEdit = new QLineEdit(&menu);
+    searchEdit->setPlaceholderText(QStringLiteral("Search relays") +
+                                   QString::fromUtf8("\xE2\x80\xA6"));
+    searchEdit->setClearButtonEnabled(true);
+    searchEdit->setMinimumWidth(240);
+    auto *searchAction = new QWidgetAction(&menu);
+    searchAction->setDefaultWidget(searchEdit);
+    menu.addAction(searchAction);
+    menu.addSeparator();
+
+    // One checkable action per relay (active one checked).
+    QList<QAction *> relayActions;
+    for (int i = 0; i < m_servers.size(); ++i) {
+        const ServerConfig &server = m_servers.at(i);
+        QAction *act =
+            menu.addAction(QIcon(faviconFor(server)), serverHost(server.url));
+        act->setCheckable(true);
+        act->setChecked(i == m_activeServer);
+        connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
+        relayActions.append(act);
+    }
+
+    menu.addSeparator();
+    QAction *addAct = menu.addAction(QStringLiteral("Add relay") +
+                                     QString::fromUtf8("\xE2\x80\xA6"));
+    connect(addAct, &QAction::triggered, this, &MainWindow::promptAddServer);
+
+    connect(searchEdit, &QLineEdit::textChanged, &menu,
+            [this, relayActions](const QString &text) {
+                const QString needle = text.trimmed().toLower();
+                for (int i = 0;
+                     i < relayActions.size() && i < m_servers.size(); ++i)
+                    relayActions.at(i)->setVisible(
+                        needle.isEmpty() ||
+                        serverHost(m_servers.at(i).url).toLower().contains(needle));
+            });
+    // Focus the search box once the menu's event loop is running.
+    QTimer::singleShot(0, searchEdit, [searchEdit] { searchEdit->setFocus(); });
+
+    menu.exec(m_relayMenuButton->mapToGlobal(
+        QPoint(0, m_relayMenuButton->height())));
+}
+
+void MainWindow::updateNodeSwitcher()
+{
+    if (!m_nodeMenuButton)
+        return;
+    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
+    const QString label =
+        m_selectedNode.isEmpty() ? QStringLiteral("Nodes") : m_selectedNode;
+    m_nodeMenuButton->setText(label + "  " + caret + "  " +
+                              QString::number(m_nodeMenuEntries.size()));
+    // Badge the button with the selected node's platform/online state.
+    for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+        if (e.name == m_selectedNode) {
+            m_nodeMenuButton->setIcon(osBadgeIcon(e.platform, e.online, 16));
+            return;
+        }
+    }
+    m_nodeMenuButton->setIcon(QIcon());
+}
+
+void MainWindow::showNodeMenu()
+{
+    if (!m_nodeMenuButton)
+        return;
+    QMenu menu(this);
+
+    QAction *header =
+        menu.addAction(QStringLiteral("Nodes (%1)").arg(m_nodeMenuEntries.size()));
+    header->setEnabled(false);
+
+    auto *searchEdit = new QLineEdit(&menu);
+    searchEdit->setPlaceholderText(QStringLiteral("Search nodes") +
+                                   QString::fromUtf8("\xE2\x80\xA6"));
+    searchEdit->setClearButtonEnabled(true);
+    searchEdit->setMinimumWidth(240);
+    auto *searchAction = new QWidgetAction(&menu);
+    searchAction->setDefaultWidget(searchEdit);
+    menu.addAction(searchAction);
+    menu.addSeparator();
+
+    if (m_nodeMenuEntries.isEmpty()) {
+        QAction *empty = menu.addAction(QStringLiteral("No nodes yet"));
+        empty->setEnabled(false);
+    }
+
+    QList<QAction *> nodeActions;
+    QStringList nodeNames;
+    for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+        QString text = e.name;
+        if (e.self)
+            text += " (you)";
+        QAction *act = menu.addAction(osBadgeIcon(e.platform, e.online, 16), text);
+        act->setCheckable(true);
+        act->setChecked(e.name == m_selectedNode);
+        const QString node = e.name;
+        connect(act, &QAction::triggered, this, [this, node] {
+            selectNode(node);                 // fill the repositories column
+            showNodeProfile(QString(), node); // and open the node's profile
+        });
+        nodeActions.append(act);
+        nodeNames.append(e.name.toLower());
+    }
+
+    connect(searchEdit, &QLineEdit::textChanged, &menu,
+            [nodeActions, nodeNames](const QString &text) {
+                const QString needle = text.trimmed().toLower();
+                for (int i = 0; i < nodeActions.size(); ++i)
+                    nodeActions.at(i)->setVisible(needle.isEmpty() ||
+                                                  nodeNames.at(i).contains(needle));
+            });
+    QTimer::singleShot(0, searchEdit, [searchEdit] { searchEdit->setFocus(); });
+
+    menu.exec(m_nodeMenuButton->mapToGlobal(
+        QPoint(0, m_nodeMenuButton->height())));
 }
 
 QWidget *MainWindow::buildSolanaNotice()
@@ -3340,14 +3443,14 @@ QWidget *MainWindow::buildHomeSection()
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("homeSplitter");
     splitter->setChildrenCollapsible(false);
-    splitter->addWidget(buildNodesPanel());
+    // Nodes are now a top-bar dropdown (see buildBreadcrumb); the Repositories
+    // column shows the selected node's repos.
     splitter->addWidget(buildReposPanel());
     splitter->addWidget(buildRepoDetailSection());
     splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
     splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 0);
-    splitter->setStretchFactor(2, 1);
-    splitter->setStretchFactor(3, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(2, 0);
     splitter->setSizes({220, 260, 760, 320});
 
     auto *layout = new QHBoxLayout(page);
@@ -3714,39 +3817,6 @@ void MainWindow::querySolanaBalance(const QString &addr, int endpointIndex)
         m_profileBalance->setText(
             QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9));
     });
-}
-
-QWidget *MainWindow::buildNodesPanel()
-{
-    auto *page = new QWidget;
-    page->setObjectName("sidebar"); // reuse list/label styling
-    page->setMinimumWidth(180);
-    page->setMaximumWidth(300);
-
-    auto *heading = new QLabel("Nodes");
-    heading->setObjectName("channelTitle");
-    m_nodeList = new QListWidget;
-    m_nodeList->setToolTip(
-        "Nodes on the network. Click one to see its repositories and profile.");
-
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 22, 16, 22);
-    layout->setSpacing(8);
-    layout->addWidget(heading);
-    layout->addSpacing(8);
-    layout->addWidget(m_nodeList, 1);
-
-    connect(m_nodeList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                if (!item)
-                    return;
-                const QString node = item->data(Qt::UserRole + 1).toString();
-                if (node.isEmpty())
-                    return;
-                selectNode(node);                 // fill the repositories column
-                showNodeProfile(QString(), node); // and open the node's profile
-            });
-    return page;
 }
 
 QWidget *MainWindow::buildReposPanel()
@@ -11308,11 +11378,10 @@ void MainWindow::saveRepositories() const
 
 void MainWindow::refreshRepositoryList()
 {
-    if (!m_repoList || !m_nodeList)
+    if (!m_repoList)
         return;
 
     QSignalBlocker blocker(m_repoList);
-    QSignalBlocker nodeBlocker(m_nodeList);
     // Preserve the selected repository across the rebuild.
     int selectedRepo = -1;
     if (QListWidgetItem *current = m_repoList->currentItem()) {
@@ -11321,7 +11390,7 @@ void MainWindow::refreshRepositoryList()
             selectedRepo = idx;
     }
     m_repoList->clear();
-    m_nodeList->clear();
+    m_nodeMenuEntries.clear();
 
     // Repos grouped by node (owner).
     QHash<QString, QList<int>> reposByNode;
@@ -11397,44 +11466,26 @@ void MainWindow::refreshRepositoryList()
     }
     QSet<QString> shownAdvertised; // dedupe a repo advertised by several nodes
 
-    // --- Nodes column: one row per node. The OS badge (Linux/Windows/mac) both
-    // identifies the row as a node and signals online (tinted) vs offline (grey).
-    QListWidgetItem *nodeToSelect = nullptr;
+    // --- Nodes dropdown: one entry per node for the top-bar node switcher. The
+    // OS badge (Linux/Windows/mac) signals online (tinted) vs offline (grey).
     bool selectedStillExists = false;
     for (const QString &node : std::as_const(nodeOrder)) {
         const NodeInfo info = nodes.value(node);
-        QString text = node;
-        if (info.self)
-            text += " (you)";
-        if (!info.inRoster)
-            text = QStringLiteral("Desktop node ") + text;
-        auto *row = new QListWidgetItem(text);
-        row->setData(Qt::UserRole, -3);       // node-row marker
-        row->setData(Qt::UserRole + 1, node); // node name (click target)
-        row->setIcon(osBadgeIcon(info.platform, info.inRoster && info.online, 16));
-        row->setToolTip(
-            (info.platform.isEmpty() ? QStringLiteral("Platform: unknown")
-                                     : "Platform: " + info.platform) +
-            "\nClick to view this node's repositories and profile");
-        QFont f = row->font();
-        f.setBold(true);
-        row->setFont(f);
-        m_nodeList->addItem(row);
-        if (node == m_selectedNode) {
+        NodeMenuEntry entry;
+        entry.name = node;
+        entry.platform = info.platform;
+        entry.online = info.inRoster && info.online;
+        entry.self = info.self;
+        m_nodeMenuEntries.append(entry);
+        if (node == m_selectedNode)
             selectedStillExists = true;
-            nodeToSelect = row;
-        }
     }
 
     // Default the selection to the first node (the ranking puts you first) when
     // nothing is selected yet or the previously-selected node went away.
-    if (!selectedStillExists) {
+    if (!selectedStillExists)
         m_selectedNode = nodeOrder.isEmpty() ? QString() : nodeOrder.first();
-        if (!m_selectedNode.isEmpty() && m_nodeList->count() > 0)
-            nodeToSelect = m_nodeList->item(0);
-    }
-    if (nodeToSelect)
-        m_nodeList->setCurrentItem(nodeToSelect);
+    updateNodeSwitcher();
 
     // --- Repositories column: just the repos owned by the selected node, plus
     // any repos that node advertises mirroring that we don't already have.

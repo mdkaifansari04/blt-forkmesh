@@ -336,6 +336,53 @@ async def network_stats(env):
 
 ONLINE_SAMPLE_WINDOW_MS = 2 * 60 * 1000  # treat a node seen in the last 2 min as online
 ONLINE_HISTORY_RETAIN_MS = 48 * 60 * 60 * 1000
+ONLINE_HISTORY_MAX_NODES = 50
+
+
+def _short_presence_label(prefix, key):
+    return prefix + " " + str(key or "")[:8]
+
+
+async def _live_online_nodes(env, now):
+    nodes = {}
+    host_rows = await d1_all(
+        env,
+        """SELECT hp.repo_bi, r.owner_bi, r.data
+             FROM host_presence hp
+             LEFT JOIN repositories r ON r.key_bi = hp.repo_bi
+             WHERE hp.ts >= ?""",
+        now - HOST_PRESENCE_STALE_MS,
+    )
+    for row in host_rows:
+        node_key = row.get("owner_bi") or row.get("repo_bi")
+        if not node_key:
+            continue
+        label = ""
+        if row.get("data"):
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                label = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
+        nodes[node_key] = label or nodes.get(node_key) or _short_presence_label("repo", node_key)
+
+    acct_rows = await d1_all(
+        env,
+        """SELECT ap.name_bi, a.name, a.data
+             FROM account_presence ap
+             LEFT JOIN accounts a ON a.name_bi = ap.name_bi
+             WHERE ap.ts >= ?""",
+        now - ONLINE_SAMPLE_WINDOW_MS,
+    )
+    for row in acct_rows:
+        node_key = row.get("name_bi")
+        if not node_key:
+            continue
+        label = clean_string(row.get("name", ""), MAX_NODE_NAME)
+        if not label and row.get("data"):
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                label = clean_string(rec.get("name", ""), MAX_NODE_NAME)
+        nodes[node_key] = label or nodes.get(node_key) or _short_presence_label("node", node_key)
+    return nodes
 
 
 async def record_online_sample(env):
@@ -347,17 +394,8 @@ async def record_online_sample(env):
     # host was online; counting hosts fixes that.
     await ensure_schema(env)
     now = int(Date.now())
-    host_row = await d1_first(
-        env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?",
-        now - HOST_PRESENCE_STALE_MS,
-    )
-    acct_row = await d1_first(
-        env, "SELECT COUNT(*) AS n FROM account_presence WHERE ts >= ?",
-        now - ONLINE_SAMPLE_WINDOW_MS,
-    )
-    hosts = int((host_row or {}).get("n", 0) or 0)
-    accounts = int((acct_row or {}).get("n", 0) or 0)
-    online = max(hosts, accounts)
+    nodes = await _live_online_nodes(env, now)
+    online = len(nodes)
     hour_ts = (now // 3600000) * 3600000
     await d1_run(
         env,
@@ -365,8 +403,22 @@ async def record_online_sample(env):
         "ON CONFLICT(hour_ts) DO UPDATE SET node_minutes = node_minutes + ?",
         hour_ts, online, online,
     )
+    for node_key, label in nodes.items():
+        await d1_run(
+            env,
+            """INSERT INTO online_hourly_nodes
+                 (hour_ts, node_key, label, node_minutes) VALUES (?, ?, ?, 1)
+               ON CONFLICT(hour_ts, node_key) DO UPDATE SET
+                 node_minutes = node_minutes + 1,
+                 label = excluded.label""",
+            hour_ts, node_key, label,
+        )
     await d1_run(
         env, "DELETE FROM online_hourly WHERE hour_ts < ?",
+        hour_ts - ONLINE_HISTORY_RETAIN_MS,
+    )
+    await d1_run(
+        env, "DELETE FROM online_hourly_nodes WHERE hour_ts < ?",
         hour_ts - ONLINE_HISTORY_RETAIN_MS,
     )
 
@@ -386,7 +438,48 @@ async def online_history(env):
     series = [{"hourTs": start + i * 3600000,
                "nodeMinutes": by_hour.get(start + i * 3600000, 0)}
               for i in range(24)]
-    return json_response({"ok": True, "hours": series}, cache_seconds=30)
+    node_rows = await d1_all(
+        env,
+        """SELECT node_key, label, hour_ts, node_minutes
+             FROM online_hourly_nodes
+             WHERE hour_ts >= ?
+             ORDER BY node_key, hour_ts""",
+        start,
+    )
+    grouped = {}
+    for row in node_rows:
+        node_key = str(row.get("node_key") or "")
+        if not node_key:
+            continue
+        item = grouped.setdefault(node_key, {
+            "label": clean_string(row.get("label", ""), MAX_NODE_NAME) or
+                     _short_presence_label("node", node_key),
+            "hours": {},
+            "total": 0,
+        })
+        minutes = int(row.get("node_minutes") or 0)
+        hour_ts = int(row.get("hour_ts") or 0)
+        item["hours"][hour_ts] = minutes
+        item["total"] += minutes
+        if row.get("label"):
+            item["label"] = clean_string(row.get("label", ""), MAX_NODE_NAME)
+    nodes = []
+    for node_key, item in grouped.items():
+        nodes.append({
+            "id": node_key[:12],
+            "label": item["label"],
+            "totalMinutes": item["total"],
+            "hours": [
+                {"hourTs": start + i * 3600000,
+                 "minutes": item["hours"].get(start + i * 3600000, 0)}
+                for i in range(24)
+            ],
+        })
+    nodes.sort(key=lambda n: (-int(n["totalMinutes"]), str(n["label"])))
+    return json_response(
+        {"ok": True, "hours": series, "nodes": nodes[:ONLINE_HISTORY_MAX_NODES]},
+        cache_seconds=30,
+    )
 
 
 def method_name(request):
@@ -541,6 +634,11 @@ SCHEMA_STATEMENTS = [
     # node_minutes is "node-minutes online" that hour (one node online all hour
     # = 60). hour_ts is the epoch-ms start of the hour.
     "CREATE TABLE IF NOT EXISTS online_hourly (hour_ts INTEGER PRIMARY KEY, node_minutes INTEGER NOT NULL DEFAULT 0)",
+    """CREATE TABLE IF NOT EXISTS online_hourly_nodes (
+        hour_ts INTEGER NOT NULL, node_key TEXT NOT NULL, label TEXT NOT NULL,
+        node_minutes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour_ts, node_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_online_hourly_nodes_key ON online_hourly_nodes(node_key)",
     # Retained chat history: the relay keeps the last few days of *encrypted*
     # durable messages per room so a node joining later sees some history even
     # when no peer is online to replay it. body is the opaque encrypted envelope
