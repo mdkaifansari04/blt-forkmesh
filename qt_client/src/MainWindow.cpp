@@ -574,7 +574,9 @@ QIcon osBadgeIcon(const QString &platform, bool online, int size)
 {
     const QString p = platform.toLower();
     const QColor grey("#6e7681");
-    auto col = [&](const QColor &c) { return online ? c : grey; };
+    // Connected nodes are tinted green (a clear "online" signal); offline grey.
+    const QColor online_green("#2ea043");
+    auto col = [&](const QColor &) { return online ? online_green : grey; };
 
     QPixmap pm(size, size);
     pm.fill(Qt::transparent);
@@ -1854,7 +1856,6 @@ void MainWindow::startSession()
     m_typingStopTimer->stop();
     m_channelList->clear();
     m_dmList->clear();
-    m_memberList->clear();
     rebuildConversationView();
 
     QSettings().setValue(kServerUrlSetting, m_serverUrlEdit->text().trimmed());
@@ -3108,27 +3109,50 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     updateAvatarButton();
 
+    // Captions for the three top-bar dropdowns.
+    auto makeCaption = [](const QString &t) {
+        auto *l = new QLabel(t);
+        l->setObjectName("navCaption");
+        return l;
+    };
+    m_relayLabel = makeCaption(QStringLiteral("Relay"));
+    m_nodeLabel = makeCaption(QStringLiteral("Node"));
+    m_repoLabel = makeCaption(QStringLiteral("Repo"));
+
+    // Chat toggle, next to the notification bell, with an unread indicator.
+    m_chatButton = new QPushButton(QString());
+    m_chatButton->setObjectName("notificationButton");
+    m_chatButton->setCursor(Qt::PointingHandCursor);
+    m_chatButton->setFixedWidth(42);
+    m_chatButton->setToolTip(QStringLiteral("Chat"));
+    connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
+
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
+    layout->addWidget(m_relayLabel);
     layout->addWidget(m_relayIconButton);
     layout->addWidget(m_relayMenuButton);
     layout->addWidget(m_relayOpenButton);
     layout->addSpacing(10);
+    layout->addWidget(m_nodeLabel);
     layout->addWidget(m_nodeMenuButton);
     layout->addSpacing(10);
+    layout->addWidget(m_repoLabel);
     layout->addWidget(m_repoMenuButton);
     layout->addSpacing(6);
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
     layout->addWidget(m_topMessage);
     layout->addStretch();
+    layout->addWidget(m_chatButton);
     layout->addWidget(m_notificationButton);
     layout->addWidget(m_connectionStatus);
     layout->addWidget(m_avatarNavButton);
     updateBreadcrumb();
     updateConnectionStatus();
     updateNotificationButton();
+    updateChatButton();
     return bar;
 }
 
@@ -3343,6 +3367,9 @@ void MainWindow::showNodeMenu()
         QString text = e.name;
         if (e.self)
             text += " (you)";
+        text += QStringLiteral("   %1 repo%2")
+                    .arg(e.repoCount)
+                    .arg(e.repoCount == 1 ? "" : "s");
         QAction *act = menu.addAction(osBadgeIcon(e.platform, e.online, 16), text);
         act->setCheckable(true);
         act->setChecked(e.name == m_selectedNode);
@@ -3371,6 +3398,13 @@ void MainWindow::showNodeMenu()
 void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
+        return;
+    // Nothing in the repo area when the selected node has no repos.
+    const bool hasRepos = !m_repoMenuEntries.isEmpty();
+    m_repoMenuButton->setVisible(hasRepos);
+    if (m_repoLabel)
+        m_repoLabel->setVisible(hasRepos);
+    if (!hasRepos)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
     QString label = QStringLiteral("Repos");
@@ -3438,6 +3472,36 @@ void MainWindow::showRepoMenu()
 
     menu.exec(m_repoMenuButton->mapToGlobal(
         QPoint(0, m_repoMenuButton->height())));
+}
+
+void MainWindow::showChatView()
+{
+    showSection(0); // Home hosts the repo-detail stack (which holds Chat)
+    // Chat has no repo tab, so clear any checked tab while it's shown.
+    if (m_repoDetailTabs) {
+        if (QAbstractButton *checked = m_repoDetailTabs->checkedButton()) {
+            m_repoDetailTabs->setExclusive(false);
+            checked->setChecked(false);
+            m_repoDetailTabs->setExclusive(true);
+        }
+    }
+    if (m_repoDetailStack && m_chatStackIndex >= 0)
+        m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+    updateChatButton();
+}
+
+void MainWindow::updateChatButton()
+{
+    if (!m_chatButton)
+        return;
+    const bool unread = !m_unread.isEmpty();
+    // A green comment glyph marks unread chats; otherwise the themed default.
+    if (unread)
+        m_chatButton->setIcon(themedOcticon("comment", QColor("#2ea043"), 18));
+    else
+        setOcticon(m_chatButton, "comment", 18);
+    m_chatButton->setToolTip(unread ? QStringLiteral("Chat \xE2\x80\x94 unread messages")
+                                    : QStringLiteral("Chat"));
 }
 
 QWidget *MainWindow::buildSolanaNotice()
@@ -4001,6 +4065,15 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
     m_issueQuickAdd->setMaxLength(160);
+    // Optionally hand the new issue straight to a coding agent.
+    m_quickAddAssignAgent = new QCheckBox("Assign agent");
+    m_quickAddAssignAgent->setToolTip(
+        "When you add the issue, immediately assign a coding agent to it.");
+    auto *quickAddRow = new QHBoxLayout;
+    quickAddRow->setContentsMargins(0, 0, 0, 0);
+    quickAddRow->setSpacing(8);
+    quickAddRow->addWidget(m_issueQuickAdd, 1);
+    quickAddRow->addWidget(m_quickAddAssignAgent);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -4010,7 +4083,7 @@ QWidget *MainWindow::buildIssuesSection()
     listLayout->addLayout(filterRow);
     listLayout->addLayout(actionRow);
     listLayout->addWidget(m_issueTable, 1);
-    listLayout->addWidget(m_issueQuickAdd);
+    listLayout->addLayout(quickAddRow);
 
     // Center: GitHub-style selected issue page: title header, status, timeline and
     // comment composer.
@@ -4591,8 +4664,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Pull requests", "git-pull-request"},
                                 {"Actions", "workflow"},
                                 {"Security and quality", "shield-check"},
-                                {"Insights", "graph"},
-                                {"Chat", "comment"}};
+                                {"Insights", "graph"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -4629,6 +4701,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
+    // Chat has no repo tab any more — it's reached from the top-bar Chat button.
+    m_chatStackIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildChatSection());                    // 8 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
@@ -4645,12 +4719,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     });
 
     // Before any repository is opened the Code/Commits/… tabs have nothing to
-    // show, so land on the always-useful Chat tab; opening a repo switches to
-    // Code (see openRepoDetail).
-    const int chatId = int(tabs.size()) - 1;
-    if (m_repoDetailTabs->button(chatId))
-        m_repoDetailTabs->button(chatId)->setChecked(true);
-    m_repoDetailStack->setCurrentIndex(chatId);
+    // show, so land on the always-useful Chat view (no tab; reached via the
+    // top-bar Chat button). Opening a repo switches to Code (see openRepoDetail).
+    m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -9314,6 +9385,9 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     setIssueInlineNotice("Issue created.");
+    // If requested, hand the freshly-created issue straight to a coding agent.
+    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked())
+        assignIssueToAgent(QStringLiteral("claude"));
 }
 
 void MainWindow::copyIssueToClipboard()
@@ -9813,16 +9887,8 @@ QWidget *MainWindow::buildChatSection()
     auto *dmsLabel = new QLabel("DIRECT MESSAGES");
     dmsLabel->setObjectName("sectionLabel");
     m_dmList = new QListWidget;
-
-    auto *membersLabel = new QLabel("MEMBERS");
-    membersLabel->setObjectName("sectionLabel");
-    membersLabel->setToolTip("Click a member to start a direct chat");
-    m_memberList = new QListWidget;
-    m_memberList->setSelectionMode(QAbstractItemView::NoSelection);
-    m_memberList->setFocusPolicy(Qt::NoFocus);
-    m_memberList->setCursor(Qt::PointingHandCursor);
-    m_memberList->setToolTip("Open a member profile or use Delete to clear stale entries");
-    m_memberList->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Members list removed: nodes are the members. Use the Node dropdown and the
+    // node profile's "Message" button to start a direct chat.
 
     auto *badgeRow = new QHBoxLayout;
     badgeRow->setContentsMargins(0, 0, 0, 0);
@@ -9839,8 +9905,6 @@ QWidget *MainWindow::buildChatSection()
     sidebarLayout->addWidget(addChannelButton);
     sidebarLayout->addWidget(dmsLabel);
     sidebarLayout->addWidget(m_dmList, 1);
-    sidebarLayout->addWidget(membersLabel);
-    sidebarLayout->addWidget(m_memberList, 2);
     sidebarLayout->addStretch();
 
     // Main column
@@ -9971,13 +10035,6 @@ QWidget *MainWindow::buildChatSection()
                 if (item)
                     switchConversation(item->data(Qt::UserRole).toString());
             });
-    connect(m_memberList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                showNodeProfile(item->data(Qt::UserRole).toString(),
-                                item->data(Qt::UserRole + 1).toString());
-            });
-    connect(m_memberList, &QListWidget::customContextMenuRequested, this,
-            &MainWindow::showMemberContextMenu);
     connect(addChannelButton, &QPushButton::clicked, this, &MainWindow::promptAddChannel);
     connect(m_messageInput, &QLineEdit::textEdited, this, &MainWindow::onComposerEdited);
     connect(m_messageInput, &QLineEdit::returnPressed, this, &MainWindow::sendCurrentMessage);
@@ -10912,58 +10969,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     }
 
     m_homeRoster = visibleMembers;
-    m_memberList->clear();
-    QHash<QString, int> nameCounts;
-    for (const MemberInfo &member : visibleMembers)
-        ++nameCounts[member.name];
+    // The members list is gone (nodes are the members); keep DM tab titles in
+    // sync with renamed/rediscovered nodes.
     for (const MemberInfo &member : visibleMembers) {
-        QString label = member.name;
-        if (nameCounts.value(member.name) > 1 && !member.id.isEmpty())
-            label += " [" + member.id.left(6) + "]";
-        if (!member.note.isEmpty())
-            label += " " + member.note;
-        if (member.self)
-            label += " (you)";
-
-        auto *item = new QListWidgetItem;
-        item->setData(Qt::UserRole, member.id);
-        item->setData(Qt::UserRole + 1, member.name);
-        item->setData(Qt::UserRole + 2, member.self);
-        item->setSizeHint(QSize(0, 30));
-        m_memberList->addItem(item);
-
-        auto *row = new QWidget;
-        row->setObjectName("memberRow");
-        auto *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(2, 1, 2, 1);
-        rowLayout->setSpacing(2);
-
-        auto *nameButton = new QPushButton(label);
-        nameButton->setObjectName("memberNameButton");
-        nameButton->setIcon(statusDotIcon(member.online));
-        nameButton->setCursor(Qt::PointingHandCursor);
-        nameButton->setToolTip("Open member profile");
-        nameButton->setEnabled(!member.id.isEmpty());
-        connect(nameButton, &QPushButton::clicked, this,
-                [this, id = member.id, name = member.name] {
-                    showNodeProfile(id, name);
-                });
-        rowLayout->addWidget(nameButton, 1);
-
-        auto *deleteButton = new QPushButton("Delete");
-        deleteButton->setObjectName("memberDeleteButton");
-        deleteButton->setFixedSize(58, 24);
-        deleteButton->setCursor(Qt::PointingHandCursor);
-        deleteButton->setToolTip("Remove stale member");
-        deleteButton->setVisible(!member.self && !member.id.isEmpty());
-        connect(deleteButton, &QPushButton::clicked, this,
-                [this, id = member.id, name = member.name] {
-                    removeChatMember(id, name);
-                });
-        rowLayout->addWidget(deleteButton);
-
-        m_memberList->setItemWidget(item, row);
-        // Keep DM tab titles in sync with renamed/rediscovered members.
         if (m_dmNames.contains(member.id) && m_dmNames.value(member.id) != member.name) {
             m_dmNames.insert(member.id, member.name);
             refreshDmList();
@@ -10972,35 +10980,11 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    // Nodes now live in the repositories panel (each node with its repos under
-    // it), so refresh that to reflect live connection status.
+    // Nodes live in the top-bar Node dropdown; refresh it (and the repo list)
+    // to reflect live connection status.
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
-}
-
-void MainWindow::showMemberContextMenu(const QPoint &pos)
-{
-    QListWidgetItem *item = m_memberList->itemAt(pos);
-    if (!item)
-        return;
-    const QString id = item->data(Qt::UserRole).toString();
-    const QString name = item->data(Qt::UserRole + 1).toString();
-    const bool self = item->data(Qt::UserRole + 2).toBool();
-
-    QMenu menu(this);
-    QAction *profileAction = menu.addAction("Open profile");
-    menu.addSeparator();
-    QAction *removeAction = menu.addAction("Remove member");
-    removeAction->setEnabled(!self && !id.isEmpty());
-
-    QAction *chosen = menu.exec(m_memberList->mapToGlobal(pos));
-    if (!chosen)
-        return;
-    if (chosen == profileAction)
-        showNodeProfile(id, name);
-    else if (chosen == removeAction)
-        removeChatMember(id, name);
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)
@@ -11066,6 +11050,7 @@ void MainWindow::refreshChannelList()
         if (channel == m_currentConversation)
             m_channelList->setCurrentItem(item);
     }
+    updateChatButton();
 }
 
 void MainWindow::refreshDmList()
@@ -11083,6 +11068,7 @@ void MainWindow::refreshDmList()
             m_dmList->setCurrentItem(item);
     }
     updateHomeStats();
+    updateChatButton();
 }
 
 void MainWindow::switchConversation(const QString &conversation)
@@ -11123,6 +11109,7 @@ void MainWindow::openDirectChat(const QString &peerId, const QString &peerName)
         m_openDms.append(peerId);
         refreshDmList();
     }
+    showChatView(); // chat has no tab now — surface the chat view explicitly
     switchConversation(dmKey(peerId));
     m_messageInput->setFocus();
 }
@@ -11488,6 +11475,7 @@ void MainWindow::refreshRepositoryList()
         entry.platform = info.platform;
         entry.online = info.inRoster && info.online;
         entry.self = info.self;
+        entry.repoCount = reposByNode.value(node).size();
         m_nodeMenuEntries.append(entry);
         if (node == m_selectedNode)
             selectedStillExists = true;

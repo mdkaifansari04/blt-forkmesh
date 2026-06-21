@@ -168,6 +168,8 @@ private:
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
+    void showChatView();           // open the chat view from the top-bar button
+    void updateChatButton();       // refresh the top-bar chat unread indicator
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Persistent network log docked at the bottom of the app.
     QWidget *buildNetworkLogDock();
@@ -396,7 +398,6 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
-    void showMemberContextMenu(const QPoint &pos); // right-click a chat member
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
     // ("@<peerId>").
@@ -488,6 +489,11 @@ private:
     QPushButton *m_relayIconButton = nullptr;
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
+    // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
+    QLabel *m_relayLabel = nullptr;
+    QLabel *m_nodeLabel = nullptr;
+    QLabel *m_repoLabel = nullptr;
+    QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
@@ -520,6 +526,7 @@ private:
         QString platform;
         bool online = false;
         bool self = false;
+        int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
@@ -533,7 +540,6 @@ private:
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
-    QListWidget *m_memberList;
     QWidget *m_firewallBanner;
     QLabel *m_firewallBannerLabel;
     QPushButton *m_firewallAllowButton;
@@ -578,6 +584,7 @@ private:
     QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
+    QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
 
     // Repo detail view
     int m_repoDetailIndex = -1;
@@ -585,6 +592,7 @@ private:
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QStackedWidget *m_repoDetailStack = nullptr;
+    int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
