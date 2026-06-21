@@ -9492,10 +9492,10 @@ void MainWindow::quickAddIssue()
             const QSignalBlocker block(m_issueAgentCreatePrCheck);
             m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
                                                   m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(QStringLiteral("codex"));
+            assignIssueToAgent(QStringLiteral("claude"));
             m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
         } else {
-            assignIssueToAgent(QStringLiteral("codex"));
+            assignIssueToAgent(QStringLiteral("claude"));
         }
     }
 }
