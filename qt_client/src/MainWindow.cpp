@@ -343,6 +343,23 @@ QString accountNameFromInput(QString value, const QString &fallback = QStringLit
     return out;
 }
 
+bool textMentionsNodeName(const QString &text, const QString &nodeName)
+{
+    const QString mentionName = accountNameFromInput(nodeName, QString());
+    if (!isValidNodeName(mentionName))
+        return false;
+
+    static const QRegularExpression mentionRe(
+        QStringLiteral("(?:^|[^A-Za-z0-9_-])@([A-Za-z][A-Za-z0-9-]{0,62})(?![A-Za-z0-9-])"));
+    auto matches = mentionRe.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch match = matches.next();
+        if (match.captured(1).compare(mentionName, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
 QString savedProfileName()
 {
     QSettings settings;
@@ -11246,7 +11263,15 @@ void MainWindow::onMessage(const ChatMessage &message)
                                   : "in " + conversation;
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
-        notifyIfInactive(message.senderName + " " + where, preview);
+        if (textMentionsNodeName(message.text, m_userName)) {
+            QApplication::alert(this, 0);
+            QString cleanPreview = preview.simplified();
+            if (cleanPreview.size() > 180)
+                cleanPreview = cleanPreview.left(177) + "...";
+            postNotification(message.senderName + " mentioned you", cleanPreview);
+        } else {
+            notifyIfInactive(message.senderName + " " + where, preview);
+        }
     }
     scheduleChatSave();
 }
