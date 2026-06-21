@@ -1,0 +1,90 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index c94defd..840755d 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -40,6 +40,7 @@
+ #include <QJsonArray>
+ #include <QJsonDocument>
+ #include <QJsonObject>
++#include <QJsonValue>
+ #include <QLabel>
+ #include <QLineEdit>
+ #include <QListWidget>
+@@ -6184,9 +6185,53 @@ QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body)
+     return message;
+ }
+ 
++double jsonNumber(const QJsonValue &value)
++{
++    if (value.isDouble())
++        return value.toDouble();
++    if (value.isString()) {
++        bool ok = false;
++        const double number = value.toString().toDouble(&ok);
++        if (ok)
++            return number;
++    }
++    return 0.0;
++}
++
+ qint64 jsonCount(const QJsonObject &obj, const QString &key)
+ {
+-    return static_cast<qint64>(obj.value(key).toDouble());
++    return static_cast<qint64>(jsonNumber(obj.value(key)));
++}
++
++double costAmount(const QJsonObject &amount, QString *currency, bool *found)
++{
++    if (!amount.contains("value"))
++        return 0.0;
++    if (found)
++        *found = true;
++    if (currency && currency->isEmpty())
++        *currency = amount.value("currency").toString();
++    return jsonNumber(amount.value("value"));
++}
++
++double costResultTotal(const QJsonObject &result, QString *currency, bool *found)
++{
++    bool foundTopLevelAmount = false;
++    const double topLevelTotal =
++        costAmount(result.value("amount").toObject(), currency, &foundTopLevelAmount);
++    if (foundTopLevelAmount) {
++        if (found)
++            *found = true;
++        return topLevelTotal;
++    }
++
++    double total = 0.0;
++    const QJsonArray lineItems = result.value("line_items").toArray();
++    for (const QJsonValue &lineItemValue : lineItems) {
++        const QJsonObject lineItem = lineItemValue.toObject();
++        total += costAmount(lineItem.value("amount").toObject(), currency, found);
++    }
++    return total;
+ }
+ 
+ QString moneyString(double amount, QString currency)
+@@ -6498,14 +6543,16 @@ void MainWindow::testOpenAiAgentKey()
+                     const QJsonArray results =
+                         bucketValue.toObject().value("results").toArray();
+                     for (const QJsonValue &resultValue : results) {
+-                        const QJsonObject amount =
+-                            resultValue.toObject().value("amount").toObject();
+-                        state->costs += amount.value("value").toDouble();
+-                        if (state->currency.isEmpty())
+-                            state->currency = amount.value("currency").toString();
++                        bool foundAmount = false;
++                        state->costs += costResultTotal(resultValue.toObject(),
++                                                        &state->currency,
++                                                        &foundAmount);
++                        state->costsOk = state->costsOk || foundAmount;
+                     }
+                 }
+-                state->costsOk = true;
++                if (!state->costsOk)
++                    state->costsError =
++                        QStringLiteral("No cost amount was returned by OpenAI.");
+             } else {
+                 state->costsError = apiErrorSummary(reply, body);
+             }
