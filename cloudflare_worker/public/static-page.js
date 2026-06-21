@@ -31,6 +31,66 @@
     if (el) el.textContent = value;
   }
 
+  function shortWallet(address) {
+    if (!address) return "No payout wallet";
+    return address.length > 16 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
+  }
+
+  function eligibilityLabel(node) {
+    if (node.payoutEligible) return "Eligible";
+    if (node.eligibilityReason === "offline") return "Offline";
+    if (node.eligibilityReason === "duplicate_wallet") return "Duplicate wallet";
+    return "No wallet";
+  }
+
+  function renderPayoutNodes(nodes) {
+    const root = document.querySelector("#network-wallets");
+    if (!root) return;
+    const list = Array.isArray(nodes) ? nodes : [];
+    if (!list.length) {
+      root.innerHTML = '<div class="online-graph-empty">No active payout wallets yet.</div>';
+      return;
+    }
+    root.innerHTML = "";
+    const headings = ["Node", "Wallet", "Balance", "Payouts"];
+    const heading = document.createElement("div");
+    heading.className = "wallet-row wallet-heading";
+    headings.forEach((text) => {
+      const cell = document.createElement("div");
+      cell.textContent = text;
+      heading.appendChild(cell);
+    });
+    root.appendChild(heading);
+    list.forEach((node) => {
+      const row = document.createElement("div");
+      row.className = "wallet-row";
+
+      const name = document.createElement("div");
+      name.className = "wallet-node";
+      name.textContent = node.name || "node";
+      row.appendChild(name);
+
+      const wallet = document.createElement("div");
+      wallet.className = "wallet-address";
+      wallet.textContent = shortWallet(node.wallet || "");
+      if (node.wallet) wallet.title = node.wallet;
+      row.appendChild(wallet);
+
+      const balance = document.createElement("div");
+      balance.className = "wallet-balance";
+      balance.textContent = node.balanceSol ? `${node.balanceSol} SOL` : "Unavailable";
+      row.appendChild(balance);
+
+      const status = document.createElement("div");
+      status.className = "wallet-status";
+      status.dataset.eligible = node.payoutEligible ? "true" : "false";
+      status.textContent = eligibilityLabel(node);
+      row.appendChild(status);
+
+      root.appendChild(row);
+    });
+  }
+
   applyTheme();
 
   const themeToggle = document.querySelector("#theme-toggle");
@@ -57,6 +117,7 @@
   const STATS_PATH = "/api/network/stats";
   const STATS_INTERVAL_MS = 30000;
   let statsTimer = null;
+  const payoutWalletsEl = document.querySelector("#network-wallets");
 
   // The header pill reflects everything that is live on the network — open host
   // tunnels plus chat clients — so it doesn't read "0 online" while a host is
@@ -75,10 +136,12 @@
       setText("#network-clients", "—");
       if (reposEl) reposEl.textContent = "—";
       if (hostsEl) hostsEl.textContent = "—";
+      renderPayoutNodes([]);
       return;
     }
     try {
-      const response = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
+      const statsPath = payoutWalletsEl ? `${STATS_PATH}?payouts=1` : STATS_PATH;
+      const response = await fetch(statsPath, { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const clients = Number(data.clients) || 0;
@@ -87,6 +150,7 @@
       setText("#network-clients", String(clients));
       if (reposEl) reposEl.textContent = String(Number(data.repos) || 0);
       if (hostsEl) hostsEl.textContent = String(hosts);
+      renderPayoutNodes(data.payoutNodes);
     } catch (error) {
       if (clientsCount) clientsCount.textContent = "Reconnecting…";
       if (clientsDot) clientsDot.classList.remove("online");

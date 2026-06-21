@@ -62,6 +62,54 @@
         gap: 3px;
       }
       .online-graph-empty { color: var(--muted); padding: 24px 4px; }
+      .wallet-table {
+        display: grid;
+        gap: 0;
+        padding: 0 18px 18px;
+      }
+      .wallet-row {
+        display: grid;
+        grid-template-columns: minmax(88px, 1fr) minmax(120px, 1.2fr) minmax(86px, 0.7fr) minmax(112px, 0.8fr);
+        gap: 12px;
+        align-items: center;
+        padding: 12px 0;
+        border-top: 1px solid var(--border);
+      }
+      .wallet-row:first-child {
+        border-top: none;
+      }
+      .wallet-heading {
+        color: var(--muted-2);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .wallet-node,
+      .wallet-balance {
+        color: var(--text);
+        font-weight: 700;
+      }
+      .wallet-address {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .wallet-status {
+        justify-self: start;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 4px 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .wallet-status[data-eligible="true"] {
+        border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+        color: var(--accent);
+      }
       @media (max-width: 720px) {
         .online-node-row,
         .online-axis {
@@ -70,6 +118,13 @@
         }
         .online-node-total {
           text-align: left;
+        }
+        .wallet-row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+        .wallet-heading {
+          display: none;
         }
       }
     </style>
@@ -148,6 +203,18 @@
           <span>Relay role</span>
           <strong class="small-stat">Control plane</strong>
         </article>
+      </section>
+
+      <section class="panel doc-panel" aria-labelledby="wallets-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="wallets-title">Node payout wallets</h2>
+            <p>Active nodes, wallet balances, and whether the node is online with a valid payout wallet.</p>
+          </div>
+        </div>
+        <div id="network-wallets" class="wallet-table" aria-live="polite">
+          <div class="online-graph-empty">Loading wallets…</div>
+        </div>
       </section>
 
       <section class="panel doc-panel" aria-labelledby="activity-title">

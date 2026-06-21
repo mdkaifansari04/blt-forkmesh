@@ -299,10 +299,11 @@ async def _flagship_client_count(env):
         return 0
 
 
-async def network_stats(env):
+async def network_stats(env, include_payouts=False):
     # Aggregate homepage stats: repo count (D1), live host count (presence table),
     # and flagship-room client count (one internal request). Cached at the edge.
-    cached = await edge_cache_match(NETWORK_STATS_CACHE_KEY)
+    cache_key = NETWORK_STATS_CACHE_KEY + ("?payouts=1" if include_payouts else "")
+    cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
 
@@ -321,6 +322,7 @@ async def network_stats(env):
     hosts = int((host_row or {}).get("n", 0) or 0)
 
     clients = await _flagship_client_count(env)
+    payout_nodes = await _network_payout_nodes(env) if include_payouts else None
 
     # Live minimum join donation (~$1, from the on-chain price) so the signup
     # page can show the real figure before requesting a deposit address.
@@ -330,11 +332,60 @@ async def network_stats(env):
         {"ok": True, "repos": repos, "hosts": hosts, "clients": clients,
          "minLamports": min_lamports, "minSol": _amount_sol(min_lamports),
          "minUsd": round((min_lamports / LAMPORTS_PER_SOL) * price, 2) if price else 0,
-         "solUsd": price or 0},
+         "solUsd": price or 0,
+         **({"payoutNodes": payout_nodes} if include_payouts else {})},
         cache_seconds=NETWORK_STATS_TTL,
     )
-    await edge_cache_put(NETWORK_STATS_CACHE_KEY, resp)
+    await edge_cache_put(cache_key, resp)
     return resp
+
+
+async def _network_payout_nodes(env):
+    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
+    try:
+        await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    rows = await d1_all(
+        env,
+        """SELECT a.name_bi, a.name, a.data, ap.ts AS online_ts
+             FROM accounts a
+             LEFT JOIN account_presence ap
+               ON ap.name_bi = a.name_bi AND ap.ts >= ?
+             ORDER BY COALESCE(ap.ts, 0) DESC, a.name ASC""",
+        cutoff,
+    )
+    nodes = []
+    seen_wallets = set()
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or rec.get("status") != "active":
+            continue
+        name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+        wallet = (rec.get("solana") or "").strip()
+        has_wallet = bool(wallet and SOLANA_RE.match(wallet))
+        online = bool(row.get("online_ts"))
+        eligible = bool(online and has_wallet and wallet not in seen_wallets)
+        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
+        if has_wallet:
+            seen_wallets.add(wallet)
+        reason = "eligible"
+        if not online:
+            reason = "offline"
+        elif not has_wallet:
+            reason = "missing_wallet"
+        elif not eligible:
+            reason = "duplicate_wallet"
+        nodes.append({
+            "name": name or _short_presence_label("node", row.get("name_bi")),
+            "wallet": wallet if has_wallet else "",
+            "balanceLamports": balance,
+            "balanceSol": _amount_sol(balance) if balance is not None else "",
+            "online": online,
+            "payoutEligible": eligible,
+            "eligibilityReason": reason,
+        })
+    return nodes
 
 
 # --- Online-activity history (24h graph on /network/) -----------------------
@@ -610,11 +661,8 @@ DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
 # from signup confirmation now that signup payments go directly to treasury.
 TREASURY_SPLIT_NUMERATOR = 1
 TREASURY_SPLIT_DENOMINATOR = 2
-MAX_PAYEES = 50
-# A single legacy Solana transaction must fit in the packet limit. With one
-# signer, treasury, system program, and transfer instructions, 20 node payees
-# leaves room while still rewarding active nodes promptly.
-MAX_SWEEP_PAYEES = 20
+# The reward split is over every online node with a payout wallet, not just the
+# first batch returned by the presence table.
 SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
@@ -1793,8 +1841,6 @@ async def _online_payout_addresses(env):
             continue
         seen.add(solana)
         addresses.append(solana)
-        if len(addresses) >= MAX_PAYEES:
-            break
     return addresses
 
 
@@ -1826,8 +1872,7 @@ async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
     if transferable <= 0:
         return _set_sweep_error(rec, "balance_too_low_for_fee")
 
-    payees = [p for p in (await _online_payout_addresses(env))[:MAX_SWEEP_PAYEES]
-              if p != from_addr]
+    payees = [p for p in await _online_payout_addresses(env) if p != from_addr]
     treasury_lamports = transferable
     transfers = []
     if payees:
@@ -2558,7 +2603,8 @@ class Default(WorkerEntrypoint):
         # per-repo handlers so a burst of visitors collapses to one computation
         # per colo per TTL instead of a Durable Object fan-out per page view.
         if url.path in ("/api/network/stats", "/api/network/stats/"):
-            return await network_stats(self.env)
+            include_payouts = parse_qs(url.query).get("payouts", [""])[0] == "1"
+            return await network_stats(self.env, include_payouts=include_payouts)
 
         # 24-hour online-activity series for the /network/ graph.
         if url.path in ("/api/network/online-history", "/api/network/online-history/"):
