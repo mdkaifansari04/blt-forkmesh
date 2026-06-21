@@ -93,11 +93,11 @@ def main():
         "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43",
     )
     # Round-trip at the worker's real iteration count is deterministic.
-    h1 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 150000)
-    h2 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 150000)
-    check("PBKDF2-SHA256 deterministic (150k)", h1, h2)
+    h1 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 100000)
+    h2 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 100000)
+    check("PBKDF2-SHA256 deterministic (100k)", h1, h2)
     check("PBKDF2-SHA256 rejects wrong password",
-          pbkdf2_sha256(b"wrong", b"\x00" * 16, 150000) == h1, False)
+          pbkdf2_sha256(b"wrong", b"\x00" * 16, 100000) == h1, False)
 
     # Blind index: deterministic, case/space-insensitive, distinct, fixed vector.
     k = "test-data-key"
