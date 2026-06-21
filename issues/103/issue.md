@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 103
 title: make it so that when we press the down arrow and go to next commit it's loaded and also move the table selection hilight when we click prev or next
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
