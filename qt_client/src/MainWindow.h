@@ -591,6 +591,8 @@ private:
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
+    QPushButton *m_repoAgentsTab = nullptr;
+    QPushButton *m_repoActionsTab = nullptr;
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.

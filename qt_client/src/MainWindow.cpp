@@ -4681,8 +4681,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             b->setChecked(true);
         if (i == 2)
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
+        if (i == 3)
+            m_repoAgentsTab = b; // handle for the Agents (N) badge
         if (i == 4)
             m_repoPullsTab = b;
+        if (i == 5)
+            m_repoActionsTab = b; // handle for the Actions (N) badge
         m_repoDetailTabs->addButton(b, i);
         tabRow->addWidget(b);
     }
@@ -6020,6 +6024,18 @@ void MainWindow::reloadAgents()
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
+    if (m_repoAgentsTab) {
+        QString owner, name;
+        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+            owner = m_repositories.at(m_repoDetailIndex).owner;
+            name = m_repositories.at(m_repoDetailIndex).name;
+        }
+        int n = 0;
+        for (const AgentSession &s : std::as_const(m_agentSessions))
+            if (s.owner == owner && s.name == name)
+                ++n;
+        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
+    }
 }
 
 void MainWindow::refreshAgentTable()
@@ -9385,9 +9401,10 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     setIssueInlineNotice("Issue created.");
-    // If requested, hand the freshly-created issue straight to a coding agent.
+    // If requested, hand the freshly-created issue straight to a coding agent
+    // (default provider: OpenAI Codex).
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked())
-        assignIssueToAgent(QStringLiteral("claude"));
+        assignIssueToAgent(QStringLiteral("codex"));
 }
 
 void MainWindow::copyIssueToClipboard()
@@ -13223,6 +13240,8 @@ void MainWindow::refreshRepoActions()
     m_actionWorkflowList->clear();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        if (m_repoActionsTab)
+            m_repoActionsTab->setText(QStringLiteral("Actions (0)"));
         refreshActionsTable();
         return;
     }
