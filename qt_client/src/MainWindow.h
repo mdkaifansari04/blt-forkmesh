@@ -256,6 +256,7 @@ private:
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
     void testOpenAiAgentKey();
+    void refreshClaudeSpend();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
     void processAgentQueue();
@@ -796,6 +797,8 @@ private:
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
+    QLabel *m_agentClaudeSpend = nullptr;
+    QLabel *m_agentClaudeStatus = nullptr;
     QPushButton *m_agentSendPromptButton = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;

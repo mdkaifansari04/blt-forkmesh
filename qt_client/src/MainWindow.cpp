@@ -7020,31 +7020,30 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->setSpacing(8);
     listLayout->addWidget(heading);
     listLayout->addWidget(hint);
-    auto *keyTestRow = new QHBoxLayout;
-    keyTestRow->setContentsMargins(0, 0, 0, 0);
-    keyTestRow->setSpacing(8);
-    m_agentTestApiKeyButton = new QPushButton("Refresh OpenAI usage");
-    m_agentTestApiKeyButton->setObjectName("ghostButton");
-    m_agentTestApiKeyButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentTestApiKeyButton, "key", 15);
-    connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
-            &MainWindow::testOpenAiAgentKey);
-    m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not refreshed");
+    m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
     m_agentOpenAiSpend->setObjectName("channelTitle");
     m_agentOpenAiSpend->setWordWrap(true);
     m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentApiKeyStatus = new QLabel("Refresh to show OpenAI requests, tokens, models, organization, and request ID.");
+    m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each Codex session.");
     m_agentApiKeyStatus->setObjectName("statusLine");
     m_agentApiKeyStatus->setWordWrap(true);
     m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentClaudeSpend = new QLabel("Claude spend this month: not yet refreshed");
+    m_agentClaudeSpend->setObjectName("channelTitle");
+    m_agentClaudeSpend->setWordWrap(true);
+    m_agentClaudeSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude Code session.");
+    m_agentClaudeStatus->setObjectName("statusLine");
+    m_agentClaudeStatus->setWordWrap(true);
+    m_agentClaudeStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *usageText = new QVBoxLayout;
     usageText->setContentsMargins(0, 0, 0, 0);
-    usageText->setSpacing(2);
+    usageText->setSpacing(4);
     usageText->addWidget(m_agentOpenAiSpend);
     usageText->addWidget(m_agentApiKeyStatus);
-    keyTestRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
-    keyTestRow->addLayout(usageText, 1);
-    listLayout->addLayout(keyTestRow);
+    usageText->addWidget(m_agentClaudeSpend);
+    usageText->addWidget(m_agentClaudeStatus);
+    listLayout->addLayout(usageText);
     listLayout->addWidget(m_agentTable, 1);
 
     auto *detailPane = new QWidget;
@@ -7410,6 +7409,103 @@ void MainWindow::testOpenAiAgentKey()
                 else
                     finish();
             });
+}
+
+void MainWindow::refreshClaudeSpend()
+{
+    const QString apiKey =
+        QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    if (apiKey.isEmpty()) {
+        if (m_agentClaudeStatus)
+            m_agentClaudeStatus->setText("No Claude API key saved in Settings.");
+        return;
+    }
+    if (!m_networkAccess) {
+        if (m_agentClaudeStatus)
+            m_agentClaudeStatus->setText("Network client is not ready.");
+        return;
+    }
+
+    if (m_agentClaudeStatus)
+        m_agentClaudeStatus->setText("Refreshing Claude usage...");
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const qint64 costsStart =
+        QDate(now.date().year(), now.date().month(), 1)
+            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .toSecsSinceEpoch();
+    const qint64 costsEnd =
+        now.date()
+            .addDays(1)
+            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .toSecsSinceEpoch();
+
+    QUrl url(QStringLiteral("https://api.anthropic.com/v1/usage"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("start_time"),
+                       QString::number(costsStart));
+    query.addQueryItem(QStringLiteral("end_time"),
+                       QString::number(costsEnd));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setRawHeader("x-api-key", apiKey.toUtf8());
+    request.setRawHeader("anthropic-version", "2023-06-01");
+    request.setRawHeader("Accept", "application/json");
+
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (m_agentClaudeStatus)
+                m_agentClaudeStatus->setText(
+                    QStringLiteral("Claude usage unavailable: %1")
+                        .arg(apiErrorSummary(reply, body)));
+            if (m_agentClaudeSpend)
+                m_agentClaudeSpend->setText("Claude spend this month: unavailable");
+            return;
+        }
+        // Parse the usage response.
+        const QJsonObject root = QJsonDocument::fromJson(body).object();
+        double totalCost = 0.0;
+        qint64 inputTokens = 0;
+        qint64 outputTokens = 0;
+        bool hasData = false;
+        const QJsonArray data = root.value("data").toArray();
+        for (const QJsonValue &entry : data) {
+            const QJsonObject obj = entry.toObject();
+            totalCost += obj.value("cost").toDouble();
+            inputTokens += static_cast<qint64>(obj.value("input_tokens").toDouble());
+            outputTokens += static_cast<qint64>(obj.value("output_tokens").toDouble());
+            hasData = true;
+        }
+        if (!hasData) {
+            // Flat top-level cost field in some API versions.
+            if (root.contains("total_cost") || root.contains("cost")) {
+                totalCost = root.value("total_cost").toDouble(
+                    root.value("cost").toDouble());
+                hasData = true;
+            }
+        }
+        if (m_agentClaudeSpend) {
+            if (hasData)
+                m_agentClaudeSpend->setText(
+                    QStringLiteral("Claude spend, month to date: $%1 USD")
+                        .arg(QString::number(totalCost, 'f', 4)));
+            else
+                m_agentClaudeSpend->setText("Claude spend this month: $0.0000 USD");
+        }
+        if (m_agentClaudeStatus) {
+            if (inputTokens > 0 || outputTokens > 0)
+                m_agentClaudeStatus->setText(
+                    QStringLiteral("Claude usage this month: %1 input tokens, %2 output tokens.")
+                        .arg(inputTokens)
+                        .arg(outputTokens));
+            else
+                m_agentClaudeStatus->setText("Claude usage refreshed.");
+        }
+    });
 }
 
 void MainWindow::initAgents()
@@ -8073,6 +8169,13 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
+    // Auto-refresh usage/spend after a session completes.
+    if (session) {
+        if (session->provider == QLatin1String("claude"))
+            refreshClaudeSpend();
+        else
+            testOpenAiAgentKey();
+    }
     processAgentQueue();
 }
 
