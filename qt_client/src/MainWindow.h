@@ -184,7 +184,10 @@ private:
     void queryBalanceFromElectrum(const QString &addr,
                                   const QByteArray &scriptHashHex,
                                   int serverIndex);
-    QWidget *buildReposPanel();
+    QWidget *buildNodesPanel(); // left column: just the nodes
+    QWidget *buildReposPanel(); // column: repos for the selected node
+    // Fill the repositories column with the repos owned by the selected node.
+    void selectNode(const QString &node);
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
@@ -271,6 +274,9 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    // Scan recent commit messages for closing keywords ("closes #12", "fixes
+    // #3", "resolves #7") and close + annotate the referenced issues. Idempotent.
+    void applyCommitIssueClosures();
     void loadRepoInsights();
     void setRepoBranch(const QString &branch);
     QString currentRef() const;
@@ -346,6 +352,9 @@ private:
     void onTypingChanged(const QString &conversation, const QString &peerId,
                          const QString &peerName, bool active);
     void logSystem(const QString &text);
+    // Compact, centered success/failure banner shown in the top bar between the
+    // breadcrumb and the notifications bell. Auto-clears after a few seconds.
+    void flashMessage(const QString &text, bool error = false);
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -434,6 +443,8 @@ private:
     QLabel *m_breadcrumb = nullptr;
     QLabel *m_breadcrumbServerIcon = nullptr;
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
+    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
+    QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -455,7 +466,9 @@ private:
     QLabel *m_channelTitle;
     QLabel *m_encryptionLabel;
     QListWidget *m_channelList;
-    QListWidget *m_repoList;
+    QListWidget *m_repoList;             // repos for the selected node
+    QListWidget *m_nodeList = nullptr;   // left column: the nodes themselves
+    QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_syncRepoButton;
     QPushButton *m_publishRepoButton;
     QListWidget *m_dmList;

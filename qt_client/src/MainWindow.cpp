@@ -2808,7 +2808,7 @@ void MainWindow::refreshServerRail()
     m_avatarNavButton->setIconSize(QSize(34, 34));
     m_avatarNavButton->setToolTip("You · Settings");
     connect(m_avatarNavButton, &QPushButton::clicked, this,
-            [this] { showSection(2); });
+            [this] { showSection(1); }); // Settings
     updateAvatarButton();
     layout->addWidget(m_avatarNavButton, 0, Qt::AlignHCenter);
 
@@ -2950,9 +2950,11 @@ QWidget *MainWindow::buildChatPage()
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
     m_sectionStack = new QStackedWidget;
-    m_sectionStack->addWidget(buildHomeSection());       // 0 Home (repos + chat)
-    m_sectionStack->addWidget(buildRepoDetailSection()); // 1 Repo detail
-    m_sectionStack->addWidget(buildSettingsSection());   // 2 Settings
+    // Home now hosts the nodes column, repositories column and the repo detail
+    // panel (with Chat as a tab) all at once, so there is no separate repo-detail
+    // section any more.
+    m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
+    m_sectionStack->addWidget(buildSettingsSection());   // 1 Settings
 
     // The server rail is the only left strip now; the section fills the rest.
     auto *content = new QWidget;
@@ -3060,11 +3062,22 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
+    // Compact, centered success/failure toast. It lives in the middle of the
+    // top bar (between the breadcrumb and the notifications bell) and is flanked
+    // by stretches so it stays centered regardless of breadcrumb width.
+    m_topMessage = new QLabel;
+    m_topMessage->setObjectName("topMessage");
+    m_topMessage->setTextFormat(Qt::RichText);
+    m_topMessage->setAlignment(Qt::AlignCenter);
+    m_topMessage->hide();
+
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(14, 6, 14, 6);
     layout->setSpacing(8);
     layout->addWidget(m_breadcrumbServerIcon);
     layout->addWidget(m_breadcrumb);
+    layout->addStretch();
+    layout->addWidget(m_topMessage);
     layout->addStretch();
     layout->addWidget(m_notificationButton);
     layout->addWidget(m_connectionStatus);
@@ -3116,7 +3129,7 @@ void MainWindow::updateBreadcrumb()
 {
     if (!m_breadcrumb)
         return;
-    static const char *kSections[] = {"Home", "Repository", "Settings"};
+    static const char *kSections[] = {"Home", "Settings"};
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -3131,13 +3144,13 @@ void MainWindow::updateBreadcrumb()
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
     const QString sep =
         QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
-    QString trail = (section >= 0 && section < 3) ? kSections[section] : "Home";
-    // On the repo detail view, fold the "Repositories › owner/name" path into the
-    // single top breadcrumb (Repositories is a link back to the repo list).
-    if (section == 1 && m_repoDetailIndex >= 0 &&
+    QString trail = (section >= 0 && section < 2) ? kSections[section] : "Home";
+    // On Home, when a repository is open in the detail panel, surface its
+    // owner/name in the breadcrumb after "Home".
+    if (section == 0 && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-        trail = QStringLiteral("<a href=\"repos\">Repositories</a>%1%2")
+        trail = QStringLiteral("Home%1%2")
                     .arg(sep, (repo.owner + "/" + repo.name).toHtmlEscaped());
     }
     // No hardcoded text colors here: the section/separator inherit the
@@ -3226,18 +3239,23 @@ QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
 
-    // Everything on one page: the nodes & repositories panel on the left (each
-    // node now carries its own stats inline), chat on the right.
+    // Everything on one page, left to right: a Nodes column, a Repositories
+    // column (the repos for the selected node), then the repo detail panel whose
+    // tabs (Code, Commits, Issues, …, Chat) are the only thing that swaps as you
+    // navigate — the two columns stay visible the whole time. The node profile
+    // panel slides in on the far right when a node is clicked.
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("homeSplitter");
     splitter->setChildrenCollapsible(false);
+    splitter->addWidget(buildNodesPanel());
     splitter->addWidget(buildReposPanel());
-    splitter->addWidget(buildChatSection());
+    splitter->addWidget(buildRepoDetailSection());
     splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
     splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 0);
-    splitter->setSizes({360, 680, 320});
+    splitter->setStretchFactor(1, 0);
+    splitter->setStretchFactor(2, 1);
+    splitter->setStretchFactor(3, 0);
+    splitter->setSizes({220, 260, 760, 320});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -3698,17 +3716,51 @@ void MainWindow::queryBalanceFromElectrum(const QString &addr,
     sock->connectToHostEncrypted(QString::fromLatin1(srv.host), srv.port);
 }
 
+QWidget *MainWindow::buildNodesPanel()
+{
+    auto *page = new QWidget;
+    page->setObjectName("sidebar"); // reuse list/label styling
+    page->setMinimumWidth(180);
+    page->setMaximumWidth(300);
+
+    auto *heading = new QLabel("Nodes");
+    heading->setObjectName("channelTitle");
+    m_nodeList = new QListWidget;
+    m_nodeList->setToolTip(
+        "Nodes on the network. Click one to see its repositories and profile.");
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(20, 22, 16, 22);
+    layout->setSpacing(8);
+    layout->addWidget(heading);
+    layout->addSpacing(8);
+    layout->addWidget(m_nodeList, 1);
+
+    connect(m_nodeList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                if (!item)
+                    return;
+                const QString node = item->data(Qt::UserRole + 1).toString();
+                if (node.isEmpty())
+                    return;
+                selectNode(node);                 // fill the repositories column
+                showNodeProfile(QString(), node); // and open the node's profile
+            });
+    return page;
+}
+
 QWidget *MainWindow::buildReposPanel()
 {
     auto *page = new QWidget;
     page->setObjectName("sidebar"); // reuse list/label styling
-    page->setMinimumWidth(240);
+    page->setMinimumWidth(220);
+    page->setMaximumWidth(360);
 
-    auto *heading = new QLabel("Nodes and repositories");
+    auto *heading = new QLabel("Repositories");
     heading->setObjectName("channelTitle");
     m_repoList = new QListWidget;
     m_repoList->setToolTip(
-        "Repositories this node is preserving locally, grouped by node");
+        "Repositories preserved by the selected node");
 
     auto *addRepoButton = new QPushButton("+ Add");
     addRepoButton->setObjectName("ghostButton");
@@ -3727,7 +3779,7 @@ QWidget *MainWindow::buildReposPanel()
     repoButtonRow->addStretch();
 
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setContentsMargins(16, 22, 20, 22);
     layout->setSpacing(8);
     layout->addWidget(heading);
     layout->addSpacing(8);
@@ -3743,9 +3795,6 @@ QWidget *MainWindow::buildReposPanel()
                     openRepoDetail(index); // files + issues for this repo
                 else if (index == -2) // advertised mirror: "mirror it too"
                     mirrorAdvertisedRepo(item->data(Qt::UserRole + 1).toString());
-                else if (index == -3) // node header: open that node's profile
-                    showNodeProfile(QString(),
-                                    item->data(Qt::UserRole + 1).toString());
             });
     connect(addRepoButton, &QPushButton::clicked, this,
             &MainWindow::promptAddRepository);
@@ -3754,6 +3803,14 @@ QWidget *MainWindow::buildReposPanel()
     connect(m_publishRepoButton, &QPushButton::clicked, this,
             &MainWindow::publishSelectedRepository);
     return page;
+}
+
+void MainWindow::selectNode(const QString &node)
+{
+    if (m_selectedNode == node)
+        return;
+    m_selectedNode = node;
+    refreshRepositoryList();
 }
 
 // ---- Issues section --------------------------------------------------------
@@ -4402,7 +4459,8 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Actions", "workflow"},
                                 {"Wiki", "file"},
                                 {"Security and quality", "shield-check"},
-                                {"Insights", "graph"}};
+                                {"Insights", "graph"},
+                                {"Chat", "comment"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -4437,6 +4495,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 5
     m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
+    m_repoDetailStack->addWidget(buildChatSection());                    // 8 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
@@ -4448,6 +4507,14 @@ QWidget *MainWindow::buildRepoDetailSection()
         else if (id == 7)
             loadRepoInsights();
     });
+
+    // Before any repository is opened the Code/Commits/… tabs have nothing to
+    // show, so land on the always-useful Chat tab; opening a repo switches to
+    // Code (see openRepoDetail).
+    const int chatId = int(tabs.size()) - 1;
+    if (m_repoDetailTabs->button(chatId))
+        m_repoDetailTabs->button(chatId)->setChecked(true);
+    m_repoDetailStack->setCurrentIndex(chatId);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -5571,26 +5638,14 @@ QString MainWindow::repoGitDir() const
 
 void MainWindow::setRepoDetailNotice(const QString &message, bool error)
 {
-    if (!m_repoDetailNotice)
-        return;
-    if (message.trimmed().isEmpty()) {
+    // Success/failure notices now surface as a compact, centered banner in the
+    // top bar (between the breadcrumb and the bell) instead of an inline strip,
+    // so the message is consistent everywhere in the app.
+    if (m_repoDetailNotice) {
         m_repoDetailNotice->clear();
         m_repoDetailNotice->hide();
-        return;
     }
-    const bool dark = currentThemeIsDark();
-    const QString bg = error ? (dark ? "#3d1f21" : "#ffebe9")
-                             : (dark ? "#11251a" : "#dafbe1");
-    const QString border = error ? (dark ? "#f85149" : "#cf222e")
-                                 : (dark ? "#2ea043" : "#1f883d");
-    const QString fg = dark ? "#e6edf3" : "#1f2328";
-    m_repoDetailNotice->setStyleSheet(
-        QStringLiteral("QLabel#repoInlineNotice { background-color:%1; color:%2; "
-                       "border:1px solid %3; border-radius:6px; padding:8px 10px; "
-                       "margin-left:16px; margin-right:16px; }")
-            .arg(bg, fg, border));
-    m_repoDetailNotice->setText(message.toHtmlEscaped());
-    m_repoDetailNotice->show();
+    flashMessage(message, error);
 }
 
 void MainWindow::forkCurrentRepo()
@@ -5856,7 +5911,10 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadRepoOverview(QString());
     if (m_filesStack)
         m_filesStack->setCurrentIndex(0);
-    showSection(1);
+    // The detail panel lives inside Home next to the columns now, so just make
+    // sure Home is the active section and refresh the breadcrumb.
+    showSection(0);
+    updateBreadcrumb();
 }
 
 void MainWindow::updateRepoIssueCount()
@@ -6163,12 +6221,128 @@ void MainWindow::loadCommits()
         item->setData(Qt::UserRole, f.at(0)); // short hash, used to open the diff
         item->setToolTip(QStringLiteral("Click to view the diff for %1").arg(f.at(0)));
     }
+
+    // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
+    // closing and annotating the referenced issues (idempotent).
+    applyCommitIssueClosures();
 }
 
 void MainWindow::showCommitList()
 {
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(0);
+}
+
+void MainWindow::applyCommitIssueClosures()
+{
+    // Closing an issue authors signed events into the repo's issues/ folder, so
+    // it requires a real working tree on this node. Mirror-only repos are
+    // read-only here and are skipped.
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+
+    // Full commit messages so we catch closing keywords in the body, not just
+    // the subject. Records separated by RS (0x1e); fields by US (0x1f).
+    QByteArray out;
+    if (!runGitCapture(dir,
+                       {"log", "--format=%h%x1f%s%x1f%B%x1e", "-n", "500",
+                        currentRef()},
+                       &out, nullptr))
+        return;
+
+    QList<Issue> issues = store.loadAll();
+    QHash<int, const Issue *> byNumber;
+    for (const Issue &issue : issues)
+        byNumber.insert(issue.number, &issue);
+
+    // GitHub-style closing keywords followed by #<number>.
+    static const QRegularExpression closeRe(
+        QStringLiteral("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*"
+                       "#(\\d+)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    int closedCount = 0;
+    QString lastClosed;
+    for (const QByteArray &record : out.split('\x1e')) {
+        if (record.trimmed().isEmpty())
+            continue;
+        const QStringList f = QString::fromUtf8(record).split('\x1f');
+        if (f.size() < 3)
+            continue;
+        const QString shortHash = f.at(0).trimmed();
+        const QString subject = f.at(1).trimmed();
+        const QString message = f.at(2);
+
+        auto it = closeRe.globalMatch(message);
+        QSet<int> seenInThisCommit; // a commit may name the same issue twice
+        while (it.hasNext()) {
+            const int number = it.next().captured(1).toInt();
+            if (number <= 0 || seenInThisCommit.contains(number))
+                continue;
+            seenInThisCommit.insert(number);
+
+            const Issue *issue = byNumber.value(number, nullptr);
+            if (!issue || issue->status == QLatin1String("closed"))
+                continue;
+
+            // Idempotency: skip if a comment already records this commit closing
+            // the issue (so reloading the commits tab doesn't re-comment).
+            bool alreadyLinked = false;
+            for (const IssueEvent &ev : issue->events) {
+                if (ev.type == QLatin1String("comment") &&
+                    ev.body.contains(shortHash)) {
+                    alreadyLinked = true;
+                    break;
+                }
+            }
+            if (alreadyLinked)
+                continue;
+
+            QString err;
+            const QString note =
+                QStringLiteral("Closed by commit `%1` \xE2\x80\x94 %2")
+                    .arg(shortHash, subject);
+            if (!store.addComment(number, note, {}, &err)) {
+                logSystem(QStringLiteral("Issue #%1: could not link commit %2: %3")
+                              .arg(number)
+                              .arg(shortHash, err));
+                continue;
+            }
+            if (!store.setStatus(number, QStringLiteral("closed"), &err)) {
+                logSystem(QStringLiteral("Issue #%1: could not close: %2")
+                              .arg(number)
+                              .arg(err));
+                continue;
+            }
+            logSystem(QStringLiteral("Closed issue #%1 via commit %2.")
+                          .arg(number)
+                          .arg(shortHash));
+            ++closedCount;
+            lastClosed = QStringLiteral("#%1").arg(number);
+            // The store mutated on disk; refresh our snapshot so a later commit
+            // in the same pass sees the updated status.
+            issues = store.loadAll();
+            byNumber.clear();
+            for (const Issue &i : issues)
+                byNumber.insert(i.number, &i);
+        }
+    }
+
+    if (closedCount > 0) {
+        flashMessage(closedCount == 1
+                         ? QStringLiteral("Closed issue %1 from commit message.")
+                               .arg(lastClosed)
+                         : QStringLiteral("Closed %1 issues from commit messages.")
+                               .arg(closedCount));
+        reloadIssues();
+        updateRepoIssueCount();
+    }
 }
 
 namespace {
@@ -8506,7 +8680,7 @@ QWidget *MainWindow::buildChatSection()
     settingsButton->setCursor(Qt::PointingHandCursor);
     settingsButton->setToolTip("Settings & network log");
     setOcticon(settingsButton, "gear", 18);
-    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(2); });
+    connect(settingsButton, &QPushButton::clicked, this, [this] { showSection(1); }); // Settings
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
@@ -9140,6 +9314,38 @@ void MainWindow::logSystem(const QString &text)
         m_networkLog.removeFirst();
     if (m_settingsLog)
         m_settingsLog->appendPlainText(line);
+}
+
+void MainWindow::flashMessage(const QString &text, bool error)
+{
+    // Always keep a copy in the network log for history.
+    logSystem(text);
+    if (!m_topMessage)
+        return;
+
+    const QString trimmed = text.simplified();
+    if (trimmed.isEmpty()) {
+        m_topMessage->hide();
+        return;
+    }
+    // Green for success, red for failure; compact pill in the centre of the bar.
+    const QString fg = error ? "#f85149" : "#3fb950";
+    const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
+                                : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    m_topMessage->setText(
+        QStringLiteral("<span style='color:%1'>%2 %3</span>")
+            .arg(fg, glyph, trimmed.toHtmlEscaped()));
+    m_topMessage->show();
+
+    if (!m_topMessageTimer) {
+        m_topMessageTimer = new QTimer(this);
+        m_topMessageTimer->setSingleShot(true);
+        connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
+            if (m_topMessage)
+                m_topMessage->hide();
+        });
+    }
+    m_topMessageTimer->start(error ? 6000 : 4000);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
@@ -9817,12 +10023,12 @@ void MainWindow::saveRepositories() const
 
 void MainWindow::refreshRepositoryList()
 {
-    if (!m_repoList)
+    if (!m_repoList || !m_nodeList)
         return;
 
     QSignalBlocker blocker(m_repoList);
-    // Preserve the selected repository across the rebuild (rows shift because of
-    // the node header rows).
+    QSignalBlocker nodeBlocker(m_nodeList);
+    // Preserve the selected repository across the rebuild.
     int selectedRepo = -1;
     if (QListWidgetItem *current = m_repoList->currentItem()) {
         const int idx = current->data(Qt::UserRole).toInt();
@@ -9830,6 +10036,7 @@ void MainWindow::refreshRepositoryList()
             selectedRepo = idx;
     }
     m_repoList->clear();
+    m_nodeList->clear();
 
     // Repos grouped by node (owner).
     QHash<QString, QList<int>> reposByNode;
@@ -9900,69 +10107,79 @@ void MainWindow::refreshRepositoryList()
         ourRepoKeys.insert(repo.owner + "/" + repo.name);
     QSet<QString> shownAdvertised; // dedupe a repo advertised by several nodes
 
-    QListWidgetItem *itemToSelect = nullptr;
+    // --- Nodes column: one row per node. The OS badge (Linux/Windows/mac) both
+    // identifies the row as a node and signals online (tinted) vs offline (grey).
+    QListWidgetItem *nodeToSelect = nullptr;
+    bool selectedStillExists = false;
     for (const QString &node : std::as_const(nodeOrder)) {
         const NodeInfo info = nodes.value(node);
-        // Node header row: bold, not selectable. The OS badge (Linux/Windows/mac)
-        // both identifies the node as a node and signals online (tinted) vs
-        // offline (grey). The detailed node stats now live in the node profile
-        // window (click the row), not inline under the node.
-        QString headerText = node;
+        QString text = node;
         if (info.self)
-            headerText += " (you)";
-        auto *header = new QListWidgetItem(headerText);
-        // -3 marks a node header row; the node name rides in UserRole+1 so the
-        // list's click handler can open that node's profile.
-        header->setData(Qt::UserRole, -3);
-        header->setData(Qt::UserRole + 1, node);
-        header->setFlags(Qt::ItemIsEnabled);
+            text += " (you)";
         if (!info.inRoster)
-            header->setText(QStringLiteral("Desktop node ") + headerText);
-        header->setIcon(osBadgeIcon(info.platform, info.inRoster && info.online, 16));
-        header->setToolTip(
+            text = QStringLiteral("Desktop node ") + text;
+        auto *row = new QListWidgetItem(text);
+        row->setData(Qt::UserRole, -3);       // node-row marker
+        row->setData(Qt::UserRole + 1, node); // node name (click target)
+        row->setIcon(osBadgeIcon(info.platform, info.inRoster && info.online, 16));
+        row->setToolTip(
             (info.platform.isEmpty() ? QStringLiteral("Platform: unknown")
                                      : "Platform: " + info.platform) +
-            "\nClick to view this node's profile");
-        QFont headerFont = header->font();
-        headerFont.setBold(true);
-        header->setFont(headerFont);
-        m_repoList->addItem(header);
-
-        for (int i : reposByNode.value(node)) {
-            const RepositoryRecord &repo = m_repositories.at(i);
-            const bool online = repo.publishedAtMs > 0;
-            QString label = "    " + repo.name; // indent under the node
-            if (m_syncingRepos.contains(i))
-                label += "  \xC2\xB7 syncing";
-            auto *item = new QListWidgetItem(label);
-            item->setData(Qt::UserRole, i);
-            // A repo glyph distinguishes repositories from nodes; it's green when
-            // published+online on the web and grey when local/pending.
-            item->setIcon(themedOcticon(
-                "repo", repo.publishToNetwork && online ? QColor("#2ea043")
-                                                        : QColor("#6e7681"),
-                14));
-            item->setToolTip("Open " + repo.owner + "/" + repo.name);
-            m_repoList->addItem(item);
-            if (i == selectedRepo)
-                itemToSelect = item;
+            "\nClick to view this node's repositories and profile");
+        QFont f = row->font();
+        f.setBold(true);
+        row->setFont(f);
+        m_nodeList->addItem(row);
+        if (node == m_selectedNode) {
+            selectedStillExists = true;
+            nodeToSelect = row;
         }
+    }
 
-        // Repos this node advertises mirroring that we don't have yet — offer to
-        // "mirror it too".
-        for (const QString &ownerName : info.mirrors) {
-            if (ourRepoKeys.contains(ownerName) || shownAdvertised.contains(ownerName))
-                continue;
-            shownAdvertised.insert(ownerName);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("    \xE2\x86\x93 ") + ownerName +
-                QString::fromUtf8("   \xC2\xB7 mirror it too"));
-            item->setData(Qt::UserRole, -2); // advertised mirror marker
-            item->setData(Qt::UserRole + 1, ownerName);
-            item->setForeground(QColor("#58a6ff"));
-            item->setToolTip("Click to mirror this repository into your own mirror");
-            m_repoList->addItem(item);
-        }
+    // Default the selection to the first node (the ranking puts you first) when
+    // nothing is selected yet or the previously-selected node went away.
+    if (!selectedStillExists) {
+        m_selectedNode = nodeOrder.isEmpty() ? QString() : nodeOrder.first();
+        if (!m_selectedNode.isEmpty() && m_nodeList->count() > 0)
+            nodeToSelect = m_nodeList->item(0);
+    }
+    if (nodeToSelect)
+        m_nodeList->setCurrentItem(nodeToSelect);
+
+    // --- Repositories column: just the repos owned by the selected node, plus
+    // any repos that node advertises mirroring that we don't already have.
+    QListWidgetItem *itemToSelect = nullptr;
+    const NodeInfo selInfo = nodes.value(m_selectedNode);
+    for (int i : reposByNode.value(m_selectedNode)) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        const bool online = repo.publishedAtMs > 0;
+        QString label = repo.name;
+        if (m_syncingRepos.contains(i))
+            label += "  \xC2\xB7 syncing";
+        auto *item = new QListWidgetItem(label);
+        item->setData(Qt::UserRole, i);
+        // A repo glyph: green when published+online on the web, grey otherwise.
+        item->setIcon(themedOcticon(
+            "repo", repo.publishToNetwork && online ? QColor("#2ea043")
+                                                    : QColor("#6e7681"),
+            14));
+        item->setToolTip("Open " + repo.owner + "/" + repo.name);
+        m_repoList->addItem(item);
+        if (i == selectedRepo)
+            itemToSelect = item;
+    }
+    for (const QString &ownerName : selInfo.mirrors) {
+        if (ourRepoKeys.contains(ownerName) || shownAdvertised.contains(ownerName))
+            continue;
+        shownAdvertised.insert(ownerName);
+        auto *item = new QListWidgetItem(
+            QString::fromUtf8("\xE2\x86\x93 ") + ownerName +
+            QString::fromUtf8("   \xC2\xB7 mirror it too"));
+        item->setData(Qt::UserRole, -2); // advertised mirror marker
+        item->setData(Qt::UserRole + 1, ownerName);
+        item->setForeground(QColor("#58a6ff"));
+        item->setToolTip("Click to mirror this repository into your own mirror");
+        m_repoList->addItem(item);
     }
     if (itemToSelect)
         m_repoList->setCurrentItem(itemToSelect);
@@ -10181,8 +10398,7 @@ void MainWindow::syncSelectedRepository()
         return;
     QListWidgetItem *item = m_repoList->currentItem();
     if (!item) {
-        QMessageBox::information(this, "Sync repository",
-                                 "Select a mirrored repository first.");
+        flashMessage("Select a repository first.", /*error=*/true);
         return;
     }
     syncRepository(item->data(Qt::UserRole).toInt());
@@ -10368,8 +10584,7 @@ void MainWindow::publishSelectedRepository()
         return;
     QListWidgetItem *item = m_repoList->currentItem();
     if (!item) {
-        QMessageBox::information(this, "Publish repository",
-                                 "Select a mirrored repository first.");
+        flashMessage("Select a repository first.", /*error=*/true);
         return;
     }
     const int index = item->data(Qt::UserRole).toInt();
@@ -10447,6 +10662,9 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                     refreshRepositoryList();
                     logSystem("Catalog: published " + repo.owner + "/" +
                               repo.name + " to forkmesh.com.");
+                    if (showDialogOnError)
+                        flashMessage("Published " + repo.owner + "/" + repo.name +
+                                     " to forkmesh.com.");
                     return;
                 }
 
@@ -10459,7 +10677,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                     (detail.isEmpty() ? QString() : ": " + detail);
                 logSystem(message);
                 if (showDialogOnError)
-                    QMessageBox::warning(this, "Publish repository", message);
+                    flashMessage(message, /*error=*/true);
             });
 }
 
@@ -10555,6 +10773,9 @@ void MainWindow::syncRepository(int index, bool quiet)
                     if (!quiet || changed)
                         logSystem("Mirror: synced " + repo.owner + "/" +
                                   repo.name + " into " + repo.mirrorPath + ".");
+                    if (!quiet)
+                        flashMessage("Synced " + repo.owner + "/" + repo.name +
+                                     (changed ? "" : " (already up to date)"));
                     if (changed && m_backend) {
                         m_backend->sendChat(
                             repositoryChannel(repo),
@@ -10572,11 +10793,11 @@ void MainWindow::syncRepository(int index, bool quiet)
                     logSystem("Mirror: sync failed for " + repo.owner + "/" +
                               repo.name + ": " + errors.right(300));
                     if (!quiet)
-                        QMessageBox::warning(
-                            this, "Sync repository",
-                            "Git mirror sync failed" +
+                        flashMessage(
+                            "Sync failed for " + repo.owner + "/" + repo.name +
                                 (errors.isEmpty() ? QString() :
-                                                    ": " + errors.right(500)));
+                                                    ": " + errors.right(160)),
+                            /*error=*/true);
                 }
             });
     connect(process, &QProcess::errorOccurred, this,
@@ -10585,9 +10806,9 @@ void MainWindow::syncRepository(int index, bool quiet)
                 m_syncingRepos.remove(index);
                 refreshRepositoryList();
                 if (!quiet)
-                    QMessageBox::warning(
-                        this, "Sync repository",
-                        "Could not run git. Install Git and try again.");
+                    flashMessage(
+                        "Could not run git. Install Git and try again.",
+                        /*error=*/true);
             });
     process->start("git", args);
 }
