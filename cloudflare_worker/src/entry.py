@@ -2480,7 +2480,7 @@ class Default(WorkerEntrypoint):
         await ensure_schema(self.env)
         params = parse_qs(urlparse(request.url).query)
 
-        # POST ?action=disburse -> retry confirmed join deposit sweeps
+        # POST ?action=disburse -> retry confirmed join deposit sweeps.
         banner = ""
         if method_name(request) == "POST" and \
                 params.get("action", [""])[0] == "disburse":
