@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 104
 title: please fix this errror that happens when someone signs up NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not supported (requested 150000).
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
