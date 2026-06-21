@@ -578,6 +578,7 @@ private:
     QCheckBox *m_autostartCheck = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
+    QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
     QLineEdit *m_claudeApiKeyEdit = nullptr;
     QLineEdit *m_codexCommandEdit = nullptr;
