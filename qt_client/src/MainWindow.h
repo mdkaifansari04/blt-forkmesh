@@ -278,6 +278,7 @@ private:
     void onRunStatusChanged(int runId, const QString &status);
     void onRunFinished(int runId, bool ok);
     void refreshActionsTable();
+    void showLatestVisibleActionRun();
     void showRun(int runId);
     void approveSelectedRun();
     void rejectSelectedRun();

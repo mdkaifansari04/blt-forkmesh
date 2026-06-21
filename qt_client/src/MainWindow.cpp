@@ -13167,6 +13167,41 @@ void MainWindow::refreshActionsTable()
     updateActionsTabIndicator();
 }
 
+void MainWindow::showLatestVisibleActionRun()
+{
+    if (!m_actionsTable || m_actionsTable->rowCount() == 0) {
+        showRun(-1);
+        return;
+    }
+
+    int targetRow = 0;
+    int targetRunId = -1;
+    for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_actionsTable->item(row, 0);
+        if (!item)
+            continue;
+        const int runId = item->data(Qt::UserRole).toInt();
+        if (targetRunId < 0) {
+            targetRow = row;
+            targetRunId = runId;
+        }
+        const ActionRun *run = findRun(runId);
+        if (run && run->status == ActionStatus::Running) {
+            targetRow = row;
+            targetRunId = runId;
+            break;
+        }
+    }
+
+    if (targetRunId < 0) {
+        showRun(-1);
+        return;
+    }
+
+    m_actionsTable->selectRow(targetRow);
+    showRun(targetRunId);
+}
+
 int MainWindow::commitStatusCode(const QString &sha) const
 {
     if (sha.isEmpty() || m_repoDetailIndex < 0 ||
@@ -13367,11 +13402,7 @@ void MainWindow::refreshRepoActions()
 
     m_selectedWorkflowFilter.clear();
     refreshActionsTable();
-
-    // If the detail pane is showing a run from another repo, reset it.
-    const ActionRun *selected = findRun(m_selectedRunId);
-    if (!selected || selected->owner != repo.owner || selected->name != repo.name)
-        showRun(-1);
+    showLatestVisibleActionRun();
 }
 
 void MainWindow::showRun(int runId)
@@ -13490,6 +13521,7 @@ QWidget *MainWindow::buildRepoActionsTab()
                 m_selectedWorkflowFilter =
                     item ? item->data(Qt::UserRole).toString() : QString();
                 refreshActionsTable();
+                showLatestVisibleActionRun();
             });
 
     // Enable/disable actions for this repo, right here on the Actions tab.
