@@ -153,6 +153,12 @@ int main(int argc, char *argv[])
             p.start("git", QStringList{"-C", tmp.path()} + args);
             p.waitForFinished(8000);
         };
+        auto gitOutput = [&](const QStringList &args) {
+            QProcess p;
+            p.start("git", QStringList{"-C", tmp.path()} + args);
+            p.waitForFinished(8000);
+            return p.readAllStandardOutput();
+        };
         git({"init", "-q"});
         git({"config", "user.email", "test@forkmesh.local"});
         git({"config", "user.name", "tester"});
@@ -200,6 +206,10 @@ int main(int argc, char *argv[])
 
         check(repo.deleteIssue(n, &err), "deleteIssue succeeds");
         check(repo.loadAll().isEmpty(), "deleted issue no longer loads");
+        check(gitOutput({"log", "--all", "--", QStringLiteral("issues/%1").arg(n)})
+                  .trimmed()
+                  .isEmpty(),
+              "deleted issue is purged from git history");
     }
 
     if (failures) {
