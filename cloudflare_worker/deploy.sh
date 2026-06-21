@@ -51,6 +51,7 @@ trim() {
 # server has no secret store unless you keep a .dev.vars file, so passing them
 # inline keeps `./deploy.sh dev` working.
 VAR_ARGS=()
+CF_ACCOUNT_ID_SET=0
 if [ -f "$ENV_FILE" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac   # skip blanks/comments
@@ -64,11 +65,30 @@ if [ -f "$ENV_FILE" ]; then
         # the ID to this open-source wrangler.toml — and never ship them as Worker
         # vars or secrets.
         case "$key" in
-            CLOUDFLARE_*) export "$key=$value"; continue ;;
+            CLOUDFLARE_ACCOUNT_ID)
+                if [ -n "$value" ]; then
+                    CF_ACCOUNT_ID_SET=1
+                    export "$key=$value"
+                fi
+                continue
+                ;;
+            CLOUDFLARE_*)
+                [ -n "$value" ] && export "$key=$value"
+                continue
+                ;;
         esac
         VAR_ARGS+=(--var "${key}:${value}")          # .env uses =, wrangler uses :
     done < "$ENV_FILE"
 fi
+
+require_cloudflare_account() {
+    if [ "$CF_ACCOUNT_ID_SET" = "1" ] || [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+        return 0
+    fi
+    echo "ERROR: CLOUDFLARE_ACCOUNT_ID is missing." >&2
+    echo "       Set it in $ENV_FILE (or the CI secret that writes that file) before deploying." >&2
+    return 1
+}
 
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
 # Idempotent (re-running updates values) and persists across redeploys. Requires
@@ -152,6 +172,7 @@ push_secrets() {
 
 case "${1:-deploy}" in
     deploy)
+        require_cloudflare_account
         echo "Deploying ForkMesh website + relay to Cloudflare..."
         pywrangler deploy
         # Secrets are set after the Worker exists; unlike plaintext vars they
@@ -160,6 +181,7 @@ case "${1:-deploy}" in
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
         ;;
     secrets)
+        require_cloudflare_account
         # Re-push just the .env.production secrets, no full redeploy.
         push_secrets
         ;;
@@ -167,6 +189,7 @@ case "${1:-deploy}" in
         pywrangler dev ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
         ;;
     dry-run)
+        require_cloudflare_account
         pywrangler deploy --dry-run
         ;;
     *)
