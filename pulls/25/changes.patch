@@ -1,0 +1,83 @@
+diff --git a/cloudflare_worker/docs/superpowers/specs/2026-06-22-waitlist-d1-design.md b/cloudflare_worker/docs/superpowers/specs/2026-06-22-waitlist-d1-design.md
+new file mode 100644
+index 0000000..00c7095
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/specs/2026-06-22-waitlist-d1-design.md
+@@ -0,0 +1,77 @@
++# Waitlist D1 Storage Design
++
++## Goal
++
++Make the `features.html` landing-page waitlist form persist submissions to Cloudflare D1.
++
++## Scope
++
++- Add a dedicated plaintext D1 table for waitlist submissions.
++- Add a public Worker endpoint for the landing page to submit an email address.
++- Update the existing waitlist form JavaScript to call that endpoint.
++- Add focused tests for schema, route wiring, and frontend behavior.
++
++No admin dashboard, export workflow, email sending, account creation, or signup funnel changes are included.
++
++## Data Model
++
++Create a `waitlist` table:
++
++```sql
++CREATE TABLE IF NOT EXISTS waitlist (
++  email TEXT PRIMARY KEY,
++  created_at INTEGER NOT NULL,
++  source TEXT,
++  path TEXT,
++  user_agent TEXT
++);
++```
++
++`email` is stored in plaintext, lowercased, and used as the primary key so duplicate submissions do not create duplicate rows. `created_at` stores epoch milliseconds. The context fields are operational metadata for understanding where the join came from.
++
++## API
++
++Add `POST /api/waitlist`.
++
++Request body:
++
++```json
++{ "email": "person@example.com", "source": "features" }
++```
++
++Behavior:
++
++- Reject malformed JSON with `400 {"error":"invalid_json"}`.
++- Reject missing or invalid email with `400 {"error":"valid_email_required"}`.
++- Normalize email with trim + lowercase.
++- Insert into D1 with `INSERT OR IGNORE`, so duplicate joins return success.
++- Return `201 {"ok":true}` for both first-time and repeat submissions.
++- Return `405 {"error":"method_not_allowed"}` for non-POST methods on `/api/waitlist`.
++
++## Frontend
++
++Replace the current preview-only submit handler in `public/features.html`.
++
++Behavior:
++
++- Keep client-side email validation for fast feedback.
++- Disable the submit button while the request is in flight.
++- POST to `/api/waitlist` with JSON.
++- Show success after a successful response.
++- Show a short retry message after network or server failure.
++- Clear stale messages when the user edits the email field.
++
++## Routing
++
++`wrangler.toml` already routes `/api/*` through the Worker, so no asset routing change is needed.
++
++## Tests
++
++Add focused tests that verify:
++
++- The lazy schema includes the `waitlist` table.
++- The Worker route table dispatches `/api/waitlist`.
++- The frontend no longer contains the preview-only message.
++- The frontend posts to `/api/waitlist`.
++- The waitlist migration exists and matches the table shape.
++
