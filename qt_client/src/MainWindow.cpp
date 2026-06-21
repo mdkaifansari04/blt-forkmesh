@@ -3233,7 +3233,6 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addSpacing(10);
     layout->addWidget(m_nodeLabel);
     layout->addWidget(m_nodeMenuButton);
-    layout->addWidget(m_navSolanaBalance);
     layout->addSpacing(10);
     layout->addWidget(m_repoLabel);
     layout->addWidget(m_repoMenuButton);
@@ -3245,6 +3244,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addWidget(m_chatButton);
     layout->addWidget(m_notificationButton);
     layout->addWidget(m_connectionStatus);
+    layout->addWidget(m_navSolanaBalance);
     layout->addWidget(m_avatarNavButton);
     updateBreadcrumb();
     updateConnectionStatus();
