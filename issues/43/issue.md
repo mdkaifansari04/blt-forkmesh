@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 43
 title: make it so that when I click on the issue description it allows me to edit it
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
