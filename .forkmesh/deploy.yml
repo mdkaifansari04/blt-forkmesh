@@ -13,11 +13,13 @@ jobs:
           ADMIN_PATH: ${{ secrets.ADMIN_PATH }}
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+          TREASURY_SOLANA_ADDRESS: ${{ secrets.TREASURY_SOLANA_ADDRESS }}
         run: |
           cat > cloudflare_worker/.env.production <<EOF
           ADMIN_PATH=${ADMIN_PATH}
           ADMIN_USER=${ADMIN_USER}
           ADMIN_PASS=${ADMIN_PASS}
+          TREASURY_SOLANA_ADDRESS=${TREASURY_SOLANA_ADDRESS}
           EOF
       - name: Deploy worker
         run: cd cloudflare_worker && ./deploy.sh
