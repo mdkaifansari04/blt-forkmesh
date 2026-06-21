@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 63
 title: always show the latest run live log output when we click on actions
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
