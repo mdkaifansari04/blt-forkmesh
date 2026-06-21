@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 57
 title: support USDT
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
