@@ -6634,6 +6634,14 @@ void MainWindow::testOpenAiAgentKey()
         QDate(now.date().year(), now.date().month(), 1)
             .startOfDay(QTimeZone(QTimeZone::UTC))
             .toSecsSinceEpoch();
+    // Costs are returned in whole UTC-day buckets. Since end_time is
+    // exclusive, use the next midnight so the still-open bucket for today is
+    // included instead of silently dropping all current-day spend.
+    const qint64 costsEnd =
+        now.date()
+            .addDays(1)
+            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .toSecsSinceEpoch();
 
     auto finish = [this, state] {
         if (m_agentTestApiKeyButton)
@@ -6690,12 +6698,13 @@ void MainWindow::testOpenAiAgentKey()
         m_agentApiKeyStatus->setText(lines.join(QStringLiteral("<br>")));
     };
 
-    auto requestCosts = [this, usageKey, costsStart, end, state, finish] {
+    auto requestCosts = [this, usageKey, costsStart, costsEnd, state, finish] {
         QUrl url(QStringLiteral("https://api.openai.com/v1/organization/costs"));
         QUrlQuery query;
         query.addQueryItem(QStringLiteral("start_time"),
                            QString::number(costsStart));
-        query.addQueryItem(QStringLiteral("end_time"), QString::number(end));
+        query.addQueryItem(QStringLiteral("end_time"),
+                           QString::number(costsEnd));
         query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
         query.addQueryItem(QStringLiteral("limit"), QStringLiteral("31"));
         url.setQuery(query);
