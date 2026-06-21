@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 89
 title: add a linke to the deploy action that if the files changed were only in the cloudflare_worker  folder then it deploys, otherwise it skips
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
