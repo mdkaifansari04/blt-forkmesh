@@ -362,6 +362,14 @@ QString AgentRunner::buildPrompt() const
             prompt << QStringLiteral("--- assignees: %1 ---").arg(ev.assignees.join(", "));
         }
     }
+    if (m_store && m_session.startedAtMs > 0) {
+        const QString transcript = m_store->readLog(m_session).trimmed();
+        if (!transcript.isEmpty()) {
+            prompt << QStringLiteral(
+                "\nPrevious session transcript (most recent part):");
+            prompt << transcript.right(12000);
+        }
+    }
     if (m_session.createPr)
         prompt << QStringLiteral("\nA pull request should be created from your patch after this run.");
     prompt << QStringLiteral("\nReturn concise progress and final notes.");

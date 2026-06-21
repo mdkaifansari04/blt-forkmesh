@@ -4069,11 +4069,18 @@ QWidget *MainWindow::buildIssuesSection()
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
+    m_quickAddCreatePr = new QCheckBox("Create PR");
+    m_quickAddCreatePr->setToolTip(
+        "When quick-add assigns an agent, create a pull request from its patch.");
+    m_quickAddCreatePr->setEnabled(false);
+    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
+            &QCheckBox::setEnabled);
     auto *quickAddRow = new QHBoxLayout;
     quickAddRow->setContentsMargins(0, 0, 0, 0);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(m_quickAddAssignAgent);
+    quickAddRow->addWidget(m_quickAddCreatePr);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -5718,6 +5725,14 @@ QWidget *MainWindow::buildAgentsTab()
             m_agentRunner->stop();
     });
 
+    m_agentContinueButton = new QPushButton("Continue");
+    m_agentContinueButton->setObjectName("primaryButton");
+    m_agentContinueButton->setCursor(Qt::PointingHandCursor);
+    m_agentContinueButton->setToolTip("Continue this session with the same agent");
+    setOcticon(m_agentContinueButton, "terminal", 16);
+    connect(m_agentContinueButton, &QPushButton::clicked, this,
+            &MainWindow::continueSelectedAgentSession);
+
     m_agentDeleteButton = new QPushButton("Delete");
     m_agentDeleteButton->setObjectName("dangerButton");
     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -5728,6 +5743,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->addWidget(m_agentTitle, 1);
+    topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
 
@@ -6288,6 +6304,35 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     processAgentQueue();
 }
 
+void MainWindow::continueSelectedAgentSession()
+{
+    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+        return;
+    if (m_agentRunner && m_agentRunner->busy()) {
+        flashMessage("Another agent session is already running.", true);
+        return;
+    }
+    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (!session)
+        return;
+    if (session->status == AgentStatus::Running ||
+        session->status == AgentStatus::Queued)
+        return;
+
+    session->status = AgentStatus::Queued;
+    session->lastError.clear();
+    session->finishedAtMs = 0;
+    m_agentStore->saveSession(*session);
+    m_agentStore->appendLog(
+        *session,
+        QStringLiteral("\n==> Session continued from ForkMesh."));
+    if (!m_agentQueue.contains(session->id))
+        m_agentQueue.append(session->id);
+    reloadAgents();
+    showAgentSession(session->id);
+    processAgentQueue();
+}
+
 void MainWindow::deleteSelectedAgentSession()
 {
     if (!m_agentStore || m_selectedAgentSessionId <= 0)
@@ -6486,6 +6531,12 @@ void MainWindow::updateAgentActionState()
                          m_agentRunner->currentSessionId() == m_selectedAgentSessionId;
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running);
+    AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
+                                     : nullptr;
+    if (m_agentContinueButton)
+        m_agentContinueButton->setEnabled(
+            session && !running && (!m_agentRunner || !m_agentRunner->busy()) &&
+            session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled(selected);
     if (m_agentSendPromptButton)
