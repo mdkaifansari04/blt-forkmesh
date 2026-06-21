@@ -7985,10 +7985,70 @@ struct DiffFileEntry {
     int dels = 0;
 };
 
+QString diffImageMimeForPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    if (lower.endsWith(QStringLiteral(".png")))
+        return QStringLiteral("image/png");
+    if (lower.endsWith(QStringLiteral(".jpg")) || lower.endsWith(QStringLiteral(".jpeg")))
+        return QStringLiteral("image/jpeg");
+    if (lower.endsWith(QStringLiteral(".gif")))
+        return QStringLiteral("image/gif");
+    if (lower.endsWith(QStringLiteral(".webp")))
+        return QStringLiteral("image/webp");
+    if (lower.endsWith(QStringLiteral(".bmp")))
+        return QStringLiteral("image/bmp");
+    if (lower.endsWith(QStringLiteral(".ico")))
+        return QStringLiteral("image/x-icon");
+    return QString();
+}
+
+QString diffImageCellHtml(const QString &label, const QString &path,
+                          const QString &mime, const QByteArray &bytes)
+{
+    const QString caption =
+        QStringLiteral("<div class='imgcaption'>%1</div>").arg(label);
+    if (bytes.isEmpty())
+        return QStringLiteral("<td class='imgcell'><div class='imgempty'>Not "
+                              "present</div>%1</td>")
+            .arg(caption);
+    return QStringLiteral("<td class='imgcell'><img alt=\"%1: %2\" src=\"data:%3;"
+                          "base64,%4\">%5</td>")
+        .arg(label.toHtmlEscaped(), path.toHtmlEscaped(), mime,
+             QString::fromLatin1(bytes.toBase64()), caption);
+}
+
+QString diffImagePreviewHtml(const QString &dir, const QString &base,
+                             const QString &head, const QString &path)
+{
+    constexpr int kMaxInlineImageBytes = 512 * 1024;
+    const QString mime = diffImageMimeForPath(path);
+    if (mime.isEmpty())
+        return QString();
+
+    QByteArray oldBytes;
+    if (!runGitCapture(dir, {"show", base + ":" + path}, &oldBytes, nullptr) ||
+        oldBytes.size() > kMaxInlineImageBytes)
+        oldBytes.clear();
+    QByteArray newBytes;
+    if (!runGitCapture(dir, {"show", head + ":" + path}, &newBytes, nullptr) ||
+        newBytes.size() > kMaxInlineImageBytes)
+        newBytes.clear();
+    if (oldBytes.isEmpty() && newBytes.isEmpty())
+        return QString();
+
+    return QStringLiteral("<table class='imagetable' width='100%' cellspacing='0' "
+                          "cellpadding='0'><tr>%1%2</tr></table>")
+        .arg(diffImageCellHtml(QStringLiteral("Before"), path, mime, oldBytes),
+             diffImageCellHtml(QStringLiteral("After"), path, mime, newBytes));
+}
+
 // Render a unified diff into an HTML table with an old/new line-number gutter
 // and +/- coloring (classes styled by the document stylesheet), one block per
 // file with a named anchor so the file list can scroll to it.
-QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files)
+QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                              const QString &dir, const QString &base,
+                              const QString &head)
 {
     static const QRegularExpression hunkRe(
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
@@ -8015,11 +8075,13 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files)
             f.anchor = QStringLiteral("file-%1").arg(files.size());
             files.append(f);
             fileIdx = files.size() - 1;
+            const QString imagePreview =
+                diffImagePreviewHtml(dir, base, head, path);
             html += QStringLiteral("<a name=\"%1\"></a><div class='fileblock'>"
                                    "<div class='fileheader'>%2</div>"
-                                   "<table class='difftable' width='100%' "
+                                   "%3<table class='difftable' width='100%' "
                                    "cellspacing='0' cellpadding='0'>")
-                        .arg(f.anchor, path.toHtmlEscaped());
+                        .arg(f.anchor, path.toHtmlEscaped(), imagePreview);
             inFile = true;
             continue;
         }
@@ -8145,7 +8207,8 @@ void MainWindow::showCommit(const QString &hash)
     // --- Render the diff and collect per-file stats.
     QList<DiffFileEntry> files;
     const QString diffHtml =
-        renderUnifiedDiffHtml(QString::fromUtf8(patchRaw), files);
+        renderUnifiedDiffHtml(QString::fromUtf8(patchRaw), files, dir, base,
+                              full.isEmpty() ? hash : full);
     int totalAdds = 0, totalDels = 0;
     for (const DiffFileEntry &f : files) {
         totalAdds += f.adds;
@@ -8200,6 +8263,12 @@ void MainWindow::showCommit(const QString &hash)
                 ".fileheader { background:%1; padding:6px 10px; font-family:"
                 "monospace; font-weight:600; border:1px solid #30363d; }"
                 ".difftable { font-family:monospace; font-size:12px; }"
+                ".imagetable { border-left:1px solid #30363d; "
+                "border-right:1px solid #30363d; }"
+                ".imgcell { width:50%; padding:10px; text-align:center; }"
+                ".imgcell img { max-width:100%; max-height:360px; }"
+                ".imgempty { color:%2; padding:60px 0; border:1px solid #30363d; }"
+                ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
                 "td.ln { color:%2; text-align:right; padding:0 8px; }"
                 "td.code { white-space:pre; padding:0 6px; }"
                 ".add { background:%3; }"

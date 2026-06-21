@@ -14,6 +14,7 @@ namespace {
 
 constexpr quint64 kMaxWsPayload = 8ull * 1024 * 1024;
 constexpr int kMaxBlobBytes = 512 * 1024;
+constexpr int kMaxImageDiffBytes = 2 * 1024 * 1024;
 constexpr int kGitTimeoutMs = 5000;
 
 QByteArray randomKey()
@@ -64,6 +65,24 @@ bool runGit(const QString &mirrorPath, const QStringList &args, QByteArray &outp
         return false;
     }
     return true;
+}
+
+QString imageMimeForPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    if (lower.endsWith(QStringLiteral(".png")))
+        return QStringLiteral("image/png");
+    if (lower.endsWith(QStringLiteral(".jpg")) || lower.endsWith(QStringLiteral(".jpeg")))
+        return QStringLiteral("image/jpeg");
+    if (lower.endsWith(QStringLiteral(".gif")))
+        return QStringLiteral("image/gif");
+    if (lower.endsWith(QStringLiteral(".webp")))
+        return QStringLiteral("image/webp");
+    if (lower.endsWith(QStringLiteral(".bmp")))
+        return QStringLiteral("image/bmp");
+    if (lower.endsWith(QStringLiteral(".ico")))
+        return QStringLiteral("image/x-icon");
+    return QString();
 }
 
 } // namespace
@@ -524,15 +543,45 @@ QJsonObject RepoHost::buildCommitReply(const QString &hash) const
     runGit(m_mirrorPath, {"diff", "--numstat", base, full}, numstat, nullptr);
 
     QJsonArray files;
+    QJsonArray imageDiffs;
+    int imageDiffBytes = 0;
     for (const QByteArray &record : numstat.split('\n')) {
         if (record.trimmed().isEmpty())
             continue;
         const QList<QByteArray> p = record.split('\t');
         if (p.size() < 3)
             continue;
-        files.append(QJsonObject{{"path", QString::fromUtf8(p.at(2))},
-                                 {"adds", QString::fromUtf8(p.at(0))},
-                                 {"dels", QString::fromUtf8(p.at(1))}});
+        const QString path = QString::fromUtf8(p.at(2));
+        const QString adds = QString::fromUtf8(p.at(0));
+        const QString dels = QString::fromUtf8(p.at(1));
+        files.append(QJsonObject{{"path", path}, {"adds", adds}, {"dels", dels}});
+
+        const QString mime = imageMimeForPath(path);
+        if (adds != QStringLiteral("-") || dels != QStringLiteral("-") ||
+            mime.isEmpty())
+            continue;
+
+        QJsonObject image{{"path", path}, {"mime", mime}};
+        QByteArray oldBytes;
+        if (runGit(m_mirrorPath, {"show", base + ":" + path}, oldBytes, nullptr) &&
+            oldBytes.size() <= kMaxBlobBytes) {
+            const QByteArray encoded = oldBytes.toBase64();
+            if (imageDiffBytes + encoded.size() <= kMaxImageDiffBytes) {
+                image.insert("old", QString::fromLatin1(encoded));
+                imageDiffBytes += encoded.size();
+            }
+        }
+        QByteArray newBytes;
+        if (runGit(m_mirrorPath, {"show", full + ":" + path}, newBytes, nullptr) &&
+            newBytes.size() <= kMaxBlobBytes) {
+            const QByteArray encoded = newBytes.toBase64();
+            if (imageDiffBytes + encoded.size() <= kMaxImageDiffBytes) {
+                image.insert("new", QString::fromLatin1(encoded));
+                imageDiffBytes += encoded.size();
+            }
+        }
+        if (image.contains("old") || image.contains("new"))
+            imageDiffs.append(image);
     }
 
     // Keep the single tunnel frame bounded; the web view notes truncation.
@@ -552,6 +601,7 @@ QJsonObject RepoHost::buildCommitReply(const QString &hash) const
     return {{"ok", true},
             {"commit", commit},
             {"files", files},
+            {"imageDiffs", imageDiffs},
             {"truncated", truncated},
             {"diff", QString::fromUtf8(diff)}};
 }

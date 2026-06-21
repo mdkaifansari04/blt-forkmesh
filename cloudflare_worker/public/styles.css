@@ -2045,6 +2045,46 @@ button.issue-row {
   overflow-x: auto;
 }
 
+.diff-image-preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.diff-image-figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.diff-image-figure img,
+.diff-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 180px;
+  max-height: 420px;
+  object-fit: contain;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--card-soft);
+}
+
+.diff-image-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.diff-image-figure figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .diff-row {
   display: flex;
   min-width: max-content;
@@ -2089,4 +2129,10 @@ html.dark .diff-del {
 
 html.dark .diff-hunk {
   background: rgba(88, 166, 255, 0.16);
+}
+
+@media (max-width: 700px) {
+  .diff-image-preview {
+    grid-template-columns: 1fr;
+  }
 }

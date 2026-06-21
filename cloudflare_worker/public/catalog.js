@@ -906,10 +906,41 @@ async function loadCommits(owner, name) {
   commitListEl.replaceChildren(...data.commits.map(commitRow));
 }
 
+function imageDiffFigure(label, item, key) {
+  const figure = document.createElement("figure");
+  figure.className = "diff-image-figure";
+  const caption = document.createElement("figcaption");
+  caption.textContent = label;
+  if (item[key]) {
+    const img = document.createElement("img");
+    img.alt = `${label}: ${item.path}`;
+    img.src = `data:${item.mime};base64,${item[key]}`;
+    figure.append(img, caption);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "diff-image-empty";
+    empty.textContent = "Not present";
+    figure.append(empty, caption);
+  }
+  return figure;
+}
+
+function appendImageDiff(block, item) {
+  const preview = document.createElement("div");
+  preview.className = "diff-image-preview";
+  preview.append(imageDiffFigure("Before", item, "old"), imageDiffFigure("After", item, "new"));
+  block.append(preview);
+}
+
 // Render a unified diff into DOM rows with an old/new line-number gutter.
-function renderDiff(container, diffText) {
+function renderDiff(container, diffText, imageDiffs) {
   container.replaceChildren();
   const lines = String(diffText || "").split("\n");
+  const images = new Map();
+  for (const item of Array.isArray(imageDiffs) ? imageDiffs : []) {
+    if (item && item.path && item.mime) images.set(item.path, item);
+  }
+  const shownImages = new Set();
   let table = null;
   let oldNo = 0;
   let newNo = 0;
@@ -921,7 +952,13 @@ function renderDiff(container, diffText) {
     head.textContent = path;
     table = document.createElement("div");
     table.className = "diff-body";
-    block.append(head, table);
+    block.append(head);
+    const image = images.get(path);
+    if (image) {
+      appendImageDiff(block, image);
+      shownImages.add(path);
+    }
+    block.append(table);
     container.append(block);
   };
   const addRow = (cls, oldn, newn, code) => {
@@ -968,6 +1005,9 @@ function renderDiff(container, diffText) {
     else if (ch === "-") addRow("diff-del", String(oldNo++), "", line.slice(1) || " ");
     else if (ch === "\\") addRow("diff-ctx", "", "", line);
     else addRow("diff-ctx", String(oldNo++), String(newNo++), line.slice(1) || " ");
+  }
+  for (const [path, image] of images.entries()) {
+    if (!shownImages.has(path)) startFile(path);
   }
   if (!container.childNodes.length) {
     const empty = document.createElement("div");
@@ -1016,7 +1056,7 @@ async function showCommitDiff(hash) {
     body.textContent = c.body;
     commitDetailMetaEl.append(body);
   }
-  renderDiff(commitDiffEl, data.diff);
+  renderDiff(commitDiffEl, data.diff, data.imageDiffs);
   if (data.truncated) {
     const t = document.createElement("div");
     t.className = "file-empty";
