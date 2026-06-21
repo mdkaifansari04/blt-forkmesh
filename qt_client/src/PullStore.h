@@ -54,6 +54,8 @@ public:
     bool mergePull(int number, QString *error = nullptr);
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
+    // Remove the PR folder entirely and commit the deletion.
+    bool deletePull(int number, QString *error = nullptr);
 
     // Sign a PR with the node identity (fills author/authorName/ts/sig). The
     // signature commits to title/base/head/patch (not the number, which the

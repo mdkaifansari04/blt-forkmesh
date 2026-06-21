@@ -5899,7 +5899,8 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeButton = new QPushButton("Merge");
     m_pullPushMainCheck = new QCheckBox("Push to main");
     m_pullCloseButton = new QPushButton("Close");
-    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton}) {
+    m_pullDeleteButton = new QPushButton("Delete");
+    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton, m_pullDeleteButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -5908,6 +5909,8 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
+    setOcticon(m_pullDeleteButton, "trash", 16);
+    m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullPushMainCheck->setToolTip(
         "After merging, push the merged commit to the pull request's base branch in this repo's mirror.");
@@ -5918,6 +5921,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullPushMainCheck, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
@@ -5985,6 +5989,7 @@ QWidget *MainWindow::buildPullsTab()
             this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
+    connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
     return page;
 }
 
@@ -6210,6 +6215,8 @@ void MainWindow::updatePullActionState()
         m_pullPushMainCheck->setEnabled(writable && have && open);
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
+    if (m_pullDeleteButton)
+        m_pullDeleteButton->setEnabled(writable && have);
 }
 
 void MainWindow::promptNewPull()
@@ -6690,6 +6697,34 @@ void MainWindow::closeCurrentPull()
     QString error;
     if (!store.setStatus(m_currentPullNumber, "closed", &error))
         QMessageBox::warning(this, "Close pull request", error);
+    reloadPulls();
+}
+
+void MainWindow::deleteCurrentPull()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    if (!m_pullDeleteConfirmPending) {
+        m_pullDeleteConfirmPending = true;
+        // Show a simple message box confirmation instead of inline notice
+        // (pull detail panel has no equivalent inline notice widget).
+        const int ret = QMessageBox::warning(
+            this, "Delete pull request",
+            QStringLiteral("Permanently delete pull request #%1? This cannot be undone.")
+                .arg(m_currentPullNumber),
+            QMessageBox::Ok | QMessageBox::Cancel);
+        m_pullDeleteConfirmPending = false;
+        if (ret != QMessageBox::Ok)
+            return;
+    }
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.deletePull(m_currentPullNumber, &error)) {
+        QMessageBox::warning(this, "Delete pull request",
+                             error.isEmpty() ? "Could not delete the pull request." : error);
+        return;
+    }
+    m_currentPullNumber = -1;
     reloadPulls();
 }
 

@@ -482,6 +482,40 @@ bool PullStore::applyRemotePull(const PullRequest &incoming, QString *error)
                   error);
 }
 
+
+bool PullStore::deletePull(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    const QString dir = pullDir(number);
+    if (!QFileInfo::exists(dir)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    const QString relPath = QStringLiteral("pulls/%1").arg(number);
+    QString err;
+    runGit(m_workTree, {"rm", "-r", "--ignore-unmatch", "--", relPath}, nullptr, nullptr);
+    if (QDir(dir).exists() && !QDir(dir).removeRecursively()) {
+        if (error)
+            *error = QStringLiteral("Could not remove pull request folder.");
+        return false;
+    }
+    if (!runGit(m_workTree, {"commit", "-m",
+                             QStringLiteral("pull #%1: deleted").arg(number),
+                             "--", relPath},
+                nullptr, &err)) {
+        if (!err.contains(QStringLiteral("nothing to commit")) && !err.isEmpty()) {
+            if (error)
+                *error = QStringLiteral("git commit failed: ") + err;
+            return false;
+        }
+    }
+    return true;
+}
 bool PullStore::commit(const QString &message, QString *error) const
 {
     QString err;
