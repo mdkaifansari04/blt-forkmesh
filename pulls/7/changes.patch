@@ -1,0 +1,17 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 6da9b1b..c35395f 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -12338,12 +12338,6 @@ void MainWindow::syncRepository(int index, bool quiet)
+                                                (changed ? QString()
+                                                         : " (already up to date)"));
+                     }
+-                    if (changed && !stillPreview && m_backend) {
+-                        m_backend->sendChat(
+-                            repositoryChannel(repo),
+-                            "Mirror synced by " + m_userName + " at " +
+-                                formatRepoDate(repo.lastSyncMs));
+-                    }
+                     if (!stillPreview && repo.publishToNetwork &&
+                         (changed || !quiet)) {
+                         publishRepository(index, false);
