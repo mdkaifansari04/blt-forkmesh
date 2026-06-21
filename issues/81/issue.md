@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 81
 title: show the solana balance of the node in the top nav next to the icon please
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
