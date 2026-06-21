@@ -221,6 +221,8 @@ private:
     void showPull(int number);
     void renderPullDiff(const QString &filePath);
     void promptNewPull();
+    void promptNewPullFromDirectory();
+    void promptNewPullFromSource(const QString &sourceDir);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void closeIssuesLinkedFromPull(const PullRequest &pr);
@@ -672,6 +674,7 @@ private:
     QTableWidget *m_pullTable = nullptr;
     QLineEdit *m_pullSearch = nullptr;
     QPushButton *m_pullNewButton = nullptr;
+    QPushButton *m_pullChooseDirButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
     QWidget *m_pullDetail = nullptr;
     QLabel *m_pullTitle = nullptr;
