@@ -1949,22 +1949,6 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
-
-async def _admin_sweep(env, request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
-    ts = clean_string(data.get("ts", ""), 20)
-    sig = clean_string(data.get("sig", ""), 200)
-    canonical = ("forkmesh-admin-sweep-v1\n" + node + "\n" + ts).encode()
-    if not await _admin_authorized(env, node, ts, sig, canonical):
-        return json_response({"error": "unauthorized"}, status=401)
-    result = await _admin_disburse(env)
-    return json_response({"ok": True, "result": result})
-
-
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
@@ -1983,8 +1967,6 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
-    if url.path == "/api/accounts/admin-sweep" and method == "POST":
-        return await _admin_sweep(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     match = ACCOUNTS_RE.match(url.path)

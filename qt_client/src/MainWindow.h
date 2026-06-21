@@ -133,7 +133,6 @@ private:
     void pollPendingUsers();
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
-    void adminSweepDeposits();
     void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
