@@ -1,0 +1,222 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index a9e53d2..e7924fe 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -2616,6 +2616,7 @@ void MainWindow::persistProfile()
+     m_nameEdit->setText(name);
+     saveProfileName(name);
+     saveSolanaAddress(m_solanaEdit->text().trimmed());
++    updateNavSolanaBalance();
+ }
+ 
+ // --------------------------------------------------------------- quick update
+@@ -3062,6 +3063,10 @@ QWidget *MainWindow::buildBreadcrumb()
+     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
+     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
+ 
++    m_navSolanaBalance = new QLabel(QStringLiteral("SOL --"));
++    m_navSolanaBalance->setObjectName("navSolanaBalance");
++    m_navSolanaBalance->setToolTip("This node's Solana wallet balance");
++
+     // Repo switcher, to the right of the node switcher: "repo ▾ count".
+     m_repoMenuButton = new QPushButton;
+     m_repoMenuButton->setObjectName("repoMenuButton");
+@@ -3153,6 +3158,7 @@ QWidget *MainWindow::buildBreadcrumb()
+     layout->addSpacing(10);
+     layout->addWidget(m_nodeLabel);
+     layout->addWidget(m_nodeMenuButton);
++    layout->addWidget(m_navSolanaBalance);
+     layout->addSpacing(10);
+     layout->addWidget(m_repoLabel);
+     layout->addWidget(m_repoMenuButton);
+@@ -3169,6 +3175,7 @@ QWidget *MainWindow::buildBreadcrumb()
+     updateConnectionStatus();
+     updateNotificationButton();
+     updateChatButton();
++    updateNavSolanaBalance();
+     return bar;
+ }
+ 
+@@ -3333,6 +3340,22 @@ void MainWindow::showRelayMenu()
+         QPoint(0, m_relayMenuButton->height())));
+ }
+ 
++// Public Solana JSON-RPC endpoints. Tried in order with fallback so the UI can
++// still show a balance if one public endpoint is unavailable.
++namespace {
++const char *kSolanaRpcEndpoints[] = {
++    "https://api.mainnet-beta.solana.com",
++    "https://solana-rpc.publicnode.com",
++};
++
++bool isLikelySolanaAddress(const QString &address)
++{
++    static const QRegularExpression re(
++        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
++    return re.match(address.trimmed()).hasMatch();
++}
++}  // namespace
++
+ void MainWindow::updateNodeSwitcher()
+ {
+     if (!m_nodeMenuButton)
+@@ -3352,6 +3375,73 @@ void MainWindow::updateNodeSwitcher()
+     m_nodeMenuButton->setIcon(QIcon());
+ }
+ 
++void MainWindow::updateNavSolanaBalance()
++{
++    if (!m_navSolanaBalance)
++        return;
++
++    const QString addr = savedSolanaAddress();
++    m_navSolanaBalanceAddress = addr;
++    if (addr.isEmpty()) {
++        m_navSolanaBalance->setText(QStringLiteral("SOL --"));
++        m_navSolanaBalance->setToolTip("Add a Solana address to show this node's balance");
++        return;
++    }
++    if (!isLikelySolanaAddress(addr)) {
++        m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
++        m_navSolanaBalance->setToolTip("Saved Solana address is invalid");
++        return;
++    }
++
++    m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
++    m_navSolanaBalance->setToolTip(QStringLiteral("Checking this node's Solana balance"));
++    queryNavSolanaBalance(addr, 0);
++}
++
++void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
++{
++    const int count = int(sizeof(kSolanaRpcEndpoints) / sizeof(kSolanaRpcEndpoints[0]));
++    if (endpointIndex >= count) {
++        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
++            m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
++            m_navSolanaBalance->setToolTip("Solana balance is temporarily unavailable");
++        }
++        return;
++    }
++
++    QNetworkRequest request(QUrl(QString::fromLatin1(kSolanaRpcEndpoints[endpointIndex])));
++    request.setHeader(QNetworkRequest::ContentTypeHeader,
++                      QStringLiteral("application/json"));
++    const QJsonObject body{
++        {"jsonrpc", "2.0"},
++        {"id", 1},
++        {"method", "getBalance"},
++        {"params", QJsonArray{addr}},
++    };
++    QNetworkReply *reply = m_networkAccess->post(
++        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
++    connect(reply, &QNetworkReply::finished, this, [this, reply, addr, endpointIndex]() {
++        const QByteArray raw = reply->readAll();
++        const QNetworkReply::NetworkError netError = reply->error();
++        reply->deleteLater();
++        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr)
++            return;
++
++        const QJsonObject root = QJsonDocument::fromJson(raw).object();
++        const QJsonObject result = root.value("result").toObject();
++        if (netError != QNetworkReply::NoError || !result.contains("value")) {
++            queryNavSolanaBalance(addr, endpointIndex + 1);
++            return;
++        }
++        const qint64 lamports = result.value("value").toVariant().toLongLong();
++        const QString balance =
++            QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 4);
++        m_navSolanaBalance->setText(balance);
++        m_navSolanaBalance->setToolTip(
++            QStringLiteral("This node's Solana balance: %1").arg(balance));
++    });
++}
++
+ void MainWindow::showNodeMenu()
+ {
+     if (!m_nodeMenuButton)
+@@ -3559,6 +3649,7 @@ void MainWindow::updateSolanaNotice()
+         return;
+     const bool hasAddress = !savedSolanaAddress().isEmpty();
+     m_solanaBanner->setVisible(!hasAddress);
++    updateNavSolanaBalance();
+ }
+ 
+ void MainWindow::promptSetSolanaAddress()
+@@ -3910,22 +4001,6 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+     m_nodeProfilePanel->show();
+ }
+ 
+-// Public Solana JSON-RPC endpoints. Tried in order with fallback so the UI can
+-// still show a balance if one public endpoint is unavailable.
+-namespace {
+-const char *kSolanaRpcEndpoints[] = {
+-    "https://api.mainnet-beta.solana.com",
+-    "https://solana-rpc.publicnode.com",
+-};
+-
+-bool isLikelySolanaAddress(const QString &address)
+-{
+-    static const QRegularExpression re(
+-        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
+-    return re.match(address.trimmed()).hasMatch();
+-}
+-}  // namespace
+-
+ void MainWindow::checkNodeBalance()
+ {
+     const QString addr = m_profileSolanaValue.trimmed();
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index e02e64c..40b2b5e 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -166,6 +166,8 @@ private:
+     void openServerWebsite(int index); // open a relay's site in the browser
+     void showNodeMenu();           // searchable dropdown to pick a node
+     void updateNodeSwitcher();     // refresh top-bar node label / count
++    void updateNavSolanaBalance(); // refresh top-bar balance for this node
++    void queryNavSolanaBalance(const QString &addr, int endpointIndex);
+     void showRepoMenu();           // dropdown to open repos / add a local repo
+     void updateRepoSwitcher();     // refresh top-bar repo label / count
+     void showChatView();           // open the chat view from the top-bar button
+@@ -498,6 +500,7 @@ private:
+     QLabel *m_relayLabel = nullptr;
+     QLabel *m_nodeLabel = nullptr;
+     QLabel *m_repoLabel = nullptr;
++    QLabel *m_navSolanaBalance = nullptr;
+     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
+     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
+     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
+@@ -524,6 +527,7 @@ private:
+     QLabel *m_encryptionLabel;
+     QListWidget *m_channelList;
+     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
++    QString m_navSolanaBalanceAddress;
+     // One row per node, populated by refreshRepositoryList and shown in the
+     // node dropdown (showNodeMenu).
+     struct NodeMenuEntry {
+diff --git a/qt_client/src/Theme.h b/qt_client/src/Theme.h
+index 2c54d46..3a1353d 100644
+--- a/qt_client/src/Theme.h
++++ b/qt_client/src/Theme.h
+@@ -223,6 +223,10 @@ QPushButton#repoMenuButton:hover {
+     background-color: #161b22; color: #e6edf3;
+ }
+ #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
++#navSolanaBalance {
++    background: transparent; border: 1px solid #30363d; border-radius: 8px;
++    color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
++}
+ #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+ QPushButton#notificationButton, QPushButton#notificationButtonAlert {
+@@ -903,6 +907,10 @@ QPushButton#repoMenuButton:hover {
+     background-color: #eaeef2; color: #1f2328;
+ }
+ #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
++#navSolanaBalance {
++    background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
++    color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
++}
+ #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
+               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+ QPushButton#notificationButton, QPushButton#notificationButtonAlert {
