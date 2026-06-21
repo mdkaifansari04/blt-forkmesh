@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 76
 title: on the node profile show what version they are running please
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
