@@ -523,8 +523,15 @@ private:
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
-    QPushButton *m_syncRepoButton;
-    QPushButton *m_publishRepoButton;
+    QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
+    // One row per repo of the selected node, shown in the repo dropdown.
+    struct RepoMenuEntry {
+        QString label;
+        QIcon icon;
+        int index = -1;     // m_repositories index; -2 = advertised mirror
+        QString advertised; // ownerName when index == -2
+    };
+    QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
     QListWidget *m_memberList;
     QWidget *m_firewallBanner;
