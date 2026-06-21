@@ -600,10 +600,9 @@ const tabDiscussionsEl = document.querySelector("#tab-discussions");
 const discussionsSectionEl = document.querySelector("#discussions");
 const tabNetworkEl = document.querySelector("#tab-network");
 const repoNetworkSectionEl = document.querySelector("#repo-network");
-const tabDocsEl = document.querySelector("#tab-docs");
-const repoDocsSectionEl = document.querySelector("#repo-docs");
 let pullsLoadedFor = null;
 let pullsToken = 0;
+let pullsCountToken = 0;
 
 // Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
 function parseFrontmatter(content) {
@@ -737,6 +736,20 @@ function pullRow(number, title, status, base, head, signed) {
   state.textContent = `${status || "open"}${signed ? " · signed" : ""}${base || head ? ` · ${head || "head"} → ${base || "base"}` : ""}`;
   row.append(dot, main, state);
   return row;
+}
+
+async function loadPullCount() {
+  if (!tabPullsCountEl) return;
+  const token = ++pullsCountToken;
+  const { data, error } = await pullPath("tree", "pulls");
+  if (token !== pullsCountToken) return;
+  const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+  if (!data || !Array.isArray(data.entries)) {
+    if (!hostDown) tabPullsCountEl.textContent = "0";
+    return;
+  }
+  const count = data.entries.filter((e) => e.type === "tree" && /^\d+$/.test(e.name)).length;
+  tabPullsCountEl.textContent = String(count);
 }
 
 async function loadPulls(owner, name) {
@@ -1022,7 +1035,6 @@ function showRepoTab(tab) {
     pulls: pullsSectionEl,
     discussions: discussionsSectionEl,
     network: repoNetworkSectionEl,
-    docs: repoDocsSectionEl,
   };
   for (const [name, section] of Object.entries(sections)) {
     if (section) section.hidden = name !== tab;
@@ -1034,7 +1046,6 @@ function showRepoTab(tab) {
     pulls: tabPullsEl,
     discussions: tabDiscussionsEl,
     network: tabNetworkEl,
-    docs: tabDocsEl,
   };
   for (const [name, button] of Object.entries(tabs)) {
     if (button) button.classList.toggle("is-active", name === tab);
@@ -1061,7 +1072,6 @@ if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues
 if (tabPullsEl) tabPullsEl.addEventListener("click", () => showRepoTab("pulls"));
 if (tabDiscussionsEl) tabDiscussionsEl.addEventListener("click", () => showRepoTab("discussions"));
 if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("network"));
-if (tabDocsEl) tabDocsEl.addEventListener("click", () => showRepoTab("docs"));
 
 // ---- Routing: home (repo list) vs. a single repository page ----------------
 
@@ -1168,6 +1178,7 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   if (tabPullsCountEl) tabPullsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
   renderRepoPath(owner, name, mode, filePath);
+  loadPullCount();
   loadLatestCommit(owner, name);
 }
 
