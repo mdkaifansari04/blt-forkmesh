@@ -1,0 +1,116 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index f3467e3..39dcd92 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -5601,6 +5601,7 @@ void MainWindow::promptNewPull()
+ {
+     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+         return;
++    const RepositoryRecord &currentRepo = m_repositories.at(m_repoDetailIndex);
+     const QString dir = repoGitDir();
+     if (dir.isEmpty()) {
+         QMessageBox::warning(this, "New pull request",
+@@ -5620,6 +5621,17 @@ void MainWindow::promptNewPull()
+ 
+     QDialog dialog(this);
+     dialog.setWindowTitle("New pull request");
++    auto *targetCombo = new QComboBox(&dialog);
++    targetCombo->setEditable(true);
++    targetCombo->addItem(currentRepo.owner);
++    QSet<QString> targetOwners{currentRepo.owner};
++    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
++        if (repo.name == currentRepo.name && !targetOwners.contains(repo.owner)) {
++            targetCombo->addItem(repo.owner);
++            targetOwners.insert(repo.owner);
++        }
++    }
++    targetCombo->setToolTip("Destination node that will receive this pull request");
+     auto *baseCombo = new QComboBox(&dialog);
+     auto *headCombo = new QComboBox(&dialog);
+     baseCombo->addItems(branches);
+@@ -5631,6 +5643,7 @@ void MainWindow::promptNewPull()
+     auto *bodyEdit = new QPlainTextEdit(&dialog);
+     bodyEdit->setPlaceholderText("Describe the change\xE2\x80\xA6");
+     auto *form = new QFormLayout;
++    form->addRow("Target node", targetCombo);
+     form->addRow("Base", baseCombo);
+     form->addRow("Head", headCombo);
+     form->addRow("Title", titleEdit);
+@@ -5648,7 +5661,13 @@ void MainWindow::promptNewPull()
+ 
+     const QString base = baseCombo->currentText();
+     const QString head = headCombo->currentText();
++    const QString targetText = targetCombo->currentText().trimmed();
++    const QString targetOwner = repoSegment(targetText, QString());
+     const QString title = titleEdit->text().trimmed();
++    if (targetOwner.isEmpty()) {
++        QMessageBox::warning(this, "New pull request", "A target node is required.");
++        return;
++    }
+     if (title.isEmpty()) {
+         QMessageBox::warning(this, "New pull request", "A title is required.");
+         return;
+@@ -5672,7 +5691,7 @@ void MainWindow::promptNewPull()
+     pr.patch = QString::fromUtf8(diff);
+ 
+     PullStore store = pullStoreForCurrentRepo();
+-    if (store.canWrite()) {
++    if (store.canWrite() && targetOwner == currentRepo.owner) {
+         QString error;
+         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
+                                              pr.patch, &error);
+@@ -5683,7 +5702,9 @@ void MainWindow::promptNewPull()
+         m_currentPullNumber = number;
+         reloadPulls();
+     } else {
+-        submitPullToInbox(store.makeSignedPull(pr));
++        RepositoryRecord targetRepo = currentRepo;
++        targetRepo.owner = targetOwner;
++        submitPullToInbox(store.makeSignedPull(pr), targetRepo);
+     }
+ }
+ 
+@@ -5896,19 +5917,26 @@ void MainWindow::submitPullToInbox(const PullRequest &pr)
+     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+         return;
+     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+-    const QJsonObject payload{{"owner", repo.owner},
+-                              {"repo", repo.name},
++    submitPullToInbox(pr, repo);
++}
++
++void MainWindow::submitPullToInbox(const PullRequest &pr,
++                                   const RepositoryRecord &targetRepo)
++{
++    const QJsonObject payload{{"owner", targetRepo.owner},
++                              {"repo", targetRepo.name},
+                               {"pull", pr.toJson()}};
+-    QNetworkRequest request(pullsApiUrl(repo));
++    QNetworkRequest request(pullsApiUrl(targetRepo));
+     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+     QNetworkReply *reply = m_networkAccess->post(
+         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
++    connect(reply, &QNetworkReply::finished, this, [this, reply, targetRepo] {
+         reply->deleteLater();
+         if (reply->error() == QNetworkReply::NoError)
+             QMessageBox::information(
+                 this, "Pull request sent",
+-                "Your signed pull request was delivered to the maintainer's inbox.");
++                "Your signed pull request was delivered to " + targetRepo.owner +
++                    "/" + targetRepo.name + ".");
+         else
+             QMessageBox::warning(this, "Pull request",
+                                  "Could not send the pull request: " +
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 81d5954..69e0e03 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -228,6 +228,7 @@ private:
+     void closeCurrentPull();
+     void syncPullsInbox();
+     void submitPullToInbox(const PullRequest &pr);
++    void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
+     void updatePullActionState();
+     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
+     // Agent sessions tab: local Codex/Claude Code runs assigned from issues.
