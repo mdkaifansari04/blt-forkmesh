@@ -2637,6 +2637,7 @@ void MainWindow::persistProfile()
     m_nameEdit->setText(name);
     saveProfileName(name);
     saveSolanaAddress(m_solanaEdit->text().trimmed());
+    updateNavSolanaBalance();
 }
 
 // --------------------------------------------------------------- quick update
@@ -3083,6 +3084,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
+    m_navSolanaBalance = new QLabel(QStringLiteral("SOL --"));
+    m_navSolanaBalance->setObjectName("navSolanaBalance");
+    m_navSolanaBalance->setToolTip("This node's Solana wallet balance");
+
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
     m_repoMenuButton->setObjectName("repoMenuButton");
@@ -3174,6 +3179,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addSpacing(10);
     layout->addWidget(m_nodeLabel);
     layout->addWidget(m_nodeMenuButton);
+    layout->addWidget(m_navSolanaBalance);
     layout->addSpacing(10);
     layout->addWidget(m_repoLabel);
     layout->addWidget(m_repoMenuButton);
@@ -3190,6 +3196,7 @@ QWidget *MainWindow::buildBreadcrumb()
     updateConnectionStatus();
     updateNotificationButton();
     updateChatButton();
+    updateNavSolanaBalance();
     return bar;
 }
 
@@ -3354,6 +3361,22 @@ void MainWindow::showRelayMenu()
         QPoint(0, m_relayMenuButton->height())));
 }
 
+// Public Solana JSON-RPC endpoints. Tried in order with fallback so the UI can
+// still show a balance if one public endpoint is unavailable.
+namespace {
+const char *kSolanaRpcEndpoints[] = {
+    "https://api.mainnet-beta.solana.com",
+    "https://solana-rpc.publicnode.com",
+};
+
+bool isLikelySolanaAddress(const QString &address)
+{
+    static const QRegularExpression re(
+        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
+    return re.match(address.trimmed()).hasMatch();
+}
+}  // namespace
+
 void MainWindow::updateNodeSwitcher()
 {
     if (!m_nodeMenuButton)
@@ -3371,6 +3394,73 @@ void MainWindow::updateNodeSwitcher()
         }
     }
     m_nodeMenuButton->setIcon(QIcon());
+}
+
+void MainWindow::updateNavSolanaBalance()
+{
+    if (!m_navSolanaBalance)
+        return;
+
+    const QString addr = savedSolanaAddress();
+    m_navSolanaBalanceAddress = addr;
+    if (addr.isEmpty()) {
+        m_navSolanaBalance->setText(QStringLiteral("SOL --"));
+        m_navSolanaBalance->setToolTip("Add a Solana address to show this node's balance");
+        return;
+    }
+    if (!isLikelySolanaAddress(addr)) {
+        m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
+        m_navSolanaBalance->setToolTip("Saved Solana address is invalid");
+        return;
+    }
+
+    m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+    m_navSolanaBalance->setToolTip(QStringLiteral("Checking this node's Solana balance"));
+    queryNavSolanaBalance(addr, 0);
+}
+
+void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
+{
+    const int count = int(sizeof(kSolanaRpcEndpoints) / sizeof(kSolanaRpcEndpoints[0]));
+    if (endpointIndex >= count) {
+        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
+            m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
+            m_navSolanaBalance->setToolTip("Solana balance is temporarily unavailable");
+        }
+        return;
+    }
+
+    QNetworkRequest request(QUrl(QString::fromLatin1(kSolanaRpcEndpoints[endpointIndex])));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    const QJsonObject body{
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "getBalance"},
+        {"params", QJsonArray{addr}},
+    };
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, addr, endpointIndex]() {
+        const QByteArray raw = reply->readAll();
+        const QNetworkReply::NetworkError netError = reply->error();
+        reply->deleteLater();
+        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr)
+            return;
+
+        const QJsonObject root = QJsonDocument::fromJson(raw).object();
+        const QJsonObject result = root.value("result").toObject();
+        if (netError != QNetworkReply::NoError || !result.contains("value")) {
+            queryNavSolanaBalance(addr, endpointIndex + 1);
+            return;
+        }
+        const qint64 lamports = result.value("value").toVariant().toLongLong();
+        const QString balance =
+            QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 4);
+        m_navSolanaBalance->setText(balance);
+        m_navSolanaBalance->setToolTip(
+            QStringLiteral("This node's Solana balance: %1").arg(balance));
+    });
 }
 
 void MainWindow::showNodeMenu()
@@ -3580,6 +3670,7 @@ void MainWindow::updateSolanaNotice()
         return;
     const bool hasAddress = !savedSolanaAddress().isEmpty();
     m_solanaBanner->setVisible(!hasAddress);
+    updateNavSolanaBalance();
 }
 
 void MainWindow::promptSetSolanaAddress()
@@ -3930,22 +4021,6 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
 
     m_nodeProfilePanel->show();
 }
-
-// Public Solana JSON-RPC endpoints. Tried in order with fallback so the UI can
-// still show a balance if one public endpoint is unavailable.
-namespace {
-const char *kSolanaRpcEndpoints[] = {
-    "https://api.mainnet-beta.solana.com",
-    "https://solana-rpc.publicnode.com",
-};
-
-bool isLikelySolanaAddress(const QString &address)
-{
-    static const QRegularExpression re(
-        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
-    return re.match(address.trimmed()).hasMatch();
-}
-}  // namespace
 
 void MainWindow::checkNodeBalance()
 {

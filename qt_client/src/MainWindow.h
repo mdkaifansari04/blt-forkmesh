@@ -166,6 +166,8 @@ private:
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void updateNodeSwitcher();     // refresh top-bar node label / count
+    void updateNavSolanaBalance(); // refresh top-bar balance for this node
+    void queryNavSolanaBalance(const QString &addr, int endpointIndex);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void showChatView();           // open the chat view from the top-bar button
@@ -498,6 +500,7 @@ private:
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
+    QLabel *m_navSolanaBalance = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
@@ -524,6 +527,7 @@ private:
     QLabel *m_encryptionLabel;
     QListWidget *m_channelList;
     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
+    QString m_navSolanaBalanceAddress;
     // One row per node, populated by refreshRepositoryList and shown in the
     // node dropdown (showNodeMenu).
     struct NodeMenuEntry {
