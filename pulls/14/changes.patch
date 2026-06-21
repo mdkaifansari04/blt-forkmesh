@@ -1,0 +1,102 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index e41d701..fa0e692 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -5544,6 +5544,7 @@ void MainWindow::mergeCurrentPull()
+         return;
+     }
+     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
++    closeIssuesLinkedFromPull(current);
+     if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
+         QMessageBox::warning(this, "Push merged pull request", error);
+         reloadPulls();
+@@ -5552,6 +5553,77 @@ void MainWindow::mergeCurrentPull()
+     reloadPulls();
+ }
+ 
++void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
++{
++    IssueStore store = issueStoreForCurrentRepo();
++    if (!store.canWrite())
++        return;
++
++    static const QRegularExpression issueRefRe(
++        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
++                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
++        QRegularExpression::CaseInsensitiveOption);
++
++    const QString haystack =
++        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
++    QSet<int> linked;
++    auto it = issueRefRe.globalMatch(haystack);
++    while (it.hasNext()) {
++        const QRegularExpressionMatch match = it.next();
++        const int number =
++            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
++        if (number > 0)
++            linked.insert(number);
++    }
++    if (linked.isEmpty())
++        return;
++
++    QHash<int, Issue> byNumber;
++    for (const Issue &issue : store.loadAll())
++        byNumber.insert(issue.number, issue);
++
++    int closedCount = 0;
++    QString lastClosed;
++    for (const int number : std::as_const(linked)) {
++        const Issue issue = byNumber.value(number);
++        if (issue.number <= 0 || issue.status == QLatin1String("closed"))
++            continue;
++
++        QString err;
++        const QString note =
++            QStringLiteral("Closed by merged pull request #%1.").arg(pr.number);
++        if (!store.addComment(number, note, {}, &err)) {
++            logSystem(QStringLiteral("Issue #%1: could not link pull request #%2: %3")
++                          .arg(number)
++                          .arg(pr.number)
++                          .arg(err));
++            continue;
++        }
++        if (!store.setStatus(number, QStringLiteral("closed"), &err)) {
++            logSystem(QStringLiteral("Issue #%1: could not close after pull request #%2: %3")
++                          .arg(number)
++                          .arg(pr.number)
++                          .arg(err));
++            continue;
++        }
++        logSystem(QStringLiteral("Closed issue #%1 via pull request #%2.")
++                      .arg(number)
++                      .arg(pr.number));
++        ++closedCount;
++        lastClosed = QStringLiteral("#%1").arg(number);
++    }
++
++    if (closedCount > 0) {
++        reloadIssues();
++        updateRepoIssueCount();
++        flashMessage(closedCount == 1
++                         ? QStringLiteral("Closed issue %1 from merged pull request.")
++                               .arg(lastClosed)
++                         : QStringLiteral("Closed %1 issues from merged pull request.")
++                               .arg(closedCount));
++    }
++}
++
+ bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
+ {
+     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index fb61dda..e02e64c 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -221,6 +221,7 @@ private:
+     void promptNewPull();
+     void updateCurrentPullBranch();
+     void mergeCurrentPull();
++    void closeIssuesLinkedFromPull(const PullRequest &pr);
+     bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
+     void closeCurrentPull();
+     void syncPullsInbox();
