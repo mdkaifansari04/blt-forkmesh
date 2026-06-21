@@ -1,0 +1,19 @@
+---
+schema: forkmesh-issue-v1
+number: 78
+title: if a pr is merged that is connected to an issue please close that related issue when the pr is merged
+status: open
+labels: []
+milestone: 
+assignees: []
+createdAt: 1782069308464
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: newnewnode
+type: open
+id: open-78
+ts: 1782069308464
+attachments: []
+sig: Yn683DORQ9yxp41QYT5PhD2KncA7OVcehdcg_ilxAUpNEnPWOOeMvU5AcOESvjvL96ROEZHQNmP72yqBN8rIAQ
+---
+
+
