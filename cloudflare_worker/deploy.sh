@@ -78,8 +78,15 @@ push_secrets() {
         echo "note: $ENV_FILE not found — no secrets to push." >&2
         return 0
     fi
+    # Worker secrets that MUST be set for the site to work; an empty/missing one
+    # is a hard error, not a silent skip (that's what made a broken deploy look
+    # successful). TREASURY_BCH_ADDRESS is optional (legacy), so it's not listed.
+    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS "
+
+    echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     local count=0
     local pushed=()
+    local empties=()
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         case "$line" in *=*) ;; *) continue ;; esac
@@ -93,6 +100,7 @@ push_secrets() {
         # the dashboard but locks out the admin path / basic auth at runtime.
         if [ -z "$value" ]; then
             echo "  skip (empty): $key" >&2
+            empties+=("$key")
             continue
         fi
         case "$value" in
@@ -108,6 +116,19 @@ push_secrets() {
         count=$((count + 1))
     done < "$ENV_FILE"
     echo "Pushed $count secret(s) from $ENV_FILE."
+
+    # Hard-fail if any REQUIRED secret never got a value (empty or missing from
+    # the file). This is what previously slipped through as a "successful" deploy
+    # with no admin creds / treasury address set.
+    local req missing_req=()
+    for req in $required; do
+        case " ${pushed[*]-} " in *" $req "*) ;; *) missing_req+=("$req") ;; esac
+    done
+    if [ "${#missing_req[@]}" -gt 0 ]; then
+        echo "ERROR: required secret(s) empty or missing in $ENV_FILE: ${missing_req[*]}" >&2
+        echo "       Set them (real values, not blank) and re-run './deploy.sh secrets'." >&2
+        return 1
+    fi
 
     # Verify: confirm each pushed name actually exists on the Worker now, so a
     # silently-failed `secret put` becomes a loud error instead of a mystery.
