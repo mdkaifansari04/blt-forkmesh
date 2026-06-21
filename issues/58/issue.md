@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 58
 title: sort the issues by id so the recent one is on top also show the date created in the table
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
