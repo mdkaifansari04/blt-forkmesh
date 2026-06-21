@@ -5544,12 +5544,84 @@ void MainWindow::mergeCurrentPull()
         return;
     }
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
+    closeIssuesLinkedFromPull(current);
     if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
         QMessageBox::warning(this, "Push merged pull request", error);
         reloadPulls();
         return;
     }
     reloadPulls();
+}
+
+void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
+{
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite())
+        return;
+
+    static const QRegularExpression issueRefRe(
+        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
+                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const QString haystack =
+        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
+    QSet<int> linked;
+    auto it = issueRefRe.globalMatch(haystack);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const int number =
+            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
+        if (number > 0)
+            linked.insert(number);
+    }
+    if (linked.isEmpty())
+        return;
+
+    QHash<int, Issue> byNumber;
+    for (const Issue &issue : store.loadAll())
+        byNumber.insert(issue.number, issue);
+
+    int closedCount = 0;
+    QString lastClosed;
+    for (const int number : std::as_const(linked)) {
+        const Issue issue = byNumber.value(number);
+        if (issue.number <= 0 || issue.status == QLatin1String("closed"))
+            continue;
+
+        QString err;
+        const QString note =
+            QStringLiteral("Closed by merged pull request #%1.").arg(pr.number);
+        if (!store.addComment(number, note, {}, &err)) {
+            logSystem(QStringLiteral("Issue #%1: could not link pull request #%2: %3")
+                          .arg(number)
+                          .arg(pr.number)
+                          .arg(err));
+            continue;
+        }
+        if (!store.setStatus(number, QStringLiteral("closed"), &err)) {
+            logSystem(QStringLiteral("Issue #%1: could not close after pull request #%2: %3")
+                          .arg(number)
+                          .arg(pr.number)
+                          .arg(err));
+            continue;
+        }
+        logSystem(QStringLiteral("Closed issue #%1 via pull request #%2.")
+                      .arg(number)
+                      .arg(pr.number));
+        ++closedCount;
+        lastClosed = QStringLiteral("#%1").arg(number);
+    }
+
+    if (closedCount > 0) {
+        reloadIssues();
+        updateRepoIssueCount();
+        flashMessage(closedCount == 1
+                         ? QStringLiteral("Closed issue %1 from merged pull request.")
+                               .arg(lastClosed)
+                         : QStringLiteral("Closed %1 issues from merged pull request.")
+                               .arg(closedCount));
+    }
 }
 
 bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
