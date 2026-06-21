@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 109
 title: when any agent is working please show an activity indicator similar to the actions indicator - but don't replace the count - fix actions tab button too like tha
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
