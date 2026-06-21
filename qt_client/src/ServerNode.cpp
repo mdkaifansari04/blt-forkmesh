@@ -11,6 +11,10 @@
 #include <QTimer>
 #include <QUuid>
 
+#ifndef FORKMESH_VERSION
+#define FORKMESH_VERSION "dev"
+#endif
+
 namespace {
 
 constexpr int kSeenCacheLimit = 4096;
@@ -18,6 +22,7 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
 constexpr int kMaxDisplayNameChars = 32;
 constexpr int kMaxSolanaAddressChars = 64;
+constexpr int kMaxVersionChars = 32;
 constexpr int kMaxTextChars = 16000;
 constexpr int kMaxFileNameChars = 180;
 constexpr int kMaxMimeChars = 100;
@@ -95,6 +100,7 @@ bool messageHasSafePayload(const QJsonObject &message)
     return message.value("text").toString().size() <= kMaxTextChars &&
            message.value("sender").toString().size() <= kMaxDisplayNameChars &&
            message.value("solana").toString().size() <= kMaxSolanaAddressChars &&
+           message.value("version").toString().size() <= kMaxVersionChars &&
            message.value("fileName").toString().size() <= kMaxFileNameChars &&
            message.value("fileMime").toString().size() <= kMaxMimeChars &&
            message.value("file").toString().size() <= kMaxBase64FileChars &&
@@ -122,6 +128,7 @@ ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
       m_roomName(roomName.trimmed()),
       m_solanaAddress(solanaAddress.trimmed().left(kMaxSolanaAddressChars)),
       m_platform(currentPlatform()),
+      m_version(QStringLiteral(FORKMESH_VERSION).left(kMaxVersionChars)),
       m_nodeId(stableOrRandomNodeId(stableNodeId)),
       m_crypto(m_roomName, passphrase)
 {
@@ -426,6 +433,8 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
         message.insert("solana", m_solanaAddress);
     if (!m_platform.isEmpty())
         message.insert("platform", m_platform);
+    if (!m_version.isEmpty())
+        message.insert("version", m_version);
     return message;
 }
 
@@ -671,8 +680,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
     const QString sender = message.value("sender").toString();
     const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
     const QString platform = message.value("platform").toString().left(16);
+    const QString version = boundedText(message, "version", kMaxVersionChars);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, solanaAddress, platform);
+        rememberPeer(senderId, sender, solanaAddress, platform, version);
 
     if (type == "hello") {
         bool changed = false;
@@ -845,7 +855,7 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
                               const QString &solanaAddress, const QString &platform,
-                              bool online)
+                              const QString &version, bool online)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
         return;
@@ -855,6 +865,8 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
         peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
     if (!platform.isEmpty())
         peer.platform = platform;
+    if (!version.isEmpty())
+        peer.version = version;
     peer.online = online;
     peer.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
     updateRosterAndStatus();
@@ -862,8 +874,9 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
 
 void ServerNode::updateRosterAndStatus()
 {
-    MemberInfo self{m_nodeId,    m_userName, QString(), true, m_wsReady, m_solanaAddress,
-                    QString(),   m_platform, m_mirroredRepos};
+    MemberInfo self{m_nodeId,  m_userName, QString(), true,      m_wsReady,
+                    m_solanaAddress, QString(),   m_platform, m_version,
+                    m_mirroredRepos};
     QList<MemberInfo> members{self};
     int onlineCount = 0;
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
@@ -876,6 +889,7 @@ void ServerNode::updateRosterAndStatus()
         member.online = it->online;
         member.solanaAddress = it->solanaAddress;
         member.platform = it->platform;
+        member.version = it->version;
         member.mirrors = it->mirrors;
         members.append(member);
         ++onlineCount;
