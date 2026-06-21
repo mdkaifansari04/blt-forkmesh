@@ -254,7 +254,9 @@ function renderCatalogList() {
   updateLiveHostStat();
   if (currentRepo) {
     const r = parseRoute();
-    openRepoPage(r.owner, r.name, r.mode, r.filePath);
+    if (!catalogLoaded || findPublishedRepo(r.owner, r.name)) {
+      openRepoPage(r.owner, r.name, r.mode, r.filePath);
+    }
   }
 }
 
@@ -281,8 +283,10 @@ function updateLiveHostStat() {
 
 function render(repositories) {
   allRepositories = Array.isArray(repositories) ? repositories : [];
+  catalogLoaded = true;
   updateCatalogStats(allRepositories);
   renderCatalogList();
+  route();
 }
 
 for (const input of searchInputs) {
@@ -1077,7 +1081,9 @@ if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("netw
 
 const homeView = document.querySelector("#home-view");
 const repoView = document.querySelector("#repo-view");
+const notFoundView = document.querySelector("#not-found-view");
 let currentRepo = null;
+let catalogLoaded = false;
 
 function decodeSeg(s) {
   try {
@@ -1097,15 +1103,33 @@ function parseRoute() {
     if (segs.length >= 3 && (segs[2] === "tree" || segs[2] === "blob")) {
       mode = segs[2];
       filePath = segs.slice(3).join("/");
+    } else if (segs.length >= 3) {
+      return { view: "not-found" };
     }
     return { view: "repo", owner: segs[0], name: segs[1], mode, filePath };
   }
-  return { view: "home" };
+  return { view: "not-found" };
+}
+
+function findPublishedRepo(owner, name) {
+  return allRepositories.find((repo) => repo.owner === owner && repo.name === name);
+}
+
+function showNotFound() {
+  currentRepo = null;
+  if (homeView) homeView.hidden = true;
+  if (repoView) repoView.hidden = true;
+  if (notFoundView) notFoundView.hidden = false;
+  document.title = "Page not found · ForkMesh";
 }
 
 function route() {
   const r = parseRoute();
   if (r.view === "repo") {
+    if (catalogLoaded && !findPublishedRepo(r.owner, r.name)) {
+      showNotFound();
+      return;
+    }
     // Navigating within the same repo (folder/file/Back) only re-renders the
     // file area, so the page header and latest-commit aren't rebuilt each time.
     const sameRepo =
@@ -1117,16 +1141,22 @@ function route() {
     currentRepo = { owner: r.owner, name: r.name };
     if (homeView) homeView.hidden = true;
     if (repoView) repoView.hidden = false;
+    if (notFoundView) notFoundView.hidden = true;
+    document.title = `${r.owner}/${r.name} · ForkMesh`;
     if (sameRepo) {
       renderRepoPath(r.owner, r.name, r.mode, r.filePath);
     } else {
       window.scrollTo(0, 0);
       openRepoPage(r.owner, r.name, r.mode, r.filePath);
     }
+  } else if (r.view === "not-found") {
+    showNotFound();
   } else {
     currentRepo = null;
     if (repoView) repoView.hidden = true;
     if (homeView) homeView.hidden = false;
+    if (notFoundView) notFoundView.hidden = true;
+    document.title = "ForkMesh";
   }
 }
 
@@ -1151,7 +1181,7 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
     nameStrong.textContent = name;
     titleEl.append(ownerSpan, nameStrong);
   }
-  const repo = repoIndex.get(`${owner}/${name}`);
+  const repo = findPublishedRepo(owner, name);
   if (descEl) descEl.textContent = repo ? text(repo.description, "") : "";
   if (cloneInput && cloneNote) {
     // Clone straight from the mainnode; it streams live from the hosting client.

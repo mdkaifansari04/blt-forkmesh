@@ -1426,6 +1426,22 @@ button.issue-row {
   letter-spacing: -0.03em;
 }
 
+.not-found-page {
+  min-height: calc(100vh - 160px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  max-width: 720px;
+}
+
+.not-found-page h1 {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1.08;
+  font-weight: 800;
+}
+
 .compact-hero {
   padding-top: 0;
 }
