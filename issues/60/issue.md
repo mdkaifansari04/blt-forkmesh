@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 60
 title: the chat does not load in general on first load, you have to switch to another channel then switch back to see the chat
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
