@@ -1,0 +1,152 @@
+diff --git a/cloudflare_worker/public/docs.html b/cloudflare_worker/public/docs.html
+index eea6320..8b378ba 100644
+--- a/cloudflare_worker/public/docs.html
++++ b/cloudflare_worker/public/docs.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Docs · ForkMesh</title>
+     <meta
+@@ -35,7 +36,7 @@
+ 
+         <div class="header-actions">
+           <div class="clients-pill" aria-live="polite">
+-            <span class="clients-dot"   id="clients-dot"></span>
++            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
+             <span id="clients-count">Checking…</span>
+           </div>
+           <button
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index c6bd6bd..5df013b 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>ForkMesh</title>
+     <meta
+@@ -53,7 +54,7 @@
+ 
+         <div class="header-actions">
+           <div class="clients-pill" aria-live="polite">
+-            <span class="clients-dot" id="clients-dot"></span>
++            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
+             <span id="clients-count">Checking…</span>
+           </div>
+           <button
+diff --git a/cloudflare_worker/public/login.html b/cloudflare_worker/public/login.html
+index bf7ae7a..7d25096 100644
+--- a/cloudflare_worker/public/login.html
++++ b/cloudflare_worker/public/login.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Log in · ForkMesh</title>
+     <link rel="stylesheet" href="styles.css" />
+diff --git a/cloudflare_worker/public/network.html b/cloudflare_worker/public/network.html
+index 85c7140..b1f7238 100644
+--- a/cloudflare_worker/public/network.html
++++ b/cloudflare_worker/public/network.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Network · ForkMesh</title>
+     <meta
+@@ -36,7 +37,7 @@
+ 
+         <div class="header-actions">
+           <div class="clients-pill" aria-live="polite">
+-            <span class="clients-dot" id="clients-dot"></span>
++            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
+             <span id="clients-count">Checking…</span>
+           </div>
+           <button
+diff --git a/cloudflare_worker/public/privacy.html b/cloudflare_worker/public/privacy.html
+index 1d8d1a4..78267f5 100644
+--- a/cloudflare_worker/public/privacy.html
++++ b/cloudflare_worker/public/privacy.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>ForkMesh Privacy</title>
+     <meta
+diff --git a/cloudflare_worker/public/signup.html b/cloudflare_worker/public/signup.html
+index 7be931f..53c32f9 100644
+--- a/cloudflare_worker/public/signup.html
++++ b/cloudflare_worker/public/signup.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Join ForkMesh</title>
+     <meta
+diff --git a/cloudflare_worker/public/styles.css b/cloudflare_worker/public/styles.css
+index 3a68019..17c95f8 100644
+--- a/cloudflare_worker/public/styles.css
++++ b/cloudflare_worker/public/styles.css
+@@ -305,20 +305,27 @@ html.dark .brand-mark {
+   white-space: nowrap;
+ }
+ 
+-.clients-dot,
++.clients-relay-icon,
+ .status-pill span {
+-  width: 6px;
+-  height: 6px;
+-  border-radius: 999px;
+-  background: var(--muted-2);
+-  display: inline-block;
++  width: 14px;
++  height: 14px;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
+   flex-shrink: 0;
++  color: var(--muted-2);
+ }
+ 
+-.clients-dot.online,
++.clients-relay-icon svg {
++  width: 14px;
++  height: 14px;
++  fill: currentColor;
++}
++
++.clients-relay-icon.online,
+ .status-pill.online span {
+-  background: var(--accent-bright);
+-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-bright) 22%, transparent);
++  color: var(--accent-bright);
++  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent-bright) 40%, transparent));
+ }
+ 
+ .icon-button {
+diff --git a/cloudflare_worker/public/terms.html b/cloudflare_worker/public/terms.html
+index 19fba29..44cc739 100644
+--- a/cloudflare_worker/public/terms.html
++++ b/cloudflare_worker/public/terms.html
+@@ -2,6 +2,7 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>ForkMesh Terms</title>
+     <meta
