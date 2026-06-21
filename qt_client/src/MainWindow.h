@@ -288,6 +288,7 @@ private:
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
     void updateRepoIssueCount();
+    void updateRepoPullCount();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void loadRepoFileTree();
@@ -563,6 +564,7 @@ private:
     int m_repoDetailIndex = -1;
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoIssuesTab = nullptr;
+    QPushButton *m_repoPullsTab = nullptr;
     QStackedWidget *m_repoDetailStack = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;

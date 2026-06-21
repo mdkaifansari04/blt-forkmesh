@@ -36,6 +36,17 @@ pywrangler() {
 # reads them the same way (env.ADMIN_PATH, etc.).
 ENV_FILE=".env.production"
 
+# Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
+# or space on a value is a classic cause of a secret that "exists" in the
+# dashboard but never matches at runtime (admin path / basic-auth comparisons).
+trim() {
+    local s="$1"
+    s="${s%$'\r'}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
 # Inline --var args are built too, but used ONLY for local `dev`: workerd's dev
 # server has no secret store unless you keep a .dev.vars file, so passing them
 # inline keeps `./deploy.sh dev` working.
@@ -44,8 +55,8 @@ if [ -f "$ENV_FILE" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac   # skip blanks/comments
         case "$line" in *=*) ;; *) continue ;; esac # skip lines without KEY=VALUE
-        key="${line%%=*}"
-        value="${line#*=}"
+        key="$(trim "${line%%=*}")"
+        value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
         # CLOUDFLARE_* keys configure wrangler itself (which account/token to use),
         # not the Worker. Export them so every pywrangler call targets the right
@@ -68,19 +79,54 @@ push_secrets() {
         return 0
     fi
     local count=0
+    local pushed=()
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         case "$line" in *=*) ;; *) continue ;; esac
-        local key="${line%%=*}"
-        local value="${line#*=}"
+        local key value
+        key="$(trim "${line%%=*}")"
+        value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
         # CLOUDFLARE_* are wrangler config (exported above), not Worker secrets.
         case "$key" in CLOUDFLARE_*) continue ;; esac
+        # Never push an empty value: it sets a blank secret, which looks "set" in
+        # the dashboard but locks out the admin path / basic auth at runtime.
+        if [ -z "$value" ]; then
+            echo "  skip (empty): $key" >&2
+            continue
+        fi
+        case "$value" in
+            *CHANGE-ME*|change-me*)
+                echo "  warning: $key still has a placeholder value ($value)" >&2 ;;
+        esac
         echo "  secret: $key"
-        printf '%s' "$value" | pywrangler secret put "$key"
+        # Feed the value on stdin terminated by a newline — the documented
+        # non-interactive form; wrangler strips the single trailing newline. The
+        # previous no-newline pipe could leave the value unread (blank secret).
+        printf '%s\n' "$value" | pywrangler secret put "$key"
+        pushed+=("$key")
         count=$((count + 1))
     done < "$ENV_FILE"
     echo "Pushed $count secret(s) from $ENV_FILE."
+
+    # Verify: confirm each pushed name actually exists on the Worker now, so a
+    # silently-failed `secret put` becomes a loud error instead of a mystery.
+    local listed
+    if listed="$(pywrangler secret list 2>/dev/null)"; then
+        local missing=()
+        local k
+        for k in ${pushed[@]+"${pushed[@]}"}; do
+            case "$listed" in *"\"$k\""*) ;; *) missing+=("$k") ;; esac
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+            echo "ERROR: these secrets did not register: ${missing[*]}" >&2
+            echo "       re-run './deploy.sh secrets' or check 'pywrangler secret list'." >&2
+            return 1
+        fi
+        echo "Verified ${#pushed[@]} secret(s) present on the Worker."
+    else
+        echo "note: could not list secrets to verify (continuing)." >&2
+    fi
 }
 
 case "${1:-deploy}" in

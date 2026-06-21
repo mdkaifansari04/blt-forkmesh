@@ -4470,7 +4470,6 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Agents", "terminal"},
                                 {"Pull requests", "git-pull-request"},
                                 {"Actions", "workflow"},
-                                {"Wiki", "file"},
                                 {"Security and quality", "shield-check"},
                                 {"Insights", "graph"},
                                 {"Chat", "comment"}};
@@ -4490,6 +4489,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             b->setChecked(true);
         if (i == 2)
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
+        if (i == 4)
+            m_repoPullsTab = b;
         m_repoDetailTabs->addButton(b, i);
         tabRow->addWidget(b);
     }
@@ -4506,10 +4507,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Wiki"));           // 6
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 7
-    m_repoDetailStack->addWidget(buildInsightsTab());                    // 8
-    m_repoDetailStack->addWidget(buildChatSection());                    // 9 Chat
+    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
+    m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
+    m_repoDetailStack->addWidget(buildChatSection());                    // 8 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
@@ -4520,7 +4520,7 @@ QWidget *MainWindow::buildRepoDetailSection()
             reloadPulls();
         else if (id == 5)
             refreshRepoActions();
-        else if (id == 8)
+        else if (id == 7)
             loadRepoInsights();
     });
 
@@ -4987,6 +4987,7 @@ void MainWindow::reloadPulls()
     if (!m_pullTable)
         return;
     m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    updateRepoPullCount();
     refreshPullList();
     updatePullActionState();
 }
@@ -6859,6 +6860,8 @@ void MainWindow::openRepoDetail(int repoIndex)
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
+    m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    updateRepoPullCount();
 
     // Default to the Code tab; reset the editor tabs/tree for the new repo.
     if (m_repoDetailTabs && m_repoDetailTabs->button(0))
@@ -6894,6 +6897,13 @@ void MainWindow::updateRepoIssueCount()
     if (m_repoIssuesTab)
         m_repoIssuesTab->setText(
             QStringLiteral("Issues (%1)").arg(m_currentIssues.size()));
+}
+
+void MainWindow::updateRepoPullCount()
+{
+    if (m_repoPullsTab)
+        m_repoPullsTab->setText(
+            QStringLiteral("Pull requests (%1)").arg(m_currentPulls.size()));
 }
 
 void MainWindow::loadRepoFileTree()
