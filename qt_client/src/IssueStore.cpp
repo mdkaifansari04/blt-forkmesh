@@ -611,7 +611,7 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
 
 void IssueStore::recomputeMetadata(Issue &issue) const
 {
-    QStringList voters;
+    int voteCount = 0;
     for (const IssueEvent &ev : issue.events) {
         if (ev.type == "open")
             issue.title = ev.title;
@@ -625,11 +625,12 @@ void IssueStore::recomputeMetadata(Issue &issue) const
             issue.milestone = ev.milestone;
         else if (ev.type == "assignees")
             issue.assignees = ev.assignees;
-        else if (ev.type == "vote" && !ev.author.isEmpty() &&
-                 !voters.contains(ev.author))
-            voters.append(ev.author);
+        else if (ev.type == "vote" && !ev.author.isEmpty())
+            // Voters may now spend multiple credits on the same issue, so every
+            // signed vote event counts (no longer one-per-author).
+            ++voteCount;
     }
-    issue.votes = voters.size();
+    issue.votes = voteCount;
 }
 
 QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths) const
@@ -770,13 +771,8 @@ bool IssueStore::addVote(int number, QString *error)
             *error = QStringLiteral("Issue #%1 not found.").arg(number);
         return false;
     }
-    const QString me = m_identity ? m_identity->publicKey() : QString();
-    for (const IssueEvent &existing : std::as_const(issue.events))
-        if (existing.type == "vote" && existing.author == me) {
-            if (error)
-                *error = QStringLiteral("You have already voted on this issue.");
-            return false;
-        }
+    // Multiple votes per author are allowed now (each spends a voting credit on
+    // the client), so we no longer reject a repeat vote from the same node.
     IssueEvent ev;
     ev.type = "vote";
     ev = makeSignedEvent(number, ev);
@@ -1000,10 +996,12 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         placeholder.ts = ev.ts;
         issue.events.append(placeholder);
     }
-    // One vote per author: ignore a repeat vote from someone we already counted.
-    if (ev.type == "vote") {
+    // Voters may cast several votes (one per credit), so we no longer collapse
+    // to one-per-author. We still ignore an event we've already merged (same id)
+    // so re-syncing the inbox doesn't double-count the same vote.
+    if (!ev.id.isEmpty()) {
         for (const IssueEvent &existing : std::as_const(issue.events))
-            if (existing.type == "vote" && existing.author == ev.author)
+            if (existing.id == ev.id)
                 return true;
     }
     issue.events.append(ev);

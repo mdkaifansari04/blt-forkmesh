@@ -129,6 +129,7 @@ const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | li
 const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // Show a desktop alert when an action run starts and finishes.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
+const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
@@ -1564,8 +1565,17 @@ void MainWindow::loadChatHistory()
 
     // Reopen the last conversation so history is visible immediately.
     const QString current = root.value("current").toString();
-    if (!current.isEmpty() && m_history.contains(current))
+    if (!current.isEmpty() && current != m_currentConversation &&
+        m_history.contains(current)) {
         switchConversation(current);
+    } else if (!m_currentConversation.isEmpty()) {
+        // History often loads *after* the relay has already selected a channel
+        // (e.g. #general). switchConversation() no-ops when the target is the
+        // current conversation, which left the view empty until you switched
+        // away and back. Re-render the open conversation so the just-loaded
+        // history shows up on first load.
+        rebuildConversationView();
+    }
 }
 
 void MainWindow::scheduleChatSave()
@@ -3877,10 +3887,10 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 6);
+    m_issueTable = new QTableWidget(0, 7);
     m_issueTable->setObjectName("issueTable");
     m_issueTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Status", "Votes", "Labels", "Milestone"});
+        {"#", "Title", "Status", "Votes", "Labels", "Milestone", "Created"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -3888,7 +3898,8 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueTable->setShowGrid(false);
     m_issueTable->setWordWrap(false);
     m_issueTable->setSortingEnabled(true);
-    m_issueTable->sortByColumn(0, Qt::AscendingOrder);
+    // Default to newest issue first (highest number on top).
+    m_issueTable->sortByColumn(0, Qt::DescendingOrder);
     m_issueTable->setToolTip("Click a column header to sort");
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
@@ -3898,6 +3909,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Votes
     header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Labels
     header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Milestone
+    header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Created
 
     // Quick-add: a single title field at the bottom, for filing an issue
     // without opening the full dialog.
@@ -5915,6 +5927,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // sure Home is the active section and refresh the breadcrumb.
     showSection(0);
     updateBreadcrumb();
+    updateActionsTabIndicator(); // reflect any in-flight runs for this repo
 }
 
 void MainWindow::updateRepoIssueCount()
@@ -6079,19 +6092,24 @@ void MainWindow::loadRepoOverview(const QString &path)
     // Latest commit strip: "<subject> · <author> committed <relative time>".
     if (m_commitBar) {
         QByteArray logOut;
-        QStringList logArgs{"log", "-1", "--format=%an%x1f%ar%x1f%s", currentRef()};
+        QStringList logArgs{"log", "-1", "--format=%H%x1f%an%x1f%ar%x1f%s",
+                            currentRef()};
         if (!path.isEmpty())
             logArgs << "--" << path;
         if (!dir.isEmpty() && runGitCapture(dir, logArgs, &logOut, nullptr) &&
             !logOut.trimmed().isEmpty()) {
             const QStringList f = QString::fromUtf8(logOut).trimmed().split('\x1f');
-            const QString author = f.value(0);
-            const QString when = f.value(1);
-            const QString subject = f.value(2);
+            const QString fullHash = f.value(0);
+            const QString author = f.value(1);
+            const QString when = f.value(2);
+            const QString subject = f.value(3);
+            // Latest commit: subject, author and "x ago", plus the action/check
+            // status glyph for this (the first/most-recent) commit.
             m_commitBar->setText(
-                QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
-                               "committed %3</span>")
-                    .arg(author.toHtmlEscaped(), subject.toHtmlEscaped(),
+                QStringLiteral("%1<b>%2</b> &nbsp; <span style='color:#8b949e'>%3 "
+                               "committed %4</span>")
+                    .arg(commitStatusGlyph(fullHash),
+                         subject.toHtmlEscaped(), author.toHtmlEscaped(),
                          when.toHtmlEscaped()));
         } else {
             m_commitBar->setText("<span style='color:#8b949e'>No commits yet</span>");
@@ -6219,7 +6237,26 @@ void MainWindow::loadCommits()
                 .arg(f.at(3), f.at(1), f.at(2), f.at(0)),
             m_commitsList);
         item->setData(Qt::UserRole, f.at(0)); // short hash, used to open the diff
-        item->setToolTip(QStringLiteral("Click to view the diff for %1").arg(f.at(0)));
+        // Action/check status badge for this commit (green check / red x /
+        // spinning-blue dot), shown as a leading icon when a workflow ran for it.
+        switch (commitStatusCode(f.at(0))) {
+        case 1:
+            item->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
+            item->setToolTip(QStringLiteral("Checks passed \xC2\xB7 %1").arg(f.at(0)));
+            break;
+        case 2:
+            item->setIcon(themedOcticon("x", QColor("#f85149"), 14));
+            item->setToolTip(QStringLiteral("Checks failed \xC2\xB7 %1").arg(f.at(0)));
+            break;
+        case 3:
+            item->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
+            item->setToolTip(QStringLiteral("Checks running \xC2\xB7 %1").arg(f.at(0)));
+            break;
+        default:
+            item->setToolTip(
+                QStringLiteral("Click to view the diff for %1").arg(f.at(0)));
+            break;
+        }
     }
 
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
@@ -7347,6 +7384,14 @@ void MainWindow::refreshIssueList()
         m_issueTable->setItem(row, 3, votes);
         m_issueTable->setItem(row, 4, new QTableWidgetItem(issue.labels.join(", ")));
         m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.milestone));
+        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
+        // tooltip carries the friendly "x ago" form.
+        auto *created = new QTableWidgetItem(
+            issue.createdAt > 0
+                ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd")
+                : QString());
+        created->setToolTip(formatIssueRelativeTime(issue.createdAt));
+        m_issueTable->setItem(row, 6, created);
     }
     m_issueTable->setSortingEnabled(true);
 
@@ -8490,10 +8535,8 @@ void MainWindow::voteOnCurrentIssue()
     const QString key = repo.owner + "/" + repo.name + "#" +
                         QString::number(m_currentIssueNumber);
     QStringList voted = QSettings().value(kVotedSetting).toStringList();
-    if (voted.contains(key)) {
-        setIssueInlineNotice("You have already voted on this issue.", true);
-        return;
-    }
+    // Repeat voting is allowed now; you may keep voting as long as you have
+    // credits (each vote spends one).
     if (availableCredits() <= 0) {
         setIssueInlineNotice(
             "No voting credits yet. You earn 1 credit for every hour online.",
@@ -8515,11 +8558,15 @@ void MainWindow::voteOnCurrentIssue()
         setIssueInlineNotice("Your signed vote was sent to the maintainer's inbox.");
     }
 
-    // Spend a credit and record the vote locally (blocks double-voting).
+    // Spend a credit; credits are the only limit on voting now. We still note
+    // which issues you've voted on (deduped) for reference, but it no longer
+    // blocks further votes.
     QSettings s;
     s.setValue(kVotesSpentSetting, s.value(kVotesSpentSetting).toInt() + 1);
-    voted << key;
-    s.setValue(kVotedSetting, voted);
+    if (!voted.contains(key)) {
+        voted << key;
+        s.setValue(kVotedSetting, voted);
+    }
     reloadIssues();
     setIssueInlineNotice("Vote recorded.");
     updateVoteUi();
@@ -8534,26 +8581,22 @@ void MainWindow::updateVoteUi()
         return;
     const bool haveIssue = m_currentIssueNumber >= 0;
     int votes = 0;
-    bool alreadyVoted = false;
     if (haveIssue) {
         for (const Issue &issue : m_currentIssues)
             if (issue.number == m_currentIssueNumber)
                 votes = issue.votes;
-        const int idx = issuesRepoIndex();
-        if (idx >= 0) {
-            const RepositoryRecord &repo = m_repositories.at(idx);
-            const QString key = repo.owner + "/" + repo.name + "#" +
-                                QString::number(m_currentIssueNumber);
-            alreadyVoted = QSettings().value(kVotedSetting).toStringList().contains(key);
-        }
     }
+    const int credits = availableCredits();
     m_issueVoteButton->setText(
         QStringLiteral("Vote (%1)").arg(votes));
-    m_issueVoteButton->setEnabled(haveIssue && !alreadyVoted &&
-                                  availableCredits() > 0);
+    // You can vote repeatedly as long as you have credits; each vote spends one.
+    m_issueVoteButton->setEnabled(haveIssue && credits > 0);
     m_issueVoteButton->setToolTip(
-        alreadyVoted ? "You already voted on this issue"
-                     : "Upvote this issue (spends 1 voting credit)");
+        credits > 0
+            ? QStringLiteral("Upvote this issue (spends 1 of %1 voting credits)")
+                  .arg(credits)
+            : QStringLiteral("No voting credits yet \xE2\x80\x94 you earn 1 per "
+                             "hour online"));
 }
 
 void MainWindow::syncIssuesInbox()
@@ -8929,6 +8972,16 @@ QWidget *MainWindow::buildSettingsSection()
     connect(actionAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kActionAlertSetting, enabled);
     });
+    auto *nodeConnectAlertCheck =
+        new QCheckBox("Show a system alert when a node connects");
+    nodeConnectAlertCheck->setChecked(
+        QSettings().value(kNodeConnectAlertSetting, true).toBool());
+    nodeConnectAlertCheck->setToolTip(
+        "Pop up a desktop notification when another node comes online on this "
+        "network.");
+    connect(nodeConnectAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kNodeConnectAlertSetting, enabled);
+    });
 
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
@@ -9058,6 +9111,7 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(notifyLabel);
     layout->addWidget(pushAlertCheck);
     layout->addWidget(actionAlertCheck);
+    layout->addWidget(nodeConnectAlertCheck);
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
@@ -9587,6 +9641,26 @@ void MainWindow::setChannels(const QStringList &channels)
 
 void MainWindow::setRoster(const QList<MemberInfo> &members)
 {
+    // #33: optionally pop a desktop notification when another node comes online.
+    // Capture who was online before this update (m_homeRoster still holds the
+    // previous roster), and skip the very first fill so we don't alert for every
+    // node that was already online when we connected.
+    const bool firstRoster = m_homeRoster.isEmpty();
+    QSet<QString> previouslyOnline;
+    for (const MemberInfo &m : std::as_const(m_homeRoster))
+        if (m.online && !m.id.isEmpty())
+            previouslyOnline.insert(m.id);
+    if (!firstRoster &&
+        QSettings().value(kNodeConnectAlertSetting, true).toBool()) {
+        for (const MemberInfo &m : members) {
+            if (m.self || m.id.isEmpty() || !m.online)
+                continue;
+            if (!previouslyOnline.contains(m.id))
+                postNotification(QStringLiteral("Node connected"),
+                                 m.name + QStringLiteral(" is online"));
+        }
+    }
+
     m_homeRoster = members;
     m_memberList->clear();
     QHash<QString, int> nameCounts;
@@ -11235,6 +11309,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
+    refreshCommitStatusGlyphs();
     if (runId == m_selectedRunId && m_actionRunMeta) {
         if (const ActionRun *run = findRun(runId)) {
             m_actionRunMeta->setText(
@@ -11257,6 +11332,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
     refreshActionsTable();
+    refreshCommitStatusGlyphs();
     updateNotificationButton();
     if (const ActionRun *run = findRun(runId))
         notifyActionEvent(ok ? QStringLiteral("Action succeeded")
@@ -11485,6 +11561,123 @@ void MainWindow::refreshActionsTable()
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+    updateActionsTabIndicator();
+}
+
+int MainWindow::commitStatusCode(const QString &sha) const
+{
+    if (sha.isEmpty() || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return 0;
+    const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString name = m_repositories.at(m_repoDetailIndex).name;
+
+    // Aggregate every run for this repo whose commit matches `sha` (one is a
+    // prefix of the other, since the log uses short hashes and runs store full
+    // SHAs). Running/queued wins, then any failure, then success.
+    bool running = false, failed = false, success = false;
+    for (const ActionRun &run : m_actionRuns) {
+        if (run.owner != owner || run.name != name || run.commit.isEmpty())
+            continue;
+        if (!(run.commit.startsWith(sha) || sha.startsWith(run.commit)))
+            continue;
+        if (run.status == ActionStatus::Running ||
+            run.status == ActionStatus::Queued ||
+            run.status == ActionStatus::AwaitingApproval)
+            running = true;
+        else if (run.status == ActionStatus::Failed ||
+                 run.status == ActionStatus::Rejected)
+            failed = true;
+        else if (run.status == ActionStatus::Success)
+            success = true;
+    }
+    if (running)
+        return 3;
+    if (failed)
+        return 2;
+    if (success)
+        return 1;
+    return 0;
+}
+
+QString MainWindow::commitStatusGlyph(const QString &sha) const
+{
+    switch (commitStatusCode(sha)) {
+    case 3:
+        return QStringLiteral(" <span style='color:#58a6ff' "
+                              "title='Checks running'>\xE2\x97\x90</span>"); // ◐
+    case 2:
+        return QStringLiteral(" <span style='color:#f85149' "
+                              "title='Checks failed'>\xE2\x9C\x95</span>"); // ✕
+    case 1:
+        return QStringLiteral(" <span style='color:#3fb950' "
+                              "title='Checks passed'>\xE2\x9C\x93</span>"); // ✓
+    default:
+        return QString();
+    }
+}
+
+void MainWindow::refreshCommitStatusGlyphs()
+{
+    if (!m_repoDetailStack)
+        return;
+    switch (m_repoDetailStack->currentIndex()) {
+    case 0: // Code overview: refresh the latest-commit strip
+        loadRepoOverview(m_overviewPath);
+        break;
+    case 1: // Commits list
+        loadCommits();
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::updateActionsTabIndicator()
+{
+    QAbstractButton *tab = m_repoDetailTabs ? m_repoDetailTabs->button(4) : nullptr;
+    if (!tab)
+        return;
+
+    // Is any run for the currently-open repo still in flight?
+    bool active = false;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+        const QString name = m_repositories.at(m_repoDetailIndex).name;
+        for (const ActionRun &run : m_actionRuns)
+            if (run.owner == owner && run.name == name &&
+                (run.status == ActionStatus::Running ||
+                 run.status == ActionStatus::Queued)) {
+                active = true;
+                break;
+            }
+    }
+
+    if (!active) {
+        if (m_actionsSpinTimer)
+            m_actionsSpinTimer->stop();
+        tab->setText(QStringLiteral("Actions"));
+        return;
+    }
+
+    if (!m_actionsSpinTimer) {
+        m_actionsSpinTimer = new QTimer(this);
+        connect(m_actionsSpinTimer, &QTimer::timeout, this, [this] {
+            QAbstractButton *t = m_repoDetailTabs ? m_repoDetailTabs->button(4) : nullptr;
+            if (!t)
+                return;
+            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
+                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
+                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+            m_actionsSpinFrame = (m_actionsSpinFrame + 1) % 10;
+            t->setText(QString::fromUtf8("Actions ") +
+                       QString::fromUtf8(frames[m_actionsSpinFrame]));
+        });
+    }
+    if (!m_actionsSpinTimer->isActive())
+        m_actionsSpinTimer->start(110);
 }
 
 QList<ActionWorkflow>

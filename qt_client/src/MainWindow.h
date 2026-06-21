@@ -277,6 +277,15 @@ private:
     // Scan recent commit messages for closing keywords ("closes #12", "fixes
     // #3", "resolves #7") and close + annotate the referenced issues. Idempotent.
     void applyCommitIssueClosures();
+    // Aggregated action/check status of a commit in the current repo:
+    // 0 none, 1 success, 2 failed, 3 running. `sha` may be short or full.
+    int commitStatusCode(const QString &sha) const;
+    // The same as HTML (coloured check / x / running dot) for rich-text labels.
+    QString commitStatusGlyph(const QString &sha) const;
+    // Spin the Actions tab label while a run for the open repo is active.
+    void updateActionsTabIndicator();
+    // Re-render commit check glyphs in whichever repo-detail tab is visible.
+    void refreshCommitStatusGlyphs();
     void loadRepoInsights();
     void setRepoBranch(const QString &branch);
     QString currentRef() const;
@@ -607,6 +616,8 @@ private:
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
+    QTimer *m_actionsSpinTimer = nullptr;        // animates the Actions tab while running
+    int m_actionsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
