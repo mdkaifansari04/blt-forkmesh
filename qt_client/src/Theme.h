@@ -548,7 +548,7 @@ QPushButton#issueIconButton:hover { background-color: #21262d; }
     border-radius: 6px;
     padding: 6px;
 }
-QToolButton#issueActionButton {
+QToolButton#issueActionButton, QPushButton#issueActionButton {
     background: transparent;
     border: none;
     border-radius: 6px;
@@ -556,7 +556,7 @@ QToolButton#issueActionButton {
     font-weight: 800;
     padding: 4px 8px;
 }
-QToolButton#issueActionButton:hover { background-color: rgba(255,255,255,24); }
+QToolButton#issueActionButton:hover, QPushButton#issueActionButton:hover { background-color: rgba(255,255,255,24); }
 QToolButton#issueActionButton::menu-indicator { image: none; width: 0; }
 #issueSidebar { background: transparent; }
 #issueSidebar QLabel { background: transparent; }
@@ -1228,7 +1228,7 @@ QPushButton#issueIconButton:hover { background-color: #eaeef2; }
     border-radius: 6px;
     padding: 6px;
 }
-QToolButton#issueActionButton {
+QToolButton#issueActionButton, QPushButton#issueActionButton {
     background: transparent;
     border: none;
     border-radius: 6px;
@@ -1236,7 +1236,7 @@ QToolButton#issueActionButton {
     font-weight: 800;
     padding: 4px 8px;
 }
-QToolButton#issueActionButton:hover { background-color: #cceaff; }
+QToolButton#issueActionButton:hover, QPushButton#issueActionButton:hover { background-color: #cceaff; }
 QToolButton#issueActionButton::menu-indicator { image: none; width: 0; }
 #issueSidebar { background: transparent; }
 #issueSidebar QLabel { background: transparent; }
