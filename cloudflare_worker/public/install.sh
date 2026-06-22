@@ -242,7 +242,17 @@ fi
 mkdir -p "$(dirname "$SRC")"
 if [ -d "$SRC/.git" ]; then
   say "Updating existing checkout in $SRC"
-  git -C "$SRC" pull --ff-only
+  # The stored remote was baked with the node id that was live at the original
+  # install. That node may now be offline (its hosted tunnel gone) while a
+  # different mirror is online, so pulling from the old URL returns 503. Repoint
+  # origin at the freshly resolved live mirror before pulling, and fall back to a
+  # clean re-clone if the fast-forward pull still cannot reach a host.
+  git -C "$SRC" remote set-url origin "$REPO" 2>/dev/null || true
+  if ! git -C "$SRC" pull --ff-only; then
+    warn "Could not update from $REPO; re-cloning from the current live mirror."
+    rm -rf "$SRC"
+    git clone --depth 1 "$REPO" "$SRC"
+  fi
 else
   say "Cloning $REPO"
   git clone --depth 1 "$REPO" "$SRC"

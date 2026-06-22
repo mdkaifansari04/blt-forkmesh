@@ -257,6 +257,15 @@ private:
     void deleteSelectedAgentSession();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
+    // Issue #115: persist and restore month-to-date spend so the figures are
+    // shown on restart instead of waiting for a fresh API refresh.
+    void cacheSpendLabel(const QString &textKey, const QString &tsKey,
+                         const QString &text);
+    void applyCachedSpendLabels();
+    // Track and display time remaining in each provider's 5-hour and weekly
+    // usage windows, anchored at first agent activity and persisted to settings.
+    void markAgentLimitWindow(const QString &provider);
+    void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
     void processAgentQueue();
@@ -804,6 +813,9 @@ private:
     QLabel *m_agentApiKeyStatus = nullptr;
     QLabel *m_agentClaudeSpend = nullptr;
     QLabel *m_agentClaudeStatus = nullptr;
+    // Time left in the rolling 5-hour and weekly usage windows per provider.
+    QLabel *m_agentLimitsLabel = nullptr;
+    QTimer *m_agentLimitsTimer = nullptr;
     QPushButton *m_agentSendPromptButton = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;
