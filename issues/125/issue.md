@@ -2,8 +2,6 @@
 schema: forkmesh-issue-v1
 number: 125
 title: Uncaught ReferenceError: Cannot access 'downloadProgress' before initialization
-    at resetDownloadProgress (catalog.js:1320:3)
-    at openRepoPage (catalog.js
 status: open
 labels: []
 milestone: 
