@@ -151,9 +151,20 @@ private:
     // host. Mirrors the fallback used when publishing.
     QString catalogOwner(const RepositoryRecord &repo) const;
     void runQuickUpdate();
-    void buildAndRelaunch(const QString &clientDir);
+    // Pull a fresh copy from the install URL (the live hosted mirror), then
+    // rebuild and relaunch. Installs into the invoking non-root user's home even
+    // when ForkMesh itself is running as root.
+    void updateRebuildRestart();
+    QString resolveInstallCloneUrl();
+    void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
+                          const QString &relaunchPath = QString());
+    void installAndRelaunch(const QString &built, const QString &appPath);
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess);
+    // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
+    // when that is set, so root-launched updates write files owned by the user.
+    void runUpdateStepUser(const QString &program, const QStringList &arguments,
+                           const QString &workingDir, std::function<void()> onSuccess);
     void setUpdateStatus(const QString &status, bool isError = false);
     void persistProfile();
 
@@ -578,6 +589,9 @@ private:
     // rebuild), so the shared build steps report to the right place.
     QLabel *m_buildStatusLabel = nullptr;
     QPushButton *m_buildButton = nullptr;
+    // Set while a root-launched "Update, rebuild & restart" is running so build
+    // steps and the relaunch run as this non-root user. Empty = run in-process.
+    QString m_updateAsUser;
 
     // Chat widgets
     QLabel *m_statusLine;
@@ -624,6 +638,7 @@ private:
 
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;
+    QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsAvatarPreview = nullptr;
     QPlainTextEdit *m_settingsLog = nullptr;
     QPushButton *m_rebuildButton = nullptr;
@@ -685,6 +700,7 @@ private:
     QPushButton *m_forkButton = nullptr;
     QPushButton *m_mirrorButton = nullptr;
     QPushButton *m_sourceButton = nullptr;
+    QPushButton *m_repoOpenButton = nullptr; // open this repo on the web
     QMenu *m_forkMenu = nullptr;
     QMenu *m_mirrorMenu = nullptr;
     QMenu *m_sourceMenu = nullptr;

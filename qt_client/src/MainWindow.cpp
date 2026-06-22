@@ -105,6 +105,11 @@
 #include <functional>
 #include <memory>
 
+#ifndef Q_OS_WIN
+#include <pwd.h>
+#include <unistd.h>
+#endif
+
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
 #endif
@@ -344,6 +349,50 @@ QString updateClientDir()
         return baked;
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
            "/src/qt_client";
+}
+
+// When ForkMesh runs as root (e.g. launched via `sudo`), updates must never be
+// written under /root. Returns the invoking non-root user's name when we are
+// root and SUDO_USER points at a real user, otherwise an empty string (meaning
+// "run the update in-process as the current user").
+QString invokingNonRootUser()
+{
+#ifndef Q_OS_WIN
+    if (geteuid() == 0) {
+        const QByteArray sudoUser = qgetenv("SUDO_USER");
+        if (!sudoUser.isEmpty() && sudoUser != "root")
+            return QString::fromUtf8(sudoUser);
+    }
+#endif
+    return QString();
+}
+
+// Home directory for a named user (falls back to /home/<user>).
+QString homeForUser(const QString &user)
+{
+#ifndef Q_OS_WIN
+    if (!user.isEmpty()) {
+        if (struct passwd *pw = getpwnam(user.toLocal8Bit().constData()))
+            return QString::fromLocal8Bit(pw->pw_dir);
+        return QStringLiteral("/home/") + user;
+    }
+#endif
+    return QDir::homePath();
+}
+
+// The managed source checkout directory (holding qt_client/CMakeLists.txt) under
+// a specific home directory.
+QString clientDirUnderHome(const QString &home)
+{
+    return home + QStringLiteral("/.local/share/forkmesh/src/qt_client");
+}
+
+// Single-quote a string for safe use inside an `sh -c` command line.
+QString shellSingleQuote(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QLatin1Char('\'') + escaped + QLatin1Char('\'');
 }
 
 QString builtExecutablePath(const QString &buildDir)
@@ -3197,41 +3246,174 @@ void MainWindow::runQuickUpdate()
     }
 }
 
-void MainWindow::buildAndRelaunch(const QString &clientDir)
+void MainWindow::runUpdateStepUser(const QString &program,
+                                   const QStringList &arguments,
+                                   const QString &workingDir,
+                                   std::function<void()> onSuccess)
 {
+    if (m_updateAsUser.isEmpty()) {
+        runUpdateStep(program, arguments, workingDir, std::move(onSuccess));
+        return;
+    }
+    // Run the command as the invoking non-root user so files it writes are owned
+    // by them and land under their home, never under /root.
+    QStringList wrapped{"-u", m_updateAsUser, "-H", program};
+    wrapped += arguments;
+    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess));
+}
+
+void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUser,
+                                  const QString &relaunchPath)
+{
+    m_updateAsUser = asUser;
+    const QString appPath = relaunchPath.isEmpty()
+                                ? QCoreApplication::applicationFilePath()
+                                : relaunchPath;
     const QString buildDir = clientDir + "/build";
     setUpdateStatus("Configuring...");
-    runUpdateStep("cmake", cmakeConfigureArgs(clientDir, buildDir),
-                  clientDir, [this, buildDir] {
+    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir),
+                      clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        runUpdateStep("cmake",
-                      {"--build", buildDir, "-j",
-                       QString::number(QThread::idealThreadCount())},
-                      buildDir, [this, buildDir] {
-            // When the running binary lives elsewhere (e.g. ~/.local/bin),
-            // install the fresh build over it; the running inode stays valid.
+        runUpdateStepUser("cmake",
+                          {"--build", buildDir, "-j",
+                           QString::number(QThread::idealThreadCount())},
+                          buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
-            const QString appPath = QCoreApplication::applicationFilePath();
-            if (QFileInfo(built).canonicalFilePath() !=
-                QFileInfo(appPath).canonicalFilePath()) {
-                QFile::remove(appPath);
-                if (!QFile::copy(built, appPath)) {
-                    setUpdateStatus("Update failed: could not replace " + appPath, true);
-                    if (m_buildButton)
-                        m_buildButton->setEnabled(true);
-                    return;
-                }
-                QFile::setPermissions(appPath,
-                                      QFile::ReadOwner | QFile::WriteOwner |
-                                      QFile::ExeOwner | QFile::ReadGroup |
-                                      QFile::ExeGroup | QFile::ReadOther |
-                                      QFile::ExeOther);
-            }
-            setUpdateStatus("Relaunching...");
-            QProcess::startDetached(appPath, {});
-            QCoreApplication::quit();
+            installAndRelaunch(built, appPath);
         });
     });
+}
+
+void MainWindow::installAndRelaunch(const QString &built, const QString &appPath)
+{
+    if (!m_updateAsUser.isEmpty()) {
+        // Install and relaunch as the user so the binary is theirs, not root's.
+        const QString binDir = QFileInfo(appPath).absolutePath();
+        const QString script =
+            QStringLiteral("mkdir -p %1 && cp -f %2 %3 && chmod 0755 %3")
+                .arg(shellSingleQuote(binDir), shellSingleQuote(built),
+                     shellSingleQuote(appPath));
+        setUpdateStatus("Installing for " + m_updateAsUser + "...");
+        runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
+                      QDir::tempPath(), [this, appPath] {
+            setUpdateStatus("Relaunching...");
+            const QString user = m_updateAsUser;
+            QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
+            QCoreApplication::quit();
+        });
+        return;
+    }
+
+    // In-process update: replace the running binary over its own path (the
+    // running inode stays valid) and relaunch directly.
+    if (QFileInfo(built).canonicalFilePath() !=
+        QFileInfo(appPath).canonicalFilePath()) {
+        QFile::remove(appPath);
+        if (!QFile::copy(built, appPath)) {
+            setUpdateStatus("Update failed: could not replace " + appPath, true);
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
+        QFile::setPermissions(appPath,
+                              QFile::ReadOwner | QFile::WriteOwner |
+                              QFile::ExeOwner | QFile::ReadGroup |
+                              QFile::ExeGroup | QFile::ReadOther |
+                              QFile::ExeOther);
+    }
+    setUpdateStatus("Relaunching...");
+    QProcess::startDetached(appPath, {});
+    QCoreApplication::quit();
+}
+
+QString MainWindow::resolveInstallCloneUrl()
+{
+    if (!m_networkAccess)
+        return QString();
+    // Ask the mainnode which node is currently hosting a live forkmesh mirror,
+    // then build the hosted git URL the installer would clone from.
+    QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+    url.setPath(QStringLiteral("/api/install-source"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    const QString node = obj.value("node").toString().trimmed();
+    const QString repo = obj.value("repo").toString(QStringLiteral("forkmesh")).trimmed();
+    if (node.isEmpty() || repo.isEmpty())
+        return QString();
+    QUrl clone = catalogApiUrl();
+    clone.setPath(QStringLiteral("/") + node + QLatin1Char('/') + repo);
+    clone.setQuery(QString());
+    clone.setFragment(QString());
+    return clone.toString();
+}
+
+void MainWindow::updateRebuildRestart()
+{
+    m_buildButton = m_rebuildButton;
+    m_buildStatusLabel = m_rebuildStatus;
+
+    // Under sudo, target the invoking user's home so nothing is written to /root.
+    const QString user = invokingNonRootUser();
+    const QString home = user.isEmpty() ? QString() : homeForUser(user);
+    const QString clientDir =
+        user.isEmpty() ? updateClientDir() : clientDirUnderHome(home);
+    const QString relaunchPath =
+        user.isEmpty() ? QCoreApplication::applicationFilePath()
+                       : (home + QStringLiteral("/.local/bin/forkmesh"));
+    // Build steps and the relaunch run as the user when we are root under sudo.
+    m_updateAsUser = user;
+
+    if (m_rebuildButton)
+        m_rebuildButton->setEnabled(false);
+    flashMessage(QStringLiteral("Updating ForkMesh from the install mirror..."));
+    setUpdateStatus(user.isEmpty()
+                        ? QStringLiteral("Finding an online ForkMesh mirror...")
+                        : QStringLiteral("Finding an online ForkMesh mirror "
+                                         "(installing for %1)...").arg(user));
+
+    const QString installUrl = resolveInstallCloneUrl();
+    if (installUrl.isEmpty()) {
+        m_updateAsUser.clear();
+        setUpdateStatus("No online ForkMesh mirror is available right now. "
+                        "Try again shortly.",
+                        true);
+        flashMessage("No online ForkMesh mirror is available right now.", true);
+        if (m_rebuildButton)
+            m_rebuildButton->setEnabled(true);
+        return;
+    }
+
+    const QString repoDir = QFileInfo(clientDir).absolutePath(); // .../src
+    const bool haveCheckout = QDir(repoDir).exists(QStringLiteral(".git"));
+
+    if (haveCheckout) {
+        setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
+        // Repoint origin at the freshly resolved live mirror, then fast-forward.
+        runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
+                                  installUrl},
+                          repoDir, [this, repoDir, clientDir, user, relaunchPath] {
+            runUpdateStepUser("git", {"-C", repoDir, "pull", "--ff-only"}, repoDir,
+                              [this, clientDir, user, relaunchPath] {
+                buildAndRelaunch(clientDir, user, relaunchPath);
+            });
+        });
+    } else {
+        const QString parent = QFileInfo(repoDir).absolutePath();
+        setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
+        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
+                          [this, installUrl, repoDir, parent, clientDir, user,
+                           relaunchPath] {
+            runUpdateStepUser("git", {"clone", "--depth", "1", installUrl, repoDir},
+                              parent, [this, clientDir, user, relaunchPath] {
+                buildAndRelaunch(clientDir, user, relaunchPath);
+            });
+        });
+    }
 }
 
 // -------------------------------------------------------------- server rail
@@ -3703,6 +3885,8 @@ QWidget *MainWindow::buildBreadcrumb()
         menu.addAction(QStringLiteral("Settings"), this, [this] { showSection(1); });
         menu.addAction(QStringLiteral("Rebuild & Restart"), this,
                        [this] { quickRebuildRestart(); });
+        menu.addAction(QStringLiteral("Update, rebuild & restart"), this,
+                       [this] { updateRebuildRestart(); });
         menu.addSeparator();
         menu.addAction(QStringLiteral("Logout"), this, [this] { leaveSession(); });
         // Drop down from the avatar, right-aligned to its right edge.
@@ -4418,6 +4602,8 @@ void MainWindow::promptSetSolanaAddress()
     saveSolanaAddress(trimmed);
     if (m_solanaEdit)
         m_solanaEdit->setText(trimmed);
+    if (m_settingsSolanaEdit)
+        m_settingsSolanaEdit->setText(trimmed);
     // The address is shared with peers on the next connect; the sponsor button
     // and donation notice pick it up immediately.
     updateSolanaNotice();
@@ -6830,7 +7016,9 @@ bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
     refreshRepositoryList();
     refreshOpenRepoDetail();
     if (m_backend)
-        m_backend->notifyMirrorUpdated(repo.owner + "/" + repo.name);
+        m_backend->notifyMirrorUpdated(
+            catalogOwner(repo) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository")));
     if (repo.publishToNetwork) {
         publishRepository(m_repoDetailIndex, false);
         startRepoHosts();
@@ -12130,25 +12318,12 @@ void MainWindow::removeIssueComposePage()
 
 void MainWindow::setIssueInlineNotice(const QString &message, bool error)
 {
-    if (!m_issueInlineNotice)
-        return;
-    if (message.trimmed().isEmpty()) {
-        m_issueInlineNotice->clear();
+    // #96: issue-created and related notices now surface in the top notification
+    // toast instead of an in-page banner. The inline label stays hidden.
+    if (m_issueInlineNotice)
         m_issueInlineNotice->hide();
-        return;
-    }
-    const bool dark = currentThemeIsDark();
-    const QString bg = error ? (dark ? "#3d1f21" : "#ffebe9")
-                             : (dark ? "#11251a" : "#dafbe1");
-    const QString border = error ? (dark ? "#f85149" : "#cf222e")
-                                 : (dark ? "#2ea043" : "#1f883d");
-    const QString fg = dark ? "#e6edf3" : "#1f2328";
-    m_issueInlineNotice->setStyleSheet(
-        QStringLiteral("QLabel#issueInlineNotice { background-color:%1; color:%2; "
-                       "border:1px solid %3; border-radius:6px; padding:8px 10px; }")
-            .arg(bg, fg, border));
-    m_issueInlineNotice->setText(message.toHtmlEscaped());
-    m_issueInlineNotice->show();
+    if (!message.trimmed().isEmpty())
+        flashMessage(message, error);
 }
 
 void MainWindow::promptEditIssueTitle()
@@ -13280,10 +13455,29 @@ QWidget *MainWindow::buildSettingsSection()
     avatarRow->addWidget(generateButton);
     avatarRow->addStretch();
 
+    // #66: let the node's Solana donation/payout address be set right here in
+    // Settings, not only during setup or from the profile panel.
+    m_settingsSolanaEdit = new QLineEdit;
+    m_settingsSolanaEdit->setMaxLength(64);
+    m_settingsSolanaEdit->setPlaceholderText(
+        "Solana address (for donations / payouts, optional)");
+    m_settingsSolanaEdit->setText(savedSolanaAddress());
+    connect(m_settingsSolanaEdit, &QLineEdit::editingFinished, this, [this] {
+        const QString addr = m_settingsSolanaEdit->text().trimmed();
+        m_settingsSolanaEdit->setText(addr);
+        saveSolanaAddress(addr);
+        if (m_solanaEdit && m_solanaEdit->text().trimmed() != addr)
+            m_solanaEdit->setText(addr);
+        // Share with peers on the next connect; refresh the sponsor banner now.
+        updateSolanaNotice();
+        updateHomeStats();
+    });
+
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft);
     form->setSpacing(8);
     form->addRow("Name", m_settingsNameEdit);
+    form->addRow("Solana", m_settingsSolanaEdit);
     form->addRow("Avatar", avatarRow);
 
     auto *startupLabel = new QLabel("STARTUP");
@@ -14730,11 +14924,19 @@ void MainWindow::refreshRepositoryList()
     updateHomeStats();
 
     // Advertise our own mirrors so other nodes can see and mirror them too.
+    // Advertise under the SAME owner/name the live host tunnel and catalog
+    // register with (catalogOwner + canonical name), not the raw repo.owner.
+    // Peers turn the advertised string straight into a clone URL, which the
+    // worker routes to the DO keyed host:<owner>/<name>. If we advertised
+    // repo.owner while the host socket connected as catalogOwner, the peer hit
+    // a DO with no host attached and got a 503 — surfaced as "Sync deferred,
+    // host temporarily unavailable" even though we were online and serving.
     if (m_backend) {
         QStringList ours;
         for (const RepositoryRecord &repo : std::as_const(m_repositories))
             if (!repo.previewOnly)
-                ours << repo.owner + "/" + repo.name;
+                ours << catalogOwner(repo) + "/" +
+                            repoSegment(repo.name, QStringLiteral("repository"));
         m_backend->setMirroredRepos(ours);
     }
 }
@@ -15759,7 +15961,9 @@ void MainWindow::syncRepository(int index, bool quiet)
                     // advanced from its source of truth. Only for real mirrors
                     // that already existed (an actual update, not a first clone).
                     if (changed && hasMirror && !stillPreview && m_backend)
-                        m_backend->notifyMirrorUpdated(repo.owner + "/" + repo.name);
+                        m_backend->notifyMirrorUpdated(
+                            catalogOwner(repo) + "/" +
+                            repoSegment(repo.name, QStringLiteral("repository")));
                     // Quiet auto-syncs only speak up when something changed.
                     if (!quiet || changed) {
                         logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
