@@ -9,6 +9,8 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QRegularExpression>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -77,11 +79,76 @@ FrontMatter parseFrontMatter(const QByteArray &bytes)
     QString body = lines.mid(i + 1).join('\n');
     while (body.startsWith('\n'))
         body.remove(0, 1);
+    while (body.endsWith('\n'))
+        body.chop(1);
     fm.body = body;
     return fm;
 }
 
+// Subsequent-event filenames: NNNN-<type>.md (same convention as issues/).
+// The type may contain hyphens (e.g. "line-comment").
+const QRegularExpression &eventFileRe()
+{
+    static const QRegularExpression re(QStringLiteral("^\\d{4}-[a-z-]+\\.md$"));
+    return re;
+}
+
+QString newId() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
+
+QString stripEdgeNewlines(QString s)
+{
+    while (s.startsWith('\n'))
+        s.remove(0, 1);
+    while (s.endsWith('\n'))
+        s.chop(1);
+    return s;
+}
+
+PullEvent eventFromFrontMatter(const FrontMatter &fm)
+{
+    PullEvent ev;
+    ev.type = fm.get("type");
+    ev.id = fm.get("id");
+    ev.author = fm.get("author");
+    ev.authorName = fm.get("authorName");
+    ev.ts = fm.num("ts");
+    ev.state = fm.get("state");
+    ev.path = fm.get("path");
+    ev.side = fm.get("side");
+    ev.line = int(fm.num("line"));
+    ev.sig = fm.get("sig");
+    ev.body = fm.body;
+    return ev;
+}
+
 } // namespace
+
+// ---- PullEvent -------------------------------------------------------------
+
+QJsonObject PullEvent::toJson() const
+{
+    return {{"type", type},   {"id", id},     {"author", author},
+            {"authorName", authorName}, {"ts", double(ts)}, {"body", body},
+            {"state", state}, {"path", path}, {"side", side},
+            {"line", line},   {"sig", sig}};
+}
+
+PullEvent PullEvent::fromJson(const QJsonObject &obj)
+{
+    PullEvent ev;
+    ev.type = obj.value("type").toString();
+    ev.id = obj.value("id").toString();
+    ev.author = obj.value("author").toString();
+    ev.authorName = obj.value("authorName").toString();
+    ev.ts = obj.value("ts").toVariant().toLongLong();
+    ev.body = obj.value("body").toString();
+    ev.state = obj.value("state").toString();
+    ev.path = obj.value("path").toString();
+    ev.side = obj.value("side").toString();
+    ev.line = obj.value("line").toInt();
+    ev.sig = obj.value("sig").toString();
+    return ev;
+}
 
 // ---- PullRequest (JSON wire format) ----------------------------------------
 
@@ -109,6 +176,30 @@ PullRequest PullRequest::fromJson(const QJsonObject &obj)
     pr.patch = obj.value("patch").toString();
     PullStore::computeStats(pr);
     return pr;
+}
+
+QString PullRequest::reviewSummary() const
+{
+    // Fold reviews into the latest state per author; a later review supersedes an
+    // earlier one from the same node. "commented" reviews don't set a state.
+    QHash<QString, QString> latest;
+    for (const PullEvent &ev : events) {
+        if (ev.type != QLatin1String("review"))
+            continue;
+        if (ev.state == QLatin1String("approved") ||
+            ev.state == QLatin1String("changes_requested"))
+            latest.insert(ev.author, ev.state);
+        else
+            latest.remove(ev.author); // a plain comment-review clears prior state
+    }
+    bool approved = false;
+    for (auto it = latest.constBegin(); it != latest.constEnd(); ++it) {
+        if (it.value() == QLatin1String("changes_requested"))
+            return QStringLiteral("changes_requested");
+        if (it.value() == QLatin1String("approved"))
+            approved = true;
+    }
+    return approved ? QStringLiteral("approved") : QString();
 }
 
 // ---- PullStore -------------------------------------------------------------
@@ -175,6 +266,182 @@ PullRequest PullStore::makeSignedPull(PullRequest pr) const
     return pr;
 }
 
+// ---- Conversation events (comments + reviews) ------------------------------
+
+QString PullStore::contentForSigning(const PullEvent &ev)
+{
+    const QChar nul(QChar::Null);
+    if (ev.type == "comment")
+        return ev.body;
+    if (ev.type == "review")
+        return ev.state + nul + ev.body;
+    if (ev.type == "line-comment")
+        return ev.path + nul + ev.side + nul + QString::number(ev.line) + nul + ev.body;
+    return QString();
+}
+
+QByteArray PullStore::canonicalString(int number, const PullEvent &ev)
+{
+    const QByteArray contentHash =
+        QCryptographicHash::hash(contentForSigning(ev).toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex();
+    QByteArray canonical = "forkmesh-pull-comment-v1\n";
+    canonical += ev.type.toUtf8() + "\n";
+    canonical += QByteArray::number(number) + "\n";
+    canonical += ev.author.toUtf8() + "\n";
+    canonical += QByteArray::number(ev.ts) + "\n";
+    canonical += contentHash;
+    return canonical;
+}
+
+PullEvent PullStore::makeSignedEvent(int number, PullEvent ev) const
+{
+    if (ev.id.isEmpty())
+        ev.id = newId();
+    ev.author = m_identity ? m_identity->publicKey() : QString();
+    if (ev.authorName.isEmpty())
+        ev.authorName = m_authorName;
+    if (ev.ts == 0)
+        ev.ts = QDateTime::currentMSecsSinceEpoch();
+    ev.sig = m_identity ? m_identity->signData(canonicalString(number, ev)) : QString();
+    return ev;
+}
+
+QList<PullEvent> PullStore::readEvents(int number) const
+{
+    QList<PullEvent> events;
+    QStringList names = QDir(pullDir(number)).entryList(QDir::Files, QDir::Name);
+    names.sort();
+    for (const QString &name : names) {
+        if (!eventFileRe().match(name).hasMatch())
+            continue;
+        QFile ef(pullDir(number) + "/" + name);
+        if (ef.open(QIODevice::ReadOnly))
+            events.append(eventFromFrontMatter(parseFrontMatter(ef.readAll())));
+    }
+    return events;
+}
+
+int PullStore::nextEventIndex(int number) const
+{
+    int max = 1; // pull.md is conceptually event 1
+    for (const QString &name : QDir(pullDir(number)).entryList(QDir::Files)) {
+        if (!eventFileRe().match(name).hasMatch())
+            continue;
+        const int n = name.left(4).toInt();
+        if (n > max)
+            max = n;
+    }
+    return max + 1;
+}
+
+bool PullStore::writeEventFile(int number, int index, const PullEvent &ev,
+                               QString *error) const
+{
+    QStringList lines;
+    lines << "---";
+    lines << "type: " + ev.type;
+    lines << "id: " + ev.id;
+    lines << "author: " + ev.author;
+    lines << "authorName: " + ev.authorName;
+    lines << "ts: " + QString::number(ev.ts);
+    if (ev.type == "review")
+        lines << "state: " + ev.state;
+    if (ev.type == "line-comment") {
+        lines << "path: " + ev.path;
+        lines << "side: " + ev.side;
+        lines << "line: " + QString::number(ev.line);
+    }
+    lines << "sig: " + ev.sig;
+    lines << "---";
+    lines << "";
+    const QString name =
+        QStringLiteral("%1-%2.md").arg(index, 4, 10, QChar('0')).arg(ev.type);
+    return writeTextFile(pullDir(number) + "/" + name,
+                         lines.join('\n') + "\n" + ev.body + "\n", error);
+}
+
+bool PullStore::appendEvent(int number, const PullEvent &ev,
+                            const QString &commitMsg, QString *error)
+{
+    if (!QFileInfo::exists(pullDir(number) + "/pull.md")) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (!writeEventFile(number, nextEventIndex(number), ev, error))
+        return false;
+    return commit(commitMsg, error);
+}
+
+bool PullStore::addComment(int number, const QString &body, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "comment";
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(number, ev,
+                       QStringLiteral("pull #%1: comment").arg(number), error);
+}
+
+bool PullStore::addReview(int number, const QString &state, const QString &body,
+                          QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "review";
+    ev.state = state;
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(number, ev,
+                       QStringLiteral("pull #%1: review (%2)").arg(number).arg(state),
+                       error);
+}
+
+bool PullStore::addLineComment(int number, const QString &path, const QString &side,
+                               int line, const QString &body, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "line-comment";
+    ev.path = path;
+    ev.side = side;
+    ev.line = line;
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(
+        number, ev,
+        QStringLiteral("pull #%1: comment on %2:%3").arg(number).arg(path).arg(line),
+        error);
+}
+
+bool PullStore::applyRemoteEvent(int number, const PullEvent &ev, QString *error)
+{
+    if (!canWrite())
+        return false;
+    return appendEvent(
+        number, ev,
+        QStringLiteral("pull #%1: %2 (from %3)")
+            .arg(number)
+            .arg(ev.type == "review" ? QStringLiteral("review") : QStringLiteral("comment"),
+                 ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName),
+        error);
+}
+
 int PullStore::nextNumber() const
 {
     int max = 0;
@@ -232,6 +499,7 @@ bool PullStore::readPull(int number, PullRequest &out) const
     if (patch.open(QIODevice::ReadOnly))
         out.patch = QString::fromUtf8(patch.readAll());
     computeStats(out);
+    out.events = readEvents(number);
     return true;
 }
 
@@ -604,6 +872,28 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error) const
         bool pok = false;
         pr.patch = QString::fromUtf8(showFromMirror("pulls/" + base + "/changes.patch", &pok));
         computeStats(pr);
+        // Enumerate this PR's conversation event files from the mirror.
+        QByteArray dirListing;
+        if (runGit(m_mirror, {"ls-tree", ref, "pulls/" + base + "/"}, &dirListing)) {
+            QStringList names;
+            for (const QString &l :
+                 QString::fromUtf8(dirListing).split('\n', Qt::SkipEmptyParts)) {
+                const int t = l.indexOf('\t');
+                if (t < 0 || !l.contains(" blob "))
+                    continue;
+                const QString fname = l.mid(t + 1).section('/', -1);
+                if (eventFileRe().match(fname).hasMatch())
+                    names << fname;
+            }
+            names.sort();
+            for (const QString &name : names) {
+                bool eok = false;
+                const QByteArray evBytes =
+                    showFromMirror("pulls/" + base + "/" + name, &eok);
+                if (eok)
+                    pr.events.append(eventFromFrontMatter(parseFrontMatter(evBytes)));
+            }
+        }
         pulls.append(pr);
     }
     std::sort(pulls.begin(), pulls.end(),

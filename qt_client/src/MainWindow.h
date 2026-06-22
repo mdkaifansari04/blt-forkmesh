@@ -9,6 +9,8 @@
 #include "AgentStore.h"
 #include "AgentRunner.h"
 
+struct CommitComment; // CommitCommentStore.h
+
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -237,6 +239,16 @@ private:
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
     void downloadCommitPatch();           // save the open commit as a .patch file
+    void renderCommitThread(const QString &sha); // per-commit conversation
+    void submitCommitComment();                  // post a comment on the open commit
+    // Sync a diff split/unified toggle button's label+tooltip to the preference.
+    void updateDiffSplitButton(QPushButton *button);
+    // Append one conversation card (avatar + header + markdown body) to a thread
+    // layout (shared by the PR and commit conversation panels). headerHtml is the
+    // already-escaped "<b>name</b> verb when" line; an accent colors the card edge.
+    void addConversationCard(QVBoxLayout *layout, const QString &author,
+                             const QString &headerHtml, const QString &body,
+                             const QString &accent = QString());
     QWidget *buildAboutSidebar();
     QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
@@ -248,6 +260,13 @@ private:
     void refreshPullList();
     void showPull(int number);
     void renderPullDiff(const QString &filePath);
+    // Handle a click on a diff line-number anchor ("cmt:<side>:<line>"): prompt
+    // for a comment and attach it to that line of the current PR file.
+    void onPullDiffAnchorClicked(const QUrl &url);
+    void renderPullThread(const PullRequest &pr);   // review/comment conversation
+    void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
+    void submitPullComment();                       // post a comment on the PR
+    void submitPullReview(const QString &state);    // approve / request changes
     void promptNewPull();
     void importPatchAsPull(); // read a .patch/.diff file and open it as a PR
     void promptNewPullFromDirectory();
@@ -264,6 +283,14 @@ private:
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
     void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
+    // Submit a signed PR conversation event (comment/review) to the relay inbox
+    // for repos this node can't write directly.
+    void submitPullEventToInbox(int number, const PullEvent &ev);
+    // Submit a signed commit comment to the relay inbox.
+    void submitCommitCommentToInbox(const QString &sha, const CommitComment &c);
+    // Drain a repo's commit-comment inbox (owner-only); apply + commit.
+    void drainCommitInboxFor(RepositoryRecord repo, bool interactive);
+    QUrl commitsApiUrl(const RepositoryRecord &repo) const;
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
     // Agent sessions tab: local Codex/Claude Code runs assigned from issues.
@@ -773,8 +800,14 @@ private:
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
+    QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
+    // Per-commit conversation (comment thread + composer).
+    QWidget *m_commitThreadContainer = nullptr;
+    QVBoxLayout *m_commitThreadLayout = nullptr;
+    MarkdownEditor *m_commitComposer = nullptr;
+    QPushButton *m_commitCommentButton = nullptr;
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
@@ -809,7 +842,17 @@ private:
     QPushButton *m_pullDeleteButton = nullptr;
     bool m_pullDeleteConfirmPending = false;
     QListWidget *m_pullFiles = nullptr;
-    QTextEdit *m_pullDiff = nullptr;
+    QTextBrowser *m_pullDiff = nullptr;
+    QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
+    QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
+    // Conversation: review thread + composer + review actions.
+    QScrollArea *m_pullThreadScroll = nullptr;
+    QWidget *m_pullThreadContainer = nullptr;
+    QVBoxLayout *m_pullThreadLayout = nullptr;
+    MarkdownEditor *m_pullComposer = nullptr;
+    QPushButton *m_pullCommentButton = nullptr;
+    QPushButton *m_pullApproveButton = nullptr;
+    QPushButton *m_pullRequestChangesButton = nullptr;
     QList<PullRequest> m_currentPulls;
     QHash<QString, QString> m_pullFileDiffs; // current PR: file path -> diff text
     int m_currentPullNumber = -1;

@@ -37,6 +37,9 @@ MAX_PENDING_ISSUES = 500
 # issue body but still bounded.
 MAX_PULL_BYTES = 1024 * 1024
 MAX_PENDING_PULLS = 200
+# Commit-comment inbox: small signed text comments keyed by commit hash.
+MAX_COMMIT_COMMENT_BYTES = 64 * 1024
+MAX_PENDING_COMMIT_COMMENTS = 500
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -45,6 +48,8 @@ REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clien
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
+# Commit-comment inbox: signed per-commit comments from any node.
+REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
@@ -193,6 +198,63 @@ async def verify_pull_event(pr):
     content_hash = await sha256_hex(content)
     canonical = (
         "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
+
+
+def pull_comment_content(ev):
+    # Mirrors PullStore::contentForSigning. Fields joined by NUL.
+    t = ev.get("type", "")
+    if t == "comment":
+        return ev.get("body", "")
+    if t == "review":
+        return "\x00".join([ev.get("state", ""), ev.get("body", "")])
+    if t == "line-comment":
+        try:
+            line = str(int(ev.get("line", 0)))
+        except (TypeError, ValueError):
+            line = "0"
+        return "\x00".join([
+            ev.get("path", ""), ev.get("side", ""), line, ev.get("body", ""),
+        ])
+    return ""
+
+
+async def verify_pull_comment_event(number, ev):
+    # Mirrors PullStore::canonicalString(number, ev): the signature binds the PR
+    # number (reviewers act on the owner's mirror, which has canonical numbers).
+    author = ev.get("author", "")
+    signature = ev.get("sig", "")
+    event_type = ev.get("type", "")
+    if not author or not signature or \
+            event_type not in ("comment", "review", "line-comment"):
+        return False
+    try:
+        ts = int(ev.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(pull_comment_content(ev))
+    canonical = (
+        "forkmesh-pull-comment-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
+        author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
+
+
+async def verify_commit_comment_event(sha, c):
+    # Mirrors CommitCommentStore::canonicalString(sha, c).
+    author = c.get("author", "")
+    signature = c.get("sig", "")
+    if not author or not signature or not sha:
+        return False
+    try:
+        ts = int(c.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(c.get("body", ""))
+    canonical = (
+        "forkmesh-commit-comment-v1\n" + sha + "\n" + author + "\n" + str(ts) +
+        "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
 
@@ -812,6 +874,10 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
+    """CREATE TABLE IF NOT EXISTS commit_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     # Server-side 5xx / error log surfaced on the admin dashboard.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
@@ -2265,6 +2331,34 @@ async def pulls_handler(env, request, owner, repo):
             data = await request.json()
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
+        # A submission is either a whole new PR ("pull") or a signed conversation
+        # event ("event" + "number") — a comment or review on an existing PR.
+        event = data.get("event")
+        if isinstance(event, dict):
+            try:
+                number = int(data.get("number", 0))
+            except (TypeError, ValueError):
+                number = 0
+            if len((event.get("body", "") or "").encode("utf-8")) > MAX_ISSUE_BYTES:
+                return json_response({"error": "event_too_large"}, status=413)
+            if not await verify_pull_comment_event(number, event):
+                return json_response({"error": "bad_signature"}, status=401)
+            count = await d1_first(
+                env, "SELECT COUNT(*) AS c FROM pull_inbox WHERE repo_bi=?", repo_bi
+            )
+            if count and count.get("c", 0) >= MAX_PENDING_PULLS:
+                return json_response({"error": "inbox_full"}, status=429)
+            item = {
+                "number": number,
+                "event": event,
+                "submitter": clean_string(event.get("author", ""), 120),
+                "submittedAt": int(Date.now()),
+            }
+            await d1_run(
+                env, "INSERT INTO pull_inbox (repo_bi, data) VALUES (?,?)",
+                repo_bi, await encrypt_row(env, item),
+            )
+            return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
             return json_response({"error": "pull_required"}, status=400)
@@ -2303,6 +2397,60 @@ async def pulls_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def commits_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        comment = data.get("comment")
+        sha = clean_string(data.get("sha", ""), 40)
+        if not isinstance(comment, dict) or not sha:
+            return json_response({"error": "comment_required"}, status=400)
+        if len((comment.get("body", "") or "").encode("utf-8")) > MAX_COMMIT_COMMENT_BYTES:
+            return json_response({"error": "comment_too_large"}, status=413)
+        if not await verify_commit_comment_event(sha, comment):
+            return json_response({"error": "bad_signature"}, status=401)
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM commit_inbox WHERE repo_bi=?", repo_bi
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_COMMIT_COMMENTS:
+            return json_response({"error": "inbox_full"}, status=429)
+        item = {
+            "sha": sha,
+            "comment": comment,
+            "submitter": clean_string(comment.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        }
+        await d1_run(
+            env, "INSERT INTO commit_inbox (repo_bi, data) VALUES (?,?)",
+            repo_bi, await encrypt_row(env, item),
+        )
+        return json_response({"ok": True}, status=201)
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env, "SELECT data FROM commit_inbox WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
+        )
+        pending = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        return json_response({"ok": True, "pending": pending})
+
+    if method == "DELETE":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -2838,6 +2986,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await pulls_handler(self.env, request, owner, repo)
+
+        commits_match = REPO_COMMITS_RE.match(url.path)
+        if commits_match:
+            owner = safe_segment(commits_match.group(1))
+            repo = safe_segment(commits_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await commits_handler(self.env, request, owner, repo)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:

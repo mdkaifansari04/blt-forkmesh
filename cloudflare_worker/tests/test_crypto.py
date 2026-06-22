@@ -45,6 +45,42 @@ def blind_index(data_key, value):
     return hmac.new(key, norm, hashlib.sha256).hexdigest()
 
 
+def _sha256_hex(s):
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def pull_comment_content(ev):
+    # Mirrors entry.py:pull_comment_content / PullStore::contentForSigning.
+    t = ev.get("type", "")
+    if t == "comment":
+        return ev.get("body", "")
+    if t == "review":
+        return "\x00".join([ev.get("state", ""), ev.get("body", "")])
+    if t == "line-comment":
+        return "\x00".join([
+            ev.get("path", ""), ev.get("side", ""), str(int(ev.get("line", 0))),
+            ev.get("body", ""),
+        ])
+    return ""
+
+
+def pull_comment_canonical(number, ev):
+    # Mirrors entry.py:verify_pull_comment_event canonical construction.
+    return (
+        "forkmesh-pull-comment-v1\n" + ev.get("type", "") + "\n" + str(int(number)) +
+        "\n" + ev.get("author", "") + "\n" + str(int(ev.get("ts", 0))) + "\n" +
+        _sha256_hex(pull_comment_content(ev))
+    )
+
+
+def commit_comment_canonical(sha, c):
+    # Mirrors entry.py:verify_commit_comment_event canonical construction.
+    return (
+        "forkmesh-commit-comment-v1\n" + sha + "\n" + c.get("author", "") + "\n" +
+        str(int(c.get("ts", 0))) + "\n" + _sha256_hex(c.get("body", ""))
+    )
+
+
 # --- Test runner -------------------------------------------------------------
 
 _failures = []
@@ -114,6 +150,42 @@ def main():
             hashlib.sha256(b"forkmesh-dev-data-key:blind-index").digest(),
             b"alice/myrepo", hashlib.sha256,
         ).hexdigest(),
+    )
+
+    # PR conversation + commit comment canonical strings: these MUST match the
+    # C++ vectors pinned in qt_client/tests/test_crypto.cpp byte-for-byte, so the
+    # client's signer and the worker's verifier agree.
+    check(
+        "pull-comment canonical vector",
+        pull_comment_canonical(
+            5, {"type": "comment", "author": "TESTPUB", "ts": 1000,
+                "body": "Looks good"}),
+        "forkmesh-pull-comment-v1\ncomment\n5\nTESTPUB\n1000\n"
+        "5fc87d339144090b0ad2e192e6a6fe58e98d3a5a062467c7e62049c7d8c3db01",
+    )
+    check(
+        "pull-review canonical vector",
+        pull_comment_canonical(
+            5, {"type": "review", "author": "TESTPUB", "ts": 2000,
+                "state": "approved", "body": "LGTM"}),
+        "forkmesh-pull-comment-v1\nreview\n5\nTESTPUB\n2000\n"
+        "b863bbc11dd8fea92da94a7da47f815aceeaa9418483992d0a952273894a0731",
+    )
+    check(
+        "pull line-comment canonical vector",
+        pull_comment_canonical(
+            5, {"type": "line-comment", "author": "TESTPUB", "ts": 2500,
+                "path": "src/x.cpp", "side": "new", "line": 42,
+                "body": "needs a guard"}),
+        "forkmesh-pull-comment-v1\nline-comment\n5\nTESTPUB\n2500\n"
+        "a2574c2b392fd0db6b7e4b0d025d4094bb410691dca7686ddf095d63881f4985",
+    )
+    check(
+        "commit-comment canonical vector",
+        commit_comment_canonical(
+            "abc123", {"author": "TESTPUB", "ts": 3000, "body": "Nice"}),
+        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
+        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060",
     )
 
     print()
