@@ -540,6 +540,59 @@ async def online_history(env):
     )
 
 
+async def install_source(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - HOST_PRESENCE_STALE_MS
+    rows = await d1_all(
+        env,
+        """SELECT hp.repo_bi, r.owner_bi, r.data
+             FROM host_presence hp
+             JOIN repositories r ON r.key_bi = hp.repo_bi
+             WHERE hp.ts >= ?""",
+        cutoff,
+    )
+
+    candidates = {}
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+            continue
+        owner = safe_segment(rec.get("owner", ""))
+        owner_bi = row.get("owner_bi")
+        if owner and owner_bi:
+            candidates[owner_bi] = owner
+
+    if not candidates:
+        return json_response({"ok": False, "error": "no_online_install_source"},
+                             status=503, cache_seconds=10)
+
+    start = now - ONLINE_HISTORY_RETAIN_MS
+    uptime_rows = await d1_all(
+        env,
+        """SELECT node_key, SUM(node_minutes) AS total_minutes
+             FROM online_hourly_nodes
+             WHERE hour_ts >= ?
+             GROUP BY node_key""",
+        start,
+    )
+    totals = {r.get("node_key"): int(r.get("total_minutes") or 0)
+              for r in uptime_rows}
+    ranked = sorted(
+        (
+            {"node": node, "totalMinutes": totals.get(node_key, 0)}
+            for node_key, node in candidates.items()
+        ),
+        key=lambda item: (-item["totalMinutes"], item["node"]),
+    )
+    best = ranked[0]
+    return json_response(
+        {"ok": True, "node": best["node"], "repo": "forkmesh",
+         "totalMinutes": best["totalMinutes"]},
+        cache_seconds=30,
+    )
+
+
 def method_name(request):
     method = getattr(request, "method", "GET")
     return str(method).upper()
@@ -2609,6 +2662,11 @@ class Default(WorkerEntrypoint):
         # 24-hour online-activity series for the /network/ graph.
         if url.path in ("/api/network/online-history", "/api/network/online-history/"):
             return await online_history(self.env)
+
+        # Installer clone source: pick the currently-online forkmesh host with
+        # the most retained uptime instead of baking one node id into install.sh.
+        if url.path in ("/api/install-source", "/api/install-source/"):
+            return await install_source(self.env)
 
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):

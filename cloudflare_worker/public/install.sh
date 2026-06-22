@@ -8,11 +8,13 @@ set -euo pipefail
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
-# Default to the canonical mainnode; override FORKMESH_HOST when self-hosting.
+# Override FORKMESH_HOST when self-hosting. By default, the installer asks the
+# mainnode for the currently-online forkmesh host with the most recent uptime.
 FORKMESH_HOST="${FORKMESH_HOST:-https://forkmesh.com}"
-FORKMESH_NODE="${FORKMESH_NODE:-node-7zmh_2s_}"
+FORKMESH_NODE="${FORKMESH_NODE:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
-REPO="${FORKMESH_REPO:-${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}}"
+FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
+REPO="${FORKMESH_REPO:-}"
 SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
@@ -20,6 +22,25 @@ BIN="$BIN_DIR/forkmesh"
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
+
+resolve_install_node() {
+  [ -n "$FORKMESH_NODE" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+
+  local body node
+  body="$(curl -fsSL "$FORKMESH_INSTALL_SOURCE_URL" 2>/dev/null || true)"
+  node="$(printf '%s\n' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  case "$node" in
+    *[!A-Za-z0-9._:-]*|"") return 0 ;;
+  esac
+  FORKMESH_NODE="$node"
+}
+
+if [ -z "$REPO" ]; then
+  resolve_install_node
+  FORKMESH_NODE="${FORKMESH_NODE:-mainnode}"
+  REPO="${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}"
+fi
 
 # --- privilege escalation ---------------------------------------------------
 # Resolve how to run a package manager that needs root. Empty when we are
