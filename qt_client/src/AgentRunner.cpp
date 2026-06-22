@@ -176,12 +176,34 @@ void AgentRunner::launch(Phase phase, const QString &program,
         QDir().mkpath(m_config.isolatedHome);
         env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
     }
-    if (!m_config.apiKeyName.isEmpty() && !m_config.apiKey.isEmpty()) {
+    // Codex and Claude Code authenticate with the user's own CLI login
+    // (subscription). The OpenAI API and Claude API providers use an API key.
+    const QString provider = m_session.provider;
+    const bool subscriptionAuth = provider == QLatin1String("codex") ||
+                                  provider == QLatin1String("claude-code");
+    const bool usingConfiguredKey = !subscriptionAuth &&
+                                    !m_config.apiKeyName.isEmpty() &&
+                                    !m_config.apiKey.trimmed().isEmpty();
+    if (usingConfiguredKey) {
         const QString key = m_config.apiKey.trimmed();
         env.insert(m_config.apiKeyName, key);
-        if (m_session.provider == QLatin1String("codex") ||
-            m_session.provider == QLatin1String("openai"))
+        if (provider == QLatin1String("openai"))
             env.insert(QStringLiteral("OPENAI_API_KEY"), key);
+    }
+    // A subscription/login CLI must ignore any API key — whether configured in
+    // ForkMesh or inherited from the environment ForkMesh was launched in — so it
+    // uses the user's login. An inherited ANTHROPIC_API_KEY otherwise forces
+    // Claude Code into API-key billing and disables its claude.ai connectors.
+    if (phase == Phase::Agent && subscriptionAuth) {
+        if (provider == QLatin1String("claude-code")) {
+            env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+            env.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+        } else { // codex
+            env.remove(QStringLiteral("OPENAI_API_KEY"));
+            env.remove(QStringLiteral("CODEX_API_KEY"));
+        }
+        emitLog(QStringLiteral("==> Using the %1 login (ignoring any API key).")
+                    .arg(providerTitle(provider)));
     }
     if (!m_config.model.trimmed().isEmpty())
         env.insert(QStringLiteral("FORKMESH_AGENT_MODEL"), m_config.model.trimmed());
