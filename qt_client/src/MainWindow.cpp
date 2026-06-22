@@ -11542,6 +11542,206 @@ void MainWindow::loadReleasesPanel()
     }
 }
 
+QWidget *MainWindow::buildMirrorNodesTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    auto *heading = new QLabel("Mirror nodes");
+    heading->setObjectName("channelTitle");
+    m_mirrorNodesSummary = new QLabel;
+    m_mirrorNodesSummary->setObjectName("statusLine");
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this,
+            &MainWindow::loadMirrorNodesPanel);
+    headerRow->addWidget(heading);
+    headerRow->addWidget(m_mirrorNodesSummary);
+    headerRow->addStretch();
+    headerRow->addWidget(refreshButton);
+    layout->addLayout(headerRow);
+
+    auto *blurb = new QLabel(
+        "Nodes across the network that keep a live mirror of this repository. "
+        "Each node serves clones and browsing from its own copy; the commit and "
+        "sync time show how fresh that copy is.");
+    blurb->setObjectName("statusLine");
+    blurb->setWordWrap(true);
+    layout->addWidget(blurb);
+
+    m_mirrorNodesTable = new QTableWidget(0, 6);
+    m_mirrorNodesTable->setObjectName("issueTable");
+    m_mirrorNodesTable->setHorizontalHeaderLabels(
+        {"Node", "Latest commit", "Synced", "Platform", "Version", "Node id"});
+    m_mirrorNodesTable->verticalHeader()->setVisible(false);
+    m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_mirrorNodesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_mirrorNodesTable->setShowGrid(false);
+    m_mirrorNodesTable->setWordWrap(false);
+    m_mirrorNodesTable->setSortingEnabled(true);
+    QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
+    mh->setHighlightSections(false);
+    mh->setSectionResizeMode(0, QHeaderView::Stretch);          // Node
+    mh->setSectionResizeMode(1, QHeaderView::ResizeToContents); // Latest commit
+    mh->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Synced
+    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Platform
+    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Version
+    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Node id
+    // Double-click a node row to open its profile.
+    connect(m_mirrorNodesTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *it = m_mirrorNodesTable->item(row, 0);
+                if (it) {
+                    const QString nid = it->data(Qt::UserRole).toString();
+                    if (!nid.isEmpty())
+                        showNodeProfile(nid, it->text());
+                }
+            });
+    layout->addWidget(m_mirrorNodesTable, 1);
+    return page;
+}
+
+void MainWindow::loadMirrorNodesPanel()
+{
+    if (!m_mirrorNodesTable)
+        return;
+    m_mirrorNodesTable->setSortingEnabled(false);
+    m_mirrorNodesTable->setRowCount(0);
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        if (m_mirrorNodesSummary)
+            m_mirrorNodesSummary->clear();
+        m_mirrorNodesTable->setSortingEnabled(true);
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // The canonical "owner/name" peers advertise (matches setMirroredRepos).
+    const QString canonical =
+        catalogOwner(repo) + "/" +
+        repoSegment(repo.name, QStringLiteral("repository"));
+    const QString legacy = repo.owner + "/" + repo.name;
+    // Our own mirror, used to resolve a peer's advertised commit to its subject.
+    const QString localMirror = repo.mirrorPath;
+
+    // For our own row, read the HEAD straight from the local mirror so it always
+    // reflects the latest sync without waiting for a roster round-trip.
+    MirrorAdvert selfAdvert;
+    selfAdvert.ownerName = canonical;
+    selfAdvert.branch = mirrorHeadBranch(localMirror);
+    selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
+    selfAdvert.updatedMs = repo.lastSyncMs;
+
+    int count = 0;
+    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+        // Find this node's advert for this repo (by canonical or legacy name).
+        const MirrorAdvert *advert = nullptr;
+        for (const MirrorAdvert &m : node.mirrorDetails) {
+            if (m.ownerName == canonical || m.ownerName == legacy) {
+                advert = &m;
+                break;
+            }
+        }
+        // Older peers may only carry bare names in `mirrors` with no detail.
+        const bool namedOnly = !advert && (node.mirrors.contains(canonical) ||
+                                           node.mirrors.contains(legacy));
+        if (node.self && !advert && !namedOnly &&
+            !repo.previewOnly && !selfAdvert.commit.isEmpty()) {
+            // We hold a real mirror even if our own advert hasn't propagated yet.
+            advert = &selfAdvert;
+        } else if (node.self && advert) {
+            advert = &selfAdvert; // prefer the live local HEAD over the roster copy
+        }
+        if (!advert && !namedOnly)
+            continue;
+
+        const int row = m_mirrorNodesTable->rowCount();
+        m_mirrorNodesTable->insertRow(row);
+
+        // Node: green/grey dot + name (+ "you").
+        const bool online = node.self ? (m_backend != nullptr) : node.online;
+        auto *nameItem = new QTableWidgetItem(
+            node.name + (node.self ? QStringLiteral("  (you)") : QString()));
+        nameItem->setIcon(themedOcticon(
+            "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+        nameItem->setData(Qt::UserRole, node.id);
+        nameItem->setToolTip(online ? "Online now" : "Offline");
+        m_mirrorNodesTable->setItem(row, 0, nameItem);
+
+        // Latest commit: short hash + branch; tooltip carries the subject/date
+        // when we hold the same commit in our own mirror.
+        QString commitText = QString::fromUtf8("\xE2\x80\x94");
+        QString commitTip;
+        if (advert && !advert->commit.isEmpty()) {
+            commitText = advert->commit.left(10);
+            if (!advert->branch.isEmpty())
+                commitText += "  (" + advert->branch + ")";
+            commitTip = advert->commit;
+            QByteArray subject;
+            if (!localMirror.isEmpty() &&
+                runGitCapture(localMirror,
+                              {"show", "-s", "--format=%s", advert->commit},
+                              &subject, nullptr)) {
+                const QString s = QString::fromUtf8(subject).trimmed();
+                if (!s.isEmpty())
+                    commitTip = s + "\n" + advert->commit;
+            }
+        }
+        auto *commitItem = new QTableWidgetItem(commitText);
+        commitItem->setToolTip(commitTip);
+        m_mirrorNodesTable->setItem(row, 1, commitItem);
+
+        // Synced: relative time since the node last fetched from source.
+        const qint64 syncedSecs = advert ? advert->updatedMs / 1000 : 0;
+        auto *syncedItem = new SortTableWidgetItem(
+            syncedSecs > 0 ? formatShortRelativeTime(syncedSecs) + " ago"
+                           : QString::fromUtf8("\xE2\x80\x94"));
+        syncedItem->setData(kTableSortRole, double(syncedSecs));
+        if (syncedSecs > 0)
+            syncedItem->setToolTip(
+                QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
+        m_mirrorNodesTable->setItem(row, 2, syncedItem);
+
+        m_mirrorNodesTable->setItem(
+            row, 3,
+            new QTableWidgetItem(node.platform.isEmpty()
+                                     ? QString::fromUtf8("\xE2\x80\x94")
+                                     : node.platform));
+        m_mirrorNodesTable->setItem(
+            row, 4,
+            new QTableWidgetItem(node.version.isEmpty()
+                                     ? QString::fromUtf8("\xE2\x80\x94")
+                                     : node.version));
+        auto *idItem = new QTableWidgetItem(
+            node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
+                                                    : QString()));
+        idItem->setToolTip(node.id);
+        m_mirrorNodesTable->setItem(row, 5, idItem);
+        ++count;
+    }
+    m_mirrorNodesTable->setSortingEnabled(true);
+
+    if (m_mirrorNodesSummary)
+        m_mirrorNodesSummary->setText(
+            QStringLiteral("\xC2\xB7 %1 node%2 mirroring %3")
+                .arg(count)
+                .arg(count == 1 ? "" : "s")
+                .arg(canonical));
+    if (count == 0) {
+        m_mirrorNodesTable->insertRow(0);
+        auto *empty = new QTableWidgetItem(
+            "No other nodes are advertising a mirror of this repository yet.");
+        empty->setForeground(QColor("#8b949e"));
+        m_mirrorNodesTable->setItem(0, 0, empty);
+    }
+}
+
 void MainWindow::promptNewRelease()
 {
     if (!repoHasWorkingTree()) {
@@ -14729,6 +14929,11 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
+    // Keep the open repo's Mirror nodes view live as peers come and go or
+    // re-advertise fresher mirrors.
+    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
+        loadMirrorNodesPanel();
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)
@@ -16820,6 +17025,10 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoPushButton();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
+    // Reflect our own freshly-synced HEAD in the Mirror nodes view if it's open.
+    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
+        loadMirrorNodesPanel();
 }
 
 void MainWindow::processActionQueue()

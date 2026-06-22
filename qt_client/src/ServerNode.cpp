@@ -538,7 +538,6 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
     if (!changed)
         return;
     m_mirroredRepos = repos;
-    updateRosterAndStatus(); // reflect our own HEADs in the local roster
     if (m_wsReady)
         sendHello(); // re-advertise so peers see the updated mirror set
 }
