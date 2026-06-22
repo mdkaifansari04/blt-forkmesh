@@ -80,6 +80,18 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
     assert "display: block;" in body
 
 
+def test_spa_assets_are_root_relative_for_deep_links():
+    html = (PUBLIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert 'href="/styles.css"' in html
+    assert 'src="/catalog.js"' in html
+    assert 'src="/chat.js"' in html
+    assert 'href="styles.css"' not in html
+    assert 'src="catalog.js"' not in html
+    assert 'src="chat.js"' not in html
+
+
 if __name__ == "__main__":
     test_all_public_html_pages_use_logo_in_brand_link()
     test_brand_logo_size_comes_from_shared_stylesheet()
+    test_spa_assets_are_root_relative_for_deep_links()
