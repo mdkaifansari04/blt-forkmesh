@@ -5495,11 +5495,11 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 9);
+    m_issueTable = new QTableWidget(0, 10);
     m_issueTable->setObjectName("issueTable");
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
-         "Created", "Agent"});
+         "Created", "Agent", "Author"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -5521,6 +5521,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Milestone
     header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Created
     header->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Agent
+    header->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Author
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -6598,10 +6599,11 @@ QWidget *MainWindow::buildPullsTab()
     m_pullSearch->setPlaceholderText("Search pull requests\xE2\x80\xA6");
     m_pullSearch->setClearButtonEnabled(true);
 
-    m_pullTable = new QTableWidget(0, 6);
+    m_pullTable = new QTableWidget(0, 7);
     m_pullTable->setObjectName("issueTable");
     m_pullTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1"});
+        {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
+         "Author"});
     m_pullTable->verticalHeader()->setVisible(false);
     m_pullTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_pullTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6613,7 +6615,7 @@ QWidget *MainWindow::buildPullsTab()
     ph->setHighlightSections(false);
     ph->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     ph->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 6; ++c)
+    for (int c = 2; c < 7; ++c)
         ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -6783,6 +6785,15 @@ void MainWindow::refreshPullList()
                              new QTableWidgetItem(QStringLiteral("+%1 -%2")
                                                       .arg(pr.additions)
                                                       .arg(pr.deletions)));
+        // Author: the node that filed the PR (the submitter for inbox PRs).
+        const QString author =
+            pr.authorName.trimmed().isEmpty()
+                ? (pr.author.isEmpty() ? QStringLiteral("\xE2\x80\x94")
+                                       : pr.author.left(8))
+                : pr.authorName.trimmed();
+        auto *authorItem = new QTableWidgetItem(author);
+        authorItem->setToolTip(pr.author);
+        m_pullTable->setItem(row, 6, authorItem);
     }
     m_pullTable->setSortingEnabled(true);
     int selRow = -1;
@@ -12353,6 +12364,16 @@ void MainWindow::refreshIssueList()
         } else {
             m_issueTable->setItem(row, 8, new QTableWidgetItem(QString()));
         }
+        // Author: the node that opened the issue. For mirror-authored issues
+        // this is the submitting node, preserved through the inbox merge.
+        const QString author =
+            issue.authorName.trimmed().isEmpty()
+                ? (issue.author.isEmpty() ? QStringLiteral("\xE2\x80\x94")
+                                          : issue.author.left(8))
+                : issue.authorName.trimmed();
+        auto *authorItem = new QTableWidgetItem(author);
+        authorItem->setToolTip(issue.author);
+        m_issueTable->setItem(row, 9, authorItem);
     }
     m_issueTable->setSortingEnabled(true);
 
@@ -13042,8 +13063,10 @@ void MainWindow::updateIssueActionState()
     const bool writable = store.canWrite();
     const bool haveIssue = m_currentIssueNumber >= 0;
 
+    // New issues can be filed on a mirror too: they go to the owner's inbox and
+    // sync back. Only the owner drains the inbox, so Sync stays writable-only.
     if (m_issueNewButton)
-        m_issueNewButton->setEnabled(writable);
+        m_issueNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
     if (m_issueTitleEditButton)
@@ -13093,8 +13116,9 @@ void MainWindow::updateIssueActionState()
     if (m_issueReadonlyNote) {
         m_issueReadonlyNote->setVisible(!writable && issuesRepoIndex() >= 0);
         m_issueReadonlyNote->setText(
-            "You don't host this repository \xE2\x80\x94 comments are sent to the "
-            "maintainer's inbox (text only). New issues and edits are owner-only.");
+            "You don't host this repository \xE2\x80\x94 new issues and comments are "
+            "sent to the maintainer's inbox (text only) and sync back once they "
+            "merge them. Edits stay owner-only.");
     }
     if (m_issueCommentButton)
         m_issueCommentButton->setText(writable ? "Comment" : "Send to maintainer");
@@ -13102,8 +13126,10 @@ void MainWindow::updateIssueActionState()
 
 void MainWindow::promptNewIssue()
 {
-    const IssueStore probe = issueStoreForCurrentRepo();
-    if (!probe.canWrite())
+    // Owners write straight to issues/; mirror nodes compose the same page but
+    // submit to the source of truth's inbox (handled in the create button). Only
+    // block when there is no repo selected at all.
+    if (issuesRepoIndex() < 0)
         return;
 
     auto *page = new QWidget;
@@ -13279,13 +13305,29 @@ void MainWindow::promptNewIssue()
         const QString title = titleEdit->text().trimmed();
         const QStringList labels = splitIssueFieldList(labelsEdit->text());
         const QStringList assignees = splitIssueFieldList(assigneesEdit->text());
+        const QString milestone = milestoneCombo->currentData().toString();
+        const int priority = priorityCombo->currentData().toInt();
 
         IssueStore store = issueStoreForCurrentRepo();
+        // On a mirror (no work tree) we can't write the issue locally, so send a
+        // signed "open" event to the source of truth's inbox; the owner merges it
+        // into issues/ preserving us as the author, and it syncs back to mirrors.
+        if (!store.canWrite()) {
+            if (!submitNewIssueToInbox(title, bodyEdit->markdown(), labels,
+                                       milestone, priority, assignees)) {
+                setPageNotice("Open a repository you can reach to file an issue.",
+                              true);
+                return;
+            }
+            removeIssueComposePage();
+            setIssueInlineNotice("Your signed issue was sent to the maintainer's "
+                                 "inbox. It appears once they sync it.");
+            return;
+        }
+
         QString error;
         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
-                                             milestoneCombo->currentData().toString(),
-                                             priorityCombo->currentData().toInt(),
-                                             assignees,
+                                             milestone, priority, assignees,
                                              bodyEdit->pendingAttachments(),
                                              &error);
         if (number < 0) {
@@ -13315,10 +13357,17 @@ void MainWindow::quickAddIssue()
         return;
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
-        setIssueInlineNotice(issuesRepoIndex() < 0
-                                 ? "Pick a repository you host to add issues."
-                                 : "You don't host this repository, so new issues are owner-only.",
-                             true);
+        // Mirror node: send the new issue to the source of truth's inbox. The
+        // agent hand-off below needs a local issue, so it stays owner-only.
+        if (issuesRepoIndex() < 0) {
+            setIssueInlineNotice("Pick a repository to add issues.", true);
+            return;
+        }
+        if (submitNewIssueToInbox(title, QString(), {}, QString(), 0, {})) {
+            m_issueQuickAdd->clear();
+            setIssueInlineNotice("Your signed issue was sent to the maintainer's "
+                                 "inbox. It appears once they sync it.");
+        }
         return;
     }
     QString error;
@@ -13690,6 +13739,62 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     });
 }
 
+bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body,
+                                       const QStringList &labels,
+                                       const QString &milestone, int priority,
+                                       const QStringList &assignees)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+
+    // Propose the next number from the mirror's view; the owner reassigns it if
+    // it collides with an issue we haven't synced yet (the signature is advisory
+    // once the owner commits and vouches for the merge).
+    int proposed = 1;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number >= proposed)
+            proposed = issue.number + 1;
+
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "open";
+    ev.id = QStringLiteral("open-%1").arg(proposed);
+    ev.title = title;
+    ev.body = body;
+    while (ev.body.endsWith('\n') || ev.body.endsWith('\r'))
+        ev.body.chop(1);
+    ev = store.makeSignedEvent(proposed, ev);
+
+    QJsonObject eventJson = ev.toJson();
+    eventJson.insert("body", ev.body); // worker needs the text to verify the sig
+    // Issue-level metadata isn't part of the open-event signature; the owner
+    // applies it on merge (vouched, like the rest of an accepted submission).
+    QJsonObject meta{{"labels", QJsonArray::fromStringList(labels)},
+                     {"milestone", milestone},
+                     {"priority", priority},
+                     {"assignees", QJsonArray::fromStringList(assignees)}};
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", proposed},
+                              {"titleIfNew", title},
+                              {"event", eventJson},
+                              {"meta", meta}};
+
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            setIssueInlineNotice("Could not send the issue: " + reply->errorString(),
+                                 true);
+    });
+    return true;
+}
+
 int MainWindow::availableCredits() const
 {
     const qint64 live =
@@ -13837,21 +13942,55 @@ void MainWindow::syncIssuesInbox()
         }
         IssueStore store = issueStoreForCurrentRepo();
         int merged = 0;
+        int comments = 0;
+        QString lastCommentAuthor;
+        int lastCommentNumber = 0;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
             const QJsonObject eventObj = item.value("event").toObject();
             IssueEvent ev = IssueEvent::fromJson(eventObj);
             ev.body = eventObj.value("body").toString();
+            const QJsonObject metaObj = item.value("meta").toObject();
+            RemoteIssueMeta meta;
+            for (const QJsonValue &l : metaObj.value("labels").toArray())
+                meta.labels << l.toString();
+            meta.milestone = metaObj.value("milestone").toString();
+            meta.priority = metaObj.value("priority").toInt();
+            for (const QJsonValue &a : metaObj.value("assignees").toArray())
+                meta.assignees << a.toString();
             if (store.applyRemoteEvent(number, ev,
-                                       item.value("titleIfNew").toString()))
+                                       item.value("titleIfNew").toString(),
+                                       nullptr, meta)) {
                 ++merged;
+                if (ev.type == QLatin1String("comment")) {
+                    ++comments;
+                    lastCommentAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
+                                                                : ev.authorName;
+                    lastCommentNumber = number;
+                }
+            }
         }
         // Acknowledge so the inbox clears the merged submissions.
         m_networkAccess->deleteResource(QNetworkRequest(url));
         reloadIssues();
         setIssueInlineNotice(
             QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
+        // Surface inbound comments as a desktop notification (#: "show a
+        // notification when we receive a comment").
+        if (comments > 0) {
+            const QString body =
+                comments == 1
+                    ? QStringLiteral("%1 commented on issue #%2")
+                          .arg(lastCommentAuthor)
+                          .arg(lastCommentNumber)
+                    : QStringLiteral("%1 new comments on your issues").arg(comments);
+            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new comment"),
+                             body);
+            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+                m_trayIcon->showMessage("ForkMesh — new comment", body,
+                                        QSystemTrayIcon::Information, 6000);
+        }
     });
 }
 

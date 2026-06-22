@@ -56,6 +56,16 @@ struct Issue {
     bool isDeleted() const; // a delete event targeting "self" tombstones the issue
 };
 
+// Issue-level metadata that rides alongside a remote "open" submission. These
+// fields aren't part of the open event's signature (which only covers
+// title/body/attachments), so the owner applies them on merge as vouched data.
+struct RemoteIssueMeta {
+    QStringList labels;
+    QString milestone;
+    int priority = 0;
+    QStringList assignees;
+};
+
 struct IssueLabel {
     QString name;
     QString color;
@@ -128,7 +138,8 @@ public:
     // local issues/ folder (used by cross-user sync). The event must already be
     // signed and verified by the caller.
     bool applyRemoteEvent(int number, const IssueEvent &ev, const QString &titleIfNew,
-                          QString *error = nullptr);
+                          QString *error = nullptr,
+                          const RemoteIssueMeta &meta = {});
 
     // The exact bytes that an event's signature commits to. Public + static so
     // it can be unit-tested and kept byte-identical to the worker's verifier.
