@@ -1,0 +1,312 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5941010..2ed9be5 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -8422,6 +8422,22 @@ QWidget *MainWindow::buildRepoEditorPage()
+     backRow->setContentsMargins(8, 4, 8, 0);
+     backRow->addWidget(backButton);
+     backRow->addStretch();
++    m_repoFileCommitButton = new QPushButton("Commit direct");
++    m_repoFileCommitButton->setObjectName("ghostButton");
++    m_repoFileCommitButton->setCursor(Qt::PointingHandCursor);
++    m_repoFileCommitButton->setToolTip("Save this file and commit it directly to the default branch");
++    setOcticon(m_repoFileCommitButton, "upload", 16);
++    connect(m_repoFileCommitButton, &QPushButton::clicked, this,
++            [this] { saveCurrentRepoFile(false); });
++    m_repoFilePullButton = new QPushButton("Save as PR");
++    m_repoFilePullButton->setObjectName("primaryButton");
++    m_repoFilePullButton->setCursor(Qt::PointingHandCursor);
++    m_repoFilePullButton->setToolTip("Save this file on a new branch and open a pull request");
++    setOcticon(m_repoFilePullButton, "git-pull-request", 16);
++    connect(m_repoFilePullButton, &QPushButton::clicked, this,
++            [this] { saveCurrentRepoFile(true); });
++    backRow->addWidget(m_repoFileCommitButton);
++    backRow->addWidget(m_repoFilePullButton);
+ 
+     m_repoFileTree = new QTreeWidget;
+     m_repoFileTree->setObjectName("fileTree");
+@@ -8457,7 +8473,10 @@ QWidget *MainWindow::buildRepoEditorPage()
+         // With no files left open, return to the overview.
+         if (m_repoFileTabs->count() == 0)
+             showRepoOverview();
++        updateRepoFileSaveActions();
+     });
++    connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
++            [this] { updateRepoFileSaveActions(); });
+ 
+     auto *splitter = new QSplitter(Qt::Horizontal);
+     splitter->setObjectName("filesSplitter");
+@@ -8473,6 +8492,7 @@ QWidget *MainWindow::buildRepoEditorPage()
+     layout->setSpacing(0);
+     layout->addLayout(backRow);
+     layout->addWidget(splitter, 1);
++    updateRepoFileSaveActions();
+     return page;
+ }
+ 
+@@ -8992,6 +9012,7 @@ void MainWindow::openRepoFile(const QString &path)
+     QByteArray out;
+     QString err;
+     QString content;
++    bool editable = false;
+     if (dir.isEmpty() || !runGitCapture(dir, {"show", currentRef() + ":" + path}, &out, &err))
+         content = "Could not read file: " + err.left(200);
+     else if (out.size() > 1024 * 1024)
+@@ -9002,6 +9023,7 @@ void MainWindow::openRepoFile(const QString &path)
+                       .arg(out.size());
+     else {
+         content = QString::fromUtf8(out);
++        editable = repoHasWorkingTree();
+         if (path.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive) ||
+             path.endsWith(QStringLiteral(".jsonc"), Qt::CaseInsensitive)) {
+             const QJsonDocument doc = QJsonDocument::fromJson(out);
+@@ -9011,7 +9033,9 @@ void MainWindow::openRepoFile(const QString &path)
+     }
+ 
+     auto *editor = new CodePreviewEditor(path);
++    editor->setReadOnly(!editable);
+     editor->setPlainText(content);
++    editor->document()->setModified(false);
+     new CodePreviewHighlighter(editor->document(), path);
+ 
+     const QString name = path.section('/', -1);
+@@ -9019,6 +9043,216 @@ void MainWindow::openRepoFile(const QString &path)
+     m_repoFileTabs->setTabToolTip(index, path);
+     m_repoFileTabs->setCurrentIndex(index);
+     m_openFileTabs.insert(path, editor);
++    updateRepoFileSaveActions();
++}
++
++void MainWindow::updateRepoFileSaveActions()
++{
++    const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
++    const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
++    const bool canSave = editor && !editor->isReadOnly() &&
++                         !w->property("previewPath").toString().isEmpty() &&
++                         repoHasWorkingTree();
++    if (m_repoFileCommitButton)
++        m_repoFileCommitButton->setEnabled(canSave);
++    if (m_repoFilePullButton)
++        m_repoFilePullButton->setEnabled(canSave);
++}
++
++void MainWindow::saveCurrentRepoFile(bool createPull)
++{
++    QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
++    auto *editor = qobject_cast<QPlainTextEdit *>(w);
++    if (!editor || editor->isReadOnly())
++        return;
++    const QString path = w->property("previewPath").toString();
++    if (path.isEmpty())
++        return;
++    if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
++        editor->document()->setModified(false);
++    updateRepoFileSaveActions();
++}
++
++bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
++                                  bool createPull)
++{
++    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
++        return false;
++    if (!repoHasWorkingTree()) {
++        setRepoDetailNotice("This is a read-only mirror; files can't be edited here.",
++                            true);
++        return false;
++    }
++    const QString cleanPath = QDir::cleanPath(path);
++    if (cleanPath.isEmpty() || cleanPath.startsWith("../") ||
++        cleanPath.contains("/../") || QDir::isAbsolutePath(cleanPath)) {
++        setRepoDetailNotice("Refusing to write outside the repository.", true);
++        return false;
++    }
++
++    const QString dir = repoGitDir();
++    QByteArray status;
++    QString err;
++    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
++        !status.trimmed().isEmpty()) {
++        setRepoDetailNotice(
++            err.isEmpty() ? "Commit or stash local changes before saving a file."
++                          : err.left(240),
++            true);
++        return false;
++    }
++
++    const QStringList branches = repoBranches();
++    const QString base = repoDefaultBranch(branches);
++    if (base.isEmpty()) {
++        setRepoDetailNotice("This repository has no branch to commit onto.", true);
++        return false;
++    }
++
++    QString title = QStringLiteral("Edit %1").arg(cleanPath);
++    QString description;
++    QString branch;
++    if (createPull) {
++        QDialog dialog(this);
++        dialog.setWindowTitle("Save as pull request");
++        auto *branchEdit = new QLineEdit(&dialog);
++        branch = QStringLiteral("edit/%1-%2")
++                     .arg(repoSegment(cleanPath, QStringLiteral("file")),
++                          QString::number(QDateTime::currentSecsSinceEpoch()));
++        branchEdit->setText(branch.left(80));
++        auto *titleEdit = new QLineEdit(title, &dialog);
++        auto *bodyEdit = new QPlainTextEdit(&dialog);
++        bodyEdit->setPlaceholderText("Describe the change...");
++        auto *form = new QFormLayout;
++        form->addRow("Branch", branchEdit);
++        form->addRow("Title", titleEdit);
++        form->addRow("Description", bodyEdit);
++        auto *buttons =
++            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
++                                 &dialog);
++        buttons->button(QDialogButtonBox::Ok)->setText("Create pull request");
++        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
++        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
++        auto *layout = new QVBoxLayout(&dialog);
++        layout->addLayout(form);
++        layout->addWidget(buttons);
++        dialog.resize(520, 320);
++        if (dialog.exec() != QDialog::Accepted)
++            return false;
++        branch = branchEdit->text().trimmed();
++        title = titleEdit->text().trimmed();
++        description = bodyEdit->toPlainText();
++        if (branch.isEmpty() || title.isEmpty()) {
++            setRepoDetailNotice("A pull request needs a branch and title.", true);
++            return false;
++        }
++    } else {
++        bool ok = false;
++        title = QInputDialog::getText(this, "Commit file edit", "Commit message:",
++                                      QLineEdit::Normal, title, &ok)
++                    .trimmed();
++        if (!ok)
++            return false;
++        if (title.isEmpty()) {
++            setRepoDetailNotice("A commit message is required.", true);
++            return false;
++        }
++    }
++
++    auto writeEditedFile = [&]() -> bool {
++        const QString fullPath = QDir(dir).filePath(cleanPath);
++        QDir().mkpath(QFileInfo(fullPath).absolutePath());
++        QFile file(fullPath);
++        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
++            err = QStringLiteral("Could not write %1").arg(cleanPath);
++            return false;
++        }
++        if (file.write(content.toUtf8()) < 0) {
++            err = QStringLiteral("Could not write %1").arg(cleanPath);
++            return false;
++        }
++        return true;
++    };
++
++    if (!runGitCapture(dir, {"checkout", base}, nullptr, &err)) {
++        setRepoDetailNotice(QStringLiteral("Could not check out %1: %2")
++                                .arg(base, err.left(200)),
++                            true);
++        return false;
++    }
++
++    QString commitRef = base;
++    if (createPull) {
++        if (!runGitCapture(dir, {"check-ref-format", "--branch", branch}, nullptr,
++                           &err) ||
++            !runGitCapture(dir, {"checkout", "-b", branch, base}, nullptr, &err)) {
++            setRepoDetailNotice(QStringLiteral("Could not create branch %1: %2")
++                                    .arg(branch, err.left(200)),
++                                true);
++            runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++            return false;
++        }
++        commitRef = branch;
++    }
++
++    if (!writeEditedFile() ||
++        !runGitCapture(dir, {"add", "--", cleanPath}, nullptr, &err)) {
++        setRepoDetailNotice(err.isEmpty() ? "Could not stage the edited file."
++                                          : err.left(240),
++                            true);
++        runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++        return false;
++    }
++    if (runGitCapture(dir, {"diff", "--cached", "--quiet"}, nullptr, nullptr)) {
++        setRepoDetailNotice("No changes to save.");
++        runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++        return false;
++    }
++    if (!runGitCapture(dir, {"commit", "-m", title, "--", cleanPath}, nullptr, &err)) {
++        setRepoDetailNotice(QStringLiteral("git commit failed: %1").arg(err.left(240)),
++                            true);
++        runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++        return false;
++    }
++
++    if (createPull) {
++        QByteArray diff;
++        if (!runGitCapture(dir, {"diff", "--binary", base + ".." + branch}, &diff,
++                           &err)) {
++            setRepoDetailNotice(QStringLiteral("Could not create pull request diff: %1")
++                                    .arg(err.left(240)),
++                                true);
++            runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++            return false;
++        }
++        runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
++        PullStore store = pullStoreForCurrentRepo();
++        QString error;
++        const int number = store.createPull(title, description, base, branch,
++                                            QString::fromUtf8(diff), &error);
++        if (number < 0) {
++            setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
++                                                : error,
++                                true);
++            return false;
++        }
++        logSystem(QStringLiteral("Saved %1 on %2 and opened pull #%3.")
++                      .arg(cleanPath, branch)
++                      .arg(number));
++        setRepoDetailNotice(QStringLiteral("Opened pull request #%1 from %2.")
++                                .arg(number)
++                                .arg(branch));
++        m_currentPullNumber = number;
++        switchToPullTab(number);
++    } else {
++        logSystem(QStringLiteral("Committed %1 to %2.").arg(cleanPath, commitRef));
++        setRepoDetailNotice(QStringLiteral("Committed %1 to %2.")
++                                .arg(cleanPath, commitRef));
++    }
++
++    setRepoBranch(base);
++    refreshOpenRepoDetail();
++    return true;
+ }
+ 
+ void MainWindow::showRepoOverview()
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index f96764d..671e610 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -327,6 +327,9 @@ private:
+     void showRepoOverview();
+     void loadRepoFileTree();
+     void openRepoFile(const QString &path);
++    void updateRepoFileSaveActions();
++    void saveCurrentRepoFile(bool createPull);
++    bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
+     void loadRepoInfo();
+     void loadBranchesAndTags();
+     QStringList repoBranches() const;
+@@ -713,6 +716,8 @@ private:
+     QTextBrowser *m_readmeView = nullptr;
+     QTreeWidget *m_repoFileTree = nullptr;
+     QTabWidget *m_repoFileTabs = nullptr;
++    QPushButton *m_repoFileCommitButton = nullptr;
++    QPushButton *m_repoFilePullButton = nullptr;
+     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+ 
+     // Pull requests tab
