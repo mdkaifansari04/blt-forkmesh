@@ -72,6 +72,62 @@ QString boundedText(const QJsonObject &object, const char *key, int maxChars)
     return value;
 }
 
+constexpr int kMaxMirrorRepos = 500;
+constexpr int kMaxRepoNameChars = 160;
+
+// Serialize advertised mirrors into the two wire fields used by `hello`:
+//   "mirrors"     — a plain array of "owner/name" (read by every peer, old or new)
+//   "mirrorHeads" — an object "owner/name" -> {c:commit, b:branch, t:syncedMs}
+// carrying the HEAD each mirror holds. Splitting it this way keeps older peers
+// (which only know "mirrors") working while newer peers gain freshness detail.
+void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
+{
+    QJsonArray names;
+    QJsonObject heads;
+    for (const MirrorAdvert &m : mirrors) {
+        if (m.ownerName.isEmpty() || names.size() >= kMaxMirrorRepos)
+            continue;
+        names.append(m.ownerName);
+        QJsonObject head;
+        head.insert("c", m.commit);
+        head.insert("b", m.branch);
+        head.insert("t", m.updatedMs);
+        heads.insert(m.ownerName, head);
+    }
+    message.insert("mirrors", names);
+    message.insert("mirrorHeads", heads);
+}
+
+// Inverse of writeMirrors: rebuild the advertised mirror list from a hello,
+// preferring the rich "mirrorHeads" detail and falling back to bare names.
+QList<MirrorAdvert> readMirrors(const QJsonObject &message)
+{
+    const QJsonObject heads = message.value("mirrorHeads").toObject();
+    QList<MirrorAdvert> mirrors;
+    for (const auto &value : message.value("mirrors").toArray()) {
+        const QString repo = value.toString().left(kMaxRepoNameChars);
+        if (repo.isEmpty() || mirrors.size() >= kMaxMirrorRepos)
+            continue;
+        MirrorAdvert advert;
+        advert.ownerName = repo;
+        const QJsonObject head = heads.value(repo).toObject();
+        advert.commit = head.value("c").toString().left(64);
+        advert.branch = head.value("b").toString().left(kMaxRepoNameChars);
+        advert.updatedMs = qint64(head.value("t").toDouble());
+        mirrors.append(advert);
+    }
+    return mirrors;
+}
+
+QStringList mirrorNames(const QList<MirrorAdvert> &mirrors)
+{
+    QStringList names;
+    names.reserve(mirrors.size());
+    for (const MirrorAdvert &m : mirrors)
+        names.append(m.ownerName);
+    return names;
+}
+
 QString safeFileName(const QString &name)
 {
     QString cleaned = name;
@@ -465,20 +521,24 @@ void ServerNode::sendHello()
     QJsonArray channels;
     for (const QString &channel : std::as_const(m_channels))
         channels.append(channel);
-    QJsonArray mirrors;
-    for (const QString &repo : std::as_const(m_mirroredRepos))
-        mirrors.append(repo);
     QJsonObject hello = makeMessage("hello");
     hello.insert("channels", channels);
-    hello.insert("mirrors", mirrors);
+    writeMirrors(hello, m_mirroredRepos);
     sendEncrypted(hello, true);
 }
 
-void ServerNode::setMirroredRepos(const QStringList &ownerNames)
+void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
 {
-    if (m_mirroredRepos == ownerNames)
+    // Re-advertise when the set of repos OR any HEAD changed (a fresh sync moves
+    // a commit/timestamp without changing the name list), so peers see freshness.
+    bool changed = repos.size() != m_mirroredRepos.size();
+    for (int i = 0; !changed && i < repos.size(); ++i)
+        changed = repos.at(i).ownerName != m_mirroredRepos.at(i).ownerName ||
+                  repos.at(i).commit != m_mirroredRepos.at(i).commit;
+    if (!changed)
         return;
-    m_mirroredRepos = ownerNames;
+    m_mirroredRepos = repos;
+    updateRosterAndStatus(); // reflect our own HEADs in the local roster
     if (m_wsReady)
         sendHello(); // re-advertise so peers see the updated mirror set
 }
@@ -695,15 +755,12 @@ void ServerNode::handlePlain(const QJsonObject &message)
         }
         if (changed)
             emit channelsChanged(m_channels);
-        // Record which repos this peer advertises mirroring.
+        // Record which repos this peer advertises mirroring, plus the HEAD each
+        // mirror currently holds (for the network's mirror-freshness view).
         if (m_peers.contains(senderId)) {
-            QStringList mirrors;
-            for (const auto &value : message.value("mirrors").toArray()) {
-                const QString repo = value.toString().left(160);
-                if (!repo.isEmpty() && mirrors.size() < 500)
-                    mirrors.append(repo);
-            }
-            m_peers[senderId].mirrors = mirrors;
+            const QList<MirrorAdvert> mirrors = readMirrors(message);
+            m_peers[senderId].mirrorDetails = mirrors;
+            m_peers[senderId].mirrors = mirrorNames(mirrors);
             updateRosterAndStatus();
         }
         // A broadcast hello (no "to") is a peer announcing themselves on a
@@ -719,6 +776,7 @@ void ServerNode::handlePlain(const QJsonObject &message)
                 channels.append(channel);
             QJsonObject reply = makeMessage("hello");
             reply.insert("channels", channels);
+            writeMirrors(reply, m_mirroredRepos); // so the newcomer sees our mirrors too
             reply.insert("to", senderId);
             sendEncrypted(reply, false);
         }
@@ -874,9 +932,16 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
 
 void ServerNode::updateRosterAndStatus()
 {
-    MemberInfo self{m_nodeId,  m_userName, QString(), true,      m_wsReady,
-                    m_solanaAddress, QString(),   m_platform, m_version,
-                    m_mirroredRepos};
+    MemberInfo self;
+    self.id = m_nodeId;
+    self.name = m_userName;
+    self.self = true;
+    self.online = m_wsReady;
+    self.solanaAddress = m_solanaAddress;
+    self.platform = m_platform;
+    self.version = m_version;
+    self.mirrors = mirrorNames(m_mirroredRepos);
+    self.mirrorDetails = m_mirroredRepos;
     QList<MemberInfo> members{self};
     int onlineCount = 0;
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
@@ -891,6 +956,7 @@ void ServerNode::updateRosterAndStatus()
         member.platform = it->platform;
         member.version = it->version;
         member.mirrors = it->mirrors;
+        member.mirrorDetails = it->mirrorDetails;
         members.append(member);
         ++onlineCount;
     }

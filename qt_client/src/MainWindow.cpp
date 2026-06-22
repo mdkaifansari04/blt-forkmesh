@@ -119,6 +119,11 @@
 
 namespace {
 
+// Defined later in this file; forward-declared so earlier callers (e.g. mirror
+// advertisement) can read a bare mirror's current HEAD branch and commit.
+QString mirrorHeadBranch(const QString &mirrorPath);
+QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
+
 constexpr int kTableSortRole = Qt::UserRole + 10;
 
 // Column in the commits list that carries the Summary text + the commit hash
@@ -5365,10 +5370,11 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 8);
+    m_issueTable = new QTableWidget(0, 9);
     m_issueTable->setObjectName("issueTable");
     m_issueTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Status", "Votes", "Labels", "Milestone", "Created", "Agent"});
+        {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
+         "Created", "Agent"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -5376,19 +5382,20 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueTable->setShowGrid(false);
     m_issueTable->setWordWrap(false);
     m_issueTable->setSortingEnabled(true);
-    // Default to newest issue first (highest number on top).
-    m_issueTable->sortByColumn(0, Qt::DescendingOrder);
+    // The launch backlog opens in execution order: 1 is highest, 99 lowest.
+    m_issueTable->sortByColumn(2, Qt::AscendingOrder);
     m_issueTable->setToolTip("Click a column header to sort");
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
     header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title
-    header->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Status
-    header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Votes
-    header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Labels
-    header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Milestone
-    header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Created
-    header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Agent
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Priority
+    header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Status
+    header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Votes
+    header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Labels
+    header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Milestone
+    header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Created
+    header->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Agent
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -5537,7 +5544,9 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
-    for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue, m_issueMilestoneValue}) {
+    m_issuePriorityValue = new QLabel("No priority");
+    for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue,
+                      m_issueMilestoneValue, m_issuePriorityValue}) {
         v->setObjectName("statusLine");
         v->setWordWrap(true);
         v->setTextFormat(Qt::RichText);
@@ -5560,9 +5569,11 @@ QWidget *MainWindow::buildIssuesSection()
     });
     m_issueLabelsButton = new QPushButton;
     m_issueMilestoneButton = new QPushButton;
+    m_issuePriorityButton = new QPushButton;
     m_issueAssigneesButton = new QPushButton;
     m_issueDeleteButton = new QPushButton("Delete issue");
     for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
+                           m_issuePriorityButton,
                            m_issueAssigneesButton}) {
         b->setObjectName("issueIconButton");
         b->setFixedSize(28, 28);
@@ -5685,6 +5696,27 @@ QWidget *MainWindow::buildIssuesSection()
     connect(milestoneCancel, &QPushButton::clicked, this,
             &MainWindow::cancelIssueSidebarEditors);
 
+    m_issuePriorityStack = new QStackedWidget(meta);
+    m_issuePriorityStack->addWidget(m_issuePriorityValue);
+    auto *priorityEditBox = new QWidget(meta);
+    auto *priorityEditLayout = new QVBoxLayout(priorityEditBox);
+    priorityEditLayout->setContentsMargins(0, 0, 0, 0);
+    priorityEditLayout->setSpacing(6);
+    m_issuePriorityEdit = new QComboBox(meta);
+    m_issuePriorityEdit->addItem("No priority", 0);
+    for (int priority = 1; priority <= 99; ++priority)
+        m_issuePriorityEdit->addItem(QString::number(priority), priority);
+    m_issuePriorityEdit->setToolTip("1 is highest priority; 99 is lowest");
+    auto *prioritySave = makeEditorButton("Save", "primaryButton");
+    auto *priorityCancel = makeEditorButton("Cancel", "ghostButton");
+    priorityEditLayout->addWidget(m_issuePriorityEdit);
+    priorityEditLayout->addWidget(makeInlineButtonRow(prioritySave, priorityCancel));
+    m_issuePriorityStack->addWidget(priorityEditBox);
+    connect(prioritySave, &QPushButton::clicked, this,
+            &MainWindow::saveIssuePriorityInline);
+    connect(priorityCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+
     auto *agentBox = new QWidget(meta);
     auto *agentLayout = new QVBoxLayout(agentBox);
     agentLayout->setContentsMargins(0, 0, 0, 0);
@@ -5745,7 +5777,7 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Assign to agent", agentBox);
     addMetaSection("Labels", m_issueLabelsStack, m_issueLabelsButton);
     addMetaSection("Type", makeValue("No type"), makeGear());
-    addMetaSection("Fields", makeValue("Priority <span style='float:right'>Choose an option</span>"));
+    addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
@@ -5850,6 +5882,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::editIssueLabels);
     connect(m_issueMilestoneButton, &QPushButton::clicked, this,
             &MainWindow::editIssueMilestone);
+    connect(m_issuePriorityButton, &QPushButton::clicked, this,
+            &MainWindow::editIssuePriority);
     connect(m_issueAssigneesButton, &QPushButton::clicked, this,
             &MainWindow::editIssueAssignees);
     return page;
@@ -5959,7 +5993,8 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Security and quality", "shield-check"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
-                                {"Releases", "tag"}};
+                                {"Releases", "tag"},
+                                {"Mirror nodes", "server"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -6008,9 +6043,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
     m_releasesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 9 Releases
+    m_mirrorNodesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 10 Mirror nodes
     // Chat has no repo tab any more — it's reached from the top-bar Chat button.
     m_chatStackIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildChatSection());                    // 10 Chat
+    m_repoDetailStack->addWidget(buildChatSection());                    // 11 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 1)
@@ -6027,6 +6064,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadBranchesPanel();
         else if (id == m_releasesTabIndex)
             loadReleasesPanel();
+        else if (id == m_mirrorNodesTabIndex)
+            loadMirrorNodesPanel();
     });
 
     // Before any repository is opened the Code/Commits/… tabs have nothing to
@@ -11911,12 +11950,13 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
-        // Free-text search over number, title, labels and milestone.
+        // Free-text search over number, title, priority, labels and milestone.
         if (!search.isEmpty()) {
-            const QString hay = QStringLiteral("#%1 %2 %3 %4")
+            const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
                                     .arg(issue.number)
-                                    .arg(issue.title, issue.labels.join(" "),
-                                         issue.milestone);
+                                    .arg(issue.title)
+                                    .arg(issue.priority)
+                                    .arg(issue.labels.join(" "), issue.milestone);
             if (!hay.contains(search, Qt::CaseInsensitive))
                 continue;
         }
@@ -11930,17 +11970,28 @@ void MainWindow::refreshIssueList()
         numItem->setData(Qt::UserRole, issue.number); // lookup key
         m_issueTable->setItem(row, 0, numItem);
         m_issueTable->setItem(row, 1, new QTableWidgetItem(issue.title));
+
+        auto *priority = new SortTableWidgetItem(
+            issue.priority > 0 ? QString::number(issue.priority)
+                               : QString::fromUtf8("\xE2\x80\x94"));
+        // Unset priorities sort after 99 without pretending to be priority 100.
+        priority->setData(kTableSortRole,
+                          issue.priority > 0 ? issue.priority : 100);
+        priority->setTextAlignment(Qt::AlignCenter);
+        priority->setToolTip("1 is highest priority; 99 is lowest");
+        m_issueTable->setItem(row, 2, priority);
+
         auto *status = new QTableWidgetItem(issue.status == "closed" ? "Closed"
                                                                      : "Open");
         status->setForeground(QColor(issue.status == "closed" ? "#f85149"
                                                               : "#3fb950"));
-        m_issueTable->setItem(row, 2, status);
+        m_issueTable->setItem(row, 3, status);
         auto *votes = new QTableWidgetItem;
         votes->setData(Qt::DisplayRole, issue.votes); // numeric sort
         votes->setTextAlignment(Qt::AlignCenter);
-        m_issueTable->setItem(row, 3, votes);
-        m_issueTable->setItem(row, 4, new QTableWidgetItem(issue.labels.join(", ")));
-        m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.milestone));
+        m_issueTable->setItem(row, 4, votes);
+        m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.labels.join(", ")));
+        m_issueTable->setItem(row, 6, new QTableWidgetItem(issue.milestone));
         // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
         // tooltip carries the friendly "x ago" form.
         auto *created = new QTableWidgetItem(
@@ -11948,7 +11999,7 @@ void MainWindow::refreshIssueList()
                 ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd")
                 : QString());
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
-        m_issueTable->setItem(row, 6, created);
+        m_issueTable->setItem(row, 7, created);
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
             // Brand icon for the agent that worked the issue: Claude uses the
             // "code" octicon (clay), Codex/OpenAI the "terminal" octicon (green).
@@ -11970,12 +12021,12 @@ void MainWindow::refreshIssueList()
             // the click it doesn't reselect the row or refresh the issue pane.
             connect(button, &QPushButton::clicked, this,
                     [this, sessionId] { switchToAgentsTab(sessionId); });
-            m_issueTable->setCellWidget(row, 7, button);
+            m_issueTable->setCellWidget(row, 8, button);
             auto *agentItem = new QTableWidgetItem(agentProviderName(session->provider));
             agentItem->setData(Qt::UserRole, session->id);
-            m_issueTable->setItem(row, 7, agentItem);
+            m_issueTable->setItem(row, 8, agentItem);
         } else {
-            m_issueTable->setItem(row, 7, new QTableWidgetItem(QString()));
+            m_issueTable->setItem(row, 8, new QTableWidgetItem(QString()));
         }
     }
     m_issueTable->setSortingEnabled(true);
@@ -12033,6 +12084,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueLabelsValue->setText("No labels");
         if (m_issueMilestoneValue)
             m_issueMilestoneValue->setText("No milestone");
+        if (m_issuePriorityValue)
+            m_issuePriorityValue->setText("No priority");
         updateIssueAgentUi(Issue());
         cancelIssueSidebarEditors();
         m_issueThreadLayout->addStretch();
@@ -12082,6 +12135,11 @@ void MainWindow::renderIssueThread(const Issue &issue)
         issue.milestone.isEmpty()
             ? QStringLiteral("No milestone")
             : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+    m_issuePriorityValue->setText(
+        issue.priority > 0
+            ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
+                  .arg(issue.priority)
+            : QStringLiteral("No priority"));
     updateIssueAgentUi(issue);
     if (m_issueAssigneesEdit)
         m_issueAssigneesEdit->setText(issue.assignees.join(", "));
@@ -12096,6 +12154,11 @@ void MainWindow::renderIssueThread(const Issue &issue)
         const int selected = m_issueMilestoneEdit->findData(issue.milestone);
         if (selected >= 0)
             m_issueMilestoneEdit->setCurrentIndex(selected);
+    }
+    if (m_issuePriorityEdit) {
+        const int selected = m_issuePriorityEdit->findData(issue.priority);
+        if (selected >= 0)
+            m_issuePriorityEdit->setCurrentIndex(selected);
     }
     cancelIssueSidebarEditors();
 
@@ -12379,6 +12442,11 @@ void MainWindow::renderIssueThread(const Issue &issue)
         else if (ev.type == "milestone")
             addActivity(ev.milestone.isEmpty() ? "cleared the milestone"
                                                : "set milestone: " + ev.milestone,
+                        ev.ts, who);
+        else if (ev.type == "priority")
+            addActivity(ev.priority > 0
+                            ? QStringLiteral("set priority: %1").arg(ev.priority)
+                            : QStringLiteral("cleared the priority"),
                         ev.ts, who);
         else if (ev.type == "assignees")
             addActivity("set assignees: " + ev.assignees.join(", "), ev.ts, who);
@@ -12665,7 +12733,8 @@ void MainWindow::updateIssueActionState()
         m_issueDeleteConfirmPending = false;
     // Owner-only structural edits.
     for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
-                           m_issueMilestoneButton, m_issueAssigneesButton,
+                           m_issueMilestoneButton, m_issuePriorityButton,
+                           m_issueAssigneesButton,
                            m_issueDeleteButton, m_issueAttachButton,
                            m_issueAssignCodexButton, m_issueAssignClaudeButton}) {
         if (b)
@@ -12805,17 +12874,12 @@ void MainWindow::promptNewIssue()
     typeValue->setObjectName("statusLine");
     addSection("Type", typeValue);
 
-    auto *fieldsBox = new QWidget(sidebar);
-    auto *fieldsLayout = new QHBoxLayout(fieldsBox);
-    fieldsLayout->setContentsMargins(0, 0, 0, 0);
-    auto *priority = new QLabel("Priority", fieldsBox);
-    priority->setObjectName("statusLine");
-    auto *priorityValue = new QLabel("Choose an option", fieldsBox);
-    priorityValue->setObjectName("statusLine");
-    fieldsLayout->addWidget(priority);
-    fieldsLayout->addStretch();
-    fieldsLayout->addWidget(priorityValue);
-    addSection("Fields", fieldsBox);
+    auto *priorityCombo = new QComboBox(sidebar);
+    priorityCombo->addItem("No priority", 0);
+    for (int priority = 1; priority <= 99; ++priority)
+        priorityCombo->addItem(QString::number(priority), priority);
+    priorityCombo->setToolTip("1 is highest priority; 99 is lowest");
+    addSection("Priority", priorityCombo);
 
     auto *projectsValue = new QLabel("No projects", sidebar);
     projectsValue->setObjectName("statusLine");
@@ -12895,6 +12959,7 @@ void MainWindow::promptNewIssue()
         QString error;
         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
                                              milestoneCombo->currentData().toString(),
+                                             priorityCombo->currentData().toInt(),
                                              assignees,
                                              bodyEdit->pendingAttachments(),
                                              &error);
@@ -12932,7 +12997,7 @@ void MainWindow::quickAddIssue()
         return;
     }
     QString error;
-    const int number = store.createIssue(title, QString(), {}, QString(), {}, {},
+    const int number = store.createIssue(title, QString(), {}, QString(), 0, {}, {},
                                          &error);
     if (number < 0) {
         setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
@@ -13174,6 +13239,34 @@ void MainWindow::saveIssueMilestoneInline()
     reloadIssues();
 }
 
+void MainWindow::editIssuePriority()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issuePriorityStack)
+        m_issuePriorityStack->setCurrentIndex(1);
+    if (m_issuePriorityEdit)
+        m_issuePriorityEdit->setFocus();
+}
+
+void MainWindow::saveIssuePriorityInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issuePriorityEdit)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    const int priority = m_issuePriorityEdit->currentData().toInt();
+    if (!store.setPriority(m_currentIssueNumber, priority, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update priority." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice(priority > 0 ? "Priority updated." : "Priority cleared.");
+    reloadIssues();
+}
+
 void MainWindow::editIssueAssignees()
 {
     if (m_currentIssueNumber < 0)
@@ -13212,6 +13305,8 @@ void MainWindow::cancelIssueSidebarEditors()
         m_issueLabelsStack->setCurrentIndex(0);
     if (m_issueMilestoneStack)
         m_issueMilestoneStack->setCurrentIndex(0);
+    if (m_issuePriorityStack)
+        m_issuePriorityStack->setCurrentIndex(0);
 }
 
 QUrl MainWindow::issuesApiUrl(const RepositoryRecord &repo) const
@@ -15190,11 +15285,20 @@ void MainWindow::refreshRepositoryList()
     // a DO with no host attached and got a 503 — surfaced as "Sync deferred,
     // host temporarily unavailable" even though we were online and serving.
     if (m_backend) {
-        QStringList ours;
-        for (const RepositoryRecord &repo : std::as_const(m_repositories))
-            if (!repo.previewOnly)
-                ours << catalogOwner(repo) + "/" +
-                            repoSegment(repo.name, QStringLiteral("repository"));
+        QList<MirrorAdvert> ours;
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly)
+                continue;
+            MirrorAdvert advert;
+            advert.ownerName = catalogOwner(repo) + "/" +
+                               repoSegment(repo.name, QStringLiteral("repository"));
+            // Advertise the HEAD this node currently holds so peers can see how
+            // fresh our mirror is relative to theirs.
+            advert.branch = mirrorHeadBranch(repo.mirrorPath);
+            advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
+            advert.updatedMs = repo.lastSyncMs;
+            ours.append(advert);
+        }
         m_backend->setMirroredRepos(ours);
     }
 }
@@ -16089,14 +16193,22 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
 {
     // Only surface it if we keep a real mirror of this repo (browse-only
     // previews don't count) — otherwise the peer's update isn't relevant here.
-    bool relevant = false;
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (!repo.previewOnly && (repo.owner + "/" + repo.name) == ownerName) {
-            relevant = true;
+    // Match on the canonical advertised owner/name (the same string peers send)
+    // so a repo we host under catalogOwner still lines up with the notification.
+    int matchIndex = -1;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.previewOnly)
+            continue;
+        const QString canonical =
+            catalogOwner(repo) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (canonical == ownerName || (repo.owner + "/" + repo.name) == ownerName) {
+            matchIndex = i;
             break;
         }
     }
-    if (!relevant)
+    if (matchIndex < 0)
         return;
 
     const QString who =
@@ -16105,6 +16217,13 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
                         " from its source.";
     logSystem(msg);
     flashMessage(msg);
+
+    // Converge promptly: pull the peer's advance into our own mirror now instead
+    // of waiting for the next 5-minute auto-sync. This fetches refs/heads/* and
+    // refs/tags/*, so issues and pull requests (which live on refs/heads) come
+    // along with the code. Quiet so it doesn't spam unless something changed.
+    if (!m_syncingRepos.contains(matchIndex))
+        syncRepository(matchIndex, /*quiet=*/true);
     if (m_trayIcon && QSystemTrayIcon::supportsMessages())
         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
                                 QSystemTrayIcon::Information, 6000);

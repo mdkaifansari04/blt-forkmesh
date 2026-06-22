@@ -136,6 +136,11 @@ def issue_event_content(ev):
         return ",".join(ev.get("labels") or [])
     if t == "milestone":
         return ev.get("milestone", "") or ""
+    if t == "priority":
+        try:
+            return str(int(ev.get("priority", 0)))
+        except (TypeError, ValueError):
+            return "0"
     if t == "assignees":
         return ",".join(ev.get("assignees") or [])
     if t == "delete":
@@ -151,6 +156,13 @@ async def verify_issue_event(number, ev):
     event_type = ev.get("type", "")
     if not author or not signature or not event_type:
         return False
+    if event_type == "priority":
+        try:
+            priority = int(ev.get("priority", 0))
+        except (TypeError, ValueError):
+            return False
+        if priority < 0 or priority > 99:
+            return False
     try:
         ts = int(ev.get("ts", 0))
     except (TypeError, ValueError):
