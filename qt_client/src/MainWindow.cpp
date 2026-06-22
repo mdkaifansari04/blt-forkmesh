@@ -6683,8 +6683,23 @@ bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
         return false;
     }
 
-    const QString branch =
-        pr.base.trimmed().isEmpty() ? QStringLiteral("main") : pr.base.trimmed();
+    // Imported agent PRs may store the base *commit* in `base`, while native
+    // PRs store a branch name. Never create refs/heads/<commit> or make that the
+    // bare mirror's HEAD: it leaves ordinary clones looking like an empty repo.
+    QString branch = pr.base.trimmed();
+    if (branch.isEmpty() ||
+        !runGitCapture(repo.localPath,
+                       {"show-ref", "--verify", "--quiet",
+                        "refs/heads/" + branch},
+                       nullptr, nullptr)) {
+        QByteArray current;
+        if (runGitCapture(repo.localPath,
+                          {"symbolic-ref", "--short", "HEAD"},
+                          &current, nullptr))
+            branch = QString::fromUtf8(current).trimmed();
+    }
+    if (branch.isEmpty())
+        branch = QStringLiteral("main");
     ensurePushHook(repo);
     QString gitError;
     if (!runGitCapture(repo.localPath,
@@ -15186,6 +15201,44 @@ QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
     return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
 }
 
+void repairMirrorHead(const QString &mirrorPath, const QString &sourcePath)
+{
+    QString preferred;
+    if (QDir(sourcePath).exists(QStringLiteral(".git"))) {
+        QProcess source;
+        source.start("git", {"-C", sourcePath, "symbolic-ref", "--short", "HEAD"});
+        if (source.waitForFinished(5000) && source.exitCode() == 0)
+            preferred = QString::fromUtf8(source.readAllStandardOutput()).trimmed();
+    }
+
+    const QString current = mirrorHeadBranch(mirrorPath);
+    QStringList candidates{preferred, QStringLiteral("main"),
+                           QStringLiteral("master"), current};
+    QString branch;
+    for (const QString &candidate : std::as_const(candidates)) {
+        if (!candidate.isEmpty() &&
+            !mirrorBranchCommit(mirrorPath, candidate).isEmpty()) {
+            branch = candidate;
+            break;
+        }
+    }
+    if (branch.isEmpty()) {
+        QProcess refs;
+        refs.start("git", {"-C", mirrorPath, "for-each-ref",
+                           "--format=%(refname:short)", "--sort=-committerdate",
+                           "--count=1", "refs/heads/"});
+        if (refs.waitForFinished(5000) && refs.exitCode() == 0)
+            branch = QString::fromUtf8(refs.readAllStandardOutput()).trimmed();
+    }
+    if (branch.isEmpty() || branch == current)
+        return;
+
+    QProcess setHead;
+    setHead.start("git", {"-C", mirrorPath, "symbolic-ref", "HEAD",
+                          "refs/heads/" + branch});
+    setHead.waitForFinished(5000);
+}
+
 } // namespace
 
 void MainWindow::autoSyncMirrors()
@@ -15281,6 +15334,10 @@ void MainWindow::syncRepository(int index, bool quiet)
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (exitCode == 0) {
+                    // Fetch does not repair a bare repo's symbolic HEAD. Keep it
+                    // on the source/default branch so smart-HTTP clones check
+                    // out real content even after agent PR activity.
+                    repairMirrorHead(repo.mirrorPath, repo.localPath);
                     const bool stillPreview = repo.previewOnly;
                     // Did the owner's repo actually change?
                     const bool changed =
