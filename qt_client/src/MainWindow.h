@@ -372,6 +372,8 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    QWidget *buildMirrorNodesTab();
+    void loadMirrorNodesPanel();
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
@@ -690,11 +692,14 @@ private:
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     int m_branchesTabIndex = -1; // index of the Branches page
     int m_releasesTabIndex = -1; // index of the Releases page
+    int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
+    QTableWidget *m_mirrorNodesTable = nullptr;
+    QLabel *m_mirrorNodesSummary = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
