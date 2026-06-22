@@ -11722,6 +11722,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setShowGrid(false);
     m_mirrorNodesTable->setWordWrap(false);
     m_mirrorNodesTable->setSortingEnabled(true);
+    m_mirrorNodesTable->sortByColumn(0, Qt::AscendingOrder); // source of truth first
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
     mh->setSectionResizeMode(0, QHeaderView::Stretch);          // Node
@@ -11758,10 +11759,16 @@ void MainWindow::loadMirrorNodesPanel()
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    // The canonical "owner/name" peers advertise (matches setMirroredRepos).
+    // This node's own clone identity (catalog/host owner) for this repo.
     const QString canonical =
         catalogOwner(repo) + "/" +
         repoSegment(repo.name, QStringLiteral("repository"));
+    // The SHARED upstream identity — the same on every node mirroring this repo,
+    // which is what actually groups them. The node whose clone identity equals
+    // this source is the source of truth (the owner).
+    const QString source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                           repoSegment(repo.name, QStringLiteral("repository"));
+    const QString sourceOwner = source.section('/', 0, 0);
     const QString legacy = repo.owner + "/" + repo.name;
     // Our own mirror, used to resolve a peer's advertised commit to its subject.
     const QString localMirror = repo.mirrorPath;
@@ -11770,16 +11777,19 @@ void MainWindow::loadMirrorNodesPanel()
     // reflects the latest sync without waiting for a roster round-trip.
     MirrorAdvert selfAdvert;
     selfAdvert.ownerName = canonical;
+    selfAdvert.source = source;
     selfAdvert.branch = mirrorHeadBranch(localMirror);
     selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
     selfAdvert.updatedMs = repo.lastSyncMs;
 
     int count = 0;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
-        // Find this node's advert for this repo (by canonical or legacy name).
+        // Match on the shared source identity (so every node mirroring this repo
+        // is grouped), falling back to the older clone-name match for old peers.
         const MirrorAdvert *advert = nullptr;
         for (const MirrorAdvert &m : node.mirrorDetails) {
-            if (m.ownerName == canonical || m.ownerName == legacy) {
+            if (m.source == source || m.ownerName == canonical ||
+                m.ownerName == legacy) {
                 advert = &m;
                 break;
             }
@@ -11787,27 +11797,37 @@ void MainWindow::loadMirrorNodesPanel()
         // Older peers may only carry bare names in `mirrors` with no detail.
         const bool namedOnly = !advert && (node.mirrors.contains(canonical) ||
                                            node.mirrors.contains(legacy));
-        if (node.self && !advert && !namedOnly &&
-            !repo.previewOnly && !selfAdvert.commit.isEmpty()) {
-            // We hold a real mirror even if our own advert hasn't propagated yet.
-            advert = &selfAdvert;
-        } else if (node.self && advert) {
-            advert = &selfAdvert; // prefer the live local HEAD over the roster copy
+        if (node.self && (advert || namedOnly || !repo.previewOnly)) {
+            advert = &selfAdvert; // always prefer our live local HEAD for our row
         }
         if (!advert && !namedOnly)
             continue;
 
+        // The source of truth: the node whose clone identity equals the shared
+        // source (the owner advertises ownerName == source); also match by name.
+        const bool isSource =
+            (advert && advert->ownerName == source) || node.name == sourceOwner;
+
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
 
-        // Node: green/grey dot + name (+ "you").
+        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
-        auto *nameItem = new QTableWidgetItem(
-            node.name + (node.self ? QStringLiteral("  (you)") : QString()));
+        auto *nameItem = new SortTableWidgetItem(
+            node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
+            (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
+                      : QString()));
         nameItem->setIcon(themedOcticon(
             "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
         nameItem->setData(Qt::UserRole, node.id);
-        nameItem->setToolTip(online ? "Online now" : "Offline");
+        // Source-of-truth rows sort to the top (★ < letters), then by name.
+        nameItem->setData(kTableSortRole,
+                          (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
+                              node.name.toLower());
+        nameItem->setToolTip(isSource
+                                 ? QStringLiteral("Source of truth \xC2\xB7 %1")
+                                       .arg(online ? "online" : "offline")
+                                 : (online ? "Online now" : "Offline"));
         m_mirrorNodesTable->setItem(row, 0, nameItem);
 
         // Latest commit: short hash + branch; tooltip carries the subject/date
@@ -11868,7 +11888,7 @@ void MainWindow::loadMirrorNodesPanel()
             QStringLiteral("\xC2\xB7 %1 node%2 mirroring %3")
                 .arg(count)
                 .arg(count == 1 ? "" : "s")
-                .arg(canonical));
+                .arg(source));
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -15774,6 +15794,11 @@ void MainWindow::refreshRepositoryList()
             MirrorAdvert advert;
             advert.ownerName = catalogOwner(repo) + "/" +
                                repoSegment(repo.name, QStringLiteral("repository"));
+            // Shared upstream identity: every node mirroring the same source repo
+            // carries the same "<sourceOwner>/name", so the mirror-nodes view can
+            // group them even though each advertises its own clone (catalog) owner.
+            advert.source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                            repoSegment(repo.name, QStringLiteral("repository"));
             // Advertise the HEAD this node currently holds so peers can see how
             // fresh our mirror is relative to theirs.
             advert.branch = mirrorHeadBranch(repo.mirrorPath);
@@ -17086,6 +17111,26 @@ void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
                      QFileDevice::ExeOwner | QFileDevice::ReadGroup |
                      QFileDevice::ExeGroup | QFileDevice::ReadOther |
                      QFileDevice::ExeOther);
+
+    // Point the working copy's push URL at the local bare mirror so a plain
+    // `git push origin ...` from the terminal lands in the served mirror (whose
+    // post-receive hook above runs actions), instead of the relay clone URL —
+    // the relay serves git-upload-pack only and 404s git-receive-pack. The fetch
+    // URL is left alone so the owner can still pull. Best-effort.
+    if (!repo.localPath.trimmed().isEmpty() &&
+        QFileInfo::exists(repo.localPath + QStringLiteral("/.git"))) {
+        QByteArray current;
+        runGitCapture(repo.localPath,
+                      {QStringLiteral("remote"), QStringLiteral("get-url"),
+                       QStringLiteral("--push"), QStringLiteral("origin")},
+                      &current, nullptr);
+        if (QString::fromUtf8(current).trimmed() != repo.mirrorPath)
+            runGitCapture(repo.localPath,
+                          {QStringLiteral("remote"), QStringLiteral("set-url"),
+                           QStringLiteral("--push"), QStringLiteral("origin"),
+                           repo.mirrorPath},
+                          nullptr, nullptr);
+    }
 }
 
 void MainWindow::removePushHook(const RepositoryRecord &repo) const

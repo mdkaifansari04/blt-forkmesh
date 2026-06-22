@@ -92,6 +92,7 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("c", m.commit);
         head.insert("b", m.branch);
         head.insert("t", m.updatedMs);
+        head.insert("s", m.source); // shared upstream identity for grouping
         heads.insert(m.ownerName, head);
     }
     message.insert("mirrors", names);
@@ -114,6 +115,7 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
         advert.commit = head.value("c").toString().left(64);
         advert.branch = head.value("b").toString().left(kMaxRepoNameChars);
         advert.updatedMs = qint64(head.value("t").toDouble());
+        advert.source = head.value("s").toString().left(kMaxRepoNameChars);
         mirrors.append(advert);
     }
     return mirrors;
