@@ -343,6 +343,7 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
