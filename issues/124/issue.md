@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 124
 title: the repo url is crashing when we access it directly - it works when we click from the homepage - please fix that
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
