@@ -4048,6 +4048,16 @@ void MainWindow::openServerWebsite(int index)
         QDesktopServices::openUrl(url);
 }
 
+void MainWindow::openRepositoryWebsite()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QUrl url(repositoryWebUrl(repo));
+    if (url.isValid() && !url.host().isEmpty())
+        QDesktopServices::openUrl(url);
+}
+
 void MainWindow::showRelayMenu()
 {
     if (!m_relayMenuButton)
@@ -5641,9 +5651,12 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_mirrorButton = new QPushButton("Mirror 1");
     m_sourceButton = new QPushButton("Source");
     m_starButton = new QPushButton("Star 0");
+    // Open-in-browser link, mirroring the relay switcher's open button: takes
+    // the active repo to its page on the mainnode website.
+    m_repoOpenButton = new QPushButton("Open");
     for (QPushButton *b :
          {notifyButton, m_forkButton, m_mirrorButton, m_sourceButton,
-          m_starButton}) {
+          m_starButton, m_repoOpenButton}) {
         b->setObjectName("repoAction");
         b->setCursor(Qt::PointingHandCursor);
     }
@@ -5651,6 +5664,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_mirrorButton, "sync", 16);
     setOcticon(m_sourceButton, "code", 16);
     setOcticon(m_starButton, "star", 16);
+    setOcticon(m_repoOpenButton, "link", 16);
+    m_repoOpenButton->setToolTip("Open this repository on the web");
+    connect(m_repoOpenButton, &QPushButton::clicked, this,
+            &MainWindow::openRepositoryWebsite);
     m_mirrorButton->setToolTip("Mirror status and actions");
     m_forkButton->setToolTip("Fork destination and working directory");
     m_sourceButton->setToolTip("Download or use this repository's local remote");
@@ -5675,6 +5692,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     headerRow->addWidget(m_forkButton);
     headerRow->addWidget(m_mirrorButton);
     headerRow->addWidget(m_sourceButton);
+    headerRow->addWidget(m_repoOpenButton);
     headerRow->addWidget(m_starButton);
 
     m_repoDetailNotice = new QLabel;
@@ -15211,8 +15229,10 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
 {
     // Clean repository route on the public website, derived from the same host
     // that serves the catalog API. Static Assets routes this to the catalog SPA.
+    // Key it by catalogOwner — the owner the catalog entry and live host tunnel
+    // register under — so the page resolves to a host actually serving the repo.
     QUrl url = catalogApiUrl();
-    url.setPath("/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+    url.setPath("/" + catalogOwner(repo) +
                 "/" + repoSegment(repo.name, QStringLiteral("repository")));
     url.setFragment(QString());
     return url.toString();
