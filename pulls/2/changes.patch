@@ -1,0 +1,24 @@
+diff --git a/cloudflare_worker/public/catalog.js b/cloudflare_worker/public/catalog.js
+index 2316d93..ce78239 100644
+--- a/cloudflare_worker/public/catalog.js
++++ b/cloudflare_worker/public/catalog.js
+@@ -1305,9 +1305,6 @@ document.querySelectorAll('header nav a[href^="/#"], .install-link[href^="/#"]')
+   })
+ );
+ 
+-// Route on first load so deep links (e.g. /owner/name/blob/file) render.
+-route();
+-
+ // ---- Download the whole repo into the browser (localStorage) with progress --
+ 
+ const downloadBtn = document.querySelector("#download-repo");
+@@ -1316,6 +1313,9 @@ const downloadFill = document.querySelector("#download-bar-fill");
+ const downloadText = document.querySelector("#download-progress-text");
+ let downloading = false;
+ 
++// Route on first load so deep links (e.g. /owner/name/blob/file) render.
++route();
++
+ function resetDownloadProgress() {
+   if (downloadProgress) downloadProgress.hidden = true;
+   if (downloadFill) downloadFill.style.width = "0%";
