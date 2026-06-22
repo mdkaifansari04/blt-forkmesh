@@ -4,7 +4,8 @@ number: 12
 title: Mirror storage location setting
 status: open
 labels: [enhancement]
-milestone: 
+milestone: MVP launch
+priority: 12
 assignees: []
 createdAt: 1781642499090
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

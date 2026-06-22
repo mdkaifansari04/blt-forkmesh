@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 21
 title: when I click the rebuild icon make it spin
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 28
 assignees: []
 createdAt: 1781662663408
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

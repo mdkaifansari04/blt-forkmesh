@@ -4,7 +4,8 @@ number: 9
 title: Private repos
 status: open
 labels: [feature]
-milestone: 
+milestone: MVP launch
+priority: 9
 assignees: []
 createdAt: 1781642499087
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

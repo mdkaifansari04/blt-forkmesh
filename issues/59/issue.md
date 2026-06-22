@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 59
 title: make login be email only and not node name or email
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 6
 assignees: []
 createdAt: 1781985089894
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

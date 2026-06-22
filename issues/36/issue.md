@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 36
 title: Have a signup sheet to request funding to join
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 32
 assignees: []
 createdAt: 1781685850525
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

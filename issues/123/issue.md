@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 123
 title: make the commits table open up more on initial load 3/4th of evertything is hidden when it firs topens - we could open it up half the size of the open app
 status: open
-labels: []
-milestone: 
+labels: [bug]
+milestone: MVP launch
+priority: 26
 assignees: []
 createdAt: 1782098709951
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

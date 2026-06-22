@@ -37,6 +37,7 @@ title: …
 status: open            # open | closed
 labels: [security]       # names defined in labels.json
 milestone: v1            # title in milestones.json, or empty
+priority: 1              # 1 highest, 99 lowest, 0 unset
 assignees: []            # pubkeys (or node names) responsible
 createdAt: 1781600000000
 author: <pubkey-b64url>  # raw 32-byte Ed25519 key, base64url
@@ -66,6 +67,7 @@ holds the text. Each event carries `type`, `id`, `author` (pubkey), `authorName`
 | `status`    | `status` (`open`/`closed`) | close / reopen        |
 | `labels`    | `labels` (array)        | set the issue's labels   |
 | `milestone` | `milestone` (string)    | set the issue's milestone|
+| `priority`  | `priority` (1–99, or 0) | set/clear numeric priority|
 | `assignees` | `assignees` (array)     | set the issue's assignees|
 | `delete`    | `target` (`<eventId>`/`self`) | tombstone an event/issue |
 
@@ -102,6 +104,7 @@ change the signature. `attachments` is the comma-joined list of image filenames:
 | `status`    | `status`                                  |
 | `labels`    | `labels.join(",")`                        |
 | `milestone` | `milestone` (or "")                       |
+| `priority`  | decimal priority (`1`–`99`, or `0`)        |
 | `assignees` | `assignees.join(",")`                     |
 | `delete`    | `target`                                  |
 

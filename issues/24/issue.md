@@ -4,7 +4,8 @@ number: 24
 title: make it so the issue comments are in the json file and not separate md
 status: open
 labels: [issues]
-milestone: 
+milestone: MVP launch
+priority: 72
 assignees: []
 createdAt: 1781663570844
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

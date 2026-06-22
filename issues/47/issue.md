@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 47
 title: show releases in the code right column and allow for creating new releases based on tags - show the git tags and current one please and make it easy to create
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 44
 assignees: []
 createdAt: 1781731509057
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

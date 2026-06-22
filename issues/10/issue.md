@@ -4,7 +4,8 @@ number: 10
 title: Extend mainnode repository catalogs
 status: open
 labels: [enhancement]
-milestone: 
+milestone: MVP launch
+priority: 8
 assignees: []
 createdAt: 1781642499088
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

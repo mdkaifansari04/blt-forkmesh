@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 98
 title: make a gitlab and github repo importer that pulls everything from them
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 10
 assignees: []
 createdAt: 1782078460630
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
