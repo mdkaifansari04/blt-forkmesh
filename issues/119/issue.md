@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 119
 title: when I merge a pr then sync to main it doesn't seem to be triggering the build to deploy, please fix that
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
