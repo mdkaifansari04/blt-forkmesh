@@ -2437,6 +2437,26 @@ async def _render_table_view(env, table):
     count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
     total = int((count_row or {}).get("n", 0) or 0)
 
+    # Admin tool: reset any user account's login password. Shown above the
+    # accounts table; posts back to ?action=set_password (handled in _admin).
+    prefix = ""
+    if table == "accounts":
+        prefix = (
+            '<div class="tools">'
+            '<form method="post" action="?table=accounts&amp;action=set_password" '
+            'onsubmit="return confirm(\'Set a new login password for this '
+            'account?\')">'
+            '<input type="text" name="name" placeholder="node name" '
+            'autocomplete="off" required>'
+            '<input type="password" name="password" '
+            'placeholder="new password (min 8 chars)" minlength="8" required>'
+            '<button type="submit">Set password</button>'
+            '</form>'
+            '<span class="meta">Resets a user account\'s login password '
+            '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
+            '</div>'
+        )
+
     if table == "error_log":
         # Keep the purpose-built, time-formatted error view.
         body = []
@@ -2462,8 +2482,9 @@ async def _render_table_view(env, table):
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
     if not rows:
-        return ('<div class="title">%s · 0 rows</div>'
-                '<div class="empty">This table is empty.</div>'
+        return (prefix
+                + '<div class="title">%s · 0 rows</div>'
+                  '<div class="empty">This table is empty.</div>'
                 % _html_escape(table))
 
     # Column order: union of keys, first row's order first.
@@ -2487,7 +2508,8 @@ async def _render_table_view(env, table):
 
     head = "".join("<th>%s</th>" % _html_escape(c) for c in columns)
     return (
-        '<div class="title">%s · %d row(s)%s</div>'
+        prefix
+        + '<div class="title">%s · %d row(s)%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "")
         + "<table><thead><tr>" + head + "</tr></thead><tbody>"
@@ -2549,6 +2571,27 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
         "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
         "</body></html>"
     )
+
+
+async def _admin_set_password(env, name, password):
+    # Reset a user account's login password. The admin (basic-auth) supplies a
+    # node name and a new password; we PBKDF2-hash it and overwrite pass_salt /
+    # pass_hash on the encrypted account record, leaving email/solana/etc intact.
+    name = clean_string(name or "", MAX_NODE_NAME).lower()
+    if not name:
+        return "Set password failed: a node name is required."
+    if len(password or "") < 8:
+        return "Set password failed: password must be at least 8 characters."
+    password = password[:256]
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return "Set password failed: no account named '%s'." % name
+    salt, phash = await hash_password(password)
+    rec["pass_salt"] = salt
+    rec["pass_hash"] = phash
+    rec.setdefault("status", "active")
+    await _save_account(env, name_bi, rec)
+    return "Password updated for '%s'. The user can log in with it now." % name
 
 
 async def _admin_disburse(env):
@@ -2648,14 +2691,25 @@ class Default(WorkerEntrypoint):
         await ensure_schema(self.env)
         params = parse_qs(urlparse(request.url).query)
 
-        # POST ?action=disburse -> retry confirmed join deposit sweeps
+        # POST actions: ?action=disburse retries join-deposit sweeps;
+        # ?action=set_password resets a user account's login password.
         banner = ""
-        if method_name(request) == "POST" and \
-                params.get("action", [""])[0] == "disburse":
+        action = params.get("action", [""])[0]
+        if method_name(request) == "POST" and action == "disburse":
             try:
                 banner = await _admin_disburse(self.env)
             except Exception as error:
                 banner = "Disburse failed: " + repr(error)
+        elif method_name(request) == "POST" and action == "set_password":
+            try:
+                form = parse_qs(await request.text())
+                banner = await _admin_set_password(
+                    self.env,
+                    form.get("name", [""])[0],
+                    form.get("password", [""])[0],
+                )
+            except Exception as error:
+                banner = "Set password failed: " + repr(error)
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
