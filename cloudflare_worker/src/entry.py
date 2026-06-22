@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import gzip
 import hmac
+import io
 import json
 import re
 import struct
@@ -185,6 +187,36 @@ async def verify_pull_event(pr):
 
 def pkt_line(payload):
     return ("%04x" % (len(payload) + 4)).encode() + payload
+
+
+def decode_git_request_body(data, content_encoding, max_bytes=8 * 1024 * 1024):
+    """Return the Git smart-HTTP body after decoding HTTP content encodings."""
+    data = bytes(data or b"")
+    if len(data) > max_bytes:
+        raise ValueError("git request body is too large")
+
+    encodings = [
+        item.strip().lower()
+        for item in (content_encoding or "").split(",")
+        if item.strip()
+    ]
+    # Content encodings are decoded in reverse application order. Git uses gzip
+    # once its upload-pack request crosses http.postBuffer; forwarding those raw
+    # bytes makes upload-pack parse the gzip header as a pkt-line and fail with
+    # "bad line length character".
+    for encoding in reversed(encodings):
+        if encoding == "identity":
+            continue
+        if encoding != "gzip":
+            raise ValueError("unsupported git content encoding: " + encoding)
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+                data = stream.read(max_bytes + 1)
+        except (EOFError, OSError) as error:
+            raise ValueError("invalid gzip git request body") from error
+        if len(data) > max_bytes:
+            raise ValueError("git request body is too large")
+    return data
 
 
 def git_bytes_response(data, content_type):
@@ -2969,9 +3001,14 @@ class ForkMeshHost(DurableObject):
             await self._mark_present(path)
             body = b""
             try:
-                body = bytes(await request.bytes())
+                raw_body = bytes(await request.bytes())
+                body = decode_git_request_body(
+                    raw_body, request.headers.get("content-encoding") or ""
+                )
+            except ValueError as error:
+                return Response("Invalid Git request: " + str(error), status=400)
             except Exception:
-                body = b""
+                return Response("Could not read Git request body.", status=400)
             return await self._git(request, "git-upload-pack", body)
 
         action = path.rsplit("/", 1)[-1]
