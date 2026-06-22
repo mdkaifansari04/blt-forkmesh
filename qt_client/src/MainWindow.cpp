@@ -3,6 +3,7 @@
 #include "ActionFile.h"
 #include "ActionRunner.h"
 #include "ClaudeAgentScript.h"
+#include "CommitCommentStore.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
 
@@ -269,7 +270,19 @@ const QString kLegacyCodexCommand =
 // stored settings using it can be migrated to the API-key based runner below.
 const QString kLegacyClaudeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
+// "Claude Code" provider: drive the installed `claude` CLI (subscription/login
+// auth) rather than the bundled Anthropic-API script used by "Claude API".
+const QString kClaudeCodeCliCommand =
+    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 constexpr int kNetworkLogLimit = 2000;
+
+// Provider family helper: the Anthropic-backed providers ("Claude Code" CLI and
+// "Claude API" script, plus the legacy "claude" value) share usage windows,
+// spend tracking and iconography; everything else is OpenAI/Codex-backed.
+bool agentIsClaudeProvider(const QString &provider)
+{
+    return provider.startsWith(QLatin1String("claude"));
+}
 
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
@@ -3738,7 +3751,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAgentProvider = new QComboBox;
     m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), QStringLiteral("codex"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
-                                     QStringLiteral("claude"));
+                                     QStringLiteral("claude-code"));
+    m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
+                                     QStringLiteral("openai"));
+    m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
+                                     QStringLiteral("claude-api"));
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
@@ -6226,6 +6243,30 @@ QWidget *MainWindow::buildRepoDetailSection()
     return page;
 }
 
+namespace {
+// Diff rendering shared by the commit and pull-request views. The struct is
+// defined here (ahead of its first users) while the renderers themselves live
+// further down next to showCommit; they share this same anonymous namespace
+// within the translation unit.
+struct DiffFileEntry {
+    QString path;
+    QString anchor;
+    int adds = 0;
+    int dels = 0;
+    QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
+};
+QString diffStyleSheet();
+// anchorFile (when set) makes the line-number gutters clickable comment anchors
+// (href "cmt:<side>:<line>"); lineNotes maps "<side>:<line>" to HTML inserted
+// as a full-width row beneath that line (for already-posted inline comments).
+QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                       const QString &dir, const QString &base, const QString &head,
+                       const QString &anchorFile = QString(),
+                       const QHash<QString, QString> &lineNotes = {});
+bool diffSplitPref();
+void setDiffSplitPref(bool split);
+} // namespace
+
 QWidget *MainWindow::buildRepoCommitsTab()
 {
     m_commitsStack = new QStackedWidget;
@@ -6323,6 +6364,26 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitDownloadButton, &QPushButton::clicked, this,
             &MainWindow::downloadCommitPatch);
 
+    // Switch between unified and side-by-side (split) diff rendering. The choice
+    // is a shared, persisted preference (see diffSplitPref) used by both the
+    // commit and pull-request diff views.
+    m_commitSplitButton = new QPushButton;
+    m_commitSplitButton->setObjectName("ghostButton");
+    m_commitSplitButton->setCursor(Qt::PointingHandCursor);
+    m_commitSplitButton->setCheckable(true);
+    m_commitSplitButton->setChecked(diffSplitPref());
+    setOcticon(m_commitSplitButton, "diff", 16);
+    updateDiffSplitButton(m_commitSplitButton);
+    connect(m_commitSplitButton, &QPushButton::clicked, this, [this](bool on) {
+        setDiffSplitPref(on);
+        updateDiffSplitButton(m_commitSplitButton);
+        updateDiffSplitButton(m_pullSplitButton);
+        if (m_pullSplitButton)
+            m_pullSplitButton->setChecked(on);
+        if (!m_currentCommitHash.isEmpty())
+            showCommit(m_currentCommitHash);
+    });
+
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
     navCol->setSpacing(4);
@@ -6331,6 +6392,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->setContentsMargins(0, 0, 0, 0);
     prevNextRow->setSpacing(4);
     prevNextRow->addStretch();
+    prevNextRow->addWidget(m_commitSplitButton);
     prevNextRow->addWidget(m_commitDownloadButton);
     prevNextRow->addWidget(m_commitPrevButton);
     prevNextRow->addWidget(m_commitNextButton);
@@ -6385,13 +6447,54 @@ QWidget *MainWindow::buildRepoCommitsTab()
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 1);
 
+    // --- Per-commit conversation: comment thread + composer.
+    m_commitThreadContainer = new QWidget;
+    m_commitThreadLayout = new QVBoxLayout(m_commitThreadContainer);
+    m_commitThreadLayout->setContentsMargins(0, 0, 0, 0);
+    m_commitThreadLayout->setSpacing(10);
+    m_commitThreadLayout->addStretch();
+    auto *commitThreadScroll = new QScrollArea;
+    commitThreadScroll->setWidgetResizable(true);
+    commitThreadScroll->setWidget(m_commitThreadContainer);
+    commitThreadScroll->setObjectName("issuePageScroll");
+    commitThreadScroll->setFrameShape(QFrame::NoFrame);
+    m_commitComposer = new MarkdownEditor;
+    m_commitComposer->setPlaceholderText("Leave a comment on this commit\xE2\x80\xA6");
+    m_commitComposer->setMinimumHeight(80);
+    m_commitCommentButton = new QPushButton("Comment");
+    m_commitCommentButton->setObjectName("ghostButton");
+    m_commitCommentButton->setProperty("buttonSize", "sm");
+    m_commitCommentButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitCommentButton, "comment", 16);
+    connect(m_commitCommentButton, &QPushButton::clicked, this,
+            &MainWindow::submitCommitComment);
+    auto *commitComposerButtons = new QHBoxLayout;
+    commitComposerButtons->setContentsMargins(0, 0, 0, 0);
+    commitComposerButtons->addStretch();
+    commitComposerButtons->addWidget(m_commitCommentButton);
+    auto *commitConversation = new QWidget;
+    auto *commitConversationLayout = new QVBoxLayout(commitConversation);
+    commitConversationLayout->setContentsMargins(0, 0, 0, 0);
+    commitConversationLayout->setSpacing(8);
+    commitConversationLayout->addWidget(commitThreadScroll, 1);
+    commitConversationLayout->addWidget(m_commitComposer);
+    commitConversationLayout->addLayout(commitComposerButtons);
+
+    auto *commitVSplit = new QSplitter(Qt::Vertical);
+    commitVSplit->setChildrenCollapsible(false);
+    commitVSplit->addWidget(split);
+    commitVSplit->addWidget(commitConversation);
+    commitVSplit->setStretchFactor(0, 3);
+    commitVSplit->setStretchFactor(1, 2);
+    commitVSplit->setSizes({440, 240});
+
     auto *detailLayout = new QVBoxLayout(detailPage);
     detailLayout->setContentsMargins(16, 12, 16, 16);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(headerRow);
     detailLayout->addWidget(m_commitMessage);
     detailLayout->addWidget(m_commitMeta);
-    detailLayout->addWidget(split, 1);
+    detailLayout->addWidget(commitVSplit, 1);
 
     // Right side: a placeholder until a commit is picked, then the diff view.
     // The commit list (listPage) stays visible in the left splitter pane the
@@ -6652,11 +6755,27 @@ QWidget *MainWindow::buildPullsTab()
     m_pullPushMainCheck = new QCheckBox("Push to main");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
-    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton, m_pullDeleteButton}) {
+    m_pullSplitButton = new QPushButton;
+    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton,
+                           m_pullDeleteButton, m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
+    // Unified <-> side-by-side toggle for this PR's diff (shared preference).
+    m_pullSplitButton->setCheckable(true);
+    m_pullSplitButton->setChecked(diffSplitPref());
+    setOcticon(m_pullSplitButton, "diff", 16);
+    updateDiffSplitButton(m_pullSplitButton);
+    connect(m_pullSplitButton, &QPushButton::clicked, this, [this](bool on) {
+        setDiffSplitPref(on);
+        updateDiffSplitButton(m_pullSplitButton);
+        updateDiffSplitButton(m_commitSplitButton);
+        if (m_commitSplitButton)
+            m_commitSplitButton->setChecked(on);
+        if (m_pullFiles && m_pullFiles->currentItem())
+            renderPullDiff(m_pullFiles->currentItem()->data(Qt::UserRole).toString());
+    });
     m_pullMergeButton->setObjectName("primaryButton");
     setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
@@ -6669,6 +6788,7 @@ QWidget *MainWindow::buildPullsTab()
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
+    pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullPushMainCheck, 0, Qt::AlignTop);
@@ -6684,24 +6804,111 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
-    m_pullFiles->setMinimumWidth(200);
+    m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item)
                     renderPullDiff(item->data(Qt::UserRole).toString());
             });
-    m_pullDiff = new QTextEdit;
+
+    // Commits that make up this PR; clicking one opens it in the commit view.
+    auto *commitsHeading = new QLabel("Commits");
+    commitsHeading->setObjectName("sectionLabel");
+    m_pullCommitsList = new QListWidget;
+    m_pullCommitsList->setObjectName("overviewList");
+    m_pullCommitsList->setMaximumHeight(140);
+    connect(m_pullCommitsList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                const QString sha = item ? item->data(Qt::UserRole).toString()
+                                         : QString();
+                if (sha.isEmpty())
+                    return;
+                if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+                    m_repoDetailTabs->button(1)->setChecked(true);
+                if (m_repoDetailStack)
+                    m_repoDetailStack->setCurrentIndex(1);
+                showCommit(sha);
+            });
+
+    auto *filesPane = new QWidget;
+    auto *filesPaneLayout = new QVBoxLayout(filesPane);
+    filesPaneLayout->setContentsMargins(0, 0, 0, 0);
+    filesPaneLayout->setSpacing(6);
+    filesPaneLayout->addWidget(m_pullFiles, 1);
+    filesPaneLayout->addWidget(commitsHeading);
+    filesPaneLayout->addWidget(m_pullCommitsList);
+
+    m_pullDiff = new QTextBrowser;
     m_pullDiff->setObjectName("diffView");
-    m_pullDiff->setReadOnly(true);
+    m_pullDiff->setOpenExternalLinks(false);
+    m_pullDiff->setOpenLinks(false); // we handle "cmt:" anchors ourselves
     m_pullDiff->setLineWrapMode(QTextEdit::NoWrap);
+    connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
+            &MainWindow::onPullDiffAnchorClicked);
 
     auto *diffSplit = new QSplitter(Qt::Horizontal);
     diffSplit->setChildrenCollapsible(false);
-    diffSplit->addWidget(m_pullFiles);
+    diffSplit->addWidget(filesPane);
     diffSplit->addWidget(m_pullDiff);
     diffSplit->setStretchFactor(0, 0);
     diffSplit->setStretchFactor(1, 1);
     diffSplit->setSizes({240, 600});
+
+    // --- Conversation: review thread + composer + review actions.
+    m_pullThreadContainer = new QWidget;
+    m_pullThreadLayout = new QVBoxLayout(m_pullThreadContainer);
+    m_pullThreadLayout->setContentsMargins(0, 0, 0, 0);
+    m_pullThreadLayout->setSpacing(10);
+    m_pullThreadLayout->addStretch();
+    m_pullThreadScroll = new QScrollArea;
+    m_pullThreadScroll->setWidgetResizable(true);
+    m_pullThreadScroll->setWidget(m_pullThreadContainer);
+    m_pullThreadScroll->setObjectName("issuePageScroll");
+    m_pullThreadScroll->setFrameShape(QFrame::NoFrame);
+
+    m_pullComposer = new MarkdownEditor;
+    m_pullComposer->setPlaceholderText("Leave a comment or review\xE2\x80\xA6");
+    m_pullComposer->setMinimumHeight(90);
+    m_pullCommentButton = new QPushButton("Comment");
+    m_pullApproveButton = new QPushButton("Approve");
+    m_pullRequestChangesButton = new QPushButton("Request changes");
+    for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
+                           m_pullRequestChangesButton}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_pullCommentButton, "comment", 16);
+    setOcticon(m_pullApproveButton, "check-circle", 16);
+    setOcticon(m_pullRequestChangesButton, "alert", 16);
+    connect(m_pullCommentButton, &QPushButton::clicked, this,
+            &MainWindow::submitPullComment);
+    connect(m_pullApproveButton, &QPushButton::clicked, this,
+            [this] { submitPullReview(QStringLiteral("approved")); });
+    connect(m_pullRequestChangesButton, &QPushButton::clicked, this,
+            [this] { submitPullReview(QStringLiteral("changes_requested")); });
+    auto *composerButtons = new QHBoxLayout;
+    composerButtons->setContentsMargins(0, 0, 0, 0);
+    composerButtons->addStretch();
+    composerButtons->addWidget(m_pullRequestChangesButton);
+    composerButtons->addWidget(m_pullApproveButton);
+    composerButtons->addWidget(m_pullCommentButton);
+    auto *conversation = new QWidget;
+    auto *conversationLayout = new QVBoxLayout(conversation);
+    conversationLayout->setContentsMargins(0, 0, 0, 0);
+    conversationLayout->setSpacing(8);
+    conversationLayout->addWidget(m_pullThreadScroll, 1);
+    conversationLayout->addWidget(m_pullComposer);
+    conversationLayout->addLayout(composerButtons);
+
+    // Stack the diff over the conversation; let the user resize the split.
+    auto *detailVSplit = new QSplitter(Qt::Vertical);
+    detailVSplit->setChildrenCollapsible(false);
+    detailVSplit->addWidget(diffSplit);
+    detailVSplit->addWidget(conversation);
+    detailVSplit->setStretchFactor(0, 3);
+    detailVSplit->setStretchFactor(1, 2);
+    detailVSplit->setSizes({440, 280});
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
     detailLayout->setContentsMargins(18, 18, 18, 18);
@@ -6709,7 +6916,7 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullDesc);
-    detailLayout->addWidget(diffSplit, 1);
+    detailLayout->addWidget(detailVSplit, 1);
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setChildrenCollapsible(false);
@@ -6844,11 +7051,26 @@ void MainWindow::showPull(int number)
         m_pullMeta->clear();
         m_pullDesc->clear();
         m_pullDiff->clear();
+        if (m_pullCommitsList)
+            m_pullCommitsList->clear();
+        renderPullThread(PullRequest());
+        if (m_pullComposer)
+            m_pullComposer->setEnabled(false);
+        for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
+                               m_pullRequestChangesButton})
+            if (b)
+                b->setEnabled(false);
         if (m_pullPushMainCheck)
             m_pullPushMainCheck->setText("Push to main");
         updatePullActionState();
         return;
     }
+    if (m_pullComposer)
+        m_pullComposer->setEnabled(true);
+    for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
+                           m_pullRequestChangesButton})
+        if (b)
+            b->setEnabled(true);
     if (m_pullPushMainCheck)
         m_pullPushMainCheck->setText(
             "Push to " + (found->base.isEmpty() ? QStringLiteral("main") : found->base));
@@ -6865,6 +7087,15 @@ void MainWindow::showPull(int number)
             .arg((found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
+    const QString review = found->reviewSummary();
+    if (review == QLatin1String("approved"))
+        m_pullMeta->setText(m_pullMeta->text() +
+                            QStringLiteral(" \xC2\xB7 <span style='color:#3fb950'>"
+                                           "\xE2\x9C\x93 Approved</span>"));
+    else if (review == QLatin1String("changes_requested"))
+        m_pullMeta->setText(m_pullMeta->text() +
+                            QStringLiteral(" \xC2\xB7 <span style='color:#f85149'>"
+                                           "\xE2\x9A\xA0 Changes requested</span>"));
     m_pullDesc->setText(found->description.toHtmlEscaped());
 
     // Split the unified diff into per-file sections.
@@ -6897,6 +7128,8 @@ void MainWindow::showPull(int number)
         m_pullFiles->setCurrentRow(0);
     else
         m_pullDiff->setPlainText("(no changes)");
+    renderPullCommits(*found);
+    renderPullThread(*found);
     updatePullActionState();
 }
 
@@ -6923,28 +7156,286 @@ void MainWindow::switchToPullTab(int pullNumber)
 
 void MainWindow::renderPullDiff(const QString &filePath)
 {
+    if (!m_pullDiff)
+        return;
     const QString diff = m_pullFileDiffs.value(filePath);
-    QString html =
-        "<pre style='font-family:monospace; font-size:12px; margin:0; white-space:pre'>";
-    for (const QString &line : diff.split('\n')) {
-        QString color;
-        if (line.startsWith("@@"))
-            color = "#58a6ff";
-        else if (line.startsWith("+++") || line.startsWith("---") ||
-                 line.startsWith("diff ") || line.startsWith("index "))
-            color = "#8b949e";
-        else if (line.startsWith('+'))
-            color = "#3fb950";
-        else if (line.startsWith('-'))
-            color = "#f85149";
-        const QString escaped = line.toHtmlEscaped();
-        if (color.isEmpty())
-            html += escaped + "\n";
-        else
-            html += "<span style='color:" + color + "'>" + escaped + "</span>\n";
+
+    // Collect already-posted inline comments for this file, keyed by side:line,
+    // so the renderer can drop them in beneath the lines they annotate.
+    QHash<QString, QString> notes;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &p : m_currentPulls)
+        if (p.number == m_currentPullNumber)
+            pr = &p;
+    if (pr) {
+        for (const PullEvent &ev : pr->events) {
+            if (ev.type != QLatin1String("line-comment") || ev.path != filePath)
+                continue;
+            const QString who =
+                ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+            QString body = ev.body.toHtmlEscaped();
+            body.replace('\n', QStringLiteral("<br>"));
+            const QString key =
+                ev.side + QStringLiteral(":") + QString::number(ev.line);
+            notes[key] +=
+                QStringLiteral("<div class='notehdr'><b>%1</b> commented %2</div>%3")
+                    .arg(who.toHtmlEscaped(), formatIssueRelativeTime(ev.ts), body);
+        }
     }
-    html += "</pre>";
-    m_pullDiff->setHtml(html);
+
+    // The PR patch carries no git object context for image previews; pass empty
+    // dir/base/head so the renderer skips them and just lays out the text diff.
+    // filePath is the comment anchor file (enables clickable line numbers).
+    QList<DiffFileEntry> files;
+    const QString html = renderDiffHtml(diff, files, QString(), QString(),
+                                        QString(), filePath, notes);
+    m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_pullDiff->setHtml(html.isEmpty()
+                            ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                            : html);
+}
+
+void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
+{
+    // Anchor format: "cmt:<side>:<line>" where side is old|new.
+    const QStringList parts = url.toString().split(QLatin1Char(':'));
+    if (parts.size() != 3 || parts.at(0) != QLatin1String("cmt"))
+        return;
+    const QString side = parts.at(1);
+    const int line = parts.at(2).toInt();
+    if (m_currentPullNumber < 0 || !m_pullFiles || !m_pullFiles->currentItem())
+        return;
+    const QString filePath =
+        m_pullFiles->currentItem()->data(Qt::UserRole).toString();
+
+    bool ok = false;
+    const QString body = QInputDialog::getMultiLineText(
+        this, QStringLiteral("Comment on %1:%2").arg(filePath).arg(line),
+        QStringLiteral("Comment"), QString(), &ok);
+    if (!ok || body.trimmed().isEmpty())
+        return;
+
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addLineComment(m_currentPullNumber, filePath, side, line,
+                                  body.trimmed(), &error)) {
+            QMessageBox::warning(this, "Comment", error);
+            return;
+        }
+    } else {
+        PullEvent ev;
+        ev.type = QStringLiteral("line-comment");
+        ev.path = filePath;
+        ev.side = side;
+        ev.line = line;
+        ev.body = body.trimmed();
+        ev = store.makeSignedEvent(m_currentPullNumber, ev);
+        submitPullEventToInbox(m_currentPullNumber, ev);
+    }
+    reloadPulls();
+    showPull(m_currentPullNumber);
+}
+
+void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
+                                     const QString &headerHtml, const QString &body,
+                                     const QString &accent)
+{
+    if (!layout)
+        return;
+    const QString who = author.isEmpty() ? QStringLiteral("?") : author;
+    auto *row = new QWidget;
+    row->setObjectName("issueTimelineRow");
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(14);
+    auto *avatar = new QLabel(who.left(2).toUpper());
+    avatar->setObjectName("issueAvatar");
+    avatar->setAlignment(Qt::AlignCenter);
+    avatar->setFixedSize(36, 36);
+    rowLayout->addWidget(avatar, 0, Qt::AlignTop);
+
+    auto *card = new QWidget;
+    card->setObjectName("issueTimelineCard");
+    if (!accent.isEmpty())
+        card->setStyleSheet(QStringLiteral("#issueTimelineCard { border-left:3px solid %1; }")
+                                .arg(accent));
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(0, 0, 0, 0);
+    cardLayout->setSpacing(0);
+    auto *headerBox = new QWidget(card);
+    headerBox->setObjectName("issueTimelineHeader");
+    auto *headerRow = new QHBoxLayout(headerBox);
+    headerRow->setContentsMargins(16, 8, 10, 8);
+    auto *header = new QLabel(headerHtml);
+    header->setTextFormat(Qt::RichText);
+    headerRow->addWidget(header);
+    headerRow->addStretch();
+    cardLayout->addWidget(headerBox);
+
+    if (!body.trimmed().isEmpty()) {
+        auto *bodyLabel = new QLabel;
+        bodyLabel->setTextFormat(Qt::MarkdownText);
+        bodyLabel->setText(body);
+        bodyLabel->setWordWrap(true);
+        bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        bodyLabel->setOpenExternalLinks(true);
+        bodyLabel->setContentsMargins(16, 12, 16, 14);
+        cardLayout->addWidget(bodyLabel);
+    }
+    rowLayout->addWidget(card, 1);
+    // Insert before the trailing stretch.
+    layout->insertWidget(layout->count() - 1, row);
+}
+
+void MainWindow::renderPullThread(const PullRequest &pr)
+{
+    if (!m_pullThreadLayout)
+        return;
+    while (QLayoutItem *item = m_pullThreadLayout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    if (pr.number == 0) {
+        m_pullThreadLayout->addStretch();
+        return;
+    }
+
+    // The PR description as the opening card.
+    const QString opener = pr.authorName.isEmpty() ? pr.author.left(10) : pr.authorName;
+    addConversationCard(
+        m_pullThreadLayout, opener,
+        QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
+                       "request %2</span>")
+            .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
+        pr.description);
+
+    for (const PullEvent &ev : pr.events) {
+        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+        const QString when = formatIssueRelativeTime(ev.ts);
+        QString verb = QStringLiteral("commented");
+        QString accent;
+        if (ev.type == QLatin1String("line-comment")) {
+            verb = QStringLiteral("commented on <code>%1:%2</code>")
+                       .arg(ev.path.toHtmlEscaped())
+                       .arg(ev.line);
+        } else if (ev.type == QLatin1String("review")) {
+            if (ev.state == QLatin1String("approved")) {
+                verb = QStringLiteral("<span style='color:#3fb950'>approved these "
+                                      "changes</span>");
+                accent = QStringLiteral("#3fb950");
+            } else if (ev.state == QLatin1String("changes_requested")) {
+                verb = QStringLiteral("<span style='color:#f85149'>requested "
+                                      "changes</span>");
+                accent = QStringLiteral("#f85149");
+            } else {
+                verb = QStringLiteral("reviewed");
+            }
+        }
+        addConversationCard(
+            m_pullThreadLayout, who,
+            QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
+                .arg(who.toHtmlEscaped(), verb, when),
+            ev.body, accent);
+    }
+    m_pullThreadLayout->addStretch();
+}
+
+void MainWindow::renderPullCommits(const PullRequest &pr)
+{
+    if (!m_pullCommitsList)
+        return;
+    m_pullCommitsList->clear();
+    const QString dir = repoGitDir();
+    // PRs are patch-based; list the commits on the head branch since the base
+    // when both refs resolve in this repo. Otherwise show a single synthetic row.
+    bool listed = false;
+    if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(dir,
+                          {"log", "--no-merges", "--date=short",
+                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad",
+                           pr.base + ".." + pr.head},
+                          &out, nullptr) &&
+            !out.trimmed().isEmpty()) {
+            for (const QString &line :
+                 QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts)) {
+                const QStringList f = line.split(QLatin1Char('\x1f'));
+                if (f.size() < 5)
+                    continue;
+                auto *item = new QListWidgetItem(
+                    QStringLiteral("%1  %2 \xC2\xB7 %3")
+                        .arg(f.at(1), f.at(2), f.at(3)));
+                item->setData(Qt::UserRole, f.at(0));
+                item->setToolTip(f.at(4));
+                m_pullCommitsList->addItem(item);
+                listed = true;
+            }
+        }
+    }
+    if (!listed) {
+        auto *item = new QListWidgetItem(
+            QStringLiteral("%1 file(s) changed \xC2\xB7 +%2 -%3")
+                .arg(pr.filesChanged)
+                .arg(pr.additions)
+                .arg(pr.deletions));
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+        m_pullCommitsList->addItem(item);
+    }
+}
+
+void MainWindow::submitPullComment()
+{
+    if (m_currentPullNumber < 0 || !m_pullComposer)
+        return;
+    const QString body = m_pullComposer->markdown().trimmed();
+    if (body.isEmpty()) {
+        flashMessage(QStringLiteral("Write a comment first."));
+        return;
+    }
+    PullStore store = pullStoreForCurrentRepo();
+    PullEvent ev;
+    ev.type = QStringLiteral("comment");
+    ev.body = body;
+    ev = store.makeSignedEvent(m_currentPullNumber, ev);
+    QString error;
+    if (store.canWrite()) {
+        if (!store.addComment(m_currentPullNumber, body, &error)) {
+            QMessageBox::warning(this, "Comment", error);
+            return;
+        }
+    } else {
+        submitPullEventToInbox(m_currentPullNumber, ev);
+    }
+    m_pullComposer->setMarkdown(QString());
+    reloadPulls();
+    showPull(m_currentPullNumber);
+}
+
+void MainWindow::submitPullReview(const QString &state)
+{
+    if (m_currentPullNumber < 0 || !m_pullComposer)
+        return;
+    const QString body = m_pullComposer->markdown().trimmed();
+    PullStore store = pullStoreForCurrentRepo();
+    PullEvent ev;
+    ev.type = QStringLiteral("review");
+    ev.state = state;
+    ev.body = body;
+    ev = store.makeSignedEvent(m_currentPullNumber, ev);
+    QString error;
+    if (store.canWrite()) {
+        if (!store.addReview(m_currentPullNumber, state, body, &error)) {
+            QMessageBox::warning(this, "Review", error);
+            return;
+        }
+    } else {
+        submitPullEventToInbox(m_currentPullNumber, ev);
+    }
+    m_pullComposer->setMarkdown(QString());
+    reloadPulls();
+    showPull(m_currentPullNumber);
 }
 
 void MainWindow::updatePullActionState()
@@ -7548,6 +8039,129 @@ void MainWindow::submitPullToInbox(const PullRequest &pr,
     });
 }
 
+void MainWindow::submitPullEventToInbox(int number, const PullEvent &ev)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"event", ev.toJson()}};
+    QNetworkRequest request(pullsApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, repo] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            flashMessage("Your review was delivered to " + repo.owner + "/" +
+                         repo.name + ".");
+        else
+            QMessageBox::warning(this, "Review",
+                                 "Could not send your review: " + reply->errorString());
+    });
+}
+
+QUrl MainWindow::commitsApiUrl(const RepositoryRecord &repo) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(repo.name, QStringLiteral("repository")) + "/commits");
+    return url;
+}
+
+void MainWindow::submitCommitCommentToInbox(const QString &sha, const CommitComment &c)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"sha", sha},
+                              {"comment", c.toJson()}};
+    QNetworkRequest request(commitsApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, repo] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            flashMessage("Your commit comment was delivered to " + repo.owner + "/" +
+                         repo.name + ".");
+        else
+            QMessageBox::warning(this, "Commit comment",
+                                 "Could not send your comment: " + reply->errorString());
+    });
+}
+
+void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
+{
+    const RepositoryRecord writable = writableRecordFor(repo);
+    {
+        CommitCommentStore probe(writable.localPath, writable.mirrorPath,
+                                 &m_profileIdentity, m_userName);
+        if (!probe.canWrite())
+            return;
+    }
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    const QString sig = m_profileIdentity.signData(canonical);
+    QUrl url = commitsApiUrl(repo);
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", sig);
+    url.setQuery(query);
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, url, repo, writable, interactive] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (interactive)
+                QMessageBox::warning(this, "Sync inbox",
+                                     "Could not reach the inbox: " +
+                                         reply->errorString());
+            return;
+        }
+        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
+                                       .object()
+                                       .value("pending")
+                                       .toArray();
+        if (pending.isEmpty()) {
+            if (interactive)
+                QMessageBox::information(this, "Sync inbox",
+                                         "No pending commit comments.");
+            return;
+        }
+        CommitCommentStore store(writable.localPath, writable.mirrorPath,
+                                 &m_profileIdentity, m_userName);
+        int merged = 0;
+        for (const QJsonValue &value : pending) {
+            const QJsonObject obj = value.toObject();
+            const QString sha = obj.value("sha").toString();
+            const CommitComment c =
+                CommitComment::fromJson(obj.value("comment").toObject());
+            if (store.applyRemoteComment(sha, c))
+                ++merged;
+        }
+        m_networkAccess->deleteResource(QNetworkRequest(url)); // ack/clear
+        const bool onThisRepo =
+            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+            m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+            m_repositories.at(m_repoDetailIndex).name == repo.name;
+        if (onThisRepo && !m_currentCommitHash.isEmpty())
+            renderCommitThread(m_currentCommitHash);
+        if (interactive)
+            QMessageBox::information(
+                this, "Sync inbox",
+                QStringLiteral("Merged %1 commit comment(s).").arg(merged));
+    });
+}
+
 void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -7604,8 +8218,23 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         QString lastAuthor;
         QString lastTitle;
         for (const QJsonValue &value : pending) {
+            const QJsonObject obj = value.toObject();
+            // A submission is either a whole new PR ("pull") or a conversation
+            // event on an existing PR ("event" + "number").
+            if (obj.contains("event")) {
+                const int number = obj.value("number").toInt();
+                const PullEvent ev =
+                    PullEvent::fromJson(obj.value("event").toObject());
+                if (store.applyRemoteEvent(number, ev)) {
+                    ++merged;
+                    lastAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
+                                                         : ev.authorName;
+                    lastTitle = QStringLiteral("review on #%1").arg(number);
+                }
+                continue;
+            }
             const PullRequest pr =
-                PullRequest::fromJson(value.toObject().value("pull").toObject());
+                PullRequest::fromJson(obj.value("pull").toObject());
             if (store.applyRemotePull(pr)) {
                 ++merged;
                 lastAuthor = pr.authorName.isEmpty() ? pr.author.left(8)
@@ -7663,6 +8292,7 @@ void MainWindow::pollOwnedInboxes()
         seen.insert(key);
         drainIssuesInboxFor(repo, /*interactive=*/false);
         drainPullsInboxFor(repo, /*interactive=*/false);
+        drainCommitInboxFor(repo, /*interactive=*/false);
     }
 }
 
@@ -7670,8 +8300,13 @@ void MainWindow::pollOwnedInboxes()
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    if (provider == QLatin1String("claude"))
+    if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
+    // Legacy "claude" sessions used the bundled Anthropic-API script.
+    if (provider == QLatin1String("claude-api") || provider == QLatin1String("claude"))
+        return QStringLiteral("Claude API");
+    if (provider == QLatin1String("openai"))
+        return QStringLiteral("OpenAI API");
     return QStringLiteral("Codex");
 }
 
@@ -8273,7 +8908,7 @@ void MainWindow::applyCachedSpendLabels()
 
 void MainWindow::markAgentLimitWindow(const QString &provider)
 {
-    const bool claude = provider == QLatin1String("claude");
+    const bool claude = agentIsClaudeProvider(provider);
     const QString k5h =
         claude ? kClaudeLimit5hStartSetting : kCodexLimit5hStartSetting;
     const QString kWeek =
@@ -8756,21 +9391,33 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
-    if (provider == QLatin1String("claude")) {
+    if (provider == QLatin1String("claude-code")) {
+        // Claude Code: the installed `claude` CLI using its own login/auth.
+        config.command = kClaudeCodeCliCommand;
+        config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
+        config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    } else if (provider == QLatin1String("claude-api") ||
+               provider == QLatin1String("claude")) {
+        // Claude API: bundled Python script talking to api.anthropic.com.
         config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    } else {
+    } else if (provider == QLatin1String("openai")) {
+        // OpenAI API: the Codex CLI driven with an isolated home so it
+        // authenticates with the OPENAI/CODEX API key rather than a login.
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
         config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
-        if (!config.apiKey.isEmpty()) {
-            config.preferApiKeyAuth = true;
-            config.isolatedHome =
-                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-                QStringLiteral("/agents/codex-api-home");
-        }
+        config.preferApiKeyAuth = true;
+        config.isolatedHome =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+            QStringLiteral("/agents/codex-api-home");
+    } else {
+        // Codex: the Codex CLI using its own subscription/login auth.
+        config.command = codexCommandSetting();
+        config.apiKeyName = QStringLiteral("CODEX_API_KEY");
+        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
     }
     return config;
 }
@@ -9098,7 +9745,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     refreshIssueList();
     // Auto-refresh usage/spend after a session completes.
     if (session) {
-        if (session->provider == QLatin1String("claude"))
+        if (agentIsClaudeProvider(session->provider))
             refreshClaudeSpend();
         else
             testOpenAiAgentKey();
@@ -10597,14 +11244,6 @@ void MainWindow::applyCommitIssueClosures()
 
 namespace {
 
-struct DiffFileEntry {
-    QString path;
-    QString anchor;
-    int adds = 0;
-    int dels = 0;
-    QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
-};
-
 QString diffImageMimeForPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -10666,12 +11305,49 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
 // Render a unified diff into an HTML table with an old/new line-number gutter
 // and +/- coloring (classes styled by the document stylesheet), one block per
 // file with a named anchor so the file list can scroll to it.
+// Build a line-number gutter cell. When anchors is true the number links to
+// "cmt:<side>:<line>" so the PR view can attach a comment to that line.
+QString gutterCellHtml(const QString &cls, const QString &num, const QString &side,
+                       bool anchors)
+{
+    if (num.isEmpty())
+        return QStringLiteral("<td class='ln %1'></td>").arg(cls);
+    if (!anchors)
+        return QStringLiteral("<td class='ln %1'>%2</td>").arg(cls, num);
+    return QStringLiteral("<td class='ln lnlink %1'>"
+                          "<a href='cmt:%2:%3' title='Comment on this line'>%3</a></td>")
+        .arg(cls, side, num);
+}
+
+// Insert any inline-comment note rows that target the just-emitted line numbers
+// (keys "old:<n>" / "new:<n>"), spanning all `columns` columns of the table.
+QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &oldNum,
+                     const QString &newNum, int columns)
+{
+    QString out;
+    const auto addNote = [&](const QString &key) {
+        const QString note = lineNotes.value(key);
+        if (!note.isEmpty())
+            out += QStringLiteral("<tr><td class='notecell' colspan='%1'>%2</td></tr>")
+                       .arg(columns)
+                       .arg(note);
+    };
+    if (!oldNum.isEmpty())
+        addNote(QStringLiteral("old:") + oldNum);
+    if (!newNum.isEmpty())
+        addNote(QStringLiteral("new:") + newNum);
+    return out;
+}
+
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                               const QString &dir, const QString &base,
-                              const QString &head)
+                              const QString &head,
+                              const QString &anchorFile = QString(),
+                              const QHash<QString, QString> &lineNotes = {})
 {
     static const QRegularExpression hunkRe(
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
+    const bool anchors = !anchorFile.isEmpty();
     QString html;
     html.reserve(patch.size() * 3); // avoid repeated reallocation on big diffs
     QString fileBody;
@@ -10790,18 +11466,295 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             oldCell = QString::number(oldNo++);
             newCell = QString::number(newNo++);
         }
-        fileBody += QStringLiteral("<tr><td class='ln %1'>%2</td>"
-                                   "<td class='ln %1'>%3</td>"
-                                   "<td class='code %1'>%4</td></tr>")
-                        .arg(cls, oldCell, newCell,
+        fileBody += QStringLiteral("<tr>%1%2<td class='code %3'>%4</td></tr>")
+                        .arg(gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors),
+                             gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors),
+                             cls,
                              text.isEmpty() ? QStringLiteral("&nbsp;")
                                             : text.toHtmlEscaped());
+        if (anchors)
+            fileBody += lineNoteRows(lineNotes, oldCell, newCell, 3);
     }
     closeFile();
     return html;
 }
 
+// Render a unified diff into a side-by-side (split) HTML table: per file, four
+// columns — old line-number, old code, new line-number, new code. Deletions sit
+// on the left, additions on the right, context spans both. Within a hunk a run
+// of removed lines is paired row-for-row with the following run of added lines;
+// any surplus on one side leaves the opposite cell blank. Stats and per-file
+// anchors/headers match renderUnifiedDiffHtml so the file list and toggle line up.
+QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                            const QString &dir, const QString &base,
+                            const QString &head,
+                            const QString &anchorFile = QString(),
+                            const QHash<QString, QString> &lineNotes = {})
+{
+    static const QRegularExpression hunkRe(
+        QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
+    const bool anchors = !anchorFile.isEmpty();
+    QString html;
+    html.reserve(patch.size() * 3);
+    QString fileBody;
+    const QStringList lines = patch.split(QLatin1Char('\n'));
+    int oldNo = 0, newNo = 0, fileIdx = -1;
+    bool inFile = false;
+
+    // A side gutter cell; clickable (comment anchor) when anchors is on.
+    const auto gut = [&](const QString &extraCls, const QString &num,
+                         const QString &side) {
+        if (num.isEmpty())
+            return QStringLiteral("<td class='ln %1'></td>").arg(extraCls);
+        if (!anchors)
+            return QStringLiteral("<td class='ln %1'>%2</td>").arg(extraCls, num);
+        return QStringLiteral("<td class='ln lnlink %1'>"
+                              "<a href='cmt:%2:%3' title='Comment on this line'>%3</a>"
+                              "</td>")
+            .arg(extraCls, side, num);
+    };
+
+    // Buffered runs of removed/added lines awaiting pairing.
+    QStringList pendingDel, pendingAdd;
+    const auto emitText = [](const QString &t) {
+        return t.isEmpty() ? QStringLiteral("&nbsp;") : t.toHtmlEscaped();
+    };
+    const auto flushPairs = [&] {
+        const int n = qMax(pendingDel.size(), pendingAdd.size());
+        for (int i = 0; i < n; ++i) {
+            const bool hasDel = i < pendingDel.size();
+            const bool hasAdd = i < pendingAdd.size();
+            const QString oldLn = hasDel ? QString::number(oldNo++) : QString();
+            const QString newLn = hasAdd ? QString::number(newNo++) : QString();
+            const QString delCls = hasDel ? QStringLiteral("del") : QString();
+            const QString addCls = hasAdd ? QStringLiteral("add") : QString();
+            fileBody += QStringLiteral("<tr>%1<td class='code ocode %2'>%3</td>"
+                                       "%4<td class='code ncode %5'>%6</td></tr>")
+                            .arg(gut(delCls, oldLn, QStringLiteral("old")), delCls,
+                                 hasDel ? emitText(pendingDel.at(i)) : QStringLiteral("&nbsp;"),
+                                 gut(QStringLiteral("nln ") + addCls, newLn,
+                                     QStringLiteral("new")),
+                                 addCls,
+                                 hasAdd ? emitText(pendingAdd.at(i)) : QStringLiteral("&nbsp;"));
+            if (anchors)
+                fileBody += lineNoteRows(lineNotes, oldLn, newLn, 4);
+        }
+        pendingDel.clear();
+        pendingAdd.clear();
+    };
+
+    auto emitFileHeader = [&](int idx) {
+        const DiffFileEntry &f = files[idx];
+        QString badgeClass = QStringLiteral("st-mod");
+        QString badgeText = QStringLiteral("MODIFIED");
+        if (f.status == QLatin1String("added")) {
+            badgeClass = QStringLiteral("st-add");
+            badgeText = QStringLiteral("ADDED");
+        } else if (f.status == QLatin1String("deleted")) {
+            badgeClass = QStringLiteral("st-del");
+            badgeText = QStringLiteral("DELETED");
+        } else if (f.status == QLatin1String("renamed")) {
+            badgeClass = QStringLiteral("st-ren");
+            badgeText = QStringLiteral("RENAMED");
+        }
+        const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
+        html += QStringLiteral(
+                    "<a name=\"%1\"></a><div class='fileblock'>"
+                    "<div class='fileheader'>"
+                    "<span class='stbadge %2'>%3</span>"
+                    "<span class='fpath'>%4</span>"
+                    "<span class='fstat'><span class='sadd'>+%5</span> "
+                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>"
+                    "%7<table class='difftable' cellspacing='0' cellpadding='0'>")
+                    .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
+                         QString::number(f.adds), QString::number(f.dels),
+                         imagePreview);
+    };
+    auto closeFile = [&] {
+        if (inFile) {
+            flushPairs();
+            emitFileHeader(fileIdx);
+            html += fileBody;
+            html += QStringLiteral("</table></div>");
+            fileBody.clear();
+            inFile = false;
+        }
+    };
+
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git "))) {
+            closeFile();
+            QString path = line;
+            const int bpos = line.indexOf(QLatin1String(" b/"));
+            if (bpos >= 0)
+                path = line.mid(bpos + 3);
+            DiffFileEntry f;
+            f.path = path;
+            f.anchor = QStringLiteral("file-%1").arg(files.size());
+            files.append(f);
+            fileIdx = files.size() - 1;
+            inFile = true;
+            continue;
+        }
+        if (!inFile)
+            continue;
+        if (fileIdx >= 0) {
+            if (line.startsWith(QLatin1String("new file")))
+                files[fileIdx].status = QStringLiteral("added");
+            else if (line.startsWith(QLatin1String("deleted file")))
+                files[fileIdx].status = QStringLiteral("deleted");
+            else if (line.startsWith(QLatin1String("rename ")) ||
+                     line.startsWith(QLatin1String("similarity ")))
+                files[fileIdx].status = QStringLiteral("renamed");
+        }
+        if (line.startsWith(QLatin1String("index ")) ||
+            line.startsWith(QLatin1String("--- ")) ||
+            line.startsWith(QLatin1String("+++ ")) ||
+            line.startsWith(QLatin1String("new file")) ||
+            line.startsWith(QLatin1String("deleted file")) ||
+            line.startsWith(QLatin1String("similarity ")) ||
+            line.startsWith(QLatin1String("rename ")) ||
+            line.startsWith(QLatin1String("old mode")) ||
+            line.startsWith(QLatin1String("new mode")))
+            continue;
+        if (line.startsWith(QLatin1String("@@"))) {
+            flushPairs();
+            const QRegularExpressionMatch m = hunkRe.match(line);
+            if (m.hasMatch()) {
+                oldNo = m.captured(1).toInt();
+                newNo = m.captured(2).toInt();
+            }
+            fileBody += QStringLiteral(
+                            "<tr><td class='ln hunk'></td>"
+                            "<td class='code hunk'>%1</td>"
+                            "<td class='ln nln hunk'></td>"
+                            "<td class='code hunk'>&nbsp;</td></tr>")
+                            .arg(line.toHtmlEscaped());
+            continue;
+        }
+
+        const QChar c0 = line.isEmpty() ? QLatin1Char(' ') : line.at(0);
+        const QString text = line.isEmpty() ? QString() : line.mid(1);
+        if (c0 == QLatin1Char('+')) {
+            pendingAdd << text;
+            if (fileIdx >= 0)
+                ++files[fileIdx].adds;
+        } else if (c0 == QLatin1Char('-')) {
+            pendingDel << text;
+            if (fileIdx >= 0)
+                ++files[fileIdx].dels;
+        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+            // Render on both sides as context so neither column drifts.
+            flushPairs();
+            fileBody += QStringLiteral(
+                            "<tr><td class='ln'></td><td class='code'>%1</td>"
+                            "<td class='ln nln'></td><td class='code'>%1</td></tr>")
+                            .arg(line.toHtmlEscaped());
+        } else {
+            flushPairs();
+            const QString ln1 = QString::number(oldNo++);
+            const QString ln2 = QString::number(newNo++);
+            fileBody += QStringLiteral(
+                            "<tr>%1<td class='code ocode'>%3</td>"
+                            "%2<td class='code ncode'>%3</td></tr>")
+                            .arg(gut(QString(), ln1, QStringLiteral("old")),
+                                 gut(QStringLiteral("nln"), ln2, QStringLiteral("new")),
+                                 emitText(text));
+            if (anchors)
+                fileBody += lineNoteRows(lineNotes, ln1, ln2, 4);
+        }
+    }
+    closeFile();
+    return html;
+}
+
+// User preference (persisted): render diffs side-by-side (split) vs unified.
+// Defaults to side-by-side. Shared by the commit and pull-request diff views.
+bool diffSplitPref()
+{
+    return QSettings().value(QStringLiteral("view/diffSplit"), true).toBool();
+}
+void setDiffSplitPref(bool split)
+{
+    QSettings().setValue(QStringLiteral("view/diffSplit"), split);
+}
+
+// Dispatch to the split or unified renderer based on the current preference.
+QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                       const QString &dir, const QString &base, const QString &head,
+                       const QString &anchorFile,
+                       const QHash<QString, QString> &lineNotes)
+{
+    return diffSplitPref()
+               ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile, lineNotes)
+               : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
+                                       lineNotes);
+}
+
+// Theme-aware stylesheet for the diff HTML produced by the renderers above,
+// shared by the commit and pull-request diff QTextBrowsers. Includes the
+// split-view central divider (td.nln) on top of the unified-view rules.
+QString diffStyleSheet()
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString addBg = dark ? "#12261c" : "#e6ffec";
+    const QString delBg = dark ? "#2d1416" : "#ffebe9";
+    const QString hunkBg = dark ? "#0d1d33" : "#ddf4ff";
+    const QString hunkFg = dark ? "#58a6ff" : "#0969da";
+    const QString lnFg = "#8b949e";
+    const QString headBg = dark ? "#161b22" : "#f6f8fa";
+    const QString border = dark ? "#30363d" : "#d0d7de";
+    const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    return QStringLiteral(
+               ".fileblock { margin-bottom:18px; }"
+               ".fileheader { background:%1; padding:8px 12px; font-family:"
+               "monospace; border:1px solid %7; }"
+               ".stbadge { font-weight:700; font-size:10px; margin-right:10px; }"
+               ".st-add { color:#3fb950; } .st-del { color:#f85149; }"
+               ".st-mod { color:#d29922; } .st-ren { color:#58a6ff; }"
+               ".fpath { font-weight:600; color:%8; }"
+               ".fstat { color:%2; font-size:11px; }"
+               ".sadd { color:#3fb950; font-weight:700; }"
+               ".sdel { color:#f85149; font-weight:700; }"
+               ".difftable { font-family:monospace; font-size:12px; width:100%; }"
+               ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
+               ".imgcell { width:50%; padding:10px; text-align:center; }"
+               ".imgcell img { max-width:100%; max-height:360px; }"
+               ".imgempty { color:%2; padding:60px 0; border:1px solid %7; }"
+               ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
+               "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
+               "white-space:nowrap; background:%9; border-right:1px solid %7; }"
+               "td.code { white-space:pre; padding:0 10px; color:%8; }"
+               ".add { background:%3; } .del { background:%4; }"
+               ".hunk { color:%5; background:%6; }"
+               "td.ln.hunk { background:%6; border-right:1px solid %7; }"
+               // Split view: the new-side line-number gutter doubles as the
+               // central divider between the old and new columns.
+               "td.nln { border-left:1px solid %7; }"
+               // Clickable line-number gutters (PR view) + inline comment rows.
+               "td.lnlink a { color:%2; text-decoration:none; }"
+               "td.notecell { padding:8px 12px; background:%1; "
+               "border:1px solid %7; color:%8; white-space:normal; }"
+               ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
+        .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg);
+}
+
 } // namespace
+
+void MainWindow::updateDiffSplitButton(QPushButton *button)
+{
+    if (!button)
+        return;
+    const bool split = diffSplitPref();
+    button->setText(split ? QStringLiteral("Side-by-side")
+                          : QStringLiteral("Unified"));
+    button->setToolTip(split
+                           ? QStringLiteral("Showing a side-by-side diff \xE2\x80\x94 "
+                                            "click for a unified diff")
+                           : QStringLiteral("Showing a unified diff \xE2\x80\x94 "
+                                            "click for a side-by-side diff"));
+}
 
 void MainWindow::showCommit(const QString &hash)
 {
@@ -10876,8 +11829,8 @@ void MainWindow::showCommit(const QString &hash)
     // --- Render the diff and collect per-file stats.
     QList<DiffFileEntry> files;
     const QString diffHtml =
-        renderUnifiedDiffHtml(QString::fromUtf8(patchRaw), files, dir, base,
-                              full.isEmpty() ? hash : full);
+        renderDiffHtml(QString::fromUtf8(patchRaw), files, dir, base,
+                       full.isEmpty() ? hash : full);
     int totalAdds = 0, totalDels = 0;
     for (const DiffFileEntry &f : files) {
         totalAdds += f.adds;
@@ -10934,53 +11887,79 @@ void MainWindow::showCommit(const QString &hash)
 
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
-        const bool dark =
-            qApp->palette().color(QPalette::Base).lightness() < 128;
-        const QString addBg = dark ? "#12261c" : "#e6ffec";
-        const QString delBg = dark ? "#2d1416" : "#ffebe9";
-        const QString hunkBg = dark ? "#0d1d33" : "#ddf4ff";
-        const QString hunkFg = dark ? "#58a6ff" : "#0969da";
-        const QString lnFg = "#8b949e";
-        const QString headBg = dark ? "#161b22" : "#f6f8fa";
-        const QString border = dark ? "#30363d" : "#d0d7de";
-        const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
-        const QString fg = dark ? "#e6edf3" : "#1f2328";
-        const QString css =
-            QStringLiteral(
-                ".fileblock { margin-bottom:18px; }"
-                ".fileheader { background:%1; padding:8px 12px; font-family:"
-                "monospace; border:1px solid %7; }"
-                // Status word + path + counts on the header line.
-                ".stbadge { font-weight:700; font-size:10px; margin-right:10px; }"
-                ".st-add { color:#3fb950; } .st-del { color:#f85149; }"
-                ".st-mod { color:#d29922; } .st-ren { color:#58a6ff; }"
-                ".fpath { font-weight:600; color:%8; }"
-                ".fstat { color:%2; font-size:11px; }"
-                ".sadd { color:#3fb950; font-weight:700; }"
-                ".sdel { color:#f85149; font-weight:700; }"
-                ".difftable { font-family:monospace; font-size:12px; width:100%; }"
-                ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
-                ".imgcell { width:50%; padding:10px; text-align:center; }"
-                ".imgcell img { max-width:100%; max-height:360px; }"
-                ".imgempty { color:%2; padding:60px 0; border:1px solid %7; }"
-                ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
-                // Two equal-width line-number gutters, right-aligned, with a
-                // separator rule so old/new numbers line up evenly on each side.
-                "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
-                "white-space:nowrap; background:%9; border-right:1px solid %7; }"
-                "td.code { white-space:pre; padding:0 10px; color:%8; }"
-                ".add { background:%3; } .del { background:%4; }"
-                ".hunk { color:%5; background:%6; }"
-                "td.ln.hunk { background:%6; border-right:1px solid %7; }")
-                .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg);
-        m_commitDiffView->document()->setDefaultStyleSheet(css);
+        m_commitDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
         m_commitDiffView->setHtml(diffHtml.isEmpty()
                                       ? QStringLiteral("<p style='color:#8b949e'>"
                                                        "No changes in this commit.</p>")
                                       : diffHtml);
     }
 
+    renderCommitThread(m_currentCommitHash);
     m_commitsStack->setCurrentIndex(1);
+}
+
+void MainWindow::renderCommitThread(const QString &sha)
+{
+    if (!m_commitThreadLayout)
+        return;
+    while (QLayoutItem *item = m_commitThreadLayout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    if (sha.isEmpty()) {
+        m_commitThreadLayout->addStretch();
+        return;
+    }
+    const RepositoryRecord rec =
+        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
+            : RepositoryRecord();
+    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
+                             m_userName);
+    for (const CommitComment &c : store.loadFor(sha)) {
+        const QString who = c.authorName.isEmpty() ? c.author.left(10) : c.authorName;
+        addConversationCard(
+            m_commitThreadLayout, who,
+            QStringLiteral("<b>%1</b> <span style='color:#8b949e'>commented %2</span>")
+                .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
+            c.body);
+    }
+    m_commitThreadLayout->addStretch();
+}
+
+void MainWindow::submitCommitComment()
+{
+    if (m_currentCommitHash.isEmpty() || !m_commitComposer)
+        return;
+    const QString body = m_commitComposer->markdown().trimmed();
+    if (body.isEmpty()) {
+        flashMessage(QStringLiteral("Write a comment first."));
+        return;
+    }
+    const RepositoryRecord rec =
+        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
+            : RepositoryRecord();
+    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
+                             m_userName);
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addComment(m_currentCommitHash, body, &error)) {
+            QMessageBox::warning(this, "Comment", error);
+            return;
+        }
+    } else {
+        const CommitComment c =
+            store.makeSignedComment(m_currentCommitHash, [&] {
+                CommitComment x;
+                x.body = body;
+                return x;
+            }());
+        submitCommitCommentToInbox(m_currentCommitHash, c);
+    }
+    m_commitComposer->setMarkdown(QString());
+    renderCommitThread(m_currentCommitHash);
 }
 
 void MainWindow::loadRepoInsights()
@@ -12465,7 +13444,7 @@ void MainWindow::refreshIssueList()
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
             // Brand icon for the agent that worked the issue: Claude uses the
             // "code" octicon (clay), Codex/OpenAI the "terminal" octicon (green).
-            const bool isClaude = session->provider == QLatin1String("claude");
+            const bool isClaude = agentIsClaudeProvider(session->provider);
             const QString iconName = isClaude ? "code" : "terminal";
             const QColor iconColor(isClaude ? "#d97757" : "#10a37f");
             auto *button = new QPushButton;
@@ -17501,6 +18480,11 @@ void MainWindow::refreshOpenRepoDetail()
     loadBranchesAndTags();
     loadCommits();
     reloadAgents();
+    // Issues and pull requests live on refs/heads, so a mirror fetch already
+    // brought any new ones along with the code; re-read them so a mirror node
+    // reflects fresh issues/PRs (and review conversations) without reopening.
+    reloadIssues();
+    reloadPulls();
     loadAboutSidebar();
     if (m_insightsSummary)
         loadRepoInsights();

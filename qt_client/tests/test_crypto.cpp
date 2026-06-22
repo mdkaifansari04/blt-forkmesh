@@ -1,6 +1,8 @@
+#include "../src/CommitCommentStore.h"
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/PullStore.h"
 #include "../src/RoomCrypto.h"
 
 #include <QByteArray>
@@ -126,6 +128,57 @@ int main(int argc, char *argv[])
         "37f2b6516c608aafe45958eabd5bb4c20b9c6765d1eb39a5c27b4588e566ec97";
     check(IssueStore::canonicalString(3, titleVec) == expectedTitle,
           "title-event canonical string matches the cross-language vector");
+
+    // --- PR conversation event signing -----------------------------------
+    // Pin the canonical byte format so the C++ client and the worker's
+    // verify_pull_comment_event stay byte-identical. The number is bound.
+    PullEvent pullComment;
+    pullComment.type = "comment";
+    pullComment.author = "TESTPUB";
+    pullComment.ts = 1000;
+    pullComment.body = "Looks good";
+    const QByteArray expectedPullComment =
+        "forkmesh-pull-comment-v1\ncomment\n5\nTESTPUB\n1000\n"
+        "5fc87d339144090b0ad2e192e6a6fe58e98d3a5a062467c7e62049c7d8c3db01";
+    check(PullStore::canonicalString(5, pullComment) == expectedPullComment,
+          "pull-comment canonical string matches the cross-language vector");
+
+    PullEvent pullReview;
+    pullReview.type = "review";
+    pullReview.author = "TESTPUB";
+    pullReview.ts = 2000;
+    pullReview.state = "approved";
+    pullReview.body = "LGTM";
+    const QByteArray expectedPullReview =
+        "forkmesh-pull-comment-v1\nreview\n5\nTESTPUB\n2000\n"
+        "b863bbc11dd8fea92da94a7da47f815aceeaa9418483992d0a952273894a0731";
+    check(PullStore::canonicalString(5, pullReview) == expectedPullReview,
+          "pull-review canonical string matches the cross-language vector");
+
+    PullEvent pullLine;
+    pullLine.type = "line-comment";
+    pullLine.author = "TESTPUB";
+    pullLine.ts = 2500;
+    pullLine.path = "src/x.cpp";
+    pullLine.side = "new";
+    pullLine.line = 42;
+    pullLine.body = "needs a guard";
+    const QByteArray expectedPullLine =
+        "forkmesh-pull-comment-v1\nline-comment\n5\nTESTPUB\n2500\n"
+        "a2574c2b392fd0db6b7e4b0d025d4094bb410691dca7686ddf095d63881f4985";
+    check(PullStore::canonicalString(5, pullLine) == expectedPullLine,
+          "pull line-comment canonical string matches the cross-language vector");
+
+    // --- Commit comment signing ------------------------------------------
+    CommitComment commitVec;
+    commitVec.author = "TESTPUB";
+    commitVec.ts = 3000;
+    commitVec.body = "Nice";
+    const QByteArray expectedCommit =
+        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
+        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060";
+    check(CommitCommentStore::canonicalString("abc123", commitVec) == expectedCommit,
+          "commit-comment canonical string matches the cross-language vector");
 
     // A burn-up series must reconstruct historical state, including a close
     // and a later reopening, rather than repeating today's status backwards.
@@ -282,6 +335,54 @@ int main(int argc, char *argv[])
               "re-applying the same remote open event succeeds");
         check(repo.loadAll().size() == before,
               "re-syncing a merged issue does not duplicate it");
+
+        // --- PullStore conversation round-trip ---------------------------
+        PullStore pulls(tmp.path(), QString(), &identity, "tester");
+        const int pn = pulls.createPull(
+            "A change", "Body", "main", "feature",
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n", &err);
+        check(pn == 1, "createPull returns the first PR number");
+        check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
+        check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
+        check(pulls.addLineComment(pn, "x", "new", 1, "inline note", &err),
+              "PR addLineComment succeeds");
+        QList<PullRequest> loadedPulls = pulls.loadAll();
+        check(!loadedPulls.isEmpty() && loadedPulls.first().events.size() == 3,
+              "PR conversation events round-trip from NNNN-*.md");
+        bool sawLine = false;
+        if (!loadedPulls.isEmpty())
+            for (const PullEvent &e : loadedPulls.first().events)
+                if (e.type == "line-comment" && e.path == "x" && e.side == "new" &&
+                    e.line == 1 && e.body == "inline note")
+                    sawLine = true;
+        check(sawLine, "line-comment round-trips with path/side/line");
+        check(!loadedPulls.isEmpty() &&
+                  loadedPulls.first().reviewSummary() == "approved",
+              "PR review summary folds to approved");
+
+        // A remote node files a review event via the inbox; it must append+commit.
+        PullEvent remoteReview;
+        remoteReview.type = "review";
+        remoteReview.state = "changes_requested";
+        remoteReview.body = "please fix";
+        remoteReview = pulls.makeSignedEvent(pn, remoteReview);
+        remoteReview.authorName = "reviewer-node";
+        check(pulls.applyRemoteEvent(pn, remoteReview, &err),
+              "applyRemoteEvent accepts a mirror-authored review");
+        loadedPulls = pulls.loadAll();
+        check(!loadedPulls.isEmpty() &&
+                  loadedPulls.first().reviewSummary() == "changes_requested",
+              "a later changes-requested review supersedes approval");
+
+        // --- CommitCommentStore round-trip -------------------------------
+        const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
+        CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
+        check(comments.addComment(QString::fromUtf8(head), "great commit", &err),
+              "commit addComment succeeds");
+        const QList<CommitComment> loadedComments =
+            comments.loadFor(QString::fromUtf8(head));
+        check(loadedComments.size() == 1 && loadedComments.first().body == "great commit",
+              "commit comment round-trips from commits/<sha>/NNNN-comment.md");
     }
 
     if (failures) {

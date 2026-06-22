@@ -40,8 +40,12 @@ bool runCapture(const QString &dir, const QStringList &args, QByteArray *out,
 
 QString providerTitle(const QString &provider)
 {
-    if (provider == QLatin1String("claude"))
+    if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
+    if (provider == QLatin1String("claude-api") || provider == QLatin1String("claude"))
+        return QStringLiteral("Claude API");
+    if (provider == QLatin1String("openai"))
+        return QStringLiteral("OpenAI API");
     return QStringLiteral("Codex");
 }
 
@@ -175,7 +179,8 @@ void AgentRunner::launch(Phase phase, const QString &program,
     if (!m_config.apiKeyName.isEmpty() && !m_config.apiKey.isEmpty()) {
         const QString key = m_config.apiKey.trimmed();
         env.insert(m_config.apiKeyName, key);
-        if (m_session.provider == QLatin1String("codex"))
+        if (m_session.provider == QLatin1String("codex") ||
+            m_session.provider == QLatin1String("openai"))
             env.insert(QStringLiteral("OPENAI_API_KEY"), key);
     }
     if (!m_config.model.trimmed().isEmpty())
@@ -242,7 +247,8 @@ void AgentRunner::onProcessFinished(int exitCode)
         QString message =
             QStringLiteral("Agent command exited with code %1.").arg(exitCode);
         const QString log = m_store ? m_store->readLog(m_session) : QString();
-        if (m_session.provider == QLatin1String("codex") &&
+        if ((m_session.provider == QLatin1String("codex") ||
+             m_session.provider == QLatin1String("openai")) &&
             log.contains(QStringLiteral("401 Unauthorized"), Qt::CaseInsensitive)) {
             message += QStringLiteral(
                 " OpenAI rejected the API key; rotate it and re-enter it in Settings.");
