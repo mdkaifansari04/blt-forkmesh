@@ -12974,9 +12974,19 @@ void MainWindow::showIssueComposePage(QWidget *page)
     if (!m_issueDetailStack || !page)
         return;
     removeIssueComposePage();
-    m_issueComposePage = page;
-    m_issueDetailStack->addWidget(page);
-    m_issueDetailStack->setCurrentWidget(page);
+    // Host the compose form in a scroll area so a short window scrolls instead of
+    // clipping the title/body/buttons — important on small screens. The page
+    // keeps its preferred size; scrollbars only appear when the viewport is
+    // smaller than that.
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("issueComposeScroll");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(page);
+    m_issueComposePage = scroll; // removeIssueComposePage deletes this (and page)
+    m_issueDetailStack->addWidget(scroll);
+    m_issueDetailStack->setCurrentWidget(scroll);
     if (m_issueDetail)
         m_issueDetail->setVisible(true);
     if (m_issueDetailToggle)
@@ -13161,7 +13171,10 @@ void MainWindow::promptNewIssue()
     auto *titleEdit = new QLineEdit(page);
     titleEdit->setPlaceholderText("Title");
     auto *bodyEdit = new MarkdownEditor(page);
-    bodyEdit->setMinimumHeight(430);
+    // A modest minimum keeps the window shrinkable on small screens; the editor
+    // still expands to fill the available space (it has stretch in the layout),
+    // and the compose page scrolls when the window is shorter than this.
+    bodyEdit->setMinimumHeight(200);
     bodyEdit->setPlaceholderText("Type your description here...");
 
     auto *left = new QWidget(page);
