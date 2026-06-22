@@ -217,6 +217,9 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // Show a desktop alert when an action run starts and finishes.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
 const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
+const QString kDisbursementAlertSetting = QStringLiteral("notifications/disbursement");
+const QString kSolanaLastBalanceSettingPrefix =
+    QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
@@ -2392,6 +2395,7 @@ void MainWindow::sendNodeHeartbeat()
                 pollPendingUsers();
             }
         }
+        updateNavSolanaBalance();
     });
 }
 
@@ -3835,6 +3839,16 @@ bool isLikelySolanaAddress(const QString &address)
         QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
     return re.match(address.trimmed()).hasMatch();
 }
+
+QString formatSolanaBalance(qint64 lamports)
+{
+    return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
+}
+
+QString lastSolanaBalanceSetting(const QString &address)
+{
+    return kSolanaLastBalanceSettingPrefix + address.trimmed();
+}
 }  // namespace
 
 void MainWindow::updateNodeSwitcher()
@@ -3915,11 +3929,25 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             return;
         }
         const qint64 lamports = result.value("value").toVariant().toLongLong();
-        const QString balance =
-            QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 4);
+        QSettings settings;
+        const QString lastBalanceKey = lastSolanaBalanceSetting(addr);
+        const QVariant previousValue = settings.value(lastBalanceKey);
+        const qint64 previousLamports = previousValue.toLongLong();
+        const QString balance = formatSolanaBalance(lamports);
         m_navSolanaBalance->setText(balance);
         m_navSolanaBalance->setToolTip(
             QStringLiteral("This node's Solana balance: %1").arg(balance));
+        if (previousValue.isValid() && lamports > previousLamports &&
+            QSettings().value(kDisbursementAlertSetting, true).toBool()) {
+            const QString amount = formatSolanaBalance(lamports - previousLamports);
+            QApplication::alert(this, 0);
+            postNotification(QStringLiteral("New disbursement received"),
+                             QStringLiteral("%1 added to this node's wallet. "
+                                            "New balance: %2")
+                                 .arg(amount, balance),
+                             false, QStringLiteral("emblem-default"));
+        }
+        settings.setValue(lastBalanceKey, QString::number(lamports));
     });
 }
 
@@ -4685,8 +4713,7 @@ void MainWindow::querySolanaBalance(const QString &addr, int endpointIndex)
         const qint64 lamports = result.value("value").toVariant().toLongLong();
         m_profileBalanceButton->setEnabled(true);
         m_profileBalanceButton->setText("Refresh balance");
-        m_profileBalance->setText(
-            QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9));
+        m_profileBalance->setText(formatSolanaBalance(lamports));
     });
 }
 
@@ -12822,6 +12849,16 @@ QWidget *MainWindow::buildSettingsSection()
     connect(nodeConnectAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kNodeConnectAlertSetting, enabled);
     });
+    auto *disbursementAlertCheck =
+        new QCheckBox("Show a system alert when this node receives a disbursement");
+    disbursementAlertCheck->setChecked(
+        QSettings().value(kDisbursementAlertSetting, true).toBool());
+    disbursementAlertCheck->setToolTip(
+        "Pop up a desktop notification when this node's Solana wallet balance "
+        "increases after a refresh.");
+    connect(disbursementAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kDisbursementAlertSetting, enabled);
+    });
 
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
@@ -13062,6 +13099,7 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(pushAlertCheck);
     layout->addWidget(actionAlertCheck);
     layout->addWidget(nodeConnectAlertCheck);
+    layout->addWidget(disbursementAlertCheck);
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
