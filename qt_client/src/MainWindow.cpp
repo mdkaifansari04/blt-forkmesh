@@ -6733,7 +6733,8 @@ PullStore MainWindow::pullStoreForCurrentRepo() const
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return PullStore(QString(), QString(), &m_profileIdentity, m_userName);
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord &repo =
+        writableRecordFor(m_repositories.at(m_repoDetailIndex));
     return PullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
 }
 
@@ -12162,12 +12163,33 @@ int MainWindow::issuesRepoIndex() const
     return idx;
 }
 
+const RepositoryRecord &MainWindow::writableRecordFor(
+    const RepositoryRecord &repo) const
+{
+    // Already backed by a working tree we can commit to.
+    if (!repo.localPath.trimmed().isEmpty() &&
+        QFileInfo::exists(repo.localPath + QStringLiteral("/.git")))
+        return repo;
+    // Otherwise, if we own a real working-tree copy of the same repo (e.g. the
+    // selected entry is a read-only browse/preview of a repo we host), use it so
+    // the source of truth can author locally instead of being told it's read-only.
+    for (const RepositoryRecord &r : m_repositories) {
+        if (r.previewOnly || &r == &repo)
+            continue;
+        if (r.owner == repo.owner && r.name == repo.name &&
+            !r.localPath.trimmed().isEmpty() &&
+            QFileInfo::exists(r.localPath + QStringLiteral("/.git")))
+            return r;
+    }
+    return repo;
+}
+
 IssueStore MainWindow::issueStoreForCurrentRepo() const
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return IssueStore(QString(), QString(), &m_profileIdentity, m_userName);
-    const RepositoryRecord &repo = m_repositories.at(idx);
+    const RepositoryRecord &repo = writableRecordFor(m_repositories.at(idx));
     return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
 }
 

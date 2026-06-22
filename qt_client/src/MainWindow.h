@@ -408,6 +408,12 @@ private:
     void startRefreshSpin();
     void stopRefreshSpin();
 
+    // If this node owns a writable working-tree copy of the same logical repo as
+    // `repo` (same owner/name), returns that record; else returns `repo`. Lets the
+    // source-of-truth author issues/PRs even when a read-only preview of their own
+    // repo is the one currently selected.
+    const RepositoryRecord &writableRecordFor(const RepositoryRecord &repo) const;
+
     // Issues tab
     int issuesRepoIndex() const;                 // selected repo, or -1
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
