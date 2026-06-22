@@ -191,6 +191,11 @@ private:
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateRepoPushButton();   // show pending local commits for the open repo
     void pushCurrentRepoUpstream();
+    // True when the open repo's branch tracks the ForkMesh relay (which serves
+    // clone/fetch only, no git-receive-pack). Such repos publish by syncing the
+    // served mirror from the local copy, not by a git push to the relay.
+    bool relayPublishRepo(const RepositoryRecord &repo, QString *localBranch,
+                          int *unpublished) const;
     void showChatView();           // open the chat view from the top-bar button
     void updateChatButton();       // refresh the top-bar chat unread indicator
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
@@ -580,6 +585,8 @@ private:
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
+    QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
+    QString m_topMessageRaw;              // plain text of the current toast, for copy
 
     // Setup widgets
     QLineEdit *m_nameEdit;

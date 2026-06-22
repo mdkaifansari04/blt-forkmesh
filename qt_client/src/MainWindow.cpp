@@ -3915,7 +3915,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setObjectName("topMessage");
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
+    m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_topMessage->hide();
+
+    // Copy button shown beside the toast for errors only. The toast stays up
+    // until the user copies (or dismisses) it, so a failure can't scroll away
+    // before it's been read or grabbed for a bug report.
+    m_topMessageCopy = new QPushButton(QStringLiteral("Copy"));
+    m_topMessageCopy->setObjectName("ghostButton");
+    m_topMessageCopy->setCursor(Qt::PointingHandCursor);
+    m_topMessageCopy->setToolTip(QStringLiteral("Copy this message and dismiss it"));
+    setOcticon(m_topMessageCopy, "copy", 14);
+    m_topMessageCopy->hide();
+    connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
+        if (!m_topMessageRaw.isEmpty())
+            QGuiApplication::clipboard()->setText(m_topMessageRaw);
+        if (m_topMessage)
+            m_topMessage->hide();
+        m_topMessageCopy->hide();
+    });
 
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
@@ -3977,6 +3995,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addWidget(m_breadcrumb);
     layout->addStretch();
     layout->addWidget(m_topMessage);
+    layout->addWidget(m_topMessageCopy);
     layout->addStretch();
     layout->addWidget(m_chatButton);
     layout->addWidget(m_notificationButton);
@@ -4551,6 +4570,70 @@ void MainWindow::updateRepoSwitcher()
                               QString::number(m_repoMenuEntries.size()));
 }
 
+bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
+                                  QString *localBranch, int *unpublished) const
+{
+    if (localBranch)
+        localBranch->clear();
+    if (unpublished)
+        *unpublished = 0;
+    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
+        return false;
+    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
+        return false;
+
+    // The branch must track a remote whose URL resolves to the ForkMesh relay.
+    QByteArray upstreamOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("--symbolic-full-name"),
+                        QStringLiteral("@{upstream}")},
+                       &upstreamOut, nullptr))
+        return false;
+    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
+    const int slash = upstream.indexOf('/');
+    if (slash <= 0)
+        return false;
+    QByteArray urlOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("remote"), QStringLiteral("get-url"),
+                        upstream.left(slash)},
+                       &urlOut, nullptr))
+        return false;
+    QString relayHost =
+        serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
+    if (relayHost.isEmpty())
+        relayHost = serverHost(kDefaultServerUrl);
+    if (relayHost.isEmpty() ||
+        QUrl(QString::fromUtf8(urlOut).trimmed()).host() != relayHost)
+        return false;
+
+    // Local branch + commits not yet folded into the served mirror. The mirror's
+    // HEAD commit always exists in the working copy (the mirror is fetched from
+    // it), so counting from there gives the unpublished commits.
+    QByteArray branchOut;
+    runGitCapture(repo.localPath,
+                  {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                   QStringLiteral("HEAD")},
+                  &branchOut, nullptr);
+    if (localBranch)
+        *localBranch = QString::fromUtf8(branchOut).trimmed();
+    const QString mirrorCommit =
+        mirrorBranchCommit(repo.mirrorPath, mirrorHeadBranch(repo.mirrorPath));
+    QByteArray countOut;
+    runGitCapture(repo.localPath,
+                  mirrorCommit.isEmpty()
+                      ? QStringList{QStringLiteral("rev-list"),
+                                    QStringLiteral("--count"), QStringLiteral("HEAD")}
+                      : QStringList{QStringLiteral("rev-list"),
+                                    QStringLiteral("--count"),
+                                    mirrorCommit + QStringLiteral("..HEAD")},
+                  &countOut, nullptr);
+    if (unpublished)
+        *unpublished = QString::fromUtf8(countOut).trimmed().toInt();
+    return true;
+}
+
 void MainWindow::updateRepoPushButton()
 {
     if (!m_repoPushButton)
@@ -4567,6 +4650,35 @@ void MainWindow::updateRepoPushButton()
     if (m_pushingRepos.contains(m_repoDetailIndex)) {
         m_repoPushButton->setText(QStringLiteral("Pushing..."));
         m_repoPushButton->setToolTip(QStringLiteral("Pushing local commits upstream"));
+        m_repoPushButton->show();
+        return;
+    }
+
+    // ForkMesh relay-backed repo: the relay has no git-receive-pack, so publish
+    // local commits by syncing the served mirror from this working copy.
+    QString relayBranch;
+    int unpublished = 0;
+    if (relayPublishRepo(repo, &relayBranch, &unpublished)) {
+        if (m_syncingRepos.contains(m_repoDetailIndex)) {
+            m_repoPushButton->setText(QStringLiteral("Publishing..."));
+            m_repoPushButton->setToolTip(
+                QStringLiteral("Publishing local commits to your served mirror"));
+            m_repoPushButton->show();
+            return;
+        }
+        if (unpublished <= 0)
+            return;
+        m_repoPushButton->setText(
+            QStringLiteral("Publish %1 commit%2")
+                .arg(unpublished)
+                .arg(unpublished == 1 ? QString() : QStringLiteral("s")));
+        m_repoPushButton->setToolTip(
+            QStringLiteral("Publish %1 local commit%2 from %3/%4 to your served "
+                           "mirror so the network can fetch them")
+                .arg(unpublished)
+                .arg(unpublished == 1 ? QString() : QStringLiteral("s"),
+                     repo.owner, repo.name));
+        m_repoPushButton->setEnabled(true);
         m_repoPushButton->show();
         return;
     }
@@ -4614,6 +4726,19 @@ void MainWindow::pushCurrentRepoUpstream()
     const RepositoryRecord repo = m_repositories.at(index);
     if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
         return;
+
+    // ForkMesh relay-backed repo: the relay serves clone/fetch only (no
+    // git-receive-pack), so a `git push` to it 404s ("repository not found").
+    // Publish instead by syncing the served mirror from this working copy; the
+    // host then serves the new commits and peers fetch them.
+    if (relayPublishRepo(repo, nullptr, nullptr)) {
+        logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to the "
+                                 "served mirror.")
+                      .arg(repo.owner, repo.name));
+        syncRepository(index, /*quiet=*/false);
+        updateRepoPushButton();
+        return;
+    }
 
     QByteArray upstreamOut;
     if (!runGitCapture(repo.localPath,
@@ -14606,12 +14731,15 @@ void MainWindow::flashMessage(const QString &text, bool error)
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty()) {
         m_topMessage->hide();
+        if (m_topMessageCopy)
+            m_topMessageCopy->hide();
         return;
     }
     // Green for success, red for failure; compact pill in the centre of the bar.
     const QString fg = error ? "#f85149" : "#3fb950";
     const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                 : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    m_topMessageRaw = trimmed;
     m_topMessage->setText(
         QStringLiteral("<span style='color:%1'>%2 %3</span>")
             .arg(fg, glyph, trimmed.toHtmlEscaped()));
@@ -14625,7 +14753,17 @@ void MainWindow::flashMessage(const QString &text, bool error)
                 m_topMessage->hide();
         });
     }
-    m_topMessageTimer->start(error ? 6000 : 4000);
+    // Errors persist with a Copy button until the user acts on them; successes
+    // fade on their own and need no copy affordance.
+    if (error) {
+        m_topMessageTimer->stop();
+        if (m_topMessageCopy)
+            m_topMessageCopy->show();
+    } else {
+        if (m_topMessageCopy)
+            m_topMessageCopy->hide();
+        m_topMessageTimer->start(4000);
+    }
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
