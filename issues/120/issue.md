@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 120
 title: allow for editing files in the code and give the user the option to save to new branch with a pr or commit directly to main
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
