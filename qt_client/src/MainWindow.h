@@ -449,6 +449,11 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     void submitIssueCommentToInbox(const QString &body);
+    // Mirror node path: send a signed new-issue ("open") event to the source of
+    // truth's inbox. Returns false only when there is no repo to target.
+    bool submitNewIssueToInbox(const QString &title, const QString &body,
+                               const QStringList &labels, const QString &milestone,
+                               int priority, const QStringList &assignees);
     void syncIssuesInbox();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);

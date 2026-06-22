@@ -2202,10 +2202,31 @@ async def issues_handler(env, request, owner, repo):
         )
         if count and count.get("c", 0) >= MAX_PENDING_ISSUES:
             return json_response({"error": "inbox_full"}, status=429)
+        # Issue-level metadata for a new issue (labels/milestone/priority/
+        # assignees). Not signature-bound; the owner applies it on merge. Bounded
+        # to keep a submission small and the lists sane.
+        meta_in = data.get("meta")
+        meta = {}
+        if isinstance(meta_in, dict):
+            labels = meta_in.get("labels")
+            assignees = meta_in.get("assignees")
+            try:
+                priority = int(meta_in.get("priority", 0))
+            except (TypeError, ValueError):
+                priority = 0
+            meta = {
+                "labels": [clean_string(x, 60) for x in (labels or [])][:20]
+                if isinstance(labels, list) else [],
+                "milestone": clean_string(meta_in.get("milestone", ""), 120),
+                "priority": priority if 0 <= priority <= 99 else 0,
+                "assignees": [clean_string(x, 60) for x in (assignees or [])][:20]
+                if isinstance(assignees, list) else [],
+            }
         item = {
             "number": number,
             "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
             "event": event,
+            "meta": meta,
             "submitter": clean_string(event.get("author", ""), 120),
             "submittedAt": int(Date.now()),
         }

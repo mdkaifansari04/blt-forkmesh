@@ -1182,13 +1182,31 @@ bool IssueStore::saveMilestones(const QList<IssueMilestone> &milestones, QString
 // ---- Cross-user sync (merge an inbound signed event) -----------------------
 
 bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
-                                  const QString &titleIfNew, QString *error)
+                                  const QString &titleIfNew, QString *error,
+                                  const RemoteIssueMeta &meta)
 {
     if (!canWrite())
         return false;
 
     Issue issue;
-    const bool exists = readIssueFile(number, issue);
+    bool exists = readIssueFile(number, issue);
+    // A new-issue ("open") submission whose proposed number is already taken by a
+    // different issue (a mirror raced ahead, or numbered against a stale view):
+    // assign the next free number so we never staple a second open event onto an
+    // existing issue. Idempotent re-syncs of the same event are caught below.
+    if (exists && ev.type == "open" && !ev.id.isEmpty()) {
+        bool sameOpen = false;
+        for (const IssueEvent &existing : std::as_const(issue.events))
+            if (existing.id == ev.id) {
+                sameOpen = true;
+                break;
+            }
+        if (!sameOpen) {
+            number = nextNumber();
+            exists = false;
+            issue = Issue();
+        }
+    }
     if (!exists) {
         issue = Issue();
         issue.number = number;
@@ -1197,6 +1215,11 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         issue.createdAt = ev.ts;
         issue.author = ev.author;
         issue.authorName = ev.authorName;
+        // Apply vouched issue-level metadata supplied with a new submission.
+        issue.labels = meta.labels;
+        issue.milestone = meta.milestone;
+        issue.priority = qBound(0, meta.priority, 99);
+        issue.assignees = meta.assignees;
         if (ev.type == "open") {
             issue.events.append(ev);
             recomputeMetadata(issue);
