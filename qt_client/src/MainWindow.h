@@ -432,9 +432,11 @@ private:
     void deleteCurrentIssue();
     void editIssueLabels();
     void editIssueMilestone();
+    void editIssuePriority();
     void editIssueAssignees();
     void saveIssueLabelsInline();
     void saveIssueMilestoneInline();
+    void saveIssuePriorityInline();
     void saveIssueAssigneesInline();
     void cancelIssueSidebarEditors();
     void updateIssueActionState();
@@ -859,12 +861,15 @@ private:
     QLabel *m_issueAssigneesValue = nullptr;
     QLabel *m_issueLabelsValue = nullptr;
     QLabel *m_issueMilestoneValue = nullptr;
+    QLabel *m_issuePriorityValue = nullptr;
     QStackedWidget *m_issueAssigneesStack = nullptr;
     QStackedWidget *m_issueLabelsStack = nullptr;
     QStackedWidget *m_issueMilestoneStack = nullptr;
+    QStackedWidget *m_issuePriorityStack = nullptr;
     QLineEdit *m_issueAssigneesEdit = nullptr;
     QLineEdit *m_issueLabelsEdit = nullptr;
     QComboBox *m_issueMilestoneEdit = nullptr;
+    QComboBox *m_issuePriorityEdit = nullptr;
     QScrollArea *m_issueThreadScroll = nullptr;
     QWidget *m_issueThreadContainer = nullptr;
     QVBoxLayout *m_issueThreadLayout = nullptr;
@@ -879,6 +884,7 @@ private:
     QPushButton *m_issueCloseButton = nullptr;
     QPushButton *m_issueLabelsButton = nullptr;
     QPushButton *m_issueMilestoneButton = nullptr;
+    QPushButton *m_issuePriorityButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;

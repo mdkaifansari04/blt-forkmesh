@@ -198,23 +198,27 @@ int main(int argc, char *argv[])
 
         QString err;
         const int n = repo.createIssue("Round trip", "Hello **body**",
-                                       {"bug"}, "v1", {}, {}, &err);
+                                       {"bug"}, "v1", 7, {}, {}, &err);
         check(n == 1, "createIssue returns the first issue number");
         QList<Issue> loaded = repo.loadAll();
         check(loaded.size() == 1 && loaded.first().title == "Round trip" &&
                   loaded.first().labels.contains("bug") &&
-                  loaded.first().milestone == "v1",
-              "issue loads back with title, label and milestone");
+                  loaded.first().milestone == "v1" &&
+                  loaded.first().priority == 7,
+              "issue loads back with title, label, milestone and priority");
         check(!loaded.isEmpty() && loaded.first().events.first().body == "Hello **body**",
               "open-event body round-trips from issue.md frontmatter");
 
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
         check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
+        check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
               "assignAgent succeeds");
         check(repo.assignAgent(n, QString(), 0, false, "cleared", &err),
               "assignAgent clears the issue agent");
         loaded = repo.loadAll();
+        check(!loaded.isEmpty() && loaded.first().priority == 3,
+              "priority event folds into issue metadata");
         bool sawComment = false;
         bool sawAgentAssign = false;
         bool sawAgentClear = false;

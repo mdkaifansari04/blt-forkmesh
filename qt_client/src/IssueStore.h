@@ -11,7 +11,7 @@ class ForkMeshIdentity;
 // different fields (see issues/README.md). Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
-    QString type;          // open | comment | edit | status | labels | milestone | assignees | agent | delete
+    QString type;          // open | comment | edit | status | labels | milestone | priority | assignees | agent | delete
     QString id;
     QString author;        // signer pubkey (base64url)
     QString authorName;
@@ -24,6 +24,7 @@ struct IssueEvent {
     QString status;        // status: open|closed
     QStringList labels;    // labels
     QString milestone;     // milestone (empty = none)
+    int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
     QStringList assignees; // assignees
     QString agentProvider; // agent: codex|claude
     int agentSessionId = 0; // agent
@@ -42,6 +43,7 @@ struct Issue {
     QString status = "open";
     QStringList labels;
     QString milestone;
+    int priority = 0; // 1 (highest) through 99 (lowest), 0 = unset
     QStringList assignees;
     qint64 createdAt = 0;
     QString author;
@@ -90,6 +92,7 @@ public:
     // label/milestone def files when relevant), then commits the issues/ folder.
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
+                    int priority,
                     const QStringList &assignees,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
     bool addComment(int number, const QString &body,
@@ -107,6 +110,7 @@ public:
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
+    bool setPriority(int number, int priority, QString *error = nullptr);
     bool setAssignees(int number, const QStringList &assignees, QString *error = nullptr);
     bool assignAgent(int number, const QString &provider, int sessionId,
                      bool createPr, const QString &status, QString *error = nullptr);

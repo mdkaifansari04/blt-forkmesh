@@ -216,6 +216,8 @@ QJsonObject IssueEvent::toJson() const
         obj.insert("labels", fromStringList(labels));
     if (type == "milestone")
         obj.insert("milestone", milestone);
+    if (type == "priority")
+        obj.insert("priority", priority);
     if (type == "assignees")
         obj.insert("assignees", fromStringList(assignees));
     if (type == "agent") {
@@ -242,6 +244,7 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     ev.status = obj.value("status").toString();
     ev.labels = toStringList(obj.value("labels").toArray());
     ev.milestone = obj.value("milestone").toString();
+    ev.priority = obj.value("priority").toInt();
     ev.assignees = toStringList(obj.value("assignees").toArray());
     ev.agentProvider = obj.value("agentProvider").toString();
     ev.agentSessionId = obj.value("agentSessionId").toInt();
@@ -260,7 +263,8 @@ QJsonObject Issue::toJson() const
         eventsArray.append(ev.toJson());
     return {{"schema", "forkmesh-issue-v1"}, {"number", number}, {"title", title},
             {"status", status}, {"labels", fromStringList(labels)},
-            {"milestone", milestone}, {"assignees", fromStringList(assignees)},
+            {"milestone", milestone}, {"priority", priority},
+            {"assignees", fromStringList(assignees)},
             {"createdAt", double(createdAt)}, {"author", author},
             {"authorName", authorName}, {"events", eventsArray}};
 }
@@ -273,6 +277,7 @@ Issue Issue::fromJson(const QJsonObject &obj)
     issue.status = obj.value("status").toString("open");
     issue.labels = toStringList(obj.value("labels").toArray());
     issue.milestone = obj.value("milestone").toString();
+    issue.priority = obj.value("priority").toInt();
     issue.assignees = toStringList(obj.value("assignees").toArray());
     issue.createdAt = qint64(obj.value("createdAt").toDouble());
     issue.author = obj.value("author").toString();
@@ -330,6 +335,8 @@ QString IssueStore::contentForSigning(const IssueEvent &ev)
         return ev.labels.join(",");
     if (ev.type == "milestone")
         return ev.milestone;
+    if (ev.type == "priority")
+        return QString::number(ev.priority);
     if (ev.type == "assignees")
         return ev.assignees.join(",");
     if (ev.type == "agent")
@@ -391,6 +398,8 @@ void appendEventFields(QStringList &lines, const IssueEvent &ev)
         lines << "labels: " + serializeList(ev.labels);
     if (ev.type == "milestone")
         lines << "milestone: " + ev.milestone;
+    if (ev.type == "priority")
+        lines << "priority: " + QString::number(ev.priority);
     if (ev.type == "assignees")
         lines << "assignees: " + serializeList(ev.assignees);
     if (ev.type == "agent") {
@@ -417,6 +426,7 @@ IssueEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.status = fm.get("status");
     ev.labels = fm.list("labels");
     ev.milestone = fm.get("milestone");
+    ev.priority = int(fm.num("priority"));
     ev.assignees = fm.list("assignees");
     ev.agentProvider = fm.get("agentProvider");
     ev.agentSessionId = fm.num("agentSessionId");
@@ -467,6 +477,7 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
     out.status = fm.values.contains("status") ? fm.get("status") : QStringLiteral("open");
     out.labels = fm.list("labels");
     out.milestone = fm.get("milestone");
+    out.priority = int(fm.num("priority"));
     out.assignees = fm.list("assignees");
     out.createdAt = fm.num("createdAt");
     out.author = fm.get("author");
@@ -559,6 +570,7 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
                                                     : QStringLiteral("open");
         issue.labels = fm.list("labels");
         issue.milestone = fm.get("milestone");
+        issue.priority = int(fm.num("priority"));
         issue.assignees = fm.list("assignees");
         issue.createdAt = fm.num("createdAt");
         issue.author = fm.get("author");
@@ -658,6 +670,7 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
     lines << "status: " + issue.status;
     lines << "labels: " + serializeList(issue.labels);
     lines << "milestone: " + issue.milestone;
+    lines << "priority: " + QString::number(issue.priority);
     lines << "assignees: " + serializeList(issue.assignees);
     lines << "createdAt: " + QString::number(issue.createdAt);
     lines << "author: " + issue.author;
@@ -706,6 +719,8 @@ void IssueStore::recomputeMetadata(Issue &issue) const
             issue.labels = ev.labels;
         else if (ev.type == "milestone")
             issue.milestone = ev.milestone;
+        else if (ev.type == "priority")
+            issue.priority = ev.priority;
         else if (ev.type == "assignees")
             issue.assignees = ev.assignees;
         else if (ev.type == "vote" && !ev.author.isEmpty())
@@ -778,6 +793,7 @@ int IssueStore::nextNumber() const
 
 int IssueStore::createIssue(const QString &title, const QString &body,
                             const QStringList &labels, const QString &milestone,
+                            int priority,
                             const QStringList &assignees,
                             const QStringList &attachmentSrcPaths, QString *error)
 {
@@ -803,6 +819,7 @@ int IssueStore::createIssue(const QString &title, const QString &body,
     issue.status = "open";
     issue.labels = labels;
     issue.milestone = milestone;
+    issue.priority = qBound(0, priority, 99);
     issue.assignees = assignees;
     issue.createdAt = ev.ts;
     issue.author = ev.author;
@@ -960,6 +977,34 @@ bool IssueStore::setMilestone(int number, const QString &milestone, QString *err
     if (!writeIssueFile(issue, error))
         return false;
     return commit(QStringLiteral("issue #%1: milestone").arg(number), error);
+}
+
+bool IssueStore::setPriority(int number, int priority, QString *error)
+{
+    if (!canWrite())
+        return false;
+    if (priority < 0 || priority > 99) {
+        if (error)
+            *error = QStringLiteral(
+                "Priority must be between 1 and 99, or 0 to clear it.");
+        return false;
+    }
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "priority";
+    ev.priority = priority;
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    recomputeMetadata(issue);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: priority %2")
+                      .arg(number)
+                      .arg(priority == 0 ? QStringLiteral("cleared")
+                                         : QString::number(priority)),
+                  error);
 }
 
 bool IssueStore::setAssignees(int number, const QStringList &assignees, QString *error)

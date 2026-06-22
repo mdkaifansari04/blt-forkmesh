@@ -38,7 +38,7 @@ public:
     void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
-    void setMirroredRepos(const QStringList &ownerNames) override;
+    void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
     void notifyMirrorUpdated(const QString &ownerName) override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
@@ -50,6 +50,7 @@ private:
         QString platform;
         QString version;
         QStringList mirrors;
+        QList<MirrorAdvert> mirrorDetails; // per-repo HEAD info advertised by the peer
         qint64 lastSeenMs = 0;
         bool online = true;
     };
@@ -92,7 +93,7 @@ private:
     QString m_solanaAddress;
     QString m_platform;
     QString m_version;
-    QStringList m_mirroredRepos; // "owner/name" advertised to other nodes
+    QList<MirrorAdvert> m_mirroredRepos; // repos + HEAD advertised to other nodes
     QString m_nodeId;
     // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so
     // members are only recalled for the exact same encrypted room.

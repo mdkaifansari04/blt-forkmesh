@@ -6,6 +6,16 @@
 #include <QString>
 #include <QStringList>
 
+// One repo a node mirrors, with the HEAD that node currently holds. Advertised
+// to peers so the network can show which nodes mirror a given repo and how fresh
+// each one's copy is (a lagging node reveals itself by an older commit/time).
+struct MirrorAdvert {
+    QString ownerName;    // "owner/name"
+    QString commit;       // full HEAD commit hash of the node's mirror (may be empty)
+    QString branch;       // branch HEAD points to
+    qint64 updatedMs = 0; // when the node last synced this repo from its source
+};
+
 // A chat participant as shown in the member list. `id` is the stable node id
 // used to address direct messages.
 struct MemberInfo {
@@ -19,6 +29,9 @@ struct MemberInfo {
     QString platform;    // linux | macos | windows | android | ios | web
     QString version;     // ForkMesh app version advertised by the node
     QStringList mirrors; // "owner/name" of repos this node mirrors
+    // Per-repo HEAD detail for the repos in `mirrors` (same owner/name keys).
+    // Carried alongside `mirrors` so older peers that only read names still work.
+    QList<MirrorAdvert> mirrorDetails;
 };
 
 // A single chat message delivered to the UI. `conversation` is either a
@@ -71,8 +84,9 @@ public:
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;
-    // Advertise to other nodes which repos ("owner/name") this node mirrors.
-    virtual void setMirroredRepos(const QStringList &ownerNames) { Q_UNUSED(ownerNames); }
+    // Advertise to other nodes which repos this node mirrors, each with the
+    // HEAD commit/branch it currently holds so peers can see mirror freshness.
+    virtual void setMirroredRepos(const QList<MirrorAdvert> &repos) { Q_UNUSED(repos); }
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
     virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
