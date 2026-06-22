@@ -965,8 +965,8 @@ private:
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
-    QPushButton *m_issueAssignCodexButton = nullptr;
-    QPushButton *m_issueAssignClaudeButton = nullptr;
+    QComboBox *m_issueAgentProvider = nullptr;   // Codex | Claude Code | OpenAI | Claude API
+    QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;
     QList<Issue> m_currentIssues;
     QList<IssueLabel> m_currentLabels;

@@ -273,7 +273,8 @@ const QString kLegacyClaudeCommand =
 // "Claude Code" provider: drive the installed `claude` CLI (subscription/login
 // auth) rather than the bundled Anthropic-API script used by "Claude API".
 const QString kClaudeCodeCliCommand =
-    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
+    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions "
+                   "< /dev/null");
 constexpr int kNetworkLogLimit = 2000;
 
 // Provider family helper: the Anthropic-backed providers ("Claude Code" CLI and
@@ -5876,26 +5877,35 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAgentValue->setObjectName("statusLine");
     m_issueAgentValue->setWordWrap(true);
     m_issueAgentValue->setTextFormat(Qt::RichText);
-    m_issueAssignCodexButton = makeEditorButton("Assign to Codex", "ghostButton");
-    m_issueAssignClaudeButton =
-        makeEditorButton("Assign to Claude Code", "ghostButton");
+    // The same four ways to run an agent as the issue-list quick-add: two
+    // subscription/login CLIs (Codex, Claude Code) and two API-key providers
+    // (OpenAI API, Claude API).
+    m_issueAgentProvider = new QComboBox(meta);
+    m_issueAgentProvider->addItem(QStringLiteral("Codex"), QStringLiteral("codex"));
+    m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                  QStringLiteral("claude-code"));
+    m_issueAgentProvider->addItem(QStringLiteral("OpenAI API"),
+                                  QStringLiteral("openai"));
+    m_issueAgentProvider->addItem(QStringLiteral("Claude API"),
+                                  QStringLiteral("claude-api"));
+    m_issueAgentProvider->setToolTip("Which agent to run on this issue");
+    m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
     m_issueAgentCreatePrCheck->setToolTip(
         "If the agent produces a patch, create a ForkMesh pull request from it.");
     m_issueAgentViewButton = makeEditorButton("View session", "primaryButton");
     m_issueAgentViewButton->hide();
-    setOcticon(m_issueAssignCodexButton, "terminal", 15);
-    setOcticon(m_issueAssignClaudeButton, "code", 15);
+    setOcticon(m_issueAssignAgentButton, "rocket", 15);
     setOcticon(m_issueAgentViewButton, "chevron-right", 15);
     agentLayout->addWidget(m_issueAgentValue);
-    agentLayout->addWidget(m_issueAssignCodexButton);
-    agentLayout->addWidget(m_issueAssignClaudeButton);
+    agentLayout->addWidget(m_issueAgentProvider);
+    agentLayout->addWidget(m_issueAssignAgentButton);
     agentLayout->addWidget(m_issueAgentCreatePrCheck);
     agentLayout->addWidget(m_issueAgentViewButton, 0, Qt::AlignLeft);
-    connect(m_issueAssignCodexButton, &QPushButton::clicked, this,
-            [this] { assignIssueToAgent(QStringLiteral("codex")); });
-    connect(m_issueAssignClaudeButton, &QPushButton::clicked, this,
-            [this] { assignIssueToAgent(QStringLiteral("claude")); });
+    connect(m_issueAssignAgentButton, &QPushButton::clicked, this, [this] {
+        if (m_issueAgentProvider)
+            assignIssueToAgent(m_issueAgentProvider->currentData().toString());
+    });
     connect(m_issueAgentViewButton, &QPushButton::clicked, this,
             &MainWindow::openAgentSessionFromIssue);
 
@@ -9392,10 +9402,11 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     if (provider == QLatin1String("claude-code")) {
-        // Claude Code: the installed `claude` CLI using its own login/auth.
+        // Claude Code: the installed `claude` CLI using its own claude.ai login.
+        // Deliberately no API key — even if one is saved in Settings — so the CLI
+        // uses the subscription login (AgentRunner::launch strips any inherited
+        // ANTHROPIC_API_KEY for this provider).
         config.command = kClaudeCodeCliCommand;
-        config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
-        config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
     } else if (provider == QLatin1String("claude-api") ||
                provider == QLatin1String("claude")) {
         // Claude API: bundled Python script talking to api.anthropic.com.
@@ -9505,10 +9516,14 @@ void MainWindow::continueSelectedAgentSession()
     m_agentStore->appendLog(
         *session,
         QStringLiteral("\n==> Session continued from ForkMesh."));
-    if (!m_agentQueue.contains(session->id))
-        m_agentQueue.append(session->id);
+    // Capture the id before reloadAgents() rebuilds m_agentSessions, which frees
+    // the backing array and leaves `session` dangling (a use-after-free crash if
+    // dereferenced afterwards).
+    const int sessionId = session->id;
+    if (!m_agentQueue.contains(sessionId))
+        m_agentQueue.append(sessionId);
     reloadAgents();
-    showAgentSession(session->id);
+    showAgentSession(sessionId);
     processAgentQueue();
 }
 
@@ -14199,10 +14214,12 @@ void MainWindow::updateIssueActionState()
                            m_issueMilestoneButton, m_issuePriorityButton,
                            m_issueAssigneesButton,
                            m_issueDeleteButton, m_issueAttachButton,
-                           m_issueAssignCodexButton, m_issueAssignClaudeButton}) {
+                           m_issueAssignAgentButton}) {
         if (b)
             b->setEnabled(writable && haveIssue);
     }
+    if (m_issueAgentProvider)
+        m_issueAgentProvider->setEnabled(writable && haveIssue);
     if (m_issueAgentCreatePrCheck)
         m_issueAgentCreatePrCheck->setEnabled(writable && haveIssue);
     if (m_issueAgentViewButton)

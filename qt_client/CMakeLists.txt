@@ -91,4 +91,18 @@ if(FORKMESH_BUILD_TESTS)
     if(APPLE)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
+
+    # Register with CTest so the suite runs independently of the app:
+    #   ctest --test-dir build            (runs the already-built binary)
+    #   cmake --build build --target check (builds the tests, then runs them)
+    # The headless smoke tests need an offscreen Qt platform.
+    enable_testing()
+    add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
+    set_tests_properties(forkmesh-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_custom_target(check
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL)
+    add_dependencies(check forkmesh-tests)
 endif()
