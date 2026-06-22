@@ -230,9 +230,11 @@ def _ws_attr(ws, name, default=None):
     return default if value is None else value
 
 
-def json_response(data, status=200, cache_seconds=None):
+def json_response(data, status=200, cache_seconds=None, cache_control=None):
     headers = {"content-type": "application/json; charset=utf-8"}
-    if cache_seconds is not None:
+    if cache_control is not None:
+        headers["cache-control"] = cache_control
+    elif cache_seconds is not None:
         # Lets both the Cloudflare edge cache (via the Cache API) and the browser
         # reuse this response for cache_seconds, collapsing repeated polls.
         headers["cache-control"] = "public, max-age=%d" % cache_seconds
@@ -565,7 +567,8 @@ async def install_source(env):
 
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
-                             status=503, cache_seconds=10)
+                             status=503,
+                             cache_control="no-store, max-age=0, must-revalidate")
 
     start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
@@ -589,7 +592,7 @@ async def install_source(env):
     return json_response(
         {"ok": True, "node": best["node"], "repo": "forkmesh",
          "totalMinutes": best["totalMinutes"]},
-        cache_seconds=30,
+        cache_control="no-store, max-age=0, must-revalidate",
     )
 
 
