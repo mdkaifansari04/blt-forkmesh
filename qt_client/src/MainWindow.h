@@ -183,6 +183,7 @@ private:
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
+    void showNodesWindow();        // full window listing nodes, status, earnings
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
@@ -949,6 +950,10 @@ private:
     QTimer *m_homeStatsTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+    // Until this moment, "node connected" alerts are suppressed: the roster
+    // arrives incrementally right after we connect, so without a grace window
+    // every node that was already online would pop a notification on startup.
+    qint64 m_nodeAlertGraceUntilMs = 0;
 
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;

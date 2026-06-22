@@ -1707,6 +1707,37 @@ bool runGitCaptureWithEnv(const QString &dir, const QStringList &args,
     return true;
 }
 
+// Drop refs outside refs/heads/* and refs/tags/* from a bare mirror. Tool refs
+// (refs/codex/*, refs/remotes/*, refs/pull/*, ...) churn on active repos; once
+// advertised by our host they make peers' clones want refs that vanish, failing
+// the whole upload-pack with "not our ref" (HTTP 502). Branches and tags carry
+// everything we serve (issues and pulls live in refs/heads), so pruning the
+// rest keeps the mirror serviceable. Best-effort: never blocks a sync.
+void pruneNonStableMirrorRefs(const QString &mirrorPath)
+{
+    QByteArray out;
+    if (!runGitCapture(mirrorPath, {"for-each-ref", "--format=%(refname)"}, &out,
+                       nullptr))
+        return;
+    QByteArray deletions;
+    for (const QByteArray &line : out.split('\n')) {
+        const QByteArray ref = line.trimmed();
+        if (ref.isEmpty() || ref.startsWith("refs/heads/") ||
+            ref.startsWith("refs/tags/"))
+            continue;
+        deletions += "delete " + ref + "\n";
+    }
+    if (deletions.isEmpty())
+        return;
+    QProcess process;
+    process.start("git", {"-C", mirrorPath, "update-ref", "--stdin"});
+    if (!process.waitForStarted(4000))
+        return;
+    process.write(deletions);
+    process.closeWriteChannel();
+    process.waitForFinished(8000);
+}
+
 bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteArray *out,
                           QString *err)
 {
@@ -2386,6 +2417,10 @@ void MainWindow::startSession()
     if (m_backend) {
         if (m_connectedAtMs <= 0)
             m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
+        // Stay quiet about node connections while the initial roster settles, so
+        // a restart doesn't fire an alert for every node that is already online.
+        m_nodeAlertGraceUntilMs =
+            QDateTime::currentMSecsSinceEpoch() + 12000;
         // Broadcast the generated identicon when no custom avatar is set, so
         // peers always see something on-brand for this node.
         m_backend->setAvatar(effectiveAvatar());
@@ -3850,10 +3885,15 @@ QWidget *MainWindow::buildBreadcrumb()
             openServerWebsite(m_activeServer);
         }
     });
-    // Live connection indicator, pinned to the top-right of the window.
+    // Live connection indicator, pinned to the top-right of the window. Clicking
+    // it opens the full nodes window (status, earnings, per-node actions).
     m_connectionStatus = new QLabel;
     m_connectionStatus->setObjectName("connectionStatus");
     m_connectionStatus->setTextFormat(Qt::RichText);
+    m_connectionStatus->setCursor(Qt::PointingHandCursor);
+    m_connectionStatus->setToolTip("Show all nodes on this relay");
+    connect(m_connectionStatus, &QLabel::linkActivated, this,
+            [this](const QString &) { showNodesWindow(); });
 
     m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
     m_notificationButton->setObjectName("notificationButton");
@@ -3980,8 +4020,10 @@ void MainWindow::updateConnectionStatus()
         dot = QString::fromUtf8("\xE2\x97\x8B");
         text = QStringLiteral("Offline");
     }
+    // The whole pill is a link so a click anywhere opens the nodes window.
     m_connectionStatus->setText(
-        QStringLiteral("<span style='color:%1'>%2</span> %3")
+        QStringLiteral("<a href='nodes' style='text-decoration:none; color:%1'>"
+                       "<span style='color:%1'>%2</span> %3</a>")
             .arg(color, dot, text.toHtmlEscaped()));
 }
 
@@ -4296,6 +4338,191 @@ void MainWindow::showNodeMenu()
 
     menu.exec(m_nodeMenuButton->mapToGlobal(
         QPoint(0, m_nodeMenuButton->height())));
+}
+
+void MainWindow::showNodesWindow()
+{
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("nodesWindow");
+    dialog->setWindowTitle(QStringLiteral("Network nodes"));
+    dialog->setMinimumSize(560, 520);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *outer = new QVBoxLayout(dialog);
+    outer->setContentsMargins(16, 16, 16, 16);
+    outer->setSpacing(10);
+
+    auto *heading = new QLabel;
+    heading->setObjectName("nodesWindowHeading");
+    heading->setTextFormat(Qt::RichText);
+    outer->addWidget(heading);
+
+    auto *scroll = new QScrollArea(dialog);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *listHost = new QWidget;
+    auto *listLayout = new QVBoxLayout(listHost);
+    listLayout->setContentsMargins(0, 0, 0, 0);
+    listLayout->setSpacing(8);
+    listLayout->addStretch();
+    scroll->setWidget(listHost);
+    outer->addWidget(scroll, 1);
+
+    const bool dark = currentThemeIsDark();
+    const QString cardBg = dark ? "#161b22" : "#ffffff";
+    const QString cardBorder = dark ? "#30363d" : "#d0d7de";
+    const QString subFg = dark ? "#8b949e" : "#57606a";
+
+    // Rebuildable so a delete reflects immediately without reopening.
+    auto populate = std::make_shared<std::function<void()>>();
+    *populate = [this, listLayout, heading, dialog, cardBg, cardBorder, subFg,
+                 populate] {
+        // Clear existing cards (keep the trailing stretch at the end).
+        while (listLayout->count() > 1) {
+            QLayoutItem *item = listLayout->takeAt(0);
+            if (item->widget())
+                item->widget()->deleteLater();
+            delete item;
+        }
+
+        QList<MemberInfo> nodes = m_homeRoster;
+        std::sort(nodes.begin(), nodes.end(), [](const MemberInfo &a,
+                                                 const MemberInfo &b) {
+            if (a.self != b.self)
+                return a.self; // you first
+            if (a.online != b.online)
+                return a.online; // then online
+            return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+        });
+
+        int online = 0;
+        for (const MemberInfo &m : nodes)
+            if (m.online || m.self)
+                ++online;
+        heading->setText(
+            QStringLiteral("<b>%1</b> node%2 \xC2\xB7 <span style='color:#3fb950'>"
+                           "%3 online</span>")
+                .arg(nodes.size())
+                .arg(nodes.size() == 1 ? "" : "s")
+                .arg(online));
+
+        if (nodes.isEmpty()) {
+            auto *empty = new QLabel(QStringLiteral("No nodes on this relay yet."));
+            empty->setStyleSheet(QStringLiteral("color:%1; padding:24px;").arg(subFg));
+            empty->setAlignment(Qt::AlignCenter);
+            listLayout->insertWidget(0, empty);
+            return;
+        }
+
+        for (const MemberInfo &node : nodes) {
+            auto *card = new QWidget;
+            card->setObjectName("nodeCard");
+            card->setStyleSheet(
+                QStringLiteral("#nodeCard { background:%1; border:1px solid %2; "
+                               "border-radius:10px; }")
+                    .arg(cardBg, cardBorder));
+            auto *row = new QHBoxLayout(card);
+            row->setContentsMargins(12, 12, 12, 12);
+            row->setSpacing(12);
+
+            // Icon: real avatar if known, else a generated tile.
+            QPixmap avatar = m_avatars.value(node.id);
+            if (avatar.isNull())
+                avatar = letterFavicon(node.name);
+            auto *icon = new QLabel;
+            icon->setPixmap(roundedRectPixmap(avatar, 48, 12));
+            icon->setFixedSize(48, 48);
+            row->addWidget(icon, 0, Qt::AlignTop);
+
+            // Identity + every detail we hold about this node.
+            auto *info = new QVBoxLayout;
+            info->setSpacing(3);
+            const bool isOnline = node.self ? (m_backend != nullptr) : node.online;
+            auto *title = new QLabel(
+                QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> "
+                               "<b>%2</b>%3")
+                    .arg(isOnline ? "#3fb950" : "#8b949e",
+                         node.name.toHtmlEscaped(),
+                         node.self ? " <span style='color:#8b949e'>(you)</span>"
+                                   : QString()));
+            title->setTextFormat(Qt::RichText);
+            info->addWidget(title);
+
+            QStringList lines;
+            lines << QStringLiteral("Status: %1")
+                         .arg(isOnline ? "Online" : "Offline");
+            if (!node.platform.isEmpty())
+                lines << QStringLiteral("Platform: %1").arg(node.platform.toHtmlEscaped());
+            if (!node.version.isEmpty())
+                lines << QStringLiteral("Version: %1").arg(node.version.toHtmlEscaped());
+            lines << QStringLiteral("Earnings: %1")
+                         .arg(node.solanaBalance.trimmed().isEmpty()
+                                  ? QStringLiteral("\xE2\x80\x94")
+                                  : node.solanaBalance.trimmed().toHtmlEscaped() +
+                                        " SOL");
+            if (!node.solanaAddress.trimmed().isEmpty())
+                lines << QStringLiteral("Solana: %1")
+                             .arg(node.solanaAddress.trimmed().toHtmlEscaped());
+            lines << QStringLiteral("Mirrors: %1")
+                         .arg(node.mirrors.isEmpty()
+                                  ? QStringLiteral("none")
+                                  : node.mirrors.join(", ").toHtmlEscaped());
+            if (!node.id.isEmpty())
+                lines << QStringLiteral("Node id: %1")
+                             .arg(node.id.left(16).toHtmlEscaped() +
+                                  (node.id.size() > 16 ? "\xE2\x80\xA6" : ""));
+            if (!node.note.trimmed().isEmpty())
+                lines << node.note.trimmed().toHtmlEscaped();
+
+            auto *details = new QLabel(lines.join("<br>"));
+            details->setTextFormat(Qt::RichText);
+            details->setWordWrap(true);
+            details->setStyleSheet(QStringLiteral("color:%1; font-size:12px;").arg(subFg));
+            details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            info->addWidget(details);
+            row->addLayout(info, 1);
+
+            // Per-node actions: open the profile, or forget the node.
+            auto *actions = new QVBoxLayout;
+            actions->setSpacing(6);
+            auto *profileBtn = new QPushButton(QStringLiteral("Profile"));
+            profileBtn->setCursor(Qt::PointingHandCursor);
+            const QString nid = node.id;
+            const QString nname = node.name;
+            connect(profileBtn, &QPushButton::clicked, dialog, [this, nid, nname] {
+                showNodeProfile(nid, nname);
+            });
+            actions->addWidget(profileBtn);
+            if (!node.self && !node.id.isEmpty()) {
+                auto *delBtn = new QPushButton(QStringLiteral("Delete"));
+                delBtn->setCursor(Qt::PointingHandCursor);
+                delBtn->setObjectName("dangerButton");
+                connect(delBtn, &QPushButton::clicked, dialog,
+                        [this, nid, nname, populate] {
+                            if (QMessageBox::question(
+                                    nullptr, QStringLiteral("Delete node"),
+                                    QStringLiteral("Forget %1? It reappears if the "
+                                                   "node announces itself again.")
+                                        .arg(nname)) != QMessageBox::Yes)
+                                return;
+                            removeChatMember(nid, nname);
+                            (*populate)();
+                        });
+                actions->addWidget(delBtn);
+            }
+            actions->addStretch();
+            row->addLayout(actions, 0);
+
+            listLayout->insertWidget(listLayout->count() - 1, card);
+        }
+    };
+    (*populate)();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    outer->addWidget(buttons);
+
+    dialog->show();
 }
 
 void MainWindow::updateRepoSwitcher()
@@ -14370,6 +14597,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         if (m.online && !m.id.isEmpty())
             previouslyOnline.insert(m.id);
     if (!firstRoster &&
+        QDateTime::currentMSecsSinceEpoch() >= m_nodeAlertGraceUntilMs &&
         QSettings().value(kNodeConnectAlertSetting, true).toBool()) {
         // Never notify about our own node coming online. The roster's "self"
         // flag isn't always set (e.g. on reconnect), so also match our own node
@@ -15916,11 +16144,20 @@ void MainWindow::syncRepository(int index, bool quiet)
     const QString beforeHeadBranch = mirrorHeadBranch(repo.mirrorPath);
     const QString beforeHeadCommit =
         mirrorBranchCommit(repo.mirrorPath, beforeHeadBranch);
-    const QStringList args = hasMirror
-                                 ? QStringList{"-C", repo.mirrorPath,
-                                               "fetch", "--prune"}
-                                 : QStringList{"clone", "--mirror",
-                                               source, repo.mirrorPath};
+    // Mirror only the stable namespaces (branches + tags). Tool-managed refs
+    // like refs/codex/* churn constantly on active repos: a client that wants a
+    // ref which vanished between the advertisement and the pack negotiation gets
+    // "not our ref" and the whole upload-pack fails (HTTP 502 -> "host
+    // temporarily unavailable"). Issues and pull requests live in refs/heads, so
+    // limiting to heads/tags keeps everything we serve while dropping the churn.
+    static const QStringList kStableRefspecs = {
+        QStringLiteral("+refs/heads/*:refs/heads/*"),
+        QStringLiteral("+refs/tags/*:refs/tags/*")};
+    const QStringList args =
+        hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--prune",
+                                "origin"} +
+                        kStableRefspecs
+                  : QStringList{"clone", "--bare", source, repo.mirrorPath};
 
     // Track the live source: an owned repo with a local working copy should
     // fetch from that copy, not from a stale relay URL baked into origin at
@@ -15963,6 +16200,9 @@ void MainWindow::syncRepository(int index, bool quiet)
                     // on the source/default branch so smart-HTTP clones check
                     // out real content even after agent PR activity.
                     repairMirrorHead(repo.mirrorPath, repo.localPath);
+                    // Drop churning tool refs left over from older --mirror
+                    // clones so peers cloning from us don't hit "not our ref".
+                    pruneNonStableMirrorRefs(repo.mirrorPath);
                     const bool stillPreview = repo.previewOnly;
                     // Did the owner's repo actually change?
                     const bool changed =
