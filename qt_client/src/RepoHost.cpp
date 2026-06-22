@@ -368,21 +368,40 @@ void RepoHost::runGitStream(const QString &reqId, const QStringList &args,
                 sendGitChunk(reqId, process->readAllStandardOutput());
             });
     connect(process, &QProcess::finished, this,
-            [this, process, reqId](int exitCode, QProcess::ExitStatus) {
+            [this, process, reqId](int exitCode, QProcess::ExitStatus status) {
                 sendGitChunk(reqId, process->readAllStandardOutput());
-                sendGitEnd(reqId, exitCode == 0,
-                           exitCode == 0 ? QString() : QStringLiteral("git_failed"));
+                const bool ok =
+                    exitCode == 0 && status == QProcess::NormalExit;
+                QString error;
+                if (!ok) {
+                    // Surface the real git diagnostic (e.g. "fatal: bad object"),
+                    // not a generic code, so a broken mirror is debuggable.
+                    error = QString::fromUtf8(
+                                process->readAllStandardError()).trimmed();
+                    if (error.isEmpty())
+                        error = QStringLiteral("git_failed");
+                }
+                sendGitEnd(reqId, ok, error);
                 process->deleteLater();
             });
     connect(process, &QProcess::errorOccurred, this,
             [this, process, reqId] {
-                sendGitEnd(reqId, false, QStringLiteral("git_error"));
+                sendGitEnd(reqId, false,
+                           QStringLiteral("git_error: ") + process->errorString());
                 process->deleteLater();
             });
+    // Feed the request body on stdin only AFTER the process is running. Writing
+    // (and closing the write channel) while QProcess is still in Starting state
+    // can race the deferred startup flush: the pipe gets closed before the
+    // buffered request reaches git, so `upload-pack --stateless-rpc` reads an
+    // empty request and exits non-zero immediately — surfacing to clients as a
+    // 502 "host temporarily unavailable" even though the mirror is healthy.
+    connect(process, &QProcess::started, this, [process, input] {
+        if (!input.isEmpty())
+            process->write(input);
+        process->closeWriteChannel();
+    });
     process->start();
-    if (!input.isEmpty())
-        process->write(input);
-    process->closeWriteChannel();
 }
 
 void RepoHost::sendGitChunk(const QString &reqId, const QByteArray &data)
