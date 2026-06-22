@@ -1,0 +1,21 @@
+---
+schema: forkmesh-issue-v1
+number: 125
+title: Uncaught ReferenceError: Cannot access 'downloadProgress' before initialization
+    at resetDownloadProgress (catalog.js:1320:3)
+    at openRepoPage (catalog.js
+status: open
+labels: []
+milestone: 
+assignees: []
+createdAt: 1782101959454
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: newnewnode
+type: open
+id: open-125
+ts: 1782101959454
+attachments: []
+sig: skViNk7__Ez4ppftrP5I1w6pDmEfWf76hUyeJAEKkNknytIBmS371McpbbxITckMY--jARkP00qojOuSeuccBw
+---
+
+
