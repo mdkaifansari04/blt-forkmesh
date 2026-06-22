@@ -231,6 +231,21 @@ const QString kCodexCommandSetting = QStringLiteral("agents/codexCommand");
 const QString kClaudeCommandSetting = QStringLiteral("agents/claudeCommand");
 const QString kAgentContextSetting = QStringLiteral("agents/contextWindow");
 const QString kAgentMaxOutputSetting = QStringLiteral("agents/maxOutputTokens");
+// Cached month-to-date spend labels (issue #115) so the figures persist and are
+// shown immediately on restart instead of "not yet refreshed".
+const QString kOpenAiSpendTextSetting = QStringLiteral("agents/openAiSpendText");
+const QString kOpenAiSpendTsSetting = QStringLiteral("agents/openAiSpendTs");
+const QString kClaudeSpendTextSetting = QStringLiteral("agents/claudeSpendText");
+const QString kClaudeSpendTsSetting = QStringLiteral("agents/claudeSpendTs");
+// Anchors (epoch ms) for the rolling 5-hour and weekly usage windows. They are
+// reset to "now" whenever an agent runs after the previous window has elapsed,
+// so the agent sessions screen can count down the time left in each window.
+const QString kCodexLimit5hStartSetting = QStringLiteral("agents/codexLimit5hStart");
+const QString kCodexLimitWeekStartSetting = QStringLiteral("agents/codexLimitWeekStart");
+const QString kClaudeLimit5hStartSetting = QStringLiteral("agents/claudeLimit5hStart");
+const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitWeekStart");
+constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
+constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 const QString kDefaultCodexCommand =
     QStringLiteral("codex -a never {modelArg} exec --sandbox workspace-write - < {promptFile}");
 const QString kPreviousCodexCommand =
@@ -7011,6 +7026,21 @@ QWidget *MainWindow::buildAgentsTab()
     usageText->addWidget(m_agentApiKeyStatus);
     usageText->addWidget(m_agentClaudeSpend);
     usageText->addWidget(m_agentClaudeStatus);
+    m_agentLimitsLabel = new QLabel;
+    m_agentLimitsLabel->setObjectName("statusLine");
+    m_agentLimitsLabel->setWordWrap(true);
+    m_agentLimitsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    usageText->addWidget(m_agentLimitsLabel);
+    // Issue #115: restore the last-known spend figures immediately so they are
+    // visible on restart before any network refresh completes.
+    applyCachedSpendLabels();
+    refreshAgentLimitLabel();
+    // Tick once a minute so the countdowns stay current while the tab is open.
+    m_agentLimitsTimer = new QTimer(this);
+    m_agentLimitsTimer->setInterval(60 * 1000);
+    connect(m_agentLimitsTimer, &QTimer::timeout, this,
+            &MainWindow::refreshAgentLimitLabel);
+    m_agentLimitsTimer->start();
     listLayout->addLayout(usageText);
     listLayout->addWidget(m_agentTable, 1);
 
@@ -7233,9 +7263,12 @@ void MainWindow::testOpenAiAgentKey()
 
         if (m_agentOpenAiSpend) {
             if (state->costsOk) {
-                m_agentOpenAiSpend->setText(
+                const QString text =
                     QStringLiteral("OpenAI spend, month to date: %1")
-                        .arg(moneyString(state->costs, state->currency)));
+                        .arg(moneyString(state->costs, state->currency));
+                m_agentOpenAiSpend->setText(text);
+                cacheSpendLabel(kOpenAiSpendTextSetting, kOpenAiSpendTsSetting,
+                                text);
             } else {
                 m_agentOpenAiSpend->setText("OpenAI spend: unavailable");
             }
@@ -7379,6 +7412,99 @@ void MainWindow::testOpenAiAgentKey()
             });
 }
 
+void MainWindow::cacheSpendLabel(const QString &textKey, const QString &tsKey,
+                                 const QString &text)
+{
+    QSettings settings;
+    settings.setValue(textKey, text);
+    settings.setValue(tsKey, QDateTime::currentMSecsSinceEpoch());
+}
+
+void MainWindow::applyCachedSpendLabels()
+{
+    QSettings settings;
+    auto restore = [&settings](QLabel *label, const QString &textKey,
+                               const QString &tsKey) {
+        if (!label)
+            return;
+        const QString text = settings.value(textKey).toString();
+        if (text.isEmpty())
+            return;
+        const qint64 ts = settings.value(tsKey).toLongLong();
+        QString suffix;
+        if (ts > 0)
+            suffix = QStringLiteral(" (cached %1)")
+                         .arg(QDateTime::fromMSecsSinceEpoch(ts).toString(
+                             QStringLiteral("MMM d hh:mm")));
+        label->setText(text + suffix);
+    };
+    restore(m_agentOpenAiSpend, kOpenAiSpendTextSetting, kOpenAiSpendTsSetting);
+    restore(m_agentClaudeSpend, kClaudeSpendTextSetting, kClaudeSpendTsSetting);
+}
+
+void MainWindow::markAgentLimitWindow(const QString &provider)
+{
+    const bool claude = provider == QLatin1String("claude");
+    const QString k5h =
+        claude ? kClaudeLimit5hStartSetting : kCodexLimit5hStartSetting;
+    const QString kWeek =
+        claude ? kClaudeLimitWeekStartSetting : kCodexLimitWeekStartSetting;
+    QSettings settings;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // A rolling window only restarts once the previous one has fully elapsed;
+    // activity inside an open window keeps the same reset time.
+    auto refreshAnchor = [&](const QString &key, qint64 windowMs) {
+        const qint64 start = settings.value(key).toLongLong();
+        if (start <= 0 || now - start >= windowMs)
+            settings.setValue(key, now);
+    };
+    refreshAnchor(k5h, kAgentLimit5hMs);
+    refreshAnchor(kWeek, kAgentLimitWeekMs);
+    refreshAgentLimitLabel();
+}
+
+void MainWindow::refreshAgentLimitLabel()
+{
+    if (!m_agentLimitsLabel)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    // Compact "3h 12m" / "4d 6h" rendering of a remaining duration.
+    auto humanize = [](qint64 ms) -> QString {
+        const qint64 totalMin = (ms + 59999) / 60000; // round up to the minute
+        const qint64 days = totalMin / (24 * 60);
+        const qint64 hours = (totalMin % (24 * 60)) / 60;
+        const qint64 mins = totalMin % 60;
+        if (days > 0)
+            return QStringLiteral("%1d %2h").arg(days).arg(hours);
+        if (hours > 0)
+            return QStringLiteral("%1h %2m").arg(hours).arg(mins);
+        return QStringLiteral("%1m").arg(mins);
+    };
+    auto windowText = [&](const QString &key, qint64 windowMs) -> QString {
+        const qint64 start = settings.value(key).toLongLong();
+        if (start <= 0)
+            return QStringLiteral("ready");
+        const qint64 remaining = windowMs - (now - start);
+        if (remaining <= 0)
+            return QStringLiteral("ready");
+        return QStringLiteral("resets in %1").arg(humanize(remaining));
+    };
+    auto providerLine = [&](const QString &label, const QString &k5h,
+                            const QString &kWeek) {
+        return QStringLiteral("%1 — 5h %2 · weekly %3")
+            .arg(label, windowText(k5h, kAgentLimit5hMs),
+                 windowText(kWeek, kAgentLimitWeekMs));
+    };
+    m_agentLimitsLabel->setText(
+        QStringLiteral("Usage limits · %1 · %2")
+            .arg(providerLine(QStringLiteral("Codex"), kCodexLimit5hStartSetting,
+                              kCodexLimitWeekStartSetting),
+                 providerLine(QStringLiteral("Claude Code"),
+                              kClaudeLimit5hStartSetting,
+                              kClaudeLimitWeekStartSetting)));
+}
+
 void MainWindow::refreshClaudeSpend()
 {
     const QString apiKey =
@@ -7457,12 +7583,13 @@ void MainWindow::refreshClaudeSpend()
             }
         }
         if (m_agentClaudeSpend) {
-            if (hasData)
-                m_agentClaudeSpend->setText(
-                    QStringLiteral("Claude spend, month to date: $%1 USD")
-                        .arg(QString::number(totalCost, 'f', 4)));
-            else
-                m_agentClaudeSpend->setText("Claude spend this month: $0.0000 USD");
+            const QString text =
+                hasData
+                    ? QStringLiteral("Claude spend, month to date: $%1 USD")
+                          .arg(QString::number(totalCost, 'f', 4))
+                    : QStringLiteral("Claude spend this month: $0.0000 USD");
+            m_agentClaudeSpend->setText(text);
+            cacheSpendLabel(kClaudeSpendTextSetting, kClaudeSpendTsSetting, text);
         }
         if (m_agentClaudeStatus) {
             if (inputTokens > 0 || outputTokens > 0)
@@ -8061,6 +8188,9 @@ void MainWindow::processAgentQueue()
             continue;
         }
         const AgentSession snapshot = *session;
+        // A launched run consumes from this provider's rolling usage windows;
+        // anchor them so the agent sessions screen can count down the time left.
+        markAgentLimitWindow(snapshot.provider);
         acquireAgentRunner()->start(snapshot, issue, repo.localPath,
                                     agentConfigForProvider(session->provider));
     }

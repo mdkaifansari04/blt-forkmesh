@@ -296,7 +296,12 @@ async def _flagship_client_count(env):
             "https://forkmesh.internal/api/repo/mainnode/forkmesh/rooms/general/clients"
         )
         data = await resp.json()
-        return int(getattr(data, "clients", 0) or 0)
+        # workers.Response.json() may cross the Python/JS boundary as either a
+        # native dict or a JsProxy depending on where the response was created;
+        # accept both shapes (see the host-count read in select_install_source).
+        clients = (data.get("clients", 0) if isinstance(data, dict)
+                   else getattr(data, "clients", 0))
+        return int(clients or 0)
     except Exception:
         return 0
 
