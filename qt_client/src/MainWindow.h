@@ -461,6 +461,15 @@ private:
                                const QStringList &labels, const QString &milestone,
                                int priority, const QStringList &assignees);
     void syncIssuesInbox();
+    // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
+    // notices/dialogs (manual "Sync inbox"); when false it's a silent background
+    // poll that only speaks up (notification + list refresh) when something new
+    // arrives. Repo is taken by value so the async reply can't dangle.
+    void drainIssuesInboxFor(RepositoryRecord repo, bool interactive);
+    void drainPullsInboxFor(RepositoryRecord repo, bool interactive);
+    // Periodically pull every owned repo's inboxes so the source of truth picks
+    // up issues/PRs/comments filed by other nodes without a manual sync.
+    void pollOwnedInboxes();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
@@ -680,6 +689,7 @@ private:
     QLineEdit *m_agentContextEdit = nullptr;
     QLineEdit *m_agentMaxOutputEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
+    QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
 
     // Issues section widgets
     QLineEdit *m_issueSearch = nullptr;

@@ -72,6 +72,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QSet>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -1997,6 +1998,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
     m_mirrorSyncTimer->start(5 * 60 * 1000);
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
+    // Source-of-truth nodes poll their inboxes so issues/PRs/comments filed by
+    // other nodes show up automatically (with a notification), without a manual
+    // "Sync inbox". First pass shortly after launch, then on a short interval.
+    m_inboxPollTimer = new QTimer(this);
+    connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::pollOwnedInboxes);
+    m_inboxPollTimer->start(60 * 1000);
+    QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
@@ -6176,12 +6184,20 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildChatSection());                    // 11 Chat
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
+        if (id == 2 && m_repoDetailIndex >= 0 &&
+            m_repoDetailIndex < m_repositories.size())
+            // Opening Issues: drain this repo's inbox now (owner-only) so incoming
+            // issues from other nodes show immediately instead of next poll tick.
+            drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
         if (id == 1)
             loadCommits();
         else if (id == 3)
             reloadAgents();
-        else if (id == 4)
+        else if (id == 4) {
             reloadPulls();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        }
         else if (id == 5)
             refreshRepoActions();
         else if (id == 7)
@@ -7536,9 +7552,18 @@ void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (!pullStoreForCurrentRepo().canWrite())
-        return;
+    drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), /*interactive=*/true);
+}
+
+void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
+{
+    const RepositoryRecord writable = writableRecordFor(repo);
+    {
+        PullStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                        m_userName);
+        if (!probe.canWrite())
+            return;
+    }
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -7553,33 +7578,92 @@ void MainWindow::syncPullsInbox()
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, url, repo, writable, interactive] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(this, "Sync inbox",
-                                 "Could not reach the inbox: " + reply->errorString());
+            if (interactive)
+                QMessageBox::warning(this, "Sync inbox",
+                                     "Could not reach the inbox: " +
+                                         reply->errorString());
             return;
         }
-        const QJsonArray pending =
-            QJsonDocument::fromJson(reply->readAll()).object().value("pending").toArray();
+        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
+                                       .object()
+                                       .value("pending")
+                                       .toArray();
         if (pending.isEmpty()) {
-            QMessageBox::information(this, "Sync inbox", "No pending pull requests.");
+            if (interactive)
+                QMessageBox::information(this, "Sync inbox",
+                                         "No pending pull requests.");
             return;
         }
-        PullStore store = pullStoreForCurrentRepo();
+        PullStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                        m_userName);
         int merged = 0;
+        QString lastAuthor;
+        QString lastTitle;
         for (const QJsonValue &value : pending) {
             const PullRequest pr =
                 PullRequest::fromJson(value.toObject().value("pull").toObject());
-            if (store.applyRemotePull(pr))
+            if (store.applyRemotePull(pr)) {
                 ++merged;
+                lastAuthor = pr.authorName.isEmpty() ? pr.author.left(8)
+                                                     : pr.authorName;
+                lastTitle = pr.title;
+            }
         }
         m_networkAccess->deleteResource(QNetworkRequest(url)); // ack/clear
-        reloadPulls();
-        QMessageBox::information(
-            this, "Sync inbox",
-            QStringLiteral("Merged %1 pull request(s) into pulls/.").arg(merged));
+        const bool onThisRepo =
+            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+            m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+            m_repositories.at(m_repoDetailIndex).name == repo.name;
+        if (onThisRepo)
+            reloadPulls();
+        if (interactive) {
+            QMessageBox::information(
+                this, "Sync inbox",
+                QStringLiteral("Merged %1 pull request(s) into pulls/.").arg(merged));
+        } else if (merged > 0) {
+            const QString body =
+                merged == 1
+                    ? QStringLiteral("%1 opened a pull request: %2")
+                          .arg(lastAuthor, lastTitle)
+                    : QStringLiteral("%1 new pull requests on %2/%3")
+                          .arg(merged)
+                          .arg(repo.owner, repo.name);
+            flashMessage(body);
+            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new pull request"),
+                             body);
+            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+                m_trayIcon->showMessage("ForkMesh — new pull request", body,
+                                        QSystemTrayIcon::Information, 6000);
+        }
     });
+}
+
+void MainWindow::pollOwnedInboxes()
+{
+    if (!m_networkAccess)
+        return;
+    // Drain each owned repo's inboxes once. Dedup by owner/name so a preview and
+    // its owned copy don't both poll the same inbox.
+    QSet<QString> seen;
+    for (const RepositoryRecord &repo : m_repositories) {
+        if (repo.previewOnly)
+            continue;
+        const QString key = repo.owner + "/" + repo.name;
+        if (seen.contains(key))
+            continue;
+        const RepositoryRecord writable = writableRecordFor(repo);
+        IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (!probe.canWrite())
+            continue; // not the owner of this repo; nothing to drain
+        seen.insert(key);
+        drainIssuesInboxFor(repo, /*interactive=*/false);
+        drainPullsInboxFor(repo, /*interactive=*/false);
+    }
 }
 
 // ---- Agents ---------------------------------------------------------------
@@ -13963,9 +14047,19 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    const RepositoryRecord &repo = m_repositories.at(idx);
-    if (!issueStoreForCurrentRepo().canWrite())
-        return;
+    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+}
+
+void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
+{
+    // Only the owner (a writable working-tree copy) can read and merge the inbox.
+    const RepositoryRecord writable = writableRecordFor(repo);
+    {
+        IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (!probe.canWrite())
+            return;
+    }
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -13981,31 +14075,41 @@ void MainWindow::syncIssuesInbox()
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, repo, url] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, url, repo, writable, interactive] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            setIssueInlineNotice("Could not reach the inbox: " + reply->errorString(),
-                                 true);
+            if (interactive)
+                setIssueInlineNotice("Could not reach the inbox: " +
+                                         reply->errorString(),
+                                     true);
             return;
         }
-        const QJsonObject root =
-            QJsonDocument::fromJson(reply->readAll()).object();
-        const QJsonArray pending = root.value("pending").toArray();
+        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
+                                       .object()
+                                       .value("pending")
+                                       .toArray();
         if (pending.isEmpty()) {
-            setIssueInlineNotice("No pending submissions.");
+            if (interactive)
+                setIssueInlineNotice("No pending submissions.");
             return;
         }
-        IssueStore store = issueStoreForCurrentRepo();
+        IssueStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
         int merged = 0;
         int comments = 0;
+        int newIssues = 0;
         QString lastCommentAuthor;
         int lastCommentNumber = 0;
+        QString lastIssueAuthor;
+        QString lastIssueTitle;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
             const QJsonObject eventObj = item.value("event").toObject();
             IssueEvent ev = IssueEvent::fromJson(eventObj);
             ev.body = eventObj.value("body").toString();
+            const QString titleIfNew = item.value("titleIfNew").toString();
             const QJsonObject metaObj = item.value("meta").toObject();
             RemoteIssueMeta meta;
             for (const QJsonValue &l : metaObj.value("labels").toArray())
@@ -14014,25 +14118,49 @@ void MainWindow::syncIssuesInbox()
             meta.priority = metaObj.value("priority").toInt();
             for (const QJsonValue &a : metaObj.value("assignees").toArray())
                 meta.assignees << a.toString();
-            if (store.applyRemoteEvent(number, ev,
-                                       item.value("titleIfNew").toString(),
-                                       nullptr, meta)) {
+            if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
                 ++merged;
+                const QString who =
+                    ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
                 if (ev.type == QLatin1String("comment")) {
                     ++comments;
-                    lastCommentAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
-                                                                : ev.authorName;
+                    lastCommentAuthor = who;
                     lastCommentNumber = number;
+                } else if (ev.type == QLatin1String("open")) {
+                    ++newIssues;
+                    lastIssueAuthor = who;
+                    lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
                 }
             }
         }
         // Acknowledge so the inbox clears the merged submissions.
         m_networkAccess->deleteResource(QNetworkRequest(url));
-        reloadIssues();
-        setIssueInlineNotice(
-            QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
-        // Surface inbound comments as a desktop notification (#: "show a
-        // notification when we receive a comment").
+        // Refresh the issue list if this is the repo currently on screen.
+        const int curIdx = issuesRepoIndex();
+        if (curIdx >= 0 &&
+            m_repositories.at(curIdx).owner == repo.owner &&
+            m_repositories.at(curIdx).name == repo.name)
+            reloadIssues();
+        if (interactive)
+            setIssueInlineNotice(
+                QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
+
+        // Notify on new issues filed by other nodes (the source of truth should
+        // see incoming issues) and on inbound comments — interactive or not.
+        if (newIssues > 0) {
+            const QString body =
+                newIssues == 1
+                    ? QStringLiteral("%1 filed a new issue: %2")
+                          .arg(lastIssueAuthor, lastIssueTitle)
+                    : QStringLiteral("%1 new issues filed on %2/%3")
+                          .arg(newIssues)
+                          .arg(repo.owner, repo.name);
+            flashMessage(body);
+            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new issue"), body);
+            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+                m_trayIcon->showMessage("ForkMesh — new issue", body,
+                                        QSystemTrayIcon::Information, 6000);
+        }
         if (comments > 0) {
             const QString body =
                 comments == 1
