@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 126
 title: don't send a system notification when a node connects by default thrn this off but make so please log it in the network
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 20
 assignees: []
 createdAt: 1782140598761
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 27
 title: show the size of the repos and how much data each node is mirroring
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 14
 assignees: []
 createdAt: 1781663751017
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

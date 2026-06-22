@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 45
 title: show attached images in the image detail and allow for paste from clipboard
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 64
 assignees: []
 createdAt: 1781720372472
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -1,8 +1,14 @@
 [
-  {
-    "title": "v1",
-    "due": 0,
-    "status": "open",
-    "description": "First federated release: security, PRs, accounts."
-  }
+    {
+        "description": "First federated release: security, PRs, accounts.",
+        "due": 0,
+        "status": "open",
+        "title": "v1"
+    },
+    {
+        "description": "Prioritized launch backlog; priority 1 is highest and 99 is lowest.",
+        "due": 0,
+        "status": "open",
+        "title": "MVP launch"
+    }
 ]

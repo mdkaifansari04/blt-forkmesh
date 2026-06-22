@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 23
 title: make it so that issues description can be edited also able to edit the issue title with a rich text markdown editor and able to drag and drop images into certai
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 62
 assignees: []
 createdAt: 1781663125678
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

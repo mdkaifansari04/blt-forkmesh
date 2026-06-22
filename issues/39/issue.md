@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 39
 title: when I click the fork button on a repo it should ask me where to fork it too
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 40
 assignees: []
 createdAt: 1781713627748
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

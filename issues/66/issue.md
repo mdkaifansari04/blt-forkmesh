@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 66
 title: also allow adding solana address from the settings page
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 36
 assignees: []
 createdAt: 1782056862296
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

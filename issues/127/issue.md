@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 127
 title: new test issue
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 99
 assignees: []
 createdAt: 1782140746962
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

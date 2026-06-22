@@ -4,7 +4,8 @@ number: 15
 title: Federation & routing
 status: open
 labels: [feature]
-milestone: 
+milestone: MVP launch
+priority: 7
 assignees: []
 createdAt: 1781642499093
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

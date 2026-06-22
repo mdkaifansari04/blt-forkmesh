@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 29
 title: add the aiblity to send the issue into your claude codex or anything with one click similar to copy but it auto fills and and possibly submits it
 status: open
-labels: []
-milestone: 
+labels: [feature]
+milestone: MVP launch
+priority: 58
 assignees: []
 createdAt: 1781663915011
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

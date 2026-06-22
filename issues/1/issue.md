@@ -4,7 +4,8 @@ number: 1
 title: Anti-spoofing / security hardening
 status: open
 labels: [security]
-milestone: v1
+milestone: MVP launch
+priority: 1
 assignees: []
 createdAt: 1781642499079
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

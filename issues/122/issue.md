@@ -3,8 +3,9 @@ schema: forkmesh-issue-v1
 number: 122
 title: remove the settings and network log from the chat page
 status: open
-labels: []
-milestone: 
+labels: [enhancement]
+milestone: MVP launch
+priority: 22
 assignees: []
 createdAt: 1782098617779
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
