@@ -15469,10 +15469,12 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
 {
     // Clean repository route on the public website, derived from the same host
     // that serves the catalog API. Static Assets routes this to the catalog SPA.
-    // Key it by catalogOwner — the owner the catalog entry and live host tunnel
-    // register under — so the page resolves to a host actually serving the repo.
+    // Key it by the repo's OWN owner — the node that actually hosts it (and the
+    // one selected in the top bar when viewing it) — not this node's account.
+    // Using catalogOwner here would point every repo at the local account and
+    // open the wrong node's page for repos mirrored from other nodes.
     QUrl url = catalogApiUrl();
-    url.setPath("/" + catalogOwner(repo) +
+    url.setPath("/" + repoSegment(repo.owner, QStringLiteral("owner")) +
                 "/" + repoSegment(repo.name, QStringLiteral("repository")));
     url.setFragment(QString());
     return url.toString();
