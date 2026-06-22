@@ -1,1 +1,0 @@
-on the login page combine node name and display name please - just have the forkmesh server address (we add wss and api )  don't let the user change the default repository room and don't require a mainnode room passphrase anymore just encrypt it standardly and all nodes can join the same rooms on the server have the full signup here so it's username and password and bch address 
