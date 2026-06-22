@@ -14776,14 +14776,18 @@ void MainWindow::updateRepoActionMenus()
                 mirrorPreviewRepository(m_repoDetailIndex);
         });
     } else {
-        m_mirrorMenu->addSection(online ? "ONLINE" :
-                                 (repo.publishToNetwork ? "PUBLISHING" : "LOCAL ONLY"));
+        m_mirrorMenu->addSection("MIRROR STATUS");
         if (online) {
             QAction *browse = m_mirrorMenu->addAction(
-                QStringLiteral("Browse ") + QChar(0x00B7) + " " + webUrl);
+                QStringLiteral("Online ") + QChar(0x00B7) +
+                " browsable at " + webUrl);
             browse->setToolTip(webUrl);
             connect(browse, &QAction::triggered, this,
                     [webUrl] { QDesktopServices::openUrl(QUrl(webUrl)); });
+        } else {
+            QAction *status = m_mirrorMenu->addAction(
+                repo.publishToNetwork ? "Publishing to ForkMesh..." : "Local only");
+            status->setEnabled(false);
         }
         m_mirrorMenu->addSection("MIRROR LOCATION");
         QAction *location = m_mirrorMenu->addAction(
@@ -14847,6 +14851,17 @@ void MainWindow::updateRepoActionMenus()
             setRepoDetailNotice("Copied local remote path.");
             logSystem("Copied local remote path to clipboard: " + path);
         });
+        QAction *copyCommand = m_sourceMenu->addAction(
+            "Copy git remote add command");
+        connect(copyCommand, &QAction::triggered, this, [this] {
+            if (m_repoDetailIndex < 0 ||
+                m_repoDetailIndex >= m_repositories.size())
+                return;
+            const QString path = m_repositories.at(m_repoDetailIndex).mirrorPath;
+            QApplication::clipboard()->setText(
+                QStringLiteral("git remote add forkmesh \"") + path + "\"");
+            setRepoDetailNotice("Copied git remote add command.");
+        });
     }
     m_sourceMenu->addSeparator();
     QAction *zip = m_sourceMenu->addAction("Download ZIP");
@@ -14898,17 +14913,38 @@ void MainWindow::deleteCurrentMirror()
     }
     if (!repo.previewOnly && repo.publishToNetwork)
         deleteCatalogRepository(catalogOwner(repo), repo.name);
-    m_repositories.removeAt(index);
+    const bool canKeepLocalRecord = !repo.localPath.trimmed().isEmpty() ||
+                                    !repo.cloneUrl.trimmed().isEmpty();
+    if (!repo.previewOnly && canKeepLocalRecord) {
+        // Delete the mirror, not the source checkout. Keep the repository in
+        // the app as local-only so Mirror > Create mirror can publish it again.
+        RepositoryRecord &local = m_repositories[index];
+        local.publishToNetwork = false;
+        local.publishedAtMs = 0;
+        local.lastSyncMs = 0;
+    } else {
+        // A preview or independent bare-only fork has no separate source left
+        // after its mirror is deleted, so its transient record goes too.
+        m_repositories.removeAt(index);
+    }
     saveRepositories();
-    m_repoDetailIndex = -1;
     startRepoHosts();
     refreshRepositoryList();
-    if (!m_repositories.isEmpty())
-        openRepoDetail(qMin(index, m_repositories.size() - 1));
-    else if (m_repoDetailStack && m_chatStackIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+    if (!repo.previewOnly && canKeepLocalRecord) {
+        m_repoDetailIndex = index;
+        updateRepoDetailStatus();
+        updateRepoActionMenus();
+    } else {
+        m_repoDetailIndex = -1;
+        if (!m_repositories.isEmpty())
+            openRepoDetail(qMin(index, m_repositories.size() - 1));
+        else if (m_repoDetailStack && m_chatStackIndex >= 0)
+            m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+    }
     logSystem("Deleted local mirror for " + repo.owner + "/" + repo.name + ".");
-    setRepoDetailNotice("Deleted mirror. The working directory was kept.");
+    setRepoDetailNotice(canKeepLocalRecord
+                            ? "Deleted mirror. The working directory was kept."
+                            : "Deleted mirror.");
 }
 
 void MainWindow::updateRepoDetailStatus()
