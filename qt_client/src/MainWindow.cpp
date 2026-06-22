@@ -6685,6 +6685,7 @@ bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
 
     const QString branch =
         pr.base.trimmed().isEmpty() ? QStringLiteral("main") : pr.base.trimmed();
+    ensurePushHook(repo);
     QString gitError;
     if (!runGitCapture(repo.localPath,
                        {"push", repo.mirrorPath,
@@ -14928,6 +14929,29 @@ QString mirrorRefsDigest(const QString &mirrorPath)
     return QString::fromUtf8(p.readAllStandardOutput());
 }
 
+QString mirrorHeadBranch(const QString &mirrorPath)
+{
+    if (!QDir(mirrorPath).exists())
+        return QString();
+    QProcess p;
+    p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
+    if (!p.waitForFinished(5000) || p.exitCode() != 0)
+        return QString();
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
+QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
+{
+    if (!QDir(mirrorPath).exists() || branch.isEmpty())
+        return QString();
+    QProcess p;
+    p.start("git", {"-C", mirrorPath, "rev-parse", "--verify",
+                    "refs/heads/" + branch});
+    if (!p.waitForFinished(5000) || p.exitCode() != 0)
+        return QString();
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
 } // namespace
 
 void MainWindow::autoSyncMirrors()
@@ -14986,6 +15010,9 @@ void MainWindow::syncRepository(int index, bool quiet)
     const bool hasMirror = QDir(repo.mirrorPath).exists();
     const QString source = repositorySource(repo);
     const QString beforeDigest = mirrorRefsDigest(repo.mirrorPath);
+    const QString beforeHeadBranch = mirrorHeadBranch(repo.mirrorPath);
+    const QString beforeHeadCommit =
+        mirrorBranchCommit(repo.mirrorPath, beforeHeadBranch);
     const QStringList args = hasMirror
                                  ? QStringList{"-C", repo.mirrorPath,
                                                "fetch", "--prune"}
@@ -15005,7 +15032,8 @@ void MainWindow::syncRepository(int index, bool quiet)
 
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
-            [this, process, index, quiet, beforeDigest, hasMirror](
+            [this, process, index, quiet, beforeDigest, beforeHeadCommit,
+             hasMirror](
                 int exitCode, QProcess::ExitStatus) {
                 const QString errors =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
@@ -15032,6 +15060,16 @@ void MainWindow::syncRepository(int index, bool quiet)
                     // so local pushes are detected (for actions + live refresh).
                     if (!stillPreview)
                         ensurePushHook(repo);
+                    if (changed && hasMirror && !stillPreview && m_actionStore) {
+                        const QString branch = mirrorHeadBranch(repo.mirrorPath);
+                        const QString commit =
+                            mirrorBranchCommit(repo.mirrorPath, branch);
+                        if (!branch.isEmpty() && !commit.isEmpty() &&
+                            commit != beforeHeadCommit) {
+                            enqueuePushEvent(repo.owner, repo.name, commit,
+                                             "refs/heads/" + branch);
+                        }
+                    }
                     // If this repo's detail is open, reflect the new commits.
                     if (changed && index == m_repoDetailIndex)
                         refreshOpenRepoDetail();
