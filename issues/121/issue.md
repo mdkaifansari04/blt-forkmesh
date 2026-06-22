@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 121
 title: I am getting unable to access forkmesh.com/node-7zmh_2s_ this was the old node make sure the install script uses a current online node and cache is clear
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
