@@ -5999,7 +5999,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     outerSplit->addWidget(m_commitsStack);
     outerSplit->setStretchFactor(0, 0);
     outerSplit->setStretchFactor(1, 1);
-    outerSplit->setSizes({360, 720});
+    // #123: open the commit list to about half the width on first load so its
+    // columns aren't clipped (the right pane is just a placeholder until a
+    // commit is selected). The divider is still draggable from here.
+    outerSplit->setSizes({600, 600});
 
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
