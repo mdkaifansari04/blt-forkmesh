@@ -35,6 +35,7 @@ class QCompleter;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QMenu;
 class QNetworkAccessManager;
 class QPlainTextEdit;
 class QPushButton;
@@ -482,7 +483,8 @@ private:
     void changeMirrorLocation();
     void changePreviewCacheLocation();
     void publishRepository(int index, bool showDialogOnError = true);
-    void updateRepoRemoteInfo();
+    void updateRepoActionMenus();
+    void deleteCurrentMirror();
     void updateRepoDetailStatus();
     QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
@@ -497,7 +499,6 @@ private:
     QString repositoryPreviewPath(const QString &owner, const QString &name) const;
     QString repositoryNetworkCloneUrl(const QString &owner, const QString &name) const;
     QString repositoryWebUrl(const RepositoryRecord &repo) const;
-    void updateRepoWebLink();
     QUrl catalogApiUrl() const;
     void deleteCatalogRepository(const QString &owner, const QString &name);
     void migrateReposForProfileName(const QString &oldOwner,
@@ -664,12 +665,12 @@ private:
     QLabel *m_repoHeaderTitle = nullptr;
     QLabel *m_repoDetailNotice = nullptr;
     QLabel *m_repoDetailStatus = nullptr;
-    QLabel *m_repoWebLink = nullptr;
-    QLineEdit *m_repoRemoteEdit = nullptr; // local mirror path = push remote
-    QLabel *m_repoRemoteHint = nullptr;
     QPushButton *m_forkButton = nullptr;
     QPushButton *m_mirrorButton = nullptr;
-    QPushButton *m_downloadZipButton = nullptr;
+    QPushButton *m_sourceButton = nullptr;
+    QMenu *m_forkMenu = nullptr;
+    QMenu *m_mirrorMenu = nullptr;
+    QMenu *m_sourceMenu = nullptr;
     QPushButton *m_starButton = nullptr;
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
