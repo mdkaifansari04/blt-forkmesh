@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 136
 title: allow for reviewing PRs and giving feedback, requesting changes, seeing the commit history and conversations around them
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
