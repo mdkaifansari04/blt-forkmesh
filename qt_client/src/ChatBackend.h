@@ -10,7 +10,11 @@
 // to peers so the network can show which nodes mirror a given repo and how fresh
 // each one's copy is (a lagging node reveals itself by an older commit/time).
 struct MirrorAdvert {
-    QString ownerName;    // "owner/name"
+    QString ownerName;    // this node's clone identity "<account>/name" (host routing)
+    // Shared upstream identity "<sourceOwner>/name" — the SAME across every node
+    // mirroring the same logical repo, used to group them in the mirror-nodes
+    // view. The source-of-truth node is the one whose ownerName equals its source.
+    QString source;
     QString commit;       // full HEAD commit hash of the node's mirror (may be empty)
     QString branch;       // branch HEAD points to
     qint64 updatedMs = 0; // when the node last synced this repo from its source
