@@ -3629,6 +3629,26 @@ QWidget *MainWindow::buildBreadcrumb()
     m_repoMenuButton->setToolTip("Open a repository, or add a local repo to mirror");
     connect(m_repoMenuButton, &QPushButton::clicked, this, &MainWindow::showRepoMenu);
 
+    // Small "View" button beside the repo dropdown: jump straight to the open
+    // repository's Code view (or open the picker when none is selected).
+    m_repoViewButton = new QPushButton(QStringLiteral("View"));
+    m_repoViewButton->setObjectName("ghostButton");
+    m_repoViewButton->setCursor(Qt::PointingHandCursor);
+    m_repoViewButton->setToolTip(QStringLiteral("View the current repository"));
+    setOcticon(m_repoViewButton, "code", 14);
+    connect(m_repoViewButton, &QPushButton::clicked, this, [this] {
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+            showRepoMenu();
+            return;
+        }
+        showSection(0);
+        if (m_repoCodeTab)
+            m_repoCodeTab->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(0); // Code
+        showRepoOverview();
+    });
+
     m_repoPushButton = new QPushButton;
     m_repoPushButton->setObjectName("primaryButton");
     m_repoPushButton->setCursor(Qt::PointingHandCursor);
@@ -3653,10 +3673,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_connectionStatus->setObjectName("connectionStatus");
     m_connectionStatus->setTextFormat(Qt::RichText);
 
-    m_notificationButton = new QPushButton(QString());
+    m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
     m_notificationButton->setObjectName("notificationButton");
     m_notificationButton->setCursor(Qt::PointingHandCursor);
-    m_notificationButton->setFixedWidth(42);
     setOcticon(m_notificationButton, "bell", 16);
     m_notificationButton->setToolTip("Notifications");
     connect(m_notificationButton, &QPushButton::clicked, this,
@@ -3704,10 +3723,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
     // Chat toggle, next to the notification bell, with an unread indicator.
-    m_chatButton = new QPushButton(QString());
+    m_chatButton = new QPushButton(QStringLiteral("Chat"));
     m_chatButton->setObjectName("notificationButton");
     m_chatButton->setCursor(Qt::PointingHandCursor);
-    m_chatButton->setFixedWidth(42);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
 
@@ -3724,6 +3742,7 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->addSpacing(10);
     layout->addWidget(m_repoLabel);
     layout->addWidget(m_repoMenuButton);
+    layout->addWidget(m_repoViewButton);
     layout->addWidget(m_repoPushButton);
     layout->addSpacing(6);
     layout->addWidget(m_breadcrumb);
@@ -3789,22 +3808,16 @@ void MainWindow::updateBreadcrumb()
     updateRepoPushButton();
     if (!m_breadcrumb)
         return;
-    static const char *kSections[] = {"Home", "Settings"};
     const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
-    const QString sep =
-        QString::fromUtf8("<span style='color:#8b949e'>  \xE2\x80\xBA  </span>");
-    QString trail = (section >= 0 && section < 2) ? kSections[section] : "Home";
-    // On Home, when a repository is open in the detail panel, surface its
-    // owner/name in the breadcrumb after "Home".
-    if (section == 0 && m_repoDetailIndex >= 0 &&
-        m_repoDetailIndex < m_repositories.size()) {
-        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-        trail = QStringLiteral("Home%1%2")
-                    .arg(sep, (repo.owner + "/" + repo.name).toHtmlEscaped());
+    // The relay / node / repo switchers already show the active location, so the
+    // old "Home > node/repo" trail was redundant. Only label non-Home sections.
+    if (section == 1) {
+        m_breadcrumb->setText(QStringLiteral("Settings"));
+        m_breadcrumb->show();
+    } else {
+        m_breadcrumb->clear();
+        m_breadcrumb->hide();
     }
-    // The section/separator inherit the #breadcrumb stylesheet color so it
-    // stays readable in light and dark.
-    m_breadcrumb->setText(trail);
 }
 
 void MainWindow::updateRelaySwitcher()
@@ -4098,6 +4111,8 @@ void MainWindow::updateRepoSwitcher()
     // Nothing in the repo area when the selected node has no repos.
     const bool hasRepos = !m_repoMenuEntries.isEmpty();
     m_repoMenuButton->setVisible(hasRepos);
+    if (m_repoViewButton)
+        m_repoViewButton->setVisible(hasRepos);
     if (m_repoLabel)
         m_repoLabel->setVisible(hasRepos);
     if (!hasRepos)
@@ -4488,6 +4503,14 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileStats->setObjectName("statusLine");
     m_profileStats->setWordWrap(true);
     m_profileStats->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Per-repo hosting stats relocated from the repo detail view.
+    m_profileHostingLabel = new QLabel("HOSTING");
+    m_profileHostingLabel->setObjectName("sectionLabel");
+    m_profileHosting = new QLabel;
+    m_profileHosting->setObjectName("statusLine");
+    m_profileHosting->setWordWrap(true);
+    m_profileHosting->setTextFormat(Qt::RichText);
+    m_profileHosting->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_profileNote = new QLabel;
     m_profileNote->setObjectName("statusLine");
     m_profileNote->setWordWrap(true);
@@ -4593,6 +4616,8 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileVersion);
     layout->addWidget(m_profileMirrors);
     layout->addWidget(m_profileStats);
+    layout->addWidget(m_profileHostingLabel);
+    layout->addWidget(m_profileHosting);
     layout->addWidget(nodeKeyLabel);
     layout->addWidget(m_profileNodeKey);
     layout->addWidget(copyKey, 0, Qt::AlignLeft);
@@ -4688,6 +4713,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         }
     }
 
+    // Per-repo hosting stats (served/clones/hosted-since/last-sync) live here
+    // now, for your own node only.
+    m_profileIsSelf = info.self;
+    refreshProfileHostingStats();
+
     // Discovery note (e.g. "(discovered)"), shown only when present.
     m_profileNote->setText(info.note.toHtmlEscaped());
     m_profileNote->setVisible(!info.note.trimmed().isEmpty());
@@ -4736,6 +4766,40 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     }
 
     m_nodeProfilePanel->show();
+}
+
+void MainWindow::refreshProfileHostingStats()
+{
+    if (!m_profileHosting || !m_profileHostingLabel)
+        return;
+    // Only meaningful for your own node — served/clone counts are tracked locally.
+    if (!m_profileIsSelf) {
+        m_profileHosting->clear();
+        m_profileHosting->setVisible(false);
+        m_profileHostingLabel->setVisible(false);
+        return;
+    }
+    QStringList lines;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        const QPair<int, int> stats = m_repoStats.value(repo.owner + "/" + repo.name);
+        lines << QStringLiteral(
+                     "<b>%1</b> \xC2\xB7 %2 served \xC2\xB7 %3 clone%4<br>"
+                     "<span style='color:#8b949e'>hosted since %5 \xC2\xB7 "
+                     "last sync %6</span>")
+                     .arg(repo.name.toHtmlEscaped())
+                     .arg(stats.first)
+                     .arg(stats.second)
+                     .arg(stats.second == 1 ? QString() : QStringLiteral("s"),
+                          formatRepoDate(repo.hostedSinceMs),
+                          formatRepoDate(repo.lastSyncMs));
+    }
+    m_profileHosting->setText(
+        lines.isEmpty() ? QStringLiteral("No hosted repositories yet.")
+                        : lines.join(QStringLiteral("<br>")));
+    m_profileHosting->setVisible(true);
+    m_profileHostingLabel->setVisible(true);
 }
 
 void MainWindow::checkNodeBalance()
@@ -5375,11 +5439,13 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *page = new QWidget;
 
     // --- GitHub-style header: title + Public badge, action buttons on the right.
+    // The repo identity and public/private state now live in the top-bar repo
+    // dropdown, so the old "owner/name  Public" header is omitted here. The label
+    // is still created (hidden) because other code sets its text.
     m_repoHeaderTitle = new QLabel("Repository");
     m_repoHeaderTitle->setObjectName("repoHeaderTitle");
     m_repoHeaderTitle->setTextFormat(Qt::RichText);
-    auto *publicBadge = new QLabel("Public");
-    publicBadge->setObjectName("publicBadge");
+    m_repoHeaderTitle->hide();
 
     auto *notifyButton = new QPushButton("Notify");
     notifyButton->setObjectName("repoAction");
@@ -5418,8 +5484,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(16, 12, 16, 4);
     headerRow->setSpacing(8);
-    headerRow->addWidget(m_repoHeaderTitle);
-    headerRow->addWidget(publicBadge);
     headerRow->addStretch();
     headerRow->addWidget(notifyButton);
     headerRow->addWidget(m_forkButton);
@@ -5443,6 +5507,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     metaLayout->setContentsMargins(16, 4, 16, 8);
     metaLayout->setSpacing(6);
     metaLayout->addWidget(m_repoDetailStatus);
+    // Served/clone counts and hosted-since/last-sync now live in the node
+    // profile panel, so this band stays hidden in the repo view.
+    metaBand->hide();
 
     // --- Tab bar (GitHub order; Commits gets its own tab).
     struct TabDef {
@@ -9422,7 +9489,13 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
     }
 
     setRepoBranch(base);
+    // A direct commit shouldn't yank the user out of the file editor back to the
+    // overview. Remember which files-panel page they were on and restore it after
+    // the refresh (the PR path intentionally navigates to the new pull instead).
+    const int filesPage = m_filesStack ? m_filesStack->currentIndex() : 0;
     refreshOpenRepoDetail();
+    if (!createPull && m_filesStack)
+        m_filesStack->setCurrentIndex(filesPage);
     return true;
 }
 
@@ -14620,6 +14693,9 @@ void MainWindow::refreshRepositoryList()
         QString label = repo.name;
         if (repo.previewOnly)
             label += "  \xC2\xB7 preview";
+        else
+            label += repo.publishToNetwork ? "  \xC2\xB7 public"
+                                           : "  \xC2\xB7 private";
         if (m_syncingRepos.contains(i))
             label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
         RepoMenuEntry entry;
@@ -15336,6 +15412,9 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
         if (repo.owner == owner && repo.name == name)
             updateRepoDetailStatus();
     }
+    // Hosting stats now live in the node profile; keep them current while it is open.
+    if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
+        refreshProfileHostingStats();
 }
 
 void MainWindow::loadRepoStats()
@@ -15585,6 +15664,20 @@ void MainWindow::syncRepository(int index, bool quiet)
 
     const bool hasMirror = QDir(repo.mirrorPath).exists();
     const QString source = repositorySource(repo);
+
+    // A repository we publish and host ourselves, with no separate upstream
+    // working copy, IS the source of truth. Re-fetching it would loop back
+    // through the relay to our own host tunnel and fail (HTTP 5xx), so there is
+    // nothing to sync.
+    if (!preview && hasMirror && repo.publishToNetwork &&
+        repo.localPath.trimmed().isEmpty() && repo.owner == accountOwner()) {
+        if (!quiet)
+            flashMessage(QStringLiteral("Nothing to sync for %1/%2 — this node "
+                                        "hosts it directly.")
+                             .arg(repo.owner, repo.name));
+        return;
+    }
+
     const QString beforeDigest = mirrorRefsDigest(repo.mirrorPath);
     const QString beforeHeadBranch = mirrorHeadBranch(repo.mirrorPath);
     const QString beforeHeadCommit =
@@ -15594,6 +15687,15 @@ void MainWindow::syncRepository(int index, bool quiet)
                                                "fetch", "--prune"}
                                  : QStringList{"clone", "--mirror",
                                                source, repo.mirrorPath};
+
+    // Track the live source: an owned repo with a local working copy should
+    // fetch from that copy, not from a stale relay URL baked into origin at
+    // clone time (which can return HTTP 5xx through the host tunnel).
+    if (hasMirror && !source.isEmpty())
+        runGitCapture(repo.mirrorPath,
+                      {QStringLiteral("remote"), QStringLiteral("set-url"),
+                       QStringLiteral("origin"), source},
+                      nullptr, nullptr);
 
     m_syncingRepos.insert(index);
     refreshRepositoryList();
@@ -15684,11 +15786,37 @@ void MainWindow::syncRepository(int index, bool quiet)
                     }
                 } else {
                     refreshRepositoryList();
+                    // Relay/host hiccups (HTTP 5xx, RPC failed, connection
+                    // resets) are transient: the host serving this repo is
+                    // momentarily unavailable and the next sync will retry. Log
+                    // them quietly rather than raising a persistent red error.
+                    const bool transient =
+                        errors.contains(QStringLiteral("HTTP 50")) ||
+                        errors.contains(QStringLiteral("RPC failed")) ||
+                        errors.contains(QStringLiteral("curl 22")) ||
+                        errors.contains(QStringLiteral("502")) ||
+                        errors.contains(QStringLiteral("503")) ||
+                        errors.contains(QStringLiteral("504")) ||
+                        errors.contains(QStringLiteral("Could not resolve"),
+                                        Qt::CaseInsensitive) ||
+                        errors.contains(QStringLiteral("Couldn't connect"),
+                                        Qt::CaseInsensitive) ||
+                        errors.contains(QStringLiteral("Connection reset"),
+                                        Qt::CaseInsensitive);
                     logSystem((repo.previewOnly ? QStringLiteral("Preview cache: sync failed for ")
                                                 : QStringLiteral("Mirror: sync failed for ")) +
                               repo.owner + "/" +
-                              repo.name + ": " + errors.right(300));
-                    if (!quiet)
+                              repo.name +
+                              (transient ? QStringLiteral(" (host temporarily "
+                                                          "unavailable): ")
+                                         : QStringLiteral(": ")) +
+                              errors.right(300));
+                    if (!quiet && transient) {
+                        flashMessage(QStringLiteral("Sync deferred for %1/%2 — host "
+                                                    "temporarily unavailable.")
+                                         .arg(repo.owner, repo.name),
+                                     /*error=*/false);
+                    } else if (!quiet) {
                         flashMessage(
                             (repo.previewOnly ? QStringLiteral("Preview failed for ")
                                               : QStringLiteral("Sync failed for ")) +
@@ -15696,6 +15824,7 @@ void MainWindow::syncRepository(int index, bool quiet)
                                 (errors.isEmpty() ? QString() :
                                                     ": " + errors.right(160)),
                             /*error=*/true);
+                    }
                 }
             });
     connect(process, &QProcess::errorOccurred, this,
@@ -16219,8 +16348,8 @@ void MainWindow::updateNotificationButton()
         return;
     const int pending = pendingActionCount();
     m_notificationButton->setText(pending > 0
-                                      ? QStringLiteral("•")
-                                      : QString());
+                                      ? QStringLiteral("Notifications •")
+                                      : QStringLiteral("Notifications"));
     m_notificationButton->setToolTip(
         pending > 0
             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)

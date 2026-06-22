@@ -200,6 +200,7 @@ private:
     // Slack-style node profile panel (right side of Home).
     QWidget *buildNodeProfilePanel();
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
+    void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
     void hideNodeProfile();
     void checkNodeBalance();
     // Query the Solana network for a balance via public JSON-RPC endpoints.
@@ -597,6 +598,7 @@ private:
     QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
+    QPushButton *m_repoViewButton = nullptr; // top-bar "view" button beside the switcher
     QPushButton *m_repoPushButton = nullptr; // top-bar push for commits ahead of upstream
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
@@ -883,6 +885,11 @@ private:
     QLabel *m_profileMirrors = nullptr;
     QLabel *m_profileNote = nullptr;
     QLabel *m_profileStats = nullptr; // node stats, moved here from the node list
+    // Per-repo hosting stats (served/clones/hosted-since/last-sync), moved here
+    // from the repo detail view. Shown only for your own node.
+    QLabel *m_profileHostingLabel = nullptr;
+    QLabel *m_profileHosting = nullptr;
+    bool m_profileIsSelf = false;
     QLabel *m_profileNodeKey = nullptr;
     QLabel *m_profileSolanaAddr = nullptr;
     QLabel *m_profileQr = nullptr;
