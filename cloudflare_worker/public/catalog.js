@@ -1305,9 +1305,6 @@ document.querySelectorAll('header nav a[href^="/#"], .install-link[href^="/#"]')
   })
 );
 
-// Route on first load so deep links (e.g. /owner/name/blob/file) render.
-route();
-
 // ---- Download the whole repo into the browser (localStorage) with progress --
 
 const downloadBtn = document.querySelector("#download-repo");
@@ -1315,6 +1312,9 @@ const downloadProgress = document.querySelector("#download-progress");
 const downloadFill = document.querySelector("#download-bar-fill");
 const downloadText = document.querySelector("#download-progress-text");
 let downloading = false;
+
+// Route on first load so deep links (e.g. /owner/name/blob/file) render.
+route();
 
 function resetDownloadProgress() {
   if (downloadProgress) downloadProgress.hidden = true;
