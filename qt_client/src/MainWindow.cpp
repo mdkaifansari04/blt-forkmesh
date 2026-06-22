@@ -14368,8 +14368,17 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             previouslyOnline.insert(m.id);
     if (!firstRoster &&
         QSettings().value(kNodeConnectAlertSetting, true).toBool()) {
+        // Never notify about our own node coming online. The roster's "self"
+        // flag isn't always set (e.g. on reconnect), so also match our own node
+        // id (public key) and account name defensively.
+        const QString ownId = m_profileIdentity.publicKey();
+        const QString ownName = accountOwner();
         for (const MemberInfo &m : visibleMembers) {
             if (m.self || m.id.isEmpty() || !m.online)
+                continue;
+            if (!ownId.isEmpty() && m.id == ownId)
+                continue;
+            if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
             if (!previouslyOnline.contains(m.id))
                 postNotification(QStringLiteral("Node connected"),
