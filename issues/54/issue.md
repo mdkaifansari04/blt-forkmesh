@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 54
 title: fix the 404 page - add a 404 page on the site
-status: open
+status: closed
 labels: []
 milestone: 
 assignees: []
