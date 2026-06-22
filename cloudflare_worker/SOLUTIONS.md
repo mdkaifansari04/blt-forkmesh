@@ -143,13 +143,15 @@ bindings resolve; no production write):
 
 ### Phase 1 — Shrink the DO footprint
 
-7. 🟡 **Separate "presence" from "relay" — host side DONE.** A `host_presence`
+7. ✅ **Separate "presence" from "relay" — host side DONE.** A `host_presence`
    table (blind-indexed `repo_bi`, `ts`) now records live hosts so stats/catalog read
    presence from D1 instead of probing tunnel DOs. Rows are refreshed (throttled) while
    a host is active and self-heal via a `HOST_PRESENCE_STALE_MS` (10 min) window.
-   *Remaining:* an "active in the last 10 min" host that goes fully idle drops off the
-   count until its next request — exact long-idle presence would want an alarm-based
-   heartbeat (deferred; low value for a vanity stat).
+   The desktop tunnel sends a small application heartbeat alongside its WebSocket ping,
+   so an idle-but-connected mirror remains registered after the Durable Object
+   hibernates. The installer source endpoint additionally checks the candidate
+   repository Durable Objects directly, making source selection exact even for an
+   older client whose presence row has already aged out.
 
 8. ⏸️ **Coalesce git browsing / cache blobs — DEFERRED (correctness).** The `/blob`
    API is keyed by **path only** (no commit SHA — see `pullPath("blob", path)` in

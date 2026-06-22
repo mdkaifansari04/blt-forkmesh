@@ -25,7 +25,7 @@ die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
 
 resolve_install_node() {
   [ -n "$FORKMESH_NODE" ] && return 0
-  command -v curl >/dev/null 2>&1 || return 0
+  command -v curl >/dev/null 2>&1 || die "curl is required to find an online ForkMesh mirror."
 
   local body node source_url sep
   sep="?"
@@ -33,17 +33,20 @@ resolve_install_node() {
     *\?*) sep="&" ;;
   esac
   source_url="${FORKMESH_INSTALL_SOURCE_URL}${sep}_=$(date +%s)"
-  body="$(curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url" 2>/dev/null || true)"
+  if ! body="$(curl -sSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
+    die "Could not check for an online ForkMesh mirror. Please try again shortly."
+  fi
   node="$(printf '%s\n' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   case "$node" in
-    *[!A-Za-z0-9._:-]*|"") return 0 ;;
+    *[!A-Za-z0-9._:-]*|"")
+      die "No online ForkMesh node is currently mirroring '$FORKMESH_NAME'. Start a node that publishes this repository, then try the installer again."
+      ;;
   esac
   FORKMESH_NODE="$node"
 }
 
 if [ -z "$REPO" ]; then
   resolve_install_node
-  FORKMESH_NODE="${FORKMESH_NODE:-mainnode}"
   REPO="${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}"
 fi
 

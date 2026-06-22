@@ -545,14 +545,14 @@ async def online_history(env):
 async def install_source(env):
     await ensure_schema(env)
     now = int(Date.now())
-    cutoff = now - HOST_PRESENCE_STALE_MS
+    # The installer needs an exact answer: a host WebSocket can still be live
+    # after an older desktop client's D1 presence row ages out. Decode the small
+    # set of catalog entries named "forkmesh", then ask each repository's
+    # Durable Object for its real connected-host count. This also avoids ever
+    # selecting a stale presence row left by an unclean disconnect.
     rows = await d1_all(
         env,
-        """SELECT hp.repo_bi, r.owner_bi, r.data
-             FROM host_presence hp
-             JOIN repositories r ON r.key_bi = hp.repo_bi
-             WHERE hp.ts >= ?""",
-        cutoff,
+        "SELECT owner_bi, data FROM repositories",
     )
 
     candidates = {}
@@ -562,8 +562,26 @@ async def install_source(env):
             continue
         owner = safe_segment(rec.get("owner", ""))
         owner_bi = row.get("owner_bi")
-        if owner and owner_bi:
-            candidates[owner_bi] = owner
+        if not owner or not owner_bi:
+            continue
+        try:
+            host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/forkmesh")
+            host_object = env.FORKMESH_HOST.get(host_id)
+            response = await host_object.fetch(
+                f"https://forkmesh.internal/api/repo/{owner}/forkmesh/host"
+            )
+            status = await response.json()
+            # workers.Response.json() may cross the Python/JS boundary as either
+            # a native dict or a JsProxy depending on where the response was
+            # created; accept both shapes.
+            hosts = (status.get("hosts", 0) if isinstance(status, dict)
+                     else getattr(status, "hosts", 0))
+            if int(hosts or 0) > 0:
+                candidates[owner_bi] = owner
+        except Exception:
+            # A single unavailable DO must not stop another live mirror from
+            # being selected.
+            continue
 
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
@@ -2990,7 +3008,16 @@ class ForkMeshHost(DurableObject):
         if not isinstance(msg, dict):
             return
         mtype = msg.get("type")
-        if mtype == "response":
+        if mtype == "heartbeat":
+            # Control-frame pings keep the socket alive but do not dispatch a
+            # message event. The desktop host therefore sends this lightweight
+            # application heartbeat too. Restore the repo key from the socket
+            # attachment after DO hibernation, then refresh D1 presence.
+            repo_bi = _ws_attr(ws, "repo_bi")
+            if repo_bi:
+                self._repo_bi = repo_bi
+                await self._mark_present()
+        elif mtype == "response":
             fut = self.pending.pop(msg.get("reqId"), None)
             if fut is not None and not fut.done():
                 fut.set_result(msg)
