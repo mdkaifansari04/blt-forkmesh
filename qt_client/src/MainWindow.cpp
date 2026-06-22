@@ -1912,6 +1912,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
     m_mirrorSyncTimer->start(5 * 60 * 1000);
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
+    // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
+    // installed client shows the project repo without manual setup.
+    QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
 
     if (!m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
@@ -2670,6 +2673,66 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     syncRepository(m_repositories.size() - 1);
 }
 
+QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) const
+{
+    const QString safeOwner = repoSegment(owner, QStringLiteral("owner"));
+    const QString safeName = repoSegment(name, QStringLiteral("repository"));
+    if (safeOwner.isEmpty() || safeName.isEmpty())
+        return QString();
+    // Catalog records published by local nodes omit cloneUrl; the repo is still
+    // reachable through the mainnode's git smart-HTTP route, which forwards to
+    // whichever client is currently hosting it.
+    QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+    url.setPath(QStringLiteral("/") + safeOwner + QLatin1Char('/') + safeName);
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url.toString();
+}
+
+void MainWindow::ensureFlagshipRepo()
+{
+    if (!m_networkAccess)
+        return;
+    // Already mirroring the ForkMesh project repo — nothing to bootstrap.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        if (!repo.previewOnly &&
+            repo.name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0)
+            return;
+
+    const QJsonArray repos = fetchCatalogRepos();
+    QString owner, cloneUrl;
+    bool ownerLive = false;
+    for (const QJsonValue &v : repos) {
+        const QJsonObject r = v.toObject();
+        if (r.value("name").toString().compare(QStringLiteral("forkmesh"),
+                                               Qt::CaseInsensitive) != 0)
+            continue;
+        const QString candidateOwner = r.value("owner").toString();
+        if (candidateOwner.isEmpty())
+            continue;
+        QString candidateUrl = r.value("cloneUrl").toString().trimmed();
+        if (candidateUrl.isEmpty())
+            candidateUrl = hostedCloneUrl(candidateOwner, QStringLiteral("forkmesh"));
+        if (candidateUrl.isEmpty())
+            continue;
+        const bool live = r.value("liveHost").toBool();
+        // Prefer a live host; otherwise keep the first usable entry as a fallback.
+        if (live || owner.isEmpty()) {
+            owner = candidateOwner;
+            cloneUrl = candidateUrl;
+            ownerLive = live;
+        }
+        if (live)
+            break;
+    }
+    if (owner.isEmpty() || cloneUrl.isEmpty())
+        return;
+    if (!ownerLive)
+        logSystem("No live ForkMesh host right now; mirroring " + owner +
+                  "/forkmesh anyway so it appears once a host comes online.");
+    mirrorCatalogRepo(owner, QStringLiteral("forkmesh"), cloneUrl);
+}
+
 bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &solana)
 {
     Q_UNUSED(solana);
@@ -2896,10 +2959,13 @@ bool MainWindow::runRepoPickStep()
         const QString name = r.value("name").toString();
         if (owner.isEmpty() || name.isEmpty())
             continue;
+        QString cloneUrl = r.value("cloneUrl").toString().trimmed();
+        if (cloneUrl.isEmpty())
+            cloneUrl = hostedCloneUrl(owner, name);
         auto *item = new QListWidgetItem(owner + "/" + name, list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
-        item->setData(Qt::UserRole, r.value("cloneUrl").toString());
+        item->setData(Qt::UserRole, cloneUrl);
         item->setData(Qt::UserRole + 1, owner);
         item->setData(Qt::UserRole + 2, name);
     }

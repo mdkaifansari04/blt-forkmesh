@@ -124,6 +124,12 @@ private:
     int fetchNodesOnline();
     void mirrorCatalogRepo(const QString &owner, const QString &name,
                            const QString &cloneUrl);
+    // Hosted git URL (https://<mainnode>/<owner>/<name>) for a catalog repo,
+    // used when the catalog record omits an explicit cloneUrl.
+    QString hostedCloneUrl(const QString &owner, const QString &name) const;
+    // Bootstrap a fresh client by mirroring the flagship ForkMesh repository so
+    // it appears in the Repos list without first walking the full join flow.
+    void ensureFlagshipRepo();
     bool verifyTotpLogin(const QString &accountName, const QString &password,
                          const QString &totp);
     // Periodic signed heartbeat that keeps this node eligible for the reward
