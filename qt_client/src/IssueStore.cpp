@@ -1188,49 +1188,63 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
     if (!canWrite())
         return false;
 
-    Issue issue;
-    bool exists = readIssueFile(number, issue);
-    // A new-issue ("open") submission whose proposed number is already taken by a
-    // different issue (a mirror raced ahead, or numbered against a stale view):
-    // assign the next free number so we never staple a second open event onto an
-    // existing issue. Idempotent re-syncs of the same event are caught below.
-    if (exists && ev.type == "open" && !ev.id.isEmpty()) {
-        bool sameOpen = false;
-        for (const IssueEvent &existing : std::as_const(issue.events))
-            if (existing.id == ev.id) {
-                sameOpen = true;
-                break;
+    // A brand-new issue ("open") authored elsewhere (e.g. filed from a mirror).
+    // The proposed number is only a hint: the open event's id is number-derived
+    // ("open-N"), so it isn't a stable identity. We dedup on the signature (which
+    // binds content+number+author+ts) across ALL issues so a re-synced submission
+    // never duplicates, and we always assign a free number so a collision can't
+    // staple a second open event onto an existing issue.
+    if (ev.type == "open") {
+        const QList<Issue> all = loadAll();
+        for (const Issue &i : all)
+            for (const IssueEvent &e : i.events) {
+                if (e.type != "open")
+                    continue;
+                const bool sameSig = !ev.sig.isEmpty() && e.sig == ev.sig;
+                const bool sameAuthorTs = ev.sig.isEmpty() && e.author == ev.author &&
+                                          e.ts == ev.ts && e.title == ev.title;
+                if (sameSig || sameAuthorTs)
+                    return true; // already merged this submission
             }
-        if (!sameOpen) {
-            number = nextNumber();
-            exists = false;
-            issue = Issue();
-        }
-    }
-    if (!exists) {
-        issue = Issue();
+
+        Issue probe;
+        if (number <= 0 || readIssueFile(number, probe))
+            number = nextNumber(); // proposed slot taken (or unset) -> reassign
+
+        Issue issue;
         issue.number = number;
-        issue.title = ev.type == "open" ? ev.title : titleIfNew;
+        issue.title = ev.title;
         issue.status = "open";
         issue.createdAt = ev.ts;
         issue.author = ev.author;
         issue.authorName = ev.authorName;
-        // Apply vouched issue-level metadata supplied with a new submission.
+        // Issue-level metadata isn't part of the open-event signature; apply it
+        // as vouched data that rode along with the submission.
         issue.labels = meta.labels;
         issue.milestone = meta.milestone;
         issue.priority = qBound(0, meta.priority, 99);
         issue.assignees = meta.assignees;
-        if (ev.type == "open") {
-            issue.events.append(ev);
-            recomputeMetadata(issue);
-            if (!writeIssueFile(issue, error))
-                return false;
-            return commit(QStringLiteral("issue #%1: opened (from %2)")
-                              .arg(number)
-                              .arg(ev.authorName.isEmpty() ? ev.author.left(8)
-                                                           : ev.authorName),
-                          error);
-        }
+        issue.events.append(ev);
+        recomputeMetadata(issue);
+        if (!writeIssueFile(issue, error))
+            return false;
+        return commit(QStringLiteral("issue #%1: opened (from %2)")
+                          .arg(number)
+                          .arg(ev.authorName.isEmpty() ? ev.author.left(8)
+                                                       : ev.authorName),
+                      error);
+    }
+
+    Issue issue;
+    const bool exists = readIssueFile(number, issue);
+    if (!exists) {
+        issue = Issue();
+        issue.number = number;
+        issue.title = titleIfNew;
+        issue.status = "open";
+        issue.createdAt = ev.ts;
+        issue.author = ev.author;
+        issue.authorName = ev.authorName;
         // A non-open event for a missing issue: synthesize a placeholder open.
         IssueEvent placeholder;
         placeholder.type = "open";

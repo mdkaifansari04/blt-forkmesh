@@ -244,6 +244,44 @@ int main(int argc, char *argv[])
                   .trimmed()
                   .isEmpty(),
               "deleted issue is purged from git history");
+
+        // A mirror node files an issue: it arrives as a signed "open" event with
+        // a proposed number that collides with an existing issue. applyRemoteEvent
+        // must reassign a fresh number, keep the submitter as author, and apply
+        // the vouched issue-level metadata that rode along with the submission.
+        const int base = repo.createIssue("Base", "b", {}, QString(), 0, {}, {}, &err);
+        IssueEvent remoteOpen;
+        remoteOpen.type = "open";
+        remoteOpen.id = QStringLiteral("open-%1").arg(base); // collides with base
+        remoteOpen.title = "From a mirror";
+        remoteOpen.body = "filed remotely";
+        remoteOpen = repo.makeSignedEvent(base, remoteOpen);
+        remoteOpen.authorName = "mirrornode";
+        RemoteIssueMeta meta;
+        meta.labels = QStringList{"enhancement"};
+        meta.priority = 9;
+        check(repo.applyRemoteEvent(base, remoteOpen, "From a mirror", &err, meta),
+              "applyRemoteEvent accepts a mirror-authored open event");
+        const QList<Issue> afterRemote = repo.loadAll();
+        const Issue *mirrored = nullptr;
+        for (const Issue &i : afterRemote)
+            if (i.title == "From a mirror")
+                mirrored = &i;
+        check(mirrored && mirrored->number != base,
+              "colliding remote issue is reassigned a fresh number");
+        check(mirrored && mirrored->authorName == "mirrornode",
+              "remote issue preserves the submitting node as author");
+        check(mirrored && mirrored->labels.contains("enhancement") &&
+                  mirrored->priority == 9,
+              "remote issue applies vouched metadata (labels + priority)");
+
+        // Re-syncing the same submission (same signature) must be idempotent:
+        // the inbox can redeliver before the owner acknowledges it.
+        const int before = repo.loadAll().size();
+        check(repo.applyRemoteEvent(base, remoteOpen, "From a mirror", &err, meta),
+              "re-applying the same remote open event succeeds");
+        check(repo.loadAll().size() == before,
+              "re-syncing a merged issue does not duplicate it");
     }
 
     if (failures) {
