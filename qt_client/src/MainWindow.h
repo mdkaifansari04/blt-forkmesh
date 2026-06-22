@@ -327,6 +327,9 @@ private:
     void showRepoOverview();
     void loadRepoFileTree();
     void openRepoFile(const QString &path);
+    void updateRepoFileSaveActions();
+    void saveCurrentRepoFile(bool createPull);
+    bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
     void loadRepoInfo();
     void loadBranchesAndTags();
     QStringList repoBranches() const;
@@ -713,6 +716,8 @@ private:
     QTextBrowser *m_readmeView = nullptr;
     QTreeWidget *m_repoFileTree = nullptr;
     QTabWidget *m_repoFileTabs = nullptr;
+    QPushButton *m_repoFileCommitButton = nullptr;
+    QPushButton *m_repoFilePullButton = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
 
     // Pull requests tab
