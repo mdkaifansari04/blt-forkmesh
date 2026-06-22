@@ -98,7 +98,14 @@ RepoHost::RepoHost(const QString &owner, const QString &name,
 
     m_pingTimer = new QTimer(this);
     m_pingTimer->setInterval(25000);
-    connect(m_pingTimer, &QTimer::timeout, this, [this] { sendControlFrame(0x9); });
+    connect(m_pingTimer, &QTimer::timeout, this, [this] {
+        // A WebSocket ping keeps the transport alive, while the application
+        // heartbeat lets the hibernating Worker refresh this repository's D1
+        // presence row. Without the text heartbeat an idle-but-connected host
+        // fell out of the online catalog after ten minutes.
+        sendControlFrame(0x9);
+        sendText(QByteArrayLiteral("{\"type\":\"heartbeat\"}"));
+    });
 }
 
 void RepoHost::start()
