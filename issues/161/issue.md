@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 161
 title: create an "ask the ai" issue comment button that uses a very cheap model with open ai to ask a question and it then adds a comment with an answer
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
