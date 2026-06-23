@@ -2009,16 +2009,28 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 repoIndexFor(lastRepository.left(slash),
                              lastRepository.mid(slash + 1));
             if (index >= 0) {
-                m_selectedNode = m_repositories.at(index).owner;
-                refreshRepositoryList();
-                openRepoDetail(index);
+                // Defer the (heavy, git-backed) repo-detail load until after the
+                // window is shown so it doesn't block startup. The window appears
+                // immediately and the last repo populates a tick later.
+                QTimer::singleShot(0, this, [this, index] {
+                    if (index < 0 || index >= m_repositories.size())
+                        return;
+                    logStartup(QStringLiteral("restoring last repository (deferred)"));
+                    m_selectedNode = m_repositories.at(index).owner;
+                    refreshRepositoryList();
+                    openRepoDetail(index);
+                    logStartup(QStringLiteral("last repository detail loaded"));
+                });
             }
         }
     }
+    logStartup(QStringLiteral("last repository restore scheduled"));
     loadActiveServerIntoEdits();
     updateBreadcrumb();
+    logStartup(QStringLiteral("active server + breadcrumb"));
     for (int i = 0; i < m_servers.size(); ++i)
         fetchFavicon(i);
+    logStartup(QStringLiteral("favicons fetched"));
 
     m_typingStopTimer = new QTimer(this);
     m_typingStopTimer->setSingleShot(true);
@@ -2049,6 +2061,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
 
+    logStartup(QStringLiteral("timers started"));
     if (!m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
@@ -2068,7 +2081,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 startSession();
         });
     }
+    logStartup(QStringLiteral("identity loaded"));
     updateHomeStats();
+    logStartup(QStringLiteral("home stats updated (ctor end)"));
 }
 
 void MainWindow::applyTheme()
@@ -10507,11 +10522,14 @@ void MainWindow::openRepoDetail(int repoIndex)
         if (combo >= 0)
             m_issuesRepoCombo->setCurrentIndex(combo);
     }
+    logStartup(QStringLiteral("  openRepo: info+branches+codeSize done"));
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
+    logStartup(QStringLiteral("  openRepo: issues+agents loaded"));
     m_currentPulls = pullStoreForCurrentRepo().loadAll();
     updateRepoPullCount();
+    logStartup(QStringLiteral("  openRepo: pulls loaded"));
 
     // Default to the Code tab; reset the editor tabs/tree for the new repo.
     if (m_repoDetailTabs && m_repoDetailTabs->button(0))
@@ -10527,13 +10545,17 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_treeLoadedForIndex = -1;
 
     loadFileSearchIndex();
+    logStartup(QStringLiteral("  openRepo: file search index built"));
     loadAboutSidebar();
+    logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
     loadCommits();
+    logStartup(QStringLiteral("  openRepo: commits loaded"));
     // Insights (contributor stats, git shortlog) are computed lazily when the
     // Insights tab is opened — see the tab-switch handler — so opening a repo
     // doesn't pay for them up front.
     // Land on the GitHub-style overview (no explorer until a file is opened).
     loadRepoOverview(QString());
+    logStartup(QStringLiteral("  openRepo: overview loaded"));
     if (m_filesStack)
         m_filesStack->setCurrentIndex(0);
     // The detail panel lives inside Home next to the columns now, so just make
