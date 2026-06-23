@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 147
 title: don't create a new chat room for each node / repo
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 13
