@@ -5,7 +5,7 @@ title: when switching between nodes in the top menu the app freezes sometimes - 
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 6
 progress: 0
 assignees: []
 createdAt: 1782151989335
