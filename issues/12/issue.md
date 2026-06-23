@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 12
 title: Mirror storage location setting
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 12
