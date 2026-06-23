@@ -1,0 +1,33 @@
+diff --git a/flutter_app/lib/services/settings_service.dart b/flutter_app/lib/services/settings_service.dart
+index 83441d1..ddb1b74 100644
+--- a/flutter_app/lib/services/settings_service.dart
++++ b/flutter_app/lib/services/settings_service.dart
+@@ -22,17 +22,28 @@ class SettingsService extends ChangeNotifier {
+   String get passphrase =>
+       _prefs.getString('server/passphrase') ?? defaultPassphrase;
+   String get solanaAddress => _prefs.getString('profile/solana') ?? '';
++  String get bchAddress => _prefs.getString('profile/bch') ?? '';
+   String get githubToken => _prefs.getString('import/githubToken') ?? '';
+   String get gitlabToken => _prefs.getString('import/gitlabToken') ?? '';
+ 
++  /// Whether the user has seen and dismissed the join/onboarding screen.
++  bool get hasCompletedOnboarding =>
++      _prefs.getBool('onboarding/completed') ?? false;
++
+   Future<void> setDisplayName(String v) => _set('profile/name', v);
+   Future<void> setServerUrl(String v) => _set('server/url', v);
+   Future<void> setRoom(String v) => _set('server/room', v);
+   Future<void> setPassphrase(String v) => _set('server/passphrase', v);
+   Future<void> setSolanaAddress(String v) => _set('profile/solana', v);
++  Future<void> setBchAddress(String v) => _set('profile/bch', v);
+   Future<void> setGithubToken(String v) => _set('import/githubToken', v);
+   Future<void> setGitlabToken(String v) => _set('import/gitlabToken', v);
+ 
++  Future<void> completeOnboarding() async {
++    await _prefs.setBool('onboarding/completed', true);
++    notifyListeners();
++  }
++
+   Future<void> _set(String key, String value) async {
+     await _prefs.setString(key, value);
+     notifyListeners();
