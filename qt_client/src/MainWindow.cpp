@@ -1962,6 +1962,28 @@ void logStartup(const QString &phase)
                              .arg(startupClock().elapsed(), 5)
                              .arg(phase);
 }
+
+// Same idea for the rebuild/restart path, which can be slow (git pull, cmake
+// configure, full rebuild, relaunch): each phase prints "[restart +<ms>ms]" so
+// the time sink is obvious from the terminal. The clock is reset by
+// beginRestartLog() at the start of each restart sequence.
+QElapsedTimer &restartClock()
+{
+    static QElapsedTimer t;
+    return t;
+}
+void beginRestartLog()
+{
+    restartClock().start();
+}
+void logRestart(const QString &phase)
+{
+    if (!restartClock().isValid())
+        restartClock().start();
+    qInfo().noquote() << QStringLiteral("[restart +%1ms] %2")
+                             .arg(restartClock().elapsed(), 5)
+                             .arg(phase);
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
@@ -3353,6 +3375,7 @@ void MainWindow::persistProfile()
 
 void MainWindow::setUpdateStatus(const QString &status, bool isError)
 {
+    logRestart(isError ? QStringLiteral("ERROR: %1").arg(status) : status);
     QLabel *label = m_buildStatusLabel ? m_buildStatusLabel : m_updateStatus;
     if (!label)
         return;
@@ -3366,13 +3389,22 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                                const QString &workingDir,
                                std::function<void()> onSuccess)
 {
+    const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
+    logRestart(QStringLiteral("run: %1").arg(commandLine));
+    QElapsedTimer stepTimer;
+    stepTimer.start();
     auto *process = new QProcess(this);
     process->setWorkingDirectory(workingDir);
     connect(process, &QProcess::finished, this,
-            [this, process, onSuccess](int exitCode, QProcess::ExitStatus) {
+            [this, process, stepTimer, commandLine, onSuccess](
+                int exitCode, QProcess::ExitStatus) {
                 const QString errors =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
+                logRestart(QStringLiteral("done in %1ms (exit %2): %3")
+                               .arg(stepTimer.elapsed())
+                               .arg(exitCode)
+                               .arg(commandLine));
                 if (exitCode != 0) {
                     stopRefreshSpin();
                     setUpdateStatus("Update failed: " + errors.right(300), true);
@@ -3382,8 +3414,12 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                 }
                 onSuccess();
             });
-    connect(process, &QProcess::errorOccurred, this, [this, process] {
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, stepTimer, commandLine] {
         stopRefreshSpin();
+        logRestart(QStringLiteral("failed to start after %1ms: %2")
+                       .arg(stepTimer.elapsed())
+                       .arg(commandLine));
         setUpdateStatus("Update failed: could not run " + process->program(), true);
         process->deleteLater();
         if (m_buildButton)
@@ -3394,6 +3430,8 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 
 void MainWindow::runQuickUpdate()
 {
+    beginRestartLog();
+    logRestart(QStringLiteral("quick update started"));
     saveProfileName(m_nameEdit->text());
     m_buildButton = m_updateButton;
     m_buildStatusLabel = m_updateStatus;
@@ -3469,6 +3507,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
             QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
+            logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
             QCoreApplication::quit();
         });
         return;
@@ -3493,6 +3532,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     }
     setUpdateStatus("Relaunching...");
     QProcess::startDetached(appPath, {});
+    logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
     QCoreApplication::quit();
 }
 
@@ -3524,6 +3564,8 @@ QString MainWindow::resolveInstallCloneUrl()
 
 void MainWindow::updateRebuildRestart()
 {
+    beginRestartLog();
+    logRestart(QStringLiteral("update, rebuild & restart started"));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
 
@@ -6504,6 +6546,12 @@ namespace {
 // defined here (ahead of its first users) while the renderers themselves live
 // further down next to showCommit; they share this same anonymous namespace
 // within the translation unit.
+// Format an estimated agent task cost as a short USD string, e.g. "$0.0123".
+QString agentCostText(double usd)
+{
+    return QStringLiteral("$%1").arg(usd, 0, 'f', 4);
+}
+
 struct DiffFileEntry {
     QString path;
     QString anchor;
@@ -6974,11 +7022,11 @@ QWidget *MainWindow::buildPullsTab()
     m_pullSearch->setPlaceholderText("Search pull requests\xE2\x80\xA6");
     m_pullSearch->setClearButtonEnabled(true);
 
-    m_pullTable = new QTableWidget(0, 7);
+    m_pullTable = new QTableWidget(0, 8);
     m_pullTable->setObjectName("issueTable");
     m_pullTable->setHorizontalHeaderLabels(
         {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
-         "Author"});
+         "Author", "Agent cost"});
     m_pullTable->verticalHeader()->setVisible(false);
     m_pullTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_pullTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6990,7 +7038,7 @@ QWidget *MainWindow::buildPullsTab()
     ph->setHighlightSections(false);
     ph->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     ph->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 7; ++c)
+    for (int c = 2; c < 8; ++c)
         ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -7274,6 +7322,19 @@ void MainWindow::refreshPullList()
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(pr.author);
         m_pullTable->setItem(row, 6, authorItem);
+        // Cost of the agent task that produced this PR, when one is linked.
+        const AgentSession *agent = agentSessionForPull(pr.number);
+        auto *costItem = new QTableWidgetItem;
+        if (agent) {
+            costItem->setData(Qt::DisplayRole, agentCostText(agent->costUsd));
+            costItem->setData(Qt::UserRole, agent->costUsd);
+            costItem->setToolTip(
+                QStringLiteral("Estimated cost of the agent task for this PR"));
+        } else {
+            costItem->setData(Qt::DisplayRole, QStringLiteral("\xE2\x80\x94"));
+            costItem->setData(Qt::UserRole, 0.0);
+        }
+        m_pullTable->setItem(row, 7, costItem);
     }
     m_pullTable->setSortingEnabled(true);
     int selRow = -1;
@@ -7352,6 +7413,11 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(m_pullMeta->text() +
                             QStringLiteral(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
+    // If an agent task produced this PR, surface its estimated cost.
+    if (const AgentSession *agent = agentSessionForPull(found->number))
+        m_pullMeta->setText(
+            m_pullMeta->text() +
+            QStringLiteral(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
     m_pullDesc->setText(found->description.toHtmlEscaped());
 
     // Split the unified diff into per-file sections.
@@ -8700,10 +8766,10 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 6);
+    m_agentTable = new QTableWidget(0, 7);
     m_agentTable->setObjectName("issueTable");
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "PR", "When"});
+        {"#", "Issue", "Agent", "Status", "PR", "Cost", "When"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -8715,7 +8781,7 @@ QWidget *MainWindow::buildAgentsTab()
     agentHeader->setHighlightSections(false);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 6; ++c)
+    for (int c = 2; c < 7; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -9424,8 +9490,13 @@ void MainWindow::refreshAgentTable()
                                       ? QStringLiteral("#%1").arg(session.prNumber)
                                       : (session.createPr ? QStringLiteral("Requested")
                                                           : QStringLiteral("-"))));
+        auto *cost = new QTableWidgetItem;
+        cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
+        cost->setData(Qt::UserRole, session.costUsd);
+        cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
+        m_agentTable->setItem(row, 5, cost);
         m_agentTable->setItem(
-            row, 5,
+            row, 6,
             new QTableWidgetItem(
                 QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
                     .toString(QStringLiteral("MMM d  hh:mm"))));
@@ -9489,6 +9560,17 @@ const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) cons
     return nullptr;
 }
 
+const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
+{
+    if (prNumber <= 0)
+        return nullptr;
+    for (const AgentSession &session : m_agentSessions) {
+        if (session.prNumber == prNumber)
+            return &session;
+    }
+    return nullptr;
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -9538,7 +9620,7 @@ void MainWindow::showAgentSession(int sessionId)
                 : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
         const int pct = window > 0 ? qMin(100, session->contextTokens * 100 / window) : 0;
         m_agentUsage->setText(
-            QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8")
+            QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
                 .arg(session->totalTokens)
                 .arg(session->promptTokens)
                 .arg(session->completionTokens)
@@ -9546,7 +9628,8 @@ void MainWindow::showAgentSession(int sessionId)
                 .arg(window)
                 .arg(pct)
                 .arg(maxOutput)
-                .arg(session->estimatedCredits));
+                .arg(session->estimatedCredits)
+                .arg(agentCostText(session->costUsd)));
     }
     // Connected / working status pill.
     if (m_agentStatusPill) {
@@ -10022,7 +10105,9 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                         .arg(agentProviderName(session->provider))
                         .arg(session->id)
                         .arg(session->issueNumber),
-                    session->baseRef, session->branchName, patch, &error);
+                    session->baseBranch.isEmpty() ? session->baseRef
+                                                  : session->baseBranch,
+                    session->branchName, patch, &error);
                 if (pr > 0) {
                     session->prNumber = pr;
                     m_agentStore->saveSession(*session);
@@ -10082,11 +10167,12 @@ void MainWindow::updateIssueAgentUi(const Issue &issue)
     if (m_issueAgentValue) {
         if (session) {
             m_issueAgentValue->setText(
-                QStringLiteral("%1 session #%2<br>%3 · ~%4 credits")
+                QStringLiteral("%1 session #%2<br>%3 · ~%4 credits · cost ~%5")
                     .arg(agentProviderName(session->provider))
                     .arg(session->id)
                     .arg(agentStatusText(session->status))
-                    .arg(session->estimatedCredits));
+                    .arg(session->estimatedCredits)
+                    .arg(agentCostText(session->costUsd)));
         } else {
             m_issueAgentValue->setText("No agent assigned");
         }
@@ -16168,6 +16254,8 @@ void MainWindow::quickRebuildRestart()
 {
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
+    beginRestartLog();
+    logRestart(QStringLiteral("quick rebuild & restart started"));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
     const QString clientDir = updateClientDir();
@@ -16186,6 +16274,8 @@ void MainWindow::quickRebuildRestart()
 
 void MainWindow::rebuildAndRelaunch()
 {
+    beginRestartLog();
+    logRestart(QStringLiteral("clean rebuild & restart started"));
     if (m_settingsNameEdit)
         saveProfileName(m_settingsNameEdit->text());
     m_buildButton = m_rebuildButton;

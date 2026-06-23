@@ -50,6 +50,30 @@ QString providerTitle(const QString &provider)
     return QStringLiteral("Codex");
 }
 
+// Approximate USD price per 1,000,000 tokens, used only to surface a rough
+// "how much did this task cost" figure. Claude numbers are the published
+// Anthropic per-million-token rates; the OpenAI/Codex fallback is a single
+// rough estimate since those models aren't priced here.
+struct TokenPrice {
+    double inputPerMillion;
+    double outputPerMillion;
+};
+
+TokenPrice priceFor(const QString &provider, const QString &model)
+{
+    const QString m = model.toLower();
+    if (provider.startsWith(QLatin1String("claude"))) {
+        if (m.contains(QLatin1String("haiku")))
+            return {1.0, 5.0};
+        if (m.contains(QLatin1String("sonnet")))
+            return {3.0, 15.0};
+        // Opus (the default Claude Code model) and anything unrecognised.
+        return {5.0, 25.0};
+    }
+    // Codex / OpenAI and any other provider.
+    return {1.25, 10.0};
+}
+
 } // namespace
 
 AgentRunner::AgentRunner(AgentStore *store, QObject *parent)
@@ -82,6 +106,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     m_session.maxOutputTokens = m_config.maxOutputTokens;
     m_session.promptTokens += estimateTokens(m_prompt);
     refreshUsage();
+    // Record the spend at the start of this run so the run's incremental cost
+    // can be reported as a diff when it finishes.
+    m_session.spendBeforeUsd = m_session.costUsd;
     m_store->saveSession(m_session);
     emit statusChanged(m_session.id, m_session.status);
 
@@ -115,6 +142,19 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
         return;
     }
     m_session.baseRef = QString::fromUtf8(base).trimmed();
+    // The PR targets the branch the agent forked from (typically main), not the
+    // frozen commit SHA. Fall back to the SHA only when HEAD is detached.
+    QByteArray branch;
+    if (runCapture(m_repoPath,
+                   {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                    QStringLiteral("HEAD")},
+                   &branch, nullptr)) {
+        const QString name = QString::fromUtf8(branch).trimmed();
+        if (!name.isEmpty() && name != QLatin1String("HEAD"))
+            m_session.baseBranch = name;
+    }
+    if (m_session.baseBranch.isEmpty())
+        m_session.baseBranch = m_session.baseRef;
     if (m_session.branchName.isEmpty()) {
         m_session.branchName =
             QStringLiteral("agent/issue-%1-%2-%3")
@@ -379,6 +419,16 @@ void AgentRunner::complete(bool ok, const QString &status, const QString &messag
     }
     emitLog((ok ? QStringLiteral("==> SUCCESS: ") : QStringLiteral("==> ")) + message);
     refreshUsage();
+    // Snapshot the spend after this run and log the difference so the cost of
+    // this particular run is visible in the agent log.
+    m_session.spendAfterUsd = m_session.costUsd;
+    const double runCost = m_session.spendAfterUsd - m_session.spendBeforeUsd;
+    emitLog(QStringLiteral(
+                "==> Task cost: $%1 (spend before $%2 -> after $%3, this run +$%4)")
+                .arg(m_session.costUsd, 0, 'f', 4)
+                .arg(m_session.spendBeforeUsd, 0, 'f', 4)
+                .arg(m_session.spendAfterUsd, 0, 'f', 4)
+                .arg(runCost, 0, 'f', 4));
     cleanupWorktree();
     m_session.status = status;
     m_session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -549,6 +599,15 @@ void AgentRunner::refreshUsage()
     m_session.totalTokens = m_session.promptTokens + m_session.completionTokens;
     m_session.contextTokens = m_session.totalTokens;
     m_session.estimatedCredits = (m_session.totalTokens + 999) / 1000;
+    m_session.costUsd = estimateCostUsd();
+}
+
+double AgentRunner::estimateCostUsd() const
+{
+    const TokenPrice price = priceFor(m_session.provider, m_config.model);
+    return (m_session.promptTokens * price.inputPerMillion +
+            m_session.completionTokens * price.outputPerMillion) /
+           1000000.0;
 }
 
 int AgentRunner::estimateTokens(const QString &text)

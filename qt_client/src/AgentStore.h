@@ -25,7 +25,8 @@ struct AgentSession {
     int prNumber = 0;
     QString status = AgentStatus::Queued;
     QString branchName;
-    QString baseRef;
+    QString baseRef;    // base commit SHA captured at run start (worktree/diff)
+    QString baseBranch; // base branch the PR targets (e.g. main)
     qint64 createdAtMs = 0;
     qint64 startedAtMs = 0;
     qint64 finishedAtMs = 0;
@@ -36,6 +37,12 @@ struct AgentSession {
     int contextWindow = 0;
     int maxOutputTokens = 0;
     int estimatedCredits = 0;
+    // Estimated USD cost of the task, derived from token usage and the model's
+    // price. costUsd is the running total; spendBeforeUsd / spendAfterUsd
+    // snapshot the total around the latest run so the per-run diff can be logged.
+    double costUsd = 0.0;
+    double spendBeforeUsd = 0.0;
+    double spendAfterUsd = 0.0;
     QString lastError;
 
     QString repoKey() const;
