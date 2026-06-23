@@ -985,6 +985,16 @@ main {
   color: var(--muted);
 }
 
+a.repo-icon {
+  text-decoration: none;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+a.repo-icon:hover {
+  color: var(--foreground);
+  border-color: var(--accent-bright);
+}
+
 .repo-icon svg {
   width: 13px;
   height: 13px;
@@ -1030,6 +1040,59 @@ main {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+/* ===== Profile page ===== */
+.profile-header,
+.profile-repos {
+  max-width: 960px;
+  margin: 0 auto 16px;
+}
+
+.profile-header {
+  padding: 18px;
+}
+
+.profile-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.profile-avatar {
+  width: 54px;
+  height: 54px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+}
+
+.profile-avatar svg {
+  width: 25px;
+  height: 25px;
+}
+
+#profile-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+#profile-subtitle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.profile-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .clone-box {
@@ -1801,6 +1864,10 @@ button.issue-row {
 
   .home-grid,
   .repo-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-meta {
     grid-template-columns: 1fr;
   }
 
