@@ -61,6 +61,7 @@ private:
     // actionable message the first time one is seen (else empty).
     QString detectAuthIssue(const QString &chunk);
     void refreshUsage();
+    double estimateCostUsd() const;
     static int estimateTokens(const QString &text);
 
     AgentStore *m_store;

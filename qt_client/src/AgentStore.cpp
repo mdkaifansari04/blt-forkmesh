@@ -41,6 +41,7 @@ QJsonObject AgentSession::toJson() const
     obj["status"] = status;
     obj["branchName"] = branchName;
     obj["baseRef"] = baseRef;
+    obj["baseBranch"] = baseBranch;
     obj["createdAtMs"] = createdAtMs;
     obj["startedAtMs"] = startedAtMs;
     obj["finishedAtMs"] = finishedAtMs;
@@ -51,6 +52,9 @@ QJsonObject AgentSession::toJson() const
     obj["contextWindow"] = contextWindow;
     obj["maxOutputTokens"] = maxOutputTokens;
     obj["estimatedCredits"] = estimatedCredits;
+    obj["costUsd"] = costUsd;
+    obj["spendBeforeUsd"] = spendBeforeUsd;
+    obj["spendAfterUsd"] = spendAfterUsd;
     obj["lastError"] = lastError;
     return obj;
 }
@@ -69,6 +73,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.status = obj.value("status").toString(AgentStatus::Queued);
     session.branchName = obj.value("branchName").toString();
     session.baseRef = obj.value("baseRef").toString();
+    session.baseBranch = obj.value("baseBranch").toString();
     session.createdAtMs = obj.value("createdAtMs").toVariant().toLongLong();
     session.startedAtMs = obj.value("startedAtMs").toVariant().toLongLong();
     session.finishedAtMs = obj.value("finishedAtMs").toVariant().toLongLong();
@@ -79,6 +84,9 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.contextWindow = obj.value("contextWindow").toInt();
     session.maxOutputTokens = obj.value("maxOutputTokens").toInt();
     session.estimatedCredits = obj.value("estimatedCredits").toInt();
+    session.costUsd = obj.value("costUsd").toDouble();
+    session.spendBeforeUsd = obj.value("spendBeforeUsd").toDouble();
+    session.spendAfterUsd = obj.value("spendAfterUsd").toDouble();
     session.lastError = obj.value("lastError").toString();
     return session;
 }

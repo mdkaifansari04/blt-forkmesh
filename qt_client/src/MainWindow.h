@@ -307,6 +307,7 @@ private:
     void updateAgentNetworkPanel(const QString &log, const QString &status);
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
+    const AgentSession *agentSessionForPull(int prNumber) const;
     void assignIssueToAgent(const QString &provider);
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
