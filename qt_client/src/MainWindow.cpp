@@ -4150,13 +4150,14 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
-    // Chat toggle, next to the notification bell, with an unread indicator.
+    // Chat toggle, paired with the notification bell on the second nav row.
     m_chatButton = new QPushButton(QStringLiteral("Chat"));
     m_chatButton->setObjectName("notificationButton");
     m_chatButton->setCursor(Qt::PointingHandCursor);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
 
+<<<<<<< ours
     auto *firstRow = new QHBoxLayout;
     firstRow->setContentsMargins(0, 0, 0, 0);
     firstRow->setSpacing(8);
@@ -4196,6 +4197,45 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->setSpacing(8);
     layout->addLayout(firstRow);
     layout->addLayout(secondRow);
+=======
+    auto *layout = new QVBoxLayout(bar);
+    layout->setContentsMargins(16, 10, 16, 10);
+    layout->setSpacing(8);
+
+    auto *mainRow = new QHBoxLayout;
+    mainRow->setContentsMargins(0, 0, 0, 0);
+    mainRow->setSpacing(8);
+    mainRow->addWidget(m_relayLabel);
+    mainRow->addWidget(m_relayIconButton);
+    mainRow->addWidget(m_relayMenuButton);
+    mainRow->addWidget(m_relayOpenButton);
+    mainRow->addSpacing(10);
+    mainRow->addWidget(m_nodeLabel);
+    mainRow->addWidget(m_nodeMenuButton);
+    mainRow->addSpacing(10);
+    mainRow->addWidget(m_repoLabel);
+    mainRow->addWidget(m_repoMenuButton);
+    mainRow->addWidget(m_repoViewButton);
+    mainRow->addWidget(m_repoPushButton);
+    mainRow->addSpacing(6);
+    mainRow->addWidget(m_breadcrumb);
+    mainRow->addStretch();
+    mainRow->addWidget(m_topMessage);
+    mainRow->addWidget(m_topMessageCopy);
+    mainRow->addStretch();
+    mainRow->addWidget(m_connectionStatus);
+    mainRow->addWidget(m_navSolanaBalance);
+    mainRow->addWidget(m_avatarNavButton);
+    layout->addLayout(mainRow);
+
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(8);
+    actionRow->addWidget(m_chatButton);
+    actionRow->addWidget(m_notificationButton);
+    actionRow->addStretch();
+    layout->addLayout(actionRow);
+>>>>>>> theirs
     updateBreadcrumb();
     updateConnectionStatus();
     updateNotificationButton();
