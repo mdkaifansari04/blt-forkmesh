@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 32
 title: add another tab for milestones and list the milestones with their open / closed issues and progress bars
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 68
