@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 21
 title: when I click the rebuild icon make it spin
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 28
