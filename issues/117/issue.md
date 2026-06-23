@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 117
 title: action tab shows 0 when first started it should show the correct amount
-status: open
+status: closed
 labels: [bug]
 milestone: MVP launch
 priority: 17
