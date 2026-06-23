@@ -19,6 +19,13 @@ namespace {
 
 constexpr int kSeenCacheLimit = 4096;
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
+// Each connected node rebroadcasts a lightweight presence frame on this cadence
+// so peers keep its "last seen" fresh; a peer not heard from for longer than the
+// stale window is treated as offline and dropped from the roster. This is what
+// reaps nodes that vanished without a clean "bye" (crash, network loss) instead
+// of leaving them shown as online indefinitely.
+constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
+constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
 constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
 constexpr int kMaxDisplayNameChars = 32;
 constexpr int kMaxSolanaAddressChars = 64;
@@ -222,6 +229,17 @@ bool ServerNode::start()
                 [this] { sendControlFrame(0x9); });
     }
 
+    if (!m_presenceTimer) {
+        // Heartbeat into the room so peers keep our last-seen fresh, and sweep
+        // our own roster so peers that went stale (no "bye") stop showing online.
+        m_presenceTimer = new QTimer(this);
+        m_presenceTimer->setInterval(kPresenceIntervalMs);
+        connect(m_presenceTimer, &QTimer::timeout, this, [this] {
+            sendPresence();
+            updateRosterAndStatus(); // re-evaluate staleness even with no traffic
+        });
+    }
+
     emit statusChanged("Connecting to " + m_url.host() + "...");
     openConnection();
     return true;
@@ -291,6 +309,8 @@ void ServerNode::connectSocketSignals()
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
         if (m_pingTimer)
             m_pingTimer->stop();
+        if (m_presenceTimer)
+            m_presenceTimer->stop();
         m_wsReady = false;
         m_peers.clear();
         updateRosterAndStatus();
@@ -352,6 +372,8 @@ void ServerNode::onSocketReadyRead()
         m_reconnectAttempt = 0; // healthy link: reset backoff
         if (m_pingTimer)
             m_pingTimer->start();
+        if (m_presenceTimer)
+            m_presenceTimer->start();
         emit channelsChanged(m_channels);
         updateRosterAndStatus();
         emit statusChanged("Connected to encrypted mainnode room " + m_roomName);
@@ -527,6 +549,16 @@ void ServerNode::sendHello()
     hello.insert("channels", channels);
     writeMirrors(hello, m_mirroredRepos);
     sendEncrypted(hello, true);
+}
+
+void ServerNode::sendPresence()
+{
+    if (!m_wsReady)
+        return;
+    // A bare keep-alive: makeMessage already carries senderId/name/platform, so
+    // peers refresh our last-seen on receipt. Ephemeral (not persisted) and not
+    // logged as activity, unlike hello, so it stays quiet on the network log.
+    sendEncrypted(makeMessage("presence"), false);
 }
 
 void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
@@ -719,6 +751,8 @@ void ServerNode::shutdown()
         m_reconnectTimer->stop();
     if (m_pingTimer)
         m_pingTimer->stop();
+    if (m_presenceTimer)
+        m_presenceTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
     if (m_socket) {
@@ -961,8 +995,13 @@ void ServerNode::flushRosterAndStatus()
     self.mirrorDetails = m_mirroredRepos;
     QList<MemberInfo> members{self};
     int onlineCount = 0;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
         if (!it->online)
+            continue;
+        // Drop peers that stopped sending frames (presence/hello/chat) long ago:
+        // a disconnect without a "bye" otherwise leaves them stuck online forever.
+        if (now - it->lastSeenMs > kPeerStaleMs)
             continue;
         MemberInfo member;
         member.id = it.key();

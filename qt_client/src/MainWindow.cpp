@@ -15372,27 +15372,7 @@ void MainWindow::refreshIssueList()
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 7, created);
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
-            // Brand icon for the agent that worked the issue: Claude uses the
-            // "code" octicon (clay), Codex/OpenAI the "terminal" octicon (green).
-            const bool isClaude = agentIsClaudeProvider(session->provider);
-            const QString iconName = isClaude ? "code" : "terminal";
-            const QColor iconColor(isClaude ? "#d97757" : "#10a37f");
-            auto *button = new QPushButton;
-            button->setObjectName("issueIconButton");
-            button->setFlat(true);
-            button->setCursor(Qt::PointingHandCursor);
-            button->setIcon(themedOcticon(iconName, iconColor, 16));
-            button->setIconSize(QSize(16, 16));
-            button->setFocusPolicy(Qt::NoFocus); // don't steal the row selection
-            button->setToolTip(agentProviderName(session->provider) +
-                               QStringLiteral(" session #%1 \xC2\xB7 click to view")
-                                   .arg(session->id));
-            const int sessionId = session->id;
-            // Clicking the icon opens the session; because the button consumes
-            // the click it doesn't reselect the row or refresh the issue pane.
-            connect(button, &QPushButton::clicked, this,
-                    [this, sessionId] { switchToAgentsTab(sessionId); });
-            m_issueTable->setCellWidget(row, 8, button);
+            // Plain agent-provider name — no clickable icon/hover in this cell.
             auto *agentItem = new QTableWidgetItem(agentProviderName(session->provider));
             agentItem->setData(Qt::UserRole, session->id);
             m_issueTable->setItem(row, 8, agentItem);
