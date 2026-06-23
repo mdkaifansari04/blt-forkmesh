@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 116
 title: don't let the user change the default repository room and don't require a mainnode room passphrase anymore just encrypt it standardly and all nodes can join the same rooms on the server
-status: open
+status: closed
 labels: [security]
 milestone: MVP launch
 priority: 4
