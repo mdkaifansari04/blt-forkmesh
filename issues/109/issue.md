@@ -5,10 +5,15 @@ title: when any agent is working please show an activity indicator similar to th
 status: closed
 labels: []
 milestone: 
+priority: 0
+progress: 100
 assignees: []
 createdAt: 1782083839322
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-109
 ts: 1782083839322
