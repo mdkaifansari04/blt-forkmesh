@@ -473,6 +473,7 @@ private:
     void promptNewIssue();
     void quickAddIssue();
     void copyIssueToClipboard();
+    void askAiForCurrentIssue();
     int availableCredits() const;     // 1 voting credit per hour online
     void voteOnCurrentIssue();
     void submitIssueVoteToInbox();
@@ -971,6 +972,7 @@ private:
     QPushButton *m_issueVoteButton = nullptr;
     QLabel *m_issueCreditsLabel = nullptr;
     QPushButton *m_issueCommentButton = nullptr;
+    QPushButton *m_issueAskAiButton = nullptr;
     QPushButton *m_issueAttachButton = nullptr;
     QPushButton *m_issueCloseButton = nullptr;
     QPushButton *m_issueLabelsButton = nullptr;

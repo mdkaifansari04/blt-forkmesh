@@ -561,10 +561,6 @@ void AgentRunner::onNoOutputTimeout()
                 .arg(quietSecs)
                 .arg(m_process->processId())
                 .arg(m_currentProgram));
-    if (m_session.provider == QLatin1String("claude-code")) {
-        emitLog(QStringLiteral(
-            "==> Claude Code can be silent while working or while waiting for CLI login/permission state; check the Claude Code terminal login if this keeps repeating."));
-    }
 }
 
 void AgentRunner::refreshUsage()
