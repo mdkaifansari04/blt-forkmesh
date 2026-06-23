@@ -4,7 +4,7 @@ number: 4
 title: Fix Qt startup without account login
 base: main
 head: fix/qt-client-startup-branch-name
-status: open
+status: merged
 ts: 1782218616802
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

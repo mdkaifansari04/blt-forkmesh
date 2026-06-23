@@ -582,6 +582,42 @@ QString updateClientDir()
            "/src/qt_client";
 }
 
+bool gitOutput(const QString &clientDir, const QStringList &arguments, QString *out)
+{
+    QProcess process;
+    process.setWorkingDirectory(clientDir);
+    process.start(QStringLiteral("git"), arguments);
+    if (!process.waitForFinished(3000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return false;
+    }
+    if (process.exitCode() != 0)
+        return false;
+    if (out)
+        *out = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    return true;
+}
+
+QStringList quickUpdatePullArguments(const QString &clientDir)
+{
+    QString upstream;
+    if (gitOutput(clientDir,
+                  {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"},
+                  &upstream) &&
+        !upstream.isEmpty()) {
+        return {"pull", "--ff-only"};
+    }
+
+    QString branch;
+    if (gitOutput(clientDir, {"branch", "--show-current"}, &branch) &&
+        !branch.isEmpty()) {
+        return {"pull", "--ff-only", "origin", branch};
+    }
+
+    return {"pull", "--ff-only", "origin", "HEAD"};
+}
+
 // When ForkMesh runs as root (e.g. launched via `sudo`), updates must never be
 // written under /root. Returns the invoking non-root user's name when we are
 // root and SUDO_USER points at a real user, otherwise an empty string (meaning
@@ -2750,8 +2786,6 @@ QWidget *MainWindow::buildSetupPage()
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
     connect(joinButton, &QPushButton::clicked, this, [this]() {
-        // Make sure the identity + session are ready, then run the staged join.
-        startSession();
         const QString name = accountNameFromInput(m_nameEdit->text(), QString());
         if (name.isEmpty()) {
             if (m_setupError) {
@@ -2760,7 +2794,20 @@ QWidget *MainWindow::buildSetupPage()
             }
             return;
         }
-        ensureNodeAccount(name, m_solanaEdit->text().trimmed());
+        m_nameEdit->setText(name);
+        saveProfileName(name);
+        saveSolanaAddress(m_solanaEdit->text().trimmed());
+        if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+            m_setupError->setText(m_profileIdentity.errorString());
+            m_setupError->show();
+            return;
+        }
+        if (!ensureNodeAccount(name, m_solanaEdit->text().trimmed())) {
+            m_setupError->setText("Log in to your node account to join the network.");
+            m_setupError->show();
+            return;
+        }
+        startSession();
     });
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
@@ -2777,6 +2824,39 @@ QWidget *MainWindow::buildSetupPage()
 
     return page;
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testSetSetupInputs(const QString &name, const QString &solana)
+{
+    if (m_nameEdit)
+        m_nameEdit->setText(name);
+    if (m_solanaEdit)
+        m_solanaEdit->setText(solana);
+    QSettings().setValue(kSolanaSetting, solana.trimmed());
+}
+
+int MainWindow::testStackIndex() const
+{
+    return m_stack ? m_stack->currentIndex() : -1;
+}
+
+QString MainWindow::testSavedSolanaAddress() const
+{
+    return QSettings().value(kSolanaSetting).toString().trimmed();
+}
+
+int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
+                                           const QString &mirrorPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.mirrorPath = mirrorPath;
+    repo.publishToNetwork = true;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+#endif
 
 void MainWindow::startSession()
 {
@@ -2795,14 +2875,12 @@ void MainWindow::startSession()
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(kDefaultServerUrl);
 
-    // The one visible name is also the account owner / repo namespace. The app
-    // must be authenticated: log in (or sign up) before any networking starts, so
-    // the node key is bound to a registered account that the relay verifies for
-    // hosting/publishing. If the user cancels, stay on the setup screen.
-    if (!ensureNodeAccount(name, m_solanaEdit->text().trimmed())) {
-        m_setupError->setText("Log in to your node account to join the network.");
-        m_setupError->show();
-        return;
+    saveSolanaAddress(m_solanaEdit->text().trimmed());
+    if (m_accountAuthenticated && m_accountName != name) {
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
     }
     m_accountName = name;
     QSettings().setValue(kAccountNameSetting, name);
@@ -2810,6 +2888,12 @@ void MainWindow::startSession()
     m_roomNameEdit->setText(kDefaultRoomName); // fixed shared room (read-only)
     m_setupError->hide();
     m_userName = name;
+#ifdef FORKMESH_WINDOW_TESTS
+    if (m_testBypassServerStart) {
+        m_stack->setCurrentIndex(1);
+        return;
+    }
+#endif
     persistProfile();
     m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
 
@@ -3106,6 +3190,11 @@ QString MainWindow::accountOwner() const
     return accountNameFromInput(m_userName, QStringLiteral("owner"));
 }
 
+bool MainWindow::hasActiveAccountSession() const
+{
+    return m_accountAuthenticated && m_accountTier == QStringLiteral("active");
+}
+
 QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
 {
     const QString account = accountOwner();
@@ -3278,6 +3367,19 @@ void MainWindow::ensureFlagshipRepo()
 
 bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &solana)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    if (m_testUseAccountFlowResult) {
+        ++m_testEnsureNodeAccountCalls;
+        if (m_testAccountFlowResult) {
+            m_accountAuthenticated = true;
+            m_accountName = accountName;
+            m_accountTier = QStringLiteral("active");
+            m_accountSolanaVerified = true;
+        }
+        Q_UNUSED(solana);
+        return m_testAccountFlowResult;
+    }
+#endif
     Q_UNUSED(solana);
     if (m_accountAuthenticated && m_accountName == accountName)
         return true;
@@ -3758,6 +3860,13 @@ void MainWindow::setUpdateStatus(const QString &status, bool isError)
     label->show();
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) const
+{
+    return quickUpdatePullArguments(clientDir);
+}
+#endif
+
 void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
                                const QString &workingDir,
                                std::function<void()> onSuccess)
@@ -3813,7 +3922,7 @@ void MainWindow::runQuickUpdate()
 
     if (QDir(clientDir).exists("CMakeLists.txt")) {
         setUpdateStatus("Pulling the latest version...");
-        runUpdateStep("git", {"pull", "--ff-only"}, clientDir,
+        runUpdateStep("git", quickUpdatePullArguments(clientDir), clientDir,
                       [this, clientDir] { buildAndRelaunch(clientDir); });
     } else {
         // No checkout anywhere (binary installed without one): clone a fresh
@@ -21819,6 +21928,8 @@ void MainWindow::startRepoHosts()
     // One live host per published repository that already has a local mirror.
     // Rebuilt from scratch so adding/removing repos stays simple.
     stopRepoHosts();
+    if (!hasActiveAccountSession())
+        return;
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
             !QDir(repo.mirrorPath).exists())
@@ -21896,12 +22007,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
         return;
     if (m_repositories.at(index).previewOnly)
         return;
+    RepositoryRecord &repo = m_repositories[index];
+    if (!hasActiveAccountSession()) {
+        const QString message =
+            QStringLiteral("Join the network before publishing repositories.");
+        logSystem(message);
+        if (showDialogOnError)
+            flashMessage(message, /*error=*/true);
+        return;
+    }
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Catalog: could not load identity for repository publishing.");
         return;
     }
 
-    RepositoryRecord &repo = m_repositories[index];
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     // Always publish under the registered account name so the catalog dedups by
     // account/name (one entry per fork) and the server can verify ownership.
