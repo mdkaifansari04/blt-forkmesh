@@ -5849,11 +5849,11 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 10);
+    m_issueTable = new QTableWidget(0, 13);
     m_issueTable->setObjectName("issueTable");
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
-         "Created", "Agent", "Author"});
+         "Created", "Agent", "Author", "Progress", "Est. cost", "Bounty"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -5875,7 +5875,10 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Milestone
     header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Created
     header->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Agent
-    header->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Author
+    header->setSectionResizeMode(9, QHeaderView::ResizeToContents);  // Author
+    header->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Progress
+    header->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Est. cost
+    header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Bounty
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
@@ -14139,6 +14142,33 @@ void MainWindow::refreshIssueList()
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(issue.author);
         m_issueTable->setItem(row, 9, authorItem);
+
+        // Progress: percent complete, sorted numerically.
+        const int pct = qBound(0, issue.progress, 100);
+        auto *progressItem = new SortTableWidgetItem(QStringLiteral("%1%").arg(pct));
+        progressItem->setData(kTableSortRole, pct);
+        progressItem->setTextAlignment(Qt::AlignCenter);
+        m_issueTable->setItem(row, 10, progressItem);
+
+        // Estimated OpenAI cost to implement, sorted numerically.
+        const double estUsd = openAiEstimateUsd(issue);
+        auto *estItem = new SortTableWidgetItem(
+            QStringLiteral("$%1").arg(QString::number(estUsd, 'f', 2)));
+        estItem->setData(kTableSortRole, estUsd);
+        estItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_issueTable->setItem(row, 11, estItem);
+
+        // Bounty pledged on the issue (em dash + sorts first when none).
+        auto *bountyItem = new SortTableWidgetItem(
+            issue.bountyUsd > 0
+                ? QStringLiteral("$%1").arg(QString::number(issue.bountyUsd, 'f', 2))
+                : QString::fromUtf8("\xE2\x80\x94"));
+        bountyItem->setData(kTableSortRole, issue.bountyUsd);
+        bountyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (!issue.bountyStatus.isEmpty())
+            bountyItem->setToolTip(
+                QStringLiteral("Bounty status: %1").arg(issue.bountyStatus));
+        m_issueTable->setItem(row, 12, bountyItem);
     }
     m_issueTable->setSortingEnabled(true);
 
@@ -14150,12 +14180,20 @@ void MainWindow::refreshIssueList()
             break;
         }
     }
-    if (selRow < 0 && m_issueTable->rowCount() > 0)
-        selRow = 0;
     if (selRow >= 0) {
-        m_issueTable->selectRow(selRow); // fires itemSelectionChanged -> showIssue
+        // Re-select the issue the user was already viewing (fires
+        // itemSelectionChanged -> showIssue).
+        m_issueTable->selectRow(selRow);
     } else {
+        // First load (or the viewed issue is gone): show the table full width
+        // with no row selected; the detail panel stays hidden until a click.
+        m_issueTable->clearSelection();
         m_currentIssueNumber = -1;
+        if (m_issueDetail && m_issueDetail->isVisible()) {
+            m_issueDetail->hide();
+            if (m_issueDetailToggle)
+                m_issueDetailToggle->setText("Show detail");
+        }
         renderIssueThread(Issue());
         updateIssueActionState();
     }
