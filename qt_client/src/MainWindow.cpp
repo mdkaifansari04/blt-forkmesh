@@ -275,16 +275,11 @@ const QString kLegacyCodexCommand =
 // stored settings using it can be migrated to the API-key based runner below.
 const QString kLegacyClaudeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
-// "Claude Code" provider: drive the installed `claude` CLI (subscription/login
-// auth) rather than the bundled Anthropic-API script used by "Claude API".
-const QString kClaudeCodeCliCommand =
-    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions "
-                   "< /dev/null");
 constexpr int kNetworkLogLimit = 2000;
 
-// Provider family helper: the Anthropic-backed providers ("Claude Code" CLI and
-// "Claude API" script, plus the legacy "claude" value) share usage windows,
-// spend tracking and iconography; everything else is OpenAI/Codex-backed.
+// Provider family helper: the Anthropic-backed "Claude API" script (plus the
+// legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
+// iconography; everything else is OpenAI-backed.
 bool agentIsClaudeProvider(const QString &provider)
 {
     return provider.startsWith(QLatin1String("claude"));
@@ -445,10 +440,11 @@ QString brewPrefix(const QString &formula)
 }
 #endif
 
-QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir)
+QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
+                               const QString &buildType)
 {
-    QStringList args{"-S", clientDir, "-B", buildDir, "-DCMAKE_BUILD_TYPE=Release",
-                     "-DFORKMESH_BUILD_TESTS=OFF"};
+    QStringList args{"-S", clientDir, "-B", buildDir,
+                     "-DCMAKE_BUILD_TYPE=" + buildType, "-DFORKMESH_BUILD_TESTS=OFF"};
 #ifdef Q_OS_MACOS
     const QString qtPrefix = brewPrefix("qt");
     if (!qtPrefix.isEmpty())
@@ -3473,7 +3469,7 @@ void MainWindow::runUpdateStepUser(const QString &program,
 }
 
 void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUser,
-                                  const QString &relaunchPath)
+                                  const QString &relaunchPath, const QString &buildType)
 {
     m_updateAsUser = asUser;
     const QString appPath = relaunchPath.isEmpty()
@@ -3481,7 +3477,7 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
                                 : relaunchPath;
     const QString buildDir = clientDir + "/build";
     setUpdateStatus("Configuring...");
-    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir),
+    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
         runUpdateStepUser("cmake",
@@ -3910,9 +3906,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
     m_quickAddAgentProvider = new QComboBox;
-    m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), QStringLiteral("codex"));
-    m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
-                                     QStringLiteral("claude-code"));
     m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
@@ -5816,17 +5809,28 @@ QWidget *MainWindow::buildIssuesSection()
     issueBurnupButton->setToolTip(
         "Show open and closed issue totals over time");
     setOcticon(issueBurnupButton, "graph", 16);
-    m_issueDetailToggle = new QPushButton("Hide detail");
+    m_issueDetailToggle = new QPushButton("Show detail");
     m_issueDetailToggle->setObjectName("ghostButton");
     m_issueDetailToggle->setCursor(Qt::PointingHandCursor);
     m_issueDetailToggle->setToolTip("Show/hide the issue detail panel");
     m_issueCreditsLabel = new QLabel;
     m_issueCreditsLabel->setObjectName("statusLine");
     m_issueCreditsLabel->setToolTip("Voting credits — earn 1 per hour online");
+    auto *reprioritizeButton = new QPushButton("Reprioritize");
+    reprioritizeButton->setObjectName("ghostButton");
+    reprioritizeButton->setProperty("buttonSize", "sm");
+    reprioritizeButton->setCursor(Qt::PointingHandCursor);
+    reprioritizeButton->setToolTip(
+        "Assign a priority and an MVP/Phase 2 label to open issues that have no "
+        "priority yet");
+    setOcticon(reprioritizeButton, "sort-desc", 16);
+    connect(reprioritizeButton, &QPushButton::clicked, this,
+            &MainWindow::reprioritizeBacklog);
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
+    actionRow->addWidget(reprioritizeButton);
     actionRow->addWidget(m_issueStatusFilter);
     actionRow->addStretch();
     actionRow->addWidget(m_issueCreditsLabel);
@@ -6051,8 +6055,13 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
     m_issuePriorityValue = new QLabel("No priority");
+    m_issueProgressValue = new QLabel("0%");
+    m_issueEstimateValue = new QLabel("\xE2\x80\x94");
+    m_issueBountyValue = new QLabel("No bounty");
     for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue,
-                      m_issueMilestoneValue, m_issuePriorityValue}) {
+                      m_issueMilestoneValue, m_issuePriorityValue,
+                      m_issueProgressValue, m_issueEstimateValue,
+                      m_issueBountyValue}) {
         v->setObjectName("statusLine");
         v->setWordWrap(true);
         v->setTextFormat(Qt::RichText);
@@ -6076,10 +6085,13 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueLabelsButton = new QPushButton;
     m_issueMilestoneButton = new QPushButton;
     m_issuePriorityButton = new QPushButton;
+    m_issueProgressButton = new QPushButton;
+    m_issueBountyButton = new QPushButton;
     m_issueAssigneesButton = new QPushButton;
     m_issueDeleteButton = new QPushButton("Delete issue");
     for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
-                           m_issuePriorityButton,
+                           m_issuePriorityButton, m_issueProgressButton,
+                           m_issueBountyButton,
                            m_issueAssigneesButton}) {
         b->setObjectName("issueIconButton");
         b->setFixedSize(28, 28);
@@ -6231,13 +6243,8 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAgentValue->setObjectName("statusLine");
     m_issueAgentValue->setWordWrap(true);
     m_issueAgentValue->setTextFormat(Qt::RichText);
-    // The same four ways to run an agent as the issue-list quick-add: two
-    // subscription/login CLIs (Codex, Claude Code) and two API-key providers
-    // (OpenAI API, Claude API).
+    // The same two API-key providers as the issue-list quick-add.
     m_issueAgentProvider = new QComboBox(meta);
-    m_issueAgentProvider->addItem(QStringLiteral("Codex"), QStringLiteral("codex"));
-    m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
-                                  QStringLiteral("claude-code"));
     m_issueAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                   QStringLiteral("openai"));
     m_issueAgentProvider->addItem(QStringLiteral("Claude API"),
@@ -6293,6 +6300,9 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Labels", m_issueLabelsStack, m_issueLabelsButton);
     addMetaSection("Type", makeValue("No type"), makeGear());
     addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton);
+    addMetaSection("Progress", m_issueProgressValue, m_issueProgressButton);
+    addMetaSection("Est. OpenAI cost", m_issueEstimateValue);
+    addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
@@ -6351,6 +6361,9 @@ QWidget *MainWindow::buildIssuesSection()
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({520, 560});
+    // Open full width: the table fills the page until an issue is selected, at
+    // which point showIssue() reveals the detail pane beside it.
+    m_issueDetail->hide();
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -6424,6 +6437,10 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::editIssueMilestone);
     connect(m_issuePriorityButton, &QPushButton::clicked, this,
             &MainWindow::editIssuePriority);
+    connect(m_issueProgressButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueProgress);
+    connect(m_issueBountyButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueBounty);
     connect(m_issueAssigneesButton, &QPushButton::clicked, this,
             &MainWindow::editIssueAssignees);
     return page;
@@ -7313,11 +7330,15 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addWidget(m_pullDesc);
     detailLayout->addWidget(detailVSplit, 1);
 
+    // Open full width: the table fills the page until a pull request is
+    // selected, at which point showPull() reveals the detail pane beside it.
+    m_pullDetail->hide();
+
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setChildrenCollapsible(false);
     splitter->addWidget(listPane);
     splitter->addWidget(m_pullDetail);
-    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({460, 620});
 
@@ -7473,6 +7494,9 @@ void MainWindow::showPull(int number)
         updatePullActionState();
         return;
     }
+
+    if (m_pullDetail)
+        m_pullDetail->show();
     if (m_pullComposer)
         m_pullComposer->setEnabled(true);
     for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
@@ -8224,6 +8248,7 @@ void MainWindow::mergeCurrentPull()
     }
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
+    releaseBountiesForMergedPull(current);
     if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
         QMessageBox::warning(this, "Push merged pull request", error);
         reloadPulls();
@@ -8300,6 +8325,122 @@ void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
                                .arg(lastClosed)
                          : QStringLiteral("Closed %1 issues from merged pull request.")
                                .arg(closedCount));
+    }
+}
+
+QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
+{
+    QSet<int> linked;
+    // An agent-created PR carries the issue number directly.
+    if (const AgentSession *session = agentSessionForPull(pr.number))
+        if (session->issueNumber > 0)
+            linked.insert(session->issueNumber);
+    // Plus any "closes #N" style reference in the PR text.
+    static const QRegularExpression issueRefRe(
+        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
+                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QString haystack =
+        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
+    auto it = issueRefRe.globalMatch(haystack);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const int number =
+            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
+        if (number > 0)
+            linked.insert(number);
+    }
+    return linked.values();
+}
+
+void MainWindow::releaseBountiesForMergedPull(const PullRequest &pr)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || !m_networkAccess)
+        return;
+    const RepositoryRecord repo = m_repositories.at(idx);
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite())
+        return;
+
+    QHash<int, Issue> byNumber;
+    for (const Issue &issue : store.loadAll())
+        byNumber.insert(issue.number, issue);
+
+    for (const int number : issuesLinkedFromPull(pr)) {
+        const Issue issue = byNumber.value(number);
+        if (issue.number <= 0 || issue.bountyUsd <= 0 ||
+            issue.bountyStatus == QLatin1String("paid"))
+            continue;
+        const QString question =
+            QStringLiteral("Issue #%1 has a $%2 bounty. Release it now?\n\n90%% goes "
+                           "to the pull request author and 10%% to the ForkMesh "
+                           "treasury.")
+                .arg(number)
+                .arg(QString::number(issue.bountyUsd, 'f', 2));
+        if (QMessageBox::question(this, QStringLiteral("Release bounty"), question) !=
+            QMessageBox::Yes)
+            continue;
+        bool ok = false;
+        const QString payee = QInputDialog::getText(
+                                  this, QStringLiteral("Release bounty"),
+                                  QStringLiteral("Payee Solana address (the PR "
+                                                 "author's wallet):"),
+                                  QLineEdit::Normal, QString(), &ok)
+                                  .trimmed();
+        if (!ok || payee.isEmpty())
+            continue;
+
+        const qint64 ts = QDateTime::currentSecsSinceEpoch();
+        const QString canonical =
+            QStringLiteral("forkmesh-bounty-payout-v1\n%1\n%2\n%3\n%4\n%5")
+                .arg(repo.owner, repo.name)
+                .arg(number)
+                .arg(payee)
+                .arg(ts);
+        const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+        const QJsonObject payload{{"action", "payout"},
+                                  {"owner", repo.owner},
+                                  {"repo", repo.name},
+                                  {"number", number},
+                                  {"payee", payee},
+                                  {"ts", double(ts)},
+                                  {"sig", sig}};
+        QNetworkRequest request(bountyApiUrl(repo));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        const double amount = issue.bountyUsd;
+        QNetworkReply *reply = m_networkAccess->post(
+            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, number, payee, amount] {
+                    const QByteArray body = reply->readAll();
+                    reply->deleteLater();
+                    const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                    const QString payoutSig = obj.value("payoutSig").toString();
+                    if (reply->error() != QNetworkReply::NoError ||
+                        obj.value("status").toString() != QLatin1String("paid")) {
+                        flashMessage(
+                            QStringLiteral("Bounty payout for #%1 failed: %2")
+                                .arg(number)
+                                .arg(obj.value("error").toString(
+                                    reply->errorString())));
+                        return;
+                    }
+                    // Record the paid state as a signed event on the issue.
+                    IssueStore writeStore = issueStoreForCurrentRepo();
+                    QString error;
+                    writeStore.setBounty(number, amount, payee,
+                                         QStringLiteral("paid"), &error);
+                    logSystem(QStringLiteral("Paid $%1 bounty for issue #%2 (tx %3).")
+                                  .arg(QString::number(amount, 'f', 2))
+                                  .arg(number)
+                                  .arg(payoutSig.left(12)));
+                    flashMessage(
+                        QStringLiteral("Released $%1 bounty for issue #%2.")
+                            .arg(QString::number(amount, 'f', 2))
+                            .arg(number));
+                    reloadIssues();
+                });
     }
 }
 
@@ -8713,14 +8854,11 @@ void MainWindow::pollOwnedInboxes()
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    if (provider == QLatin1String("claude-code"))
-        return QStringLiteral("Claude Code");
-    // Legacy "claude" sessions used the bundled Anthropic-API script.
-    if (provider == QLatin1String("claude-api") || provider == QLatin1String("claude"))
+    // Only two API-key providers remain. Legacy "claude"/"claude-code" sessions
+    // map to Claude API; everything else (incl. legacy "codex") to OpenAI API.
+    if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
-    if (provider == QLatin1String("openai"))
-        return QStringLiteral("OpenAI API");
-    return QStringLiteral("Codex");
+    return QStringLiteral("OpenAI API");
 }
 
 namespace {
@@ -8873,7 +9011,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
     auto *hint = new QLabel(
-        "Issue-assigned local Codex and Claude Code runs. Usage is estimated "
+        "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
         "from prompt and transcript size.");
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
@@ -8905,7 +9043,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOpenAiSpend->setObjectName("channelTitle");
     m_agentOpenAiSpend->setWordWrap(true);
     m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each Codex session.");
+    m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each OpenAI API session.");
     m_agentApiKeyStatus->setObjectName("statusLine");
     m_agentApiKeyStatus->setWordWrap(true);
     m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -8913,7 +9051,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentClaudeSpend->setObjectName("channelTitle");
     m_agentClaudeSpend->setWordWrap(true);
     m_agentClaudeSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude Code session.");
+    m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude API session.");
     m_agentClaudeStatus->setObjectName("statusLine");
     m_agentClaudeStatus->setWordWrap(true);
     m_agentClaudeStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -9091,11 +9229,16 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addWidget(m_agentLog, 1);
     detailLayout->addLayout(promptRow);
 
+    m_agentDetail = detailPane;
+    // Open full width: the table fills the page until a session is selected, at
+    // which point showAgentSession() reveals the detail pane beside it.
+    detailPane->hide();
+
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setChildrenCollapsible(false);
     splitter->addWidget(listPane);
     splitter->addWidget(detailPane);
-    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({430, 680});
 
@@ -9706,6 +9849,8 @@ void MainWindow::showAgentSession(int sessionId)
         return;
     }
 
+    if (m_agentDetail)
+        m_agentDetail->show();
     if (m_agentTitle)
         m_agentTitle->setText(QStringLiteral("%1 on issue #%2")
                                   .arg(agentProviderName(session->provider))
@@ -9868,21 +10013,16 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
-    if (provider == QLatin1String("claude-code")) {
-        // Claude Code: the installed `claude` CLI using its own claude.ai login.
-        // Deliberately no API key — even if one is saved in Settings — so the CLI
-        // uses the subscription login (AgentRunner::launch strips any inherited
-        // ANTHROPIC_API_KEY for this provider).
-        config.command = kClaudeCodeCliCommand;
-    } else if (provider == QLatin1String("claude-api") ||
-               provider == QLatin1String("claude")) {
-        // Claude API: bundled Python script talking to api.anthropic.com.
+    if (provider.startsWith(QLatin1String("claude"))) {
+        // Claude API: bundled Python script talking to api.anthropic.com. Legacy
+        // "claude"/"claude-code" sessions resolve here too.
         config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    } else if (provider == QLatin1String("openai")) {
+    } else {
         // OpenAI API: the Codex CLI driven with an isolated home so it
-        // authenticates with the OPENAI/CODEX API key rather than a login.
+        // authenticates with the OPENAI/CODEX API key rather than a login. Legacy
+        // "codex" sessions resolve here too.
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
@@ -9891,11 +10031,6 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.isolatedHome =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
             QStringLiteral("/agents/codex-api-home");
-    } else {
-        // Codex: the Codex CLI using its own subscription/login auth.
-        config.command = codexCommandSetting();
-        config.apiKeyName = QStringLiteral("CODEX_API_KEY");
-        config.model = QSettings().value(kCodexModelSetting).toString().trimmed();
     }
     return config;
 }
@@ -14253,6 +14388,11 @@ void MainWindow::showIssue(int number)
             removeIssueComposePage();
             m_issueDeleteConfirmPending = false;
             m_currentIssueNumber = number;
+            if (m_issueDetail && !m_issueDetail->isVisible()) {
+                m_issueDetail->show();
+                if (m_issueDetailToggle)
+                    m_issueDetailToggle->setText("Hide detail");
+            }
             renderIssueThread(issue);
             updateIssueActionState();
             return;
@@ -14336,6 +14476,34 @@ void MainWindow::renderIssueThread(const Issue &issue)
             ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
                   .arg(issue.priority)
             : QStringLiteral("No priority"));
+    if (m_issueProgressValue) {
+        // A small text progress bar so the percent reads at a glance.
+        const int pct = qBound(0, issue.progress, 100);
+        const int filled = (pct + 5) / 10;
+        const QString bar = QString(filled, QChar(0x2588)) +
+                            QString(10 - filled, QChar(0x2591));
+        m_issueProgressValue->setText(
+            QStringLiteral("<span style='color:#3fb950'>%1</span> <b>%2%</b>")
+                .arg(bar)
+                .arg(pct));
+    }
+    if (m_issueEstimateValue) {
+        m_issueEstimateValue->setText(
+            QStringLiteral("~$%1 <span style='color:#8b949e'>(OpenAI to implement)</span>")
+                .arg(QString::number(openAiEstimateUsd(issue), 'f', 2)));
+    }
+    if (m_issueBountyValue) {
+        if (issue.bountyUsd > 0) {
+            const QString status = issue.bountyStatus.isEmpty()
+                                       ? QStringLiteral("open")
+                                       : issue.bountyStatus;
+            m_issueBountyValue->setText(
+                QStringLiteral("<b>$%1</b> <span style='color:#8b949e'>(%2)</span>")
+                    .arg(QString::number(issue.bountyUsd, 'f', 2), status.toHtmlEscaped()));
+        } else {
+            m_issueBountyValue->setText(QStringLiteral("No bounty"));
+        }
+    }
     updateIssueAgentUi(issue);
     if (m_issueAssigneesEdit)
         m_issueAssigneesEdit->setText(issue.assignees.join(", "));
@@ -15683,6 +15851,119 @@ void MainWindow::saveIssuePriorityInline()
     reloadIssues();
 }
 
+double MainWindow::openAiEstimateUsd(const Issue &issue)
+{
+    // Rough size of the task in characters: the title plus the description body
+    // of the open event (later comments are discussion, not spec).
+    int chars = issue.title.size();
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type == QLatin1String("open")) {
+            chars += ev.body.size();
+            break;
+        }
+    }
+    // ~4 chars/token. A coding agent reads the repo for context and writes a
+    // patch, so model fixed context overhead plus output that scales with the
+    // spec size. OpenAI/Codex price: ~$1.25 input, ~$10 output per 1M tokens.
+    const double specTokens = chars / 4.0;
+    const double inputTokens = 12000.0 + specTokens * 3.0; // context + re-reads
+    const double outputTokens = 3000.0 + specTokens * 2.0; // the patch + messages
+    const double usd =
+        (inputTokens * 1.25 + outputTokens * 10.0) / 1000000.0;
+    return qMax(0.05, usd);
+}
+
+void MainWindow::editIssueProgress()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    int current = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number == m_currentIssueNumber) {
+            current = qBound(0, issue.progress, 100);
+            break;
+        }
+    bool ok = false;
+    const int progress = QInputDialog::getInt(
+        this, QStringLiteral("Set progress"),
+        QStringLiteral("Percent complete (0\xE2\x80\x93""100):"), current, 0, 100, 5,
+        &ok);
+    if (!ok)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setProgress(m_currentIssueNumber, progress, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update progress." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice(QStringLiteral("Progress set to %1%.").arg(progress));
+    reloadIssues();
+}
+
+void MainWindow::reprioritizeBacklog()
+{
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        setIssueInlineNotice("This repo is read-only here; can't reprioritize.", true);
+        return;
+    }
+    // Only touch OPEN issues that have no priority yet, so a manual triage is
+    // never clobbered.
+    QList<Issue> todo;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.status != QLatin1String("closed") && issue.priority == 0)
+            todo.append(issue);
+    if (todo.isEmpty()) {
+        setIssueInlineNotice("No open, unprioritized issues to triage.");
+        return;
+    }
+    const int answer = QMessageBox::question(
+        this, QStringLiteral("Reprioritize backlog"),
+        QStringLiteral("Assign a priority and an MVP/Phase 2 label to %1 open "
+                       "issue(s) that have no priority set?\n\nIssues with votes "
+                       "are treated as MVP; the rest become Phase 2.")
+            .arg(todo.size()),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    // Most-wanted first: more votes, then older (lower number).
+    std::sort(todo.begin(), todo.end(), [](const Issue &a, const Issue &b) {
+        if (a.votes != b.votes)
+            return a.votes > b.votes;
+        return a.number < b.number;
+    });
+
+    int done = 0, failed = 0, prio = 1;
+    for (const Issue &issue : std::as_const(todo)) {
+        const bool mvp = issue.votes > 0;
+        const QString phaseLabel =
+            mvp ? QStringLiteral("MVP") : QStringLiteral("Phase 2");
+        QStringList labels = issue.labels;
+        labels.removeAll(QStringLiteral("MVP"));
+        labels.removeAll(QStringLiteral("Phase 2"));
+        labels << phaseLabel;
+        QString error;
+        const bool okLabels = store.setLabels(issue.number, labels, &error);
+        const bool okPrio =
+            store.setPriority(issue.number, qMin(99, prio), &error);
+        if (okLabels && okPrio)
+            ++done;
+        else
+            ++failed;
+        ++prio;
+    }
+    setIssueInlineNotice(
+        failed == 0
+            ? QStringLiteral("Reprioritized %1 issue(s).").arg(done)
+            : QStringLiteral("Reprioritized %1 issue(s); %2 failed.")
+                  .arg(done)
+                  .arg(failed),
+        failed != 0);
+    reloadIssues();
+}
+
 void MainWindow::editIssueAssignees()
 {
     if (m_currentIssueNumber < 0)
@@ -15732,6 +16013,130 @@ QUrl MainWindow::issuesApiUrl(const RepositoryRecord &repo) const
                 "/" + repoSegment(repo.name, QStringLiteral("repository")) +
                 "/issues");
     return url;
+}
+
+QUrl MainWindow::bountyApiUrl(const RepositoryRecord &repo) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
+                "/bounty");
+    return url;
+}
+
+void MainWindow::showBountyQrDialog(const QString &uri, const QString &address,
+                                    double amountUsd)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Fund bounty"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        QStringLiteral("Send <b>$%1</b> of SOL to fund this bounty. On merge of a "
+                       "pull request that closes the issue, 90%% goes to the "
+                       "author and 10%% to the ForkMesh treasury.")
+            .arg(QString::number(amountUsd, 'f', 2)));
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+    const QImage qr = QrCode::encodeToImage(uri, 6, 3);
+    if (!qr.isNull()) {
+        auto *qrLabel = new QLabel;
+        qrLabel->setPixmap(QPixmap::fromImage(qr));
+        qrLabel->setAlignment(Qt::AlignCenter);
+        layout->addWidget(qrLabel);
+    }
+    auto *addr = new QLabel(address);
+    addr->setObjectName("statusLine");
+    addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    addr->setAlignment(Qt::AlignCenter);
+    addr->setWordWrap(true);
+    layout->addWidget(addr);
+    auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
+    connect(copyBtn, &QPushButton::clicked, this, [address] {
+        QGuiApplication::clipboard()->setText(address);
+    });
+    auto *closeBtn = new QPushButton(QStringLiteral("Done"));
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    auto *row = new QHBoxLayout;
+    row->addWidget(copyBtn);
+    row->addStretch();
+    row->addWidget(closeBtn);
+    layout->addLayout(row);
+    dialog.exec();
+}
+
+void MainWindow::editIssueBounty()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord repo = m_repositories.at(idx);
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        setIssueInlineNotice("This repo is read-only here; can't add a bounty.", true);
+        return;
+    }
+    if (!m_networkAccess) {
+        setIssueInlineNotice("Network client is not ready.", true);
+        return;
+    }
+    bool ok = false;
+    const double amount = QInputDialog::getDouble(
+        this, QStringLiteral("Add bounty"),
+        QStringLiteral("Bounty amount (USD):"), 10.0, 1.0, 100000.0, 2, &ok);
+    if (!ok)
+        return;
+
+    const int number = m_currentIssueNumber;
+    // Ask the worker to mint a dedicated Solana deposit address for this bounty
+    // (same custody model as the signup donation funnel). It auto-splits to the
+    // PR author + treasury when the issue's PR is merged.
+    const QJsonObject payload{{"action", "create"},
+                              {"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"amountUsd", amount}};
+    QNetworkRequest request(bountyApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    setIssueInlineNotice("Creating bounty deposit address\xE2\x80\xA6");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repo, number, amount] {
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                const QJsonObject obj =
+                    QJsonDocument::fromJson(body).object();
+                const QString address = obj.value("address").toString();
+                if (reply->error() != QNetworkReply::NoError || address.isEmpty()) {
+                    setIssueInlineNotice(
+                        QStringLiteral("Could not create the bounty deposit: %1")
+                            .arg(apiErrorSummary(reply, body)),
+                        true);
+                    return;
+                }
+                const QString uri = obj.value("uri").toString(
+                    QStringLiteral("solana:%1").arg(address));
+                // Record the pledge as a signed event on the issue.
+                IssueStore writeStore = issueStoreForCurrentRepo();
+                QString error;
+                if (!writeStore.setBounty(number, amount, address,
+                                          QStringLiteral("open"), &error)) {
+                    setIssueInlineNotice(
+                        error.isEmpty() ? "Could not record the bounty." : error,
+                        true);
+                    return;
+                }
+                setIssueInlineNotice(
+                    QStringLiteral("Bounty of $%1 created \xE2\x80\x94 scan the QR to "
+                                   "fund it.")
+                        .arg(QString::number(amount, 'f', 2)));
+                if (m_currentIssueNumber == number)
+                    reloadIssues();
+                showBountyQrDialog(uri, address, amount);
+            });
 }
 
 void MainWindow::submitIssueCommentToInbox(const QString &body)
@@ -16534,9 +16939,9 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setSpacing(8);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
-    agentForm->addRow("Codex model", m_codexModelEdit);
+    agentForm->addRow("OpenAI model", m_codexModelEdit);
     agentForm->addRow("Claude API key", m_claudeApiKeyEdit);
-    agentForm->addRow("Codex command", m_codexCommandEdit);
+    agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
@@ -16799,7 +17204,12 @@ void MainWindow::quickRebuildRestart()
     }
     if (m_rebuildButton)
         m_rebuildButton->setEnabled(false);
-    buildAndRelaunch(clientDir);
+    // Dev iteration loop: build unoptimized (Debug => -O0) so the 20k-line
+    // MainWindow.cpp compiles in ~13s instead of ~42s at -O2. The user-facing
+    // Quick update path stays Release. Note: alternating between this and a
+    // Release update reconfigures the shared build dir and forces one full
+    // rebuild on the switch.
+    buildAndRelaunch(clientDir, QString(), QString(), QStringLiteral("Debug"));
 }
 
 void MainWindow::rebuildAndRelaunch()

@@ -161,7 +161,8 @@ private:
     void updateRebuildRestart();
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
-                          const QString &relaunchPath = QString());
+                          const QString &relaunchPath = QString(),
+                          const QString &buildType = QStringLiteral("Release"));
     void installAndRelaunch(const QString &built, const QString &appPath);
     void runUpdateStep(const QString &program, const QStringList &arguments,
                        const QString &workingDir, std::function<void()> onSuccess);
@@ -281,6 +282,10 @@ private:
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void closeIssuesLinkedFromPull(const PullRequest &pr);
+    // After a merge, release any bounty on the issues this PR closes: 90% to the
+    // PR author's Solana address, 10% to the treasury (owner-signed, via worker).
+    void releaseBountiesForMergedPull(const PullRequest &pr);
+    QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
     bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
     void deleteCurrentPull();
@@ -297,7 +302,7 @@ private:
     QUrl commitsApiUrl(const RepositoryRecord &repo) const;
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
-    // Agent sessions tab: local Codex/Claude Code runs assigned from issues.
+    // Agent sessions tab: local OpenAI API / Claude API runs assigned from issues.
     QWidget *buildAgentsTab();
     void initAgents();
     void reloadAgents();
@@ -334,7 +339,7 @@ private:
     void onAgentLog(int sessionId, const QString &text);
     void onAgentStatusChanged(int sessionId, const QString &status);
     void onAgentFinished(int sessionId, bool ok);
-    // The agent CLI needs the user to act (e.g. Claude Code sign-in); surface it.
+    // The agent CLI needs the user to act (e.g. a bad API key); surface it.
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
     void updateIssueAgentUi(const Issue &issue);
@@ -486,6 +491,14 @@ private:
     void editIssueLabels();
     void editIssueMilestone();
     void editIssuePriority();
+    void editIssueProgress();
+    void editIssueBounty();
+    // One-shot triage: give every open issue with no priority an MVP/Phase-2
+    // label and an initial priority (votes/age heuristic).
+    void reprioritizeBacklog();
+    // Rough USD estimate of having an OpenAI coding agent implement an issue,
+    // derived from its text length and the OpenAI token price.
+    static double openAiEstimateUsd(const Issue &issue);
     void editIssueAssignees();
     void saveIssueLabelsInline();
     void saveIssueMilestoneInline();
@@ -494,6 +507,10 @@ private:
     void cancelIssueSidebarEditors();
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
+    QUrl bountyApiUrl(const RepositoryRecord &repo) const;
+    // Pop up a modal with a Solana QR + address so a funder can pay a bounty.
+    void showBountyQrDialog(const QString &uri, const QString &address,
+                            double amountUsd);
     void submitIssueCommentToInbox(const QString &body);
     // Mirror node path: send a signed new-issue ("open") event to the source of
     // truth's inbox. Returns false only when there is no repo to target.
@@ -917,6 +934,7 @@ private:
     QList<int> m_agentQueue;
     int m_selectedAgentSessionId = -1;
     QTableWidget *m_agentTable = nullptr;
+    QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
@@ -954,6 +972,9 @@ private:
     QLabel *m_issueLabelsValue = nullptr;
     QLabel *m_issueMilestoneValue = nullptr;
     QLabel *m_issuePriorityValue = nullptr;
+    QLabel *m_issueProgressValue = nullptr;
+    QLabel *m_issueEstimateValue = nullptr; // derived OpenAI coding cost estimate
+    QLabel *m_issueBountyValue = nullptr;
     QStackedWidget *m_issueAssigneesStack = nullptr;
     QStackedWidget *m_issueLabelsStack = nullptr;
     QStackedWidget *m_issueMilestoneStack = nullptr;
@@ -978,11 +999,13 @@ private:
     QPushButton *m_issueLabelsButton = nullptr;
     QPushButton *m_issueMilestoneButton = nullptr;
     QPushButton *m_issuePriorityButton = nullptr;
+    QPushButton *m_issueProgressButton = nullptr;
+    QPushButton *m_issueBountyButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
-    QComboBox *m_issueAgentProvider = nullptr;   // Codex | Claude Code | OpenAI | Claude API
+    QComboBox *m_issueAgentProvider = nullptr;   // OpenAI API | Claude API
     QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;
     QList<Issue> m_currentIssues;
