@@ -135,6 +135,8 @@ QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
 QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
+// Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
+constexpr int kProgressBarRole = Qt::UserRole + 11;
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
@@ -230,6 +232,58 @@ void enableHoverRowHighlight(QAbstractItemView *view)
     if (view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
+
+// Paints a compact progress bar (track + fill + "NN%") in place of plain text.
+// Subclasses HoverRowDelegate so the column keeps the full-row hover highlight.
+// The percentage is read from kProgressBarRole; the cell's display text is left
+// empty so only the bar shows. Sorting still works via kTableSortRole on the
+// underlying item.
+class ProgressBarDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize base = HoverRowDelegate::sizeHint(option, index);
+        return QSize(qMax(base.width(), 96), qMax(base.height(), 18));
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Base draws the hover/selection background (and the empty cell text).
+        HoverRowDelegate::paint(painter, option, index);
+        const QVariant value = index.data(kProgressBarRole);
+        if (!value.isValid())
+            return;
+        const int pct = qBound(0, value.toInt(), 100);
+
+        QRect cell = option.rect.adjusted(8, 0, -8, 0);
+        const QString label = QStringLiteral("%1%").arg(pct);
+        const int textW = option.fontMetrics.horizontalAdvance(QStringLiteral("100%")) + 4;
+        QRect barRect(cell.left(), cell.center().y() - 3,
+                      qMax(0, cell.width() - textW), 6);
+        QRect textRect(barRect.right() + 4, cell.top(), textW, cell.height());
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#30363d")); // track
+        painter->drawRoundedRect(barRect, 3, 3);
+        if (pct > 0) {
+            QRect fill(barRect.left(), barRect.top(),
+                       barRect.width() * pct / 100, barRect.height());
+            // Green once complete, blue while in progress.
+            painter->setBrush(QColor(pct >= 100 ? "#3fb950" : "#388bfd"));
+            painter->drawRoundedRect(fill, 3, 3);
+        }
+        painter->setPen(QColor("#8b949e"));
+        painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
+        painter->restore();
+    }
+};
 
 QString formatByteSize(qint64 bytes)
 {
@@ -2753,7 +2807,18 @@ void MainWindow::sendNodeHeartbeat()
         reply->deleteLater();
         // The server tells us whether this node is an admin; if so, start
         // watching for newly-joined users that need email verification.
+        const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
+        // Admin status is learned after the initial nav render, so refresh the
+        // top-bar name once when it flips to show/hide the crown — without the
+        // balance re-query the heartbeat path otherwise avoids.
+        if (m_isAdmin != wasAdmin && m_navNodeName) {
+            const QString name = accountNameFromInput(m_userName, QString());
+            const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
+            m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
+            m_navNodeName->setToolTip(
+                m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
+        }
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -4729,8 +4794,10 @@ void MainWindow::updateNavSolanaBalance()
 {
     if (m_navNodeName) {
         const QString name = accountNameFromInput(m_userName, QString());
-        m_navNodeName->setText(name);
-        m_navNodeName->setToolTip(name);
+        // Admins get a little crown next to their name. U+1F451 (👑).
+        const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
+        m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
+        m_navNodeName->setToolTip(m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
         m_navNodeName->setVisible(!name.isEmpty());
     }
     if (!m_navSolanaBalance)
@@ -5985,8 +6052,12 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileAvatarSource = avatar;
     rescaleProfileAvatar();
 
+    // Show a crown next to your own name when this node is an admin (we only
+    // know our own admin status, so it's self-only). U+1F451 (👑).
+    const QString crown =
+        (info.self && m_isAdmin) ? QString::fromUtf8(" \xF0\x9F\x91\x91") : QString();
     m_profileName->setText(info.name.toHtmlEscaped() +
-                           (info.self ? " (you)" : QString()));
+                           (info.self ? " (you)" : QString()) + crown);
     const bool online = info.self ? (m_backend != nullptr) : info.online;
     m_profileStatus->setText(
         QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2")
@@ -6327,6 +6398,7 @@ QWidget *MainWindow::buildIssuesSection()
     heading->setObjectName("channelTitle");
 
     auto *issueTabGroup = new QButtonGroup(page);
+    m_issueTabGroup = issueTabGroup;
     issueTabGroup->setExclusive(true);
     auto *issuesTab = new QPushButton;
     issuesTab->setObjectName("ghostButton");
@@ -6496,6 +6568,8 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Est. cost
     header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Bounty
     header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Comments
+    // Render the Progress column as a mini bar (keeps row hover via the subclass).
+    m_issueTable->setItemDelegateForColumn(10, new ProgressBarDelegate(m_issueTable));
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
@@ -7022,14 +7096,28 @@ QWidget *MainWindow::buildIssuesSection()
             [this](int) { refreshIssueList(); });
     connect(m_issueSearch, &QLineEdit::textChanged, this,
             [this] { refreshIssueList(); });
-    connect(issueTabGroup, &QButtonGroup::idClicked, this, [=](int id) {
-        m_issueListStack->setCurrentIndex(id);
-        const bool tableMode = id == 0;
-        m_issueSearch->setVisible(tableMode);
-        m_issueLabelFilter->setVisible(tableMode);
-        m_issueMilestoneFilter->setVisible(tableMode);
-        m_issueStatusFilter->setVisible(tableMode);
-        m_issueDetailToggle->setVisible(tableMode);
+    connect(issueTabGroup, &QButtonGroup::idClicked, this,
+            [this](int id) { selectIssueListTab(id); });
+    // Clicking a milestone's Open (col 1) or Closed (col 2) count jumps to the
+    // Issues tab filtered to that milestone + status (issue #172).
+    connect(m_issueMilestonesTable, &QTableWidget::cellClicked, this,
+            [this](int row, int col) {
+        if (col != 1 && col != 2)
+            return;
+        QTableWidgetItem *titleItem = m_issueMilestonesTable->item(row, 0);
+        if (!titleItem)
+            return;
+        const QString milestone = titleItem->text();
+        // Switch to the Issues table tab (also restores the filter controls).
+        if (m_issueTabGroup && m_issueTabGroup->button(0))
+            m_issueTabGroup->button(0)->setChecked(true);
+        selectIssueListTab(0);
+        // Match the milestone, and Open/Closed for the column clicked.
+        const int msIndex = m_issueMilestoneFilter->findText(milestone);
+        if (msIndex >= 0)
+            m_issueMilestoneFilter->setCurrentIndex(msIndex);
+        m_issueStatusFilter->setCurrentText(col == 1 ? "Open" : "Closed");
+        refreshIssueList();
     });
     connect(m_issueTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const QModelIndexList rows = m_issueTable->selectionModel()->selectedRows();
@@ -15301,6 +15389,19 @@ QWidget *MainWindow::makeIssueRow(const Issue &issue,
     return row;
 }
 
+void MainWindow::selectIssueListTab(int id)
+{
+    if (!m_issueListStack)
+        return;
+    m_issueListStack->setCurrentIndex(id);
+    const bool tableMode = id == 0; // filters only make sense on the Issues table
+    m_issueSearch->setVisible(tableMode);
+    m_issueLabelFilter->setVisible(tableMode);
+    m_issueMilestoneFilter->setVisible(tableMode);
+    m_issueStatusFilter->setVisible(tableMode);
+    m_issueDetailToggle->setVisible(tableMode);
+}
+
 void MainWindow::refreshIssueList()
 {
     if (!m_issueTable)
@@ -15393,11 +15494,14 @@ void MainWindow::refreshIssueList()
         authorItem->setToolTip(issue.author);
         m_issueTable->setItem(row, 9, authorItem);
 
-        // Progress: percent complete, sorted numerically.
+        // Progress: percent complete. Drawn as a mini bar by ProgressBarDelegate
+        // (value via kProgressBarRole); display text stays empty. Still sorts
+        // numerically via kTableSortRole.
         const int pct = qBound(0, issue.progress, 100);
-        auto *progressItem = new SortTableWidgetItem(QStringLiteral("%1%").arg(pct));
+        auto *progressItem = new SortTableWidgetItem(QString());
         progressItem->setData(kTableSortRole, pct);
-        progressItem->setTextAlignment(Qt::AlignCenter);
+        progressItem->setData(kProgressBarRole, pct);
+        progressItem->setToolTip(QStringLiteral("%1% complete").arg(pct));
         m_issueTable->setItem(row, 10, progressItem);
 
         // Estimated OpenAI cost to implement, sorted numerically.
@@ -15510,14 +15614,18 @@ void MainWindow::refreshIssueMilestones()
         auto *titleItem = new QTableWidgetItem(title);
         titleItem->setIcon(themedOcticon("graph", QColor("#8b949e"), 14));
         m_issueMilestonesTable->setItem(row, 0, titleItem);
-        auto addNumber = [&](int column, int value) {
+        auto addNumber = [&](int column, int value, const QString &which) {
             auto *item = new QTableWidgetItem;
             item->setData(Qt::DisplayRole, value);
             item->setTextAlignment(Qt::AlignCenter);
+            // Open/Closed counts act as links into the filtered issue list.
+            item->setForeground(QColor("#388bfd"));
+            item->setToolTip(
+                QStringLiteral("Show %1 %2 issues").arg(which, title));
             m_issueMilestonesTable->setItem(row, column, item);
         };
-        addNumber(1, c.open);
-        addNumber(2, c.closed);
+        addNumber(1, c.open, QStringLiteral("open"));
+        addNumber(2, c.closed, QStringLiteral("closed"));
 
         auto *progressItem = new QTableWidgetItem(QStringLiteral("%1%").arg(pct));
         progressItem->setData(kTableSortRole, pct);
