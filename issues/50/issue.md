@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 50
-title: if a user needs a bch wallet suggest exodus - also show on the join screen exactly how their money will be divided among the nodes and servers
+title: if a user needs a SOL wallet suggest exodus - also show on the join screen exactly how their money will be divided among the nodes and servers
 status: open
 labels: [enhancement]
 milestone: MVP launch
