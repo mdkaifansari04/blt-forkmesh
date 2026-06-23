@@ -4,8 +4,8 @@ number: 178
 title: make the comment appear faster instead of waiting for the commit to push
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 21
 progress: 0
 assignees: []
 createdAt: 1782206824069

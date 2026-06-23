@@ -5,7 +5,7 @@ title: when deciding payment split only calculate the repos that are mirrored fr
 status: open
 labels: [bug]
 milestone: MVP launch
-priority: 30
+priority: 8
 progress: 0
 assignees: []
 createdAt: 1782076659204

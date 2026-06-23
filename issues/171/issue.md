@@ -4,8 +4,8 @@ number: 171
 title: if the payout wallet has not been verified show a big banner that the user must make a small deposit to verify it and then it can start receiving payouts
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 9
 progress: 0
 assignees: []
 createdAt: 1782200053541

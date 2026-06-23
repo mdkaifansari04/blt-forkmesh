@@ -4,8 +4,8 @@ number: 177
 title: BUG: even after login i can see the login screen again after three time putting the right credentials
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 3
 progress: 0
 assignees: []
 createdAt: 1782206195625

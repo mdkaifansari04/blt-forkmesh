@@ -5,8 +5,8 @@ title: don't send a system notification when a node connects by default thrn thi
 status: open
 labels: [enhancement]
 milestone: MVP launch
-priority: 20
-progress: 0
+priority: 28
+progress: 40
 assignees: []
 createdAt: 1782140598761
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

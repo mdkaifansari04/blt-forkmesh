@@ -4,7 +4,7 @@ number: 155
 title: on the code page show how much space each folder is taking along with it's lattest commit message and x ago time have the option for explorer or list view
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 19
 progress: 0
 assignees: []

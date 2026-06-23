@@ -5,7 +5,7 @@ title: when an agent is working show an activity indicator in the agenets tab
 status: open
 labels: [enhancement]
 milestone: MVP launch
-priority: 54
+priority: 24
 progress: 0
 assignees: []
 createdAt: 1782060748655

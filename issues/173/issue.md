@@ -4,8 +4,8 @@ number: 173
 title: clear notifications is not working
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 19
 progress: 0
 assignees: []
 createdAt: 1782200887806

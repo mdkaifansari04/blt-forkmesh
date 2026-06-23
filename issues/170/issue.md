@@ -4,8 +4,8 @@ number: 170
 title: when clicking continue the previous session did not persist please fix that
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 12
 progress: 0
 assignees: []
 createdAt: 1782199514541

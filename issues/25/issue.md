@@ -5,7 +5,7 @@ title: show the issues as a table and have an option view as kanban have statuse
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 66
+priority: 26
 progress: 0
 assignees: []
 createdAt: 1781663648420

@@ -5,7 +5,7 @@ title: Set a real ACCOUNTS_KEY secret in prod
 status: open
 labels: [infra]
 milestone: MVP launch
-priority: 2
+priority: 1
 progress: 0
 assignees: []
 createdAt: 1781642499094

@@ -5,7 +5,7 @@ title: show attached images in the image detail and allow for paste from clipboa
 status: open
 labels: [enhancement]
 milestone: MVP launch
-priority: 64
+priority: 23
 progress: 0
 assignees: []
 createdAt: 1781720372472

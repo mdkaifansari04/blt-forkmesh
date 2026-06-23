@@ -4,7 +4,7 @@ number: 160
 title: remove the star button
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 23
 progress: 0
 assignees: []

@@ -2,11 +2,11 @@
 schema: forkmesh-issue-v1
 number: 96
 title: move the isuse created and any related banners into the top top notification area please
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
-priority: 24
-progress: 0
+priority: 29
+progress: 100
 assignees: []
 createdAt: 1782077649385
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

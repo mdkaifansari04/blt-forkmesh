@@ -4,7 +4,7 @@ number: 162
 title: move the chat button and notifications button to be on the left on the second row right under the relay > node > repo section
 status: closed
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 24
 progress: 90
 assignees: []

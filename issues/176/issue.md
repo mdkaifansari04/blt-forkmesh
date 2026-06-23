@@ -4,7 +4,7 @@ number: 176
 title: keep track of installs and if they were successfull or not - have this be a table in the admin showing some anonymous diagnostics
 status: open
 labels: []
-milestone: 
+milestone: Phase 2
 priority: 0
 progress: 0
 assignees: []

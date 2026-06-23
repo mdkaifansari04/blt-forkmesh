@@ -4,7 +4,7 @@ number: 129
 title: allow for the basic auth admin interface to be able to create, read, update, delete records, show all data in all tables and encrypted data with a decrypt icon
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 2
 progress: 0
 assignees: []

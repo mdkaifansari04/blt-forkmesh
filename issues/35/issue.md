@@ -5,7 +5,7 @@ title: for the native app To-do: Keep repo service reachable while app is foregr
 status: open
 labels: [infra]
 milestone: MVP launch
-priority: 82
+priority: 7
 progress: 0
 assignees: []
 createdAt: 1781685834420

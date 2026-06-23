@@ -4,7 +4,7 @@ number: 145
 title: when serving a repo from a mirror make sure it wasn't tampered with - keep track on the relay what the latest commit is and hash the whole repo somehow
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 12
 progress: 0
 assignees: []

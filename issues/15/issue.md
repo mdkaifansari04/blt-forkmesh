@@ -5,7 +5,7 @@ title: Federation & routing
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 7
+priority: 5
 progress: 0
 assignees: []
 createdAt: 1781642499093

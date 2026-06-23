@@ -4,8 +4,8 @@ number: 175
 title: turn off the auto publishing have a setting for it
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 20
 progress: 0
 assignees: []
 createdAt: 1782201237321
