@@ -1,5 +1,5 @@
 name: Build Android app
-on: [push]
+on: [push, workflow_dispatch]
 jobs:
   android:
     steps:
