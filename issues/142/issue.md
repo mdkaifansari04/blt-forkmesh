@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 142
 title: have the ability to view PR diffs in side by side mode show a selector switch icon there - do the other pr enhancement first though
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 9
