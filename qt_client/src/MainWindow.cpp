@@ -3946,9 +3946,60 @@ void MainWindow::persistProfile()
 
 // --------------------------------------------------------------- quick update
 
+void MainWindow::showUpdateLog()
+{
+    if (!m_updateLogDialog) {
+        m_updateLogDialog = new QDialog(this);
+        m_updateLogDialog->setWindowTitle(QStringLiteral("Updating ForkMesh"));
+        m_updateLogDialog->resize(780, 480);
+        auto *intro = new QLabel(QStringLiteral(
+            "Live update log. The app relaunches automatically once the rebuild "
+            "finishes; if a step fails this window stays open so you can read "
+            "exactly what went wrong."));
+        intro->setObjectName("statusLine");
+        intro->setWordWrap(true);
+        m_updateLog = new QPlainTextEdit;
+        m_updateLog->setReadOnly(true);
+        m_updateLog->setObjectName("actionLog");
+        m_updateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+        m_updateLog->setMaximumBlockCount(50000);
+        applyLogFont(m_updateLog);
+        new AgentLogHighlighter(m_updateLog->document());
+        auto *closeBtn = new QPushButton(QStringLiteral("Close"));
+        closeBtn->setObjectName("ghostButton");
+        closeBtn->setCursor(Qt::PointingHandCursor);
+        connect(closeBtn, &QPushButton::clicked, m_updateLogDialog, &QDialog::hide);
+        auto *row = new QHBoxLayout;
+        row->addStretch();
+        row->addWidget(closeBtn);
+        auto *lay = new QVBoxLayout(m_updateLogDialog);
+        lay->addWidget(intro);
+        lay->addWidget(m_updateLog, 1);
+        lay->addLayout(row);
+    }
+    m_updateLog->clear();
+    appendUpdateLog(QStringLiteral("==> ForkMesh update started\n"));
+    m_updateLogDialog->show();
+    m_updateLogDialog->raise();
+    m_updateLogDialog->activateWindow();
+}
+
+void MainWindow::appendUpdateLog(const QString &text)
+{
+    if (!m_updateLog || text.isEmpty())
+        return;
+    m_updateLog->moveCursor(QTextCursor::End);
+    m_updateLog->insertPlainText(text);
+    m_updateLog->moveCursor(QTextCursor::End);
+}
+
 void MainWindow::setUpdateStatus(const QString &status, bool isError)
 {
     logRestart(isError ? QStringLiteral("ERROR: %1").arg(status) : status);
+    // Mirror the phase into the live log as a narrative header ("==>" / "!!"),
+    // which AgentLogHighlighter colourises.
+    appendUpdateLog((isError ? QStringLiteral("!! ") : QStringLiteral("==> ")) + status +
+                    QStringLiteral("\n"));
     QLabel *label = m_buildStatusLabel ? m_buildStatusLabel : m_updateStatus;
     if (!label)
         return;
@@ -3971,23 +4022,43 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 {
     const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
     logRestart(QStringLiteral("run: %1").arg(commandLine));
+    // Echo the exact command and its working directory into the live log, then
+    // stream the process's merged stdout+stderr as it runs.
+    appendUpdateLog(QStringLiteral("\n$ %1\n  (in %2)\n").arg(commandLine, workingDir));
     QElapsedTimer stepTimer;
     stepTimer.start();
     auto *process = new QProcess(this);
     process->setWorkingDirectory(workingDir);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    // Keep a bounded copy of the output so a failure can surface its tail in the
+    // status label even though the full detail is already in the log window.
+    auto output = std::make_shared<QString>();
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, output] {
+        const QString chunk = QString::fromUtf8(process->readAllStandardOutput());
+        output->append(chunk);
+        if (output->size() > 200000)
+            *output = output->right(200000);
+        appendUpdateLog(chunk);
+    });
     connect(process, &QProcess::finished, this,
-            [this, process, stepTimer, commandLine, onSuccess](
+            [this, process, stepTimer, commandLine, onSuccess, output](
                 int exitCode, QProcess::ExitStatus) {
-                const QString errors =
-                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                const QString tail = QString::fromUtf8(process->readAllStandardOutput());
+                if (!tail.isEmpty()) {
+                    output->append(tail);
+                    appendUpdateLog(tail);
+                }
                 process->deleteLater();
                 logRestart(QStringLiteral("done in %1ms (exit %2): %3")
                                .arg(stepTimer.elapsed())
                                .arg(exitCode)
                                .arg(commandLine));
+                appendUpdateLog(QStringLiteral("\xE2\x80\x94 finished in %1ms (exit %2)\n")
+                                    .arg(stepTimer.elapsed())
+                                    .arg(exitCode));
                 if (exitCode != 0) {
                     stopRefreshSpin();
-                    setUpdateStatus("Update failed: " + errors.right(300), true);
+                    setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
                     if (m_buildButton)
                         m_buildButton->setEnabled(true);
                     return;
@@ -4011,6 +4082,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
 void MainWindow::runQuickUpdate()
 {
     beginRestartLog();
+    showUpdateLog();
     logRestart(QStringLiteral("quick update started"));
     saveProfileName(m_nameEdit->text());
     m_buildButton = m_updateButton;
@@ -4145,6 +4217,7 @@ QString MainWindow::resolveInstallCloneUrl()
 void MainWindow::updateRebuildRestart()
 {
     beginRestartLog();
+    showUpdateLog();
     logRestart(QStringLiteral("update, rebuild & restart started"));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
@@ -20101,6 +20174,7 @@ void MainWindow::quickRebuildRestart()
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
     beginRestartLog();
+    showUpdateLog();
     logRestart(QStringLiteral("quick rebuild & restart started"));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
@@ -20126,6 +20200,7 @@ void MainWindow::quickRebuildRestart()
 void MainWindow::rebuildAndRelaunch()
 {
     beginRestartLog();
+    showUpdateLog();
     logRestart(QStringLiteral("clean rebuild & restart started"));
     if (m_settingsNameEdit)
         saveProfileName(m_settingsNameEdit->text());
