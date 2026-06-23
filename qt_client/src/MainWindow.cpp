@@ -509,6 +509,12 @@ const QString kLegacyCodexCommand =
 // stored settings using it can be migrated to the API-key based runner below.
 const QString kLegacyClaudeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
+// "Claude Code" provider: drive the real `claude` CLI headlessly (no prompts, no
+// input) so it edits the worktree until done; ForkMesh then turns the diff into a
+// PR. Distinct from "Claude API" (the bundled python script) above.
+const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
+const QString kDefaultClaudeCodeCommand =
+    QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 constexpr int kNetworkLogLimit = 2000;
 
 // Provider family helper: the Anthropic-backed "Claude API" script (plus the
@@ -568,6 +574,21 @@ QString claudeCommandSetting()
         command = current;
         settings.setValue(kClaudeCommandSetting, command);
     }
+    return command;
+}
+
+// The "Claude Code" command runs the real `claude` CLI (unlike claudeCommandSetting,
+// which is migrated to the bundled python script). Configurable so users can match
+// their own install / flags; defaults to a non-interactive headless invocation.
+QString claudeCodeCommandSetting()
+{
+    QSettings settings;
+    QString command =
+        settings.value(kClaudeCodeCommandSetting, kDefaultClaudeCodeCommand)
+            .toString()
+            .trimmed();
+    if (command.isEmpty())
+        command = kDefaultClaudeCodeCommand;
     return command;
 }
 
@@ -4578,6 +4599,10 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
                                      QStringLiteral("claude-api"));
+    // "Claude Code" drives the real `claude` CLI headlessly (no input) in a
+    // tracked agent session, working until ForkMesh can open a PR from its diff.
+    m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                     QStringLiteral("claude-code"));
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
@@ -7323,6 +7348,23 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDeleteButton->setObjectName("issueDangerLink");
     m_issueDeleteButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueDeleteButton, "trash", 15);
+    // Quick priority nudges (a quarter of the 1..99 span per click) shown beside
+    // the Priority gear: chevron-up raises priority, chevron-down lowers it.
+    m_issuePriorityRaiseButton = new QPushButton;
+    m_issuePriorityLowerButton = new QPushButton;
+    for (QPushButton *b : {m_issuePriorityRaiseButton, m_issuePriorityLowerButton}) {
+        b->setObjectName("issueIconButton");
+        b->setFixedSize(28, 28);
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_issuePriorityRaiseButton, "chevron-up", 15);
+    setOcticon(m_issuePriorityLowerButton, "chevron-down", 15);
+    m_issuePriorityRaiseButton->setToolTip("Raise priority (more important)");
+    m_issuePriorityLowerButton->setToolTip("Lower priority (less important)");
+    connect(m_issuePriorityRaiseButton, &QPushButton::clicked, this,
+            [this] { nudgeIssuePriority(-1); });
+    connect(m_issuePriorityLowerButton, &QPushButton::clicked, this,
+            [this] { nudgeIssuePriority(1); });
     auto makeValue = [](const QString &text) {
         auto *label = new QLabel(text);
         label->setObjectName("statusLine");
@@ -7471,6 +7513,10 @@ QWidget *MainWindow::buildIssuesSection()
                                   QStringLiteral("openai"));
     m_issueAgentProvider->addItem(QStringLiteral("Claude API"),
                                   QStringLiteral("claude-api"));
+    // "Claude Code" drives the real `claude` CLI headlessly (no input) in a
+    // tracked agent session, working until ForkMesh can open a PR from its diff.
+    m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                  QStringLiteral("claude-code"));
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
@@ -7535,13 +7581,16 @@ QWidget *MainWindow::buildIssuesSection()
         metaLayout->addWidget(line);
     };
     auto addMetaSection = [&](const QString &label, QWidget *value,
-                              QPushButton *btn = nullptr) {
+                              QPushButton *btn = nullptr,
+                              const QList<QPushButton *> &extraBtns = {}) {
         auto *header = new QHBoxLayout;
         header->setContentsMargins(0, 0, 0, 0);
         auto *l = new QLabel(label);
         l->setObjectName("issueSidebarHeading");
         header->addWidget(l);
         header->addStretch();
+        for (QPushButton *extra : extraBtns)
+            header->addWidget(extra);
         if (btn)
             header->addWidget(btn);
         metaLayout->addLayout(header);
@@ -7554,7 +7603,8 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Assign to agent", agentBox);
     addMetaSection("Labels", m_issueLabelsStack, m_issueLabelsButton);
     addMetaSection("Type", makeValue("No type"), makeGear());
-    addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton);
+    addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton,
+                   {m_issuePriorityRaiseButton, m_issuePriorityLowerButton});
     addMetaSection("Progress", m_issueProgressValue, m_issueProgressButton);
     addMetaSection("Est. OpenAI cost", m_issueEstimateValue);
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
@@ -10823,8 +10873,11 @@ void MainWindow::pollOwnedInboxes()
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    // Only two API-key providers remain. Legacy "claude"/"claude-code" sessions
-    // map to Claude API; everything else (incl. legacy "codex") to OpenAI API.
+    // "Claude Code" runs the real `claude` CLI; the two API-key providers use the
+    // bundled script / Codex. Legacy "claude" sessions map to Claude API;
+    // everything else (incl. legacy "codex") to OpenAI API.
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("Claude Code");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -12045,9 +12098,15 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
-    if (provider.startsWith(QLatin1String("claude"))) {
+    if (provider == QLatin1String("claude-code")) {
+        // Claude Code: the real `claude` CLI, run headlessly in the worktree. Uses
+        // ANTHROPIC_API_KEY when set, else falls back to the CLI's own login.
+        config.command = claudeCodeCommandSetting();
+        config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
+        config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    } else if (provider.startsWith(QLatin1String("claude"))) {
         // Claude API: bundled Python script talking to api.anthropic.com. Legacy
-        // "claude"/"claude-code" sessions resolve here too.
+        // "claude" sessions resolve here too.
         config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
@@ -16785,6 +16844,21 @@ void MainWindow::selectIssueListTab(int id)
     m_issueDetailToggle->setVisible(tableMode);
 }
 
+namespace {
+// Braille spinner frames for the issue-list Agent column (same glyphs the Agents
+// tab badge animates with).
+const char *kAgentSpinFrames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99", "\xE2\xA0\xB9",
+                                  "\xE2\xA0\xB8", "\xE2\xA0\xBC", "\xE2\xA0\xB4",
+                                  "\xE2\xA0\xA6", "\xE2\xA0\xA7", "\xE2\xA0\x87",
+                                  "\xE2\xA0\x8F"};
+// An agent is "working" on the issue while queued or running.
+bool agentSessionActive(const AgentSession *s)
+{
+    return s && (s->status == AgentStatus::Running ||
+                 s->status == AgentStatus::Queued);
+}
+} // namespace
+
 void MainWindow::refreshIssueList()
 {
     if (!m_issueTable)
@@ -16859,8 +16933,13 @@ void MainWindow::refreshIssueList()
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 7, created);
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
-            // Plain agent-provider name — no clickable icon/hover in this cell.
-            auto *agentItem = new QTableWidgetItem(agentProviderName(session->provider));
+            // Provider name, prefixed with a spinner frame while the agent is
+            // still working so the list shows live activity at a glance.
+            QString text = agentProviderName(session->provider);
+            if (agentSessionActive(session))
+                text = QString::fromUtf8(kAgentSpinFrames[m_issueSpinFrame % 10]) +
+                       QStringLiteral(" ") + text;
+            auto *agentItem = new QTableWidgetItem(text);
             agentItem->setData(Qt::UserRole, session->id);
             m_issueTable->setItem(row, 8, agentItem);
         } else {
@@ -16951,6 +17030,52 @@ void MainWindow::refreshIssueList()
         renderIssueThread(Issue());
         updateIssueActionState();
     }
+
+    // Animate the per-row Agent spinner only while something is actually working.
+    bool anyActive = false;
+    for (const Issue &issue : m_currentIssues) {
+        if (agentSessionActive(latestAgentSessionForIssue(issue.number))) {
+            anyActive = true;
+            break;
+        }
+    }
+    if (anyActive) {
+        if (!m_issueSpinTimer) {
+            m_issueSpinTimer = new QTimer(this);
+            connect(m_issueSpinTimer, &QTimer::timeout, this,
+                    &MainWindow::tickIssueListSpinners);
+        }
+        if (!m_issueSpinTimer->isActive())
+            m_issueSpinTimer->start(110);
+    } else if (m_issueSpinTimer) {
+        m_issueSpinTimer->stop();
+    }
+}
+
+// Advance the Agent-column spinner one frame for every issue row whose agent is
+// still working. Updates cell text in place (no full rebuild) so it stays cheap.
+void MainWindow::tickIssueListSpinners()
+{
+    if (!m_issueTable)
+        return;
+    m_issueSpinFrame = (m_issueSpinFrame + 1) % 10;
+    const QString frame = QString::fromUtf8(kAgentSpinFrames[m_issueSpinFrame]);
+    bool anyActive = false;
+    for (int r = 0; r < m_issueTable->rowCount(); ++r) {
+        QTableWidgetItem *numItem = m_issueTable->item(r, 0);
+        QTableWidgetItem *cell = m_issueTable->item(r, 8);
+        if (!numItem || !cell)
+            continue;
+        const AgentSession *session =
+            latestAgentSessionForIssue(numItem->data(Qt::UserRole).toInt());
+        if (!agentSessionActive(session))
+            continue;
+        anyActive = true;
+        cell->setText(frame + QStringLiteral(" ") +
+                      agentProviderName(session->provider));
+    }
+    if (!anyActive && m_issueSpinTimer)
+        m_issueSpinTimer->stop();
 }
 
 void MainWindow::refreshIssueMilestones()
@@ -17926,6 +18051,7 @@ void MainWindow::updateIssueActionState()
     // Owner-only structural edits.
     for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
                            m_issueMilestoneButton, m_issuePriorityButton,
+                           m_issuePriorityRaiseButton, m_issuePriorityLowerButton,
                            m_issueAssigneesButton,
                            m_issueDeleteButton, m_issueAttachButton,
                            m_issueAssignAgentButton}) {
@@ -18731,6 +18857,43 @@ void MainWindow::saveIssuePriorityInline()
         return;
     }
     setIssueInlineNotice(priority > 0 ? "Priority updated." : "Priority cleared.");
+    reloadIssues();
+}
+
+void MainWindow::nudgeIssuePriority(int direction)
+{
+    if (m_currentIssueNumber < 0 || direction == 0)
+        return;
+    // Priority runs 1 (highest) to 99 (lowest). A quick nudge moves by a quarter
+    // of that span (~25); direction < 0 raises priority (toward 1), direction > 0
+    // lowers it (toward 99).
+    const int kHighest = 1;
+    const int kLowest = 99;
+    const int step = qRound((kLowest - kHighest) * 0.25);
+    int original = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number == m_currentIssueNumber) {
+            original = issue.priority;
+            break;
+        }
+    // An unset priority starts from the middle of the range so the first nudge
+    // lands somewhere sensible rather than jumping to an extreme.
+    const int base = original > 0 ? original
+                                  : qRound((kHighest + kLowest) / 2.0);
+    const int next = qBound(kHighest, base + direction * step, kLowest);
+    if (next == original) {
+        setIssueInlineNotice(direction < 0 ? "Already at the highest priority."
+                                           : "Already at the lowest priority.");
+        return;
+    }
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setPriority(m_currentIssueNumber, next, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update priority." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice(QStringLiteral("Priority set to %1.").arg(next));
     reloadIssues();
 }
 

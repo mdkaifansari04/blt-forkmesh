@@ -599,6 +599,10 @@ private:
     void editIssueLabels();
     void editIssueMilestone();
     void editIssuePriority();
+    // Quick one-click priority nudge in the issue detail sidebar. direction < 0
+    // raises priority (toward 1, highest); direction > 0 lowers it (toward 99,
+    // lowest). Each step moves by a quarter of the 1..99 priority span.
+    void nudgeIssuePriority(int direction);
     void editIssueProgress();
     void editIssueBounty();
     // Bulk-pledge the same bounty (USD) on every open issue in the current repo.
@@ -1202,6 +1206,10 @@ private:
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
+    // Per-row spinner in the issue list's Agent column while a session is active.
+    QTimer *m_issueSpinTimer = nullptr;
+    int m_issueSpinFrame = 0;
+    void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     QLabel *m_issueTitle = nullptr;
@@ -1246,6 +1254,8 @@ private:
     QPushButton *m_issueLabelsButton = nullptr;
     QPushButton *m_issueMilestoneButton = nullptr;
     QPushButton *m_issuePriorityButton = nullptr;
+    QPushButton *m_issuePriorityRaiseButton = nullptr;
+    QPushButton *m_issuePriorityLowerButton = nullptr;
     QPushButton *m_issueProgressButton = nullptr;
     QPushButton *m_issueBountyButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;

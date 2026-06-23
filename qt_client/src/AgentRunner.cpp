@@ -41,8 +41,10 @@ bool runCapture(const QString &dir, const QStringList &args, QByteArray *out,
 
 QString providerTitle(const QString &provider)
 {
-    // Only two API-key providers remain. Legacy "claude"/"claude-code" sessions
-    // map to Claude API; everything else (incl. legacy "codex") to OpenAI API.
+    // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
+    // API script; everything else (incl. legacy "codex") is OpenAI API.
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("Claude Code");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
