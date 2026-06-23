@@ -5,7 +5,7 @@ title: move the chat button and notifications button to be on the left on the se
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 24
 progress: 0
 assignees: []
 createdAt: 1782188212739
