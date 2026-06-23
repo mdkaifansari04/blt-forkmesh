@@ -293,6 +293,19 @@ private:
     void onPullDiffAnchorClicked(const QUrl &url);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
     void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
+    void renderPullChecks(const PullRequest &pr);   // action runs for the PR's commits
+    void renderPullChecksSummary(const PullRequest &pr); // inline conversation card
+    void showPullCheckLog(int runId);               // load a run's log into the panel
+    QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
+    QList<int> runIdsForPull(const PullRequest &pr) const;   // matching action runs
+    void runChecksForCurrentPull();                 // enqueue workflows at PR head
+    void updatePullSubTabCounts(const PullRequest &pr);
+    void refreshOpenPullChecks();                   // re-render checks for the open PR
+    // Enqueue every push-triggered workflow found at `commit` for owner/name.
+    // Shared by the push handler and the PR "Run checks" button.
+    void queueWorkflowsForCommit(int repoIndex, const QString &owner,
+                                 const QString &name, const QString &commit,
+                                 const QString &ref);
     void submitPullComment();                       // post a comment on the PR
     void submitPullReview(const QString &state);    // approve / request changes
     void promptNewPull();
@@ -1025,14 +1038,26 @@ private:
     QTextBrowser *m_pullDiff = nullptr;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
-    // Conversation: review thread + composer + review actions.
+    // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
+    QButtonGroup *m_pullSubTabs = nullptr;
+    QStackedWidget *m_pullSubStack = nullptr;
+    QPushButton *m_pullTabConversation = nullptr;
+    QPushButton *m_pullTabCommits = nullptr;
+    QPushButton *m_pullTabChecks = nullptr;
+    QPushButton *m_pullTabFiles = nullptr;
+    // Conversation: review thread + inline checks summary + inline composer.
     QScrollArea *m_pullThreadScroll = nullptr;
     QWidget *m_pullThreadContainer = nullptr;
     QVBoxLayout *m_pullThreadLayout = nullptr;
+    QLabel *m_pullChecksSummary = nullptr; // compact pass/fail/running card in thread
     MarkdownEditor *m_pullComposer = nullptr;
     QPushButton *m_pullCommentButton = nullptr;
     QPushButton *m_pullApproveButton = nullptr;
     QPushButton *m_pullRequestChangesButton = nullptr;
+    // Checks tab: action runs for this PR's commits + a manual trigger.
+    QTableWidget *m_pullChecksTable = nullptr;
+    QPlainTextEdit *m_pullChecksLog = nullptr;
+    QPushButton *m_pullRunChecksButton = nullptr;
     QList<PullRequest> m_currentPulls;
     QHash<QString, QString> m_pullFileDiffs; // current PR: file path -> diff text
     int m_currentPullNumber = -1;

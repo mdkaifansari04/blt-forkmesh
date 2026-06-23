@@ -188,7 +188,7 @@ QJsonObject PullRequest::toJson() const
     return {{"number", number},   {"title", title},   {"description", description},
             {"base", base},       {"head", head},     {"status", status},
             {"ts", double(ts)},   {"author", author}, {"authorName", authorName},
-            {"sig", sig},         {"patch", patch}};
+            {"sig", sig},         {"patch", patch},   {"commits", commits}};
 }
 
 PullRequest PullRequest::fromJson(const QJsonObject &obj)
@@ -205,6 +205,7 @@ PullRequest PullRequest::fromJson(const QJsonObject &obj)
     pr.authorName = obj.value("authorName").toString();
     pr.sig = obj.value("sig").toString();
     pr.patch = obj.value("patch").toString();
+    pr.commits = obj.value("commits").toString();
     PullStore::computeStats(pr);
     return pr;
 }
@@ -276,7 +277,11 @@ void PullStore::computeStats(PullRequest &pr)
 QByteArray PullStore::canonicalString(const PullRequest &pr)
 {
     const QChar nul(QChar::Null);
-    const QString content = pr.title + nul + pr.base + nul + pr.head + nul + pr.patch;
+    // The mbox is appended as a 5th NUL-separated field. This changes the hash
+    // versus the original 4-field form even when commits is empty, so the worker
+    // verifies against both forms during the client rollout.
+    const QString content =
+        pr.title + nul + pr.base + nul + pr.head + nul + pr.patch + nul + pr.commits;
     const QByteArray contentHash =
         QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex();
     QByteArray canonical = "forkmesh-pull-event-v1\n";
@@ -506,7 +511,12 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
     if (!writeTextFile(pullDir(pr.number) + "/pull.md",
                        lines.join('\n') + "\n" + pr.description + "\n", error))
         return false;
-    return writeTextFile(pullDir(pr.number) + "/changes.patch", pr.patch, error);
+    if (!writeTextFile(pullDir(pr.number) + "/changes.patch", pr.patch, error))
+        return false;
+    // Authored commit series, when present, so merge can replay it with `git am`.
+    if (!pr.commits.isEmpty())
+        return writeTextFile(pullDir(pr.number) + "/commits.mbox", pr.commits, error);
+    return true;
 }
 
 bool PullStore::readPull(int number, PullRequest &out) const
@@ -529,6 +539,9 @@ bool PullStore::readPull(int number, PullRequest &out) const
     QFile patch(pullDir(number) + "/changes.patch");
     if (patch.open(QIODevice::ReadOnly))
         out.patch = QString::fromUtf8(patch.readAll());
+    QFile mbox(pullDir(number) + "/commits.mbox");
+    if (mbox.open(QIODevice::ReadOnly))
+        out.commits = QString::fromUtf8(mbox.readAll());
     computeStats(out);
     out.events = readEvents(number);
     return true;
@@ -556,7 +569,8 @@ QList<PullRequest> PullStore::loadAll(QString *error) const
 
 int PullStore::createPull(const QString &title, const QString &description,
                           const QString &base, const QString &head,
-                          const QString &patch, QString *error)
+                          const QString &patch, const QString &commits,
+                          QString *error)
 {
     if (!canWrite()) {
         if (error)
@@ -578,6 +592,7 @@ int PullStore::createPull(const QString &title, const QString &description,
     pr.base = base;
     pr.head = head;
     pr.patch = patch;
+    pr.commits = commits;
     pr = makeSignedPull(pr);
     pr.number = nextNumber();
     if (!writePull(pr, error))
@@ -736,9 +751,21 @@ bool PullStore::mergePull(int number, QString *error)
             *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
         return false;
     }
-    const QString patchPath = pullDir(number) + "/changes.patch";
     QString err;
-    if (!runGit(m_workTree, {"apply", "--index", "--3way", patchPath}, nullptr, &err)) {
+    const QString patchPath = pullDir(number) + "/changes.patch";
+    const QString mboxPath = pullDir(number) + "/commits.mbox";
+    if (!pr.commits.isEmpty() && QFileInfo::exists(mboxPath)) {
+        // Replay the author's commits so their name/email/date/message survive.
+        // 3-way lets `git am` resolve against the current base; on any failure we
+        // abort so the working tree is left clean for the reviewer to retry.
+        if (!runGit(m_workTree, {"am", "--3way", mboxPath}, nullptr, &err)) {
+            runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
+            if (error)
+                *error = "Could not replay the pull request's commits cleanly: " + err;
+            return false;
+        }
+    } else if (!runGit(m_workTree, {"apply", "--index", "--3way", patchPath},
+                       nullptr, &err)) {
         if (error)
             *error = "Could not apply the patch cleanly: " + err;
         return false;
@@ -957,6 +984,10 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error) const
         pr.description = fm.body;
         bool pok = false;
         pr.patch = QString::fromUtf8(showFromMirror("pulls/" + base + "/changes.patch", &pok));
+        bool mok = false;
+        const QByteArray mbox = showFromMirror("pulls/" + base + "/commits.mbox", &mok);
+        if (mok)
+            pr.commits = QString::fromUtf8(mbox);
         computeStats(pr);
         // Enumerate this PR's conversation event files from the mirror.
         QByteArray dirListing;

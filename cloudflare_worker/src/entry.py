@@ -226,6 +226,10 @@ async def verify_issue_event(number, ev):
 async def verify_pull_event(pr):
     # Mirrors PullStore::canonicalString: the signature commits to
     # title/base/head/patch (not the number, which the owner assigns on merge).
+    # Newer clients append a 5th field — the format-patch mbox (commits) — so the
+    # owner can replay authored commits on merge. Accept either form so a client
+    # rollout doesn't reject not-yet-updated peers; an old client simply omits the
+    # 5th field and an old peer that signed the 4-field form still verifies.
     author = pr.get("author", "")
     signature = pr.get("sig", "")
     if not author or not signature:
@@ -234,15 +238,17 @@ async def verify_pull_event(pr):
         ts = int(pr.get("ts", 0))
     except (TypeError, ValueError):
         return False
-    content = "\x00".join([
-        pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
-        pr.get("patch", ""),
-    ])
-    content_hash = await sha256_hex(content)
-    canonical = (
-        "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
-    ).encode()
-    return await ed25519_verify(author, signature, canonical)
+    fields = [pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
+              pr.get("patch", "")]
+    for content in ("\x00".join(fields + [pr.get("commits", "")]),
+                    "\x00".join(fields)):
+        content_hash = await sha256_hex(content)
+        canonical = (
+            "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
+        ).encode()
+        if await ed25519_verify(author, signature, canonical):
+            return True
+    return False
 
 
 def pull_comment_content(ev):
@@ -3019,7 +3025,9 @@ async def pulls_handler(env, request, owner, repo):
         pull = data.get("pull")
         if not isinstance(pull, dict):
             return json_response({"error": "pull_required"}, status=400)
-        if len((pull.get("patch", "") or "").encode("utf-8")) > MAX_PULL_BYTES:
+        pull_bytes = len((pull.get("patch", "") or "").encode("utf-8")) + len(
+            (pull.get("commits", "") or "").encode("utf-8"))
+        if pull_bytes > MAX_PULL_BYTES:
             return json_response({"error": "pull_too_large"}, status=413)
         if not await verify_pull_event(pull):
             return json_response({"error": "bad_signature"}, status=401)

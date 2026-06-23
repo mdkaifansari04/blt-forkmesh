@@ -45,6 +45,11 @@ struct PullRequest {
     QString authorName;
     QString sig;
     QString patch;           // unified diff (from changes.patch)
+    // git format-patch series (mbox) for base..head when the PR is built from a
+    // branch range, so the owner can replay it with `git am` and keep every
+    // commit's author/date/message. Empty for working-tree or imported-patch PRs,
+    // which fall back to a single `git apply` of `patch`.
+    QString commits;         // from commits.mbox
     int filesChanged = 0;
     int additions = 0;
     int deletions = 0;
@@ -72,10 +77,12 @@ public:
 
     QList<PullRequest> loadAll(QString *error = nullptr) const;
 
-    // Owner-side: create a PR locally from an already-computed diff.
+    // Owner-side: create a PR locally from an already-computed diff. `commits` is
+    // the optional format-patch mbox (base..head) used to preserve authorship on
+    // merge; pass an empty string for working-tree/imported patches.
     int createPull(const QString &title, const QString &description,
                    const QString &base, const QString &head, const QString &patch,
-                   QString *error = nullptr);
+                   const QString &commits, QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr) const;
     bool updateBranchFromBase(int number, QString *error = nullptr);
