@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 53
 title: make it so that when we check the bch ballance it connects to the bch network to check the balance there
-status: open
+status: closed
 labels: [bug]
 milestone: MVP launch
 priority: 38
