@@ -4,7 +4,7 @@ number: 1
 title: Fix node connect alerts default
 base: main
 head: fix/issue-126-node-connect-alerts
-status: open
+status: merged
 ts: 1782213467180
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: mainnode

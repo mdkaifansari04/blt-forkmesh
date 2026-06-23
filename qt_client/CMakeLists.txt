@@ -102,6 +102,7 @@ if(FORKMESH_BUILD_TESTS)
         ${FORKMESH_APP_SOURCES}
     )
     target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
     if(APPLE)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()

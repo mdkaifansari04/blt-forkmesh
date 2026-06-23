@@ -1213,6 +1213,7 @@ function findPublishedRepo(owner, name) {
 }
 
 function showNotFound() {
+  clearPacmen();
   currentRepo = null;
   currentProfile = null;
   if (homeView) homeView.hidden = true;
@@ -1225,6 +1226,7 @@ function showNotFound() {
 function route() {
   const r = parseRoute();
   if (r.view === "profile") {
+    clearPacmen();
     currentRepo = null;
     currentProfile = r.owner;
     if (homeView) homeView.hidden = true;
@@ -1262,6 +1264,7 @@ function route() {
   } else if (r.view === "not-found") {
     showNotFound();
   } else {
+    clearPacmen();
     currentRepo = null;
     currentProfile = null;
     if (repoView) repoView.hidden = true;
@@ -1278,11 +1281,108 @@ function go(url) {
   route();
 }
 
+// A live host refreshes its presence/sync on this cadence (mirrors the desktop
+// client's host-presence refresh and the Worker's HOST_PRESENCE_REFRESH_MS), so
+// a node that is behind is expected to catch up at the next heartbeat boundary.
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
+// Sync times jitter by a few seconds between mirrors of the same repo even when
+// their content matches, so only flag a node as behind past this grace window.
+const SYNC_TOLERANCE_MS = 5 * 1000;
+
+// Active pacman countdown charts (one per out-of-sync live mirror node). A single
+// shared ticker animates them all so the page never spins up a timer per node.
+let pacmanEntries = [];
+let pacmanTimer = null;
+
+// SVG pie wedge from the top (12 o'clock) sweeping `sweepDeg` degrees clockwise.
+// As the wedge grows toward a full circle the open "mouth" shrinks — pac-man
+// closing its mouth as the next heartbeat approaches.
+function pacmanWedgePath(cx, cy, r, sweepDeg) {
+  if (sweepDeg <= 0) return `M ${cx} ${cy}`;
+  if (sweepDeg >= 359.999) sweepDeg = 359.999; // a 360° arc collapses to a point
+  const rad = (d) => (d * Math.PI) / 180;
+  const start = -90;
+  const end = start + sweepDeg;
+  const x1 = cx + r * Math.cos(rad(start));
+  const y1 = cy + r * Math.sin(rad(start));
+  const x2 = cx + r * Math.cos(rad(end));
+  const y2 = cy + r * Math.sin(rad(end));
+  const large = sweepDeg > 180 ? 1 : 0;
+  return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+}
+
+function tickPacmen() {
+  if (!pacmanEntries.length) return stopPacmanTicker();
+  const now = Date.now();
+  for (const entry of pacmanEntries) {
+    // Phase each node off its own last sync so mirrors don't all chomp in unison.
+    const elapsed = ((now - entry.anchor) % HEARTBEAT_INTERVAL_MS +
+      HEARTBEAT_INTERVAL_MS) % HEARTBEAT_INTERVAL_MS;
+    const remainingSec = Math.max(0, Math.ceil(
+      (HEARTBEAT_INTERVAL_MS - elapsed) / 1000));
+    entry.path.setAttribute("d",
+      pacmanWedgePath(10, 10, 8, (elapsed / HEARTBEAT_INTERVAL_MS) * 360));
+    entry.svg.setAttribute("aria-label", `next heartbeat in ~${remainingSec}s`);
+    entry.svg.querySelector("title").textContent =
+      `behind — next heartbeat expected in ~${remainingSec}s, then it re-syncs`;
+    if (entry.label) entry.label.textContent = `heartbeat ~${remainingSec}s`;
+  }
+}
+
+function startPacmanTicker() {
+  if (pacmanTimer !== null || !pacmanEntries.length || document.hidden) return;
+  tickPacmen();
+  pacmanTimer = setInterval(tickPacmen, 1000);
+}
+
+function stopPacmanTicker() {
+  if (pacmanTimer === null) return;
+  clearInterval(pacmanTimer);
+  pacmanTimer = null;
+}
+
+// Tear down all charts when leaving the repo page so the ticker stops updating
+// detached nodes.
+function clearPacmen() {
+  stopPacmanTicker();
+  pacmanEntries = [];
+}
+
+// Build the little pacman countdown chart shown beside an out-of-sync live node,
+// and register it with the shared ticker.
+function createPacmanChart(anchor) {
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "mirror-node-pacman");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("role", "img");
+  const title = document.createElementNS(SVGNS, "title");
+  svg.append(title);
+  const track = document.createElementNS(SVGNS, "circle");
+  track.setAttribute("class", "pacman-track");
+  track.setAttribute("cx", "10");
+  track.setAttribute("cy", "10");
+  track.setAttribute("r", "8");
+  const wedge = document.createElementNS(SVGNS, "path");
+  wedge.setAttribute("class", "pacman-wedge");
+  svg.append(track, wedge);
+  const label = document.createElement("span");
+  label.className = "mirror-node-eta";
+  const wrap = document.createElement("span");
+  wrap.className = "mirror-node-countdown";
+  wrap.append(svg, label);
+  pacmanEntries.push({ svg, path: wedge, label, anchor });
+  return wrap;
+}
+
 // List every node mirroring this logical repo on the detail page, with each
 // node's live/offline state and last sync.
 function renderMirrorNodes(owner, name, repo) {
   const el = document.querySelector("#repo-mirror-nodes");
   if (!el) return;
+  // Rebuilding the list invalidates any charts from a previously open repo.
+  stopPacmanTicker();
+  pacmanEntries = [];
   const ref = repo || repoIndex.get(`${owner}/${name}`) || { name };
   const key = repoGroupKey(ref);
   const members = allRepositories
@@ -1295,6 +1395,9 @@ function renderMirrorNodes(owner, name, repo) {
     el.replaceChildren();
     return;
   }
+  // The freshest sync in the group is the canonical state; others are "behind".
+  const newestSync = members.reduce(
+    (max, m) => Math.max(max, Number(m.lastSync) || 0), 0);
   const live = members.reduce((n, m) => n + (m.liveHost ? 1 : 0), 0);
   const heading = document.createElement("div");
   heading.className = "mirror-nodes-title";
@@ -1316,10 +1419,19 @@ function renderMirrorNodes(owner, name, repo) {
     synced.className = "mirror-node-sync";
     synced.textContent = `synced ${formatDate(m.lastSync)}`;
     li.append(a, pill, synced);
+    // A behind-but-live node will catch up at its next heartbeat: show a little
+    // pacman chart counting down to it. Offline nodes get no chart (no heartbeat
+    // is expected), and the freshest node is already in sync.
+    const behind = newestSync - (Number(m.lastSync) || 0) > SYNC_TOLERANCE_MS;
+    if (behind && m.liveHost) {
+      synced.classList.add("is-behind");
+      li.append(createPacmanChart(Number(m.lastSync) || 0));
+    }
     ul.append(li);
   }
   el.replaceChildren(heading, ul);
   el.hidden = false;
+  startPacmanTicker();
 }
 
 function openRepoPage(owner, name, mode = null, filePath = "") {
@@ -1643,8 +1755,13 @@ function stopClients() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopClients();
-  else startClients();
+  if (document.hidden) {
+    stopClients();
+    stopPacmanTicker();
+  } else {
+    startClients();
+    startPacmanTicker();
+  }
 });
 
 loadCatalog();

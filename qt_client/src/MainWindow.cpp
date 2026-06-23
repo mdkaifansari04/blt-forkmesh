@@ -137,6 +137,14 @@ QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
 constexpr int kProgressBarRole = Qt::UserRole + 11;
+// Last-sync timestamp (qint64 ms) for a behind-but-online mirror node, read by
+// MirrorSyncDelegate to draw a pac-man countdown to its next heartbeat/re-sync.
+constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
+// Cadence on which a node re-fetches its mirrors from source (mirrors
+// m_mirrorSyncTimer); a behind node is expected to catch up at the next tick.
+constexpr qint64 kMirrorSyncIntervalMs = 5LL * 60 * 1000;
+// Defined further down; used early by MirrorSyncDelegate to pick chart colors.
+bool currentThemeIsDark();
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
@@ -283,6 +291,64 @@ public:
         painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
         painter->restore();
     }
+};
+
+// Draws the cell's relative-time text (via the base) and, when the cell carries
+// kPacmanAnchorRole (a behind-but-online node), a small pac-man pie at the right
+// edge that fills toward a closed mouth as the node nears its next heartbeat and
+// re-sync. Painting via a delegate (rather than a cell widget) keeps the chart
+// aligned with its row through sorting. The view animates it by repainting the
+// viewport on a timer.
+class MirrorSyncDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize base = HoverRowDelegate::sizeHint(option, index);
+        if (index.data(kPacmanAnchorRole).isValid())
+            base.setWidth(base.width() + kDiameter + 12); // room for the pie
+        return base;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Base draws hover/selection background and the left-aligned time text.
+        HoverRowDelegate::paint(painter, option, index);
+        const QVariant anchor = index.data(kPacmanAnchorRole);
+        if (!anchor.isValid())
+            return;
+        qint64 elapsed =
+            (QDateTime::currentMSecsSinceEpoch() - anchor.toLongLong()) %
+            kMirrorSyncIntervalMs;
+        if (elapsed < 0)
+            elapsed += kMirrorSyncIntervalMs;
+        const double frac =
+            qBound(0.0, double(elapsed) / double(kMirrorSyncIntervalMs), 1.0);
+
+        const bool dark = currentThemeIsDark();
+        QRectF box(option.rect.right() - kDiameter - 6,
+                   option.rect.center().y() - kDiameter / 2.0,
+                   kDiameter, kDiameter);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1.2));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(box);
+        if (frac > 0.004) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(dark ? "#d29922" : "#9a6700"));
+            // Sweep clockwise from 12 o'clock; Qt pie angles are 1/16°, CCW+.
+            painter->drawPie(box, 90 * 16, -int(frac * 360.0 * 16));
+        }
+        painter->restore();
+    }
+
+private:
+    static constexpr int kDiameter = 12;
 };
 
 QString formatByteSize(qint64 bytes)
@@ -14799,6 +14865,17 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Platform
     mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Version
     mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Node id
+    // Synced column draws a pac-man countdown for behind nodes; a 1s timer
+    // repaints the column so the chart animates while the panel is visible.
+    m_mirrorNodesTable->setItemDelegateForColumn(
+        2, new MirrorSyncDelegate(m_mirrorNodesTable));
+    auto *pacmanTick = new QTimer(m_mirrorNodesTable);
+    pacmanTick->setInterval(1000);
+    connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
+        if (m_mirrorNodesTable->isVisible())
+            m_mirrorNodesTable->viewport()->update();
+    });
+    pacmanTick->start();
     // Double-click a node row to open its profile.
     connect(m_mirrorNodesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -14850,10 +14927,11 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
     selfAdvert.updatedMs = repo.lastSyncMs;
 
-    int count = 0;
-    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
-        // Match on the shared source identity (so every node mirroring this repo
-        // is grouped), falling back to the older clone-name match for old peers.
+    // Resolve a node's advert for this repo: the shared source identity groups
+    // every mirror, with a clone-name fallback for older peers, and our own row
+    // always reads the live local HEAD via selfAdvert.
+    auto matchAdvert = [&](const MemberInfo &node,
+                           bool &namedOnly) -> const MirrorAdvert * {
         const MirrorAdvert *advert = nullptr;
         for (const MirrorAdvert &m : node.mirrorDetails) {
             if (m.source == source || m.ownerName == canonical ||
@@ -14862,12 +14940,38 @@ void MainWindow::loadMirrorNodesPanel()
                 break;
             }
         }
-        // Older peers may only carry bare names in `mirrors` with no detail.
-        const bool namedOnly = !advert && (node.mirrors.contains(canonical) ||
-                                           node.mirrors.contains(legacy));
-        if (node.self && (advert || namedOnly || !repo.previewOnly)) {
+        namedOnly = !advert && (node.mirrors.contains(canonical) ||
+                                node.mirrors.contains(legacy));
+        if (node.self && (advert || namedOnly || !repo.previewOnly))
             advert = &selfAdvert; // always prefer our live local HEAD for our row
+        return advert;
+    };
+
+    // The reference HEAD a node must match to count as "in sync": the source of
+    // truth's commit if it advertises one, else the freshest-synced commit in the
+    // group. Nodes whose commit differs are behind and get a heartbeat countdown.
+    QString sourceCommit;
+    QString newestCommit;
+    qint64 newestMs = -1;
+    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+        bool namedOnly = false;
+        const MirrorAdvert *advert = matchAdvert(node, namedOnly);
+        if (!advert || advert->commit.isEmpty())
+            continue;
+        if (advert->ownerName == source || node.name == sourceOwner)
+            sourceCommit = advert->commit;
+        if (advert->updatedMs > newestMs) {
+            newestMs = advert->updatedMs;
+            newestCommit = advert->commit;
         }
+    }
+    const QString referenceCommit =
+        !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
+
+    int count = 0;
+    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+        bool namedOnly = false;
+        const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
             continue;
 
@@ -14930,6 +15034,18 @@ void MainWindow::loadMirrorNodesPanel()
         if (syncedSecs > 0)
             syncedItem->setToolTip(
                 QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
+        // Behind-but-online node: tag the cell so MirrorSyncDelegate draws a
+        // pac-man counting down to its next heartbeat/re-sync. In-sync and
+        // offline rows carry no anchor and render as plain text.
+        const bool behind = online && advert && !advert->commit.isEmpty() &&
+                            !referenceCommit.isEmpty() &&
+                            advert->commit != referenceCommit;
+        if (behind) {
+            syncedItem->setData(kPacmanAnchorRole,
+                                static_cast<qlonglong>(advert->updatedMs));
+            syncedItem->setToolTip(QStringLiteral(
+                "Behind the source \xC2\xB7 catches up at its next heartbeat"));
+        }
         m_mirrorNodesTable->setItem(row, 2, syncedItem);
 
         m_mirrorNodesTable->setItem(
@@ -18568,7 +18684,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *nodeConnectAlertCheck =
         new QCheckBox("Show a system alert when a node connects");
     nodeConnectAlertCheck->setChecked(
-        QSettings().value(kNodeConnectAlertSetting, true).toBool());
+        QSettings().value(kNodeConnectAlertSetting, false).toBool());
     nodeConnectAlertCheck->setToolTip(
         "Pop up a desktop notification when another node comes online on this "
         "network.");
@@ -19661,13 +19777,14 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         if (m.online && !m.id.isEmpty())
             previouslyOnline.insert(m.id);
     if (!firstRoster &&
-        QDateTime::currentMSecsSinceEpoch() >= m_nodeAlertGraceUntilMs &&
-        QSettings().value(kNodeConnectAlertSetting, true).toBool()) {
+        QDateTime::currentMSecsSinceEpoch() >= m_nodeAlertGraceUntilMs) {
         // Never notify about our own node coming online. The roster's "self"
         // flag isn't always set (e.g. on reconnect), so also match our own node
         // id (public key) and account name defensively.
         const QString ownId = m_profileIdentity.publicKey();
         const QString ownName = accountOwner();
+        const bool showNodeConnectAlert =
+            QSettings().value(kNodeConnectAlertSetting, false).toBool();
         for (const MemberInfo &m : visibleMembers) {
             if (m.self || m.id.isEmpty() || !m.online)
                 continue;
@@ -19675,9 +19792,15 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
-            if (!previouslyOnline.contains(m.id))
+            if (!previouslyOnline.contains(m.id)) {
+                const QString displayName =
+                    m.name.trimmed().isEmpty() ? m.id : m.name.trimmed();
+                logSystem(QStringLiteral("Node connected: %1 is online").arg(displayName));
+                if (!showNodeConnectAlert)
+                    continue;
                 postNotification(QStringLiteral("Node connected"),
-                                 m.name + QStringLiteral(" is online"));
+                                 displayName + QStringLiteral(" is online"));
+            }
         }
     }
 
