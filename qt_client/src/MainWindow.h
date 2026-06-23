@@ -1138,6 +1138,7 @@ private:
 
     // Node profile panel widgets + the node it currently shows.
     QWidget *m_nodeProfilePanel = nullptr;
+    QWidget *m_repoDetailSection = nullptr; // hidden while node profile is full-page
     QLabel *m_profileAvatar = nullptr;
     QPixmap m_profileAvatarSource; // raw avatar, re-scaled to a banner on resize
     QLabel *m_profileName = nullptr;
