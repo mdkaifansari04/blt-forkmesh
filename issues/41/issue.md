@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 41
 title: have a button next to the issue detail that lets you assign the issue to claude code or codex - it will work on the currently connected fork
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 56
