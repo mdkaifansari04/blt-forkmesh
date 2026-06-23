@@ -6374,9 +6374,11 @@ QWidget *MainWindow::buildIssuesSection()
     splitter->setChildrenCollapsible(false);
     splitter->addWidget(listPane);
     splitter->addWidget(m_issueDetail);
+    // The table is the primary surface: it keeps the width and the detail panel
+    // opens at a minimal size beside it (the divider is still draggable).
     splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({520, 560});
+    splitter->setStretchFactor(1, 0);
+    splitter->setSizes({900, 440});
     // Open full width: the table fills the page until an issue is selected, at
     // which point showIssue() reveals the detail pane beside it.
     m_issueDetail->hide();
