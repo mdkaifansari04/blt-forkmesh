@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 95
 title: noticible lag when starting the app please fix that
-status: open
+status: closed
 labels: [bug]
 milestone: MVP launch
 priority: 5
