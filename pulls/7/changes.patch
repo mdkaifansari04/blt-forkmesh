@@ -1,0 +1,147 @@
+diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
+index 602412c..fcd1b04 100644
+--- a/qt_client/src/AgentRunner.cpp
++++ b/qt_client/src/AgentRunner.cpp
+@@ -7,6 +7,7 @@
+ #include <QProcessEnvironment>
+ #include <QRegularExpression>
+ #include <QStandardPaths>
++#include <QTimer>
+ 
+ namespace {
+ 
+@@ -65,6 +66,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
+     m_busy = true;
+     m_stopping = false;
+     m_attentionRaised = false;
++    m_processStartedAtMs = 0;
++    m_lastOutputAtMs = 0;
++    m_currentProgram.clear();
+     m_phase = Phase::Idle;
+     m_session = session;
+     m_issue = issue;
+@@ -167,6 +171,9 @@ void AgentRunner::launch(Phase phase, const QString &program,
+                          const QStringList &args, const QString &workingDir)
+ {
+     m_phase = phase;
++    m_processStartedAtMs = 0;
++    m_lastOutputAtMs = 0;
++    m_currentProgram = program;
+     m_process = new QProcess(this);
+     m_process->setProcessChannelMode(QProcess::MergedChannels);
+     if (!workingDir.isEmpty())
+@@ -222,6 +229,7 @@ void AgentRunner::launch(Phase phase, const QString &program,
+     m_process->setProcessEnvironment(env);
+ 
+     connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
++        m_lastOutputAtMs = QDateTime::currentMSecsSinceEpoch();
+         const QString chunk = QString::fromUtf8(m_process->readAllStandardOutput());
+         emitLog(chunk);
+         const QString hint = detectAuthIssue(chunk);
+@@ -232,10 +240,21 @@ void AgentRunner::launch(Phase phase, const QString &program,
+     });
+     connect(m_process, &QProcess::finished, this,
+             [this](int exitCode, QProcess::ExitStatus) {
++                if (m_noOutputTimer)
++                    m_noOutputTimer->stop();
+                 onProcessFinished(exitCode);
+             });
++    connect(m_process, &QProcess::started, this, [this] {
++        m_processStartedAtMs = QDateTime::currentMSecsSinceEpoch();
++        m_lastOutputAtMs = m_processStartedAtMs;
++        emitLog(QStringLiteral("==> Started process pid %1: %2")
++                    .arg(m_process ? m_process->processId() : 0)
++                    .arg(m_currentProgram));
++    });
+     connect(m_process, &QProcess::errorOccurred, this,
+             [this](QProcess::ProcessError error) {
++                if (m_noOutputTimer)
++                    m_noOutputTimer->stop();
+                 if (!m_process)
+                     return;
+                 emitLog(QStringLiteral("!! ") + m_process->errorString());
+@@ -246,6 +265,16 @@ void AgentRunner::launch(Phase phase, const QString &program,
+     m_process->setProgram(program);
+     m_process->setArguments(args);
+     m_process->start();
++    if (phase == Phase::Agent) {
++        if (!m_noOutputTimer) {
++            m_noOutputTimer = new QTimer(this);
++            m_noOutputTimer->setInterval(15000);
++            connect(m_noOutputTimer, &QTimer::timeout, this,
++                    &AgentRunner::onNoOutputTimeout);
++        }
++        emitLog(QStringLiteral("==> Waiting for agent output..."));
++        m_noOutputTimer->start();
++    }
+ }
+ 
+ void AgentRunner::onProcessFinished(int exitCode)
+@@ -342,6 +371,8 @@ void AgentRunner::complete(bool ok, const QString &status, const QString &messag
+     if (!m_busy && m_phase == Phase::Idle)
+         return;
+     if (m_process) {
++        if (m_noOutputTimer)
++            m_noOutputTimer->stop();
+         m_process->disconnect(this);
+         m_process->deleteLater();
+         m_process = nullptr;
+@@ -489,6 +520,28 @@ void AgentRunner::emitLog(const QString &text)
+     emit logLine(m_session.id, safe);
+ }
+ 
++void AgentRunner::onNoOutputTimeout()
++{
++    if (!m_process || m_phase != Phase::Agent ||
++        m_process->state() != QProcess::Running)
++        return;
++    const qint64 now = QDateTime::currentMSecsSinceEpoch();
++    const qint64 started = m_processStartedAtMs > 0 ? m_processStartedAtMs : now;
++    const qint64 last = m_lastOutputAtMs > 0 ? m_lastOutputAtMs : started;
++    const qint64 runningSecs = qMax<qint64>(0, (now - started) / 1000);
++    const qint64 quietSecs = qMax<qint64>(0, (now - last) / 1000);
++    emitLog(QStringLiteral(
++                "==> Agent process still running: %1s elapsed, no output for %2s (pid %3, program %4).")
++                .arg(runningSecs)
++                .arg(quietSecs)
++                .arg(m_process->processId())
++                .arg(m_currentProgram));
++    if (m_session.provider == QLatin1String("claude-code")) {
++        emitLog(QStringLiteral(
++            "==> Claude Code can be silent while working or while waiting for CLI login/permission state; check the Claude Code terminal login if this keeps repeating."));
++    }
++}
++
+ void AgentRunner::refreshUsage()
+ {
+     const QString transcript = m_store ? m_store->readLog(m_session) : QString();
+diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
+index 053afb1..119619b 100644
+--- a/qt_client/src/AgentRunner.h
++++ b/qt_client/src/AgentRunner.h
+@@ -7,6 +7,7 @@
+ #include <QString>
+ 
+ class QProcess;
++class QTimer;
+ 
+ class AgentRunner : public QObject
+ {
+@@ -55,6 +56,7 @@ private:
+     QString expandCommand(const QString &promptPath) const;
+     QString redact(QString text) const;
+     void emitLog(const QString &text);
++    void onNoOutputTimeout();
+     // Scan agent output for "needs sign-in / out of credit" markers; returns an
+     // actionable message the first time one is seen (else empty).
+     QString detectAuthIssue(const QString &chunk);
+@@ -72,5 +74,9 @@ private:
+     QString m_worktree;
+     QString m_prompt;
+     QProcess *m_process = nullptr;
++    QTimer *m_noOutputTimer = nullptr;
++    qint64 m_processStartedAtMs = 0;
++    qint64 m_lastOutputAtMs = 0;
++    QString m_currentProgram;
+     bool m_attentionRaised = false; // emit needsAttention only once per run
+ };
