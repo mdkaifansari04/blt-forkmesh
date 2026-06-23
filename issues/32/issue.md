@@ -6,10 +6,14 @@ status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 68
+progress: 100
 assignees: []
 createdAt: 1781667187357
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: node1
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-32
 ts: 1781667187357
