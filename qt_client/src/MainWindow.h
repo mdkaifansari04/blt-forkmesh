@@ -114,6 +114,29 @@ public:
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
+    QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
+    void testSetSetupInputs(const QString &name, const QString &solana);
+    void testSetAccountFlowResult(bool result)
+    {
+        m_testUseAccountFlowResult = true;
+        m_testAccountFlowResult = result;
+        m_testEnsureNodeAccountCalls = 0;
+    }
+    void testEnableSessionStartBypass(bool value) { m_testBypassServerStart = value; }
+    void testStartSession() { startSession(); }
+    int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
+    int testStackIndex() const;
+    QString testUserName() const { return m_userName; }
+    QString testAccountName() const { return m_accountName; }
+    QString testSavedSolanaAddress() const;
+    bool testAccountAuthenticated() const { return m_accountAuthenticated; }
+    QString testAccountTier() const { return m_accountTier; }
+    int testAddPublishedRepository(const QString &owner, const QString &name,
+                                   const QString &mirrorPath);
+    void testPublishRepository(int index) { publishRepository(index, false); }
+    void testStartRepoHosts() { startRepoHosts(); }
+    void testStopRepoHosts() { stopRepoHosts(); }
+    int testRepoHostCount() const { return m_repoHosts.size(); }
 #endif
 
 protected:
@@ -138,6 +161,7 @@ private:
     bool runDonationStep(const QString &accountName);
     QJsonArray fetchCatalogRepos();
     int fetchNodesOnline();
+    bool hasActiveAccountSession() const;
     void mirrorCatalogRepo(const QString &owner, const QString &name,
                            const QString &cloneUrl);
     // Hosted git URL (https://<mainnode>/<owner>/<name>) for a catalog repo,
@@ -1307,4 +1331,10 @@ private:
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;
+#ifdef FORKMESH_WINDOW_TESTS
+    bool m_testUseAccountFlowResult = false;
+    bool m_testAccountFlowResult = true;
+    int m_testEnsureNodeAccountCalls = 0;
+    bool m_testBypassServerStart = false;
+#endif
 };

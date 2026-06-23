@@ -4,6 +4,7 @@
 #include <QCheckBox>
 #include <QDebug>
 #include <QProcess>
+#include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QWidget>
@@ -84,6 +85,66 @@ QCheckBox *findCheckBox(QWidget &root, const QString &text)
     return nullptr;
 }
 
+QPushButton *findButtonStartingWith(QWidget &root, const QString &prefix)
+{
+    const QList<QPushButton *> buttons = root.findChildren<QPushButton *>();
+    for (QPushButton *button : buttons) {
+        if (button->text().startsWith(prefix))
+            return button;
+    }
+    return nullptr;
+}
+
+QString quotedCommand(const QString &program, const QStringList &arguments)
+{
+    QStringList parts{program};
+    parts += arguments;
+    return parts.join(QLatin1Char(' '));
+}
+
+bool runProcessChecked(const QString &program, const QStringList &arguments,
+                       const QString &workingDir)
+{
+    QProcess process;
+    if (!workingDir.isEmpty())
+        process.setWorkingDirectory(workingDir);
+    process.start(program, arguments);
+    if (!process.waitForFinished(10000)) {
+        qCritical().noquote()
+            << "FAIL: timed out:" << quotedCommand(program, arguments);
+        ++failures;
+        return false;
+    }
+    if (process.exitCode() != 0) {
+        qCritical().noquote()
+            << "FAIL:" << quotedCommand(program, arguments)
+            << QString::fromUtf8(process.readAllStandardError()).trimmed();
+        ++failures;
+        return false;
+    }
+    return true;
+}
+
+bool runGitChecked(const QString &repoDir, const QStringList &arguments)
+{
+    return runProcessChecked(QStringLiteral("git"), arguments, repoDir);
+}
+
+bool initGitRepo(QTemporaryDir &repo)
+{
+    if (!repo.isValid()) {
+        qCritical("FAIL: could not create temporary git repository");
+        ++failures;
+        return false;
+    }
+
+    return runGitChecked(repo.path(), {"init"}) &&
+           runGitChecked(repo.path(), {"config", "user.email", "tests@forkmesh.local"}) &&
+           runGitChecked(repo.path(), {"config", "user.name", "ForkMesh Tests"}) &&
+           runGitChecked(repo.path(), {"checkout", "-b", "main"}) &&
+           runGitChecked(repo.path(), {"commit", "--allow-empty", "-m", "initial"});
+}
+
 MemberInfo testMember(const QString &id, const QString &name, bool self = false)
 {
     MemberInfo member;
@@ -126,6 +187,87 @@ int main(int argc, char *argv[])
     MainWindow window;
     window.show();
     QApplication::processEvents();
+
+    QTemporaryDir upstreamRepo;
+    QTemporaryDir upstreamRemote;
+    if (initGitRepo(upstreamRepo) && upstreamRemote.isValid()) {
+        runProcessChecked(QStringLiteral("git"),
+                          {"init", "--bare", upstreamRemote.path()}, QString());
+        runGitChecked(upstreamRepo.path(),
+                      {"remote", "add", "origin", upstreamRemote.path()});
+        runGitChecked(upstreamRepo.path(), {"push", "-u", "origin", "main"});
+        check(window.testQuickUpdatePullArguments(upstreamRepo.path()) ==
+                  QStringList({"pull", "--ff-only"}),
+              QStringLiteral("quick update keeps plain pull when upstream exists"));
+    }
+
+    QTemporaryDir noUpstreamRepo;
+    if (initGitRepo(noUpstreamRepo)) {
+        runGitChecked(noUpstreamRepo.path(), {"checkout", "-b", "feature/no-upstream"});
+        check(window.testQuickUpdatePullArguments(noUpstreamRepo.path()) ==
+                  QStringList({"pull", "--ff-only", "origin", "feature/no-upstream"}),
+              QStringLiteral("quick update pulls origin/current-branch without upstream"));
+    }
+
+    QTemporaryDir detachedRepo;
+    if (initGitRepo(detachedRepo)) {
+        runGitChecked(detachedRepo.path(), {"checkout", "--detach", "HEAD"});
+        check(window.testQuickUpdatePullArguments(detachedRepo.path()) ==
+                  QStringList({"pull", "--ff-only", "origin", "HEAD"}),
+              QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
+    }
+
+    window.testEnableSessionStartBypass(true);
+    window.testSetSetupInputs(QStringLiteral("Alice-Node"),
+                              QStringLiteral("SavedSolana111"));
+    window.testSetAccountFlowResult(false);
+    window.testStartSession();
+    check(window.testAccountFlowCalls() == 0,
+          QStringLiteral("free start does not run account authentication"));
+    check(window.testStackIndex() == 1,
+          QStringLiteral("free start opens the app shell"));
+    check(window.testUserName() == QStringLiteral("alice-node"),
+          QStringLiteral("free start uses sanitized node name"));
+    check(window.testAccountName() == QStringLiteral("alice-node"),
+          QStringLiteral("free start records the account owner name locally"));
+    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
+          QStringLiteral("free start preserves the saved Solana address"));
+    check(!window.testAccountAuthenticated(),
+          QStringLiteral("free start keeps the account unauthenticated"));
+    check(window.testAccountTier() == QStringLiteral("free"),
+          QStringLiteral("free start keeps the account tier free"));
+    QTemporaryDir freeHostMirror;
+    if (freeHostMirror.isValid()) {
+        const int freeRepoIndex =
+            window.testAddPublishedRepository(QStringLiteral("alice-node"),
+                                              QStringLiteral("free-repo"),
+                                              freeHostMirror.path());
+        window.testPublishRepository(freeRepoIndex);
+        check(window.testNetworkLog().join(QLatin1Char('\n')).contains(
+                  QStringLiteral("Join the network before publishing repositories")),
+              QStringLiteral("free start blocks repository publishing"));
+        window.testStartRepoHosts();
+        check(window.testRepoHostCount() == 0,
+              QStringLiteral("free start does not host published repositories"));
+        window.testStopRepoHosts();
+    }
+
+    window.testSetSetupInputs(QStringLiteral("Join-Node"),
+                              QStringLiteral("JoinSolana222"));
+    window.testSetAccountFlowResult(true);
+    QPushButton *joinButton =
+        findButtonStartingWith(window, QStringLiteral("Join the network"));
+    check(joinButton != nullptr, QStringLiteral("join button exists"));
+    if (joinButton) {
+        joinButton->click();
+        QApplication::processEvents();
+    }
+    check(window.testAccountFlowCalls() == 1,
+          QStringLiteral("join runs the account flow exactly once"));
+    check(window.testStackIndex() == 1,
+          QStringLiteral("join opens the app shell after authentication"));
+    check(window.testAccountName() == QStringLiteral("join-node"),
+          QStringLiteral("join stores the authenticated node name"));
 
     QCheckBox *nodeConnectAlertCheck =
         findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
