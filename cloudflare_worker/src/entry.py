@@ -46,6 +46,9 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# Per-author cap across the issue/pull/commit inboxes, so one signing key can't
+# fill a repo's whole inbox to the global cap and block everyone else.
+MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
 # issue body but still bounded.
 MAX_PULL_BYTES = 1024 * 1024
@@ -97,6 +100,11 @@ NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 MAX_NODE_NAME = 63
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
+# Login brute-force throttle: after LOGIN_MAX_FAILS failures (counted within a
+# rolling window) the identifier is locked out for LOGIN_LOCKOUT_MS.
+LOGIN_MAX_FAILS = 10
+LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
+LOGIN_LOCKOUT_MS = 15 * 60 * 1000
 
 
 def valid_node_name(value):
@@ -978,6 +986,11 @@ SCHEMA_STATEMENTS = [
     # be included in the reward split. Keyed by the account blind index.
     "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_account_presence_ts ON account_presence(ts)",
+    # Login throttle: failed-attempt counter + lockout per login identifier (blind
+    # index). No plaintext credential is stored — only the HMAC of the identifier.
+    "CREATE TABLE IF NOT EXISTS login_attempts (id_bi TEXT PRIMARY KEY, "
+    "fails INTEGER NOT NULL DEFAULT 0, first_fail_ts INTEGER NOT NULL DEFAULT 0, "
+    "locked_until INTEGER NOT NULL DEFAULT 0)",
     # Email-verification queue: newly finalized accounts land here until an admin
     # manually verifies them (placeholder until a real email service like SES is
     # wired up). data = encrypted {name, email, joinedAt}.
@@ -1019,6 +1032,15 @@ async def ensure_schema(env):
         ).run()
     except Exception:
         pass
+    # Plaintext blind index of the (signature-verified) submitter on each inbox
+    # row, so a per-author quota can be enforced with a COUNT instead of
+    # decrypting every pending row. Added separately for tables predating it.
+    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox"):
+        try:
+            await env.DB.prepare(
+                "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
+        except Exception:
+            pass
     _schema_ready = True
 
 
@@ -1052,8 +1074,27 @@ async def d1_run(env, sql, *args):
 
 # --- Encryption-at-rest + blind index ---------------------------------------
 
+# Known placeholder values that must never reach production: encrypting custody
+# key material under a publicly known key is equivalent to storing it in plaintext.
+_INSECURE_DATA_KEYS = frozenset({
+    "", "forkmesh-dev-data-key", "forkmesh-dev-data-key-change-me",
+})
+
+
+def _require_data_secret(env):
+    # Fail closed: a missing or placeholder DATA_KEY would silently encrypt every
+    # custody seed under a public key. Set a real secret (deploy.sh pushes it):
+    #   uvx --from workers-py pywrangler secret put DATA_KEY
+    secret = (getattr(env, "DATA_KEY", "") or "").strip()
+    if secret in _INSECURE_DATA_KEYS:
+        raise RuntimeError(
+            "DATA_KEY is unset or a known placeholder; refusing to use a public "
+            "key for at-rest encryption. Set DATA_KEY as a Worker secret.")
+    return secret
+
+
 async def _data_key(env):
-    secret = getattr(env, "DATA_KEY", "forkmesh-dev-data-key")
+    secret = _require_data_secret(env)
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
     return await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "AES-GCM"}), False,
@@ -1088,7 +1129,7 @@ async def decrypt_row(env, stored):
 
 async def _hmac_key(env):
     # A distinct key context so the blind-index HMAC key isn't the AES key.
-    secret = getattr(env, "DATA_KEY", "forkmesh-dev-data-key") + ":blind-index"
+    secret = _require_data_secret(env) + ":blind-index"
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
     return await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
@@ -2129,6 +2170,51 @@ async def _account_finalize(env, request):
         status=201)
 
 
+async def _login_locked_until(env, id_bi):
+    # Returns the lock-expiry ms if the identifier is currently locked, else 0.
+    row = await d1_first(
+        env, "SELECT locked_until FROM login_attempts WHERE id_bi=?", id_bi)
+    if not row:
+        return 0
+    try:
+        locked = int(row.get("locked_until") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return locked if locked > int(Date.now()) else 0
+
+
+async def _login_record_fail(env, id_bi):
+    # Increment the failure counter (resetting it once the rolling window passes)
+    # and lock the identifier once it crosses the threshold.
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT fails, first_fail_ts FROM login_attempts WHERE id_bi=?", id_bi)
+    fails = 0
+    first = now
+    if row:
+        try:
+            fails = int(row.get("fails") or 0)
+            first = int(row.get("first_fail_ts") or now)
+        except (TypeError, ValueError):
+            fails, first = 0, now
+    if now - first > LOGIN_FAIL_WINDOW_MS:
+        fails, first = 0, now
+    fails += 1
+    locked_until = now + LOGIN_LOCKOUT_MS if fails >= LOGIN_MAX_FAILS else 0
+    await d1_run(
+        env,
+        "INSERT INTO login_attempts (id_bi, fails, first_fail_ts, locked_until) "
+        "VALUES (?,?,?,?) ON CONFLICT(id_bi) DO UPDATE SET "
+        "fails=excluded.fails, first_fail_ts=excluded.first_fail_ts, "
+        "locked_until=excluded.locked_until",
+        id_bi, fails, first, locked_until,
+    )
+
+
+async def _login_clear(env, id_bi):
+    await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", id_bi)
+
+
 async def _account_login(env, request):
     try:
         data = await request.json()
@@ -2142,6 +2228,17 @@ async def _account_login(env, request):
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
 
+    # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
+    # stored). Checked before any account lookup so it also protects nonexistent
+    # identifiers (and so the lockout itself doesn't leak whether an account
+    # exists). A generic "invalid_credentials" is returned for every pre-TOTP
+    # failure so an attacker can't enumerate accounts by error code.
+    id_bi = await blind_index(env, identifier) if identifier else ""
+    if not id_bi:
+        return json_response({"error": "invalid_credentials"}, status=401)
+    if await _login_locked_until(env, id_bi):
+        return json_response({"error": "too_many_attempts"}, status=429)
+
     rec = None
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
@@ -2151,17 +2248,22 @@ async def _account_login(env, request):
             rec = await decrypt_row(env, row["data"])
     elif valid_node_name(identifier):
         _, rec = await _account_row(env, identifier)
-    if not rec:
-        return json_response({"error": "no_such_account"}, status=404)
-    if rec.get("status") != "active" or not rec.get("pass_hash"):
-        return json_response({"error": "account_not_active"}, status=403)
-    if not await verify_password(password, rec.get("pass_salt", ""),
-                                 rec.get("pass_hash", "")):
-        return json_response({"error": "bad_password"}, status=401)
-    # TOTP is only enforced for accounts that have enrolled it.
+
+    ok = (rec is not None and rec.get("status") == "active" and
+          rec.get("pass_hash") and
+          await verify_password(password, rec.get("pass_salt", ""),
+                                rec.get("pass_hash", "")))
+    if not ok:
+        await _login_record_fail(env, id_bi)
+        return json_response({"error": "invalid_credentials"}, status=401)
+    # TOTP is only enforced for accounts that have enrolled it. A bad code counts
+    # toward the lockout but the password was already correct, so the distinct
+    # error here doesn't aid account enumeration.
     if rec.get("totp_enrolled"):
         if not await totp_verify(rec.get("totp_secret", ""), totp):
+            await _login_record_fail(env, id_bi)
             return json_response({"error": "bad_totp"}, status=401)
+    await _login_clear(env, id_bi)
     return json_response({
         "ok": True, "nodeName": rec.get("name", ""),
         "email": rec.get("email", ""), "status": rec.get("status", "active"),
@@ -2398,6 +2500,11 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
     # unless the escrow has a balance, a payee, and hasn't already been paid.
     if not rec or rec.get("status") == "paid":
         return rec
+    # Only ever auto-pay a payee the repo owner explicitly authorized (set via an
+    # owner-signed create/payout). This is the gate that makes a funded escrow
+    # un-stealable by an unauthenticated caller.
+    if not rec.get("payee_authorized"):
+        return rec
     payee = rec.get("payee", "")
     if not SOLANA_RE.match(payee or ""):
         return rec
@@ -2447,6 +2554,7 @@ async def sweep_funded_bounties(env):
         except Exception:
             continue
         if (not rec or rec.get("status") == "paid" or not rec.get("payee") or
+                not rec.get("payee_authorized") or
                 not rec.get("address") or not rec.get("secret")):
             continue
         try:
@@ -2488,19 +2596,40 @@ async def bounties_handler(env, request, owner, repo):
         required = await _usd_to_lamports(env, amount_usd)
         if required <= 0:
             return json_response({"error": "price_unavailable"}, status=503)
-        # Resolve the payee (the merged PR's author) up front so a funded escrow
-        # can split to author + treasury automatically, with no second step.
-        # Prefer an explicit address; else the author's registered payout wallet.
-        payee = clean_string(data.get("payee", ""), 64)
-        if not (payee and SOLANA_RE.match(payee)):
-            payee_node = clean_string(
-                data.get("payeeNode", ""), MAX_NODE_NAME).lower()
-            payee = ""
-            if payee_node:
-                _, author_rec = await _account_row(env, payee_node)
-                cand = (author_rec or {}).get("solana", "")
-                if cand and SOLANA_RE.match(cand):
-                    payee = cand
+        # Creating/funding a bounty AND choosing who it pays out to are both
+        # owner-only: the repo owner signs the create so a funded escrow can only
+        # ever be released to an owner-approved payee. Without this gate anyone
+        # could repoint an unpaid bounty's payee to their own wallet and let the
+        # auto-payout drain it. The payee identifier (explicit address, else the
+        # PR author's node name) is bound into the signature.
+        payee_addr = clean_string(data.get("payee", ""), 64)
+        payee_node = clean_string(data.get("payeeNode", ""), MAX_NODE_NAME).lower()
+        payee_id = (payee_addr if (payee_addr and SOLANA_RE.match(payee_addr))
+                    else payee_node)
+        try:
+            ts = int(data.get("ts", 0))
+        except (TypeError, ValueError):
+            ts = 0
+        sig = data.get("sig", "")
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=401)
+        owner_pub = await _owner_pubkey(env, owner)
+        if not owner_pub:
+            return json_response({"error": "no_owner_key"}, status=403)
+        canonical = ("forkmesh-bounty-create-v1\n" + owner + "\n" + repo + "\n" +
+                     str(number) + "\n" + payee_id + "\n" + str(ts)).encode()
+        if not await ed25519_verify(owner_pub, sig, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+        # Resolve the signed payee identifier to a Solana address. An owner-signed
+        # create with a resolvable payee marks it authorized for auto-payout.
+        payee = ""
+        if payee_addr and SOLANA_RE.match(payee_addr):
+            payee = payee_addr
+        elif payee_node:
+            _, author_rec = await _account_row(env, payee_node)
+            cand = (author_rec or {}).get("solana", "")
+            if cand and SOLANA_RE.match(cand):
+                payee = cand
         # Reuse an existing unpaid address (top-ups raise the target) so a repeat
         # call doesn't strand funds at a stale address.
         if rec and rec.get("address") and rec.get("status") != "paid":
@@ -2508,6 +2637,7 @@ async def bounties_handler(env, request, owner, repo):
             rec["required_lamports"] = required
             if payee:
                 rec["payee"] = payee
+                rec["payee_authorized"] = True
         else:
             addr, secret = await _new_solana_keypair()
             if not addr:
@@ -2517,7 +2647,8 @@ async def bounties_handler(env, request, owner, repo):
                 "address": addr, "secret": secret,
                 "amount_usd": amount_usd, "required_lamports": required,
                 "received_lamports": 0, "confirmed": False, "status": "open",
-                "created_at": int(Date.now()), "payee": payee, "payout_sig": "",
+                "created_at": int(Date.now()), "payee": payee,
+                "payee_authorized": bool(payee), "payout_sig": "",
             }
         await _save_bounty(env, bounty_bi, rec)
         return json_response(_bounty_public(rec))
@@ -2535,9 +2666,10 @@ async def bounties_handler(env, request, owner, repo):
                     if rec.get("status") == "open":
                         rec["status"] = "funded"
                 await _save_bounty(env, bounty_bi, rec)
-                # As soon as it's funded and we know the payee, split it — no
-                # second manual payout step is needed.
-                if rec.get("status") == "funded" and rec.get("payee"):
+                # As soon as it's funded and we have an owner-authorized payee,
+                # split it — no second manual payout step is needed.
+                if (rec.get("status") == "funded" and rec.get("payee") and
+                        rec.get("payee_authorized")):
                     rec = await _bounty_auto_payout(env, bounty_bi, rec)
         return json_response(_bounty_public(rec))
 
@@ -2588,6 +2720,7 @@ async def bounties_handler(env, request, owner, repo):
             return json_response({"error": "send_transaction_failed"}, status=502)
         rec["status"] = "paid"
         rec["payee"] = payee
+        rec["payee_authorized"] = True
         rec["payout_sig"] = send_sig
         rec["paid_at"] = int(Date.now())
         rec["payout_transfers"] = [
@@ -2743,6 +2876,20 @@ async def _authorize_owner(env, request, owner):
     return await ed25519_verify(owner_pub, sig, canonical)
 
 
+async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
+    # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
+    # in this repo's inbox (table is a fixed literal, safe to interpolate).
+    if not submitter_bi:
+        return False
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM " + table +
+        " WHERE repo_bi=? AND submitter_bi=?",
+        repo_bi, submitter_bi,
+    )
+    return bool(row and (row.get("c", 0) or 0) >= MAX_PENDING_PER_AUTHOR)
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -2768,6 +2915,9 @@ async def issues_handler(env, request, owner, repo):
         )
         if count and count.get("c", 0) >= MAX_PENDING_ISSUES:
             return json_response({"error": "inbox_full"}, status=429)
+        submitter_bi = await blind_index(env, event.get("author", ""))
+        if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
+            return json_response({"error": "author_quota"}, status=429)
         # Issue-level metadata for a new issue (labels/milestone/priority/
         # assignees). Not signature-bound; the owner applies it on merge. Bounded
         # to keep a submission small and the lists sane.
@@ -2797,8 +2947,9 @@ async def issues_handler(env, request, owner, repo):
             "submittedAt": int(Date.now()),
         }
         await d1_run(
-            env, "INSERT INTO issue_inbox (repo_bi, data) VALUES (?,?)",
-            repo_bi, await encrypt_row(env, item),
+            env,
+            "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
+            repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         return json_response({"ok": True}, status=201)
 
@@ -2848,6 +2999,10 @@ async def pulls_handler(env, request, owner, repo):
             )
             if count and count.get("c", 0) >= MAX_PENDING_PULLS:
                 return json_response({"error": "inbox_full"}, status=429)
+            submitter_bi = await blind_index(env, event.get("author", ""))
+            if await _inbox_author_over_quota(
+                    env, "pull_inbox", repo_bi, submitter_bi):
+                return json_response({"error": "author_quota"}, status=429)
             item = {
                 "number": number,
                 "event": event,
@@ -2855,8 +3010,10 @@ async def pulls_handler(env, request, owner, repo):
                 "submittedAt": int(Date.now()),
             }
             await d1_run(
-                env, "INSERT INTO pull_inbox (repo_bi, data) VALUES (?,?)",
-                repo_bi, await encrypt_row(env, item),
+                env,
+                "INSERT INTO pull_inbox (repo_bi, data, submitter_bi) "
+                "VALUES (?,?,?)",
+                repo_bi, await encrypt_row(env, item), submitter_bi,
             )
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
@@ -2871,14 +3028,18 @@ async def pulls_handler(env, request, owner, repo):
         )
         if count and count.get("c", 0) >= MAX_PENDING_PULLS:
             return json_response({"error": "inbox_full"}, status=429)
+        submitter_bi = await blind_index(env, pull.get("author", ""))
+        if await _inbox_author_over_quota(env, "pull_inbox", repo_bi, submitter_bi):
+            return json_response({"error": "author_quota"}, status=429)
         item = {
             "pull": pull,
             "submitter": clean_string(pull.get("author", ""), 120),
             "submittedAt": int(Date.now()),
         }
         await d1_run(
-            env, "INSERT INTO pull_inbox (repo_bi, data) VALUES (?,?)",
-            repo_bi, await encrypt_row(env, item),
+            env,
+            "INSERT INTO pull_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
+            repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         return json_response({"ok": True}, status=201)
 
@@ -2924,6 +3085,9 @@ async def commits_handler(env, request, owner, repo):
         )
         if count and count.get("c", 0) >= MAX_PENDING_COMMIT_COMMENTS:
             return json_response({"error": "inbox_full"}, status=429)
+        submitter_bi = await blind_index(env, comment.get("author", ""))
+        if await _inbox_author_over_quota(env, "commit_inbox", repo_bi, submitter_bi):
+            return json_response({"error": "author_quota"}, status=429)
         item = {
             "sha": sha,
             "comment": comment,
@@ -2931,8 +3095,9 @@ async def commits_handler(env, request, owner, repo):
             "submittedAt": int(Date.now()),
         }
         await d1_run(
-            env, "INSERT INTO commit_inbox (repo_bi, data) VALUES (?,?)",
-            repo_bi, await encrypt_row(env, item),
+            env,
+            "INSERT INTO commit_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
+            repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         return json_response({"ok": True}, status=201)
 
@@ -3019,6 +3184,22 @@ async def admin_stats(env):
         "clients": await _flagship_client_count(env),
         "errors_24h": int((err_row or {}).get("n", 0) or 0),
     }
+
+
+def _admin_csrf_token(env):
+    # A deterministic CSRF token derived from admin/at-rest secrets. It is only
+    # ever rendered inside the (Basic-auth-protected) admin HTML, so a cross-site
+    # forged POST — which still carries the browser's cached Basic-auth creds —
+    # cannot include it. No server-side session store is needed to verify it.
+    secret = (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
+              str(getattr(env, "DATA_KEY", "") or "")).encode()
+    return hmac.new(secret, b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
+
+
+def _admin_csrf_ok(env, form):
+    submitted = (form.get("csrf", [""]) or [""])[0]
+    return bool(submitted) and hmac.compare_digest(
+        submitted, _admin_csrf_token(env))
 
 
 def _check_basic_auth(env, request):
@@ -3109,16 +3290,17 @@ def _admin_cell(column, value, env_unused=None):
 
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
 
-def _admin_bulk_form_open(table):
+def _admin_bulk_form_open(table, csrf_field=""):
     return (
         '<form method="post" action="?table=%s&amp;action=delete_rows" '
         'onsubmit="return confirm(\'Delete the selected row(s)? This cannot be '
         'undone.\')">'
+        '%s'
         '<div class="tools">'
         '<button type="submit">Delete selected</button>'
         '<span class="meta">Tick rows (or the header box for all) then delete.'
         '</span></div>'
-    ) % _html_escape(table)
+    ) % (_html_escape(table), csrf_field)
 
 
 def _admin_select_all_th():
@@ -3140,7 +3322,7 @@ async def _admin_table_columns(env, table):
     return [str(r.get("name", "")) for r in rows if r.get("name")]
 
 
-async def _render_row_form(env, table, rowid):
+async def _render_row_form(env, table, rowid, csrf_field=""):
     # Full-page create/edit form for one row. Field per column; the encrypted
     # `data` column is shown decrypted as JSON in a textarea and re-encrypted on
     # save. Field names are prefixed "f_" so they never collide with rowid/action.
@@ -3175,12 +3357,12 @@ async def _render_row_form(env, table, rowid):
     return (
         '<div class="title">%s</div>'
         '<form method="post" action="?table=%s&amp;action=%s" class="rowform">'
-        '%s%s'
+        '%s%s%s'
         '<div class="tools"><button type="submit">Save</button>'
         '<a class="navlink" href="?table=%s">Cancel</a></div>'
         '</form>'
         % (_html_escape(title), _html_escape(table), action,
-           hidden_rowid, "".join(fields), _html_escape(table))
+           csrf_field, hidden_rowid, "".join(fields), _html_escape(table))
     )
 
 
@@ -3228,7 +3410,7 @@ async def _admin_insert_row(env, table, form):
     return "Added a row to %s." % table
 
 
-async def _render_table_view(env, table):
+async def _render_table_view(env, table, csrf_field=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
@@ -3248,6 +3430,7 @@ async def _render_table_view(env, table):
             '<form method="post" action="?table=accounts&amp;action=set_password" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
+            + csrf_field +
             '<input type="text" name="name" placeholder="node name" '
             'autocomplete="off" required>'
             '<input type="password" name="password" '
@@ -3279,7 +3462,7 @@ async def _render_table_view(env, table):
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
-            inner = (_admin_bulk_form_open(table)
+            inner = (_admin_bulk_form_open(table, csrf_field)
                      + "<table><thead><tr>" + _admin_select_all_th()
                      + "<th>Time</th><th>Status</th><th>Method</th>"
                      "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
@@ -3324,7 +3507,7 @@ async def _render_table_view(env, table):
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
-        + _admin_bulk_form_open(table)
+        + _admin_bulk_form_open(table, csrf_field)
         + "<table><thead><tr>" + head + "</tr></thead><tbody>"
         + "".join(body) + "</tbody></table></form>"
     )
@@ -3362,7 +3545,7 @@ def _render_admin_nav(tables, active, counts=None):
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None):
+                      counts=None, csrf_field=""):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -3374,6 +3557,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + _render_admin_stats(env_stats)
         + '<div class="tools"><form method="post" action="?action=disburse" '
           'onsubmit="return confirm(\'Sweep confirmed join deposits now?\')">'
+          + csrf_field +
           '<button type="submit">Sweep join deposits</button></form>'
           '<span class="meta">Automated sweeping is enabled: confirmed join '
           'deposits sweep to the treasury and online node payout addresses; '
@@ -3521,63 +3705,73 @@ class Default(WorkerEntrypoint):
         params = parse_qs(urlparse(request.url).query)
 
         # POST actions: ?action=disburse retries join-deposit sweeps;
-        # ?action=set_password resets a user account's login password.
+        # ?action=set_password resets a user account's login password. Every
+        # state-changing POST must carry a CSRF token (rendered only into this
+        # Basic-auth-gated page) so a cross-site form — which would still send the
+        # browser's cached admin credentials — can't trigger these actions.
         banner = ""
         action = params.get("action", [""])[0]
-        if method_name(request) == "POST" and action == "disburse":
+        csrf_field = ('<input type="hidden" name="csrf" value="%s">'
+                      % _html_escape(_admin_csrf_token(self.env)))
+        if method_name(request) == "POST":
             try:
-                banner = await _admin_disburse(self.env)
-            except Exception as error:
-                banner = "Disburse failed: " + repr(error)
-        elif method_name(request) == "POST" and action == "set_password":
-            try:
-                form = parse_qs(await request.text())
-                banner = await _admin_set_password(
-                    self.env,
-                    form.get("name", [""])[0],
-                    form.get("password", [""])[0],
-                )
-            except Exception as error:
-                banner = "Set password failed: " + repr(error)
-        elif method_name(request) == "POST" and action == "delete_rows":
-            try:
-                tables = await _admin_list_tables(self.env)
-                table = params.get("table", [""])[0]
-                form = parse_qs(await request.text())
-                ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
-                if table not in tables:
-                    banner = "Delete failed: unknown table."
-                elif not ids:
-                    banner = "Delete: no rows were selected."
-                else:
-                    # D1 caps bound parameters per query (~100), so delete in
-                    # chunks rather than one giant IN (...) list.
-                    chunk = 90
-                    for start in range(0, len(ids), chunk):
-                        batch = ids[start:start + chunk]
-                        placeholders = ",".join(["?"] * len(batch))
-                        await d1_run(
-                            self.env,
-                            "DELETE FROM " + table
-                            + " WHERE rowid IN (" + placeholders + ")",
-                            *batch,
-                        )
-                    banner = "Deleted %d row(s) from %s." % (len(ids), table)
-            except Exception as error:
-                banner = "Delete failed: " + repr(error)
-        elif method_name(request) == "POST" and action in ("update_row", "insert_row"):
-            try:
-                tables = await _admin_list_tables(self.env)
-                table = params.get("table", [""])[0]
                 form = parse_qs(await request.text(), keep_blank_values=True)
-                if table not in tables:
-                    banner = "Save failed: unknown table."
-                elif action == "update_row":
-                    banner = await _admin_update_row(self.env, table, form)
-                else:
-                    banner = await _admin_insert_row(self.env, table, form)
-            except Exception as error:
-                banner = "Save failed: " + repr(error)
+            except Exception:
+                form = {}
+            if not _admin_csrf_ok(self.env, form):
+                banner = ("Action blocked: invalid or missing CSRF token. "
+                          "Reload the admin page and try again.")
+            elif action == "disburse":
+                try:
+                    banner = await _admin_disburse(self.env)
+                except Exception as error:
+                    banner = "Disburse failed: " + repr(error)
+            elif action == "set_password":
+                try:
+                    banner = await _admin_set_password(
+                        self.env,
+                        form.get("name", [""])[0],
+                        form.get("password", [""])[0],
+                    )
+                except Exception as error:
+                    banner = "Set password failed: " + repr(error)
+            elif action == "delete_rows":
+                try:
+                    tables = await _admin_list_tables(self.env)
+                    table = params.get("table", [""])[0]
+                    ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
+                    if table not in tables:
+                        banner = "Delete failed: unknown table."
+                    elif not ids:
+                        banner = "Delete: no rows were selected."
+                    else:
+                        # D1 caps bound parameters per query (~100), so delete in
+                        # chunks rather than one giant IN (...) list.
+                        chunk = 90
+                        for start in range(0, len(ids), chunk):
+                            batch = ids[start:start + chunk]
+                            placeholders = ",".join(["?"] * len(batch))
+                            await d1_run(
+                                self.env,
+                                "DELETE FROM " + table
+                                + " WHERE rowid IN (" + placeholders + ")",
+                                *batch,
+                            )
+                        banner = "Deleted %d row(s) from %s." % (len(ids), table)
+                except Exception as error:
+                    banner = "Delete failed: " + repr(error)
+            elif action in ("update_row", "insert_row"):
+                try:
+                    tables = await _admin_list_tables(self.env)
+                    table = params.get("table", [""])[0]
+                    if table not in tables:
+                        banner = "Save failed: unknown table."
+                    elif action == "update_row":
+                        banner = await _admin_update_row(self.env, table, form)
+                    else:
+                        banner = await _admin_insert_row(self.env, table, form)
+                except Exception as error:
+                    banner = "Save failed: " + repr(error)
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
@@ -3593,11 +3787,12 @@ class Default(WorkerEntrypoint):
         # Edit/create forms are full-page GET views for the active table.
         if action == "edit" and active:
             rowid = params.get("rowid", [""])[0]
-            table_html = await _render_row_form(self.env, active, rowid)
+            table_html = await _render_row_form(self.env, active, rowid, csrf_field)
         elif action == "new" and active:
-            table_html = await _render_row_form(self.env, active, None)
+            table_html = await _render_row_form(self.env, active, None, csrf_field)
         else:
-            table_html = (await _render_table_view(self.env, active) if active
+            table_html = (await _render_table_view(self.env, active, csrf_field)
+                          if active
                           else '<div class="empty">No tables found.</div>')
 
         # Row counts for the left nav.
@@ -3610,24 +3805,13 @@ class Default(WorkerEntrypoint):
                 counts[t] = 0
         stats = await admin_stats(self.env)
         return Response(
-            render_admin_html(stats, tables, active, table_html, banner, counts),
+            render_admin_html(stats, tables, active, table_html, banner, counts,
+                              csrf_field=csrf_field),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
 
     async def _route(self, request, url):
-        # TEMP DIAGNOSTIC (remove after debugging the admin 404): reports whether
-        # the live worker sees ADMIN_PATH and whether it equals a candidate, with
-        # no secret leak (booleans + length only).
-        if url.path == "/api/_admincheck":
-            ap = _admin_path(self.env)
-            cand = (parse_qs(url.query).get("p", [""])[0] or "").strip("/")
-            return json_response({
-                "configured": bool(ap),
-                "length": len(ap),
-                "match": bool(ap) and ap == cand,
-            })
-
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info and parse_qs(url.query).get("service", [""])[0] == "git-upload-pack":

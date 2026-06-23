@@ -531,7 +531,8 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
     // (typing/presence/hello/history/avatar) and private DMs are never retained.
     static const QSet<QString> kDurableTypes = {
         QStringLiteral("chat"), QStringLiteral("edit"),
-        QStringLiteral("delete"), QStringLiteral("reaction")};
+        QStringLiteral("delete"), QStringLiteral("reaction"),
+        QStringLiteral("admin-delete")};
     if (kDurableTypes.contains(plain.value("type").toString()))
         envelope.insert("persist", true);
     sendTextFrame(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
@@ -683,6 +684,29 @@ void ServerNode::deleteMessage(const QString &conversation, const QString &messa
     message.insert("target", messageId);
     handlePlain(message);
     sendEncrypted(message, false);
+}
+
+void ServerNode::sendAdminDelete(const QString &conversation, const QString &messageId,
+                                 qint64 ts, const QString &signature)
+{
+    if (messageId.isEmpty() || signature.isEmpty())
+        return;
+    // The UI signed a canonical string that binds this exact ts/messageId/
+    // conversation to the admin's key; carry the same ts (overriding the one
+    // makeMessage stamps) so every receiver reconstructs the identical string.
+    QJsonObject message = makeMessage("admin-delete");
+    message.insert("ts", double(ts));
+    message.insert("conversation", conversation);
+    message.insert("target", messageId);
+    message.insert("sig", signature);
+    sendEncrypted(message, false);
+}
+
+void ServerNode::applyAdminDelete(const QString &conversation,
+                                  const QString &messageId)
+{
+    // Called by the UI only after it verified the signature and admin status.
+    applyDeleteUnchecked(conversation, messageId);
 }
 
 void ServerNode::setAvatar(const QByteArray &pngData)
@@ -854,6 +878,16 @@ void ServerNode::handlePlain(const QJsonObject &message)
         const QString target = message.value("target").toString();
         if (messageIsAuthoredBy(target, senderId))
             applyDelete(message.value("conversation").toString(), target, senderId);
+    } else if (type == "admin-delete") {
+        // A signed moderation delete. We can't authorise it here (admin status
+        // lives server-side); hand it to the UI to verify the signature against
+        // senderId and confirm that node is an admin, then apply.
+        const QString target = message.value("target").toString();
+        const QString sig = message.value("sig").toString();
+        const qint64 ts = qint64(message.value("ts").toDouble());
+        if (!target.isEmpty() && !sig.isEmpty())
+            emit adminDeleteRequested(message.value("conversation").toString(),
+                                      target, senderId, sender, ts, sig);
     } else if (type == "avatar") {
         const QByteArray avatar =
             boundedBase64(message, "png", 4 * kMaxAvatarBytes / 3 + 8,
@@ -1085,6 +1119,14 @@ void ServerNode::applyDelete(const QString &conversation, const QString &target,
                              const QString &senderId)
 {
     if (!messageIsAuthoredBy(target, senderId))
+        return;
+    applyDeleteUnchecked(conversation, target);
+}
+
+void ServerNode::applyDeleteUnchecked(const QString &conversation,
+                                      const QString &target)
+{
+    if (target.isEmpty())
         return;
     const QString conv =
         conversation.isEmpty() ? m_messageConversation.value(target) : conversation;
