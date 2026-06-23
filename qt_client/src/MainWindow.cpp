@@ -2612,7 +2612,14 @@ void MainWindow::sendNodeHeartbeat()
                 pollPendingUsers();
             }
         }
-        updateNavSolanaBalance();
+        // The nav balance is deliberately NOT refreshed on every heartbeat:
+        // hitting Solana RPC + the price API each minute is wasteful. Instead the
+        // server reports this node's wallet balance in the heartbeat reply and
+        // flags when it grew since the last beat (a donation). Only then do we
+        // refresh the displayed balance (which also fires the disbursement
+        // notification). Other refreshes happen on startup / address changes.
+        if (resp.value(QStringLiteral("donationReceived")).toBool())
+            updateNavSolanaBalance();
     });
 }
 
@@ -4157,51 +4164,12 @@ QWidget *MainWindow::buildBreadcrumb()
     m_chatButton->setToolTip(QStringLiteral("Chat"));
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
 
-<<<<<<< ours
-    auto *firstRow = new QHBoxLayout;
-    firstRow->setContentsMargins(0, 0, 0, 0);
-    firstRow->setSpacing(8);
-    firstRow->addWidget(m_relayLabel);
-    firstRow->addWidget(m_relayIconButton);
-    firstRow->addWidget(m_relayMenuButton);
-    firstRow->addWidget(m_relayOpenButton);
-    firstRow->addSpacing(10);
-    firstRow->addWidget(m_nodeLabel);
-    firstRow->addWidget(m_nodeMenuButton);
-    firstRow->addSpacing(10);
-    firstRow->addWidget(m_repoLabel);
-    firstRow->addWidget(m_repoMenuButton);
-    firstRow->addWidget(m_repoViewButton);
-    firstRow->addWidget(m_repoPushButton);
-    firstRow->addSpacing(6);
-    firstRow->addWidget(m_breadcrumb);
-    firstRow->addStretch();
-    firstRow->addWidget(m_topMessage);
-    firstRow->addWidget(m_topMessageCopy);
-    firstRow->addStretch();
-    firstRow->addWidget(m_connectionStatus);
-    firstRow->addWidget(m_navSolanaBalance);
-    firstRow->addWidget(m_avatarNavButton);
-
-    // Second row: Chat + Notifications, left-aligned directly under the
-    // relay > node > repo navigation on the first row.
-    auto *secondRow = new QHBoxLayout;
-    secondRow->setContentsMargins(0, 0, 0, 0);
-    secondRow->setSpacing(8);
-    secondRow->addWidget(m_chatButton);
-    secondRow->addWidget(m_notificationButton);
-    secondRow->addStretch();
-
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
-    layout->addLayout(firstRow);
-    layout->addLayout(secondRow);
-=======
-    auto *layout = new QVBoxLayout(bar);
-    layout->setContentsMargins(16, 10, 16, 10);
-    layout->setSpacing(8);
 
+    // First row: relay > node > repo navigation, breadcrumb, centered toast,
+    // and the right-aligned connection / balance / avatar cluster.
     auto *mainRow = new QHBoxLayout;
     mainRow->setContentsMargins(0, 0, 0, 0);
     mainRow->setSpacing(8);
@@ -4228,6 +4196,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_avatarNavButton);
     layout->addLayout(mainRow);
 
+    // Second row (next section, under the nav line): Chat + Notifications,
+    // left-aligned and pinned to the top near the line above.
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->setSpacing(8);
@@ -4235,7 +4205,7 @@ QWidget *MainWindow::buildBreadcrumb()
     actionRow->addWidget(m_notificationButton);
     actionRow->addStretch();
     layout->addLayout(actionRow);
->>>>>>> theirs
+
     updateBreadcrumb();
     updateConnectionStatus();
     updateNotificationButton();
@@ -5874,8 +5844,8 @@ QWidget *MainWindow::buildIssuesSection()
     reprioritizeButton->setProperty("buttonSize", "sm");
     reprioritizeButton->setCursor(Qt::PointingHandCursor);
     reprioritizeButton->setToolTip(
-        "Assign a priority and an MVP/Phase 2 label to open issues that have no "
-        "priority yet");
+        "Assign a priority + MVP/Phase 2 label to open issues with no priority, "
+        "and estimate each issue's progress from whether the work has landed");
     setOcticon(reprioritizeButton, "sort-desc", 16);
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
@@ -7268,6 +7238,13 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
     m_pullMeta->setWordWrap(true);
+    // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
+    // it applies cleanly (or which files conflict) before they hit Merge.
+    m_pullMergeStatus = new QLabel;
+    m_pullMergeStatus->setObjectName("statusLine");
+    m_pullMergeStatus->setTextFormat(Qt::RichText);
+    m_pullMergeStatus->setWordWrap(true);
+    m_pullMergeStatus->hide();
     m_pullDesc = new QLabel;
     m_pullDesc->setObjectName("statusLine");
     m_pullDesc->setWordWrap(true);
@@ -7385,6 +7362,7 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->setSpacing(8);
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
+    detailLayout->addWidget(m_pullMergeStatus);
     detailLayout->addWidget(m_pullDesc);
     detailLayout->addWidget(detailVSplit, 1);
 
@@ -7942,9 +7920,42 @@ void MainWindow::updatePullActionState()
     for (const PullRequest &pr : m_currentPulls)
         if (pr.number == m_currentPullNumber)
             open = pr.status == "open";
+    const bool mergeable = writable && have && open;
     bool behind = false;
-    if (writable && have && open)
+    if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
+    // Dry-run the patch so the reviewer sees conflicts before merging.
+    bool mergeClean = true;
+    QStringList conflictFiles;
+    if (mergeable) {
+        bool clean = false;
+        if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
+            mergeClean = clean;
+    }
+    if (m_pullMergeStatus) {
+        if (!mergeable) {
+            m_pullMergeStatus->hide();
+        } else if (mergeClean) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x93 No conflicts \xE2\x80\x94 "
+                "ready to merge.</span>"));
+            m_pullMergeStatus->show();
+        } else {
+            const QString detail =
+                conflictFiles.isEmpty()
+                    ? QStringLiteral("the patch does not apply to the current base")
+                    : QStringLiteral("conflicts in %1 file(s): %2")
+                          .arg(conflictFiles.size())
+                          .arg(conflictFiles.join(QStringLiteral(", ")).toHtmlEscaped());
+            m_pullMergeStatus->setText(
+                QString::fromUtf8(
+                    "<span style='color:#f85149'>\xE2\x9A\xA0 Cannot merge cleanly "
+                    "\xE2\x80\x94 %1. Update the branch from its base, then retry."
+                    "</span>")
+                    .arg(detail));
+            m_pullMergeStatus->show();
+        }
+    }
     if (m_pullNewButton)
         m_pullNewButton->setEnabled(m_repoDetailIndex >= 0);
     if (m_pullChooseDirButton)
@@ -7957,8 +7968,14 @@ void MainWindow::updatePullActionState()
         m_pullUpdateButton->setVisible(writable && have && open && behind);
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
     }
-    if (m_pullMergeButton)
-        m_pullMergeButton->setEnabled(writable && have && open);
+    if (m_pullMergeButton) {
+        m_pullMergeButton->setEnabled(mergeable && mergeClean);
+        m_pullMergeButton->setToolTip(
+            mergeable && !mergeClean
+                ? QStringLiteral("Resolve conflicts before merging — update the "
+                                 "branch from its base, or rework the patch.")
+                : QStringLiteral("Apply and merge this pull request"));
+    }
     if (m_pullPushMainCheck)
         m_pullPushMainCheck->setEnabled(writable && have && open);
     if (m_pullCloseButton)
@@ -15963,6 +15980,32 @@ void MainWindow::editIssueProgress()
     reloadIssues();
 }
 
+int MainWindow::estimateIssueProgress(const Issue &issue,
+                                      const QSet<int> &mergedIssues) const
+{
+    // A closed issue, or one covered by a merged PR, is done.
+    if (issue.status == QLatin1String("closed") ||
+        mergedIssues.contains(issue.number))
+        return 100;
+    // Otherwise read the agent's state on the issue: a finished session produced
+    // a patch; one still running is partway; nothing yet is 0.
+    if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
+        const QString s = session->status;
+        if (s == AgentStatus::Success)
+            return session->prNumber > 0 ? 90 : 75;
+        if (s == AgentStatus::Running || s == AgentStatus::Waiting)
+            return 40;
+        if (s == AgentStatus::Queued)
+            return 15;
+        if (s == AgentStatus::Failed || s == AgentStatus::Stopped)
+            return 10;
+    }
+    // A claimed-but-not-started issue counts as just begun.
+    if (!issue.assignees.isEmpty())
+        return 10;
+    return 0;
+}
+
 void MainWindow::reprioritizeBacklog()
 {
     IssueStore store = issueStoreForCurrentRepo();
@@ -15970,22 +16013,40 @@ void MainWindow::reprioritizeBacklog()
         setIssueInlineNotice("This repo is read-only here; can't reprioritize.", true);
         return;
     }
-    // Only touch OPEN issues that have no priority yet, so a manual triage is
+
+    // Done-detection input: which issue numbers a merged PR closes/references.
+    QSet<int> mergedIssues;
+    for (const PullRequest &pr : pullStoreForCurrentRepo().loadAll())
+        if (pr.status == QLatin1String("merged"))
+            for (const int number : issuesLinkedFromPull(pr))
+                mergedIssues.insert(number);
+
+    // Only assign priority to OPEN issues with none set, so a manual triage is
     // never clobbered.
     QList<Issue> todo;
     for (const Issue &issue : std::as_const(m_currentIssues))
         if (issue.status != QLatin1String("closed") && issue.priority == 0)
             todo.append(issue);
-    if (todo.isEmpty()) {
-        setIssueInlineNotice("No open, unprioritized issues to triage.");
+
+    // Progress is estimated for every issue that has no value set yet.
+    int progressPending = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.progress == 0 && estimateIssueProgress(issue, mergedIssues) > 0)
+            ++progressPending;
+
+    if (todo.isEmpty() && progressPending == 0) {
+        setIssueInlineNotice("Nothing to triage: priorities and progress are set.");
         return;
     }
     const int answer = QMessageBox::question(
         this, QStringLiteral("Reprioritize backlog"),
-        QStringLiteral("Assign a priority and an MVP/Phase 2 label to %1 open "
-                       "issue(s) that have no priority set?\n\nIssues with votes "
-                       "are treated as MVP; the rest become Phase 2.")
-            .arg(todo.size()),
+        QStringLiteral("Assign a priority and an MVP/Phase 2 label to %1 open, "
+                       "unprioritized issue(s), and estimate progress for %2 "
+                       "issue(s) from whether the work landed (closed / merged "
+                       "PR / agent activity)?\n\nIssues with votes are treated as "
+                       "MVP; the rest become Phase 2.")
+            .arg(todo.size())
+            .arg(progressPending),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
     if (answer != QMessageBox::Yes)
         return;
@@ -16016,12 +16077,30 @@ void MainWindow::reprioritizeBacklog()
             ++failed;
         ++prio;
     }
+
+    // Apply estimated progress to issues that don't already carry a value.
+    int progressed = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.progress != 0)
+            continue;
+        const int pct = estimateIssueProgress(issue, mergedIssues);
+        if (pct <= 0)
+            continue;
+        QString error;
+        if (store.setProgress(issue.number, pct, &error))
+            ++progressed;
+    }
+
     setIssueInlineNotice(
         failed == 0
-            ? QStringLiteral("Reprioritized %1 issue(s).").arg(done)
-            : QStringLiteral("Reprioritized %1 issue(s); %2 failed.")
+            ? QStringLiteral("Prioritized %1 issue(s); estimated progress on %2.")
                   .arg(done)
-                  .arg(failed),
+                  .arg(progressed)
+            : QStringLiteral("Prioritized %1 issue(s) (%2 failed); estimated "
+                             "progress on %3.")
+                  .arg(done)
+                  .arg(failed)
+                  .arg(progressed),
         failed != 0);
     reloadIssues();
 }

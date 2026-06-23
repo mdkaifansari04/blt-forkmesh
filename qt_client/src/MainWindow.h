@@ -494,8 +494,13 @@ private:
     void editIssueProgress();
     void editIssueBounty();
     // One-shot triage: give every open issue with no priority an MVP/Phase-2
-    // label and an initial priority (votes/age heuristic).
+    // label and an initial priority (votes/age heuristic), and estimate each
+    // issue's progress from whether the work landed (closed / merged PR / agent).
     void reprioritizeBacklog();
+    // Estimate how done an issue is from repo state (0..100): closed or covered
+    // by a merged PR -> 100; an agent produced/started work -> partial.
+    int estimateIssueProgress(const Issue &issue,
+                              const QSet<int> &mergedIssues) const;
     // Rough USD estimate of having an OpenAI coding agent implement an issue,
     // derived from its text length and the OpenAI token price.
     static double openAiEstimateUsd(const Issue &issue);
@@ -867,6 +872,7 @@ private:
     QWidget *m_pullDetail = nullptr;
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
+    QLabel *m_pullMergeStatus = nullptr; // conflict / ready-to-merge banner
     QLabel *m_pullDesc = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
