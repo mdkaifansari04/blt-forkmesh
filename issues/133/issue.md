@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 133
 title: issue from node 2
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
