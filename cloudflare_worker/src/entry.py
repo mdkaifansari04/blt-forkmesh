@@ -811,6 +811,10 @@ def safe_catalog_record(data):
         "hostedSince": clean_string(data.get("hostedSince", ""), 32),
         "lastSync": clean_string(data.get("lastSync", ""), 32),
         "updatedAt": now,
+        # Stable identity (first/root commit) shared by every mirror of this repo,
+        # so the network page can group mirrors under different owners into one
+        # card. Falls back to the repo name on the website when absent.
+        "rootCommit": clean_string(data.get("rootCommit", ""), 64),
         "source": clean_string(data.get("source", "local-node"), 40),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
@@ -2687,6 +2691,100 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
+async def _admin_table_columns(env, table):
+    # Real column names for the table (table name is validated by the caller).
+    rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
+    return [str(r.get("name", "")) for r in rows if r.get("name")]
+
+
+async def _render_row_form(env, table, rowid):
+    # Full-page create/edit form for one row. Field per column; the encrypted
+    # `data` column is shown decrypted as JSON in a textarea and re-encrypted on
+    # save. Field names are prefixed "f_" so they never collide with rowid/action.
+    columns = await _admin_table_columns(env, table)
+    row = {}
+    editing = bool(rowid) and str(rowid).isdigit()
+    if editing:
+        row = await d1_first(
+            env, "SELECT * FROM " + table + " WHERE rowid=?", int(rowid)) or {}
+    action = "update_row" if editing else "insert_row"
+    fields = []
+    for col in columns:
+        value = row.get(col)
+        if col == "data":
+            shown = ""
+            if isinstance(value, str) and value:
+                decoded = await decrypt_row(env, value)
+                shown = json.dumps(decoded, indent=2, sort_keys=True) if decoded is not None else value
+            fields.append(
+                '<label class="rowfield"><span>%s (JSON, encrypted on save)</span>'
+                '<textarea name="f_%s" rows="12">%s</textarea></label>'
+                % (_html_escape(col), _html_escape(col), _html_escape(shown)))
+        else:
+            text = "" if value is None else str(value)
+            fields.append(
+                '<label class="rowfield"><span>%s</span>'
+                '<input type="text" name="f_%s" value="%s"></label>'
+                % (_html_escape(col), _html_escape(col), _html_escape(text)))
+    hidden_rowid = ('<input type="hidden" name="rowid" value="%s">'
+                    % _html_escape(rowid)) if editing else ""
+    title = ("Edit row in %s" % table) if editing else ("Add row to %s" % table)
+    return (
+        '<div class="title">%s</div>'
+        '<form method="post" action="?table=%s&amp;action=%s" class="rowform">'
+        '%s%s'
+        '<div class="tools"><button type="submit">Save</button>'
+        '<a class="navlink" href="?table=%s">Cancel</a></div>'
+        '</form>'
+        % (_html_escape(title), _html_escape(table), action,
+           hidden_rowid, "".join(fields), _html_escape(table))
+    )
+
+
+async def _admin_row_values(env, table, form):
+    # Map submitted f_<col> fields to (column, value) for valid columns only,
+    # encrypting the `data` column from its edited JSON.
+    valid = set(await _admin_table_columns(env, table))
+    cols, values = [], []
+    for key, vals in form.items():
+        if not key.startswith("f_"):
+            continue
+        col = key[2:]
+        if col not in valid:
+            continue
+        raw = vals[0] if vals else ""
+        if col == "data":
+            parsed = json.loads(raw) if raw.strip() else {}
+            values.append(await encrypt_row(env, parsed))
+        else:
+            values.append(raw)
+        cols.append(col)
+    return cols, values
+
+
+async def _admin_update_row(env, table, form):
+    rowid = form.get("rowid", [""])[0]
+    if not str(rowid).isdigit():
+        return "Update failed: missing row id."
+    cols, values = await _admin_row_values(env, table, form)
+    if not cols:
+        return "Update: nothing to change."
+    assignments = ",".join(c + "=?" for c in cols)
+    await d1_run(env, "UPDATE " + table + " SET " + assignments + " WHERE rowid=?",
+                 *values, int(rowid))
+    return "Updated row in %s." % table
+
+
+async def _admin_insert_row(env, table, form):
+    cols, values = await _admin_row_values(env, table, form)
+    if not cols:
+        return "Insert failed: no fields provided."
+    placeholders = ",".join(["?"] * len(cols))
+    await d1_run(env, "INSERT INTO " + table + " (" + ",".join(cols) + ") VALUES ("
+                 + placeholders + ")", *values)
+    return "Added a row to %s." % table
+
+
 async def _render_table_view(env, table):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
@@ -2745,11 +2843,13 @@ async def _render_table_view(env, table):
                      + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
+    add_link = (' <a class="navlink" href="?table=%s&amp;action=new">+ Add row</a>'
+                % _html_escape(table))
     if not rows:
         return (prefix
-                + '<div class="title">%s · 0 rows</div>'
+                + '<div class="title">%s · 0 rows%s</div>'
                   '<div class="empty">This table is empty.</div>'
-                % _html_escape(table))
+                % (_html_escape(table), add_link))
 
     # Column order: union of keys, first row's order first. The synthetic
     # _rowid_ column drives row selection and is not displayed.
@@ -2761,7 +2861,10 @@ async def _render_table_view(env, table):
 
     body = []
     for r in rows:
-        cells = [_admin_row_checkbox(r.get("_rowid_", ""))]
+        rid = r.get("_rowid_", "")
+        cells = [_admin_row_checkbox(rid),
+                 '<td><a class="navlink" href="?table=%s&amp;action=edit&amp;rowid=%s">'
+                 'Edit</a></td>' % (_html_escape(table), _html_escape(rid))]
         for col in columns:
             value = r.get(col)
             if col == "data" and isinstance(value, str) and value:
@@ -2771,13 +2874,13 @@ async def _render_table_view(env, table):
             cells.append("<td>%s</td>" % _admin_cell(col, value))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    head = _admin_select_all_th() + "".join(
+    head = _admin_select_all_th() + "<th>Edit</th>" + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns)
     return (
         prefix
-        + '<div class="title">%s · %d row(s)%s</div>'
+        + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
-           " (showing 500)" if total > 500 else "")
+           " (showing 500)" if total > 500 else "", add_link)
         + _admin_bulk_form_open(table)
         + "<table><thead><tr>" + head + "</tr></thead><tbody>"
         + "".join(body) + "</tbody></table></form>"
@@ -2802,17 +2905,21 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
-def _render_admin_nav(tables, active):
+def _render_admin_nav(tables, active, counts=None):
+    counts = counts or {}
     links = ['<div class="sec">Tables</div>']
     for t in tables:
         label = "Error logs" if t == "error_log" else t
         cls = ' class="active"' if t == active else ""
-        links.append('<a href="?table=%s"%s>%s</a>'
-                     % (_html_escape(t), cls, _html_escape(label)))
+        n = counts.get(t)
+        suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
+        links.append('<a href="?table=%s"%s>%s%s</a>'
+                     % (_html_escape(t), cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
 
-def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
+def render_admin_html(env_stats, tables, active_table, table_html, banner="",
+                      counts=None):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -2830,7 +2937,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner=""):
           'this retries any pending sweep.</span></div>'
         + banner_html
         + '<div class="layout">'
-        + _render_admin_nav(tables, active_table)
+        + _render_admin_nav(tables, active_table, counts)
         + "<main>" + table_html + "</main>"
         + "</div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
@@ -2997,6 +3104,19 @@ class Default(WorkerEntrypoint):
                     banner = "Deleted %d row(s) from %s." % (len(ids), table)
             except Exception as error:
                 banner = "Delete failed: " + repr(error)
+        elif method_name(request) == "POST" and action in ("update_row", "insert_row"):
+            try:
+                tables = await _admin_list_tables(self.env)
+                table = params.get("table", [""])[0]
+                form = parse_qs(await request.text(), keep_blank_values=True)
+                if table not in tables:
+                    banner = "Save failed: unknown table."
+                elif action == "update_row":
+                    banner = await _admin_update_row(self.env, table, form)
+                else:
+                    banner = await _admin_insert_row(self.env, table, form)
+            except Exception as error:
+                banner = "Save failed: " + repr(error)
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
@@ -3008,11 +3128,28 @@ class Default(WorkerEntrypoint):
             active = "error_log"
         else:
             active = tables[0] if tables else ""
-        table_html = (await _render_table_view(self.env, active) if active
-                      else '<div class="empty">No tables found.</div>')
+
+        # Edit/create forms are full-page GET views for the active table.
+        if action == "edit" and active:
+            rowid = params.get("rowid", [""])[0]
+            table_html = await _render_row_form(self.env, active, rowid)
+        elif action == "new" and active:
+            table_html = await _render_row_form(self.env, active, None)
+        else:
+            table_html = (await _render_table_view(self.env, active) if active
+                          else '<div class="empty">No tables found.</div>')
+
+        # Row counts for the left nav.
+        counts = {}
+        for t in tables:
+            try:
+                row = await d1_first(self.env, "SELECT COUNT(*) AS n FROM " + t)
+                counts[t] = int((row or {}).get("n", 0) or 0)
+            except Exception:
+                counts[t] = 0
         stats = await admin_stats(self.env)
         return Response(
-            render_admin_html(stats, tables, active, table_html, banner),
+            render_admin_html(stats, tables, active, table_html, banner, counts),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )

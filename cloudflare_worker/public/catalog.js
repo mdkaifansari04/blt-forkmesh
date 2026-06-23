@@ -88,6 +88,35 @@ if (installDismissBtn) {
 // Catalog records keyed "owner/name", so the repo page can show description
 // and clone URL for whichever repository is open.
 const repoIndex = new Map();
+// Logical repos keyed by group key (root commit, else name) -> array of records,
+// so the same repo mirrored by several nodes renders as one card and the detail
+// page can list every mirror node.
+const repoGroups = new Map();
+
+// Two catalog records belong to the same logical repo when they share a root
+// commit (published by mirrors of the same repo); fall back to the repo name.
+function repoGroupKey(repo) {
+  const root = text(repo && repo.rootCommit);
+  return root ? "root:" + root : "name:" + text(repo && repo.name).toLowerCase();
+}
+
+// Group records into logical repos. Within each group the "primary" is a live
+// host if any (so Browse/Clone hit an online node), else the most recently synced.
+function groupRepositories(repos) {
+  const groups = new Map();
+  for (const repo of repos) {
+    const key = repoGroupKey(repo);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(repo);
+  }
+  return [...groups.values()].map((members) => {
+    const sorted = [...members].sort((a, b) => {
+      if (!!b.liveHost !== !!a.liveHost) return (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0);
+      return Number(b.lastSync || 0) - Number(a.lastSync || 0);
+    });
+    return { primary: sorted[0], members: sorted };
+  });
+}
 
 function text(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -138,8 +167,9 @@ function repoCloneUrl(owner, name) {
 }
 
 function updateCatalogStats(repos) {
-  if (count) count.textContent = `${repos.length} mirrored`;
-  if (statRepos) statRepos.textContent = String(repos.length);
+  const logical = groupRepositories(repos).length; // distinct repos, not mirrors
+  if (count) count.textContent = `${logical} mirrored`;
+  if (statRepos) statRepos.textContent = String(logical);
   if (statIssues) statIssues.textContent = "Git";
   if (statPulls) statPulls.textContent = "Patch";
   if (statHosts) statHosts.textContent = "0";
@@ -169,8 +199,12 @@ function routeCatalogClick(event, owner, name) {
   go(repoUrl(owner, name));
 }
 
-function createCatalogItem(repo) {
-  repoIndex.set(`${repo.owner}/${repo.name}`, repo);
+function createCatalogGroupItem(group) {
+  const repo = group.primary;            // a live host if any, else newest
+  const members = group.members;
+  for (const m of members) repoIndex.set(`${m.owner}/${m.name}`, m);
+  repoGroups.set(repoGroupKey(repo), members);
+  const liveHosts = members.reduce((n, m) => n + (m.liveHost ? 1 : 0), 0);
 
   const item = document.createElement("article");
   item.className = "catalog-item";
@@ -187,9 +221,8 @@ function createCatalogItem(repo) {
   header.append(title);
 
   const status = document.createElement("span");
-  // Live-host state ships with the catalog payload (repo.liveHost), so cards no
-  // longer probe each repo's tunnel Durable Object on every page view.
-  renderHostPill(status, repo.liveHost ? 1 : 0);
+  // Combined live-host count across every node mirroring this logical repo.
+  renderHostPill(status, liveHosts);
   header.append(status);
 
   const description = document.createElement("p");
@@ -203,9 +236,16 @@ function createCatalogItem(repo) {
   synced.textContent = `Last sync ${formatDate(repo.lastSync)}`;
   const maintainer = document.createElement("span");
   maintainer.textContent = `Maintainer ${text(repo.maintainer).slice(0, 12)}…`;
-  const source = document.createElement("span");
-  source.textContent = text(repo.source, "local-node");
-  meta.append(channel, synced, maintainer, source);
+  meta.append(channel, synced, maintainer);
+  if (members.length > 1) {
+    const mirrors = document.createElement("span");
+    mirrors.textContent = `${members.length} mirror nodes`;
+    meta.append(mirrors);
+  } else {
+    const source = document.createElement("span");
+    source.textContent = text(repo.source, "local-node");
+    meta.append(source);
+  }
 
   const actions = document.createElement("div");
   actions.className = "repo-card-actions";
@@ -244,13 +284,15 @@ function renderCatalogList() {
   if (!list) return;
   const repos = filteredRepositories();
   repoIndex.clear();
+  repoGroups.clear();
   if (!repos.length) {
     list.innerHTML = allRepositories.length
       ? `<div class="catalog-empty">No repositories match your search.</div>`
       : `<div class="catalog-empty">No repositories have been published yet.</div>`;
     return;
   }
-  list.replaceChildren(...repos.map(createCatalogItem));
+  // Collapse mirrors of the same logical repo into one card.
+  list.replaceChildren(...groupRepositories(repos).map(createCatalogGroupItem));
   updateLiveHostStat();
   if (currentRepo) {
     const r = parseRoute();
@@ -277,7 +319,8 @@ async function checkHost(owner, name, statusEl) {
 
 function updateLiveHostStat() {
   if (!statHosts) return;
-  const live = document.querySelectorAll(".catalog-item .status-pill.online").length;
+  // Total live hosts across every mirror (not the number of cards).
+  const live = allRepositories.reduce((n, r) => n + (r.liveHost ? 1 : 0), 0);
   statHosts.textContent = String(live);
 }
 
@@ -1206,6 +1249,50 @@ function go(url) {
   route();
 }
 
+// List every node mirroring this logical repo on the detail page, with each
+// node's live/offline state and last sync.
+function renderMirrorNodes(owner, name, repo) {
+  const el = document.querySelector("#repo-mirror-nodes");
+  if (!el) return;
+  const ref = repo || repoIndex.get(`${owner}/${name}`) || { name };
+  const key = repoGroupKey(ref);
+  const members = allRepositories
+    .filter((r) => repoGroupKey(r) === key)
+    .sort((a, b) =>
+      (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0) ||
+      Number(b.lastSync || 0) - Number(a.lastSync || 0));
+  if (members.length <= 1) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+  const live = members.reduce((n, m) => n + (m.liveHost ? 1 : 0), 0);
+  const heading = document.createElement("div");
+  heading.className = "mirror-nodes-title";
+  heading.textContent = `Mirror nodes · ${members.length} (${live} live)`;
+  const ul = document.createElement("ul");
+  ul.className = "mirror-nodes-list";
+  for (const m of members) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = repoRoute(m.owner, m.name);
+    a.textContent = `${m.owner}/${m.name}`;
+    a.addEventListener("click", (event) => routeCatalogClick(event, m.owner, m.name));
+    const pill = document.createElement("span");
+    pill.className = m.liveHost ? "status-pill online" : "status-pill offline";
+    pill.replaceChildren(
+      document.createElement("span"),
+      document.createTextNode(m.liveHost ? "live" : "offline"));
+    const synced = document.createElement("span");
+    synced.className = "mirror-node-sync";
+    synced.textContent = `synced ${formatDate(m.lastSync)}`;
+    li.append(a, pill, synced);
+    ul.append(li);
+  }
+  el.replaceChildren(heading, ul);
+  el.hidden = false;
+}
+
 function openRepoPage(owner, name, mode = null, filePath = "") {
   const titleEl = document.querySelector("#repo-page-title");
   const descEl = document.querySelector("#repo-page-desc");
@@ -1223,6 +1310,7 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   }
   const repo = findPublishedRepo(owner, name);
   if (descEl) descEl.textContent = repo ? text(repo.description, "") : "";
+  renderMirrorNodes(owner, name, repo);
   if (cloneInput && cloneNote) {
     // Clone straight from the mainnode; it streams live from the hosting client.
     cloneInput.value = repoCloneUrl(owner, name);

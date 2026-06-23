@@ -17932,6 +17932,25 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     const QString updatedAt = QString::number(now);
+    // A stable identity for the logical repo: its first (root) commit, shared by
+    // every node mirroring it. The network page groups mirrors by this so the same
+    // repo under different owners shows as one card. Not part of the signature.
+    QString rootCommit;
+    {
+        const QString gitDir =
+            (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
+                ? repo.localPath
+                : repo.mirrorPath;
+        QByteArray out;
+        if (!gitDir.trimmed().isEmpty() &&
+            runGitCapture(gitDir, {"rev-list", "--max-parents=0", "HEAD"}, &out,
+                          nullptr)) {
+            const QStringList roots =
+                QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+            if (!roots.isEmpty())
+                rootCommit = roots.last().trimmed(); // earliest root commit
+        }
+    }
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"description", repo.description},
@@ -17941,6 +17960,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"hostedSince", QString::number(repo.hostedSinceMs)},
                          {"lastSync", QString::number(repo.lastSyncMs)},
                          {"updatedAt", updatedAt},
+                         {"rootCommit", rootCommit},
                          {"source", repo.localPath.trimmed().isEmpty()
                                         ? QStringLiteral("remote-clone")
                                         : QStringLiteral("local-node")},
