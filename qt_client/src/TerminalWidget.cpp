@@ -199,8 +199,8 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
     if (pid == 0) {
         // Child: only async-signal-safe calls from here. The COW address space
         // still holds the buffers built above, so the pointers stay valid.
-        if (!cwdBytes.isEmpty())
-            (void)::chdir(cwdBytes.constData());
+        if (!cwdBytes.isEmpty() && ::chdir(cwdBytes.constData()) != 0)
+            ::_exit(127);
         environ = envp.data();
         ::execvp("bash", argv);
         ::_exit(127);
