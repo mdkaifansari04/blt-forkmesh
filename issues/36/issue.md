@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 36
 title: Have a signup sheet to request funding to join
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 32
