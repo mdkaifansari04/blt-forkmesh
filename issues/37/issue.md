@@ -5,10 +5,15 @@ title: Make it so you start with a BCH address username and password also 2fa (A
 status: closed
 labels: []
 milestone: 
+priority: 0
+progress: 100
 assignees: []
 createdAt: 1781685941745
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: node1
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-37
 ts: 1781685941745
