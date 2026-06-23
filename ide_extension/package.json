@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "forkmesh",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://forkmesh.com/forkmesh"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
