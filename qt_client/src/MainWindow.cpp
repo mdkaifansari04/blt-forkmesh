@@ -469,6 +469,9 @@ const QString kGithubTokenSetting = QStringLiteral("import/githubToken");
 const QString kGitlabTokenSetting = QStringLiteral("import/gitlabToken");
 const QString kCodexApiKeySetting = QStringLiteral("agents/codexApiKey");
 const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
+// IDE integration: when on, the issue view gains "run in IDE" buttons that hand
+// the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
+const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
@@ -7477,17 +7480,50 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAgentViewButton->hide();
     setOcticon(m_issueAssignAgentButton, "rocket", 15);
     setOcticon(m_issueAgentViewButton, "chevron-right", 15);
+    // IDE hand-off: shown only when "IDE integration" is enabled in Settings and
+    // the ForkMesh VS Code / Codeium extension is detected running. These run the
+    // issue through the IDE's Claude Code / Codex rather than the API-key agents.
+    m_issueIdeLabel = new QLabel("Run in IDE", meta);
+    m_issueIdeLabel->setObjectName("statusLine");
+    m_issueIdeClaudeButton = makeEditorButton("Claude Code", "ghostButton");
+    m_issueIdeCodexButton = makeEditorButton("Codex", "ghostButton");
+    setOcticon(m_issueIdeClaudeButton, "rocket", 15);
+    setOcticon(m_issueIdeCodexButton, "terminal", 15);
+    m_issueIdeClaudeButton->setToolTip(
+        "Start Claude Code on this issue in your connected IDE");
+    m_issueIdeCodexButton->setToolTip(
+        "Start Codex on this issue in your connected IDE");
+    auto *ideRow = new QHBoxLayout;
+    ideRow->setContentsMargins(0, 0, 0, 0);
+    ideRow->setSpacing(6);
+    ideRow->addWidget(m_issueIdeClaudeButton);
+    ideRow->addWidget(m_issueIdeCodexButton);
+    ideRow->addStretch();
+
     agentLayout->addWidget(m_issueAgentValue);
     agentLayout->addWidget(m_issueAgentProvider);
     agentLayout->addWidget(m_issueAssignAgentButton);
     agentLayout->addWidget(m_issueAgentCreatePrCheck);
     agentLayout->addWidget(m_issueAgentViewButton, 0, Qt::AlignLeft);
+    agentLayout->addWidget(m_issueIdeLabel);
+    agentLayout->addLayout(ideRow);
     connect(m_issueAssignAgentButton, &QPushButton::clicked, this, [this] {
         if (m_issueAgentProvider)
             assignIssueToAgent(m_issueAgentProvider->currentData().toString());
     });
     connect(m_issueAgentViewButton, &QPushButton::clicked, this,
             &MainWindow::openAgentSessionFromIssue);
+    connect(m_issueIdeClaudeButton, &QPushButton::clicked, this, [this] {
+        startIssueInIde(m_currentIssueNumber, m_currentIssueTitle,
+                        QStringLiteral("claude"));
+    });
+    connect(m_issueIdeCodexButton, &QPushButton::clicked, this, [this] {
+        startIssueInIde(m_currentIssueNumber, m_currentIssueTitle,
+                        QStringLiteral("codex"));
+    });
+    m_issueIdeLabel->hide();
+    m_issueIdeClaudeButton->hide();
+    m_issueIdeCodexButton->hide();
 
     auto *metaLayout = new QVBoxLayout(meta);
     metaLayout->setContentsMargins(22, 22, 10, 22);
@@ -12403,8 +12439,100 @@ void MainWindow::updateAgentActionState()
         m_agentPromptEdit->setEnabled(selected);
 }
 
+// ---- IDE extension integration --------------------------------------------
+// The contract with the VS Code / Codeium extension lives under
+// ~/.forkmesh/ide/ (see ide_extension/PROTOCOL.md). The extension heartbeats a
+// registration file we poll, and watches a requests/ dir we drop tasks into.
+
+static QString ideRegistryDir()
+{
+    return QDir::homePath() + QStringLiteral("/.forkmesh/ide");
+}
+
+// True when the extension is running (heartbeat within the last 90s). Fills
+// ideName with the IDE's display name when known.
+bool MainWindow::ideExtensionActive(QString *ideName) const
+{
+    QFile f(ideRegistryDir() + QStringLiteral("/registration.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
+    const qint64 ts = static_cast<qint64>(obj.value("ts").toDouble());
+    if (QDateTime::currentMSecsSinceEpoch() - ts > 90'000)
+        return false; // stale: the IDE is closed or the extension stopped
+    if (ideName)
+        *ideName = obj.value("ide").toString(QStringLiteral("your IDE"));
+    return true;
+}
+
+// The toggle is on AND a live extension is detected.
+bool MainWindow::ideIntegrationReady(QString *ideName) const
+{
+    if (!QSettings().value(kIdeIntegrationSetting, false).toBool())
+        return false;
+    return ideExtensionActive(ideName);
+}
+
+// Drop a task request the extension will pick up and run in a terminal.
+void MainWindow::startIssueInIde(int issueNumber, const QString &title,
+                                 const QString &provider)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || issueNumber < 0)
+        return;
+    const QString repoPath = writableRecordFor(m_repositories.at(idx)).localPath;
+    if (repoPath.isEmpty()) {
+        setIssueInlineNotice(
+            QStringLiteral("This repo has no local checkout to run in."), true);
+        return;
+    }
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QJsonObject req;
+    req["id"] = id;
+    req["ts"] = static_cast<double>(QDateTime::currentMSecsSinceEpoch());
+    req["repoPath"] = repoPath;
+    req["issueNumber"] = issueNumber;
+    req["issueTitle"] = title;
+    req["provider"] = provider;
+
+    const QString dir = ideRegistryDir() + QStringLiteral("/requests");
+    QDir().mkpath(dir);
+    QFile out(dir + QStringLiteral("/") + id + QStringLiteral(".json"));
+    if (!out.open(QIODevice::WriteOnly)) {
+        setIssueInlineNotice(
+            QStringLiteral("Could not write the IDE task request."), true);
+        return;
+    }
+    out.write(QJsonDocument(req).toJson(QJsonDocument::Compact));
+    out.close();
+    QString ideName = QStringLiteral("the IDE");
+    ideExtensionActive(&ideName);
+    setIssueInlineNotice(QStringLiteral("Sent issue #%1 to %2 (%3)")
+                             .arg(issueNumber)
+                             .arg(ideName, provider == QLatin1String("claude")
+                                               ? QStringLiteral("Claude Code")
+                                               : QStringLiteral("Codex")),
+                         false);
+}
+
+// Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
+// a live extension is detected. Called whenever an issue is rendered.
+void MainWindow::updateIssueIdeButtons()
+{
+    const bool ready = ideIntegrationReady();
+    const bool haveIssue = m_currentIssueNumber > 0;
+    if (m_issueIdeLabel)
+        m_issueIdeLabel->setVisible(ready && haveIssue);
+    if (m_issueIdeClaudeButton)
+        m_issueIdeClaudeButton->setVisible(ready && haveIssue);
+    if (m_issueIdeCodexButton)
+        m_issueIdeCodexButton->setVisible(ready && haveIssue);
+}
+
 void MainWindow::updateIssueAgentUi(const Issue &issue)
 {
+    m_currentIssueTitle = issue.title;
+    updateIssueIdeButtons();
     const AgentSession *session =
         issue.number > 0 ? latestAgentSessionForIssue(issue.number) : nullptr;
     if (m_issueAgentValue) {
@@ -19708,6 +19836,53 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kDisbursementAlertSetting, enabled);
     });
 
+    auto *ideLabel = new QLabel("IDE INTEGRATION");
+    ideLabel->setObjectName("sectionLabel");
+    auto *ideIntegrationCheck = new QCheckBox(
+        "Run issues in my IDE (VS Code / Codeium) with Claude Code or Codex");
+    ideIntegrationCheck->setChecked(
+        QSettings().value(kIdeIntegrationSetting, false).toBool());
+    ideIntegrationCheck->setToolTip(
+        "When the ForkMesh IDE extension is installed and running, each issue "
+        "gets buttons to start the task with Claude Code or Codex in the IDE.");
+    auto *ideStatus = new QLabel(this);
+    ideStatus->setObjectName("statusLine");
+    ideStatus->setWordWrap(true);
+    // Refresh the detect-status line; reused on toggle and on a short poll so the
+    // user sees the extension appear without reopening Settings.
+    auto refreshIdeStatus = [this, ideStatus, ideIntegrationCheck] {
+        if (!ideIntegrationCheck->isChecked()) {
+            ideStatus->setText(
+                "Off. Install the extension from the ide_extension/ folder, then "
+                "enable this to connect.");
+            return;
+        }
+        QString ideName;
+        if (ideExtensionActive(&ideName))
+            ideStatus->setText(QStringLiteral("\xE2\x97\x8F Connected to %1.")
+                                   .arg(ideName));
+        else
+            ideStatus->setText(
+                "Waiting for the IDE extension\xE2\x80\xA6 open your IDE with the "
+                "ForkMesh extension installed.");
+    };
+    connect(ideIntegrationCheck, &QCheckBox::toggled, this,
+            [this, refreshIdeStatus](bool enabled) {
+                QSettings().setValue(kIdeIntegrationSetting, enabled);
+                refreshIdeStatus();
+                updateIssueIdeButtons();
+            });
+    // Poll while Settings is open so detection (and the issue buttons) update
+    // live as the IDE/extension comes and goes.
+    auto *idePoll = new QTimer(ideStatus);
+    idePoll->setInterval(5000);
+    connect(idePoll, &QTimer::timeout, this, [this, refreshIdeStatus] {
+        refreshIdeStatus();
+        updateIssueIdeButtons();
+    });
+    idePoll->start();
+    refreshIdeStatus();
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -20058,6 +20233,10 @@ QWidget *MainWindow::buildSettingsSection()
     rightCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     rightCol->addWidget(nodeConnectAlertCheck);
     rightCol->addWidget(disbursementAlertCheck);
+    rightCol->addSpacing(6);
+    rightCol->addWidget(ideLabel);
+    rightCol->addWidget(ideIntegrationCheck);
+    rightCol->addWidget(ideStatus);
     rightCol->addSpacing(6);
     rightCol->addWidget(appearanceLabel);
     rightCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
