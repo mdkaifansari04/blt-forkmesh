@@ -5,7 +5,7 @@ title: update issue storage to not have seprate files for lables, milestone or p
 status: open
 labels: [Phase 2]
 milestone: Phase 2
-priority: 1
+priority: 26
 progress: 0
 assignees: []
 createdAt: 1782141634338
