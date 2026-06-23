@@ -124,7 +124,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 /* --- Repo files: explorer tree + editor tabs --- */
 #fileTree { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #c9d1d9; }
-#fileTree::item:hover { background-color: #161b22; padding: 3px 2px; }
+/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
 #fileTree::item:selected { background-color: #1f6feb; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
@@ -149,7 +149,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #e6edf3; }
 #overviewList { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #c9d1d9; }
-#overviewList::item:hover { background-color: #161b22; padding: 6px 8px; }
+/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
 #overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #readmeView {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
@@ -219,9 +219,15 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #0d1117; }
+/* Red unread-count badge on the chat button. */
+#chatUnreadBadge {
+    background-color: #da3633; color: #ffffff; border: 1px solid #0d1117;
+    border-radius: 7px; font-size: 9px; font-weight: 700;
+}
 /* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
+#navDivider { background-color: #21262d; border: none; }
 QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
@@ -379,7 +385,7 @@ QPushButton#memberDeleteButton:hover {
 #nodeProfilePanel { background: transparent; border-left: 1px solid #30363d; }
 #nodeProfileContent { background-color: #0d1117; }
 #profileBanner { border-radius: 16px; }
-#profileName { font-size: 20px; font-weight: 800; }
+#profileName { font-size: 17px; font-weight: 800; }
 QPushButton#profileActionButton {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
     color: #c9d1d9;
@@ -389,16 +395,16 @@ QPushButton#profileActionButton:hover {
 }
 QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #statTile {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
-    padding: 10px 4px; color: #e6edf3;
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 9px;
+    padding: 6px 4px; color: #e6edf3;
 }
 #profileCard {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
-    padding: 10px 12px; color: #c9d1d9;
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 9px;
+    padding: 7px 10px; color: #c9d1d9;
 }
 #profileMono {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    padding: 8px 10px; color: #c9d1d9; font-family: monospace;
+    padding: 6px 9px; color: #c9d1d9; font-family: monospace;
 }
 #profileQr {
     background-color: #ffffff; border-radius: 10px; padding: 8px;
@@ -893,7 +899,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 /* --- Repo files: explorer tree + editor tabs --- */
 #fileTree { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #1f2328; }
-#fileTree::item:hover { background-color: #f6f8fa; padding: 3px 2px; }
+/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
 #fileTree::item:selected { background-color: #0969da; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
@@ -918,7 +924,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #1f2328; }
 #overviewList { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #1f2328; }
-#overviewList::item:hover { background-color: #f6f8fa; padding: 6px 8px; }
+/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
 #overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #readmeView {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
@@ -988,9 +994,15 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #ffffff; }
+/* Red unread-count badge on the chat button. */
+#chatUnreadBadge {
+    background-color: #cf222e; color: #ffffff; border: 1px solid #ffffff;
+    border-radius: 7px; font-size: 9px; font-weight: 700;
+}
 /* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
+#navDivider { background-color: #d0d7de; border: none; }
 QPushButton#topNavButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
@@ -1146,7 +1158,7 @@ QPushButton#memberDeleteButton:hover {
 #nodeProfilePanel { background: transparent; border-left: 1px solid #d0d7de; }
 #nodeProfileContent { background-color: #ffffff; }
 #profileBanner { border-radius: 16px; }
-#profileName { font-size: 20px; font-weight: 800; }
+#profileName { font-size: 17px; font-weight: 800; }
 QPushButton#profileActionButton {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
     color: #1f2328;
@@ -1156,16 +1168,16 @@ QPushButton#profileActionButton:hover {
 }
 QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #statTile {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
-    padding: 10px 4px; color: #1f2328;
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 9px;
+    padding: 6px 4px; color: #1f2328;
 }
 #profileCard {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
-    padding: 10px 12px; color: #1f2328;
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 9px;
+    padding: 7px 10px; color: #1f2328;
 }
 #profileMono {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
-    padding: 8px 10px; color: #1f2328; font-family: monospace;
+    padding: 6px 9px; color: #1f2328; font-family: monospace;
 }
 #profileQr {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;

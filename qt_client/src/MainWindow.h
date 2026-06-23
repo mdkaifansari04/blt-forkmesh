@@ -199,7 +199,7 @@ private:
     void showNodesWindow();        // full window listing nodes, status, earnings
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
-    void updateNavCurrencyButton(); // sync the SOL/USD/INR swap button + tooltip
+    void cycleNavSolanaCurrency(); // SOL -> USD -> INR -> SOL on balance click
     // Re-render the top-bar balance from the cached lamports/fiat rate without
     // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
     // on getBalance / price rate-limits.
@@ -219,8 +219,10 @@ private:
     void updateChatButton();       // refresh the top-bar chat unread indicator
     bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
-    // Persistent network log docked at the bottom of the app.
+    // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // Full-height "Log" section (section 4) showing the whole network log.
+    QWidget *buildLogSection();
 
     // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();
@@ -422,8 +424,10 @@ private:
     void updateRepoPullCount();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
+    void showRepoEditor();
     void loadRepoFileTree();
     void openRepoFile(const QString &path);
+    void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
     bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
@@ -625,6 +629,13 @@ private:
     void saveRepositories() const;
     void refreshRepositoryList();
     void promptAddRepository();
+    // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
+    // copy, then add it like a local repo. An optional per-host access token
+    // (Settings) authenticates the clone to dodge unauthenticated rate limits.
+    void importRemoteRepository();
+    // Provider-aware "-c http.extraHeader=Authorization: Basic ..." clone args
+    // carrying the saved token for the URL's host, or empty when none is set.
+    QStringList importAuthGitArgs(const QString &url) const;
     void previewAdvertisedRepo(const QString &ownerName);
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
@@ -708,13 +719,13 @@ private:
     QLabel *m_repoLabel = nullptr;
     QLabel *m_navNodeName = nullptr;     // node name shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
-    QPushButton *m_navSolanaCurrencyButton = nullptr; // swaps SOL/USD/INR view
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
+    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
@@ -762,6 +773,7 @@ private:
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
+    QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // top-bar push for commits ahead of upstream
     // One row per repo of the selected node, shown in the repo dropdown.
@@ -795,6 +807,10 @@ private:
     QLabel *m_rebuildStatus = nullptr;
     QLineEdit *m_mirrorRootEdit = nullptr;
     QLineEdit *m_previewCacheRootEdit = nullptr;
+    // Import-a-repo (GitHub/GitLab) controls.
+    QLineEdit *m_importUrlEdit = nullptr;
+    QPushButton *m_importButton = nullptr;
+    QLabel *m_importStatus = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
@@ -869,12 +885,13 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
+    QPushButton *m_editorModeButton = nullptr; // overview -> explorer/editor view
+    QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;
-    QLabel *m_aboutSize = nullptr; // on-disk repository size (moved off the Code tab)
     QLabel *m_releaseHeader = nullptr;
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
@@ -1160,6 +1177,9 @@ private:
     QStringList m_networkLog;
     QStringList m_openDms;                      // peerIds in sidebar order
     QSet<QString> m_unread;
+    // Per-conversation unread message tally, summed into the red count badge on
+    // the chat button. Kept in lockstep with m_unread.
+    QHash<QString, int> m_unreadCounts;
     QString m_userName;
     QByteArray m_userAvatar;
     QString m_typingConversation;
