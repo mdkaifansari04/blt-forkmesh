@@ -2371,6 +2371,50 @@ QString MainWindow::chatHistoryPath() const
            "/chat_history/" + key + ".json";
 }
 
+QString MainWindow::avatarCachePath(const QString &peerId) const
+{
+    if (peerId.isEmpty())
+        return {};
+    // Node ids are base64url, so hash to a filesystem-safe, fixed-length name.
+    const QString file = QString::fromLatin1(
+        QCryptographicHash::hash(peerId.toUtf8(), QCryptographicHash::Sha256)
+            .toHex());
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/avatars/" + file + ".png";
+}
+
+void MainWindow::loadCachedAvatars()
+{
+    // Restore avatars saved on previous sessions so message rows and profiles
+    // keep their picture before (or without) the peer re-broadcasting it. The
+    // file name is a hash of the node id, so each .png stores the id inside it
+    // in a small header line we wrote at save time.
+    const QString dir = QStandardPaths::writableLocation(
+                            QStandardPaths::AppDataLocation) +
+                        "/avatars";
+    QDir d(dir);
+    if (!d.exists())
+        return;
+    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
+    for (const QFileInfo &fi : files) {
+        QFile f(fi.absoluteFilePath());
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QByteArray data = f.readAll();
+        f.close();
+        // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
+        const int nl = data.indexOf('\n');
+        if (nl <= 0)
+            continue;
+        const QString peerId = QString::fromUtf8(data.left(nl));
+        QPixmap pixmap;
+        if (peerId.isEmpty() || !pixmap.loadFromData(data.mid(nl + 1)))
+            continue;
+        if (!m_avatars.contains(peerId))
+            m_avatars.insert(peerId, pixmap);
+    }
+}
+
 void MainWindow::saveChatHistory()
 {
     const QString path = chatHistoryPath();
@@ -2766,6 +2810,7 @@ void MainWindow::startSession()
         updateSolanaNotice();
         // Restore locally-saved chat history for this server/room so past
         // conversations are visible right away (deduped against any replay).
+        loadCachedAvatars();
         loadChatHistory();
         // Serve already-mirrored repos live to the web for this session.
         startRepoHosts();
@@ -3211,13 +3256,22 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         QSettings().setValue(kAuthedAccountSetting, accountName);
         return true;
     }
-    // Offline fallback: if the relay is unreachable but this exact name was
-    // confirmed on this machine before, trust the cached state so the app still
-    // starts (the relay still enforces the signed token for any real hosting).
-    if (status == 0 &&
-        QSettings().value(kAuthedAccountSetting).toString() == accountName) {
+    // Previously authenticated on this machine — either by key (above) or by a
+    // password (cross-device) login, where this node key does NOT own the
+    // account so the pubkey check above can never pass. Trust the cached marker
+    // so those users aren't forced to re-enter credentials on every launch.
+    // When the relay is reachable we still require the account to exist and be
+    // active; when it's unreachable (status == 0) we trust the cache outright.
+    // Either way the relay re-verifies the signed token for any real hosting.
+    const bool cachedHere =
+        QSettings().value(kAuthedAccountSetting).toString() == accountName;
+    const bool activeAccount = lookup.value("exists").toBool() &&
+                               lookup.value("status").toString() == "active";
+    if (cachedHere && (status == 0 || activeAccount)) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
         return true;
     }
     return false;
@@ -3239,6 +3293,12 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         m_accountName = resp.value("nodeName").toString(accountName);
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true; // joined = active network member
+        // Remember that this machine successfully authenticated this account so
+        // the next launch opens straight onto the app shell. Without this a
+        // password (cross-device) login — where the node key does NOT own the
+        // account — fails silent auth on every restart and is sent back to the
+        // login screen even with correct credentials.
+        QSettings().setValue(kAuthedAccountSetting, m_accountName);
         return true;
     }
     const QString err = resp.value("error").toString();
@@ -3598,6 +3658,8 @@ void MainWindow::verifyWallet()
             m_profileEligibility->setText(
                 QStringLiteral("<span style='color:#3fb950'>Active "
                                "\xC2\xB7 network member</span>"));
+        // Verified now: hide the "verify your wallet" banner.
+        updateSolanaNotice();
     }
 }
 
@@ -4129,6 +4191,7 @@ QWidget *MainWindow::buildChatPage()
     layout->setSpacing(0);
     layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
+    layout->addWidget(buildWalletVerifyNotice());
     auto *contentScroll = new QScrollArea;
     contentScroll->setWidgetResizable(true);
     contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -5643,7 +5706,70 @@ void MainWindow::updateSolanaNotice()
         return;
     const bool hasAddress = !savedSolanaAddress().isEmpty();
     m_solanaBanner->setVisible(!hasAddress);
+    updateWalletVerifyNotice();
     updateNavSolanaBalance();
+}
+
+QWidget *MainWindow::buildWalletVerifyNotice()
+{
+    m_walletVerifyBanner = new QWidget;
+    m_walletVerifyBanner->setObjectName("walletVerifyBanner");
+
+    auto *icon = new QLabel;
+    icon->setObjectName("walletVerifyIcon");
+    icon->setPixmap(themedOcticon("alert", QColor("#d29922"), 22).pixmap(22, 22));
+
+    auto *title = new QLabel("Verify your payout wallet to receive payouts");
+    title->setObjectName("walletVerifyTitle");
+    auto *body = new QLabel(
+        "This node's payout wallet isn't verified yet, so it can't receive "
+        "payouts. Make a small deposit (\xE2\x89\xA5 0.001 SOL) to your wallet "
+        "to prove you control it \xE2\x80\x94 then this node starts earning its "
+        "share of the network rewards.");
+    body->setObjectName("walletVerifyBody");
+    body->setWordWrap(true);
+    body->setTextFormat(Qt::RichText);
+
+    auto *textCol = new QVBoxLayout;
+    textCol->setContentsMargins(0, 0, 0, 0);
+    textCol->setSpacing(2);
+    textCol->addWidget(title);
+    textCol->addWidget(body);
+
+    auto *verifyButton = new QPushButton("Verify wallet");
+    verifyButton->setObjectName("primaryButton");
+    verifyButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(verifyButton, "shield-check", 16);
+    connect(verifyButton, &QPushButton::clicked, this, &MainWindow::verifyWallet);
+
+    auto *dismissButton = new QPushButton(QString());
+    dismissButton->setObjectName("ghostButton");
+    dismissButton->setCursor(Qt::PointingHandCursor);
+    dismissButton->setToolTip("Hide for now");
+    setOcticon(dismissButton, "x", 16);
+    connect(dismissButton, &QPushButton::clicked, m_walletVerifyBanner,
+            &QWidget::hide);
+
+    auto *layout = new QHBoxLayout(m_walletVerifyBanner);
+    layout->setContentsMargins(16, 12, 12, 12);
+    layout->setSpacing(12);
+    layout->addWidget(icon, 0, Qt::AlignTop);
+    layout->addLayout(textCol, 1);
+    layout->addWidget(verifyButton, 0, Qt::AlignVCenter);
+    layout->addWidget(dismissButton, 0, Qt::AlignTop);
+
+    m_walletVerifyBanner->hide();
+    return m_walletVerifyBanner;
+}
+
+void MainWindow::updateWalletVerifyNotice()
+{
+    if (!m_walletVerifyBanner)
+        return;
+    // Show only once a payout address exists (the "add an address" banner covers
+    // the no-address case) and the wallet isn't verified yet.
+    const bool hasAddress = !savedSolanaAddress().isEmpty();
+    m_walletVerifyBanner->setVisible(hasAddress && !m_accountSolanaVerified);
 }
 
 void MainWindow::promptSetSolanaAddress()
@@ -19171,7 +19297,14 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::saveFileRequested, this,
             &MainWindow::saveIncomingFile);
-    connect(row, &MessageRow::senderClicked, this, &MainWindow::showNodeProfile);
+    // Clicking a sender's avatar or name in chat opens their node profile. The
+    // profile panel lives in the Home section, so switch there first — otherwise
+    // the panel updates behind the Chat section and nothing appears to happen.
+    connect(row, &MessageRow::senderClicked, this,
+            [this](const QString &id, const QString &name) {
+                showSection(0);
+                showNodeProfile(id, name);
+            });
     // Insert before the trailing stretch.
     m_messageLayout->insertWidget(m_messageLayout->count() - 1, row);
     m_visibleRows.insert(message.id, row);
@@ -19359,6 +19492,18 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
     if (!pixmap.loadFromData(pngData))
         return;
     m_avatars.insert(peerId, pixmap);
+    // Cache to disk so this avatar survives a restart and stays visible after
+    // the peer goes offline (when they stop re-broadcasting it).
+    const QString path = avatarCachePath(peerId);
+    if (!path.isEmpty()) {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(peerId.toUtf8());
+            f.write("\n");
+            f.write(pngData);
+        }
+    }
     // Update any visible rows authored by this peer.
     for (auto it = m_visibleRows.constBegin(); it != m_visibleRows.constEnd(); ++it) {
         if (it.value()->senderId() == peerId)
@@ -22751,15 +22896,23 @@ void MainWindow::refreshRepoActions()
     all->setSelected(true);
 
     const QList<ActionWorkflow> wfs = availableWorkflowsForRepo(repo);
+    m_repoWorkflows = wfs; // cache so the manual-run bar can look workflows up
     for (const ActionWorkflow &wf : wfs) {
         auto *item =
             new QListWidgetItem(wf.name);
         item->setData(Qt::UserRole, wf.path);
-        item->setToolTip(wf.valid ? wf.path +
-                                        (wf.triggersOnPush()
-                                             ? QStringLiteral("  (on: push)")
-                                             : QString())
-                                  : wf.path + QStringLiteral("  — ") + wf.error);
+        QStringList triggers;
+        if (wf.triggersOnPush())
+            triggers << QStringLiteral("on: push");
+        if (wf.allowsManualRun())
+            triggers << QStringLiteral("manual");
+        item->setToolTip(wf.valid
+                             ? wf.path + (triggers.isEmpty()
+                                              ? QString()
+                                              : QStringLiteral("  (") +
+                                                    triggers.join(QStringLiteral(", ")) +
+                                                    QStringLiteral(")"))
+                             : wf.path + QStringLiteral("  — ") + wf.error);
         m_actionWorkflowList->addItem(item);
     }
     if (wfs.isEmpty()) {
@@ -22774,9 +22927,144 @@ void MainWindow::refreshRepoActions()
     m_selectedWorkflowFilter.clear();
     refreshActionsTable();
     showLatestVisibleActionRun();
+    updateManualRunBar();
     if (m_repoActionsTab)
         m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
                                       .arg(qMax(0, m_actionWorkflowList->count() - 1)));
+}
+
+void MainWindow::updateManualRunBar()
+{
+    if (!m_actionManualRunBar)
+        return;
+    // Find the selected workflow and whether it opted into manual runs.
+    const ActionWorkflow *wf = nullptr;
+    for (const ActionWorkflow &w : std::as_const(m_repoWorkflows)) {
+        if (w.valid && w.path == m_selectedWorkflowFilter) {
+            wf = &w;
+            break;
+        }
+    }
+    const bool show = wf && wf->allowsManualRun();
+    m_actionManualRunBar->setVisible(show);
+    if (!show)
+        return;
+    m_actionManualRunButton->setText(
+        QStringLiteral("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
+
+    // Populate the branch list from the repo's mirror, keeping the user's choice
+    // (or defaulting to main) selected.
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    QStringList branches;
+    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
+        QProcess refs;
+        refs.start(QStringLiteral("git"),
+                   {QStringLiteral("-C"), repo.mirrorPath,
+                    QStringLiteral("for-each-ref"),
+                    QStringLiteral("--format=%(refname:short)"),
+                    QStringLiteral("refs/heads")});
+        refs.waitForFinished(8000);
+        branches = QString::fromUtf8(refs.readAllStandardOutput())
+                       .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    }
+    const QString previous = m_actionRunBranchCombo->currentText().trimmed();
+    QSignalBlocker block(m_actionRunBranchCombo);
+    m_actionRunBranchCombo->clear();
+    m_actionRunBranchCombo->addItems(branches);
+    // Prefer the user's prior choice, else main, else the first branch.
+    const QString want = previous.isEmpty() ? QStringLiteral("main") : previous;
+    int idx = m_actionRunBranchCombo->findText(want);
+    if (idx < 0 && want != QStringLiteral("main"))
+        idx = m_actionRunBranchCombo->findText(QStringLiteral("main"));
+    if (idx >= 0)
+        m_actionRunBranchCombo->setCurrentIndex(idx);
+    else if (m_actionRunBranchCombo->count() > 0)
+        m_actionRunBranchCombo->setCurrentIndex(0);
+    else
+        m_actionRunBranchCombo->setEditText(QStringLiteral("main"));
+}
+
+void MainWindow::runSelectedWorkflowManually()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString path = m_selectedWorkflowFilter;
+    if (path.isEmpty() || repo.mirrorPath.isEmpty())
+        return;
+    const QString branch = m_actionRunBranchCombo->currentText().trimmed();
+    if (branch.isEmpty()) {
+        flashMessage(QStringLiteral("Choose a branch to run on."));
+        return;
+    }
+
+    // Resolve the branch to a commit in the mirror (accept short or full ref).
+    auto revParse = [&](const QString &rev) {
+        QProcess p;
+        p.start(QStringLiteral("git"),
+                {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("rev-parse"),
+                 QStringLiteral("--verify"), QStringLiteral("%1^{commit}").arg(rev)});
+        p.waitForFinished(8000);
+        return p.exitCode() == 0
+                   ? QString::fromUtf8(p.readAllStandardOutput()).trimmed()
+                   : QString();
+    };
+    QString commit = revParse(branch);
+    if (commit.isEmpty())
+        commit = revParse(QStringLiteral("refs/heads/") + branch);
+    if (commit.isEmpty()) {
+        flashMessage(
+            QStringLiteral("Branch not found in this repo's mirror: %1").arg(branch));
+        return;
+    }
+
+    // Read the workflow exactly as it exists at that commit (its content is the
+    // approval/diff unit), so a manual run honours the same approval gate.
+    QProcess show;
+    show.start(QStringLiteral("git"),
+               {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("show"),
+                commit + QLatin1Char(':') + path});
+    show.waitForFinished(10000);
+    if (show.exitCode() != 0) {
+        flashMessage(QStringLiteral("\xE2\x80\x9C%1\xE2\x80\x9D doesn't exist on %2.")
+                         .arg(path, branch));
+        return;
+    }
+    const QString content = QString::fromUtf8(show.readAllStandardOutput());
+    const ActionWorkflow wf = ActionFile::parse(path, content);
+    if (!wf.valid) {
+        flashMessage(QStringLiteral("Workflow is invalid: %1").arg(wf.error));
+        return;
+    }
+
+    ActionRun run;
+    run.owner = repo.owner;
+    run.name = repo.name;
+    run.workflowPath = path;
+    run.workflowName = wf.name;
+    run.workflowContent = content;
+    run.commit = commit;
+    run.ref = QStringLiteral("refs/heads/") + branch;
+    const bool approved = ActionStore::isApproved(run.repoKey(), path, content);
+    run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
+
+    const ActionRun created = m_actionStore->createRun(run);
+    m_actionRuns.prepend(created);
+    if (approved)
+        m_actionQueue.append(created.id);
+    logSystem(QStringLiteral("Actions: manual %1 \"%2\" for %3/%4 on %5 @ %6")
+                  .arg(approved ? QStringLiteral("run of")
+                                : QStringLiteral("run awaiting approval of"),
+                       wf.name, repo.owner, repo.name, branch, commit.left(8)));
+
+    // Show this workflow's runs and select the new one so its log/approval is
+    // immediately visible.
+    refreshActionsTable();
+    showRun(created.id);
+    updateNotificationButton();
+    processActionQueue();
 }
 
 void MainWindow::showRun(int runId)
@@ -22896,6 +23184,7 @@ QWidget *MainWindow::buildRepoActionsTab()
                     item ? item->data(Qt::UserRole).toString() : QString();
                 refreshActionsTable();
                 showLatestVisibleActionRun();
+                updateManualRunBar();
             });
 
     // Enable/disable actions for this repo, right here on the Actions tab.
@@ -22997,9 +23286,35 @@ QWidget *MainWindow::buildRepoActionsTab()
     new AgentLogHighlighter(m_actionLog->document());
     m_actionLog->setMaximumBlockCount(20000);
 
+    // Manual-run bar: appears at the top of the detail pane only for workflows
+    // that declare `on: workflow_dispatch`. Lets the user trigger a run by hand
+    // on a chosen branch (defaults to main).
+    m_actionManualRunBar = new QWidget;
+    m_actionManualRunButton = new QPushButton("Run workflow");
+    m_actionManualRunButton->setObjectName("primaryButton");
+    m_actionManualRunButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_actionManualRunButton, "rocket", 16);
+    m_actionRunBranchCombo = new QComboBox;
+    m_actionRunBranchCombo->setEditable(true); // allow any ref, not just listed
+    m_actionRunBranchCombo->setMinimumWidth(160);
+    m_actionRunBranchCombo->setToolTip("Branch to check out and run the workflow on");
+    auto *branchLabel = new QLabel("on branch");
+    branchLabel->setObjectName("statusLine");
+    connect(m_actionManualRunButton, &QPushButton::clicked, this,
+            &MainWindow::runSelectedWorkflowManually);
+    auto *manualRow = new QHBoxLayout(m_actionManualRunBar);
+    manualRow->setContentsMargins(0, 0, 0, 0);
+    manualRow->setSpacing(8);
+    manualRow->addWidget(m_actionManualRunButton);
+    manualRow->addWidget(branchLabel);
+    manualRow->addWidget(m_actionRunBranchCombo);
+    manualRow->addStretch();
+    m_actionManualRunBar->hide();
+
     auto *detailLayout = new QVBoxLayout(detailPane);
     detailLayout->setContentsMargins(12, 22, 24, 22);
     detailLayout->setSpacing(8);
+    detailLayout->addWidget(m_actionManualRunBar);
     detailLayout->addWidget(m_actionRunTitle);
     detailLayout->addWidget(m_actionRunMeta);
     detailLayout->addWidget(m_actionApprovalBanner);

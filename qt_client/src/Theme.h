@@ -431,6 +431,13 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #solanaBannerLabel {
     color: #56d364; font-size: 13px; font-weight: 600; background: transparent;
 }
+#walletVerifyBanner {
+    background-color: #2b210a;
+    border-bottom: 1px solid #bb8009;
+}
+#walletVerifyBanner QLabel { background: transparent; }
+#walletVerifyTitle { color: #e3b341; font-size: 15px; font-weight: 800; }
+#walletVerifyBody { color: #d8c08a; font-size: 13px; }
 #messageView, #messageContainer {
     background-color: #0d1117; border: none;
 }
@@ -1212,6 +1219,13 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #solanaBannerLabel {
     color: #1a7f37; font-size: 13px; font-weight: 600; background: transparent;
 }
+#walletVerifyBanner {
+    background-color: #fff8c5;
+    border-bottom: 1px solid #d4a72c;
+}
+#walletVerifyBanner QLabel { background: transparent; }
+#walletVerifyTitle { color: #7d4e00; font-size: 15px; font-weight: 800; }
+#walletVerifyBody { color: #6a4b16; font-size: 13px; }
 #messageView, #messageContainer {
     background-color: #ffffff; border: none;
 }
