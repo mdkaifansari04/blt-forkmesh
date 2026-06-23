@@ -5,10 +5,15 @@ title: only show the open count of issues in the top tabs please - also move ope
 status: closed
 labels: []
 milestone: 
+priority: 0
+progress: 100
 assignees: []
 createdAt: 1782077874141
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-97
 ts: 1782077874141
