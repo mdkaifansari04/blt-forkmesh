@@ -3020,6 +3020,9 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     repo.name = name;
     repo.cloneUrl = cloneUrl;
     repo.publishToNetwork = true;
+    // Mirrored repos (cloned from another node) start with actions off; the user
+    // can opt in per repo on the Settings/Actions tab.
+    repo.actionsEnabled = false;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
@@ -11194,17 +11197,61 @@ QWidget *MainWindow::buildRepoOverviewPage()
                 loadRepoOverview(href == "/" ? QString() : href);
             });
 
-    m_overviewList = new QListWidget;
+    // Sort control above the list. Sorting reorders the cached rows in place
+    // (no git re-read). Name keeps folders first; size / updated rank purely by
+    // the metric so the size bars and recency read top-to-bottom.
+    m_overviewSortCombo = new QComboBox;
+    m_overviewSortCombo->addItem("Name", "name");
+    m_overviewSortCombo->addItem("Size", "size");
+    m_overviewSortCombo->addItem("Last updated", "updated");
+    m_overviewSortCombo->setToolTip("Sort files and folders");
+    connect(m_overviewSortCombo, &QComboBox::currentIndexChanged, this,
+            [this](int) { populateOverviewTree(); });
+    m_overviewSortDirButton = new QPushButton(QString::fromUtf8("\xE2\x86\x91"));
+    m_overviewSortDirButton->setObjectName("ghostButton");
+    m_overviewSortDirButton->setCursor(Qt::PointingHandCursor);
+    m_overviewSortDirButton->setToolTip("Ascending / descending");
+    m_overviewSortDirButton->setFixedWidth(34);
+    connect(m_overviewSortDirButton, &QPushButton::clicked, this, [this] {
+        m_overviewSortDesc = !m_overviewSortDesc;
+        m_overviewSortDirButton->setText(
+            m_overviewSortDesc ? QString::fromUtf8("\xE2\x86\x93")   // down arrow
+                               : QString::fromUtf8("\xE2\x86\x91")); // up arrow
+        populateOverviewTree();
+    });
+    auto *sortLabel = new QLabel("Sort");
+    sortLabel->setObjectName("statusLine");
+    auto *sortRow = new QHBoxLayout;
+    sortRow->setContentsMargins(0, 0, 0, 0);
+    sortRow->setSpacing(6);
+    sortRow->addStretch();
+    sortRow->addWidget(sortLabel);
+    sortRow->addWidget(m_overviewSortCombo);
+    sortRow->addWidget(m_overviewSortDirButton);
+
+    m_overviewList = new QTreeWidget;
     m_overviewList->setObjectName("overviewList");
+    m_overviewList->setColumnCount(4);
+    m_overviewList->setHeaderLabels({"Name", "Size", "Last commit", "Updated"});
+    m_overviewList->setRootIsDecorated(false);
+    m_overviewList->setUniformRowHeights(true);
+    m_overviewList->setSortingEnabled(false); // we sort the cached rows ourselves
+    m_overviewList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_overviewList->setAllColumnsShowFocus(true);
+    m_overviewList->header()->setStretchLastSection(false);
+    m_overviewList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    m_overviewList->setColumnWidth(1, 130);
+    m_overviewList->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_overviewList->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     enableHoverRowHighlight(m_overviewList);
-    connect(m_overviewList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                const QString path = item->data(Qt::UserRole).toString();
-                if (path.isEmpty())
-                    return;
-                if (item->data(Qt::UserRole + 1).toBool())
-                    loadRepoOverview(path); // navigate into the directory
-                else
+    connect(m_overviewList, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                const QString path = item->data(0, Qt::UserRole).toString();
+                const int kind = item->data(0, Qt::UserRole + 1).toInt();
+                if (kind == 1)
+                    loadRepoOverview(path); // navigate into the directory (or up)
+                else if (!path.isEmpty())
                     openRepoFile(path); // open the file (switches to editor view)
             });
 
@@ -11284,6 +11331,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     leftLayout->addLayout(toolbar);
     leftLayout->addWidget(commitCard);
     leftLayout->addWidget(m_overviewCrumb);
+    leftLayout->addLayout(sortRow);
     leftLayout->addWidget(m_overviewList, 2);
     leftLayout->addWidget(m_readmeView, 3);
 
@@ -12419,9 +12467,14 @@ void MainWindow::loadRepoOverview(const QString &path)
         m_overviewCrumb->setText(crumb);
     }
 
+    m_overviewRows.clear();
+    m_overviewRepoBytes = 0;
     if (dir.isEmpty()) {
-        new QListWidgetItem("No local copy of this repository to browse.",
-                            m_overviewList);
+        if (m_overviewList) {
+            m_overviewList->clear();
+            new QTreeWidgetItem(m_overviewList,
+                                {"No local copy of this repository to browse."});
+        }
         return;
     }
 
@@ -12429,18 +12482,44 @@ void MainWindow::loadRepoOverview(const QString &path)
     QByteArray out;
     QString err;
     if (!runGitCapture(dir, {"ls-tree", "-z", treeish}, &out, &err)) {
-        new QListWidgetItem(err.isEmpty() ? "This repository has no commits yet."
-                                          : "Could not read files: " + err.left(120),
-                            m_overviewList);
+        if (m_overviewList) {
+            m_overviewList->clear();
+            new QTreeWidgetItem(
+                m_overviewList,
+                {err.isEmpty() ? "This repository has no commits yet."
+                               : "Could not read files: " + err.left(120)});
+        }
         return;
     }
 
-    struct Entry {
-        QString name;
-        QString path;
-        bool isDir;
-    };
-    QList<Entry> entries;
+    // Per-entry blob sizes (directories = recursive sum) and the whole-repo total,
+    // from a single recursive ls-tree. The total is the size-bar denominator so a
+    // bar shows each entry's share of the entire repository.
+    QHash<QString, qint64> childBytes;
+    QByteArray sizeOut;
+    if (runGitCapture(dir, {"ls-tree", "-r", "-l", "-z", currentRef()}, &sizeOut,
+                      nullptr)) {
+        const QString prefix = path.isEmpty() ? QString() : path + "/";
+        for (const QByteArray &record : sizeOut.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QStringList meta =
+                QString::fromUtf8(record.left(tab)).split(' ', Qt::SkipEmptyParts);
+            if (meta.size() < 4)
+                continue;
+            const qint64 sz = meta.at(3).toLongLong(); // '-' (submodule) -> 0
+            m_overviewRepoBytes += sz;
+            const QString blob = QString::fromUtf8(record.mid(tab + 1));
+            if (!prefix.isEmpty() && !blob.startsWith(prefix))
+                continue;
+            const QString rel = prefix.isEmpty() ? blob : blob.mid(prefix.size());
+            childBytes[rel.section('/', 0, 0)] += sz;
+        }
+    }
+
     QString readmePath;
     for (const QByteArray &record : out.split('\0')) {
         if (record.isEmpty())
@@ -12452,31 +12531,30 @@ void MainWindow::loadRepoOverview(const QString &path)
             QString::fromUtf8(record.left(tab)).split(' ', Qt::SkipEmptyParts);
         if (meta.size() < 2)
             continue;
-        Entry e;
+        OverviewRow e;
         e.name = QString::fromUtf8(record.mid(tab + 1));
         e.isDir = meta.at(1) == "tree";
         e.path = path.isEmpty() ? e.name : path + "/" + e.name;
-        entries.append(e);
+        e.size = childBytes.value(e.name, 0);
+        // Last commit that touched this entry: timestamp (for sorting), relative
+        // "x ago" and subject (shown in the row).
+        QByteArray logOut;
+        if (runGitCapture(dir,
+                          {"log", "-1", "--format=%ct%x1f%cr%x1f%s", currentRef(),
+                           "--", e.path},
+                          &logOut, nullptr) &&
+            !logOut.trimmed().isEmpty()) {
+            const QStringList f = QString::fromUtf8(logOut).trimmed().split('\x1f');
+            e.commitTs = f.value(0).toLongLong();
+            e.whenText = f.value(1);
+            e.subject = f.value(2);
+        }
+        m_overviewRows.append(e);
         if (!e.isDir && e.name.compare("README.md", Qt::CaseInsensitive) == 0)
             readmePath = e.path;
     }
-    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
-        if (a.isDir != b.isDir)
-            return a.isDir;
-        return a.name.toLower() < b.name.toLower();
-    });
-    if (!path.isEmpty()) {
-        auto *up = new QListWidgetItem(iconForDir(false), "..", m_overviewList);
-        const int cut = path.lastIndexOf('/');
-        up->setData(Qt::UserRole, cut < 0 ? QString() : path.left(cut));
-        up->setData(Qt::UserRole + 1, true);
-    }
-    for (const Entry &e : std::as_const(entries)) {
-        auto *item = new QListWidgetItem(
-            e.isDir ? iconForDir(false) : iconForFile(e.name), e.name, m_overviewList);
-        item->setData(Qt::UserRole, e.path);
-        item->setData(Qt::UserRole + 1, e.isDir);
-    }
+
+    populateOverviewTree();
 
     // Render the directory's README beneath the file list (GitHub-style).
     if (m_readmeView && !readmePath.isEmpty()) {
@@ -12485,6 +12563,94 @@ void MainWindow::loadRepoOverview(const QString &path)
                           nullptr) &&
             !readme.contains('\0'))
             m_readmeView->setMarkdown(QString::fromUtf8(readme));
+    }
+}
+
+// Build the small per-row size bar widget shown in the overview's Size column:
+// a muted track with an accent fill proportional to the entry's share of the
+// repo, plus the human-readable size. Transparent to mouse so row clicks still
+// reach the tree (navigate / open file).
+static QWidget *makeOverviewSizeBar(double fraction, const QString &sizeText)
+{
+    auto *w = new QWidget;
+    auto *lay = new QHBoxLayout(w);
+    lay->setContentsMargins(4, 0, 2, 0);
+    lay->setSpacing(6);
+    auto *track = new QFrame;
+    track->setObjectName("sizeBarTrack");
+    track->setFixedSize(60, 6);
+    auto *fill = new QFrame(track);
+    fill->setObjectName("sizeBarFill");
+    const double f = std::clamp(fraction, 0.0, 1.0);
+    const int fw = f <= 0.0 ? 0 : std::max(2, int(f * 60.0));
+    fill->setGeometry(0, 0, fw, 6);
+    auto *label = new QLabel(sizeText);
+    label->setObjectName("statusLine");
+    lay->addWidget(track);
+    lay->addWidget(label, 1);
+    for (QWidget *child : {w, static_cast<QWidget *>(track),
+                           static_cast<QWidget *>(fill), static_cast<QWidget *>(label)})
+        child->setAttribute(Qt::WA_TransparentForMouseEvents);
+    return w;
+}
+
+void MainWindow::populateOverviewTree()
+{
+    if (!m_overviewList)
+        return;
+    m_overviewList->clear();
+
+    // A ".." row to step up a directory (kept pinned at the top, above the sort).
+    if (!m_overviewPath.isEmpty()) {
+        auto *up = new QTreeWidgetItem(m_overviewList);
+        up->setIcon(0, iconForDir(false));
+        up->setText(0, "..");
+        const int cut = m_overviewPath.lastIndexOf('/');
+        up->setData(0, Qt::UserRole, cut < 0 ? QString() : m_overviewPath.left(cut));
+        up->setData(0, Qt::UserRole + 1, 1); // kind 1 = directory / up
+    }
+
+    const QString key = m_overviewSortCombo
+                            ? m_overviewSortCombo->currentData().toString()
+                            : QStringLiteral("name");
+    const bool desc = m_overviewSortDesc;
+    QList<OverviewRow> rows = m_overviewRows;
+    std::sort(rows.begin(), rows.end(),
+              [&key, desc](const OverviewRow &a, const OverviewRow &b) {
+                  if (key == QLatin1String("size")) {
+                      if (a.size != b.size)
+                          return desc ? a.size > b.size : a.size < b.size;
+                  } else if (key == QLatin1String("updated")) {
+                      if (a.commitTs != b.commitTs)
+                          return desc ? a.commitTs > b.commitTs
+                                      : a.commitTs < b.commitTs;
+                  } else { // name: folders first, then by name
+                      if (a.isDir != b.isDir)
+                          return a.isDir;
+                      const int c = a.name.compare(b.name, Qt::CaseInsensitive);
+                      return desc ? c > 0 : c < 0;
+                  }
+                  return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+              });
+
+    for (const OverviewRow &e : std::as_const(rows)) {
+        auto *item = new QTreeWidgetItem(m_overviewList);
+        item->setIcon(0, e.isDir ? iconForDir(false) : iconForFile(e.name));
+        item->setText(0, e.name);
+        item->setData(0, Qt::UserRole, e.path);
+        item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
+        item->setText(2, e.subject);
+        item->setToolTip(2, e.subject);
+        item->setText(3, e.whenText);
+        const double frac = m_overviewRepoBytes > 0
+                                ? double(e.size) / double(m_overviewRepoBytes)
+                                : 0.0;
+        m_overviewList->setItemWidget(item, 1,
+                                      makeOverviewSizeBar(frac, formatByteSize(e.size)));
+        const double pct = frac * 100.0;
+        item->setToolTip(1, QStringLiteral("%1 \xC2\xB7 %2% of the repository")
+                                .arg(formatByteSize(e.size),
+                                     QString::number(pct, 'f', pct < 10 ? 1 : 0)));
     }
 }
 
@@ -19496,7 +19662,11 @@ void MainWindow::loadRepositories()
         repo.mirrorPath = settings.value("mirrorPath").toString();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
         repo.isPrivate = settings.value("isPrivate").toBool();
-        repo.actionsEnabled = settings.value("actionsEnabled", true).toBool();
+        // Default off for mirrored repos (owner isn't this node); on for repos
+        // this node owns. Explicitly stored values always win.
+        repo.actionsEnabled =
+            settings.value("actionsEnabled", repo.owner == accountOwner())
+                .toBool();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
@@ -19759,6 +19929,8 @@ void MainWindow::mirrorAdvertisedRepo(const QString &ownerName)
     repo.name = name;
     repo.cloneUrl = cloneUrl;
     repo.publishToNetwork = true;
+    // Mirrored repos start with actions off; opt in per repo on Settings.
+    repo.actionsEnabled = false;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
@@ -19796,6 +19968,8 @@ void MainWindow::previewAdvertisedRepo(const QString &ownerName)
     repo.name = name;
     repo.cloneUrl = repositoryNetworkCloneUrl(owner, name);
     repo.previewOnly = true;
+    // Mirrored repos start with actions off (also applies once promoted).
+    repo.actionsEnabled = false;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryPreviewPath(owner, name);
     m_repositories.append(repo);
