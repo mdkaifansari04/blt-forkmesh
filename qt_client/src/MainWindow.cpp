@@ -2328,10 +2328,24 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addWidget(m_updateButton, 0, Qt::AlignHCenter);
     cardLayout->addWidget(m_updateStatus);
 
+    auto *setupContent = new QWidget;
+    auto *setupContentLayout = new QVBoxLayout(setupContent);
+    setupContentLayout->addStretch();
+    setupContentLayout->addWidget(card, 0, Qt::AlignHCenter);
+    setupContentLayout->addStretch();
+
+    auto *setupScroll = new QScrollArea;
+    setupScroll->setWidgetResizable(true);
+    setupScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setupScroll->setFrameShape(QFrame::NoFrame);
+    // Let the setup card scroll in short windows instead of fixing window height.
+    setupScroll->setMinimumHeight(0);
+    setupScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    setupScroll->setWidget(setupContent);
+
     auto *layout = new QVBoxLayout(page);
-    layout->addStretch();
-    layout->addWidget(card, 0, Qt::AlignHCenter);
-    layout->addStretch();
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(setupScroll);
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
     connect(joinButton, &QPushButton::clicked, this, [this]() {
@@ -3714,7 +3728,16 @@ QWidget *MainWindow::buildChatPage()
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
-    m_sectionStack->addWidget(buildSettingsSection());   // 1 Settings
+    auto *settingsScroll = new QScrollArea;
+    settingsScroll->setObjectName("settingsScroll");
+    settingsScroll->setFrameShape(QFrame::NoFrame);
+    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settingsScroll->setWidgetResizable(true);
+    // Settings content can be tall; keep it out of the section stack minimum.
+    settingsScroll->setMinimumHeight(0);
+    settingsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    settingsScroll->setWidget(buildSettingsSection());
+    m_sectionStack->addWidget(settingsScroll);           // 1 Settings
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -3731,7 +3754,15 @@ QWidget *MainWindow::buildChatPage()
     layout->setSpacing(0);
     layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
-    layout->addWidget(content, 1);
+    auto *contentScroll = new QScrollArea;
+    contentScroll->setWidgetResizable(true);
+    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    contentScroll->setFrameShape(QFrame::NoFrame);
+    // Tall tab pages should scroll instead of becoming the window's minimum height.
+    contentScroll->setMinimumHeight(0);
+    contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    contentScroll->setWidget(content);
+    layout->addWidget(contentScroll, 1);
     layout->addWidget(buildNetworkLogDock());
     return page;
 }
@@ -5957,13 +5988,25 @@ QWidget *MainWindow::buildIssuesSection()
         metaLayout->addWidget(action);
     metaLayout->addStretch();
 
+    auto *metaScroll = new QScrollArea;
+    metaScroll->setObjectName("issueSidebarScroll");
+    metaScroll->setFrameShape(QFrame::NoFrame);
+    metaScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    metaScroll->setWidgetResizable(true);
+    metaScroll->setMinimumWidth(265);
+    metaScroll->setMaximumWidth(335);
+    // The long issue sidebar should scroll, not force the Issues tab height.
+    metaScroll->setMinimumHeight(0);
+    metaScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
+    metaScroll->setWidget(meta);
+
     // Collapsible detail panel: the issue thread (center) + metadata sidebar,
     // sharing their own draggable divider.
     auto *issueDetailView = new QWidget;
     auto *detailSplit = new QSplitter(Qt::Horizontal);
     detailSplit->setChildrenCollapsible(false);
     detailSplit->addWidget(center);
-    detailSplit->addWidget(meta);
+    detailSplit->addWidget(metaScroll);
     detailSplit->setStretchFactor(0, 1);
     detailSplit->setStretchFactor(1, 0);
     detailSplit->setSizes({520, 220});

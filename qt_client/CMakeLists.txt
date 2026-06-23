@@ -16,8 +16,7 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
 find_package(OpenSSL REQUIRED)
 
-qt_add_executable(forkmesh
-    src/main.cpp
+set(FORKMESH_APP_SOURCES
     resources/icons.qrc
     src/Theme.h
     src/ForkMeshIdentity.h
@@ -56,6 +55,11 @@ qt_add_executable(forkmesh
     src/MainWindow.cpp
 )
 
+qt_add_executable(forkmesh
+    src/main.cpp
+    ${FORKMESH_APP_SOURCES}
+)
+
 target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
 
 if(APPLE)
@@ -92,17 +96,28 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
-    # Register with CTest so the suite runs independently of the app:
-    #   ctest --test-dir build            (runs the already-built binary)
+    # A second suite that drives the real MainWindow (needs the full app sources).
+    qt_add_executable(forkmesh-window-tests
+        tests/test_window_resize.cpp
+        ${FORKMESH_APP_SOURCES}
+    )
+    target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    if(APPLE)
+        set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # Register both suites with CTest so they run independently of the app:
+    #   ctest --test-dir build            (runs the already-built binaries)
     #   cmake --build build --target check (builds the tests, then runs them)
     # The headless smoke tests need an offscreen Qt platform.
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
-    set_tests_properties(forkmesh-tests PROPERTIES
+    add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    set_tests_properties(forkmesh-tests forkmesh-window-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests)
+    add_dependencies(check forkmesh-tests forkmesh-window-tests)
 endif()
