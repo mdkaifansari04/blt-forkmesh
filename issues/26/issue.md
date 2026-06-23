@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 26
 title: have the ability to hide the issue detail screen
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 70
