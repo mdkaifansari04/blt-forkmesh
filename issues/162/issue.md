@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 162
 title: move the chat button and notifications button to be on the left on the second row right under the relay > node > repo section
-status: open
+status: closed
 labels: [Phase 2]
 milestone: 
 priority: 24
