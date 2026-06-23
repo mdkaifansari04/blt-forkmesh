@@ -8684,12 +8684,38 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentClaudeStatus->setObjectName("statusLine");
     m_agentClaudeStatus->setWordWrap(true);
     m_agentClaudeStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto makeStatsRefreshButton = [](const QString &toolTip) {
+        auto *button = new QPushButton("Refresh");
+        button->setObjectName("ghostButton");
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(toolTip);
+        setOcticon(button, "sync", 16);
+        return button;
+    };
+    m_agentTestApiKeyButton =
+        makeStatsRefreshButton("Refresh OpenAI usage and spend");
+    connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
+            &MainWindow::testOpenAiAgentKey);
+    auto *claudeRefreshButton =
+        makeStatsRefreshButton("Refresh Claude usage and spend");
+    connect(claudeRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshClaudeSpend);
+    auto *openAiStatsRow = new QHBoxLayout;
+    openAiStatsRow->setContentsMargins(0, 0, 0, 0);
+    openAiStatsRow->setSpacing(8);
+    openAiStatsRow->addWidget(m_agentOpenAiSpend, 1);
+    openAiStatsRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
+    auto *claudeStatsRow = new QHBoxLayout;
+    claudeStatsRow->setContentsMargins(0, 0, 0, 0);
+    claudeStatsRow->setSpacing(8);
+    claudeStatsRow->addWidget(m_agentClaudeSpend, 1);
+    claudeStatsRow->addWidget(claudeRefreshButton, 0, Qt::AlignTop);
     auto *usageText = new QVBoxLayout;
     usageText->setContentsMargins(0, 0, 0, 0);
     usageText->setSpacing(4);
-    usageText->addWidget(m_agentOpenAiSpend);
+    usageText->addLayout(openAiStatsRow);
     usageText->addWidget(m_agentApiKeyStatus);
-    usageText->addWidget(m_agentClaudeSpend);
+    usageText->addLayout(claudeStatsRow);
     usageText->addWidget(m_agentClaudeStatus);
     m_agentLimitsLabel = new QLabel;
     m_agentLimitsLabel->setObjectName("statusLine");
