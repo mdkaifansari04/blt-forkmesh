@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 44
 title: fix the fork button so that it allows you to fork to a location working directory you must already have it mirrored to fork it - remove the star button
-status: open
+status: closed
 labels: [bug]
 milestone: MVP launch
 priority: 42
