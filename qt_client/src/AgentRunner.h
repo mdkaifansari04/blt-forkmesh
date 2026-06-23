@@ -52,6 +52,7 @@ private:
     void runAgentProcess();
     void complete(bool ok, const QString &status, const QString &message);
     void cleanupWorktree();
+    bool restorePreviousPatch();
     QString buildPrompt() const;
     QString expandCommand(const QString &promptPath) const;
     QString redact(QString text) const;
@@ -80,4 +81,5 @@ private:
     qint64 m_lastOutputAtMs = 0;
     QString m_currentProgram;
     bool m_attentionRaised = false; // emit needsAttention only once per run
+    bool m_restorePreviousPatch = false;
 };

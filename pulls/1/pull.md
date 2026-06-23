@@ -4,7 +4,7 @@ number: 1
 title: Agent: issue #170 when clicking continue the previous session did not persist please fix that
 base: main
 head: agent/issue-170-openai-2
-status: open
+status: merged
 ts: 1782252040118
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
