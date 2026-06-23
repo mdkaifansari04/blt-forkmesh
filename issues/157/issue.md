@@ -5,7 +5,7 @@ title: when you type @ in an issue have a dropdown of all node names that have e
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 21
 progress: 0
 assignees: []
 createdAt: 1782183920155
