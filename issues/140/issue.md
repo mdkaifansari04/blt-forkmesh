@@ -5,7 +5,7 @@ title: make sure the app maximizes and minimizes correctly
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 7
 progress: 0
 assignees: []
 createdAt: 1782152082182
