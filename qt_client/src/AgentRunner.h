@@ -7,6 +7,7 @@
 #include <QString>
 
 class QProcess;
+class QTimer;
 
 class AgentRunner : public QObject
 {
@@ -55,6 +56,7 @@ private:
     QString expandCommand(const QString &promptPath) const;
     QString redact(QString text) const;
     void emitLog(const QString &text);
+    void onNoOutputTimeout();
     // Scan agent output for "needs sign-in / out of credit" markers; returns an
     // actionable message the first time one is seen (else empty).
     QString detectAuthIssue(const QString &chunk);
@@ -72,5 +74,9 @@ private:
     QString m_worktree;
     QString m_prompt;
     QProcess *m_process = nullptr;
+    QTimer *m_noOutputTimer = nullptr;
+    qint64 m_processStartedAtMs = 0;
+    qint64 m_lastOutputAtMs = 0;
+    QString m_currentProgram;
     bool m_attentionRaised = false; // emit needsAttention only once per run
 };
