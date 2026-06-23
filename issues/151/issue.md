@@ -5,7 +5,7 @@ title: there are these repo 7cbaf0dc hosts on the website under /network/ please
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 16
 progress: 0
 assignees: []
 createdAt: 1782168870924
