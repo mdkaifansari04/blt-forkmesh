@@ -81,6 +81,14 @@ public:
     bool updateBranchFromBase(int number, QString *error = nullptr);
     // Apply the PR's patch into the working tree, commit, mark merged.
     bool mergePull(int number, QString *error = nullptr);
+    // Dry-run the PR's patch against the working tree — the same 3-way apply
+    // mergePull performs, but with --check so nothing is modified — to report
+    // whether it will merge cleanly. Returns false only on a hard error
+    // (no working tree, PR/patch missing); on success sets *clean and, when not
+    // clean, fills *conflictFiles with the conflicting paths.
+    bool checkMergeable(int number, bool *clean,
+                        QStringList *conflictFiles = nullptr,
+                        QString *error = nullptr) const;
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
     // Remove the PR folder entirely and commit the deletion.

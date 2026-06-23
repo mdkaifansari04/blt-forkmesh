@@ -39,6 +39,37 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
+// Pull the conflicting file paths out of `git apply --check --3way` output,
+// which names the offending file in a few shapes depending on whether the
+// 3-way fallback ran:
+//   "error: patch failed: <path>:<line>"
+//   "error: <path>: patch does not apply"
+//   "error: <path>: does not exist in index" / "does not match index"
+//   "Applied patch to '<path>' with conflicts."
+QStringList parseApplyConflicts(const QString &text)
+{
+    static const QRegularExpression patterns[] = {
+        QRegularExpression(QStringLiteral("^error: patch failed: (.+):\\d+$")),
+        QRegularExpression(QStringLiteral(
+            "^error: (.+): (?:patch does not apply|does not (?:exist|match) in index)$")),
+        QRegularExpression(QStringLiteral("^Applied patch to '(.+)' with conflicts\\.$")),
+    };
+    QStringList files;
+    const QStringList lines = text.split('\n');
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        for (const QRegularExpression &re : patterns) {
+            const QRegularExpressionMatch m = re.match(trimmed);
+            if (m.hasMatch()) {
+                if (!files.contains(m.captured(1)))
+                    files << m.captured(1);
+                break;
+            }
+        }
+    }
+    return files;
+}
+
 bool writeTextFile(const QString &path, const QString &text, QString *error)
 {
     QFile file(path);
@@ -732,6 +763,61 @@ bool PullStore::mergePull(int number, QString *error)
             *error = "git commit failed: " + err;
         return false;
     }
+    return true;
+}
+
+bool PullStore::checkMergeable(int number, bool *clean,
+                               QStringList *conflictFiles, QString *error) const
+{
+    if (clean)
+        *clean = false;
+    if (conflictFiles)
+        conflictFiles->clear();
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Checking the merge needs a local working tree.");
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    const QString patchPath = pullDir(number) + "/changes.patch";
+    if (!QFileInfo::exists(patchPath)) {
+        if (error)
+            *error = QStringLiteral("This pull request has no patch to merge.");
+        return false;
+    }
+
+    // --check dry-runs the same 3-way apply mergePull performs, without
+    // touching the index or working tree. Run git directly (not through runGit,
+    // which truncates failure output) so we get the full per-file diagnostics.
+    QProcess git;
+    git.start("git",
+              {"-C", m_workTree, "apply", "--check", "--3way", patchPath});
+    if (!git.waitForFinished(kGitTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git timed out checking the merge.");
+        return false;
+    }
+    const QString output = QString::fromUtf8(git.readAllStandardError()) +
+                           QString::fromUtf8(git.readAllStandardOutput());
+    const bool exitedClean =
+        git.exitStatus() == QProcess::NormalExit && git.exitCode() == 0;
+    // The 3-way fallback can "apply with conflicts" and still exit 0, so treat
+    // that message as a conflict too — clean means a non-zero exit AND no
+    // "with conflicts" report.
+    const bool hasConflicts =
+        output.contains(QStringLiteral("with conflicts"));
+    if (exitedClean && !hasConflicts) {
+        if (clean)
+            *clean = true;
+        return true;
+    }
+    if (conflictFiles)
+        *conflictFiles = parseApplyConflicts(output);
     return true;
 }
 

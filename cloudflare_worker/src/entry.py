@@ -2092,9 +2092,31 @@ async def _account_heartbeat(env, request):
         "ON CONFLICT(name_bi) DO UPDATE SET ts=excluded.ts",
         name_bi, int(Date.now()),
     )
-    return json_response({"ok": True, "online": True,
-                          "hasPayoutAddress": bool(rec.get("solana")),
-                          "isAdmin": await _is_admin(env, name)})
+
+    # Report this node's payout-wallet balance in the heartbeat reply so the
+    # client doesn't have to poll Solana itself. We track the last balance we
+    # saw for this account; an increase since then means a donation/disbursement
+    # arrived, which the client surfaces (and only then refreshes its display).
+    wallet = rec.get("solana", "")
+    balance_lamports = None
+    donation_received = False
+    if wallet and SOLANA_RE.match(wallet):
+        balance_lamports = await _solana_balance_lamports(env, wallet)
+        if balance_lamports is not None:
+            prev = rec.get("last_balance_lamports")
+            if isinstance(prev, int) and balance_lamports > prev:
+                donation_received = True
+            if prev != balance_lamports:
+                rec["last_balance_lamports"] = balance_lamports
+                await _save_account(env, name_bi, rec)
+
+    response = {"ok": True, "online": True,
+                "hasPayoutAddress": bool(rec.get("solana")),
+                "isAdmin": await _is_admin(env, name)}
+    if balance_lamports is not None:
+        response["balanceLamports"] = balance_lamports
+        response["donationReceived"] = donation_received
+    return json_response(response)
 
 
 async def _online_payout_addresses(env):
