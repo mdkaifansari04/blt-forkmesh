@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 140
 title: make sure the app maximizes and minimizes correctly
-status: open
+status: closed
 labels: [Phase 2]
 milestone: 
 priority: 7
