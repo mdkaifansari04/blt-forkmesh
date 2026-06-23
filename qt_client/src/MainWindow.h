@@ -958,6 +958,7 @@ private:
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoAgentsTab = nullptr;
+    QLabel *m_agentActivityBadge = nullptr; // colored status badge above the Agents tab
     QPushButton *m_repoActionsTab = nullptr;
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
