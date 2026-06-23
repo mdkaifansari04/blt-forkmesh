@@ -129,12 +129,17 @@ namespace {
 // advertisement) can read a bare mirror's current HEAD branch and commit.
 QString mirrorHeadBranch(const QString &mirrorPath);
 QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
+// Defined further down; forward-declared so earlier callers can summarise an
+// HTTP/API failure for a user-facing message.
+QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
-constexpr int kCommitSummaryCol = 5;
+constexpr int kCommitSummaryCol = 6;
+// Column showing the short commit hash (also flags unsynced commits).
+constexpr int kCommitHashCol = 2;
 
 class SortTableWidgetItem : public QTableWidgetItem
 {
@@ -6805,10 +6810,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
-    m_commitsTable = new QTableWidget(0, 6);
+    m_commitsTable = new QTableWidget(0, 7);
     m_commitsTable->setObjectName("commitsList");
     m_commitsTable->setHorizontalHeaderLabels(
-        {"Author", "Date", "Files", "+adds", "-dels", "Summary"});
+        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary"});
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6824,7 +6829,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
     commitHeader->setSectionResizeMode(QHeaderView::Interactive);
-    const int commitColWidths[kCommitSummaryCol] = {150, 72, 60, 66, 66};
+    const int commitColWidths[kCommitSummaryCol] = {150, 72, 80, 60, 66, 66};
     for (int i = 0; i < kCommitSummaryCol; ++i) {
         commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
         commitHeader->resizeSection(i, commitColWidths[i]);
@@ -6846,8 +6851,17 @@ QWidget *MainWindow::buildRepoCommitsTab()
                 if (item)
                     showCommit(item->data(Qt::UserRole).toString());
             });
+    // Banner above the list flagging local commits that haven't reached the
+    // network mirror yet (the rows themselves are tagged in the Commit column).
+    m_commitsUnsyncedBanner = new QLabel;
+    m_commitsUnsyncedBanner->setObjectName("statusLine");
+    m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
+    m_commitsUnsyncedBanner->setWordWrap(true);
+    m_commitsUnsyncedBanner->hide();
+
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
+    listLayout->addWidget(m_commitsUnsyncedBanner);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -8171,6 +8185,7 @@ void MainWindow::importPatchAsPull()
     setRepoDetailNotice(QStringLiteral("Imported patch as pull #%1.").arg(number));
     m_currentPullNumber = number;
     switchToPullTab(number);
+    propagateRepoUpdate(m_repoDetailIndex);
 }
 
 void MainWindow::promptNewPullFromDirectory()
@@ -8356,6 +8371,7 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
         }
         m_currentPullNumber = number;
         switchToPullTab(number);
+        propagateRepoUpdate(m_repoDetailIndex);
     } else {
         RepositoryRecord targetRepo = currentRepo;
         targetRepo.owner = targetOwner;
@@ -8417,13 +8433,16 @@ void MainWindow::mergeCurrentPull()
     }
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
-    releaseBountiesForMergedPull(current);
+    fundBountiesForMergedPull(current);
     if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
         QMessageBox::warning(this, "Push merged pull request", error);
         reloadPulls();
         return;
     }
     reloadPulls();
+    // Push the merge (closed PR + any linked issue closes) to the mirror and
+    // notify peers now. (The push-to-base path above already syncs separately.)
+    propagateRepoUpdate(m_repoDetailIndex);
 }
 
 void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
@@ -8522,7 +8541,7 @@ QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
     return linked.values();
 }
 
-void MainWindow::releaseBountiesForMergedPull(const PullRequest &pr)
+void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
 {
     const int idx = issuesRepoIndex();
     if (idx < 0 || !m_networkAccess)
@@ -8541,74 +8560,60 @@ void MainWindow::releaseBountiesForMergedPull(const PullRequest &pr)
         if (issue.number <= 0 || issue.bountyUsd <= 0 ||
             issue.bountyStatus == QLatin1String("paid"))
             continue;
+        const double amount = issue.bountyUsd;
         const QString question =
-            QStringLiteral("Issue #%1 has a $%2 bounty. Release it now?\n\n90%% goes "
+            QStringLiteral("Issue #%1 has a $%2 bounty. Show the funding QR now?\n\n"
+                           "Send the SOL to the escrow address; on payout 90%% goes "
                            "to the pull request author and 10%% to the ForkMesh "
                            "treasury.")
                 .arg(number)
-                .arg(QString::number(issue.bountyUsd, 'f', 2));
-        if (QMessageBox::question(this, QStringLiteral("Release bounty"), question) !=
+                .arg(QString::number(amount, 'f', 2));
+        if (QMessageBox::question(this, QStringLiteral("Fund bounty"), question) !=
             QMessageBox::Yes)
             continue;
-        bool ok = false;
-        const QString payee = QInputDialog::getText(
-                                  this, QStringLiteral("Release bounty"),
-                                  QStringLiteral("Payee Solana address (the PR "
-                                                 "author's wallet):"),
-                                  QLineEdit::Normal, QString(), &ok)
-                                  .trimmed();
-        if (!ok || payee.isEmpty())
-            continue;
 
-        const qint64 ts = QDateTime::currentSecsSinceEpoch();
-        const QString canonical =
-            QStringLiteral("forkmesh-bounty-payout-v1\n%1\n%2\n%3\n%4\n%5")
-                .arg(repo.owner, repo.name)
-                .arg(number)
-                .arg(payee)
-                .arg(ts);
-        const QString sig = m_profileIdentity.signData(canonical.toUtf8());
-        const QJsonObject payload{{"action", "payout"},
+        // Bounties are pledged on the issue without paying up front; the escrow
+        // deposit address is minted here, at merge time, and its funding QR is
+        // shown so the maintainer can fund the now-completed work.
+        const QJsonObject payload{{"action", "create"},
                                   {"owner", repo.owner},
                                   {"repo", repo.name},
                                   {"number", number},
-                                  {"payee", payee},
-                                  {"ts", double(ts)},
-                                  {"sig", sig}};
+                                  {"amountUsd", amount}};
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        const double amount = issue.bountyUsd;
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, number, payee, amount] {
+                [this, reply, number, amount] {
                     const QByteArray body = reply->readAll();
                     reply->deleteLater();
                     const QJsonObject obj = QJsonDocument::fromJson(body).object();
-                    const QString payoutSig = obj.value("payoutSig").toString();
-                    if (reply->error() != QNetworkReply::NoError ||
-                        obj.value("status").toString() != QLatin1String("paid")) {
+                    const QString address = obj.value("address").toString();
+                    if (reply->error() != QNetworkReply::NoError || address.isEmpty()) {
                         flashMessage(
-                            QStringLiteral("Bounty payout for #%1 failed: %2")
+                            QStringLiteral("Could not create the bounty deposit for "
+                                           "#%1: %2")
                                 .arg(number)
                                 .arg(obj.value("error").toString(
-                                    reply->errorString())));
+                                    reply->errorString())),
+                            true);
                         return;
                     }
-                    // Record the paid state as a signed event on the issue.
+                    const QString uri = obj.value("uri").toString(
+                        QStringLiteral("solana:%1").arg(address));
+                    // Record the escrow address on the issue (still unpaid).
                     IssueStore writeStore = issueStoreForCurrentRepo();
                     QString error;
-                    writeStore.setBounty(number, amount, payee,
-                                         QStringLiteral("paid"), &error);
-                    logSystem(QStringLiteral("Paid $%1 bounty for issue #%2 (tx %3).")
-                                  .arg(QString::number(amount, 'f', 2))
+                    writeStore.setBounty(number, amount, address,
+                                         QStringLiteral("open"), &error);
+                    logSystem(QStringLiteral("Bounty escrow for issue #%1 ready to "
+                                             "fund ($%2).")
                                   .arg(number)
-                                  .arg(payoutSig.left(12)));
-                    flashMessage(
-                        QStringLiteral("Released $%1 bounty for issue #%2.")
-                            .arg(QString::number(amount, 'f', 2))
-                            .arg(number));
-                    reloadIssues();
+                                  .arg(QString::number(amount, 'f', 2)));
+                    if (m_repoDetailIndex == issuesRepoIndex())
+                        reloadIssues();
+                    showBountyQrDialog(uri, address, amount);
                 });
     }
 }
@@ -9108,6 +9113,26 @@ QString openAiResponseText(const QJsonObject &obj)
         }
     }
     return parts.join(QStringLiteral("\n\n")).trimmed();
+}
+
+// USD cost of an "Ask AI" Responses call from its usage tokens. Prices are the
+// published OpenAI rates for gpt-4.1-nano (input $0.10 / output $0.40 per 1M
+// tokens); bump these if the model or its pricing changes.
+double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens = nullptr,
+                        qint64 *outTokens = nullptr)
+{
+    const QJsonObject usage = response.value(QStringLiteral("usage")).toObject();
+    const qint64 input = static_cast<qint64>(
+        usage.value(QStringLiteral("input_tokens")).toDouble());
+    const qint64 output = static_cast<qint64>(
+        usage.value(QStringLiteral("output_tokens")).toDouble());
+    if (inTokens)
+        *inTokens = input;
+    if (outTokens)
+        *outTokens = output;
+    constexpr double kInputPerMillion = 0.10;
+    constexpr double kOutputPerMillion = 0.40;
+    return (input * kInputPerMillion + output * kOutputPerMillion) / 1000000.0;
 }
 
 double jsonNumber(const QJsonValue &value)
@@ -11795,6 +11820,38 @@ QString MainWindow::currentRef() const
     return m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch;
 }
 
+QSet<QString> MainWindow::unpushedCommitHashes() const
+{
+    QSet<QString> result;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return result;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Only a node holding the working copy can be ahead of its mirror; a
+    // browse-only mirror just pulls, so nothing is ever unsynced there.
+    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists() ||
+        repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
+        return result;
+    const QString branch =
+        m_repoBranch.isEmpty() ? mirrorHeadBranch(repo.mirrorPath) : m_repoBranch;
+    const QString mirrorTip = mirrorBranchCommit(repo.mirrorPath, branch);
+    if (mirrorTip.isEmpty())
+        return result;
+    // Commits reachable from the local branch tip but not from the mirror's tip
+    // are exactly the ones the mirror hasn't received. If the mirror tip isn't a
+    // local ancestor (diverged histories), git errors and we flag nothing.
+    QByteArray out;
+    if (!runGitCapture(repo.localPath,
+                       {"rev-list", mirrorTip + ".." + currentRef()}, &out,
+                       nullptr))
+        return result;
+    for (const QByteArray &line : out.split('\n')) {
+        const QString hash = QString::fromUtf8(line).trimmed();
+        if (!hash.isEmpty())
+            result.insert(hash);
+    }
+    return result;
+}
+
 void MainWindow::loadCommits()
 {
     if (!m_commitsTable)
@@ -11818,6 +11875,10 @@ void MainWindow::loadCommits()
         m_commitsTable->setSortingEnabled(true);
         return;
     }
+    // Local commits the network mirror doesn't have yet, so the list can flag
+    // (and the banner can count) what hasn't synced.
+    const QSet<QString> unpushed = unpushedCommitHashes();
+    int unpushedShown = 0;
     for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
@@ -11828,6 +11889,7 @@ void MainWindow::loadCommits()
         const QStringList f = lines.first().split(QLatin1Char('\x1f'));
         if (f.size() < 6)
             continue;
+        const bool isUnpushed = unpushed.contains(f.at(0));
         int files = 0;
         int adds = 0;
         int dels = 0;
@@ -11882,20 +11944,47 @@ void MainWindow::loadCommits()
         date->setData(kTableSortRole, commitTs);
         date->setToolTip(f.at(3)); // full "x ago" form on hover
         m_commitsTable->setItem(row, 1, date);
+        // Short commit hash; unsynced commits get a leading marker + amber tint.
+        auto *hashItem = new SortTableWidgetItem(
+            isUnpushed ? QString::fromUtf8("\xE2\x96\xB2 ") + f.at(1) : f.at(1));
+        hashItem->setData(kTableSortRole, f.at(1));
+        if (isUnpushed) {
+            ++unpushedShown;
+            hashItem->setForeground(QColor("#d29922"));
+            hashItem->setToolTip(
+                QStringLiteral("%1 — not yet synced to the network mirror").arg(f.at(1)));
+        } else {
+            hashItem->setToolTip(f.at(1));
+        }
+        m_commitsTable->setItem(row, kCommitHashCol, hashItem);
         auto *fileItem = new SortTableWidgetItem(QString::number(files));
         fileItem->setData(kTableSortRole, files);
-        m_commitsTable->setItem(row, 2, fileItem);
+        m_commitsTable->setItem(row, 3, fileItem);
         auto *addsItem = new SortTableWidgetItem(QStringLiteral("+%1").arg(adds));
         addsItem->setForeground(QColor("#2ea043"));
         addsItem->setData(kTableSortRole, adds);
-        m_commitsTable->setItem(row, 3, addsItem);
+        m_commitsTable->setItem(row, 4, addsItem);
         auto *delsItem =
             new SortTableWidgetItem(QString::fromUtf8("\xE2\x88\x92%1").arg(dels));
         delsItem->setForeground(QColor("#f85149"));
         delsItem->setData(kTableSortRole, dels);
-        m_commitsTable->setItem(row, 4, delsItem);
+        m_commitsTable->setItem(row, 5, delsItem);
     }
     m_commitsTable->setSortingEnabled(true);
+
+    if (m_commitsUnsyncedBanner) {
+        if (unpushedShown > 0) {
+            m_commitsUnsyncedBanner->setText(
+                QString::fromUtf8(
+                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 not yet "
+                    "synced to the network mirror.</span>")
+                    .arg(unpushedShown)
+                    .arg(unpushedShown == 1 ? QString() : QStringLiteral("s")));
+            m_commitsUnsyncedBanner->show();
+        } else {
+            m_commitsUnsyncedBanner->hide();
+        }
+    }
 
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent).
@@ -14610,6 +14699,13 @@ void MainWindow::showIssue(int number)
 
 void MainWindow::renderIssueThread(const Issue &issue)
 {
+    // The transient "AI is answering…" card lives in this layout, so it's about
+    // to be deleted below — drop our reference and stop its animation first.
+    if (m_issueAiTypingTimer)
+        m_issueAiTypingTimer->stop();
+    m_issueAiTypingTimer = nullptr;
+    m_issueAiTypingRow = nullptr;
+
     // Clear all cards (keep the trailing stretch rebuilt at the end).
     while (QLayoutItem *item = m_issueThreadLayout->takeAt(0)) {
         if (QWidget *w = item->widget())
@@ -15582,6 +15678,7 @@ void MainWindow::promptNewIssue()
         const bool more = createMore->isChecked();
         removeIssueComposePage();
         reloadIssues();
+        propagateRepoUpdate(issuesRepoIndex());
         setIssueInlineNotice("Issue created.");
         if (more)
             promptNewIssue();
@@ -15624,6 +15721,7 @@ void MainWindow::quickAddIssue()
     m_issueQuickAdd->clear();
     m_currentIssueNumber = number;
     reloadIssues();
+    propagateRepoUpdate(issuesRepoIndex());
     setIssueInlineNotice("Issue created.");
     // If requested, hand the freshly-created issue straight to a coding agent.
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
@@ -16270,9 +16368,9 @@ void MainWindow::showBountyQrDialog(const QString &uri, const QString &address,
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
     auto *layout = new QVBoxLayout(&dialog);
     auto *intro = new QLabel(
-        QStringLiteral("Send <b>$%1</b> of SOL to fund this bounty. On merge of a "
-                       "pull request that closes the issue, 90%% goes to the "
-                       "author and 10%% to the ForkMesh treasury.")
+        QStringLiteral("The pull request is merged. Send <b>$%1</b> of SOL to this "
+                       "escrow address to fund the bounty; on payout 90%% goes to "
+                       "the pull request author and 10%% to the ForkMesh treasury.")
             .arg(QString::number(amountUsd, 'f', 2)));
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
@@ -16308,74 +16406,40 @@ void MainWindow::editIssueBounty()
 {
     if (m_currentIssueNumber < 0)
         return;
-    const int idx = issuesRepoIndex();
-    if (idx < 0)
-        return;
-    const RepositoryRecord repo = m_repositories.at(idx);
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         setIssueInlineNotice("This repo is read-only here; can't add a bounty.", true);
         return;
     }
-    if (!m_networkAccess) {
-        setIssueInlineNotice("Network client is not ready.", true);
-        return;
-    }
+    double existing = 0.0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number == m_currentIssueNumber) {
+            existing = issue.bountyUsd;
+            break;
+        }
     bool ok = false;
     const double amount = QInputDialog::getDouble(
         this, QStringLiteral("Add bounty"),
-        QStringLiteral("Bounty amount (USD):"), 10.0, 1.0, 100000.0, 2, &ok);
+        QStringLiteral("Bounty amount (USD):"), existing > 0 ? existing : 10.0,
+        1.0, 100000.0, 2, &ok);
     if (!ok)
         return;
 
-    const int number = m_currentIssueNumber;
-    // Ask the worker to mint a dedicated Solana deposit address for this bounty
-    // (same custody model as the signup donation funnel). It auto-splits to the
-    // PR author + treasury when the issue's PR is merged.
-    const QJsonObject payload{{"action", "create"},
-                              {"owner", repo.owner},
-                              {"repo", repo.name},
-                              {"number", number},
-                              {"amountUsd", amount}};
-    QNetworkRequest request(bountyApiUrl(repo));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    setIssueInlineNotice("Creating bounty deposit address\xE2\x80\xA6");
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, number, amount] {
-                const QByteArray body = reply->readAll();
-                reply->deleteLater();
-                const QJsonObject obj =
-                    QJsonDocument::fromJson(body).object();
-                const QString address = obj.value("address").toString();
-                if (reply->error() != QNetworkReply::NoError || address.isEmpty()) {
-                    setIssueInlineNotice(
-                        QStringLiteral("Could not create the bounty deposit: %1")
-                            .arg(apiErrorSummary(reply, body)),
-                        true);
-                    return;
-                }
-                const QString uri = obj.value("uri").toString(
-                    QStringLiteral("solana:%1").arg(address));
-                // Record the pledge as a signed event on the issue.
-                IssueStore writeStore = issueStoreForCurrentRepo();
-                QString error;
-                if (!writeStore.setBounty(number, amount, address,
-                                          QStringLiteral("open"), &error)) {
-                    setIssueInlineNotice(
-                        error.isEmpty() ? "Could not record the bounty." : error,
-                        true);
-                    return;
-                }
-                setIssueInlineNotice(
-                    QStringLiteral("Bounty of $%1 created \xE2\x80\x94 scan the QR to "
-                                   "fund it.")
-                        .arg(QString::number(amount, 'f', 2)));
-                if (m_currentIssueNumber == number)
-                    reloadIssues();
-                showBountyQrDialog(uri, address, amount);
-            });
+    // Pledge only — no money changes hands now. The escrow address is minted and
+    // its funding QR is shown when a pull request that closes the issue is
+    // merged (see fundBountiesForMergedPull), so no worker call is needed here.
+    QString error;
+    if (!store.setBounty(m_currentIssueNumber, amount, QString(),
+                         QStringLiteral("open"), &error)) {
+        setIssueInlineNotice(
+            error.isEmpty() ? "Could not record the bounty." : error, true);
+        return;
+    }
+    setIssueInlineNotice(
+        QStringLiteral("Bounty of $%1 pledged. You'll fund it with a QR when the "
+                       "issue's pull request is merged.")
+            .arg(QString::number(amount, 'f', 2)));
+    reloadIssues();
 }
 
 void MainWindow::submitIssueCommentToInbox(const QString &body)
@@ -19466,6 +19530,25 @@ void MainWindow::autoSyncMirrors()
             !repositorySource(m_repositories.at(i)).isEmpty())
             syncRepository(i, /*quiet=*/true);
     }
+}
+
+void MainWindow::propagateRepoUpdate(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(index);
+    // Only the node holding the working copy is the source of truth that can
+    // push its mirror forward; previews and pure mirrors just pull.
+    if (repo.previewOnly || repo.localPath.trimmed().isEmpty())
+        return;
+    if (m_syncingRepos.contains(index))
+        return;
+    // syncRepository fetches the bare mirror from the local working copy, so the
+    // just-committed issue/PR lands in the mirror. On a detected change it
+    // refreshes the open detail (updating the Issues/PR counts) and broadcasts
+    // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
+    // converging everyone in seconds rather than at the next 5-minute tick.
+    syncRepository(index, /*quiet=*/true);
 }
 
 void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
