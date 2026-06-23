@@ -1,0 +1,142 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index fa91dd3..431f679 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -4042,7 +4042,8 @@ QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) c
+ 
+ void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
+                                const QString &workingDir,
+-                               std::function<void()> onSuccess)
++                               std::function<void()> onSuccess,
++                               std::function<void()> onFailure)
+ {
+     const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
+     logRestart(QStringLiteral("run: %1").arg(commandLine));
+@@ -4065,7 +4066,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
+         appendUpdateLog(chunk);
+     });
+     connect(process, &QProcess::finished, this,
+-            [this, process, stepTimer, commandLine, onSuccess, output](
++            [this, process, stepTimer, commandLine, onSuccess, onFailure, output](
+                 int exitCode, QProcess::ExitStatus) {
+                 const QString tail = QString::fromUtf8(process->readAllStandardOutput());
+                 if (!tail.isEmpty()) {
+@@ -4081,6 +4082,10 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
+                                     .arg(stepTimer.elapsed())
+                                     .arg(exitCode));
+                 if (exitCode != 0) {
++                    if (onFailure) {
++                        onFailure();
++                        return;
++                    }
+                     stopRefreshSpin();
+                     setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
+                     if (m_buildButton)
+@@ -4133,17 +4138,20 @@ void MainWindow::runQuickUpdate()
+ void MainWindow::runUpdateStepUser(const QString &program,
+                                    const QStringList &arguments,
+                                    const QString &workingDir,
+-                                   std::function<void()> onSuccess)
++                                   std::function<void()> onSuccess,
++                                   std::function<void()> onFailure)
+ {
+     if (m_updateAsUser.isEmpty()) {
+-        runUpdateStep(program, arguments, workingDir, std::move(onSuccess));
++        runUpdateStep(program, arguments, workingDir, std::move(onSuccess),
++                      std::move(onFailure));
+         return;
+     }
+     // Run the command as the invoking non-root user so files it writes are owned
+     // by them and land under their home, never under /root.
+     QStringList wrapped{"-u", m_updateAsUser, "-H", program};
+     wrapped += arguments;
+-    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess));
++    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess),
++                  std::move(onFailure));
+ }
+ 
+ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUser,
+@@ -4280,28 +4288,49 @@ void MainWindow::updateRebuildRestart()
+     const QString repoDir = QFileInfo(clientDir).absolutePath(); // .../src
+     const bool haveCheckout = QDir(repoDir).exists(QStringLiteral(".git"));
+ 
++    // Clean re-clone from the live mirror, used both when there is no existing
++    // checkout and as the fallback when a fast-forward pull fails (the local
++    // checkout has diverged from the mirror, or the old origin is unreachable).
++    auto recloneFromMirror = [this, installUrl, repoDir, clientDir, user,
++                              relaunchPath] {
++        const QString parent = QFileInfo(repoDir).absolutePath();
++        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
++                          [this, installUrl, repoDir, parent, clientDir, user,
++                           relaunchPath] {
++            // Drop the stale checkout so `git clone` can recreate it in place.
++            runUpdateStepUser("rm", {"-rf", repoDir}, parent,
++                              [this, installUrl, repoDir, parent, clientDir, user,
++                               relaunchPath] {
++                runUpdateStepUser("git",
++                                  {"clone", "--depth", "1", installUrl, repoDir},
++                                  parent, [this, clientDir, user, relaunchPath] {
++                    buildAndRelaunch(clientDir, user, relaunchPath);
++                });
++            });
++        });
++    };
++
+     if (haveCheckout) {
+         setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
+         // Repoint origin at the freshly resolved live mirror, then fast-forward.
+         runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
+                                   installUrl},
+-                          repoDir, [this, repoDir, clientDir, user, relaunchPath] {
++                          repoDir, [this, repoDir, clientDir, user, relaunchPath,
++                                    installUrl, recloneFromMirror] {
+             runUpdateStepUser("git", {"-C", repoDir, "pull", "--ff-only"}, repoDir,
+                               [this, clientDir, user, relaunchPath] {
+                 buildAndRelaunch(clientDir, user, relaunchPath);
++            }, [this, installUrl, recloneFromMirror] {
++                // A diverged or unreachable mirror cannot be fast-forwarded; fall
++                // back to a clean re-clone from the current live mirror.
++                setUpdateStatus("Could not fast-forward; re-cloning a fresh copy "
++                                "from " + installUrl + "...");
++                recloneFromMirror();
+             });
+         });
+     } else {
+-        const QString parent = QFileInfo(repoDir).absolutePath();
+         setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
+-        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
+-                          [this, installUrl, repoDir, parent, clientDir, user,
+-                           relaunchPath] {
+-            runUpdateStepUser("git", {"clone", "--depth", "1", installUrl, repoDir},
+-                              parent, [this, clientDir, user, relaunchPath] {
+-                buildAndRelaunch(clientDir, user, relaunchPath);
+-            });
+-        });
++        recloneFromMirror();
+     }
+ }
+ 
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index a278fc3..cd1219b 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -202,12 +202,17 @@ private:
+                           const QString &relaunchPath = QString(),
+                           const QString &buildType = QStringLiteral("Release"));
+     void installAndRelaunch(const QString &built, const QString &appPath);
++    // When onFailure is set it is invoked instead of the default "Update failed"
++    // handling if the step exits non-zero, letting callers recover (e.g. re-clone
++    // a checkout that has diverged from the mirror).
+     void runUpdateStep(const QString &program, const QStringList &arguments,
+-                       const QString &workingDir, std::function<void()> onSuccess);
++                       const QString &workingDir, std::function<void()> onSuccess,
++                       std::function<void()> onFailure = {});
+     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
+     // when that is set, so root-launched updates write files owned by the user.
+     void runUpdateStepUser(const QString &program, const QStringList &arguments,
+-                           const QString &workingDir, std::function<void()> onSuccess);
++                           const QString &workingDir, std::function<void()> onSuccess,
++                           std::function<void()> onFailure = {});
+     void setUpdateStatus(const QString &status, bool isError = false);
+     // Open (or reset) the live update/rebuild log window and append to it.
+     void showUpdateLog();
