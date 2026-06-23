@@ -935,7 +935,24 @@ private:
     QLabel *m_commitBar = nullptr;
     QPushButton *m_historyButton = nullptr;
     QLabel *m_overviewCrumb = nullptr;
-    QListWidget *m_overviewList = nullptr;
+    // Code overview file list: a small table per directory (name, size bar, last
+    // commit, when). Rows are cached so re-sorting doesn't re-shell out to git.
+    QTreeWidget *m_overviewList = nullptr;
+    struct OverviewRow {
+        QString name;
+        QString path;
+        bool isDir = false;
+        qint64 size = 0;     // blob bytes (recursive sum for directories)
+        qint64 commitTs = 0; // last commit unix time that touched this entry
+        QString subject;     // last commit subject
+        QString whenText;    // relative "x ago"
+    };
+    QList<OverviewRow> m_overviewRows;
+    qint64 m_overviewRepoBytes = 0; // whole-repo blob total (size-bar denominator)
+    QComboBox *m_overviewSortCombo = nullptr;
+    QPushButton *m_overviewSortDirButton = nullptr;
+    bool m_overviewSortDesc = false;
+    void populateOverviewTree(); // (re)fill m_overviewList from m_overviewRows
     QTextBrowser *m_readmeView = nullptr;
     QTreeWidget *m_repoFileTree = nullptr;
     QTabWidget *m_repoFileTabs = nullptr;
