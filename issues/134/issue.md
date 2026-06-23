@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 134
 title: issue from peer 2
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
