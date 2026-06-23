@@ -6,10 +6,14 @@ status: open
 labels: [infra]
 milestone: MVP launch
 priority: 2
+progress: 0
 assignees: []
 createdAt: 1781642499094
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: node1
+bountyUsd: 1.00
+bountyAddress: 
+bountyStatus: open
 type: open
 id: open-16
 ts: 1781642499094
