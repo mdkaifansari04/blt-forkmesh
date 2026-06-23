@@ -6,7 +6,7 @@ status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 46
-progress: 0
+progress: 100
 assignees: []
 createdAt: 1782065003095
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
