@@ -1994,6 +1994,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
+    // Avoid a flash of the login/setup screen on restart: if this machine has
+    // already authenticated a node account, open straight onto the app shell.
+    // The deferred auto-start (below) connects it; if silent auth ultimately
+    // fails it falls back to the setup page.
+    if (!QSettings().value(kAuthedAccountSetting).toString().trimmed().isEmpty())
+        m_stack->setCurrentIndex(1);
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
@@ -2077,8 +2083,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         // on startup (and so headless launches never block on a prompt).
         QTimer::singleShot(0, this, [this] {
             const QString name = accountNameFromInput(m_nameEdit->text(), QString());
-            if (!name.isEmpty() && authenticateSilently(name))
+            if (!name.isEmpty() && authenticateSilently(name)) {
+                if (m_stack)
+                    m_stack->setCurrentIndex(1); // app shell, never the login form
                 startSession();
+            } else if (m_stack) {
+                m_stack->setCurrentIndex(0); // not authenticated: show setup
+            }
         });
     }
     logStartup(QStringLiteral("identity loaded"));
