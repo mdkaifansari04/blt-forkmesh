@@ -13470,6 +13470,7 @@ QWidget *MainWindow::buildReleasesTab()
 
     m_releasesTable = new QTableWidget(0, 4);
     m_releasesTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -13589,6 +13590,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
 
     m_mirrorNodesTable = new QTableWidget(0, 6);
     m_mirrorNodesTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Latest commit", "Synced", "Platform", "Version", "Node id"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
