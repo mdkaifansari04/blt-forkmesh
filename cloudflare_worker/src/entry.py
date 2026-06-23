@@ -159,6 +159,18 @@ def issue_event_content(ev):
             return str(int(ev.get("priority", 0)))
         except (TypeError, ValueError):
             return "0"
+    if t == "progress":
+        try:
+            return str(int(ev.get("progress", 0)))
+        except (TypeError, ValueError):
+            return "0"
+    if t == "bounty":
+        try:
+            amount = "%.2f" % float(ev.get("bountyUsd", 0))
+        except (TypeError, ValueError):
+            amount = "0.00"
+        return "\x00".join([amount, ev.get("bountyAddress", "") or "",
+                            ev.get("bountyStatus", "") or ""])
     if t == "assignees":
         return ",".join(ev.get("assignees") or [])
     if t == "delete":
@@ -180,6 +192,13 @@ async def verify_issue_event(number, ev):
         except (TypeError, ValueError):
             return False
         if priority < 0 or priority > 99:
+            return False
+    if event_type == "progress":
+        try:
+            progress = int(ev.get("progress", 0))
+        except (TypeError, ValueError):
+            return False
+        if progress < 0 or progress > 100:
             return False
     try:
         ts = int(ev.get("ts", 0))

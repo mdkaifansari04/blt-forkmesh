@@ -11,7 +11,7 @@ class ForkMeshIdentity;
 // different fields (see issues/README.md). Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
-    QString type;          // open | comment | edit | status | labels | milestone | priority | assignees | agent | delete
+    QString type;          // open | comment | edit | status | labels | milestone | priority | progress | assignees | agent | bounty | delete
     QString id;
     QString author;        // signer pubkey (base64url)
     QString authorName;
@@ -25,11 +25,15 @@ struct IssueEvent {
     QStringList labels;    // labels
     QString milestone;     // milestone (empty = none)
     int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
+    int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
     QString agentProvider; // agent: codex|claude
     int agentSessionId = 0; // agent
     QString agentStatus;   // agent
     bool agentCreatePr = false; // agent
+    double bountyUsd = 0.0;     // bounty: amount pledged, in USD
+    QString bountyAddress;      // bounty: worker-issued Solana deposit address
+    QString bountyStatus;       // bounty: open | funded | paid
     QString sig;
 
     QJsonObject toJson() const;
@@ -44,11 +48,16 @@ struct Issue {
     QStringList labels;
     QString milestone;
     int priority = 0; // 1 (highest) through 99 (lowest), 0 = unset
+    int progress = 0; // 0..100 percent complete (latest signed progress event)
     QStringList assignees;
     qint64 createdAt = 0;
     QString author;
     QString authorName;
     int votes = 0; // distinct voters (uptime-credit votes), derived from events
+    // Bounty state folded from the latest signed "bounty" event (0 = none).
+    double bountyUsd = 0.0;
+    QString bountyAddress;
+    QString bountyStatus;
     QList<IssueEvent> events;
 
     QJsonObject toJson() const;
@@ -121,6 +130,11 @@ public:
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
     bool setPriority(int number, int priority, QString *error = nullptr);
+    bool setProgress(int number, int progress, QString *error = nullptr);
+    // Pledge (or update) a bounty on an issue. address is the worker-issued
+    // Solana deposit address; status is open|funded|paid.
+    bool setBounty(int number, double amountUsd, const QString &address,
+                   const QString &status, QString *error = nullptr);
     bool setAssignees(int number, const QStringList &assignees, QString *error = nullptr);
     bool assignAgent(int number, const QString &provider, int sessionId,
                      bool createPr, const QString &status, QString *error = nullptr);

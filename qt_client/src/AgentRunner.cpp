@@ -41,19 +41,17 @@ bool runCapture(const QString &dir, const QStringList &args, QByteArray *out,
 
 QString providerTitle(const QString &provider)
 {
-    if (provider == QLatin1String("claude-code"))
-        return QStringLiteral("Claude Code");
-    if (provider == QLatin1String("claude-api") || provider == QLatin1String("claude"))
+    // Only two API-key providers remain. Legacy "claude"/"claude-code" sessions
+    // map to Claude API; everything else (incl. legacy "codex") to OpenAI API.
+    if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
-    if (provider == QLatin1String("openai"))
-        return QStringLiteral("OpenAI API");
-    return QStringLiteral("Codex");
+    return QStringLiteral("OpenAI API");
 }
 
 // Approximate USD price per 1,000,000 tokens, used only to surface a rough
 // "how much did this task cost" figure. Claude numbers are the published
-// Anthropic per-million-token rates; the OpenAI/Codex fallback is a single
-// rough estimate since those models aren't priced here.
+// Anthropic per-million-token rates; the OpenAI fallback is a single rough
+// estimate since those models aren't priced here.
 struct TokenPrice {
     double inputPerMillion;
     double outputPerMillion;
@@ -67,10 +65,10 @@ TokenPrice priceFor(const QString &provider, const QString &model)
             return {1.0, 5.0};
         if (m.contains(QLatin1String("sonnet")))
             return {3.0, 15.0};
-        // Opus (the default Claude Code model) and anything unrecognised.
+        // Opus (the default Claude model) and anything unrecognised.
         return {5.0, 25.0};
     }
-    // Codex / OpenAI and any other provider.
+    // OpenAI and any other provider.
     return {1.25, 10.0};
 }
 
@@ -224,34 +222,16 @@ void AgentRunner::launch(Phase phase, const QString &program,
         QDir().mkpath(m_config.isolatedHome);
         env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
     }
-    // Codex and Claude Code authenticate with the user's own CLI login
-    // (subscription). The OpenAI API and Claude API providers use an API key.
+    // Both remaining providers (OpenAI API and Claude API) authenticate with an
+    // API key supplied in Settings.
     const QString provider = m_session.provider;
-    const bool subscriptionAuth = provider == QLatin1String("codex") ||
-                                  provider == QLatin1String("claude-code");
-    const bool usingConfiguredKey = !subscriptionAuth &&
-                                    !m_config.apiKeyName.isEmpty() &&
+    const bool usingConfiguredKey = !m_config.apiKeyName.isEmpty() &&
                                     !m_config.apiKey.trimmed().isEmpty();
     if (usingConfiguredKey) {
         const QString key = m_config.apiKey.trimmed();
         env.insert(m_config.apiKeyName, key);
         if (provider == QLatin1String("openai"))
             env.insert(QStringLiteral("OPENAI_API_KEY"), key);
-    }
-    // A subscription/login CLI must ignore any API key — whether configured in
-    // ForkMesh or inherited from the environment ForkMesh was launched in — so it
-    // uses the user's login. An inherited ANTHROPIC_API_KEY otherwise forces
-    // Claude Code into API-key billing and disables its claude.ai connectors.
-    if (phase == Phase::Agent && subscriptionAuth) {
-        if (provider == QLatin1String("claude-code")) {
-            env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
-            env.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
-        } else { // codex
-            env.remove(QStringLiteral("OPENAI_API_KEY"));
-            env.remove(QStringLiteral("CODEX_API_KEY"));
-        }
-        emitLog(QStringLiteral("==> Using the %1 login (ignoring any API key).")
-                    .arg(providerTitle(provider)));
     }
     if (!m_config.model.trimmed().isEmpty())
         env.insert(QStringLiteral("FORKMESH_AGENT_MODEL"), m_config.model.trimmed());
@@ -345,8 +325,7 @@ void AgentRunner::onProcessFinished(int exitCode)
         QString message =
             QStringLiteral("Agent command exited with code %1.").arg(exitCode);
         const QString log = m_store ? m_store->readLog(m_session) : QString();
-        if ((m_session.provider == QLatin1String("codex") ||
-             m_session.provider == QLatin1String("openai")) &&
+        if (!m_session.provider.startsWith(QLatin1String("claude")) &&
             log.contains(QStringLiteral("401 Unauthorized"), Qt::CaseInsensitive)) {
             message += QStringLiteral(
                 " OpenAI rejected the API key; rotate it and re-enter it in Settings.");
@@ -534,31 +513,27 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
         return QString();
     const QString low = chunk.toLower();
     const bool claude = m_session.provider.startsWith(QLatin1String("claude"));
-    const bool openai = m_session.provider == QLatin1String("codex") ||
-                        m_session.provider == QLatin1String("openai");
     // Strong, specific markers so normal agent output doesn't trip this.
     const auto has = [&](const char *needle) { return low.contains(QLatin1String(needle)); };
     if (claude &&
-        (has("invalid api key") || has("please run /login") || has("claude login") ||
-         has("not logged in") || has("logged out") || has("authentication_error") ||
-         has("oauth"))) {
+        (has("invalid api key") || has("authentication_error") ||
+         has("401 unauthorized"))) {
         m_attentionRaised = true;
         return QStringLiteral(
-            "Claude Code needs you to sign in. Run \"claude login\" in a terminal "
-            "(or set an Anthropic API key in Settings), then click Continue.");
+            "Claude rejected the Anthropic API key. Set a valid ANTHROPIC_API_KEY "
+            "in Settings, then click Continue.");
     }
     if (claude && has("credit balance is too low")) {
         m_attentionRaised = true;
         return QStringLiteral(
-            "Claude Code reports the credit balance is too low. Top up your plan, "
-            "switch to the Claude API with a funded key in Settings, then Continue.");
+            "Claude reports the credit balance is too low. Top up the Anthropic "
+            "account for this API key, then click Continue.");
     }
-    if (openai && (has("401 unauthorized") || has("invalid api key") ||
-                   has("please run codex login") || has("not logged in"))) {
+    if (!claude && (has("401 unauthorized") || has("invalid api key"))) {
         m_attentionRaised = true;
         return QStringLiteral(
-            "Codex needs you to sign in. Run \"codex login\" in a terminal (or set "
-            "an OpenAI API key in Settings), then click Continue.");
+            "OpenAI rejected the API key. Set a valid OpenAI API key in Settings, "
+            "then click Continue.");
     }
     return QString();
 }

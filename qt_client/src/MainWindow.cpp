@@ -19174,6 +19174,34 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     if (!repo.actionsEnabled)
         return; // push detection only; no workflow execution for this repo
 
+    // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
+    // trigger CI: they carry no code change. List the pushed commit's files and
+    // bail if every one lives under a metadata folder.
+    {
+        QProcess names;
+        names.start(QStringLiteral("git"),
+                    {QStringLiteral("-C"), repo.mirrorPath,
+                     QStringLiteral("diff-tree"), QStringLiteral("--no-commit-id"),
+                     QStringLiteral("--name-only"), QStringLiteral("-r"), commit});
+        names.waitForFinished(10000);
+        const QStringList changed =
+            QString::fromUtf8(names.readAllStandardOutput())
+                .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const auto isMetadataPath = [](const QString &p) {
+            return p.startsWith(QLatin1String("issues/")) ||
+                   p.startsWith(QLatin1String("pulls/")) ||
+                   p.startsWith(QLatin1String("commits/"));
+        };
+        if (!changed.isEmpty() &&
+            std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
+            logSystem(QStringLiteral(
+                          "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
+                          "skipping workflows.")
+                          .arg(owner, name, commit.left(8)));
+            return;
+        }
+    }
+
     // List .forkmesh/*.yml|*.yaml at the pushed commit without checking it out.
     QProcess ls;
     ls.start(QStringLiteral("git"),

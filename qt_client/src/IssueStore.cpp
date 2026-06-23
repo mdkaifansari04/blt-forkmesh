@@ -88,6 +88,7 @@ struct FrontMatter {
     QString body;
     QString get(const QString &key) const { return values.value(key); }
     qint64 num(const QString &key) const { return values.value(key).toLongLong(); }
+    double dbl(const QString &key) const { return values.value(key).toDouble(); }
     QStringList list(const QString &key) const
     {
         QString v = values.value(key).trimmed();
@@ -218,6 +219,13 @@ QJsonObject IssueEvent::toJson() const
         obj.insert("milestone", milestone);
     if (type == "priority")
         obj.insert("priority", priority);
+    if (type == "progress")
+        obj.insert("progress", progress);
+    if (type == "bounty") {
+        obj.insert("bountyUsd", bountyUsd);
+        obj.insert("bountyAddress", bountyAddress);
+        obj.insert("bountyStatus", bountyStatus);
+    }
     if (type == "assignees")
         obj.insert("assignees", fromStringList(assignees));
     if (type == "agent") {
@@ -245,6 +253,10 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     ev.labels = toStringList(obj.value("labels").toArray());
     ev.milestone = obj.value("milestone").toString();
     ev.priority = obj.value("priority").toInt();
+    ev.progress = obj.value("progress").toInt();
+    ev.bountyUsd = obj.value("bountyUsd").toDouble();
+    ev.bountyAddress = obj.value("bountyAddress").toString();
+    ev.bountyStatus = obj.value("bountyStatus").toString();
     ev.assignees = toStringList(obj.value("assignees").toArray());
     ev.agentProvider = obj.value("agentProvider").toString();
     ev.agentSessionId = obj.value("agentSessionId").toInt();
@@ -263,10 +275,12 @@ QJsonObject Issue::toJson() const
         eventsArray.append(ev.toJson());
     return {{"schema", "forkmesh-issue-v1"}, {"number", number}, {"title", title},
             {"status", status}, {"labels", fromStringList(labels)},
-            {"milestone", milestone}, {"priority", priority},
+            {"milestone", milestone}, {"priority", priority}, {"progress", progress},
             {"assignees", fromStringList(assignees)},
             {"createdAt", double(createdAt)}, {"author", author},
-            {"authorName", authorName}, {"events", eventsArray}};
+            {"authorName", authorName}, {"bountyUsd", bountyUsd},
+            {"bountyAddress", bountyAddress}, {"bountyStatus", bountyStatus},
+            {"events", eventsArray}};
 }
 
 Issue Issue::fromJson(const QJsonObject &obj)
@@ -278,10 +292,14 @@ Issue Issue::fromJson(const QJsonObject &obj)
     issue.labels = toStringList(obj.value("labels").toArray());
     issue.milestone = obj.value("milestone").toString();
     issue.priority = obj.value("priority").toInt();
+    issue.progress = obj.value("progress").toInt();
     issue.assignees = toStringList(obj.value("assignees").toArray());
     issue.createdAt = qint64(obj.value("createdAt").toDouble());
     issue.author = obj.value("author").toString();
     issue.authorName = obj.value("authorName").toString();
+    issue.bountyUsd = obj.value("bountyUsd").toDouble();
+    issue.bountyAddress = obj.value("bountyAddress").toString();
+    issue.bountyStatus = obj.value("bountyStatus").toString();
     for (const QJsonValue &value : obj.value("events").toArray())
         issue.events.append(IssueEvent::fromJson(value.toObject()));
     return issue;
@@ -337,6 +355,11 @@ QString IssueStore::contentForSigning(const IssueEvent &ev)
         return ev.milestone;
     if (ev.type == "priority")
         return QString::number(ev.priority);
+    if (ev.type == "progress")
+        return QString::number(ev.progress);
+    if (ev.type == "bounty")
+        return QString::number(ev.bountyUsd, 'f', 2) + nul + ev.bountyAddress + nul +
+               ev.bountyStatus;
     if (ev.type == "assignees")
         return ev.assignees.join(",");
     if (ev.type == "agent")
@@ -400,6 +423,13 @@ void appendEventFields(QStringList &lines, const IssueEvent &ev)
         lines << "milestone: " + ev.milestone;
     if (ev.type == "priority")
         lines << "priority: " + QString::number(ev.priority);
+    if (ev.type == "progress")
+        lines << "progress: " + QString::number(ev.progress);
+    if (ev.type == "bounty") {
+        lines << "bountyUsd: " + QString::number(ev.bountyUsd, 'f', 2);
+        lines << "bountyAddress: " + ev.bountyAddress;
+        lines << "bountyStatus: " + ev.bountyStatus;
+    }
     if (ev.type == "assignees")
         lines << "assignees: " + serializeList(ev.assignees);
     if (ev.type == "agent") {
@@ -427,6 +457,10 @@ IssueEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.labels = fm.list("labels");
     ev.milestone = fm.get("milestone");
     ev.priority = int(fm.num("priority"));
+    ev.progress = int(fm.num("progress"));
+    ev.bountyUsd = fm.dbl("bountyUsd");
+    ev.bountyAddress = fm.get("bountyAddress");
+    ev.bountyStatus = fm.get("bountyStatus");
     ev.assignees = fm.list("assignees");
     ev.agentProvider = fm.get("agentProvider");
     ev.agentSessionId = fm.num("agentSessionId");
@@ -478,10 +512,14 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
     out.labels = fm.list("labels");
     out.milestone = fm.get("milestone");
     out.priority = int(fm.num("priority"));
+    out.progress = int(fm.num("progress"));
     out.assignees = fm.list("assignees");
     out.createdAt = fm.num("createdAt");
     out.author = fm.get("author");
     out.authorName = fm.get("authorName");
+    out.bountyUsd = fm.dbl("bountyUsd");
+    out.bountyAddress = fm.get("bountyAddress");
+    out.bountyStatus = fm.get("bountyStatus");
 
     IssueEvent open = eventFromFrontMatter(fm);
     open.type = "open";
@@ -571,10 +609,14 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
         issue.labels = fm.list("labels");
         issue.milestone = fm.get("milestone");
         issue.priority = int(fm.num("priority"));
+        issue.progress = int(fm.num("progress"));
         issue.assignees = fm.list("assignees");
         issue.createdAt = fm.num("createdAt");
         issue.author = fm.get("author");
         issue.authorName = fm.get("authorName");
+        issue.bountyUsd = fm.dbl("bountyUsd");
+        issue.bountyAddress = fm.get("bountyAddress");
+        issue.bountyStatus = fm.get("bountyStatus");
         IssueEvent open = eventFromFrontMatter(fm);
         open.type = "open";
         open.title = issue.title;
@@ -671,10 +713,14 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
     lines << "labels: " + serializeList(issue.labels);
     lines << "milestone: " + issue.milestone;
     lines << "priority: " + QString::number(issue.priority);
+    lines << "progress: " + QString::number(issue.progress);
     lines << "assignees: " + serializeList(issue.assignees);
     lines << "createdAt: " + QString::number(issue.createdAt);
     lines << "author: " + issue.author;
     lines << "authorName: " + issue.authorName;
+    lines << "bountyUsd: " + QString::number(issue.bountyUsd, 'f', 2);
+    lines << "bountyAddress: " + issue.bountyAddress;
+    lines << "bountyStatus: " + issue.bountyStatus;
     lines << "type: open";
     lines << "id: " + open.id;
     lines << "ts: " + QString::number(open.ts);
@@ -721,7 +767,13 @@ void IssueStore::recomputeMetadata(Issue &issue) const
             issue.milestone = ev.milestone;
         else if (ev.type == "priority")
             issue.priority = ev.priority;
-        else if (ev.type == "assignees")
+        else if (ev.type == "progress")
+            issue.progress = ev.progress;
+        else if (ev.type == "bounty") {
+            issue.bountyUsd = ev.bountyUsd;
+            issue.bountyAddress = ev.bountyAddress;
+            issue.bountyStatus = ev.bountyStatus;
+        } else if (ev.type == "assignees")
             issue.assignees = ev.assignees;
         else if (ev.type == "vote" && !ev.author.isEmpty())
             // Voters may now spend multiple credits on the same issue, so every
@@ -1004,6 +1056,59 @@ bool IssueStore::setPriority(int number, int priority, QString *error)
                       .arg(number)
                       .arg(priority == 0 ? QStringLiteral("cleared")
                                          : QString::number(priority)),
+                  error);
+}
+
+bool IssueStore::setProgress(int number, int progress, QString *error)
+{
+    if (!canWrite())
+        return false;
+    if (progress < 0 || progress > 100) {
+        if (error)
+            *error = QStringLiteral("Progress must be between 0 and 100.");
+        return false;
+    }
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "progress";
+    ev.progress = progress;
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    recomputeMetadata(issue);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: progress %2%").arg(number).arg(progress),
+                  error);
+}
+
+bool IssueStore::setBounty(int number, double amountUsd, const QString &address,
+                           const QString &status, QString *error)
+{
+    if (!canWrite())
+        return false;
+    if (amountUsd < 0) {
+        if (error)
+            *error = QStringLiteral("Bounty amount must not be negative.");
+        return false;
+    }
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "bounty";
+    ev.bountyUsd = amountUsd;
+    ev.bountyAddress = address;
+    ev.bountyStatus = status.isEmpty() ? QStringLiteral("open") : status;
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    recomputeMetadata(issue);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: bounty $%2 (%3)")
+                      .arg(number)
+                      .arg(QString::number(amountUsd, 'f', 2), ev.bountyStatus),
                   error);
 }
 
