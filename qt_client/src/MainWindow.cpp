@@ -232,6 +232,7 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
 const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
 const QString kDisbursementAlertSetting = QStringLiteral("notifications/disbursement");
+const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
 const QString kSolanaLastBalanceSettingPrefix =
     QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
@@ -3983,6 +3984,8 @@ QWidget *MainWindow::buildBreadcrumb()
 
     m_navSolanaBalance = new QLabel(QStringLiteral("SOL --"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
+    m_navSolanaBalance->setAlignment(Qt::AlignCenter);
+    m_navSolanaBalance->setFixedWidth(148);
     m_navSolanaBalance->setToolTip("This node's Solana wallet balance");
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
@@ -4346,6 +4349,17 @@ QString formatSolanaBalance(qint64 lamports)
     return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
 }
 
+QString formatUsdBalance(qint64 lamports, double solUsd)
+{
+    const double usd = (lamports / 1000000000.0) * solUsd;
+    return QStringLiteral("$%1 USD").arg(usd, 0, 'f', 2);
+}
+
+bool showSolanaBalanceUsd()
+{
+    return QSettings().value(kSolanaDisplayUsdSetting, false).toBool();
+}
+
 QString lastSolanaBalanceSetting(const QString &address)
 {
     return kSolanaLastBalanceSettingPrefix + address.trimmed();
@@ -4435,9 +4449,6 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         const QVariant previousValue = settings.value(lastBalanceKey);
         const qint64 previousLamports = previousValue.toLongLong();
         const QString balance = formatSolanaBalance(lamports);
-        m_navSolanaBalance->setText(balance);
-        m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's Solana balance: %1").arg(balance));
         if (previousValue.isValid() && lamports > previousLamports &&
             QSettings().value(kDisbursementAlertSetting, true).toBool()) {
             const QString amount = formatSolanaBalance(lamports - previousLamports);
@@ -4449,6 +4460,50 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
                              false, QStringLiteral("emblem-default"));
         }
         settings.setValue(lastBalanceKey, QString::number(lamports));
+        if (showSolanaBalanceUsd()) {
+            m_navSolanaBalance->setText(QStringLiteral("$ ..."));
+            m_navSolanaBalance->setToolTip(
+                QStringLiteral("Checking SOL/USD price for %1").arg(balance));
+            queryNavSolanaUsdPrice(addr, lamports);
+            return;
+        }
+        m_navSolanaBalance->setText(balance);
+        m_navSolanaBalance->setToolTip(
+            QStringLiteral("This node's Solana balance: %1").arg(balance));
+    });
+}
+
+void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
+{
+    QNetworkRequest request(QUrl(QStringLiteral(
+        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, addr, lamports]() {
+        const QByteArray raw = reply->readAll();
+        const QNetworkReply::NetworkError netError = reply->error();
+        reply->deleteLater();
+        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
+            !showSolanaBalanceUsd())
+            return;
+
+        const QString solBalance = formatSolanaBalance(lamports);
+        const double solUsd =
+            QJsonDocument::fromJson(raw).object()
+                .value(QStringLiteral("solana")).toObject()
+                .value(QStringLiteral("usd")).toDouble();
+        if (netError != QNetworkReply::NoError || solUsd <= 0.0) {
+            m_navSolanaBalance->setText(solBalance);
+            m_navSolanaBalance->setToolTip(
+                QStringLiteral("SOL/USD price unavailable. Balance: %1")
+                    .arg(solBalance));
+            return;
+        }
+
+        const QString usdBalance = formatUsdBalance(lamports, solUsd);
+        m_navSolanaBalance->setText(usdBalance);
+        m_navSolanaBalance->setToolTip(
+            QStringLiteral("This node's balance: %1 (%2 at $%3/SOL)")
+                .arg(usdBalance, solBalance, QString::number(solUsd, 'f', 2)));
     });
 }
 
@@ -15771,6 +15826,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kThemeSetting, m_themeCombo->currentData().toString());
         applyTheme();
     });
+    auto *showUsdCheck = new QCheckBox("Show Solana earnings in USD");
+    showUsdCheck->setChecked(showSolanaBalanceUsd());
+    showUsdCheck->setToolTip(
+        "Show this node's top-bar Solana balance as dollars using a live SOL/USD price.");
+    connect(showUsdCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        QSettings().setValue(kSolanaDisplayUsdSetting, enabled);
+        updateNavSolanaBalance();
+    });
 
     auto *agentsLabel = new QLabel("AGENTS");
     agentsLabel->setObjectName("sectionLabel");
@@ -15998,6 +16061,7 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addSpacing(6);
     layout->addWidget(appearanceLabel);
     layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    layout->addWidget(showUsdCheck);
     layout->addSpacing(6);
     layout->addWidget(agentsLabel);
     layout->addWidget(agentsHint);

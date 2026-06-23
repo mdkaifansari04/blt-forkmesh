@@ -191,6 +191,7 @@ private:
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
+    void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateRepoPushButton();   // show pending local commits for the open repo
