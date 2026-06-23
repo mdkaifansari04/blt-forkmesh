@@ -4157,32 +4157,45 @@ QWidget *MainWindow::buildBreadcrumb()
     m_chatButton->setToolTip(QStringLiteral("Chat"));
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
 
-    auto *layout = new QHBoxLayout(bar);
+    auto *firstRow = new QHBoxLayout;
+    firstRow->setContentsMargins(0, 0, 0, 0);
+    firstRow->setSpacing(8);
+    firstRow->addWidget(m_relayLabel);
+    firstRow->addWidget(m_relayIconButton);
+    firstRow->addWidget(m_relayMenuButton);
+    firstRow->addWidget(m_relayOpenButton);
+    firstRow->addSpacing(10);
+    firstRow->addWidget(m_nodeLabel);
+    firstRow->addWidget(m_nodeMenuButton);
+    firstRow->addSpacing(10);
+    firstRow->addWidget(m_repoLabel);
+    firstRow->addWidget(m_repoMenuButton);
+    firstRow->addWidget(m_repoViewButton);
+    firstRow->addWidget(m_repoPushButton);
+    firstRow->addSpacing(6);
+    firstRow->addWidget(m_breadcrumb);
+    firstRow->addStretch();
+    firstRow->addWidget(m_topMessage);
+    firstRow->addWidget(m_topMessageCopy);
+    firstRow->addStretch();
+    firstRow->addWidget(m_connectionStatus);
+    firstRow->addWidget(m_navSolanaBalance);
+    firstRow->addWidget(m_avatarNavButton);
+
+    // Second row: Chat + Notifications, left-aligned directly under the
+    // relay > node > repo navigation on the first row.
+    auto *secondRow = new QHBoxLayout;
+    secondRow->setContentsMargins(0, 0, 0, 0);
+    secondRow->setSpacing(8);
+    secondRow->addWidget(m_chatButton);
+    secondRow->addWidget(m_notificationButton);
+    secondRow->addStretch();
+
+    auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
-    layout->addWidget(m_relayLabel);
-    layout->addWidget(m_relayIconButton);
-    layout->addWidget(m_relayMenuButton);
-    layout->addWidget(m_relayOpenButton);
-    layout->addSpacing(10);
-    layout->addWidget(m_nodeLabel);
-    layout->addWidget(m_nodeMenuButton);
-    layout->addSpacing(10);
-    layout->addWidget(m_repoLabel);
-    layout->addWidget(m_repoMenuButton);
-    layout->addWidget(m_repoViewButton);
-    layout->addWidget(m_repoPushButton);
-    layout->addSpacing(6);
-    layout->addWidget(m_breadcrumb);
-    layout->addStretch();
-    layout->addWidget(m_topMessage);
-    layout->addWidget(m_topMessageCopy);
-    layout->addStretch();
-    layout->addWidget(m_chatButton);
-    layout->addWidget(m_notificationButton);
-    layout->addWidget(m_connectionStatus);
-    layout->addWidget(m_navSolanaBalance);
-    layout->addWidget(m_avatarNavButton);
+    layout->addLayout(firstRow);
+    layout->addLayout(secondRow);
     updateBreadcrumb();
     updateConnectionStatus();
     updateNotificationButton();
@@ -5940,7 +5953,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueCopyButton->setObjectName("issueIconButton");
     m_issueCopyButton->setFixedSize(30, 30);
     m_issueCopyButton->setCursor(Qt::PointingHandCursor);
-    m_issueCopyButton->setToolTip("Copy this issue (title and thread) to the clipboard");
+    m_issueCopyButton->setToolTip("Copy the issue title to the clipboard");
     setOcticon(m_issueCopyButton, "copy", 16);
     m_issueVoteButton = new QPushButton("Vote");
     m_issueVoteButton->setObjectName("ghostButton");
@@ -15448,41 +15461,10 @@ void MainWindow::copyIssueToClipboard()
     if (!issue)
         return;
 
-    // Pre-compute edits (target -> latest body) and deletions, mirroring
-    // renderIssueThread, so the copied text matches what's on screen.
-    QHash<QString, QString> edits;
-    QSet<QString> deleted;
-    for (const IssueEvent &ev : issue->events) {
-        if (ev.type == "edit" && !ev.target.isEmpty())
-            edits.insert(ev.target, ev.body);
-        else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
-            deleted.insert(ev.target);
-    }
-
-    QStringList lines;
-    lines << QStringLiteral("#%1 %2").arg(issue->number).arg(issue->title);
-    lines << QStringLiteral("Status: %1").arg(issue->status);
-    if (!issue->labels.isEmpty())
-        lines << "Labels: " + issue->labels.join(", ");
-    if (!issue->milestone.isEmpty())
-        lines << "Milestone: " + issue->milestone;
-    if (!issue->assignees.isEmpty())
-        lines << "Assignees: " + issue->assignees.join(", ");
-
-    for (const IssueEvent &ev : issue->events) {
-        if (ev.type != "open" && ev.type != "comment")
-            continue;
-        if (deleted.contains(ev.id))
-            continue;
-        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
-        const QString when =
-            QDateTime::fromMSecsSinceEpoch(ev.ts).toString("yyyy-MM-dd HH:mm");
-        const QString body = edits.contains(ev.id) ? edits.value(ev.id) : ev.body;
-        lines << QString() << QStringLiteral("--- %1 (%2) ---").arg(who, when) << body;
-    }
-
-    QApplication::clipboard()->setText(lines.join('\n'));
-    setIssueInlineNotice("Issue copied.");
+    // Copy just the issue title — no number, status, labels, or per-comment
+    // author/date headers — so it pastes cleanly as plain text.
+    QApplication::clipboard()->setText(issue->title);
+    setIssueInlineNotice("Issue title copied.");
 }
 
 void MainWindow::askAiForCurrentIssue()
