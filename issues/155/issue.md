@@ -5,7 +5,7 @@ title: on the code page show how much space each folder is taking along with it'
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 19
 progress: 0
 assignees: []
 createdAt: 1782179278553
