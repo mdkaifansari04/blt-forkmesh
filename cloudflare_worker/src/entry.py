@@ -4221,7 +4221,23 @@ class ForkMeshHost(DurableObject):
         self._ensure()
         host = self._best_host()
         if host is None:
-            return Response("No client is hosting this repository.", status=503)
+            # No desktop client is currently connected. Return a proper git
+            # smart-HTTP error so `git clone` shows a readable message instead
+            # of a confusing protocol error. For info/refs the response MUST
+            # use the advertisement content-type and pkt-line encoding.
+            err_msg = b"ERR no host is currently serving this repository\n"
+            if op == "git-info-refs":
+                body_out = (
+                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
+                    pkt_line(err_msg)
+                )
+                return git_bytes_response(
+                    body_out,
+                    "application/x-git-upload-pack-advertisement",
+                )
+            return Response(
+                "No client is hosting this repository.", status=503
+            )
 
         self.counter += 1
         req_id = "g%d" % self.counter
