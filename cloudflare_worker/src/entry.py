@@ -2641,6 +2641,16 @@ ADMIN_STYLE = """
  tr:hover{background:#161b22}
  .empty{padding:32px 24px;color:#8b949e}
  .title{padding:14px 24px 4px;font-weight:600}
+ .navcount{color:#8b949e;font-size:11px;font-weight:400}
+ .navlink{color:#58a6ff}
+ nav a .navcount{float:right}
+ .rowform{padding:8px 24px;max-width:760px}
+ .rowfield{display:block;margin:10px 0}
+ .rowfield span{display:block;color:#8b949e;font-size:12px;margin-bottom:4px}
+ .rowfield input,.rowfield textarea{width:100%;background:#0d1117;color:#c9d1d9;
+        border:1px solid #30363d;border-radius:6px;padding:8px;
+        font:13px ui-monospace,monospace}
+ .tools .navlink{padding:8px 4px}
 """
 
 # Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
