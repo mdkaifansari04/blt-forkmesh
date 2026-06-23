@@ -2239,3 +2239,31 @@ html.dark .diff-hunk {
   font-size: 12px;
   color: var(--muted, #6e7681);
 }
+.mirror-node-sync.is-behind {
+  color: var(--warning, #d29922);
+}
+/* Pacman countdown to a behind-but-live mirror node's next heartbeat. */
+.mirror-node-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mirror-node-pacman {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: block;
+}
+.mirror-node-pacman .pacman-track {
+  fill: none;
+  stroke: var(--border, rgba(110, 118, 129, 0.3));
+  stroke-width: 1.5;
+}
+.mirror-node-pacman .pacman-wedge {
+  fill: var(--warning, #d29922);
+}
+.mirror-node-eta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--warning, #d29922);
+}

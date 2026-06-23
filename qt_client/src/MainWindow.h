@@ -110,6 +110,12 @@ public:
     static void applyTheme();
     void refreshThemedIcons();
 
+#ifdef FORKMESH_WINDOW_TESTS
+    void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
+    void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
+    QStringList testNetworkLog() const { return m_networkLog; }
+#endif
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     // Image drag-and-drop onto the inline issue comment composer.
