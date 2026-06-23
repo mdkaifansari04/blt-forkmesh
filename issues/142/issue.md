@@ -3,13 +3,17 @@ schema: forkmesh-issue-v1
 number: 142
 title: have the ability to view PR diffs in side by side mode show a selector switch icon there - do the other pr enhancement first though
 status: open
-labels: []
+labels: [Phase 2]
 milestone: 
 priority: 0
+progress: 0
 assignees: []
 createdAt: 1782152468713
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-142
 ts: 1782152468713
