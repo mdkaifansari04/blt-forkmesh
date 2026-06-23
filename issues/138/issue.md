@@ -5,7 +5,7 @@ title: test that issue sends to nodes quickly
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 5
 progress: 0
 assignees: []
 createdAt: 1782151607389
