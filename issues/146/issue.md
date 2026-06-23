@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 146
 title: when the total sol refreshes the box jumps make it stay still please and also have in settings a way to show your earnings in dollars
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
