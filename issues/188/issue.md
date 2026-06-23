@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 188
 title: when I close an isuse and the show detail is open then go to the next issue
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
