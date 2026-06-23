@@ -338,7 +338,9 @@ QPushButton#memberDeleteButton:hover {
     gridline-color: #21262d;
 }
 #issueTable::item { padding: 4px 8px; color: #c9d1d9; }
-#issueTable::item:hover { background-color: #161b22; color: #e6edf3; padding: 4px 8px; }
+/* Row hover is a full-row light-green fill drawn by HoverRowDelegate; keep the
+   per-cell hover geometry identical to the base item so text never shifts. */
+#issueTable::item:hover { padding: 4px 8px; }
 #issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22; color: #8b949e; padding: 6px 8px;
@@ -673,7 +675,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     selection-color: #ffffff;
 }
 #issueTable::item { padding: 6px 8px; color: #c9d1d9; }
-#issueTable::item:hover { background-color: #161b22; color: #e6edf3; padding: 6px 8px; }
+#issueTable::item:hover { padding: 6px 8px; }
 #issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22;
@@ -1056,7 +1058,7 @@ QPushButton#memberDeleteButton:hover {
     gridline-color: #d8dee4;
 }
 #issueTable::item { padding: 4px 8px; color: #1f2328; }
-#issueTable::item:hover { background-color: #f6f8fa; color: #1f2328; padding: 4px 8px; }
+#issueTable::item:hover { padding: 4px 8px; }
 #issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
@@ -1392,7 +1394,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     selection-color: #ffffff;
 }
 #issueTable::item { padding: 6px 8px; color: #1f2328; }
-#issueTable::item:hover { background-color: #f6f8fa; color: #1f2328; padding: 6px 8px; }
+#issueTable::item:hover { padding: 6px 8px; }
 #issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #issueTable QHeaderView::section {
     background-color: #ffffff;

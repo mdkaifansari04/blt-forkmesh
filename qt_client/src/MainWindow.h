@@ -282,9 +282,10 @@ private:
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void closeIssuesLinkedFromPull(const PullRequest &pr);
-    // After a merge, release any bounty on the issues this PR closes: 90% to the
-    // PR author's Solana address, 10% to the treasury (owner-signed, via worker).
-    void releaseBountiesForMergedPull(const PullRequest &pr);
+    // After a merge, mint the escrow deposit address and show the funding QR for
+    // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
+    // added to issues without paying up front; merge is when they get funded.
+    void fundBountiesForMergedPull(const PullRequest &pr);
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
     bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
@@ -425,6 +426,10 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    // Full hashes of commits in the local working copy that the network mirror
+    // doesn't have yet (i.e. ahead of the mirror, not yet synced). Empty for a
+    // browse-only mirror, which only ever pulls.
+    QSet<QString> unpushedCommitHashes() const;
     // Scan recent commit messages for closing keywords ("closes #12", "fixes
     // #3", "resolves #7") and close + annotate the referenced issues. Idempotent.
     void applyCommitIssueClosures();
@@ -479,6 +484,10 @@ private:
     void quickAddIssue();
     void copyIssueToClipboard();
     void askAiForCurrentIssue();
+    // Animated "AI is answering…" card shown in the issue thread while the
+    // OpenAI request is in flight.
+    void showIssueAiTyping();
+    void hideIssueAiTyping();
     int availableCredits() const;     // 1 voting credit per hour online
     void voteOnCurrentIssue();
     void submitIssueVoteToInbox();
@@ -596,6 +605,10 @@ private:
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
+    // After a local change to a repo (new/updated issue, PR, comment, merge),
+    // push it to the bare mirror and tell peers immediately instead of waiting
+    // for the 5-minute auto-sync, so counts and content converge right away.
+    void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName);
@@ -819,6 +832,7 @@ private:
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
+    QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
     QLabel *m_insightsSummary = nullptr;
     QLabel *m_insightsTraffic = nullptr;
     QLabel *m_insightsLanguageBar = nullptr;
@@ -992,6 +1006,8 @@ private:
     QScrollArea *m_issueThreadScroll = nullptr;
     QWidget *m_issueThreadContainer = nullptr;
     QVBoxLayout *m_issueThreadLayout = nullptr;
+    QWidget *m_issueAiTypingRow = nullptr; // transient "AI is answering…" card
+    QTimer *m_issueAiTypingTimer = nullptr;
     MarkdownEditor *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
