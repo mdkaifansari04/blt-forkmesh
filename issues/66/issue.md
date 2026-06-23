@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 66
 title: also allow adding solana address from the settings page
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 36
