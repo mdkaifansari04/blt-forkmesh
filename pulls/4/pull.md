@@ -4,7 +4,7 @@ number: 4
 title: Fix desktop window resizing
 base: main
 head: fix/screen-size
-status: open
+status: closed
 ts: 1782160073930
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
