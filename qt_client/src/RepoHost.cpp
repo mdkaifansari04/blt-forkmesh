@@ -108,6 +108,11 @@ RepoHost::RepoHost(const QString &owner, const QString &name,
     });
 }
 
+void RepoHost::setTokenProvider(std::function<QString()> provider)
+{
+    m_tokenProvider = std::move(provider);
+}
+
 void RepoHost::start()
 {
     m_stopping = false;
@@ -170,8 +175,15 @@ void RepoHost::sendHandshake()
     QByteArray host = m_url.host().toUtf8();
     if (m_url.port() > 0)
         host += ":" + QByteArray::number(m_url.port());
+    // Append a freshly-signed host-auth token so the relay accepts the upgrade.
+    QString path = wsPath(m_url);
+    if (m_tokenProvider) {
+        const QString token = m_tokenProvider();
+        if (!token.isEmpty())
+            path += (m_url.hasQuery() ? QLatin1Char('&') : QLatin1Char('?')) + token;
+    }
     const QByteArray request =
-        "GET " + wsPath(m_url).toUtf8() + " HTTP/1.1\r\n"
+        "GET " + path.toUtf8() + " HTTP/1.1\r\n"
         "Host: " + host + "\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"

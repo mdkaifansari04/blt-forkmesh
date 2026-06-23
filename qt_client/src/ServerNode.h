@@ -18,7 +18,7 @@ class ServerNode : public ChatBackend
 public:
     ServerNode(const QString &userName, const QString &stableNodeId,
                const QUrl &serverUrl,
-               const QString &roomName, const QString &passphrase,
+               const QString &roomName,
                const QString &solanaAddress,
                QObject *parent = nullptr);
 
@@ -95,8 +95,8 @@ private:
     QString m_version;
     QList<MirrorAdvert> m_mirroredRepos; // repos + HEAD advertised to other nodes
     QString m_nodeId;
-    // SHA-256 of mainnode URL + room + passphrase; scopes the persisted roster so
-    // members are only recalled for the exact same encrypted room.
+    // SHA-256 of mainnode URL + room; scopes the persisted roster so members are
+    // only recalled for the exact same room.
     QString m_rosterStorageKey;
     RoomCrypto m_crypto;
     QTcpSocket *m_socket = nullptr;

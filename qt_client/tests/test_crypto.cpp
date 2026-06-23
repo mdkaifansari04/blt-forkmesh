@@ -100,6 +100,34 @@ int main(int argc, char *argv[])
     check(wrongCrypto.decryptObject(encrypted).isEmpty(),
           "room crypto rejects the wrong passphrase");
 
+    // --- Passphrase-free shared rooms (baked-in app key) -----------------
+    // Two independent instances built only from the room name must interoperate,
+    // so every node joins the same shared room with no passphrase.
+    RoomCrypto sharedA("general");
+    RoomCrypto sharedB("general");
+    check(sharedA.isValid(), "passphrase-free room key derives");
+    const QJsonObject sharedMsg{{"type", "chat"}, {"text", "hello shared"}};
+    const QJsonObject sharedEnv = sharedA.encryptObject(sharedMsg);
+    check(sharedEnv.value("kind").toString() == "cipher",
+          "shared room encrypts to an opaque envelope");
+    check(sharedB.decryptObject(sharedEnv).value("text").toString() == "hello shared",
+          "a second node decrypts the shared room with the baked-in key");
+    check(RoomCrypto("random").decryptObject(sharedEnv).isEmpty(),
+          "a different room name does not decrypt the envelope");
+
+    // --- Host-auth token canonical (must match the worker's verify_host_token).
+    const QByteArray hostCanonical = "forkmesh-host-v1\nalice\nmyrepo\n1000";
+    check(hostCanonical ==
+              QByteArray("forkmesh-host-v1\nalice\nmyrepo\n1000"),
+          "host-token canonical matches the cross-language vector");
+    const QString hostSig = identity.signData(hostCanonical);
+    check(!hostSig.isEmpty(), "host token is signed by the node key");
+    check(verifyEd25519(identity.publicKey(), hostSig, hostCanonical),
+          "host-token signature verifies against the node public key");
+    check(!verifyEd25519(identity.publicKey(), hostSig,
+                         QByteArray("forkmesh-host-v1\nalice\nmyrepo\n2000")),
+          "host-token signature is bound to its timestamp");
+
     // --- Issue event signing ---------------------------------------------
     // Pin the canonical byte format so the C++ client, the Python seed
     // generator, and the worker's ed25519_verify all agree.

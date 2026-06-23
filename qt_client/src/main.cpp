@@ -2,6 +2,8 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QIcon>
 #include <QMessageBox>
 #include <QStyleFactory>
@@ -43,7 +45,16 @@ int main(int argc, char *argv[])
                      [](Qt::ColorScheme) { MainWindow::applyTheme(); });
 #endif
 
+    // Detailed startup timing to the terminal so a slow launch is diagnosable.
+    QElapsedTimer startup;
+    startup.start();
+    qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
+                             .arg(startup.elapsed(), 5);
     MainWindow window;
+    qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
+                             .arg(startup.elapsed(), 5);
     window.show();
+    qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
+                             .arg(startup.elapsed(), 5);
     return app.exec();
 }

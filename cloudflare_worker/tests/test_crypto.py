@@ -187,6 +187,12 @@ def main():
         "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
         "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060",
     )
+    # Host-auth token canonical — must match the client signer + the C++ vector.
+    check(
+        "host-token canonical vector",
+        "forkmesh-host-v1\n" + "alice" + "\n" + "myrepo" + "\n" + "1000",
+        "forkmesh-host-v1\nalice\nmyrepo\n1000",
+    )
 
     print()
     if _failures:

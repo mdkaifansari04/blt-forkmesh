@@ -13,7 +13,14 @@ constexpr int kKeyBytes = 32;
 constexpr int kNonceBytes = 12;
 constexpr int kTagBytes = 16;
 constexpr int kPbkdfRounds = 210000;
-constexpr qsizetype kMaxPlainBytes = 96ll * 1024 * 1024;
+// Room frame cap — MUST match the worker's MAX_TEXT_BYTES (4 MB) so both ends
+// agree on what they'll relay; we reject oversize frames before encrypting.
+constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
+// Baked-in app key for passphrase-free shared rooms. Every ForkMesh build derives
+// the same key for a given room name, so all nodes converge on the same rooms.
+// This is not a secret from other app users (the rooms are effectively public);
+// it only keeps the relay zero-knowledge (it sees ciphertext, never plaintext).
+const char kAppRoomKey[] = "forkmesh-shared-room-key-v1";
 
 QByteArray saltForRoom(const QString &roomName)
 {
@@ -32,7 +39,31 @@ QByteArray randomBytes(int count)
     return out;
 }
 
+// Derive the 32-byte AES key from a password and the room-scoped salt.
+bool deriveRoomKey(const QByteArray &pass, const QString &roomName, QByteArray &out)
+{
+    out.resize(kKeyBytes);
+    const QByteArray salt = saltForRoom(roomName.trimmed());
+    if (PKCS5_PBKDF2_HMAC(pass.constData(), pass.size(),
+                          reinterpret_cast<const unsigned char *>(salt.constData()),
+                          salt.size(), kPbkdfRounds, EVP_sha256(), kKeyBytes,
+                          reinterpret_cast<unsigned char *>(out.data())) == 1)
+        return true;
+    out.clear();
+    return false;
+}
+
 } // namespace
+
+RoomCrypto::RoomCrypto(const QString &roomName)
+{
+    if (roomName.trimmed().isEmpty()) {
+        m_error = "Room name is required.";
+        return;
+    }
+    if (!deriveRoomKey(QByteArray(kAppRoomKey), roomName, m_key))
+        m_error = "Could not derive the room encryption key.";
+}
 
 RoomCrypto::RoomCrypto(const QString &roomName, const QString &passphrase)
 {
@@ -40,16 +71,8 @@ RoomCrypto::RoomCrypto(const QString &roomName, const QString &passphrase)
         m_error = "Room name and passphrase are required.";
         return;
     }
-    m_key.resize(kKeyBytes);
-    const QByteArray pass = passphrase.toUtf8();
-    const QByteArray salt = saltForRoom(roomName.trimmed());
-    if (PKCS5_PBKDF2_HMAC(pass.constData(), pass.size(),
-                          reinterpret_cast<const unsigned char *>(salt.constData()),
-                          salt.size(), kPbkdfRounds, EVP_sha256(), kKeyBytes,
-                          reinterpret_cast<unsigned char *>(m_key.data())) != 1) {
-        m_key.clear();
+    if (!deriveRoomKey(passphrase.toUtf8(), roomName, m_key))
         m_error = "Could not derive the room encryption key.";
-    }
 }
 
 QJsonObject RoomCrypto::encryptObject(const QJsonObject &plain) const
