@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 168
 title: when you click on the profile icon show the whole page  of the profile (hide the repo)
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
