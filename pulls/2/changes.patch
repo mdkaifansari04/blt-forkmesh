@@ -1,0 +1,30 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 62c9516..896251d 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -7872,6 +7872,13 @@ QWidget *MainWindow::buildRepoDetailSection()
+             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
+         if (i == 3)
+             m_repoAgentsTab = b; // handle for the Agents (N) badge
++            // Activity badge: a small colored pill overlaid above the tab button
++            // that shows running/done/failed status while an agent is active.
++            m_agentActivityBadge = new QLabel(b);
++            m_agentActivityBadge->setObjectName("agentActivityBadge");
++            m_agentActivityBadge->setAlignment(Qt::AlignCenter);
++            m_agentActivityBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
++            m_agentActivityBadge->hide();
+         if (i == 4)
+             m_repoPullsTab = b;
+         if (i == 5)
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 61323f7..d0d357d 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -954,6 +954,7 @@ private:
+     QPushButton *m_repoIssuesTab = nullptr;
+     QPushButton *m_repoPullsTab = nullptr;
+     QPushButton *m_repoAgentsTab = nullptr;
++    QLabel *m_agentActivityBadge = nullptr; // colored status badge above the Agents tab
+     QPushButton *m_repoActionsTab = nullptr;
+     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
+     QStackedWidget *m_repoDetailStack = nullptr;
