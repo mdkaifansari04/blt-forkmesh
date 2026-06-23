@@ -19,18 +19,24 @@ struct ActionWorkflow {
     QString path;               // repo-relative path, e.g. ".forkmesh/deploy.yml"
     QString content;            // raw file text (hashed for approval, shown in diffs)
     QString name;               // display name (defaults to the file name)
-    QStringList on;             // trigger events, e.g. {"push"}
+    QStringList on;             // trigger events, e.g. {"push", "workflow_dispatch"}
     QMap<QString, QString> env; // workflow-level environment
     QList<ActionStep> steps;    // steps flattened across all jobs, in order
     bool valid = false;
     QString error;
 
     bool triggersOnPush() const { return on.contains(QStringLiteral("push")); }
+    // Opts the workflow into manual ("workflow_dispatch") runs the user can
+    // trigger by hand from the Actions tab, optionally against a chosen branch.
+    bool allowsManualRun() const
+    {
+        return on.contains(QStringLiteral("workflow_dispatch"));
+    }
 };
 
 // Parses a deliberately small YAML subset — enough for the workflow schema:
 //   name: <scalar>
-//   on: push | [push] | block list
+//   on: push | [push, workflow_dispatch] | block list   # workflow_dispatch = manual
 //   env: { KEY: value, ... }
 //   jobs: { <job>: { steps: [ { name, run }, ... ] } }
 //   steps: [ ... ]          # flattened top-level form is also accepted

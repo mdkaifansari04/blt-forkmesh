@@ -370,6 +370,11 @@ private:
     void refreshRepoActions();           // workflows column + runs for the open repo
     QList<ActionWorkflow> availableWorkflowsForRepo(
         const RepositoryRecord &repo) const;
+    // Show/populate the manual-run bar for the selected workflow (branches from
+    // the repo's mirror, default "main"); hidden unless it allows manual runs.
+    void updateManualRunBar();
+    // Queue a manual run of the selected workflow on the chosen branch.
+    void runSelectedWorkflowManually();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
@@ -632,6 +637,11 @@ private:
     void saveChatHistory();
     void loadChatHistory();
     void scheduleChatSave();
+    // Avatars are cached to disk per peer (keyed by node id) so they survive a
+    // restart and stay visible for peers who are currently offline — otherwise
+    // an avatar only lives as long as the sender keeps re-broadcasting it.
+    QString avatarCachePath(const QString &peerId) const;
+    void loadCachedAvatars();
     void loadRepositories();
     void saveRepositories() const;
     void refreshRepositoryList();
@@ -711,6 +721,11 @@ private:
     // Donation nudge banner (no Solana address yet).
     QWidget *m_solanaBanner = nullptr;
     QLabel *m_solanaBannerLabel = nullptr;
+    // Payout-wallet verification banner: shown when an address is set but not yet
+    // verified (a small deposit proves control before payouts can be received).
+    QWidget *m_walletVerifyBanner = nullptr;
+    QWidget *buildWalletVerifyNotice();
+    void updateWalletVerifyNotice();
 
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
@@ -1024,6 +1039,7 @@ private:
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
+    QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionsSpinTimer = nullptr;        // animates the Actions tab while running
     int m_actionsSpinFrame = 0;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
@@ -1037,6 +1053,11 @@ private:
     QWidget *m_actionApprovalBar = nullptr;
     QPushButton *m_actionApproveButton = nullptr;
     QPushButton *m_actionRejectButton = nullptr;
+    // Manual ("workflow_dispatch") run controls, shown atop the detail pane only
+    // when the selected workflow opts in. The branch combo defaults to "main".
+    QWidget *m_actionManualRunBar = nullptr;
+    QPushButton *m_actionManualRunButton = nullptr;
+    QComboBox *m_actionRunBranchCombo = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the
