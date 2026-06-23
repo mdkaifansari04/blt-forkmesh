@@ -5,10 +5,15 @@ title: make it so that when we press the down arrow and go to next commit it's l
 status: closed
 labels: []
 milestone: 
+priority: 0
+progress: 100
 assignees: []
 createdAt: 1782081213909
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-103
 ts: 1782081213909
