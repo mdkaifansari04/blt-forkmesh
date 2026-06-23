@@ -3,13 +3,17 @@ schema: forkmesh-issue-v1
 number: 153
 title: make delete issue one click and then confirm instad of double click make sure it's optimized
 status: open
-labels: []
+labels: [Phase 2]
 milestone: 
 priority: 0
+progress: 0
 assignees: []
 createdAt: 1782178776002
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-153
 ts: 1782178776002
