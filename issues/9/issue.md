@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 9
-title: Private repos
+title: Allow private repos to be shared to other nodes but hidden from the website unless the viewer is logged in.
 status: open
 labels: [feature]
 milestone: MVP launch
