@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 152
 title: have refresh buttons on the agent session stats
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
