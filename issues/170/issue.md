@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 170
 title: when clicking continue the previous session did not persist please fix that
-status: open
+status: closed
 labels: []
 milestone: MVP launch
 priority: 12
