@@ -4,7 +4,7 @@ number: 2
 title: Agent: issue #169 when you click on the avatar in the app show the whole page and don't show the code
 base: main
 head: agent/issue-169-claude-api-14
-status: open
+status: merged
 ts: 1782199528140
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode

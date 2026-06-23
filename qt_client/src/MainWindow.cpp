@@ -5641,7 +5641,8 @@ QWidget *MainWindow::buildHomeSection()
     splitter->setChildrenCollapsible(false);
     // Nodes and repositories are now top-bar dropdowns (see buildBreadcrumb);
     // the repo detail panel fills the page, with the node profile sliding in.
-    splitter->addWidget(buildRepoDetailSection());
+    m_repoDetailSection = buildRepoDetailSection();
+    splitter->addWidget(m_repoDetailSection);
     splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
@@ -5922,8 +5923,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
 
 void MainWindow::hideNodeProfile()
 {
-    if (m_nodeProfilePanel)
+    if (m_nodeProfilePanel) {
+        m_nodeProfilePanel->setMaximumWidth(400);
         m_nodeProfilePanel->hide();
+    }
+    if (m_repoDetailSection)
+        m_repoDetailSection->show();
     m_profileNodeId.clear();
     m_profileNodeName.clear();
     m_profileSolanaValue.clear();
@@ -6144,6 +6149,10 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileBalanceButton->setText("Check balance");
     }
 
+    // Show the profile as full-page: hide the code/repo area.
+    if (m_repoDetailSection)
+        m_repoDetailSection->hide();
+    m_nodeProfilePanel->setMaximumWidth(QWIDGETSIZE_MAX);
     m_nodeProfilePanel->show();
 }
 
