@@ -66,6 +66,10 @@ private:
     void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void sendEncrypted(const QJsonObject &plain, bool showActivity = false);
     void sendHello();
+    // Lightweight broadcast so peers refresh this node's "last seen"; sent on a
+    // timer while connected. Unknown to older peers, but they still record it as
+    // activity (every frame with a senderId refreshes the peer's last-seen time).
+    void sendPresence();
     void sendHistoryTo(const QString &peerId);
     void loadKnownPeers();
     void persistKnownPeers() const;
@@ -107,6 +111,7 @@ private:
     QByteArray m_wsKey;
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
+    QTimer *m_presenceTimer = nullptr; // periodic presence beat + stale-peer sweep
     // Auto-reconnect: the node stays online across drops, retrying with
     // exponential backoff until the user explicitly leaves.
     QTimer *m_reconnectTimer = nullptr;
