@@ -4,7 +4,7 @@ number: 3
 title: Improve Worker UI, waitlist, Qt issue editing, and repo actions
 base: main
 head: kaif/yesterday-forkmesh-updates
-status: open
+status: closed
 ts: 1782121214653
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -22,4 +22,3 @@ Notes:
 - This is a ForkMesh signed patch PR queued for newnewnode/forkmesh.
 - It is based on local baseline d6694de and branch metadata kaif/yesterday-forkmesh-updates.
 - Donnie can import/review/merge when his desktop node comes online and syncs the pull inbox.
-
