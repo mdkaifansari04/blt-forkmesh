@@ -5,7 +5,7 @@ title: #147 don't create a new chat room for each node / repo
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 14
 progress: 0
 assignees: []
 createdAt: 1782162970868
