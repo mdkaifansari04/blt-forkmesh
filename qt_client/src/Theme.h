@@ -812,6 +812,21 @@ QPlainTextEdit#actionLog {
     padding: 8px 12px;
 }
 
+/* --- Item-view selection, applied last so it wins over the rules above ---
+   1. border:0 gives every ::item a stylesheet box, so QStyleSheetStyle applies
+      the same horizontal padding whether or not the row is selected. Without
+      it Qt only pads the selected item and the text jumps right on select.
+   2. Selection highlight is the brand green (#238636, the primary-button green)
+      instead of blue. */
+QAbstractItemView::item { border: 0px; }
+#issueTable { selection-background-color: #238636; selection-color: #ffffff; }
+#issueTable::item:selected,
+#overviewList::item:selected,
+#fileTree::item:selected,
+#commitsList::item:selected,
+#sidebar QListWidget::item:selected { background-color: #238636; color: #ffffff; }
+QComboBox QAbstractItemView { selection-background-color: #238636; }
+
 )";
 
 // GitHub (Primer) light:
@@ -1601,6 +1616,18 @@ QPlainTextEdit#actionLog {
     border-radius: 8px;
     padding: 8px 12px;
 }
+
+/* --- Item-view selection (see the dark theme for the rationale) ---
+   border:0 stops the selected row's text from shifting; the highlight is the
+   light-theme brand green (#1f883d, the primary-button green) instead of blue. */
+QAbstractItemView::item { border: 0px; }
+#issueTable { selection-background-color: #1f883d; selection-color: #ffffff; }
+#issueTable::item:selected,
+#overviewList::item:selected,
+#fileTree::item:selected,
+#commitsList::item:selected,
+#sidebar QListWidget::item:selected { background-color: #1f883d; color: #ffffff; }
+QComboBox QAbstractItemView { selection-background-color: #1f883d; }
 
 )";
 

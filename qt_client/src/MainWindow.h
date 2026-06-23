@@ -209,6 +209,9 @@ private:
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
                            const QString &workingDir, std::function<void()> onSuccess);
     void setUpdateStatus(const QString &status, bool isError = false);
+    // Open (or reset) the live update/rebuild log window and append to it.
+    void showUpdateLog();
+    void appendUpdateLog(const QString &text);
     void persistProfile();
 
     // Chat page
@@ -831,6 +834,10 @@ private:
     // rebuild), so the shared build steps report to the right place.
     QLabel *m_buildStatusLabel = nullptr;
     QPushButton *m_buildButton = nullptr;
+    // Live update/rebuild log: a modeless window streaming each step's command,
+    // git/cmake output, and phase headers so the user sees exactly what's running.
+    QDialog *m_updateLogDialog = nullptr;
+    QPlainTextEdit *m_updateLog = nullptr;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
