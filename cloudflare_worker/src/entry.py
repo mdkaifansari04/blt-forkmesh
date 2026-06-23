@@ -812,6 +812,40 @@ def clean_string(value, max_length=240):
     return value.strip()[:max_length]
 
 
+# Owners (or repo names) that must never appear in the public catalog / under
+# /network/, and may never register host presence. Seeded with a known phantom
+# account that kept re-publishing; extend without a code change via the
+# BLOCKED_CATALOG_OWNERS env var (comma/space separated, case-insensitive).
+_BLOCKED_CATALOG_DEFAULT = {"7cbaf0dc"}
+
+
+def _blocked_catalog_set(env):
+    raw = (getattr(env, "BLOCKED_CATALOG_OWNERS", "") or "").replace(",", " ")
+    extra = {part.strip().lower() for part in raw.split() if part.strip()}
+    return _BLOCKED_CATALOG_DEFAULT | extra
+
+
+def _is_blocked_catalog_identity(env, *values):
+    blocked = _blocked_catalog_set(env)
+    for value in values:
+        if value and str(value).strip().lower() in blocked:
+            return True
+    return False
+
+
+async def purge_blocked_catalog(env):
+    # Delete any catalog rows (and their host-presence rows) belonging to a
+    # blocked owner, so phantom entries already in D1 disappear and stay gone.
+    for owner in _blocked_catalog_set(env):
+        owner_bi = await blind_index(env, owner)
+        rows = await d1_all(
+            env, "SELECT key_bi FROM repositories WHERE owner_bi=?", owner_bi)
+        for r in (rows or []):
+            await d1_run(
+                env, "DELETE FROM host_presence WHERE repo_bi=?", r["key_bi"])
+        await d1_run(env, "DELETE FROM repositories WHERE owner_bi=?", owner_bi)
+
+
 def safe_catalog_record(data):
     if not isinstance(data, dict):
         return None
@@ -823,9 +857,13 @@ def safe_catalog_record(data):
         return None
 
     now = clean_string(data.get("updatedAt", ""), 32)
+    # Visibility: anything other than the literal "private" is treated as public,
+    # so an absent/garbled field can never accidentally hide a repo.
+    visibility = "private" if data.get("visibility") == "private" else "public"
     return {
         "owner": owner,
         "name": name,
+        "visibility": visibility,
         "description": clean_string(data.get("description", ""), 240),
         "cloneUrl": clean_string(data.get("cloneUrl", ""), 2048),
         "solana": clean_string(data.get("solana", ""), 64),
@@ -972,6 +1010,15 @@ async def ensure_schema(env):
         return
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
+    # CREATE TABLE IF NOT EXISTS above won't add a column to a repositories table
+    # that predates private repos, so add it separately. Idempotent: a second run
+    # raises "duplicate column name", which we swallow.
+    try:
+        await env.DB.prepare(
+            "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0"
+        ).run()
+    except Exception:
+        pass
     _schema_ready = True
 
 
@@ -1161,7 +1208,16 @@ async def catalog_handler(env, request):
         cached = await edge_cache_match(CATALOG_CACHE_KEY)
         if cached is not None:
             return cached
-        rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        # Drop any blocked phantom entries from D1 before listing (idempotent,
+        # only runs on a cache miss).
+        try:
+            await purge_blocked_catalog(env)
+        except Exception:
+            pass
+        # Private repos are never listed publicly (and never even decrypted here);
+        # the owner's client tracks its own private repos locally.
+        rows = await d1_all(
+            env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
         # Annotate each repo with whether a host is currently live, computed once
         # here from the presence table (keyed by the same blind index as the repo)
         # instead of the catalog page probing every repo's tunnel DO per visit.
@@ -1174,6 +1230,11 @@ async def catalog_handler(env, request):
         for r in rows:
             rec = await decrypt_row(env, r["data"])
             if rec:
+                # Defense in depth: never surface a blocked identity even if a
+                # row slipped in before the purge ran.
+                if _is_blocked_catalog_identity(
+                        env, rec.get("owner"), rec.get("name")):
+                    continue
                 rec["liveHost"] = r["key_bi"] in live
                 repos.append(rec)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
@@ -1195,6 +1256,9 @@ async def catalog_handler(env, request):
                 {"error": "owner_name_and_maintainer_required"}, status=400
             )
         owner = record["owner"]
+        # Blocked phantom identities can never (re)enter the catalog.
+        if _is_blocked_catalog_identity(env, owner, record["name"]):
+            return json_response({"error": "blocked"}, status=403)
         # Repos are namespaced under a registered account, and only that account's
         # key holder may write its namespace. This ties repo identity to the
         # account (fixes duplicate forks) and prevents impersonation. A registered
@@ -1227,12 +1291,17 @@ async def catalog_handler(env, request):
             if cnt and cnt.get("c", 0) >= CATALOG_MAX_RECORDS_PER_OWNER:
                 return json_response({"error": "too_many_repos"}, status=429)
         enc = await encrypt_row(env, record)
+        # is_private is a plaintext mirror of the (signed-write-gated) visibility
+        # field so browse/clone gating can check it without decrypting the row.
+        is_private = 1 if record["visibility"] == "private" else 0
         await d1_run(
             env,
-            """INSERT INTO repositories (key_bi, owner_bi, data) VALUES (?,?,?)
+            """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
+               VALUES (?,?,?,?)
                ON CONFLICT(key_bi) DO UPDATE SET
-                 owner_bi=excluded.owner_bi, data=excluded.data""",
-            key_bi, owner_bi, enc,
+                 owner_bi=excluded.owner_bi, data=excluded.data,
+                 is_private=excluded.is_private""",
+            key_bi, owner_bi, enc, is_private,
         )
         # Cap: keep only the most-recent MAX_CATALOG_REPOS.
         rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
@@ -1317,6 +1386,59 @@ async def verify_host_token(env, owner, repo, ts, sig):
         return False
     canonical = ("forkmesh-host-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
     return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def verify_view_token(env, owner, repo, ts, sig):
+    # Read gate for private repos: same shape as verify_host_token but a distinct
+    # canonical string so a host token can't be replayed as a view token (and vice
+    # versa). Only the owner account's key holder can browse/clone a private repo.
+    if not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, owner)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-view-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def _repo_is_private(env, owner, repo):
+    # Plaintext is_private flag for owner/repo. A missing catalog row means the
+    # repo was never published (e.g. an ad-hoc host) and stays public, preserving
+    # the pre-private-repos behavior. Best-effort: any error => treat as public so
+    # a transient DB hiccup can't lock everyone out of public repos.
+    try:
+        await ensure_schema(env)
+        key_bi = await blind_index(env, owner + "/" + repo)
+        row = await d1_first(
+            env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
+        return bool(row and row.get("is_private"))
+    except Exception:
+        return False
+
+
+async def _basic_auth_view_ok(env, owner, repo, request):
+    # Git smart-HTTP carries the view token in HTTP Basic auth (username=owner,
+    # password="<ts>.<sig>"), which git supplies from the clone URL or a helper.
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
+    except Exception:
+        return False
+    _, _, password = decoded.partition(":")
+    ts, _, sig = password.partition(".")
+    if not ts or not sig:
+        return False
+    return await verify_view_token(env, owner, repo, ts, sig)
+
+
+def _basic_auth_challenge():
+    return Response(
+        "Authentication required.",
+        status=401,
+        headers={"WWW-Authenticate": 'Basic realm="forkmesh"'},
+    )
 
 
 async def _save_account(env, name_bi, rec, email_bi=None):
@@ -2270,6 +2392,69 @@ def _bounty_public(rec):
     }
 
 
+async def _bounty_auto_payout(env, bounty_bi, rec):
+    # Split a funded escrow to the resolved payee (the merged PR's author) and the
+    # treasury, with no second manual step. Safe to call repeatedly: it no-ops
+    # unless the escrow has a balance, a payee, and hasn't already been paid.
+    if not rec or rec.get("status") == "paid":
+        return rec
+    payee = rec.get("payee", "")
+    if not SOLANA_RE.match(payee or ""):
+        return rec
+    treasury = _treasury_address(env)
+    if not treasury:
+        return rec
+    from_addr = rec.get("address", "")
+    secret = rec.get("secret", "")
+    if not SOLANA_RE.match(from_addr or "") or not secret:
+        return rec
+    balance = await _solana_balance_lamports(env, from_addr)
+    if balance is None:
+        return rec
+    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+    if transferable <= 0:
+        return rec
+    treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
+    payee_lamports = transferable - treasury_lamports
+    transfers = []
+    if payee_lamports > 0:
+        transfers.append((payee, payee_lamports))
+    if treasury_lamports > 0:
+        transfers.append((treasury, treasury_lamports))
+    send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
+    if not send_sig:
+        return rec
+    rec["status"] = "paid"
+    rec["payout_sig"] = send_sig
+    rec["paid_at"] = int(Date.now())
+    rec["payout_transfers"] = [
+        {"address": a, "lamports": l} for a, l in transfers]
+    await _save_bounty(env, bounty_bi, rec)
+    return rec
+
+
+async def sweep_funded_bounties(env):
+    # Cron backstop: pay out any funded bounty whose escrow holds a balance and
+    # has a resolved payee, so the author/treasury split happens even if no client
+    # ever polls status. Best-effort per row.
+    try:
+        rows = await d1_all(env, "SELECT bounty_bi, data FROM issue_bounty")
+    except Exception:
+        return
+    for row in rows:
+        try:
+            rec = await decrypt_row(env, row["data"])
+        except Exception:
+            continue
+        if (not rec or rec.get("status") == "paid" or not rec.get("payee") or
+                not rec.get("address") or not rec.get("secret")):
+            continue
+        try:
+            await _bounty_auto_payout(env, row["bounty_bi"], rec)
+        except Exception:
+            continue
+
+
 async def bounties_handler(env, request, owner, repo):
     await ensure_schema(env)
     if method_name(request) != "POST":
@@ -2303,11 +2488,26 @@ async def bounties_handler(env, request, owner, repo):
         required = await _usd_to_lamports(env, amount_usd)
         if required <= 0:
             return json_response({"error": "price_unavailable"}, status=503)
+        # Resolve the payee (the merged PR's author) up front so a funded escrow
+        # can split to author + treasury automatically, with no second step.
+        # Prefer an explicit address; else the author's registered payout wallet.
+        payee = clean_string(data.get("payee", ""), 64)
+        if not (payee and SOLANA_RE.match(payee)):
+            payee_node = clean_string(
+                data.get("payeeNode", ""), MAX_NODE_NAME).lower()
+            payee = ""
+            if payee_node:
+                _, author_rec = await _account_row(env, payee_node)
+                cand = (author_rec or {}).get("solana", "")
+                if cand and SOLANA_RE.match(cand):
+                    payee = cand
         # Reuse an existing unpaid address (top-ups raise the target) so a repeat
         # call doesn't strand funds at a stale address.
         if rec and rec.get("address") and rec.get("status") != "paid":
             rec["amount_usd"] = amount_usd
             rec["required_lamports"] = required
+            if payee:
+                rec["payee"] = payee
         else:
             addr, secret = await _new_solana_keypair()
             if not addr:
@@ -2317,7 +2517,7 @@ async def bounties_handler(env, request, owner, repo):
                 "address": addr, "secret": secret,
                 "amount_usd": amount_usd, "required_lamports": required,
                 "received_lamports": 0, "confirmed": False, "status": "open",
-                "created_at": int(Date.now()), "payee": "", "payout_sig": "",
+                "created_at": int(Date.now()), "payee": payee, "payout_sig": "",
             }
         await _save_bounty(env, bounty_bi, rec)
         return json_response(_bounty_public(rec))
@@ -2335,6 +2535,10 @@ async def bounties_handler(env, request, owner, repo):
                     if rec.get("status") == "open":
                         rec["status"] = "funded"
                 await _save_bounty(env, bounty_bi, rec)
+                # As soon as it's funded and we know the payee, split it — no
+                # second manual payout step is needed.
+                if rec.get("status") == "funded" and rec.get("payee"):
+                    rec = await _bounty_auto_payout(env, bounty_bi, rec)
         return json_response(_bounty_public(rec))
 
     if action == "payout":
@@ -3263,6 +3467,18 @@ class Default(WorkerEntrypoint):
             await record_online_sample(self.env)
         except Exception:
             pass
+        # Keep blocked phantom catalog entries (and their host presence) purged
+        # even if no one loads /network/.
+        try:
+            await purge_blocked_catalog(self.env)
+        except Exception:
+            pass
+        # Backstop the bounty escrow split so a funded bounty pays out to the
+        # author + treasury even if no client polls its status.
+        try:
+            await sweep_funded_bounties(self.env)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -3334,12 +3550,18 @@ class Default(WorkerEntrypoint):
                 elif not ids:
                     banner = "Delete: no rows were selected."
                 else:
-                    placeholders = ",".join(["?"] * len(ids))
-                    await d1_run(
-                        self.env,
-                        "DELETE FROM " + table + " WHERE rowid IN (" + placeholders + ")",
-                        *ids,
-                    )
+                    # D1 caps bound parameters per query (~100), so delete in
+                    # chunks rather than one giant IN (...) list.
+                    chunk = 90
+                    for start in range(0, len(ids), chunk):
+                        batch = ids[start:start + chunk]
+                        placeholders = ",".join(["?"] * len(batch))
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM " + table
+                            + " WHERE rowid IN (" + placeholders + ")",
+                            *batch,
+                        )
                     banner = "Deleted %d row(s) from %s." % (len(ids), table)
             except Exception as error:
                 banner = "Delete failed: " + repr(error)
@@ -3513,6 +3735,16 @@ class Default(WorkerEntrypoint):
                 sig = params.get("sig", [""])[0]
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
+            elif host_match.group(3) in ("tree", "blob", "commits", "commit"):
+                # Browsing a private repo's files/commits needs the same owner view
+                # token used for clone, here as ?ts=&sig= (the host-token query
+                # shape). Public repos remain open to browse.
+                if await _repo_is_private(self.env, owner, repo):
+                    params = parse_qs(url.query)
+                    ts = params.get("ts", [""])[0]
+                    sig = params.get("sig", [""])[0]
+                    if not await verify_view_token(self.env, owner, repo, ts, sig):
+                        return json_response({"error": "unauthorized"}, status=401)
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             return await host_object.fetch(request)
@@ -3530,6 +3762,12 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
+        # Private repos clone only with an owner-key-signed view token carried in
+        # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
+        # supplies credentials from the clone URL or a credential helper.
+        if await _repo_is_private(self.env, owner, repo):
+            if not await _basic_auth_view_ok(self.env, owner, repo, request):
+                return _basic_auth_challenge()
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
@@ -3762,6 +4000,10 @@ class ForkMeshHost(DurableObject):
         repo = safe_segment(match.group(2))
         if not owner or not repo:
             return None
+        # Blocked phantom identities never register host presence (so they can't
+        # appear "live" under /network/), but are still routed normally.
+        self._blocked_presence = _is_blocked_catalog_identity(
+            self.env, owner, repo)
         self._repo_bi = await blind_index(self.env, owner + "/" + repo)
         return self._repo_bi
 
@@ -3774,6 +4016,8 @@ class ForkMeshHost(DurableObject):
         repo_bi = await self._repo_blind_index(path) if path else self._repo_bi
         if not repo_bi:
             return
+        if getattr(self, "_blocked_presence", False):
+            return  # blocked phantom identity — never mark live
         self._last_presence = now
         try:
             await touch_host_presence(self.env, repo_bi)

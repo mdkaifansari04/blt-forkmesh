@@ -37,6 +37,7 @@
 #include <QMimeData>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QStandardPaths>
@@ -304,6 +305,10 @@ const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
 const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
 const QString kDisbursementAlertSetting = QStringLiteral("notifications/disbursement");
 const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
+// Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
+// older boolean above (migrated on first read).
+const QString kSolanaDisplayCurrencySetting =
+    QStringLiteral("profile/solanaDisplayCurrency");
 const QString kSolanaLastBalanceSettingPrefix =
     QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
@@ -314,6 +319,9 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
+// Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
+// a regular API key cannot read organization spend.
+const QString kClaudeAdminKeySetting = QStringLiteral("agents/claudeAdminKey");
 const QString kCodexCommandSetting = QStringLiteral("agents/codexCommand");
 const QString kClaudeCommandSetting = QStringLiteral("agents/claudeCommand");
 const QString kAgentContextSetting = QStringLiteral("agents/contextWindow");
@@ -1625,6 +1633,22 @@ void setOcticon(QPushButton *button, const QString &name, int size = 16)
     applyStoredOcticon(button);
 }
 
+// Inline octicon for rich-text QLabels: a tinted SVG rendered to a base64 PNG
+// data URI so it can sit next to text in setText() HTML.
+QString octiconMarkup(const QString &name, int size,
+                      const QColor &color = QColor("#8b949e"))
+{
+    const QPixmap pixmap = tintedOcticonPixmap(name, color, size);
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral(
+               "<img src='data:image/png;base64,%1' width='%2' height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
 QString serverHost(const QString &serverUrl)
 {
     return QUrl(serverUrl).host();
@@ -1908,6 +1932,27 @@ QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
     const QPixmap scaled = src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                       Qt::SmoothTransformation);
     p.drawPixmap((side - scaled.width()) / 2, (side - scaled.height()) / 2, scaled);
+    return out;
+}
+
+// Wide variant of roundedRectPixmap: scales `src` to cover a w*h banner
+// (center-cropped, no distortion) and clips it to rounded corners. Used for the
+// full-width avatar header at the top of the node profile panel.
+QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radius)
+{
+    QPixmap out(w, h);
+    out.fill(Qt::transparent);
+    if (src.isNull() || w <= 0 || h <= 0)
+        return out;
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    QPainterPath path;
+    path.addRoundedRect(QRectF(0, 0, w, h), radius, radius);
+    p.setClipPath(path);
+    const QPixmap scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
+                                      Qt::SmoothTransformation);
+    p.drawPixmap((w - scaled.width()) / 2, (h - scaled.height()) / 2, scaled);
     return out;
 }
 
@@ -3071,14 +3116,15 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     return false;
 }
 
-// POST /api/accounts/login — log in by node name or email (+ optional TOTP).
-bool MainWindow::verifyTotpLogin(const QString &accountName,
-                                 const QString &password, const QString &totp)
+// POST /api/accounts/login — log in by email (+ optional TOTP).
+bool MainWindow::verifyTotpLogin(const QString &email,
+                                 const QString &password, const QString &totp,
+                                 const QString &accountName)
 {
     int status = 0;
     const QJsonObject resp = postAccountSync(
         "login",
-        QJsonObject{{"identifier", accountName}, {"password", password},
+        QJsonObject{{"email", email}, {"password", password},
                     {"totp", totp}},
         &status);
     if (status == 200 && resp.value("ok").toBool()) {
@@ -3094,6 +3140,8 @@ bool MainWindow::verifyTotpLogin(const QString &accountName,
                              ? "Incorrect authenticator code."
                              : err == "bad_password"
                                    ? "Incorrect password."
+                                   : err == "no_such_account"
+                                         ? "No account found for that email."
                                    : err == "account_not_active"
                                          ? "That account hasn't finished signup yet."
                                          : "Login failed" +
@@ -3107,12 +3155,15 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     QDialog dialog(this);
     dialog.setWindowTitle("Log in to " + accountName);
     auto *form = new QFormLayout(&dialog);
-    form->addRow(new QLabel("Log in to your account to join the network."));
+    form->addRow(new QLabel("Log in with your email and password to join the network."));
+    auto *emailEdit = new QLineEdit;
+    emailEdit->setPlaceholderText("you@example.com");
     auto *passEdit = new QLineEdit;
     passEdit->setEchoMode(QLineEdit::Password);
     auto *totpEdit = new QLineEdit;
     totpEdit->setPlaceholderText("6-digit code (only if you enabled 2FA)");
     totpEdit->setMaxLength(6);
+    form->addRow("Email", emailEdit);
     form->addRow("Password", passEdit);
     form->addRow("2FA code", totpEdit);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -3121,7 +3172,13 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     while (dialog.exec() == QDialog::Accepted) {
-        if (verifyTotpLogin(accountName, passEdit->text(), totpEdit->text().trimmed()))
+        const QString email = emailEdit->text().trimmed();
+        if (!email.contains('@')) {
+            QMessageBox::warning(this, "Log in", "Enter a valid email.");
+            continue;
+        }
+        if (verifyTotpLogin(email, passEdit->text(), totpEdit->text().trimmed(),
+                            accountName))
             return true;
     }
     if (m_setupError) {
@@ -3940,6 +3997,13 @@ QWidget *MainWindow::buildChatPage()
     settingsScroll->setWidget(buildSettingsSection());
     logStartup(QStringLiteral("  buildChatPage: settings section built"));
     m_sectionStack->addWidget(settingsScroll);           // 1 Settings
+    // Chat is its own top-level place now (no longer a page buried in the repo
+    // detail stack), so it survives switching between repos and stays reachable
+    // from the always-visible nav.
+    m_sectionStack->addWidget(buildChatSection());       // 2 Chat
+    logStartup(QStringLiteral("  buildChatPage: chat section built"));
+    m_sectionStack->addWidget(buildNotificationsSection()); // 3 Notifications
+    logStartup(QStringLiteral("  buildChatPage: notifications section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -4096,11 +4160,41 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
+    // Node name shown above the wallet balance in the top-right cluster.
+    m_navNodeName = new QLabel;
+    m_navNodeName->setObjectName("navNodeName");
+    m_navNodeName->setAlignment(Qt::AlignCenter);
+    m_navNodeName->setFixedWidth(148);
+
     m_navSolanaBalance = new QLabel(QStringLiteral("SOL --"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
     m_navSolanaBalance->setAlignment(Qt::AlignCenter);
     m_navSolanaBalance->setFixedWidth(148);
     m_navSolanaBalance->setToolTip("This node's Solana wallet balance");
+
+    // Little swap button to cycle the balance display: SOL -> USD -> INR -> SOL.
+    m_navSolanaCurrencyButton = new QPushButton;
+    m_navSolanaCurrencyButton->setObjectName("iconButton");
+    m_navSolanaCurrencyButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_navSolanaCurrencyButton, "sync", 14);
+    connect(m_navSolanaCurrencyButton, &QPushButton::clicked, this, [this] {
+        QSettings s;
+        QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
+        if (cur.isEmpty())
+            cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
+                      ? QStringLiteral("usd")
+                      : QStringLiteral("sol");
+        const QString next = cur == QLatin1String("sol")   ? QStringLiteral("usd")
+                             : cur == QLatin1String("usd") ? QStringLiteral("inr")
+                                                           : QStringLiteral("sol");
+        s.setValue(kSolanaDisplayCurrencySetting, next);
+        updateNavCurrencyButton();
+        // Re-render from the cached balance/rate rather than re-querying the
+        // chain + price API on every click — that re-querying is what made the
+        // figure stall (rate-limited) after a few quick switches.
+        renderNavSolanaBalance();
+    });
+    updateNavCurrencyButton();
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
@@ -4109,24 +4203,31 @@ QWidget *MainWindow::buildBreadcrumb()
     m_repoMenuButton->setToolTip("Open a repository, or add a local repo to mirror");
     connect(m_repoMenuButton, &QPushButton::clicked, this, &MainWindow::showRepoMenu);
 
-    // Small "View" button beside the repo dropdown: jump straight to the open
-    // repository's Code view (or open the picker when none is selected).
-    m_repoViewButton = new QPushButton(QStringLiteral("View"));
-    m_repoViewButton->setObjectName("ghostButton");
+    // Primary section nav: Code / Chat / Notifications / Settings. These four
+    // are a uniform, checkable button group that lives in the always-visible top
+    // bar (so the nav stays put on Settings, Chat and Notifications too) and
+    // highlights the active section. Each maps to an m_sectionStack index.
+    m_navGroup = new QButtonGroup(this);
+    m_navGroup->setExclusive(true);
+
+    // "Code" button: show the repo detail (Home section). When a repo is open it
+    // jumps to that repo's Code view; otherwise it just lands on Home.
+    m_repoViewButton = new QPushButton(QStringLiteral("Code"));
+    m_repoViewButton->setObjectName("topNavButton");
+    m_repoViewButton->setCheckable(true);
     m_repoViewButton->setCursor(Qt::PointingHandCursor);
-    m_repoViewButton->setToolTip(QStringLiteral("View the current repository"));
-    setOcticon(m_repoViewButton, "code", 14);
+    m_repoViewButton->setToolTip(QStringLiteral("View the current repository's code"));
+    setOcticon(m_repoViewButton, "code", 16);
+    m_navGroup->addButton(m_repoViewButton, 0); // section 0: Home / Code
     connect(m_repoViewButton, &QPushButton::clicked, this, [this] {
-        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-            showRepoMenu();
-            return;
-        }
         showSection(0);
-        if (m_repoCodeTab)
-            m_repoCodeTab->setChecked(true);
-        if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(0); // Code
-        showRepoOverview();
+        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+            if (m_repoCodeTab)
+                m_repoCodeTab->setChecked(true);
+            if (m_repoDetailStack)
+                m_repoDetailStack->setCurrentIndex(0); // Code
+            showRepoOverview();
+        }
     });
 
     m_repoPushButton = new QPushButton;
@@ -4148,21 +4249,16 @@ QWidget *MainWindow::buildBreadcrumb()
             openServerWebsite(m_activeServer);
         }
     });
-    // Live connection indicator, pinned to the top-right of the window. Clicking
-    // it opens the full nodes window (status, earnings, per-node actions).
-    m_connectionStatus = new QLabel;
-    m_connectionStatus->setObjectName("connectionStatus");
-    m_connectionStatus->setTextFormat(Qt::RichText);
-    m_connectionStatus->setCursor(Qt::PointingHandCursor);
-    m_connectionStatus->setToolTip("Show all nodes on this relay");
-    connect(m_connectionStatus, &QLabel::linkActivated, this,
-            [this](const QString &) { showNodesWindow(); });
+    // The live connection indicator is now a small status dot painted over the
+    // top-right avatar (created with the avatar below), not a separate text pill.
 
     m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
-    m_notificationButton->setObjectName("notificationButton");
+    m_notificationButton->setObjectName("topNavButton");
+    m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_notificationButton, "bell", 16);
     m_notificationButton->setToolTip("Notifications");
+    m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
@@ -4200,22 +4296,24 @@ QWidget *MainWindow::buildBreadcrumb()
     m_avatarNavButton->setCursor(Qt::PointingHandCursor);
     m_avatarNavButton->setFixedSize(40, 40);
     m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setToolTip("You");
+    m_avatarNavButton->setToolTip("Your node profile");
     connect(m_avatarNavButton, &QPushButton::clicked, this, [this] {
-        QMenu menu(this);
-        menu.addAction(QStringLiteral("Settings"), this, [this] { showSection(1); });
-        menu.addAction(QStringLiteral("Rebuild & Restart"), this,
-                       [this] { quickRebuildRestart(); });
-        menu.addAction(QStringLiteral("Update, rebuild & restart"), this,
-                       [this] { updateRebuildRestart(); });
-        menu.addSeparator();
-        menu.addAction(QStringLiteral("Logout"), this, [this] { leaveSession(); });
-        // Drop down from the avatar, right-aligned to its right edge.
-        const QPoint corner = m_avatarNavButton->mapToGlobal(
-            QPoint(m_avatarNavButton->width(), m_avatarNavButton->height()));
-        menu.exec(corner - QPoint(menu.sizeHint().width(), 0));
+        // Open this node's own profile in the side panel (which carries the
+        // restart options, settings shortcut and logout for self).
+        showSection(0);
+        showNodeProfile(m_profileIdentity.publicKey(), m_userName);
     });
     updateAvatarButton();
+
+    // Connection status dot, overlaid on the bottom-right of the avatar. It's
+    // purely decorative (clicks fall through to the avatar); the live status
+    // text lives in the avatar's tooltip, set by updateConnectionStatus.
+    m_connectionDot = new QLabel(m_avatarNavButton);
+    m_connectionDot->setObjectName("connectionDot");
+    m_connectionDot->setFixedSize(12, 12);
+    m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_connectionDot->move(40 - 12 - 1, 40 - 12 - 1);
+    m_connectionDot->raise();
 
     // Captions for the three top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
@@ -4227,12 +4325,26 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
-    // Chat toggle, paired with the notification bell on the second nav row.
+    // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new QPushButton(QStringLiteral("Chat"));
-    m_chatButton->setObjectName("notificationButton");
+    m_chatButton->setObjectName("topNavButton");
+    m_chatButton->setCheckable(true);
     m_chatButton->setCursor(Qt::PointingHandCursor);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
+    setOcticon(m_chatButton, "comment", 16);
+    m_navGroup->addButton(m_chatButton, 2); // section 2: Chat
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
+
+    // Settings: its own top-level section (m_sectionStack index 1).
+    m_settingsNavButton = new QPushButton(QStringLiteral("Settings"));
+    m_settingsNavButton->setObjectName("topNavButton");
+    m_settingsNavButton->setCheckable(true);
+    m_settingsNavButton->setCursor(Qt::PointingHandCursor);
+    m_settingsNavButton->setToolTip(QStringLiteral("Settings"));
+    setOcticon(m_settingsNavButton, "gear", 16);
+    m_navGroup->addButton(m_settingsNavButton, 1); // section 1: Settings
+    connect(m_settingsNavButton, &QPushButton::clicked, this,
+            [this] { showSection(1); });
 
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
@@ -4243,8 +4355,8 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *mainRow = new QHBoxLayout;
     mainRow->setContentsMargins(0, 0, 0, 0);
     mainRow->setSpacing(8);
-    mainRow->addWidget(m_relayLabel);
     mainRow->addWidget(m_relayIconButton);
+    mainRow->addWidget(m_relayLabel);
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
@@ -4253,7 +4365,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(10);
     mainRow->addWidget(m_repoLabel);
     mainRow->addWidget(m_repoMenuButton);
-    mainRow->addWidget(m_repoViewButton);
     mainRow->addWidget(m_repoPushButton);
     mainRow->addSpacing(6);
     mainRow->addWidget(m_breadcrumb);
@@ -4261,20 +4372,30 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessage);
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addStretch();
-    mainRow->addWidget(m_connectionStatus);
-    mainRow->addWidget(m_navSolanaBalance);
+    // Stack the node name on top of the wallet balance.
+    auto *balanceColumn = new QVBoxLayout;
+    balanceColumn->setContentsMargins(0, 0, 0, 0);
+    balanceColumn->setSpacing(0);
+    balanceColumn->addWidget(m_navNodeName);
+    balanceColumn->addWidget(m_navSolanaBalance);
+    mainRow->addLayout(balanceColumn);
+    mainRow->addWidget(m_navSolanaCurrencyButton);
     mainRow->addWidget(m_avatarNavButton);
     layout->addLayout(mainRow);
 
-    // Second row (next section, under the nav line): Chat + Notifications,
-    // left-aligned and pinned to the top near the line above.
-    auto *actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->setSpacing(8);
-    actionRow->addWidget(m_chatButton);
-    actionRow->addWidget(m_notificationButton);
-    actionRow->addStretch();
-    layout->addLayout(actionRow);
+    // The primary section nav (Code / Chat / Notifications / Settings) no longer
+    // sits in its own row here: it's added to the repo header's left cluster
+    // (m_repoHeaderLeft) so the buttons share the line with the repo actions
+    // (Notify / Fork / Mirror / …) below the divider. m_repoHeaderLeft is built
+    // by buildRepoDetailSection, which runs before buildBreadcrumb.
+    if (m_repoHeaderLeft) {
+        m_repoHeaderLeft->addWidget(m_repoViewButton);
+        m_repoHeaderLeft->addWidget(m_chatButton);
+        m_repoHeaderLeft->addWidget(m_notificationButton);
+        m_repoHeaderLeft->addWidget(m_settingsNavButton);
+    }
+    // Home/Code is the initial section, so show its nav button selected up front.
+    m_repoViewButton->setChecked(true);
 
     updateBreadcrumb();
     updateConnectionStatus();
@@ -4287,7 +4408,7 @@ QWidget *MainWindow::buildBreadcrumb()
 
 void MainWindow::updateConnectionStatus()
 {
-    if (!m_connectionStatus)
+    if (!m_connectionDot)
         return;
 
     // Connected when our own node shows a live link in the roster; the online
@@ -4302,33 +4423,32 @@ void MainWindow::updateConnectionStatus()
     }
     const bool connected = m_backend && selfOnline;
 
-    QString color, dot, text;
+    QString color, text;
     if (connected) {
         color = "#3fb950"; // green
-        dot = QString::fromUtf8("\xE2\x97\x8F");
         text = QString::fromUtf8("Connected \xC2\xB7 %1 %2 online")
                    .arg(onlineCount)
                    .arg(onlineCount == 1 ? "node" : "nodes");
     } else if (m_backend) {
         color = "#d29922"; // amber: connecting / backing off
-        dot = QString::fromUtf8("\xE2\x97\x8F");
         text = QString::fromUtf8("Connecting\xE2\x80\xA6");
     } else {
         color = "#8b949e"; // grey: offline / not started
-        dot = QString::fromUtf8("\xE2\x97\x8B");
         text = QStringLiteral("Offline");
     }
-    // The whole pill is a link so a click anywhere opens the nodes window.
-    const QString html =
-        QStringLiteral("<a href='nodes' style='text-decoration:none; color:%1'>"
-                       "<span style='color:%1'>%2</span> %3</a>")
-            .arg(color, dot, text.toHtmlEscaped());
-    // Skip the repaint when nothing changed, so a burst of roster updates doesn't
-    // visibly flicker the status pill.
-    if (html == m_connectionStatusHtml)
+    // The status text rides on the avatar tooltip; the dot itself just shows the
+    // colour. (The count can change while the colour doesn't, so the tooltip is
+    // always refreshed but the dot stylesheet is only rewritten on colour change.)
+    if (m_avatarNavButton)
+        m_avatarNavButton->setToolTip(
+            QStringLiteral("%1 \xC2\xB7 your node profile").arg(text));
+    if (color == m_connectionStatusColor)
         return;
-    m_connectionStatusHtml = html;
-    m_connectionStatus->setText(html);
+    m_connectionStatusColor = color;
+    // Only the fill + radius are set inline; the background-matching ring is
+    // themed via the #connectionDot rule in Theme.h so it works in light mode too.
+    m_connectionDot->setStyleSheet(
+        QStringLiteral("background:%1; border-radius:6px;").arg(color));
 }
 
 void MainWindow::updateBreadcrumb()
@@ -4338,16 +4458,11 @@ void MainWindow::updateBreadcrumb()
     updateRepoPushButton();
     if (!m_breadcrumb)
         return;
-    const int section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
-    // The relay / node / repo switchers already show the active location, so the
-    // old "Home > node/repo" trail was redundant. Only label non-Home sections.
-    if (section == 1) {
-        m_breadcrumb->setText(QStringLiteral("Settings"));
-        m_breadcrumb->show();
-    } else {
-        m_breadcrumb->clear();
-        m_breadcrumb->hide();
-    }
+    // The relay / node / repo switchers and the always-visible section nav (with
+    // its checked button) already show the active location, so the old breadcrumb
+    // trail is redundant. Keep the label hidden.
+    m_breadcrumb->clear();
+    m_breadcrumb->hide();
 }
 
 void MainWindow::updateRelaySwitcher()
@@ -4479,15 +4594,34 @@ QString formatSolanaBalance(qint64 lamports)
     return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
 }
 
-QString formatUsdBalance(qint64 lamports, double solUsd)
+// Display currency for the top-bar balance: "sol" | "usd" | "inr". Migrates
+// from the older USD-only boolean the first time, before it was a 3-way choice.
+QString solanaDisplayCurrency()
 {
-    const double usd = (lamports / 1000000000.0) * solUsd;
-    return QStringLiteral("$%1 USD").arg(usd, 0, 'f', 2);
+    QSettings s;
+    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
+    if (cur.isEmpty())
+        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
+                  ? QStringLiteral("usd")
+                  : QStringLiteral("sol");
+    if (cur != QLatin1String("usd") && cur != QLatin1String("inr"))
+        cur = QStringLiteral("sol");
+    return cur;
 }
 
-bool showSolanaBalanceUsd()
+QString fiatCurrencySymbol(const QString &cur)
 {
-    return QSettings().value(kSolanaDisplayUsdSetting, false).toBool();
+    return cur == QLatin1String("inr") ? QString::fromUtf8("\xE2\x82\xB9")
+                                       : QStringLiteral("$");
+}
+
+QString formatFiatBalance(qint64 lamports, double rate, const QString &cur)
+{
+    const double value = (lamports / 1000000000.0) * rate;
+    return QStringLiteral("%1%2 %3")
+        .arg(fiatCurrencySymbol(cur))
+        .arg(value, 0, 'f', 2)
+        .arg(cur.toUpper());
 }
 
 QString lastSolanaBalanceSetting(const QString &address)
@@ -4515,19 +4649,43 @@ void MainWindow::updateNodeSwitcher()
     m_nodeMenuButton->setIcon(QIcon());
 }
 
+void MainWindow::updateNavCurrencyButton()
+{
+    if (!m_navSolanaCurrencyButton)
+        return;
+    const QString cur = solanaDisplayCurrency();
+    const QString next = cur == QLatin1String("sol")   ? QStringLiteral("USD")
+                         : cur == QLatin1String("usd") ? QStringLiteral("INR")
+                                                       : QStringLiteral("SOL");
+    m_navSolanaCurrencyButton->setToolTip(
+        QStringLiteral("Showing balance in %1 \xE2\x80\x94 click to switch to %2")
+            .arg(cur.toUpper(), next));
+}
+
 void MainWindow::updateNavSolanaBalance()
 {
+    updateNavCurrencyButton();
+    if (m_navNodeName) {
+        const QString name = accountNameFromInput(m_userName, QString());
+        m_navNodeName->setText(name);
+        m_navNodeName->setToolTip(name);
+        m_navNodeName->setVisible(!name.isEmpty());
+    }
     if (!m_navSolanaBalance)
         return;
 
     const QString addr = savedSolanaAddress();
+    if (addr != m_navSolanaBalanceAddress)
+        m_navSolanaLamports = -1; // address changed: cached balance no longer applies
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
+        m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL --"));
         m_navSolanaBalance->setToolTip("Add a Solana address to show this node's balance");
         return;
     }
     if (!isLikelySolanaAddress(addr)) {
+        m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
         m_navSolanaBalance->setToolTip("Saved Solana address is invalid");
         return;
@@ -4536,6 +4694,45 @@ void MainWindow::updateNavSolanaBalance()
     m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
     m_navSolanaBalance->setToolTip(QStringLiteral("Checking this node's Solana balance"));
     queryNavSolanaBalance(addr, 0);
+}
+
+// Re-render the balance label from the cached lamports + fiat rate, without
+// touching the network. Falls back to a full refresh when we don't have a
+// cached balance yet, and to a single price fetch when the rate is stale.
+void MainWindow::renderNavSolanaBalance()
+{
+    if (!m_navSolanaBalance)
+        return;
+    if (m_navSolanaLamports < 0 || m_navSolanaBalanceAddress.isEmpty()) {
+        updateNavSolanaBalance(); // nothing cached yet — do the real fetch
+        return;
+    }
+    const QString cur = solanaDisplayCurrency();
+    const QString solBalance = formatSolanaBalance(m_navSolanaLamports);
+    if (cur == QLatin1String("sol")) {
+        m_navSolanaBalance->setText(solBalance);
+        m_navSolanaBalance->setToolTip(
+            QStringLiteral("This node's Solana balance: %1").arg(solBalance));
+        return;
+    }
+    const auto it = m_navFiatRates.constFind(cur);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool fresh = it != m_navFiatRates.constEnd() && it->first > 0.0 &&
+                       now - it->second < 5 * 60 * 1000; // 5-minute rate cache
+    if (fresh) {
+        const QString fiatBalance =
+            formatFiatBalance(m_navSolanaLamports, it->first, cur);
+        m_navSolanaBalance->setText(fiatBalance);
+        m_navSolanaBalance->setToolTip(
+            QStringLiteral("This node's balance: %1 (%2)")
+                .arg(fiatBalance, solBalance));
+        return;
+    }
+    // No fresh rate cached: show the SOL figure with a hint and fetch one rate.
+    m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
+    m_navSolanaBalance->setToolTip(
+        QStringLiteral("Checking SOL/%1 price for %2").arg(cur.toUpper(), solBalance));
+    queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
 }
 
 void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
@@ -4574,6 +4771,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             return;
         }
         const qint64 lamports = result.value("value").toVariant().toLongLong();
+        m_navSolanaLamports = lamports; // cache so currency switches don't re-query
         QSettings settings;
         const QString lastBalanceKey = lastSolanaBalanceSetting(addr);
         const QVariant previousValue = settings.value(lastBalanceKey);
@@ -4590,10 +4788,13 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
                              false, QStringLiteral("emblem-default"));
         }
         settings.setValue(lastBalanceKey, QString::number(lamports));
-        if (showSolanaBalanceUsd()) {
-            m_navSolanaBalance->setText(QStringLiteral("$ ..."));
+        const QString cur = solanaDisplayCurrency();
+        if (cur != QLatin1String("sol")) {
+            m_navSolanaBalance->setText(
+                QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("Checking SOL/USD price for %1").arg(balance));
+                QStringLiteral("Checking SOL/%1 price for %2")
+                    .arg(cur.toUpper(), balance));
             queryNavSolanaUsdPrice(addr, lamports);
             return;
         }
@@ -4605,35 +4806,42 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
 
 void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
 {
-    QNetworkRequest request(QUrl(QStringLiteral(
-        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")));
+    const QString cur = solanaDisplayCurrency();
+    if (cur == QLatin1String("sol"))
+        return;
+    QNetworkRequest request(QUrl(
+        QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
+                       "?ids=solana&vs_currencies=%1").arg(cur)));
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, addr, lamports]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, addr, lamports, cur]() {
         const QByteArray raw = reply->readAll();
         const QNetworkReply::NetworkError netError = reply->error();
         reply->deleteLater();
         if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
-            !showSolanaBalanceUsd())
+            solanaDisplayCurrency() != cur)
             return;
 
         const QString solBalance = formatSolanaBalance(lamports);
-        const double solUsd =
+        const double rate =
             QJsonDocument::fromJson(raw).object()
                 .value(QStringLiteral("solana")).toObject()
-                .value(QStringLiteral("usd")).toDouble();
-        if (netError != QNetworkReply::NoError || solUsd <= 0.0) {
+                .value(cur).toDouble();
+        if (netError != QNetworkReply::NoError || rate <= 0.0) {
             m_navSolanaBalance->setText(solBalance);
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("SOL/USD price unavailable. Balance: %1")
-                    .arg(solBalance));
+                QStringLiteral("SOL/%1 price unavailable. Balance: %2")
+                    .arg(cur.toUpper(), solBalance));
             return;
         }
 
-        const QString usdBalance = formatUsdBalance(lamports, solUsd);
-        m_navSolanaBalance->setText(usdBalance);
+        m_navFiatRates[cur] = {rate, QDateTime::currentMSecsSinceEpoch()};
+        const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
+        m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's balance: %1 (%2 at $%3/SOL)")
-                .arg(usdBalance, solBalance, QString::number(solUsd, 'f', 2)));
+            QStringLiteral("This node's balance: %1 (%2 at %3%4/SOL)")
+                .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
+                     QString::number(rate, 'f', 2)));
     });
 }
 
@@ -4888,8 +5096,8 @@ void MainWindow::updateRepoSwitcher()
     // Nothing in the repo area when the selected node has no repos.
     const bool hasRepos = !m_repoMenuEntries.isEmpty();
     m_repoMenuButton->setVisible(hasRepos);
-    if (m_repoViewButton)
-        m_repoViewButton->setVisible(hasRepos);
+    // The Code button is primary section nav now, so it stays visible even with
+    // no repos (it just lands on the empty Home view).
     if (m_repoLabel)
         m_repoLabel->setVisible(hasRepos);
     if (!hasRepos)
@@ -5217,23 +5425,9 @@ void MainWindow::showRepoMenu()
 
 void MainWindow::showChatView()
 {
-    showSection(0); // Home hosts the repo-detail stack (which holds Chat)
-    // Chat has no repo tab, so clear any checked tab while it's shown.
-    if (m_repoDetailTabs) {
-        if (QAbstractButton *checked = m_repoDetailTabs->checkedButton()) {
-            m_repoDetailTabs->setExclusive(false);
-            checked->setChecked(false);
-            m_repoDetailTabs->setExclusive(true);
-        }
-    }
-    if (m_repoDetailStack && m_chatStackIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
-    // Reading the chat clears the unread marker for the open conversation.
-    if (!m_currentConversation.isEmpty() && m_unread.remove(m_currentConversation)) {
-        refreshChannelList();
-        refreshDmList();
-    }
-    updateChatButton();
+    // Chat is its own top-level section now; switching to it clears the unread
+    // marker for the open conversation (handled in showSection).
+    showSection(2);
 }
 
 void MainWindow::updateChatButton()
@@ -5243,22 +5437,19 @@ void MainWindow::updateChatButton()
     const bool unread = !m_unread.isEmpty();
     // A green comment glyph marks unread chats; otherwise the themed default.
     if (unread)
-        m_chatButton->setIcon(themedOcticon("comment", QColor("#2ea043"), 18));
+        m_chatButton->setIcon(themedOcticon("comment", QColor("#2ea043"), 16));
     else
-        setOcticon(m_chatButton, "comment", 18);
+        setOcticon(m_chatButton, "comment", 16);
     m_chatButton->setToolTip(unread ? QStringLiteral("Chat \xE2\x80\x94 unread messages")
                                     : QStringLiteral("Chat"));
 }
 
 bool MainWindow::isChatViewVisible() const
 {
-    // The chat lives on the Home section's repo-detail stack. It's "being read"
-    // only when Home is the active section and the Chat page is the current tab,
-    // and the app window is active (not minimized / in the background).
+    // Chat is its own section (index 2). It's "being read" only when that
+    // section is active and the app window is active (not minimized / behind).
     return isActiveWindow() && m_sectionStack &&
-           m_sectionStack->currentIndex() == 0 && m_repoDetailStack &&
-           m_chatStackIndex >= 0 &&
-           m_repoDetailStack->currentIndex() == m_chatStackIndex;
+           m_sectionStack->currentIndex() == 2;
 }
 
 QWidget *MainWindow::buildSolanaNotice()
@@ -5334,6 +5525,17 @@ void MainWindow::showSection(int index)
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
+    else if (index == 2) {
+        // Entering Chat clears the unread marker for the open conversation.
+        if (!m_currentConversation.isEmpty() &&
+            m_unread.remove(m_currentConversation)) {
+            refreshChannelList();
+            refreshDmList();
+        }
+        updateChatButton();
+    } else if (index == 3) {
+        refreshNotificationsTable();
+    }
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -5363,12 +5565,44 @@ QWidget *MainWindow::buildHomeSection()
     return page;
 }
 
+// Small helper: an icon-only quick-action button for the "THIS NODE" toolbar at
+// the top of the profile panel. Bigger tap target, tooltip-labelled.
+static QPushButton *makeProfileActionButton(const QString &icon,
+                                            const QString &tooltip)
+{
+    auto *button = new QPushButton;
+    button->setObjectName("profileActionButton");
+    button->setCursor(Qt::PointingHandCursor);
+    button->setToolTip(tooltip);
+    button->setFixedHeight(44);
+    button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setOcticon(button, icon, 22);
+    return button;
+}
+
+// Section header label ("HOSTING", "SOLANA", …) used throughout the panel.
+static QLabel *makeProfileSection(const QString &text)
+{
+    auto *label = new QLabel(text);
+    label->setObjectName("sectionLabel");
+    return label;
+}
+
 QWidget *MainWindow::buildNodeProfilePanel()
 {
-    m_nodeProfilePanel = new QWidget;
-    m_nodeProfilePanel->setObjectName("nodeProfilePanel");
-    m_nodeProfilePanel->setMinimumWidth(280);
-    m_nodeProfilePanel->setMaximumWidth(380);
+    // The panel can grow tall (mirrors, hosting, Solana, QR), so it lives in a
+    // scroll area; the scroll area itself is what we show/hide.
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("nodeProfilePanel");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setMinimumWidth(300);
+    scroll->setMaximumWidth(400);
+    m_nodeProfilePanel = scroll;
+
+    auto *content = new QWidget;
+    content->setObjectName("nodeProfileContent");
 
     auto *closeButton = new QPushButton(QString());
     closeButton->setObjectName("ghostButton");
@@ -5384,55 +5618,27 @@ QWidget *MainWindow::buildNodeProfilePanel()
     topRow->addStretch();
     topRow->addWidget(closeButton);
 
+    // --- Full-width avatar banner. Re-rendered to the panel's width on resize
+    // (see eventFilter / rescaleProfileAvatar).
     m_profileAvatar = new QLabel;
-    m_profileAvatar->setFixedSize(72, 72);
-    m_profileAvatar->setScaledContents(true);
+    m_profileAvatar->setObjectName("profileBanner");
+    m_profileAvatar->setFixedHeight(168);
+    m_profileAvatar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_profileAvatar->setAlignment(Qt::AlignCenter);
+    m_profileAvatar->installEventFilter(this);
+
     m_profileName = new QLabel;
-    m_profileName->setObjectName("channelTitle");
+    m_profileName->setObjectName("profileName");
+    m_profileName->setAlignment(Qt::AlignHCenter);
     m_profileName->setWordWrap(true);
     m_profileStatus = new QLabel;
     m_profileStatus->setObjectName("statusLine");
+    m_profileStatus->setAlignment(Qt::AlignHCenter);
     m_profileStatus->setTextFormat(Qt::RichText);
-    m_profilePlatform = new QLabel;
-    m_profilePlatform->setObjectName("statusLine");
-    m_profileVersion = new QLabel;
-    m_profileVersion->setObjectName("statusLine");
-    m_profileMirrors = new QLabel;
-    m_profileMirrors->setObjectName("statusLine");
-    m_profileMirrors->setWordWrap(true);
-    m_profileStats = new QLabel;
-    m_profileStats->setObjectName("statusLine");
-    m_profileStats->setWordWrap(true);
-    m_profileStats->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    // Per-repo hosting stats relocated from the repo detail view.
-    m_profileHostingLabel = new QLabel("HOSTING");
-    m_profileHostingLabel->setObjectName("sectionLabel");
-    m_profileHosting = new QLabel;
-    m_profileHosting->setObjectName("statusLine");
-    m_profileHosting->setWordWrap(true);
-    m_profileHosting->setTextFormat(Qt::RichText);
-    m_profileHosting->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_profileNote = new QLabel;
     m_profileNote->setObjectName("statusLine");
+    m_profileNote->setAlignment(Qt::AlignHCenter);
     m_profileNote->setWordWrap(true);
-
-    // Node ID = the node's Ed25519 public key. Selectable so it can be copied.
-    auto *nodeKeyLabel = new QLabel("NODE ID (PUBLIC KEY)");
-    nodeKeyLabel->setObjectName("sectionLabel");
-    m_profileNodeKey = new QLabel;
-    m_profileNodeKey->setObjectName("statusLine");
-    m_profileNodeKey->setWordWrap(true);
-    m_profileNodeKey->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_profileNodeKey->setStyleSheet("font-family:monospace;");
-    auto *copyKey = new QPushButton("Copy node ID");
-    copyKey->setObjectName("ghostButton");
-    copyKey->setCursor(Qt::PointingHandCursor);
-    connect(copyKey, &QPushButton::clicked, this, [this] {
-        if (!m_profileNodeId.isEmpty()) {
-            QApplication::clipboard()->setText(m_profileNodeId);
-            logSystem("Copied node ID to clipboard.");
-        }
-    });
 
     m_profileMessageButton = new QPushButton("Message");
     m_profileMessageButton->setObjectName("ghostButton");
@@ -5443,18 +5649,112 @@ QWidget *MainWindow::buildNodeProfilePanel()
             openDirectChat(m_profileNodeId, m_profileNodeName);
     });
 
+    // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
+    // (rebuild, update, settings, logout) that used to be a stacked text menu.
+    m_profileSelfActions = new QWidget;
+    auto *selfLabel = makeProfileSection("THIS NODE");
+    m_profileRebuildButton = makeProfileActionButton(
+        "sync",
+        "Rebuild from the local source checkout and relaunch (fast; no update)");
+    connect(m_profileRebuildButton, &QPushButton::clicked, this,
+            [this] { quickRebuildRestart(); });
+    m_profileUpdateButton = makeProfileActionButton(
+        "download", "Pull the latest source, then rebuild and relaunch");
+    connect(m_profileUpdateButton, &QPushButton::clicked, this,
+            [this] { updateRebuildRestart(); });
+    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings");
+    connect(selfSettingsButton, &QPushButton::clicked, this,
+            [this] { showSection(1); });
+    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout");
+    connect(selfLogoutButton, &QPushButton::clicked, this,
+            [this] { leaveSession(); });
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    actionRow->addWidget(m_profileRebuildButton);
+    actionRow->addWidget(m_profileUpdateButton);
+    actionRow->addWidget(selfSettingsButton);
+    actionRow->addWidget(selfLogoutButton);
+    auto *selfLayout = new QVBoxLayout(m_profileSelfActions);
+    selfLayout->setContentsMargins(0, 0, 0, 0);
+    selfLayout->setSpacing(6);
+    selfLayout->addWidget(selfLabel);
+    selfLayout->addLayout(actionRow);
+
+    // --- Headline stat tiles (self only): repos / mirrored / online / chats.
+    m_profileStatGrid = new QWidget;
+    auto makeTile = [](QLabel *&tile) {
+        tile = new QLabel;
+        tile->setObjectName("statTile");
+        tile->setTextFormat(Qt::RichText);
+        tile->setAlignment(Qt::AlignCenter);
+        tile->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    };
+    makeTile(m_profileTileRepos);
+    makeTile(m_profileTileMirrored);
+    makeTile(m_profileTileOnline);
+    makeTile(m_profileTileChats);
+    auto *tileRow = new QHBoxLayout(m_profileStatGrid);
+    tileRow->setContentsMargins(0, 0, 0, 0);
+    tileRow->setSpacing(6);
+    tileRow->addWidget(m_profileTileRepos);
+    tileRow->addWidget(m_profileTileMirrored);
+    tileRow->addWidget(m_profileTileOnline);
+    tileRow->addWidget(m_profileTileChats);
+
+    // --- Details card: status / platform / version / uptime / key as a tidy
+    // key:value table.
+    auto *detailsLabel = makeProfileSection("DETAILS");
+    m_profileDetails = new QLabel;
+    m_profileDetails->setObjectName("profileCard");
+    m_profileDetails->setTextFormat(Qt::RichText);
+    m_profileDetails->setWordWrap(true);
+    m_profileDetails->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // --- Mirrors advertised by this node (with HEAD detail when available).
+    m_profileMirrorsLabel = makeProfileSection("MIRRORS");
+    m_profileMirrors = new QLabel;
+    m_profileMirrors->setObjectName("profileCard");
+    m_profileMirrors->setTextFormat(Qt::RichText);
+    m_profileMirrors->setWordWrap(true);
+    m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // --- Per-repo hosting stats relocated from the repo detail view.
+    m_profileHostingLabel = makeProfileSection("HOSTING");
+    m_profileHosting = new QLabel;
+    m_profileHosting->setObjectName("profileCard");
+    m_profileHosting->setWordWrap(true);
+    m_profileHosting->setTextFormat(Qt::RichText);
+    m_profileHosting->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // --- Node ID = the node's Ed25519 public key. Selectable so it can be copied.
+    auto *nodeKeyLabel = makeProfileSection("NODE ID (PUBLIC KEY)");
+    m_profileNodeKey = new QLabel;
+    m_profileNodeKey->setObjectName("profileMono");
+    m_profileNodeKey->setWordWrap(true);
+    m_profileNodeKey->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *copyKey = new QPushButton("Copy node ID");
+    copyKey->setObjectName("ghostButton");
+    copyKey->setCursor(Qt::PointingHandCursor);
+    setOcticon(copyKey, "copy", 14);
+    connect(copyKey, &QPushButton::clicked, this, [this] {
+        if (!m_profileNodeId.isEmpty()) {
+            QApplication::clipboard()->setText(m_profileNodeId);
+            logSystem("Copied node ID to clipboard.");
+        }
+    });
+
     // --- Solana section: address, QR, on-demand balance.
     m_profileSolanaSection = new QWidget;
-    auto *solanaLabel = new QLabel("SOLANA");
-    solanaLabel->setObjectName("sectionLabel");
+    auto *solanaLabel = makeProfileSection("SOLANA");
     m_profileSolanaAddr = new QLabel;
-    m_profileSolanaAddr->setObjectName("statusLine");
+    m_profileSolanaAddr->setObjectName("profileMono");
     m_profileSolanaAddr->setWordWrap(true);
     m_profileSolanaAddr->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_profileSolanaAddr->setStyleSheet("font-family:monospace;");
     auto *copyAddr = new QPushButton("Copy address");
     copyAddr->setObjectName("ghostButton");
     copyAddr->setCursor(Qt::PointingHandCursor);
+    setOcticon(copyAddr, "copy", 14);
     connect(copyAddr, &QPushButton::clicked, this, [this] {
         if (!m_profileSolanaValue.isEmpty()) {
             QApplication::clipboard()->setText(m_profileSolanaValue);
@@ -5462,6 +5762,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
         }
     });
     m_profileQr = new QLabel;
+    m_profileQr->setObjectName("profileQr");
     m_profileQr->setAlignment(Qt::AlignCenter);
 
     m_profileBalance = new QLabel("\xE2\x80\x94"); // em dash until checked
@@ -5469,6 +5770,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileBalanceButton = new QPushButton("Check balance");
     m_profileBalanceButton->setObjectName("ghostButton");
     m_profileBalanceButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileBalanceButton, "sync", 14);
     m_profileBalanceButton->setToolTip(
         "Query the Solana network through public JSON-RPC for this wallet's "
         "balance. This sends the address to the endpoint it connects to.");
@@ -5486,8 +5788,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(m_profileSolanaAddr);
     solanaLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
     solanaLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
-    auto *balLabel = new QLabel("BALANCE");
-    balLabel->setObjectName("sectionLabel");
+    auto *balLabel = makeProfileSection("BALANCE");
     solanaLayout->addWidget(balLabel);
     solanaLayout->addLayout(balanceRow);
 
@@ -5505,29 +5806,32 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(m_profileEligibility);
     solanaLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
 
-    auto *layout = new QVBoxLayout(m_nodeProfilePanel);
+    auto *layout = new QVBoxLayout(content);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(8);
     layout->addLayout(topRow);
-    layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileName, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatus, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileNote, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profilePlatform);
-    layout->addWidget(m_profileVersion);
+    layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
+    layout->addWidget(m_profileAvatar);
+    layout->addWidget(m_profileName);
+    layout->addWidget(m_profileStatus);
+    layout->addWidget(m_profileNote);
+    layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    layout->addWidget(m_profileStatGrid);
+    layout->addWidget(detailsLabel);
+    layout->addWidget(m_profileDetails);
+    layout->addWidget(m_profileMirrorsLabel);
     layout->addWidget(m_profileMirrors);
-    layout->addWidget(m_profileStats);
     layout->addWidget(m_profileHostingLabel);
     layout->addWidget(m_profileHosting);
     layout->addWidget(nodeKeyLabel);
     layout->addWidget(m_profileNodeKey);
     layout->addWidget(copyKey, 0, Qt::AlignLeft);
-    layout->addWidget(m_profileMessageButton, 0, Qt::AlignLeft);
     layout->addWidget(m_profileSolanaSection);
     layout->addStretch();
 
-    m_nodeProfilePanel->hide();
-    return m_nodeProfilePanel;
+    scroll->setWidget(content);
+    scroll->hide();
+    return scroll;
 }
 
 void MainWindow::hideNodeProfile()
@@ -5537,6 +5841,18 @@ void MainWindow::hideNodeProfile()
     m_profileNodeId.clear();
     m_profileNodeName.clear();
     m_profileSolanaValue.clear();
+}
+
+void MainWindow::rescaleProfileAvatar()
+{
+    if (!m_profileAvatar)
+        return;
+    const int w = qMax(m_profileAvatar->width(), 1);
+    const int h = m_profileAvatar->height();
+    QPixmap src = m_profileAvatarSource;
+    if (src.isNull())
+        src = letterFavicon(m_profileNodeName);
+    m_profileAvatar->setPixmap(roundedBannerPixmap(src, w, h, 16));
 }
 
 void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
@@ -5558,6 +5874,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (!found) {
         info.id = nodeId;
         info.name = nodeName;
+        // Offline / empty roster: still recognise our own node so the avatar's
+        // profile keeps its restart / settings / logout actions.
+        info.self = !nodeId.isEmpty() && nodeId == m_profileIdentity.publicKey();
     }
     // Self's Solana address may only live in local settings.
     QString solana = info.solanaAddress.trimmed();
@@ -5567,12 +5886,14 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileNodeId = info.id;
     m_profileNodeName = info.name;
     m_profileSolanaValue = solana;
+    m_profileIsSelf = info.self;
 
-    // Avatar: real avatar if we have one, else a generated letter tile.
+    // Full-width avatar banner: real avatar if we have one, else a letter tile.
     QPixmap avatar = m_avatars.value(info.id);
     if (avatar.isNull())
         avatar = letterFavicon(info.name);
-    m_profileAvatar->setPixmap(roundedRectPixmap(avatar, 72, 18));
+    m_profileAvatarSource = avatar;
+    rescaleProfileAvatar();
 
     m_profileName->setText(info.name.toHtmlEscaped() +
                            (info.self ? " (you)" : QString()));
@@ -5580,48 +5901,6 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileStatus->setText(
         QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2")
             .arg(online ? "#3fb950" : "#8b949e", online ? "Online" : "Offline"));
-
-    m_profilePlatform->setText(
-        info.platform.isEmpty()
-            ? QStringLiteral("Platform: unknown")
-            : QStringLiteral("Platform: %1").arg(info.platform));
-    m_profilePlatform->setVisible(!info.platform.isEmpty());
-
-    m_profileVersion->setText(
-        info.version.isEmpty()
-            ? QStringLiteral("Version: unknown")
-            : QStringLiteral("Version: v%1").arg(info.version.toHtmlEscaped()));
-    m_profileVersion->setVisible(!info.version.isEmpty());
-
-    if (info.mirrors.isEmpty()) {
-        m_profileMirrors->setText("Mirrors: none advertised");
-    } else {
-        m_profileMirrors->setText(
-            QStringLiteral("Mirrors (%1): %2")
-                .arg(info.mirrors.size())
-                .arg(info.mirrors.join(", ").toHtmlEscaped()));
-    }
-
-    // Detailed node stats (repos/mirrored/online/chats, uptime, key) — moved
-    // here from under the node in the list. Only meaningful for your own node.
-    if (m_profileStats) {
-        if (info.self) {
-            m_profileStats->setText(selfNodeStats());
-            m_profileStats->setVisible(true);
-        } else {
-            m_profileStats->clear();
-            m_profileStats->setVisible(false);
-        }
-    }
-
-    // Per-repo hosting stats (served/clones/hosted-since/last-sync) live here
-    // now, for your own node only.
-    m_profileIsSelf = info.self;
-    refreshProfileHostingStats();
-
-    // Discovery note (e.g. "(discovered)"), shown only when present.
-    m_profileNote->setText(info.note.toHtmlEscaped());
-    m_profileNote->setVisible(!info.note.trimmed().isEmpty());
 
     // Node ID = Ed25519 public key. For yourself, fall back to our own key when
     // the roster entry has no id yet.
@@ -5632,7 +5911,121 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileNodeKey->setText(nodeKey.isEmpty() ? QStringLiteral("unknown")
                                                 : nodeKey);
 
+    // --- Headline stat tiles (self only): repos / mirrored / online / chats.
+    if (info.self) {
+        int repos = 0, mirrored = 0, onlineRepos = 0;
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly)
+                continue;
+            ++repos;
+            if (repo.lastSyncMs > 0 ||
+                (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()))
+                ++mirrored;
+            if (repo.publishedAtMs > 0 || repo.publishToNetwork)
+                ++onlineRepos;
+        }
+        auto tile = [](QLabel *label, int n, const QString &caption) {
+            label->setText(
+                QStringLiteral(
+                    "<span style='font-size:22px;font-weight:700'>%1</span>"
+                    "<br><span style='font-size:10px;letter-spacing:1px;"
+                    "color:#8b949e'>%2</span>")
+                    .arg(n)
+                    .arg(caption));
+        };
+        tile(m_profileTileRepos, repos, QStringLiteral("REPOS"));
+        tile(m_profileTileMirrored, mirrored, QStringLiteral("MIRRORED"));
+        tile(m_profileTileOnline, onlineRepos, QStringLiteral("ONLINE"));
+        tile(m_profileTileChats, m_channels.size(), QStringLiteral("CHATS"));
+    }
+    m_profileStatGrid->setVisible(info.self);
+
+    // --- Details card: a tidy key:value table (status, platform, version,
+    // uptime/total for self, short key). Only rows we actually know are shown.
+    auto detailRow = [](const QString &key, const QString &value) {
+        return QStringLiteral(
+                   "<tr><td style='color:#8b949e;padding:1px 14px 1px 0;"
+                   "white-space:nowrap'>%1</td>"
+                   "<td style='padding:1px 0'>%2</td></tr>")
+            .arg(key, value);
+    };
+    QStringList rows;
+    rows << detailRow(QStringLiteral("Status"),
+                      online ? QStringLiteral("Online") : QStringLiteral("Offline"));
+    if (!info.platform.isEmpty())
+        rows << detailRow(QStringLiteral("Platform"), info.platform.toHtmlEscaped());
+    if (!info.version.isEmpty())
+        rows << detailRow(QStringLiteral("Version"),
+                          QStringLiteral("v%1").arg(info.version.toHtmlEscaped()));
+    if (info.self) {
+        const qint64 sessionMs =
+            m_connectedAtMs > 0
+                ? QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs
+                : 0;
+        rows << detailRow(QStringLiteral("Uptime"), formatDuration(sessionMs));
+        rows << detailRow(QStringLiteral("Total uptime"),
+                          formatDuration(m_totalConnectionMs + sessionMs));
+        rows << detailRow(QStringLiteral("Channels"),
+                          QString::number(m_channels.size()));
+    }
+    const QString shortKey =
+        nodeKey.size() > 16
+            ? nodeKey.left(8) + QString::fromUtf8("\xE2\x80\xA6") + nodeKey.right(6)
+            : nodeKey;
+    if (!shortKey.isEmpty())
+        rows << detailRow(QStringLiteral("Key"), shortKey.toHtmlEscaped());
+    m_profileDetails->setText(
+        QStringLiteral("<table cellspacing='0' cellpadding='0'>%1</table>")
+            .arg(rows.join(QString())));
+
+    // --- Mirrors advertised by this node, with HEAD detail when available.
+    if (info.mirrors.isEmpty()) {
+        m_profileMirrorsLabel->setVisible(false);
+        m_profileMirrors->setVisible(false);
+    } else {
+        m_profileMirrorsLabel->setText(
+            QStringLiteral("MIRRORS (%1)").arg(info.mirrors.size()));
+        QHash<QString, MirrorAdvert> byKey;
+        for (const MirrorAdvert &d : std::as_const(info.mirrorDetails)) {
+            if (!d.source.isEmpty())
+                byKey.insert(d.source, d);
+            if (!d.ownerName.isEmpty())
+                byKey.insert(d.ownerName, d);
+        }
+        QStringList lines;
+        for (const QString &m : std::as_const(info.mirrors)) {
+            const MirrorAdvert d = byKey.value(m);
+            QString detail;
+            if (!d.branch.isEmpty() || !d.commit.isEmpty()) {
+                QStringList parts;
+                if (!d.branch.isEmpty())
+                    parts << d.branch.toHtmlEscaped();
+                if (!d.commit.isEmpty())
+                    parts << QStringLiteral("@ %1").arg(d.commit.left(7));
+                if (d.updatedMs > 0)
+                    parts << formatRepoDate(d.updatedMs);
+                detail = QStringLiteral(
+                             "<br><span style='color:#8b949e'>%1</span>")
+                             .arg(parts.join(QString::fromUtf8(" \xC2\xB7 ")));
+            }
+            lines << QStringLiteral("<b>%1</b>%2").arg(m.toHtmlEscaped(), detail);
+        }
+        m_profileMirrors->setText(lines.join(QStringLiteral("<br>")));
+        m_profileMirrorsLabel->setVisible(true);
+        m_profileMirrors->setVisible(true);
+    }
+
+    // Per-repo hosting stats (served/clones/hosted-since/last-sync), self only.
+    refreshProfileHostingStats();
+
+    // Discovery note (e.g. "(discovered)"), shown only when present.
+    m_profileNote->setText(info.note.toHtmlEscaped());
+    m_profileNote->setVisible(!info.note.trimmed().isEmpty());
+
     m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
+    // Restart / settings / logout only make sense for your own node.
+    if (m_profileSelfActions)
+        m_profileSelfActions->setVisible(info.self);
 
     // Wallet verification + eligibility badge are shown only on your own profile.
     if (m_profileVerifyButton)
@@ -5769,18 +6162,30 @@ void MainWindow::selectNode(const QString &node)
         return;
     m_selectedNode = node;
     refreshRepositoryList();
-    // Show the selected node's first real repository, or blank the panel if it
-    // has none, so stale info from the previous node isn't left on screen.
-    int firstRepo = -1;
-    for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
-        if (entry.index >= 0) {
-            firstRepo = entry.index;
-            break;
-        }
-    if (firstRepo >= 0)
-        openRepoDetail(firstRepo);
-    else
-        clearRepoDetail();
+    // Opening the first repo runs a cascade of *synchronous* git commands
+    // (branches, commits, the file-search index, object size, README, …), each
+    // able to block for up to runGitCapture's 8s timeout. Doing that inline —
+    // while the node dropdown is still closing — freezes the UI thread long
+    // enough for the window manager to flag the app as "Not Responding".
+    // Defer it to the next event-loop turn so the menu closes and the node
+    // profile paints first, and coalesce rapid switches by re-checking the
+    // selection when the deferred load actually fires.
+    QTimer::singleShot(0, this, [this, node] {
+        if (m_selectedNode != node)
+            return; // a newer node switch superseded this one
+        // Show the selected node's first real repository, or blank the panel if
+        // it has none, so stale info from the previous node isn't left behind.
+        int firstRepo = -1;
+        for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
+            if (entry.index >= 0) {
+                firstRepo = entry.index;
+                break;
+            }
+        if (firstRepo >= 0)
+            openRepoDetail(firstRepo);
+        else
+            clearRepoDetail();
+    });
 }
 
 void MainWindow::clearRepoDetail()
@@ -5919,11 +6324,43 @@ QWidget *MainWindow::buildIssuesSection()
     setOcticon(reprioritizeButton, "sort-desc", 16);
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
+
+    // Bulk bounty: pledge the same amount on every open issue at once. Bounties
+    // are pledged only (funded on merge), so this never moves money.
+    auto *bountyAllAmount = new QLineEdit;
+    bountyAllAmount->setObjectName("issueControlSm");
+    bountyAllAmount->setPlaceholderText("$ all");
+    bountyAllAmount->setMaximumWidth(70);
+    bountyAllAmount->setToolTip("Bounty amount (USD) to pledge on every open issue");
+    auto *bountyAllButton = new QPushButton("Bounty all");
+    bountyAllButton->setObjectName("ghostButton");
+    bountyAllButton->setProperty("buttonSize", "sm");
+    bountyAllButton->setCursor(Qt::PointingHandCursor);
+    bountyAllButton->setToolTip(
+        "Pledge this bounty on every open issue (funded when each PR is merged)");
+    setOcticon(bountyAllButton, "tag", 16);
+    auto applyBountyAll = [this, bountyAllAmount] {
+        bool ok = false;
+        const double amount = bountyAllAmount->text().trimmed().toDouble(&ok);
+        if (!ok || amount < 1.0) {
+            setIssueInlineNotice(
+                "Enter a bounty amount (USD \xE2\x89\xA5 1) to apply to all open "
+                "issues.",
+                true);
+            return;
+        }
+        bountyAllOpenIssues(amount);
+    };
+    connect(bountyAllButton, &QPushButton::clicked, this, applyBountyAll);
+    connect(bountyAllAmount, &QLineEdit::returnPressed, this, applyBountyAll);
+
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
     actionRow->addWidget(reprioritizeButton);
+    actionRow->addWidget(bountyAllAmount);
+    actionRow->addWidget(bountyAllButton);
     actionRow->addWidget(m_issueStatusFilter);
     actionRow->addStretch();
     actionRow->addWidget(m_issueCreditsLabel);
@@ -6630,6 +7067,13 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(16, 12, 16, 4);
     headerRow->setSpacing(8);
+    // Left cluster (Code / Chat / Notifications / Settings) is filled in later by
+    // buildBreadcrumb, which creates those buttons and adds them here so they sit
+    // on the same line as the repo actions, below the Solana notice.
+    m_repoHeaderLeft = new QHBoxLayout;
+    m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
+    m_repoHeaderLeft->setSpacing(8);
+    headerRow->addLayout(m_repoHeaderLeft);
     headerRow->addStretch();
     headerRow->addWidget(notifyButton);
     headerRow->addWidget(m_forkButton);
@@ -6665,7 +7109,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     };
     // Note: existing pages are index-addressed in several places (idClicked,
     // switchTo*). Branches/Releases are appended after Insights so those indices
-    // stay valid; Chat is added last and tracked via m_chatStackIndex.
+    // stay valid. Chat is no longer here — it's a top-level section.
     const QList<TabDef> tabs = {{"Code", "code"},
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
@@ -6676,7 +7120,8 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
                                 {"Releases", "tag"},
-                                {"Mirror nodes", "server"}};
+                                {"Mirror nodes", "server"},
+                                {"Settings", "gear"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -6691,8 +7136,13 @@ QWidget *MainWindow::buildRepoDetailSection()
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
         if (i == 0)
             b->setChecked(true);
-        if (i == 0)
+        if (i == 0) {
             m_repoCodeTab = b;
+            // The Code tab is reached from the header "Code" nav button now, so
+            // it no longer needs its own pill next to Commits. Kept in the group
+            // (so the nav button can still check it) but hidden from the tab row.
+            b->hide();
+        }
         if (i == 1)
             m_repoCommitsTab = b;
         if (i == 2)
@@ -6703,6 +7153,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoPullsTab = b;
         if (i == 5)
             m_repoActionsTab = b; // handle for the Actions (N) badge
+        if (i == 10)
+            m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
         m_repoDetailTabs->addButton(b, i);
         tabRow->addWidget(b);
     }
@@ -6727,9 +7179,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 9 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 10 Mirror nodes
-    // Chat has no repo tab any more — it's reached from the top-bar Chat button.
-    m_chatStackIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildChatSection());                    // 11 Chat
+    m_settingsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 11 Settings
+    // Chat is no longer part of the repo hierarchy: it's a top-level section
+    // (m_sectionStack index 2), reached from the always-visible nav.
+    m_chatStackIndex = -1;
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 2 && m_repoDetailIndex >= 0 &&
@@ -6756,12 +7210,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadReleasesPanel();
         else if (id == m_mirrorNodesTabIndex)
             loadMirrorNodesPanel();
+        else if (id == m_settingsTabIndex)
+            refreshRepoSettings();
     });
 
-    // Before any repository is opened the Code/Commits/… tabs have nothing to
-    // show, so land on the always-useful Chat view (no tab; reached via the
-    // top-bar Chat button). Opening a repo switches to Code (see openRepoDetail).
-    m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+    // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
+    m_repoDetailStack->setCurrentIndex(0);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -7054,12 +7508,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *outerSplit = new QSplitter(Qt::Horizontal);
     outerSplit->addWidget(listPage);
     outerSplit->addWidget(m_commitsStack);
-    outerSplit->setStretchFactor(0, 0);
+    // #123: open the commit list to half the window width on first load so its
+    // columns aren't clipped (the right pane is just a placeholder until a commit
+    // is selected). Equal stretch factors keep it ~50/50 at any window width — a
+    // zero stretch on the list otherwise handed all the extra space on a wide
+    // window to the placeholder and left the list clipped. Still draggable.
+    outerSplit->setStretchFactor(0, 1);
     outerSplit->setStretchFactor(1, 1);
-    // #123: open the commit list to about half the width on first load so its
-    // columns aren't clipped (the right pane is just a placeholder until a
-    // commit is selected). The divider is still draggable from here.
-    outerSplit->setSizes({600, 600});
+    outerSplit->setSizes({1000, 1000});
 
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
@@ -7300,7 +7756,6 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTitle->setWordWrap(true);
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
-    m_pullPushMainCheck = new QCheckBox("Push to main");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullSplitButton = new QPushButton;
@@ -7331,15 +7786,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
-    m_pullPushMainCheck->setToolTip(
-        "After merging, push the merged commit to the pull request's base branch in this repo's mirror.");
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
-    pullHeaderRow->addWidget(m_pullPushMainCheck, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
@@ -7633,8 +8085,6 @@ void MainWindow::showPull(int number)
                                m_pullRequestChangesButton})
             if (b)
                 b->setEnabled(false);
-        if (m_pullPushMainCheck)
-            m_pullPushMainCheck->setText("Push to main");
         updatePullActionState();
         return;
     }
@@ -7647,9 +8097,6 @@ void MainWindow::showPull(int number)
                            m_pullRequestChangesButton})
         if (b)
             b->setEnabled(true);
-    if (m_pullPushMainCheck)
-        m_pullPushMainCheck->setText(
-            "Push to " + (found->base.isEmpty() ? QStringLiteral("main") : found->base));
     m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
     m_pullMeta->setText(
         QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
@@ -8084,8 +8531,6 @@ void MainWindow::updatePullActionState()
                                  "branch from its base, or rework the patch.")
                 : QStringLiteral("Apply and merge this pull request"));
     }
-    if (m_pullPushMainCheck)
-        m_pullPushMainCheck->setEnabled(writable && have && open);
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
     if (m_pullDeleteButton)
@@ -8413,17 +8858,10 @@ void MainWindow::mergeCurrentPull()
     }
     if (!found)
         return;
-    const bool pushAfterMerge =
-        m_pullPushMainCheck && m_pullPushMainCheck->isChecked();
-    const QString prompt =
-        pushAfterMerge
-            ? QStringLiteral("Apply and merge pull request #%1, then push to %2?")
-                  .arg(m_currentPullNumber)
-                  .arg(current.base.isEmpty() ? QStringLiteral("main") : current.base)
-            : QStringLiteral("Apply and merge pull request #%1?")
-                  .arg(m_currentPullNumber);
-    if (QMessageBox::question(this, "Merge pull request",
-                              prompt) != QMessageBox::Yes)
+    if (QMessageBox::question(
+            this, "Merge pull request",
+            QStringLiteral("Apply and merge pull request #%1?")
+                .arg(m_currentPullNumber)) != QMessageBox::Yes)
         return;
     PullStore store = pullStoreForCurrentRepo();
     QString error;
@@ -8434,14 +8872,9 @@ void MainWindow::mergeCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
-    if (pushAfterMerge && !pushCurrentPullToMirror(current, &error)) {
-        QMessageBox::warning(this, "Push merged pull request", error);
-        reloadPulls();
-        return;
-    }
     reloadPulls();
     // Push the merge (closed PR + any linked issue closes) to the mirror and
-    // notify peers now. (The push-to-base path above already syncs separately.)
+    // notify peers.
     propagateRepoUpdate(m_repoDetailIndex);
 }
 
@@ -8574,18 +9007,21 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
 
         // Bounties are pledged on the issue without paying up front; the escrow
         // deposit address is minted here, at merge time, and its funding QR is
-        // shown so the maintainer can fund the now-completed work.
+        // shown so the maintainer can fund the now-completed work. The PR author
+        // is passed as the payee so the worker can split a funded escrow to the
+        // author + treasury automatically (no second manual step).
         const QJsonObject payload{{"action", "create"},
                                   {"owner", repo.owner},
                                   {"repo", repo.name},
                                   {"number", number},
-                                  {"amountUsd", amount}};
+                                  {"amountUsd", amount},
+                                  {"payeeNode", pr.authorName}};
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, number, amount] {
+                [this, reply, repo, number, amount] {
                     const QByteArray body = reply->readAll();
                     reply->deleteLater();
                     const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -8614,79 +9050,68 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                     if (m_repoDetailIndex == issuesRepoIndex())
                         reloadIssues();
                     showBountyQrDialog(uri, address, amount);
+                    // Watch the escrow: once funded, the worker splits it to the
+                    // author + treasury; record the paid state on the issue.
+                    pollBountyPayout(repo, number, amount);
                 });
     }
 }
 
-bool MainWindow::pushCurrentPullToMirror(const PullRequest &pr, QString *error)
+void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
+                                  double amount)
 {
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        if (error)
-            *error = QStringLiteral("No repository is selected.");
-        return false;
-    }
-    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
-    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git")) {
-        if (error)
-            *error = QStringLiteral("Pushing needs a local checkout.");
-        return false;
-    }
-    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
-        if (error)
-            *error = QStringLiteral("Sync this repository first to create its mirror.");
-        return false;
-    }
-
-    // Imported agent PRs may store the base *commit* in `base`, while native
-    // PRs store a branch name. Never create refs/heads/<commit> or make that the
-    // bare mirror's HEAD: it leaves ordinary clones looking like an empty repo.
-    QString branch = pr.base.trimmed();
-    if (branch.isEmpty() ||
-        !runGitCapture(repo.localPath,
-                       {"show-ref", "--verify", "--quiet",
-                        "refs/heads/" + branch},
-                       nullptr, nullptr)) {
-        QByteArray current;
-        if (runGitCapture(repo.localPath,
-                          {"symbolic-ref", "--short", "HEAD"},
-                          &current, nullptr))
-            branch = QString::fromUtf8(current).trimmed();
-    }
-    if (branch.isEmpty())
-        branch = QStringLiteral("main");
-    ensurePushHook(repo);
-    QString gitError;
-    if (!runGitCapture(repo.localPath,
-                       {"push", repo.mirrorPath,
-                        "HEAD:refs/heads/" + branch},
-                       nullptr, &gitError)) {
-        if (error)
-            *error = QStringLiteral("Could not push to %1: %2")
-                         .arg(branch, gitError.left(500));
-        return false;
-    }
-
-    runGitCapture(repo.mirrorPath,
-                  {"symbolic-ref", "HEAD", "refs/heads/" + branch},
-                  nullptr, nullptr);
-    repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
-    saveRepositories();
-    ensurePushHook(repo);
-    refreshRepositoryList();
-    refreshOpenRepoDetail();
-    if (m_backend)
-        m_backend->notifyMirrorUpdated(
-            catalogOwner(repo) + "/" +
-            repoSegment(repo.name, QStringLiteral("repository")));
-    if (repo.publishToNetwork) {
-        publishRepository(m_repoDetailIndex, false);
-        startRepoHosts();
-    }
-    logSystem(QStringLiteral("Pushed merged pull request #%1 to %2.")
-                  .arg(pr.number)
-                  .arg(branch));
-    return true;
+    if (!m_networkAccess)
+        return;
+    // Poll the escrow status; the worker auto-splits a funded escrow to the
+    // author + treasury when status is checked. Stop once paid (or give up after
+    // a generous window — the cron backstop still pays it out either way).
+    auto *attempts = new int(0);
+    auto *timer = new QTimer(this);
+    timer->setInterval(8000);
+    connect(timer, &QTimer::timeout, this,
+            [this, repo, number, amount, attempts, timer] {
+        if (!m_networkAccess || ++(*attempts) > 75) { // ~10 minutes
+            timer->stop();
+            timer->deleteLater();
+            delete attempts;
+            return;
+        }
+        const QJsonObject payload{{"action", "status"},
+                                  {"owner", repo.owner},
+                                  {"repo", repo.name},
+                                  {"number", number}};
+        QNetworkRequest request(bountyApiUrl(repo));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        QNetworkReply *reply = m_networkAccess->post(
+            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, repo, number, amount, attempts, timer] {
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+            const QJsonObject obj = QJsonDocument::fromJson(body).object();
+            if (obj.value("status").toString() != QLatin1String("paid"))
+                return;
+            timer->stop();
+            timer->deleteLater();
+            delete attempts;
+            IssueStore writeStore = issueStoreForCurrentRepo();
+            QString error;
+            writeStore.setBounty(number, amount, obj.value("payee").toString(),
+                                 QStringLiteral("paid"), &error);
+            logSystem(QStringLiteral("Bounty for issue #%1 funded and split to the "
+                                     "author + treasury (tx %2).")
+                          .arg(number)
+                          .arg(obj.value("payoutSig").toString().left(12)));
+            flashMessage(QStringLiteral("Bounty for issue #%1 paid out to the author "
+                                        "+ treasury.")
+                             .arg(number));
+            if (m_repoDetailIndex == issuesRepoIndex())
+                reloadIssues();
+        });
+    });
+    timer->start();
 }
+
 
 void MainWindow::closeCurrentPull()
 {
@@ -8977,6 +9402,10 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             m_repositories.at(m_repoDetailIndex).name == repo.name;
         if (onThisRepo)
             reloadPulls();
+        // Incoming PRs just landed in the working copy: push them to the mirror
+        // and notify peers now so every node's count converges promptly.
+        if (merged > 0)
+            propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
         if (interactive) {
             QMessageBox::information(
                 this, "Sync inbox",
@@ -9276,6 +9705,10 @@ QWidget *MainWindow::buildAgentsTab()
     claudeStatsRow->setSpacing(8);
     claudeStatsRow->addWidget(m_agentClaudeSpend, 1);
     claudeStatsRow->addWidget(claudeRefreshButton, 0, Qt::AlignTop);
+    m_agentTotalSpend = new QLabel("Total Agent API spend this month: not yet refreshed");
+    m_agentTotalSpend->setObjectName("channelTitle");
+    m_agentTotalSpend->setWordWrap(true);
+    m_agentTotalSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *usageText = new QVBoxLayout;
     usageText->setContentsMargins(0, 0, 0, 0);
     usageText->setSpacing(4);
@@ -9283,6 +9716,7 @@ QWidget *MainWindow::buildAgentsTab()
     usageText->addWidget(m_agentApiKeyStatus);
     usageText->addLayout(claudeStatsRow);
     usageText->addWidget(m_agentClaudeStatus);
+    usageText->addWidget(m_agentTotalSpend);
     m_agentLimitsLabel = new QLabel;
     m_agentLimitsLabel->setObjectName("statusLine");
     m_agentLimitsLabel->setWordWrap(true);
@@ -9525,6 +9959,7 @@ void MainWindow::testOpenAiAgentKey()
 
         if (m_agentOpenAiSpend) {
             if (state->costsOk) {
+                m_openAiSpendUsd = state->costs; // already in dollars
                 const QString text =
                     QStringLiteral("OpenAI spend, month to date: %1")
                         .arg(moneyString(state->costs, state->currency));
@@ -9535,6 +9970,7 @@ void MainWindow::testOpenAiAgentKey()
                 m_agentOpenAiSpend->setText("OpenAI spend: unavailable");
             }
         }
+        updateAgentTotalSpend();
 
         const qint64 totalTokens = state->inputTokens + state->outputTokens;
         QStringList lines;
@@ -9767,13 +10203,43 @@ void MainWindow::refreshAgentLimitLabel()
                               kClaudeLimitWeekStartSetting)));
 }
 
+void MainWindow::updateAgentTotalSpend()
+{
+    if (!m_agentTotalSpend)
+        return;
+    const bool haveOpenAi = !qIsNaN(m_openAiSpendUsd);
+    const bool haveClaude = !qIsNaN(m_claudeSpendUsd);
+    if (!haveOpenAi && !haveClaude) {
+        m_agentTotalSpend->setText(
+            "Total Agent API spend this month: not yet refreshed");
+        return;
+    }
+    const double total = (haveOpenAi ? m_openAiSpendUsd : 0.0) +
+                         (haveClaude ? m_claudeSpendUsd : 0.0);
+    QString note;
+    if (!haveOpenAi)
+        note = QStringLiteral(" (Claude only \xE2\x80\x94 refresh OpenAI)");
+    else if (!haveClaude)
+        note = QStringLiteral(" (OpenAI only \xE2\x80\x94 refresh Claude)");
+    m_agentTotalSpend->setText(
+        QStringLiteral("Total Agent API spend, month to date: $%1 USD%2")
+            .arg(QString::number(total, 'f', 2), note));
+}
+
 void MainWindow::refreshClaudeSpend()
 {
-    const QString apiKey =
-        QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    if (apiKey.isEmpty()) {
+    // Organization cost data comes from the Admin API and needs an Admin key
+    // (sk-ant-admin01-...). A regular API key can't read it, so require the
+    // admin key rather than silently failing with "unavailable".
+    const QString adminKey =
+        QSettings().value(kClaudeAdminKeySetting).toString().trimmed();
+    if (adminKey.isEmpty()) {
         if (m_agentClaudeStatus)
-            m_agentClaudeStatus->setText("No Claude API key saved in Settings.");
+            m_agentClaudeStatus->setText(
+                "Add a Claude Admin API key (sk-ant-admin01-…) in Settings to "
+                "see spend. A regular API key can't read organization costs.");
+        if (m_agentClaudeSpend)
+            m_agentClaudeSpend->setText("Claude spend this month: needs Admin key");
         return;
     }
     if (!m_networkAccess) {
@@ -9783,29 +10249,26 @@ void MainWindow::refreshClaudeSpend()
     }
 
     if (m_agentClaudeStatus)
-        m_agentClaudeStatus->setText("Refreshing Claude usage...");
+        m_agentClaudeStatus->setText("Refreshing Claude spend...");
 
+    // The Cost API takes RFC 3339 timestamps and daily buckets; start at the
+    // first of the month (UTC) through the next midnight so today is included.
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    const qint64 costsStart =
-        QDate(now.date().year(), now.date().month(), 1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
-            .toSecsSinceEpoch();
-    const qint64 costsEnd =
-        now.date()
-            .addDays(1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
-            .toSecsSinceEpoch();
+    const QDateTime monthStart(QDate(now.date().year(), now.date().month(), 1),
+                               QTime(0, 0), QTimeZone(QTimeZone::UTC));
+    const QDateTime end(now.date().addDays(1), QTime(0, 0),
+                        QTimeZone(QTimeZone::UTC));
+    const QString iso = QStringLiteral("yyyy-MM-ddTHH:mm:ssZ");
 
-    QUrl url(QStringLiteral("https://api.anthropic.com/v1/usage"));
+    QUrl url(QStringLiteral("https://api.anthropic.com/v1/organizations/cost_report"));
     QUrlQuery query;
-    query.addQueryItem(QStringLiteral("start_time"),
-                       QString::number(costsStart));
-    query.addQueryItem(QStringLiteral("end_time"),
-                       QString::number(costsEnd));
+    query.addQueryItem(QStringLiteral("starting_at"), monthStart.toString(iso));
+    query.addQueryItem(QStringLiteral("ending_at"), end.toString(iso));
+    query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
     url.setQuery(query);
 
     QNetworkRequest request(url);
-    request.setRawHeader("x-api-key", apiKey.toUtf8());
+    request.setRawHeader("x-api-key", adminKey.toUtf8());
     request.setRawHeader("anthropic-version", "2023-06-01");
     request.setRawHeader("Accept", "application/json");
 
@@ -9816,52 +10279,36 @@ void MainWindow::refreshClaudeSpend()
         if (reply->error() != QNetworkReply::NoError) {
             if (m_agentClaudeStatus)
                 m_agentClaudeStatus->setText(
-                    QStringLiteral("Claude usage unavailable: %1")
+                    QStringLiteral("Claude spend unavailable: %1")
                         .arg(apiErrorSummary(reply, body)));
             if (m_agentClaudeSpend)
                 m_agentClaudeSpend->setText("Claude spend this month: unavailable");
             return;
         }
-        // Parse the usage response.
+        // Sum every result's `amount`, which is a decimal STRING in cents.
         const QJsonObject root = QJsonDocument::fromJson(body).object();
-        double totalCost = 0.0;
-        qint64 inputTokens = 0;
-        qint64 outputTokens = 0;
-        bool hasData = false;
-        const QJsonArray data = root.value("data").toArray();
-        for (const QJsonValue &entry : data) {
-            const QJsonObject obj = entry.toObject();
-            totalCost += obj.value("cost").toDouble();
-            inputTokens += static_cast<qint64>(obj.value("input_tokens").toDouble());
-            outputTokens += static_cast<qint64>(obj.value("output_tokens").toDouble());
-            hasData = true;
-        }
-        if (!hasData) {
-            // Flat top-level cost field in some API versions.
-            if (root.contains("total_cost") || root.contains("cost")) {
-                totalCost = root.value("total_cost").toDouble(
-                    root.value("cost").toDouble());
-                hasData = true;
+        double cents = 0.0;
+        for (const QJsonValue &bucket : root.value("data").toArray()) {
+            for (const QJsonValue &result :
+                 bucket.toObject().value("results").toArray()) {
+                cents += result.toObject()
+                             .value("amount")
+                             .toString()
+                             .toDouble();
             }
         }
+        const double usd = cents / 100.0;
+        m_claudeSpendUsd = usd;
         if (m_agentClaudeSpend) {
             const QString text =
-                hasData
-                    ? QStringLiteral("Claude spend, month to date: $%1 USD")
-                          .arg(QString::number(totalCost, 'f', 4))
-                    : QStringLiteral("Claude spend this month: $0.0000 USD");
+                QStringLiteral("Claude spend, month to date: $%1 USD")
+                    .arg(QString::number(usd, 'f', 2));
             m_agentClaudeSpend->setText(text);
             cacheSpendLabel(kClaudeSpendTextSetting, kClaudeSpendTsSetting, text);
         }
-        if (m_agentClaudeStatus) {
-            if (inputTokens > 0 || outputTokens > 0)
-                m_agentClaudeStatus->setText(
-                    QStringLiteral("Claude usage this month: %1 input tokens, %2 output tokens.")
-                        .arg(inputTokens)
-                        .arg(outputTokens));
-            else
-                m_agentClaudeStatus->setText("Claude usage refreshed.");
-        }
+        if (m_agentClaudeStatus)
+            m_agentClaudeStatus->setText("Claude spend refreshed.");
+        updateAgentTotalSpend();
     });
 }
 
@@ -10784,11 +11231,40 @@ QWidget *MainWindow::buildAboutSidebar()
     m_aboutTopics->setWordWrap(true);
     m_aboutTopics->setTextFormat(Qt::RichText);
 
+    // On-disk repository size, moved here off the old "Code (N MB)" tab label.
+    m_aboutSize = new QLabel;
+    m_aboutSize->setObjectName("statusLine");
+    m_aboutSize->setTextFormat(Qt::RichText);
+
+    // Community files (README / LICENSE / CONTRIBUTING …) rendered as links that
+    // open the file in the overview, rather than escaping to a browser.
+    m_aboutFiles = new QLabel;
+    m_aboutFiles->setObjectName("statusLine");
+    m_aboutFiles->setWordWrap(true);
+    m_aboutFiles->setTextFormat(Qt::RichText);
+    connect(m_aboutFiles, &QLabel::linkActivated, this,
+            [this](const QString &href) { openRepoFile(href); });
+
+    m_releaseHeader = new QLabel("LATEST RELEASE");
+    m_releaseHeader->setObjectName("sectionLabel");
+    m_releaseRow = new QLabel;
+    m_releaseRow->setObjectName("statusLine");
+    m_releaseRow->setWordWrap(true);
+    m_releaseRow->setTextFormat(Qt::RichText);
+    connect(m_releaseRow, &QLabel::linkActivated, this, [this](const QString &) {
+        if (m_releasesTabIndex >= 0 && m_repoDetailTabs &&
+            m_repoDetailTabs->button(m_releasesTabIndex)) {
+            m_repoDetailTabs->button(m_releasesTabIndex)->setChecked(true);
+            m_repoDetailStack->setCurrentIndex(m_releasesTabIndex);
+            loadReleasesPanel();
+        }
+    });
+
     auto *langLabel = new QLabel("LANGUAGES");
     langLabel->setObjectName("sectionLabel");
     m_langBar = new QLabel;
     m_langBar->setObjectName("langBar");
-    m_langBar->setFixedHeight(8);
+    m_langBar->setFixedHeight(10);
     m_langBar->setTextFormat(Qt::RichText);
     m_langLegend = new QLabel;
     m_langLegend->setObjectName("statusLine");
@@ -10802,17 +11278,40 @@ QWidget *MainWindow::buildAboutSidebar()
     m_contributorsRow->setWordWrap(true);
     m_contributorsRow->setTextFormat(Qt::RichText);
 
+    // Thin hairline separators between sections for a cleaner, carded look.
+    auto rule = [&side]() {
+        auto *line = new QFrame(side);
+        line->setObjectName("aboutRule");
+        line->setFrameShape(QFrame::HLine);
+        line->setFixedHeight(1);
+        return line;
+    };
+
+    // Generous, even spacing so each section can breathe. One gap value is used
+    // on both sides of every hairline rule for a consistent vertical rhythm.
+    const int kSectionGap = 14;
     auto *layout = new QVBoxLayout(side);
-    layout->setContentsMargins(8, 0, 0, 0);
-    layout->setSpacing(6);
+    layout->setContentsMargins(22, 6, 20, 20);
+    layout->setSpacing(8);
     layout->addWidget(aboutLabel);
     layout->addWidget(m_aboutText);
     layout->addWidget(m_aboutTopics);
-    layout->addSpacing(6);
+    layout->addWidget(m_aboutFiles);
+    layout->addWidget(m_aboutSize);
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(rule());
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(m_releaseHeader);
+    layout->addWidget(m_releaseRow);
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(rule());
+    layout->addSpacing(kSectionGap);
     layout->addWidget(langLabel);
     layout->addWidget(m_langBar);
     layout->addWidget(m_langLegend);
-    layout->addSpacing(6);
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(rule());
+    layout->addSpacing(kSectionGap);
     layout->addWidget(m_contributorsHeader);
     layout->addWidget(m_contributorsRow);
     layout->addStretch();
@@ -11210,6 +11709,7 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_starButton->setText(QStringLiteral("Star %1").arg(m_repoInfo.stars));
     updateRepoDetailStatus();
     updateRepoActionMenus();
+    refreshRepoSettings();
     updateRepoCodeSize();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
@@ -11259,20 +11759,27 @@ void MainWindow::openRepoDetail(int repoIndex)
     // sure Home is the active section and refresh the breadcrumb.
     showSection(0);
     updateBreadcrumb();
+    // Populate the workflow list now so the "Actions (N)" badge is correct from
+    // the start, rather than reading 0 until the Actions tab is first opened.
+    refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
 }
 
 void MainWindow::updateRepoCodeSize()
 {
-    if (!m_repoCodeTab)
+    if (!m_aboutSize)
         return;
+    auto showSize = [this](const QString &size) {
+        m_aboutSize->setText(
+            QString::fromUtf8("\xF0\x9F\x93\xA6 %1").arg(size)); // 📦 N MB
+    };
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        m_repoCodeTab->setText(QStringLiteral("Code (0 B)"));
+        showSize(QStringLiteral("0 B"));
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
-        m_repoCodeTab->setText(QStringLiteral("Code (0 B)"));
+        showSize(QStringLiteral("0 B"));
         return;
     }
 
@@ -11289,7 +11796,7 @@ void MainWindow::updateRepoCodeSize()
                 sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
         }
     }
-    m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(formatByteSize(sizeKiB * 1024)));
+    showSize(formatByteSize(sizeKiB * 1024));
 }
 
 void MainWindow::updateRepoCommitCount()
@@ -13856,6 +14363,8 @@ void MainWindow::loadMirrorNodesPanel()
                 .arg(count)
                 .arg(count == 1 ? "" : "s")
                 .arg(source));
+    if (m_repoMirrorsTab)
+        m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(count));
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -14001,6 +14510,94 @@ void MainWindow::loadAboutSidebar()
         m_aboutTopics->setVisible(!chips.isEmpty());
     }
 
+    // Community files: surface README / LICENSE / CONTRIBUTING / … as links that
+    // open the file in the overview. Match the repo root case-insensitively.
+    if (m_aboutFiles) {
+        QStringList roots;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"ls-tree", "--name-only", currentRef()}, &out,
+                          nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString t = line.trimmed();
+                if (!t.isEmpty())
+                    roots << t;
+            }
+        }
+        // label, octicon, set of accepted base-name prefixes (lowercase).
+        const struct {
+            const char *label;
+            const char *icon;
+            QStringList prefixes;
+        } wanted[] = {
+            {"README", "repo", {"readme"}},
+            {"License", "shield-check", {"license", "licence", "copying"}},
+            {"Contributing", "people", {"contributing"}},
+            {"Code of Conduct", "comment", {"code_of_conduct"}},
+            {"Security", "lock", {"security"}},
+        };
+        QStringList links;
+        for (const auto &w : wanted) {
+            QString match;
+            for (const QString &f : std::as_const(roots)) {
+                const QString base = f.section('.', 0, 0).toLower();
+                if (w.prefixes.contains(base)) {
+                    match = f;
+                    break;
+                }
+            }
+            if (match.isEmpty())
+                continue;
+            links << QStringLiteral(
+                         "<a href=\"%1\" style='color:#58a6ff; text-decoration:none'>"
+                         "%2%3</a>")
+                         .arg(match.toHtmlEscaped(),
+                              octiconMarkup(w.icon, 13, QColor("#58a6ff")),
+                              QString::fromUtf8("&nbsp;") + QString(w.label));
+        }
+        m_aboutFiles->setText(links.join(QString::fromUtf8("&nbsp;&nbsp; ")));
+        m_aboutFiles->setVisible(!links.isEmpty());
+    }
+
+    // Latest release: newest tag by creation date.
+    if (m_releaseHeader && m_releaseRow) {
+        QString tag, when;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate", "--count=1",
+                           "--format=%(refname:short)%09%(creatordate:relative)",
+                           "refs/tags"},
+                          &out, nullptr)) {
+            const QString line = QString::fromUtf8(out).trimmed();
+            const int tab = line.indexOf('\t');
+            if (tab > 0) {
+                tag = line.left(tab).trimmed();
+                when = line.mid(tab + 1).trimmed();
+            } else if (!line.isEmpty()) {
+                tag = line;
+            }
+        }
+        const bool has = !tag.isEmpty();
+        m_releaseHeader->setVisible(has);
+        m_releaseRow->setVisible(has);
+        if (has) {
+            QString row =
+                QStringLiteral("<a href=\"#releases\" style='color:#58a6ff; "
+                               "text-decoration:none'>%1<span style='background:"
+                               "#238636; color:#fff; border-radius:9px; "
+                               "padding:1px 8px; font-weight:600'>%2</span></a>")
+                    .arg(octiconMarkup("tag", 14, QColor("#3fb950")) +
+                             QString::fromUtf8("&nbsp;"),
+                         tag.toHtmlEscaped());
+            if (!when.isEmpty())
+                row += QStringLiteral(
+                           "<br><span style='color:#8b949e'>released %1</span>")
+                           .arg(when.toHtmlEscaped());
+            m_releaseRow->setText(row);
+        }
+    }
+
     // Languages: aggregate blob sizes per language.
     if (m_langBar && m_langLegend) {
         QHash<QString, qint64> bytesByLang;
@@ -14040,30 +14637,37 @@ void MainWindow::loadAboutSidebar()
             const QString color = languageColor(langs.at(i).first);
             bar += QStringLiteral("<span style='background:%1;'>%2</span>")
                        .arg(color, QString(qMax(1, int(pct / 2)), QChar(0x2588)));
-            legend += QStringLiteral(
-                          "<span style='color:%1'>\xE2\x97\x8F</span> %2 %3%&nbsp; ")
+            // Keep each "● Name 12.3%" entry on one line (all non-breaking
+            // spaces); only the trailing normal space between entries may wrap.
+            legend += QString::fromUtf8(
+                          "<span style='color:%1'>\xE2\x97\x8F</span>&nbsp;"
+                          "<span style='color:#c9d1d9'>%2</span>&nbsp;"
+                          "<span style='color:#8b949e'>%3%</span>&nbsp;&nbsp; ")
                           .arg(color, langs.at(i).first.toHtmlEscaped(),
                                QString::number(pct, 'f', 1));
         }
         m_langBar->setText(bar.isEmpty()
                                ? QString()
-                               : QStringLiteral("<span style='font-size:8px'>%1</span>")
+                               : QStringLiteral("<span style='font-size:10px'>%1</span>")
                                      .arg(bar));
         m_langLegend->setText(legend.isEmpty()
                                   ? "<span style='color:#8b949e'>No code yet.</span>"
                                   : legend);
     }
 
-    // Contributors from git shortlog, with generated avatars.
+    // Contributors from git shortlog, each shown as a deterministic avatar
+    // generated from their email (falling back to name) — gravatar-style.
     if (m_contributorsRow && m_contributorsHeader) {
         struct Contrib {
             QString name;
+            QString email;
             int count;
         };
         QList<Contrib> contribs;
         QByteArray out;
+        // -e includes the email; lines look like "  12\tName <email>".
         if (!dir.isEmpty() &&
-            runGitCapture(dir, {"shortlog", "-sn", "--all", "--no-merges"}, &out,
+            runGitCapture(dir, {"shortlog", "-sne", "--all", "--no-merges"}, &out,
                           nullptr)) {
             for (const QString &line : QString::fromUtf8(out).split('\n')) {
                 const QString t = line.trimmed();
@@ -14072,21 +14676,80 @@ void MainWindow::loadAboutSidebar()
                 const int tab = t.indexOf('\t');
                 if (tab < 0)
                     continue;
-                contribs.append({t.mid(tab + 1).trimmed(), t.left(tab).toInt()});
+                QString who = t.mid(tab + 1).trimmed();
+                QString email;
+                const int lt = who.lastIndexOf('<');
+                const int gt = who.lastIndexOf('>');
+                if (lt >= 0 && gt > lt) {
+                    email = who.mid(lt + 1, gt - lt - 1).trimmed();
+                    who = who.left(lt).trimmed();
+                }
+                contribs.append({who, email, t.left(tab).toInt()});
             }
         }
         m_contributorsHeader->setText(
             QStringLiteral("CONTRIBUTORS %1").arg(contribs.size()));
+
+        // Round a source PNG into a circular avatar (rendered at 2x for crisp
+        // hi-dpi edges) so contributors read as gravatar-style discs instead of
+        // hard squares. Falls back to the original bytes if decoding fails.
+        auto circular = [](QByteArray src, int px) -> QByteArray {
+            QPixmap p;
+            if (!p.loadFromData(src, "PNG") || p.isNull())
+                return src;
+            const int s = px * 2;
+            const QPixmap scaled = p.scaled(s, s, Qt::KeepAspectRatioByExpanding,
+                                            Qt::SmoothTransformation);
+            QPixmap out(s, s);
+            out.fill(Qt::transparent);
+            QPainter painter(&out);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            QPainterPath path;
+            path.addEllipse(0, 0, s, s);
+            painter.setClipPath(path);
+            painter.drawPixmap(0, 0, scaled);
+            painter.end();
+            QByteArray result;
+            QBuffer buf(&result);
+            buf.open(QIODevice::WriteOnly);
+            out.save(&buf, "PNG");
+            return result;
+        };
+
+        // Embed each avatar as an inline base64 PNG so it renders in rich text.
+        auto avatarTag = [this, &circular](const Contrib &c, int px) {
+            const QString custom = m_repoInfo.contributorAvatars.value(c.name);
+            QByteArray png;
+            QPixmap fromFile;
+            if (!custom.isEmpty() && fromFile.load(custom)) {
+                QBuffer buf(&png);
+                buf.open(QIODevice::WriteOnly);
+                fromFile.save(&buf, "PNG");
+            } else {
+                const QString seed =
+                    c.email.isEmpty() ? c.name.toLower() : c.email.toLower();
+                png = forkMeshAvatarPng(seed);
+            }
+            png = circular(png, px);
+            const QString tip = (c.name + QString::fromUtf8(" \xC2\xB7 ") +
+                                 QString::number(c.count) + " commits")
+                                    .toHtmlEscaped();
+            return QStringLiteral(
+                       "<img src='data:image/png;base64,%1' width='%2' "
+                       "height='%2' title='%3'>")
+                .arg(QString::fromLatin1(png.toBase64()))
+                .arg(px)
+                .arg(tip);
+        };
+
         QString html;
         const int shown = qMin(12, int(contribs.size()));
         for (int i = 0; i < shown; ++i)
-            html += QString::fromUtf8("<span style='color:%1' title='%2'>\xE2\x97\x8F</span> ")
-                        .arg(senderColor(contribs.at(i).name),
-                             (contribs.at(i).name + " \xC2\xB7 " +
-                              QString::number(contribs.at(i).count) + " commits")
-                                 .toHtmlEscaped());
+            html += avatarTag(contribs.at(i), 28) +
+                    QString::fromUtf8("&nbsp;&nbsp;");
         if (contribs.size() > shown)
-            html += QStringLiteral("<span style='color:#8b949e'>+%1</span>")
+            html += QStringLiteral(
+                        "<span style='color:#8b949e'>&nbsp;+%1</span>")
                         .arg(contribs.size() - shown);
         m_contributorsRow->setText(html.isEmpty()
                                        ? "<span style='color:#8b949e'>None yet.</span>"
@@ -15760,6 +16423,71 @@ void MainWindow::copyIssueToClipboard()
     setIssueInlineNotice("Issue title copied.");
 }
 
+void MainWindow::showIssueAiTyping()
+{
+    hideIssueAiTyping();
+    if (!m_issueThreadLayout)
+        return;
+
+    // A thread card styled like a comment, with an animated "answering" line.
+    auto *row = new QWidget;
+    row->setObjectName("issueTimelineRow");
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(14);
+    auto *avatar = new QLabel(QStringLiteral("AI"));
+    avatar->setObjectName("issueAvatar");
+    avatar->setAlignment(Qt::AlignCenter);
+    avatar->setFixedSize(36, 36);
+    rowLayout->addWidget(avatar, 0, Qt::AlignTop);
+
+    auto *card = new QWidget;
+    card->setObjectName("issueTimelineCard");
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(16, 12, 16, 12);
+    auto *label = new QLabel(QString::fromUtf8("\xF0\x9F\xA4\x96  AI is answering"));
+    label->setObjectName("statusLine");
+    cardLayout->addWidget(label);
+    rowLayout->addWidget(card, 1);
+
+    // Drop it in just above the trailing stretch so it sits at the bottom.
+    const int insertAt = qMax(0, m_issueThreadLayout->count() - 1);
+    m_issueThreadLayout->insertWidget(insertAt, row);
+    m_issueAiTypingRow = row;
+
+    // Animate a little walking bot with cycling dots.
+    m_issueAiTypingTimer = new QTimer(row);
+    connect(m_issueAiTypingTimer, &QTimer::timeout, label, [label, n = 0]() mutable {
+        n = (n + 1) % 4;
+        label->setText(QString::fromUtf8("%1\xF0\x9F\xA4\x96  AI is answering%2")
+                           .arg(QString(n, QChar(' ')), QString(n, QChar('.'))));
+    });
+    m_issueAiTypingTimer->start(400);
+
+    // Scroll the new card into view.
+    if (m_issueThreadScroll) {
+        QTimer::singleShot(0, this, [this] {
+            if (m_issueThreadScroll && m_issueThreadScroll->verticalScrollBar())
+                m_issueThreadScroll->verticalScrollBar()->setValue(
+                    m_issueThreadScroll->verticalScrollBar()->maximum());
+        });
+    }
+}
+
+void MainWindow::hideIssueAiTyping()
+{
+    if (m_issueAiTypingTimer) {
+        m_issueAiTypingTimer->stop();
+        m_issueAiTypingTimer = nullptr; // parented to the row; freed with it
+    }
+    if (m_issueAiTypingRow) {
+        if (m_issueThreadLayout)
+            m_issueThreadLayout->removeWidget(m_issueAiTypingRow);
+        m_issueAiTypingRow->deleteLater();
+        m_issueAiTypingRow = nullptr;
+    }
+}
+
 void MainWindow::askAiForCurrentIssue()
 {
     if (m_currentIssueNumber < 0 || !m_networkAccess)
@@ -15827,6 +16555,24 @@ void MainWindow::askAiForCurrentIssue()
         QStringLiteral("Use this issue thread as context.\n\n%1\n\nQuestion:\n%2")
             .arg(issueContext, question);
 
+    // Post the user's question to the thread as their own comment first (so the
+    // conversation reads naturally), then show the animated "AI is answering…"
+    // card while the request is in flight. The prompt is already captured above,
+    // so reloading the thread here is safe.
+    {
+        IssueStore questionStore = issueStoreForCurrentRepo();
+        if (questionStore.canWrite()) {
+            QString qError;
+            questionStore.addComment(issueNumber, question, {}, &qError);
+        } else {
+            submitIssueCommentToInbox(question);
+        }
+        if (m_issueComposer)
+            m_issueComposer->setMarkdown(QString());
+        reloadIssues();
+        showIssueAiTyping();
+    }
+
     QJsonObject payload;
     payload.insert(QStringLiteral("model"), kIssueAskAiModel);
     payload.insert(QStringLiteral("instructions"),
@@ -15854,6 +16600,7 @@ void MainWindow::askAiForCurrentIssue()
             [this, reply, issueNumber, question, selectedRepo, writableRepo] {
                 const QByteArray body = reply->readAll();
                 reply->deleteLater();
+                hideIssueAiTyping();
                 if (m_issueAskAiButton) {
                     m_issueAskAiButton->setText("Ask AI");
                     m_issueAskAiButton->setEnabled(m_currentIssueNumber >= 0);
@@ -15872,13 +16619,19 @@ void MainWindow::askAiForCurrentIssue()
                     return;
                 }
 
-                QStringList quotedQuestion;
-                for (const QString &line : question.split('\n'))
-                    quotedQuestion << QStringLiteral("> %1").arg(line);
-                const QString comment =
-                    QStringLiteral("Asked OpenAI (%1):\n\n%2\n\n%3")
-                        .arg(kIssueAskAiModel, quotedQuestion.join('\n'),
-                             answer.trimmed());
+                // What the answer cost, from the response's token usage.
+                qint64 inTok = 0, outTok = 0;
+                const double costUsd = openAiAskCostUsd(obj, &inTok, &outTok);
+                const QString costLine =
+                    QString::fromUtf8("\n\n*\xF0\x9F\xA4\x96 %1 \xC2\xB7 cost "
+                                      "$%2 (%3 in / %4 out tokens)*")
+                        .arg(kIssueAskAiModel,
+                             QString::number(costUsd, 'f', 4))
+                        .arg(inTok)
+                        .arg(outTok);
+                // The question is already its own comment in the thread, so the
+                // bot comment is just the answer plus the cost footer.
+                const QString comment = answer.trimmed() + costLine;
 
                 IssueStore store(writableRepo.localPath, writableRepo.mirrorPath,
                                  &m_profileIdentity, m_userName);
@@ -15966,6 +16719,7 @@ void MainWindow::addIssueComment()
     if (m_issueAttachButton)
         m_issueAttachButton->setText("Paste, drop, or click to add files");
     reloadIssues();
+    propagateRepoUpdate(issuesRepoIndex());
     setIssueInlineNotice("Comment added.");
 }
 
@@ -15994,6 +16748,9 @@ void MainWindow::queueIssueAttachment(const QString &path)
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // Keep the full-width avatar banner in sync with the profile panel's width.
+    if (obj == m_profileAvatar && event->type() == QEvent::Resize)
+        rescaleProfileAvatar();
     return QMainWindow::eventFilter(obj, event);
 }
 
@@ -16442,6 +17199,58 @@ void MainWindow::editIssueBounty()
     reloadIssues();
 }
 
+void MainWindow::bountyAllOpenIssues(double amountUsd)
+{
+    if (amountUsd < 1.0)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        setIssueInlineNotice("This repo is read-only here; can't add bounties.", true);
+        return;
+    }
+    int openCount = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.status != QLatin1String("closed"))
+            ++openCount;
+    if (openCount == 0) {
+        setIssueInlineNotice("No open issues to add a bounty to.", true);
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Bounty all issues"),
+            QStringLiteral("Pledge a $%1 bounty on all %2 open issue(s)?\n\nBounties "
+                           "are funded when each issue's pull request is merged.")
+                .arg(QString::number(amountUsd, 'f', 2))
+                .arg(openCount)) != QMessageBox::Yes)
+        return;
+
+    // Pledge only on every open issue (same model as single-issue bounties —
+    // funded on merge, no money moves now).
+    int applied = 0;
+    int failed = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.status == QLatin1String("closed"))
+            continue;
+        QString error;
+        if (store.setBounty(issue.number, amountUsd, QString(),
+                            QStringLiteral("open"), &error))
+            ++applied;
+        else
+            ++failed;
+    }
+    setIssueInlineNotice(
+        failed == 0
+            ? QStringLiteral("Pledged a $%1 bounty on %2 open issue(s).")
+                  .arg(QString::number(amountUsd, 'f', 2))
+                  .arg(applied)
+            : QStringLiteral("Pledged a $%1 bounty on %2 issue(s) (%3 failed).")
+                  .arg(QString::number(amountUsd, 'f', 2))
+                  .arg(applied)
+                  .arg(failed),
+        failed != 0);
+    reloadIssues();
+}
+
 void MainWindow::submitIssueCommentToInbox(const QString &body)
 {
     const int idx = issuesRepoIndex();
@@ -16752,6 +17561,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             m_repositories.at(curIdx).owner == repo.owner &&
             m_repositories.at(curIdx).name == repo.name)
             reloadIssues();
+        // Incoming issues just landed in the working copy: push them to the
+        // mirror and notify peers now so every node's count converges promptly.
+        if (merged > 0)
+            propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
         if (interactive)
             setIssueInlineNotice(
                 QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
@@ -17150,12 +17963,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kThemeSetting, m_themeCombo->currentData().toString());
         applyTheme();
     });
-    auto *showUsdCheck = new QCheckBox("Show Solana earnings in USD");
-    showUsdCheck->setChecked(showSolanaBalanceUsd());
-    showUsdCheck->setToolTip(
-        "Show this node's top-bar Solana balance as dollars using a live SOL/USD price.");
-    connect(showUsdCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        QSettings().setValue(kSolanaDisplayUsdSetting, enabled);
+    auto *showCurrencyCombo = new QComboBox;
+    showCurrencyCombo->addItem("Show balance in SOL", QStringLiteral("sol"));
+    showCurrencyCombo->addItem("Show balance in USD", QStringLiteral("usd"));
+    showCurrencyCombo->addItem("Show balance in INR (\xE2\x82\xB9)",
+                               QStringLiteral("inr"));
+    showCurrencyCombo->setToolTip(
+        "Currency for this node's top-bar balance (live SOL price for USD/INR). "
+        "Also switchable from the swap icon next to the balance.");
+    {
+        const int idx = showCurrencyCombo->findData(solanaDisplayCurrency());
+        showCurrencyCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(showCurrencyCombo, &QComboBox::currentIndexChanged, this, [this,
+            showCurrencyCombo](int) {
+        QSettings().setValue(kSolanaDisplayCurrencySetting,
+                             showCurrencyCombo->currentData().toString());
+        updateNavCurrencyButton();
         updateNavSolanaBalance();
     });
 
@@ -17207,6 +18031,17 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kClaudeApiKeySetting, key);
     });
 
+    m_claudeAdminKeyEdit = new QLineEdit;
+    m_claudeAdminKeyEdit->setEchoMode(QLineEdit::Password);
+    m_claudeAdminKeyEdit->setPlaceholderText("sk-ant-admin01-... (for usage and costs)");
+    m_claudeAdminKeyEdit->setText(
+        QSettings().value(kClaudeAdminKeySetting).toString().trimmed());
+    connect(m_claudeAdminKeyEdit, &QLineEdit::editingFinished, this, [this] {
+        const QString key = m_claudeAdminKeyEdit->text().trimmed();
+        m_claudeAdminKeyEdit->setText(key);
+        QSettings().setValue(kClaudeAdminKeySetting, key);
+    });
+
     m_codexCommandEdit = new QLineEdit;
     m_codexCommandEdit->setText(codexCommandSetting());
     connect(m_codexCommandEdit, &QLineEdit::editingFinished, this, [this] {
@@ -17244,6 +18079,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
     agentForm->addRow("Claude API key", m_claudeApiKeyEdit);
+    agentForm->addRow("Claude Admin key", m_claudeAdminKeyEdit);
     agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
     agentForm->addRow("Context window", m_agentContextEdit);
@@ -17365,37 +18201,57 @@ QWidget *MainWindow::buildSettingsSection()
     layout->setContentsMargins(24, 22, 24, 22);
     layout->setSpacing(10);
     layout->addWidget(title);
-    layout->addWidget(profileLabel);
-    layout->addLayout(form);
-    layout->addSpacing(6);
-    layout->addWidget(storageLabel);
-    layout->addLayout(mirrorRow);
-    layout->addSpacing(6);
-    layout->addWidget(previewCacheLabel);
-    layout->addLayout(previewCacheRow);
-    layout->addSpacing(6);
-    layout->addWidget(startupLabel);
-    layout->addWidget(m_autostartCheck);
-    layout->addSpacing(6);
-    layout->addWidget(notifyLabel);
-    layout->addWidget(pushAlertCheck);
-    layout->addWidget(actionAlertCheck);
-    layout->addWidget(nodeConnectAlertCheck);
-    layout->addWidget(disbursementAlertCheck);
-    layout->addSpacing(6);
-    layout->addWidget(appearanceLabel);
-    layout->addWidget(m_themeCombo, 0, Qt::AlignLeft);
-    layout->addWidget(showUsdCheck);
-    layout->addSpacing(6);
-    layout->addWidget(agentsLabel);
-    layout->addWidget(agentsHint);
-    layout->addLayout(agentForm);
-    layout->addSpacing(6);
-    layout->addWidget(varsLabel);
-    layout->addWidget(varsHint);
-    layout->addWidget(m_varsTable);
-    layout->addLayout(varButtonRow);
-    layout->addStretch();
+
+    // Two columns: profile + storage + startup on the left, notifications +
+    // appearance + agents + secrets on the right. The page scrolls vertically,
+    // so the split mainly shortens the page and groups related settings.
+    auto *columns = new QHBoxLayout;
+    columns->setContentsMargins(0, 0, 0, 0);
+    columns->setSpacing(32);
+
+    auto *leftCol = new QVBoxLayout;
+    leftCol->setContentsMargins(0, 0, 0, 0);
+    leftCol->setSpacing(10);
+    leftCol->addWidget(profileLabel);
+    leftCol->addLayout(form);
+    leftCol->addSpacing(6);
+    leftCol->addWidget(storageLabel);
+    leftCol->addLayout(mirrorRow);
+    leftCol->addSpacing(6);
+    leftCol->addWidget(previewCacheLabel);
+    leftCol->addLayout(previewCacheRow);
+    leftCol->addSpacing(6);
+    leftCol->addWidget(startupLabel);
+    leftCol->addWidget(m_autostartCheck);
+    leftCol->addStretch();
+
+    auto *rightCol = new QVBoxLayout;
+    rightCol->setContentsMargins(0, 0, 0, 0);
+    rightCol->setSpacing(10);
+    rightCol->addWidget(notifyLabel);
+    rightCol->addWidget(pushAlertCheck);
+    rightCol->addWidget(actionAlertCheck);
+    rightCol->addWidget(nodeConnectAlertCheck);
+    rightCol->addWidget(disbursementAlertCheck);
+    rightCol->addSpacing(6);
+    rightCol->addWidget(appearanceLabel);
+    rightCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    rightCol->addWidget(showCurrencyCombo);
+    rightCol->addSpacing(6);
+    rightCol->addWidget(agentsLabel);
+    rightCol->addWidget(agentsHint);
+    rightCol->addLayout(agentForm);
+    rightCol->addSpacing(6);
+    rightCol->addWidget(varsLabel);
+    rightCol->addWidget(varsHint);
+    rightCol->addWidget(m_varsTable);
+    rightCol->addLayout(varButtonRow);
+    rightCol->addStretch();
+
+    columns->addLayout(leftCol, 1);
+    columns->addLayout(rightCol, 1);
+    layout->addLayout(columns, 1);
+
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
     reloadVariablesTable();
@@ -18027,10 +18883,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
-    // Keep the open repo's Mirror nodes view live as peers come and go or
-    // re-advertise fresher mirrors.
-    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
-        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
+    // Keep the open repo's Mirror nodes view (and its tab count) live as peers
+    // come and go or re-advertise fresher mirrors.
+    if (m_repoDetailIndex >= 0)
         loadMirrorNodesPanel();
 }
 
@@ -18377,6 +19232,38 @@ QString MainWindow::repositorySource(const RepositoryRecord &repo) const
                                              : repo.localPath.trimmed();
 }
 
+QStringList MainWindow::viewAuthGitArgs(const RepositoryRecord &repo,
+                                        const QString &source) const
+{
+    if (!repo.isPrivate)
+        return {};
+    const QUrl src(source);
+    // Only ever attach the token to mainnode requests, and only for https/http
+    // (a local working-copy path has no host and needs no token).
+    if (!src.isValid() || src.host().isEmpty() ||
+        src.host().compare(catalogApiUrl().host(), Qt::CaseInsensitive) != 0)
+        return {};
+    // Sign the exact owner/name the relay parses from this same URL path so the
+    // canonical string matches on both sides.
+    const QStringList segs =
+        src.path().split('/', Qt::SkipEmptyParts);
+    if (segs.size() < 2)
+        return {};
+    const QString owner = segs.at(segs.size() - 2);
+    const QString name = segs.at(segs.size() - 1);
+    if (!m_profileIdentity.isValid())
+        return {};
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-view-v1\n" + owner + "\n" + name + "\n" + ts).toUtf8();
+    const QString password = ts + "." + m_profileIdentity.signData(canonical);
+    const QByteArray basic =
+        (owner + ":" + password).toUtf8().toBase64();
+    return {QStringLiteral("-c"),
+            QStringLiteral("http.extraHeader=Authorization: Basic ") +
+                QString::fromLatin1(basic)};
+}
+
 void MainWindow::loadRepositories()
 {
     m_repositories.clear();
@@ -18393,6 +19280,7 @@ void MainWindow::loadRepositories()
         repo.solanaAddress = settings.value("solanaAddress").toString();
         repo.mirrorPath = settings.value("mirrorPath").toString();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
+        repo.isPrivate = settings.value("isPrivate").toBool();
         repo.actionsEnabled = settings.value("actionsEnabled", true).toBool();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
@@ -18427,6 +19315,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("solanaAddress", repo.solanaAddress);
         settings.setValue("mirrorPath", repo.mirrorPath);
         settings.setValue("publishToNetwork", repo.publishToNetwork);
+        settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
         settings.setValue("lastSyncMs", repo.lastSyncMs);
@@ -18545,9 +19434,11 @@ void MainWindow::refreshRepositoryList()
         QString label = repo.name;
         if (repo.previewOnly)
             label += "  \xC2\xB7 preview";
+        else if (!repo.publishToNetwork)
+            label += "  \xC2\xB7 local only";
         else
-            label += repo.publishToNetwork ? "  \xC2\xB7 public"
-                                           : "  \xC2\xB7 private";
+            label += repo.isPrivate ? "  \xC2\xB7 private"
+                                    : "  \xC2\xB7 public";
         if (m_syncingRepos.contains(i))
             label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
         RepoMenuEntry entry;
@@ -19088,13 +19979,123 @@ void MainWindow::deleteCurrentMirror()
         m_repoDetailIndex = -1;
         if (!m_repositories.isEmpty())
             openRepoDetail(qMin(index, m_repositories.size() - 1));
-        else if (m_repoDetailStack && m_chatStackIndex >= 0)
-            m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+        else if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(0); // Code (empty)
     }
     logSystem("Deleted local mirror for " + repo.owner + "/" + repo.name + ".");
     setRepoDetailNotice(canKeepLocalRecord
                             ? "Deleted mirror. The working directory was kept."
                             : "Deleted mirror.");
+}
+
+// Per-repo Settings tab: flip visibility (public/private) and delete the repo.
+QWidget *MainWindow::buildRepoSettingsTab()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 22, 24, 22);
+    outer->setSpacing(14);
+
+    auto *heading = new QLabel("Repository settings");
+    heading->setObjectName("channelTitle");
+    outer->addWidget(heading);
+
+    // --- Visibility -------------------------------------------------------
+    auto *visHeading = new QLabel("Visibility");
+    visHeading->setObjectName("sectionLabel");
+    outer->addWidget(visHeading);
+
+    m_repoPrivateCheck = new QCheckBox("Private repository");
+    m_repoPrivateCheck->setCursor(Qt::PointingHandCursor);
+    m_repoPrivateCheck->setToolTip(
+        "Hide this repo from the public catalog and require your node's key to "
+        "browse or clone it through the mainnode. Only you can read it.");
+    connect(m_repoPrivateCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+            return;
+        if (m_repositories[m_repoDetailIndex].isPrivate == on)
+            return;
+        m_repositories[m_repoDetailIndex].isPrivate = on;
+        saveRepositories();
+        logSystem(QStringLiteral("%1 %2/%3.")
+                      .arg(on ? "Made private" : "Made public",
+                           m_repositories.at(m_repoDetailIndex).owner,
+                           m_repositories.at(m_repoDetailIndex).name));
+        // Push the new visibility to the catalog and rebuild hosts so the relay's
+        // is_private flag and the host registrations reflect the change at once.
+        if (m_repositories.at(m_repoDetailIndex).publishToNetwork)
+            publishRepository(m_repoDetailIndex, false);
+        startRepoHosts();
+        refreshRepositoryList();
+        refreshRepoSettings();
+    });
+    outer->addWidget(m_repoPrivateCheck);
+
+    m_repoVisibilityHint = new QLabel;
+    m_repoVisibilityHint->setObjectName("statusLine");
+    m_repoVisibilityHint->setWordWrap(true);
+    outer->addWidget(m_repoVisibilityHint);
+
+    outer->addSpacing(10);
+
+    // --- Danger zone ------------------------------------------------------
+    auto *dangerHeading = new QLabel("Danger zone");
+    dangerHeading->setObjectName("sectionLabel");
+    outer->addWidget(dangerHeading);
+
+    auto *deleteHint = new QLabel(
+        "Delete this node's mirror of the repository. If you have a local "
+        "working directory it is kept and the repo stays as local-only; "
+        "otherwise the repository is removed from this node. Published repos "
+        "are also removed from the public ForkMesh catalog.");
+    deleteHint->setObjectName("statusLine");
+    deleteHint->setWordWrap(true);
+    outer->addWidget(deleteHint);
+
+    auto *deleteBtn = new QPushButton("Delete repository");
+    deleteBtn->setObjectName("dangerButton");
+    deleteBtn->setProperty("buttonSize", "sm");
+    deleteBtn->setCursor(Qt::PointingHandCursor);
+    setOcticon(deleteBtn, "trash", 16);
+    connect(deleteBtn, &QPushButton::clicked, this, &MainWindow::deleteCurrentMirror);
+    auto *deleteRow = new QHBoxLayout;
+    deleteRow->addWidget(deleteBtn);
+    deleteRow->addStretch();
+    outer->addLayout(deleteRow);
+
+    outer->addStretch();
+    return page;
+}
+
+void MainWindow::refreshRepoSettings()
+{
+    const bool haveRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    if (m_repoPrivateCheck) {
+        QSignalBlocker block(m_repoPrivateCheck);
+        m_repoPrivateCheck->setEnabled(haveRepo);
+        m_repoPrivateCheck->setChecked(
+            haveRepo && m_repositories.at(m_repoDetailIndex).isPrivate);
+    }
+    if (!m_repoVisibilityHint)
+        return;
+    if (!haveRepo) {
+        m_repoVisibilityHint->clear();
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!repo.publishToNetwork)
+        m_repoVisibilityHint->setText(
+            "This repository is local only — it isn't published to the network "
+            "yet. The visibility choice applies once you publish it.");
+    else if (repo.isPrivate)
+        m_repoVisibilityHint->setText(
+            "Private: hidden from the public catalog. Only this node's key can "
+            "browse or clone it through the mainnode.");
+    else
+        m_repoVisibilityHint->setText(
+            "Public: listed in the catalog and anyone can browse or clone it "
+            "through the mainnode.");
 }
 
 void MainWindow::updateRepoDetailStatus()
@@ -19384,6 +20385,9 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"lastSync", QString::number(repo.lastSyncMs)},
                          {"updatedAt", updatedAt},
                          {"rootCommit", rootCommit},
+                         {"visibility", repo.isPrivate
+                                            ? QStringLiteral("private")
+                                            : QStringLiteral("public")},
                          {"source", repo.localPath.trimmed().isEmpty()
                                         ? QStringLiteral("remote-clone")
                                         : QStringLiteral("local-node")},
@@ -19637,11 +20641,17 @@ void MainWindow::syncRepository(int index, bool quiet)
     static const QStringList kStableRefspecs = {
         QStringLiteral("+refs/heads/*:refs/heads/*"),
         QStringLiteral("+refs/tags/*:refs/tags/*")};
+    // For our own private repo hosted through the mainnode, clone/fetch must carry
+    // an owner-key-signed view token; viewAuthGitArgs returns the "-c
+    // http.extraHeader=..." prefix (empty for public repos or non-mainnode sources)
+    // generated fresh so the short-lived token never goes stale in stored config.
+    const QStringList authArgs = viewAuthGitArgs(repo, source);
     const QStringList args =
-        hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--prune",
+        authArgs +
+        (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--prune",
                                 "origin"} +
                         kStableRefspecs
-                  : QStringList{"clone", "--bare", source, repo.mirrorPath};
+                  : QStringList{"clone", "--bare", source, repo.mirrorPath});
 
     // Track the live source: an owned repo with a local working copy should
     // fetch from that copy, not from a stale relay URL baked into origin at
@@ -20227,6 +21237,9 @@ void MainWindow::refreshOpenRepoDetail()
     // reflects fresh issues/PRs (and review conversations) without reopening.
     reloadIssues();
     reloadPulls();
+    // Re-read .forkmesh/ workflows so the "Actions (N)" badge tracks any added
+    // or removed workflows a sync may have brought in.
+    refreshRepoActions();
     loadAboutSidebar();
     if (m_insightsSummary)
         loadRepoInsights();
@@ -20236,10 +21249,9 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoPushButton();
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
-    // Reflect our own freshly-synced HEAD in the Mirror nodes view if it's open.
-    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
-        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
-        loadMirrorNodesPanel();
+    // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge
+    // stays current even when that tab isn't the one on screen.
+    loadMirrorNodesPanel();
 }
 
 void MainWindow::processActionQueue()
@@ -20348,6 +21360,10 @@ void MainWindow::addNotification(const QString &title, const QString &body,
     while (m_notifications.size() > 100)
         m_notifications.removeLast();
     updateNotificationButton();
+    // Keep the open Notifications page live as new alerts arrive.
+    if (m_notificationsTable && m_sectionStack &&
+        m_sectionStack->currentIndex() == 3)
+        refreshNotificationsTable();
 }
 
 int MainWindow::pendingActionCount() const
@@ -20371,9 +21387,10 @@ void MainWindow::updateNotificationButton()
         pending > 0
             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
             : QStringLiteral("Notifications"));
-    m_notificationButton->setObjectName(pending > 0
-                                            ? QStringLiteral("notificationButtonAlert")
-                                            : QStringLiteral("notificationButton"));
+    // The button keeps its "topNavButton" identity (so it stays uniform and
+    // shows its checked state); the pending-approval accent rides on a dynamic
+    // property instead of swapping the object name.
+    m_notificationButton->setProperty("alert", pending > 0);
     m_notificationButton->style()->unpolish(m_notificationButton);
     m_notificationButton->style()->polish(m_notificationButton);
 }
@@ -20404,67 +21421,156 @@ void MainWindow::openActionRunFromNotification(int runId)
     showRun(runId);
 }
 
-void MainWindow::showNotifications()
-{
-    QDialog dialog(this);
-    dialog.setWindowTitle("Notifications");
-    dialog.resize(520, 420);
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *list = new QListWidget;
-    list->setSelectionMode(QAbstractItemView::SingleSelection);
-    layout->addWidget(list, 1);
+// ---- Notifications (its own sortable-table section) ------------------------
 
-    bool hasRows = false;
+namespace {
+// A table item that sorts by an epoch-millis value held in Qt::UserRole while
+// displaying a human-friendly date, so the "When" column orders chronologically
+// instead of lexicographically.
+class TimestampItem : public QTableWidgetItem
+{
+public:
+    explicit TimestampItem(const QString &text, qint64 ms)
+        : QTableWidgetItem(text)
+    {
+        setData(Qt::UserRole, static_cast<qlonglong>(ms));
+    }
+    bool operator<(const QTableWidgetItem &other) const override
+    {
+        return data(Qt::UserRole).toLongLong() <
+               other.data(Qt::UserRole).toLongLong();
+    }
+};
+} // namespace
+
+QWidget *MainWindow::buildNotificationsSection()
+{
+    auto *page = new QWidget;
+
+    auto *title = new QLabel(QStringLiteral("Notifications"));
+    title->setObjectName("settingsTitle");
+
+    auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
+    refreshButton->setObjectName("repoAction");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshNotificationsTable);
+
+    auto *clearButton = new QPushButton(QStringLiteral("Clear"));
+    clearButton->setObjectName("repoAction");
+    clearButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(clearButton, "trash", 16);
+    clearButton->setToolTip(QStringLiteral("Dismiss all past notifications"));
+    connect(clearButton, &QPushButton::clicked, this, [this] {
+        m_notifications.clear();
+        updateNotificationButton();
+        refreshNotificationsTable();
+    });
+
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(16, 12, 16, 4);
+    header->addWidget(title);
+    header->addStretch();
+    header->addWidget(refreshButton);
+    header->addWidget(clearButton);
+
+    // GitHub-ish columns; the table is sortable by clicking a header section.
+    m_notificationsTable = new QTableWidget(0, 4);
+    m_notificationsTable->setObjectName("issueTable"); // reuse the table styling
+    m_notificationsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Type"), QStringLiteral("Title"),
+         QStringLiteral("Detail"), QStringLiteral("When")});
+    m_notificationsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_notificationsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_notificationsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_notificationsTable->verticalHeader()->setVisible(false);
+    m_notificationsTable->setSortingEnabled(true);
+    m_notificationsTable->setAlternatingRowColors(true);
+    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::Stretch);
+    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+        3, QHeaderView::ResizeToContents);
+    m_notificationsTable->horizontalHeader()->setSortIndicator(
+        3, Qt::DescendingOrder); // newest first by default
+    connect(m_notificationsTable, &QTableWidget::itemDoubleClicked, this,
+            [this](QTableWidgetItem *item) {
+                if (!item)
+                    return;
+                const int runId =
+                    m_notificationsTable->item(item->row(), 0)->data(Qt::UserRole).toInt();
+                if (runId > 0)
+                    openActionRunFromNotification(runId);
+            });
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addLayout(header);
+    layout->addWidget(m_notificationsTable, 1);
+
+    refreshNotificationsTable();
+    return page;
+}
+
+void MainWindow::refreshNotificationsTable()
+{
+    if (!m_notificationsTable)
+        return;
+    // Disable sorting while repopulating so rows aren't reordered mid-insert.
+    m_notificationsTable->setSortingEnabled(false);
+    m_notificationsTable->setRowCount(0);
+
+    auto addRow = [this](const QString &type, const QString &titleText,
+                         const QString &detail, qint64 whenMs, int runId,
+                         bool warning) {
+        const int row = m_notificationsTable->rowCount();
+        m_notificationsTable->insertRow(row);
+
+        auto *typeItem = new QTableWidgetItem(type);
+        typeItem->setData(Qt::UserRole, runId);
+        auto *titleItem = new QTableWidgetItem(titleText);
+        auto *detailItem = new QTableWidgetItem(detail);
+        // Sorts chronologically (by epoch millis) while showing a friendly date.
+        auto *whenItem = new TimestampItem(
+            whenMs > 0 ? formatRepoDate(whenMs) : QString(), whenMs);
+
+        if (warning) {
+            const QColor red("#f85149");
+            for (QTableWidgetItem *it : {typeItem, titleItem, detailItem,
+                                         static_cast<QTableWidgetItem *>(whenItem)})
+                it->setForeground(red);
+        }
+        m_notificationsTable->setItem(row, 0, typeItem);
+        m_notificationsTable->setItem(row, 1, titleItem);
+        m_notificationsTable->setItem(row, 2, detailItem);
+        m_notificationsTable->setItem(row, 3, whenItem);
+    };
+
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
         if (run.status != ActionStatus::AwaitingApproval)
             continue;
-        auto *item = new QListWidgetItem(
-            QStringLiteral("Action waiting: %1\n%2/%3 at %4")
-                .arg(run.workflowName, run.owner, run.name, run.commit.left(8)));
-        item->setData(Qt::UserRole, run.id);
-        list->addItem(item);
-        hasRows = true;
+        addRow(QStringLiteral("Approval"), run.workflowName,
+               QStringLiteral("%1/%2 at %3")
+                   .arg(run.owner, run.name, run.commit.left(8)),
+               run.createdAtMs, run.id, false);
     }
     for (const AppNotification &notice : std::as_const(m_notifications)) {
-        const QString when = formatRepoDate(notice.timestampMs);
-        auto *item = new QListWidgetItem(
-            notice.title + QStringLiteral("\n") + notice.body +
-            QStringLiteral("\n") + when);
-        item->setData(Qt::UserRole, notice.runId);
-        if (notice.warning)
-            item->setForeground(QColor("#f85149"));
-        list->addItem(item);
-        hasRows = true;
-    }
-    if (!hasRows) {
-        auto *empty = new QListWidgetItem("No notifications yet.");
-        empty->setFlags(Qt::NoItemFlags);
-        list->addItem(empty);
+        addRow(notice.warning ? QStringLiteral("Alert") : QStringLiteral("Info"),
+               notice.title, notice.body, notice.timestampMs, notice.runId,
+               notice.warning);
     }
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-    QPushButton *openButton = buttons->addButton("Open", QDialogButtonBox::ActionRole);
-    openButton->setEnabled(false);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(list, &QListWidget::currentItemChanged, this,
-            [openButton](QListWidgetItem *item, QListWidgetItem *) {
-                openButton->setEnabled(item && item->data(Qt::UserRole).toInt() > 0);
-            });
-    auto openSelected = [this, list, &dialog] {
-        QListWidgetItem *item = list->currentItem();
-        if (!item)
-            return;
-        const int runId = item->data(Qt::UserRole).toInt();
-        if (runId <= 0)
-            return;
-        dialog.accept();
-        openActionRunFromNotification(runId);
-    };
-    connect(openButton, &QPushButton::clicked, this, openSelected);
-    connect(list, &QListWidget::itemDoubleClicked, this,
-            [openSelected](QListWidgetItem *) { openSelected(); });
-    dialog.exec();
+    m_notificationsTable->setSortingEnabled(true);
+}
+
+void MainWindow::showNotifications()
+{
+    showSection(3);
 }
 
 void MainWindow::postNotification(const QString &title, const QString &body,

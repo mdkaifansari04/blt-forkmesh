@@ -22,6 +22,7 @@ struct CommitComment; // CommitCommentStore.h
 #include <QUrl>
 
 #include <functional>
+#include <limits>
 
 class MessageRow;
 class MarkdownEditor;
@@ -51,6 +52,7 @@ class QTextEdit;
 class QTimer;
 class QTreeWidget;
 class QVBoxLayout;
+class QHBoxLayout;
 
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
@@ -82,6 +84,10 @@ struct RepositoryRecord {
     QString solanaAddress;
     QString mirrorPath;
     bool publishToNetwork = false;
+    // Private repo: hidden from the public catalog and readable (browse/clone
+    // through the relay) only with an owner-key-signed forkmesh-view-v1 token, so
+    // only this node's key holder can reach it. Still published/hosted otherwise.
+    bool isPrivate = false;
     // Run .forkmesh/ workflows when a fork pushes to this repo's bare mirror.
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
@@ -134,8 +140,10 @@ private:
     // Bootstrap a fresh client by mirroring the flagship ForkMesh repository so
     // it appears in the Repos list without first walking the full join flow.
     void ensureFlagshipRepo();
-    bool verifyTotpLogin(const QString &accountName, const QString &password,
-                         const QString &totp);
+    // Log in by email (+ optional TOTP). accountName is only used as a fallback
+    // node name if the server response omits one.
+    bool verifyTotpLogin(const QString &email, const QString &password,
+                         const QString &totp, const QString &accountName);
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
@@ -191,6 +199,11 @@ private:
     void showNodesWindow();        // full window listing nodes, status, earnings
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
+    void updateNavCurrencyButton(); // sync the SOL/USD/INR swap button + tooltip
+    // Re-render the top-bar balance from the cached lamports/fiat rate without
+    // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
+    // on getBalance / price rate-limits.
+    void renderNavSolanaBalance();
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
@@ -225,6 +238,7 @@ private:
     QWidget *buildNodeProfilePanel();
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
+    void rescaleProfileAvatar();       // re-render the full-width avatar banner
     void hideNodeProfile();
     void checkNodeBalance();
     // Query the Solana network for a balance via public JSON-RPC endpoints.
@@ -234,6 +248,7 @@ private:
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
+    QWidget *buildNotificationsSection();
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     QWidget *buildRepoDetailSection();
@@ -286,8 +301,10 @@ private:
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
     void fundBountiesForMergedPull(const PullRequest &pr);
+    // Poll a bounty escrow after merge; once funded the worker splits it to the
+    // author + treasury, and this records the paid state on the issue.
+    void pollBountyPayout(const RepositoryRecord &repo, int number, double amount);
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
-    bool pushCurrentPullToMirror(const PullRequest &pr, QString *error = nullptr);
     void closeCurrentPull();
     void deleteCurrentPull();
     void syncPullsInbox();
@@ -365,6 +382,9 @@ private:
     void addNotification(const QString &title, const QString &body,
                          bool warning = false, int runId = -1);
     void showNotifications();
+    // Notifications live in their own top-level section: a sortable table
+    // (buildNotificationsSection is declared with the other section builders).
+    void refreshNotificationsTable();
     void updateNotificationButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
@@ -420,6 +440,9 @@ private:
     void loadReleasesPanel();
     void promptNewRelease();
     QWidget *buildMirrorNodesTab();
+    // Per-repo Settings tab: visibility (public/private) and repository deletion.
+    QWidget *buildRepoSettingsTab();
+    void refreshRepoSettings(); // sync the Settings controls to the open repo
     void loadMirrorNodesPanel();
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
@@ -502,6 +525,8 @@ private:
     void editIssuePriority();
     void editIssueProgress();
     void editIssueBounty();
+    // Bulk-pledge the same bounty (USD) on every open issue in the current repo.
+    void bountyAllOpenIssues(double amountUsd);
     // One-shot triage: give every open issue with no priority an MVP/Phase-2
     // label and an initial priority (votes/age heuristic), and estimate each
     // issue's progress from whether the work landed (closed / merged PR / agent).
@@ -626,6 +651,12 @@ private:
     void loadRepoStats();
     void saveRepoStats() const;
     QString repositorySource(const RepositoryRecord &repo) const;
+    // Fresh "-c http.extraHeader=Authorization: Basic ..." git args carrying an
+    // owner-key-signed forkmesh-view-v1 token, so clone/fetch of our own private
+    // repo through the mainnode passes the relay's read gate. Empty when the repo
+    // is public or the source URL is not the mainnode host (never leak the token).
+    QStringList viewAuthGitArgs(const RepositoryRecord &repo,
+                                const QString &source) const;
     QString repositoryChannel(const RepositoryRecord &repo) const;
     QString repositoryMirrorRoot() const;
     QString repositoryPreviewRoot() const;
@@ -675,10 +706,19 @@ private:
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
+    QLabel *m_navNodeName = nullptr;     // node name shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
+    QPushButton *m_navSolanaCurrencyButton = nullptr; // swaps SOL/USD/INR view
+    // Cached balance + fiat rates so cycling the currency view reuses what we
+    // already fetched instead of re-querying getBalance / the price API each
+    // click (which used to rate-limit and leave the figure stuck).
+    qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
+    QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
-    QLabel *m_connectionStatus = nullptr; // top-right connection indicator
-    QString m_connectionStatusHtml;       // last rendered text (skip redundant repaints)
+    // Small connection status dot painted over the top-right avatar (green
+    // online / amber connecting / grey offline), replacing the old text pill.
+    QLabel *m_connectionDot = nullptr;
+    QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
@@ -720,7 +760,9 @@ private:
     QList<NodeMenuEntry> m_nodeMenuEntries;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
-    QPushButton *m_repoViewButton = nullptr; // top-bar "view" button beside the switcher
+    QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
+    QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
+    QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // top-bar push for commits ahead of upstream
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
@@ -759,6 +801,7 @@ private:
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
     QLineEdit *m_claudeApiKeyEdit = nullptr;
+    QLineEdit *m_claudeAdminKeyEdit = nullptr;
     QLineEdit *m_codexCommandEdit = nullptr;
     QLineEdit *m_claudeCommandEdit = nullptr;
     QLineEdit *m_agentContextEdit = nullptr;
@@ -794,11 +837,14 @@ private:
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoAgentsTab = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
+    QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     int m_branchesTabIndex = -1; // index of the Branches page
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
+    int m_settingsTabIndex = -1; // index of the Settings page
+    QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
@@ -827,6 +873,10 @@ private:
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
+    QLabel *m_aboutFiles = nullptr;
+    QLabel *m_aboutSize = nullptr; // on-disk repository size (moved off the Code tab)
+    QLabel *m_releaseHeader = nullptr;
+    QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
     QLabel *m_langLegend = nullptr;
     QLabel *m_contributorsHeader = nullptr;
@@ -890,7 +940,6 @@ private:
     QLabel *m_pullDesc = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
-    QCheckBox *m_pullPushMainCheck = nullptr;
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     bool m_pullDeleteConfirmPending = false;
@@ -925,6 +974,7 @@ private:
     QList<int> m_actionQueue;        // run ids queued for execution
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
+    QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
@@ -945,6 +995,9 @@ private:
     QTableWidget *m_varsTable = nullptr;
     // Repos panel: per-repo "run actions on push" toggle for the selection.
     QCheckBox *m_actionsEnabledCheck = nullptr;
+    // Per-repo visibility toggle: when checked the repo is private (hidden from
+    // the public catalog; browse/clone gated on the owner's view token).
+    QCheckBox *m_repoPrivateCheck = nullptr;
     // Agent sessions assigned from issues.
     AgentStore *m_agentStore = nullptr;
     // Pool of agent runners so sessions execute in parallel (one process each)
@@ -971,6 +1024,13 @@ private:
     QLabel *m_agentApiKeyStatus = nullptr;
     QLabel *m_agentClaudeSpend = nullptr;
     QLabel *m_agentClaudeStatus = nullptr;
+    // Combined OpenAI + Claude month-to-date spend. The doubles hold the last
+    // known numeric USD figure per provider (NaN = not yet known) so the total
+    // can be recomputed whenever either side refreshes.
+    QLabel *m_agentTotalSpend = nullptr;
+    double m_openAiSpendUsd = std::numeric_limits<double>::quiet_NaN();
+    double m_claudeSpendUsd = std::numeric_limits<double>::quiet_NaN();
+    void updateAgentTotalSpend();
     // Time left in the rolling 5-hour and weekly usage windows per provider.
     QLabel *m_agentLimitsLabel = nullptr;
     QTimer *m_agentLimitsTimer = nullptr;
@@ -1040,13 +1100,22 @@ private:
     // Node profile panel widgets + the node it currently shows.
     QWidget *m_nodeProfilePanel = nullptr;
     QLabel *m_profileAvatar = nullptr;
+    QPixmap m_profileAvatarSource; // raw avatar, re-scaled to a banner on resize
     QLabel *m_profileName = nullptr;
     QLabel *m_profileStatus = nullptr;
-    QLabel *m_profilePlatform = nullptr;
-    QLabel *m_profileVersion = nullptr;
+    // Single rich-text "details" card holding the key:value rows (status,
+    // platform, version, uptime, key, …). Replaces the old one-label-per-line
+    // layout so the panel reads like a control panel.
+    QLabel *m_profileDetails = nullptr;
+    QLabel *m_profileMirrorsLabel = nullptr;
     QLabel *m_profileMirrors = nullptr;
     QLabel *m_profileNote = nullptr;
-    QLabel *m_profileStats = nullptr; // node stats, moved here from the node list
+    // Headline stat tiles (self only): repos / mirrored / online / chats.
+    QWidget *m_profileStatGrid = nullptr;
+    QLabel *m_profileTileRepos = nullptr;
+    QLabel *m_profileTileMirrored = nullptr;
+    QLabel *m_profileTileOnline = nullptr;
+    QLabel *m_profileTileChats = nullptr;
     // Per-repo hosting stats (served/clones/hosted-since/last-sync), moved here
     // from the repo detail view. Shown only for your own node.
     QLabel *m_profileHostingLabel = nullptr;
@@ -1061,6 +1130,10 @@ private:
     QPushButton *m_profileVerifyButton = nullptr;
     QLabel *m_profileEligibility = nullptr;
     QPushButton *m_profileMessageButton = nullptr;
+    // Self-only actions pinned to the top of the node profile panel.
+    QWidget *m_profileSelfActions = nullptr;
+    QPushButton *m_profileRebuildButton = nullptr;
+    QPushButton *m_profileUpdateButton = nullptr;
     QString m_profileNodeId;
     QString m_profileNodeName;
     QString m_profileSolanaValue;

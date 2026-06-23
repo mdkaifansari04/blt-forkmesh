@@ -9,11 +9,15 @@
   }
 
   async function login() {
-    const identifier = $("#identifier").value.trim();
+    const email = $("#email").value.trim();
     const password = $("#password").value;
     const totp = $("#totp").value.trim();
-    if (!identifier || !password) {
-      setHint("Enter your node name (or email) and password.", "bad");
+    if (!email || !password) {
+      setHint("Enter your email and password.", "bad");
+      return;
+    }
+    if (!email.includes("@")) {
+      setHint("Enter a valid email address.", "bad");
       return;
     }
     btn.disabled = true;
@@ -23,7 +27,7 @@
       res = await fetch("/api/accounts/login", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ identifier, password, totp }),
+        body: JSON.stringify({ email, password, totp }),
       });
       body = await res.json();
     } catch (_) {
@@ -35,7 +39,7 @@
     btn.textContent = "Log in";
 
     if (res.ok) {
-      setHint("Logged in as “" + (body.nodeName || identifier) + "”.", "good");
+      setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       try {
         localStorage.setItem("forkmesh.session", JSON.stringify({
@@ -51,14 +55,14 @@
       return;
     }
     setHint(
-      body.error === "no_such_account" ? "No account found for that name or email."
+      body.error === "no_such_account" ? "No account found for that email."
         : body.error === "account_not_active" ? "That account hasn’t finished signup yet."
         : body.error === "bad_password" ? "Incorrect password."
         : "Could not log in. Please try again.", "bad");
   }
 
   btn.addEventListener("click", login);
-  for (const id of ["identifier", "password", "totp"]) {
+  for (const id of ["email", "password", "totp"]) {
     $("#" + id).addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   }
 })();
