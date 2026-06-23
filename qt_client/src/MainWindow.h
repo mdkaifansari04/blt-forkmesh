@@ -456,6 +456,9 @@ private:
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
     void refreshIssueList();    // apply filters into the list widget
+    void refreshIssueMilestones();
+    void refreshIssueLabels();
+    void editIssueLabelDefinition(int row);
     QWidget *makeIssueRow(const Issue &issue,
                           const QHash<QString, QString> &labelColors) const;
     void showIssue(int number); // render the selected issue's thread
@@ -734,6 +737,9 @@ private:
     QComboBox *m_issueLabelFilter = nullptr;
     QComboBox *m_issueMilestoneFilter = nullptr;
     QTableWidget *m_issueTable = nullptr;
+    QStackedWidget *m_issueListStack = nullptr;
+    QTableWidget *m_issueMilestonesTable = nullptr;
+    QTableWidget *m_issueLabelsTable = nullptr;
     QWidget *m_issueDetail = nullptr;          // collapsible detail panel
     QStackedWidget *m_issueDetailStack = nullptr;
     QWidget *m_issueComposePage = nullptr;
