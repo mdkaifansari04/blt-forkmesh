@@ -202,6 +202,7 @@ private:
                           int *unpublished) const;
     void showChatView();           // open the chat view from the top-bar button
     void updateChatButton();       // refresh the top-bar chat unread indicator
+    bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Persistent network log docked at the bottom of the app.
     QWidget *buildNetworkLogDock();

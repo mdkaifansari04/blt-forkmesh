@@ -3810,6 +3810,7 @@ QWidget *MainWindow::buildChatPage()
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
+    logStartup(QStringLiteral("  buildChatPage: home section built"));
     auto *settingsScroll = new QScrollArea;
     settingsScroll->setObjectName("settingsScroll");
     settingsScroll->setFrameShape(QFrame::NoFrame);
@@ -3819,6 +3820,7 @@ QWidget *MainWindow::buildChatPage()
     settingsScroll->setMinimumHeight(0);
     settingsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     settingsScroll->setWidget(buildSettingsSection());
+    logStartup(QStringLiteral("  buildChatPage: settings section built"));
     m_sectionStack->addWidget(settingsScroll);           // 1 Settings
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
@@ -5035,6 +5037,11 @@ void MainWindow::showChatView()
     }
     if (m_repoDetailStack && m_chatStackIndex >= 0)
         m_repoDetailStack->setCurrentIndex(m_chatStackIndex);
+    // Reading the chat clears the unread marker for the open conversation.
+    if (!m_currentConversation.isEmpty() && m_unread.remove(m_currentConversation)) {
+        refreshChannelList();
+        refreshDmList();
+    }
     updateChatButton();
 }
 
@@ -5050,6 +5057,17 @@ void MainWindow::updateChatButton()
         setOcticon(m_chatButton, "comment", 18);
     m_chatButton->setToolTip(unread ? QStringLiteral("Chat \xE2\x80\x94 unread messages")
                                     : QStringLiteral("Chat"));
+}
+
+bool MainWindow::isChatViewVisible() const
+{
+    // The chat lives on the Home section's repo-detail stack. It's "being read"
+    // only when Home is the active section and the Chat page is the current tab,
+    // and the app window is active (not minimized / in the background).
+    return isActiveWindow() && m_sectionStack &&
+           m_sectionStack->currentIndex() == 0 && m_repoDetailStack &&
+           m_chatStackIndex >= 0 &&
+           m_repoDetailStack->currentIndex() == m_chatStackIndex;
 }
 
 QWidget *MainWindow::buildSolanaNotice()
@@ -16319,6 +16337,9 @@ void MainWindow::onMessage(const ChatMessage &message)
 
     m_history[conversation].append(message);
 
+    // Keep the live transcript current when this conversation is loaded, even if
+    // the chat view isn't on screen right now (so returning to it shows the new
+    // rows without a rebuild).
     if (conversation == m_currentConversation) {
         const bool wasAtBottom = m_stickToBottom;
         addMessageRow(message);
@@ -16326,11 +16347,17 @@ void MainWindow::onMessage(const ChatMessage &message)
         // rangeChanged handler does the actual scrolling once the row lays out.
         if (wasAtBottom)
             scrollToBottom();
-    } else {
+    }
+    // Mark unread (and light the chat button) for any incoming message the user
+    // isn't actively reading — either a different conversation, or the chat view
+    // isn't the focused, on-screen tab. Own messages never mark unread.
+    if (!message.self &&
+        !(conversation == m_currentConversation && isChatViewVisible())) {
         m_unread.insert(conversation);
         refreshChannelList();
         refreshDmList();
     }
+    updateChatButton();
 
     if (!message.self) {
         const QString where = isDirectConversation(conversation)

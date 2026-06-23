@@ -2660,12 +2660,41 @@ def _admin_cell(column, value, env_unused=None):
     return _html_escape(text)
 
 
+# --- Admin bulk select + delete helpers (operate on rowid) -------------------
+
+def _admin_bulk_form_open(table):
+    return (
+        '<form method="post" action="?table=%s&amp;action=delete_rows" '
+        'onsubmit="return confirm(\'Delete the selected row(s)? This cannot be '
+        'undone.\')">'
+        '<div class="tools">'
+        '<button type="submit">Delete selected</button>'
+        '<span class="meta">Tick rows (or the header box for all) then delete.'
+        '</span></div>'
+    ) % _html_escape(table)
+
+
+def _admin_select_all_th():
+    return (
+        '<th><input type="checkbox" title="Select all" '
+        "onclick=\"for(const c of this.closest('table')"
+        ".querySelectorAll('input[name=ids]'))c.checked=this.checked\"></th>"
+    )
+
+
+def _admin_row_checkbox(rowid):
+    return ('<td><input type="checkbox" name="ids" value="%s"></td>'
+            % _html_escape(rowid))
+
+
 async def _render_table_view(env, table):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
     # caller against the live table list, so it is safe to interpolate.
-    rows = await d1_all(env, "SELECT * FROM " + table + " LIMIT 500")
+    # rowid lets the admin select + bulk-delete any row regardless of the table's
+    # declared primary key (all these tables are rowid tables).
+    rows = await d1_all(env, "SELECT rowid AS _rowid_, * FROM " + table + " LIMIT 500")
     count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
     total = int((count_row or {}).get("n", 0) or 0)
 
@@ -2697,7 +2726,8 @@ async def _render_table_view(env, table):
             cls = "s5" if str(status).startswith("5") else ""
             body.append(
                 "<tr>"
-                '<td data-ts="%s">%s</td>'
+                + _admin_row_checkbox(r.get("_rowid_", ""))
+                + '<td data-ts="%s">%s</td>'
                 '<td class="%s">%s</td>'
                 "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
@@ -2708,9 +2738,11 @@ async def _render_table_view(env, table):
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
-            inner = ("<table><thead><tr><th>Time</th><th>Status</th><th>Method</th>"
+            inner = (_admin_bulk_form_open(table)
+                     + "<table><thead><tr>" + _admin_select_all_th()
+                     + "<th>Time</th><th>Status</th><th>Method</th>"
                      "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
-                     + "".join(body) + "</tbody></table>")
+                     + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
     if not rows:
@@ -2719,16 +2751,17 @@ async def _render_table_view(env, table):
                   '<div class="empty">This table is empty.</div>'
                 % _html_escape(table))
 
-    # Column order: union of keys, first row's order first.
-    columns = list(rows[0].keys())
+    # Column order: union of keys, first row's order first. The synthetic
+    # _rowid_ column drives row selection and is not displayed.
+    columns = [c for c in rows[0].keys() if c != "_rowid_"]
     for r in rows:
         for k in r.keys():
-            if k not in columns:
+            if k != "_rowid_" and k not in columns:
                 columns.append(k)
 
     body = []
     for r in rows:
-        cells = []
+        cells = [_admin_row_checkbox(r.get("_rowid_", ""))]
         for col in columns:
             value = r.get(col)
             if col == "data" and isinstance(value, str) and value:
@@ -2738,14 +2771,16 @@ async def _render_table_view(env, table):
             cells.append("<td>%s</td>" % _admin_cell(col, value))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    head = "".join("<th>%s</th>" % _html_escape(c) for c in columns)
+    head = _admin_select_all_th() + "".join(
+        "<th>%s</th>" % _html_escape(c) for c in columns)
     return (
         prefix
         + '<div class="title">%s · %d row(s)%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "")
+        + _admin_bulk_form_open(table)
         + "<table><thead><tr>" + head + "</tr></thead><tbody>"
-        + "".join(body) + "</tbody></table>"
+        + "".join(body) + "</tbody></table></form>"
     )
 
 
@@ -2942,6 +2977,26 @@ class Default(WorkerEntrypoint):
                 )
             except Exception as error:
                 banner = "Set password failed: " + repr(error)
+        elif method_name(request) == "POST" and action == "delete_rows":
+            try:
+                tables = await _admin_list_tables(self.env)
+                table = params.get("table", [""])[0]
+                form = parse_qs(await request.text())
+                ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
+                if table not in tables:
+                    banner = "Delete failed: unknown table."
+                elif not ids:
+                    banner = "Delete: no rows were selected."
+                else:
+                    placeholders = ",".join(["?"] * len(ids))
+                    await d1_run(
+                        self.env,
+                        "DELETE FROM " + table + " WHERE rowid IN (" + placeholders + ")",
+                        *ids,
+                    )
+                    banner = "Deleted %d row(s) from %s." % (len(ids), table)
+            except Exception as error:
+                banner = "Delete failed: " + repr(error)
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
