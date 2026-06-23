@@ -276,8 +276,15 @@ void AgentRunner::launch(Phase phase, const QString &program,
         env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
     }
     // Both remaining providers (OpenAI API and Claude API) authenticate with an
-    // API key supplied in Settings.
+    // API key supplied in Settings. We inherit the user's shell environment, which
+    // may already carry an ANTHROPIC_API_KEY/OPENAI_API_KEY that's stale or belongs
+    // to a different account. Unset those first so the agent never silently uses an
+    // inherited key, then reset only the one ForkMesh configured.
     const QString provider = m_session.provider;
+    env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    env.remove(QStringLiteral("OPENAI_API_KEY"));
+    if (!m_config.apiKeyName.isEmpty())
+        env.remove(m_config.apiKeyName);
     const bool usingConfiguredKey = !m_config.apiKeyName.isEmpty() &&
                                     !m_config.apiKey.trimmed().isEmpty();
     if (usingConfiguredKey) {

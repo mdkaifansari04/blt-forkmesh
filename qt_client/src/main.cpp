@@ -16,6 +16,16 @@
 
 int main(int argc, char *argv[])
 {
+    // Prefer the X11/xcb backend when a display is available: the agent detail
+    // screen embeds a real xterm (Claude Code runs in a terminal), which needs
+    // a native X11 window id. Under XWayland this still works fine. Respect an
+    // explicit QT_QPA_PLATFORM if the user set one.
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
+        !qEnvironmentVariableIsEmpty("DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "xcb");
+    }
+#endif
     QApplication app(argc, argv);
     app.setApplicationName("ForkMesh");
     app.setOrganizationName("ForkMesh");

@@ -51,6 +51,8 @@ set(FORKMESH_APP_SOURCES
     src/MessageRow.h
     src/MessageRow.cpp
     src/MarkdownEditor.cpp
+    src/TerminalWidget.h
+    src/TerminalWidget.cpp
     src/MainWindow.h
     src/MainWindow.cpp
 )
@@ -61,6 +63,11 @@ qt_add_executable(forkmesh
 )
 
 target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+# TerminalWidget runs commands under a PTY via forkpty(); on Linux that lives in
+# libutil (macOS provides it in libSystem, so no extra link there).
+if(UNIX AND NOT APPLE)
+    target_link_libraries(forkmesh PRIVATE util)
+endif()
 
 if(APPLE)
     set_target_properties(forkmesh PROPERTIES
@@ -102,6 +109,9 @@ if(FORKMESH_BUILD_TESTS)
         ${FORKMESH_APP_SOURCES}
     )
     target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(forkmesh-window-tests PRIVATE util)
+    endif()
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
     if(APPLE)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
