@@ -9759,6 +9759,9 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 {
     reloadAgents();
     AgentSession *session = findAgentSession(sessionId);
+    // The provider is needed after the reloadAgents() below, which rebuilds
+    // m_agentSessions and leaves `session` dangling — capture it now.
+    const QString provider = session ? session->provider : QString();
     // Guard against opening a second PR for the same session: onAgentFinished can
     // be reached more than once (signal re-fire, requeue), and the session may
     // already carry a prNumber from a previous pass.
@@ -9797,13 +9800,13 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             }
         }
     }
-    reloadAgents();
+    reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
     // Auto-refresh usage/spend after a session completes.
-    if (session) {
-        if (agentIsClaudeProvider(session->provider))
+    if (!provider.isEmpty()) {
+        if (agentIsClaudeProvider(provider))
             refreshClaudeSpend();
         else
             testOpenAiAgentKey();
