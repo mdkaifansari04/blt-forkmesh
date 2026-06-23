@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 144
 title: no need to run actions if we're only adding an issue
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 11
