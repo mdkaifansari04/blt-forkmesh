@@ -5,7 +5,7 @@ title: remove the star button
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 23
 progress: 0
 assignees: []
 createdAt: 1782187444046
