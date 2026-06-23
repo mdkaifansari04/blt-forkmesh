@@ -3,13 +3,17 @@ schema: forkmesh-issue-v1
 number: 140
 title: make sure the app maximizes and minimizes correctly
 status: open
-labels: []
+labels: [Phase 2]
 milestone: 
 priority: 0
+progress: 0
 assignees: []
 createdAt: 1782152082182
 author: DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI
 authorName: nodedbstpqc2
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-139
 ts: 1782152082182
