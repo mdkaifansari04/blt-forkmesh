@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 174
 title: 6/23/2026, 2:34:59 AM	503	GET	/newnewnode/forkmesh/info/refs	response status 503	a1017857ca7cccb6 please fix
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
