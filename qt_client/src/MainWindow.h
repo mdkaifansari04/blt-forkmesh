@@ -341,6 +341,7 @@ private:
     void switchToPullTab(int pullNumber);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
+    void resolveCurrentPullConflicts(); // open the per-conflict merge editor
     void closeIssuesLinkedFromPull(const PullRequest &pr);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
@@ -532,6 +533,12 @@ private:
     QIcon iconForDir(bool opened) const;
     void startRefreshSpin();
     void stopRefreshSpin();
+    // Busy feedback for switching nodes in the top nav: the node button shows a
+    // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
+    // logs the step and, mid-switch, yields the event loop so the spinner animates.
+    void startNodeSwitchSpin();
+    void stopNodeSwitchSpin();
+    void nodeSwitchStep(const QString &what);
 
     // If this node owns a writable working-tree copy of the same logical repo as
     // `repo` (same owner/name), returns that record; else returns `repo`. Lets the
@@ -1052,9 +1059,9 @@ private:
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
     QLabel *m_pullMergeStatus = nullptr; // conflict / ready-to-merge banner
-    QLabel *m_pullDesc = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
+    QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     bool m_pullDeleteConfirmPending = false;
@@ -1179,6 +1186,11 @@ private:
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
     int m_refreshAngle = 0;
+    // Node-switch busy indicator (spinner on the top-nav node button).
+    QTimer *m_nodeSwitchSpinTimer = nullptr;
+    int m_nodeSwitchAngle = 0;
+    bool m_nodeSwitching = false;      // a node switch's heavy load is running
+    bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     QLabel *m_issueTitle = nullptr;
     QLineEdit *m_issueTitleEditor = nullptr;
     QPushButton *m_issueTitleEditButton = nullptr;

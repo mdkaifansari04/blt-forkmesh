@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QMessageBox>
 #include <QStyleFactory>
@@ -20,6 +21,12 @@ int main(int argc, char *argv[])
     app.setOrganizationName("ForkMesh");
     // App icon: the cube cropped out of the ForkMesh logo.
     app.setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
+    // On Wayland (the GNOME default) the dock/taskbar icon is NOT taken from
+    // setWindowIcon — the compositor matches the window's app-id to an installed
+    // .desktop file. This name must equal the basename of the desktop entry that
+    // install.sh writes (forkmesh.desktop) for GNOME to show our logo and let it
+    // be pinned. Harmless on X11/macOS/Windows.
+    QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
     app.setStyle(QStyleFactory::create("Fusion"));
 
     // Refuse to run as root: ForkMesh runs git, action workflows and shell

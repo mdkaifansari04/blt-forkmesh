@@ -793,6 +793,211 @@ bool PullStore::mergePull(int number, QString *error)
     return true;
 }
 
+// ---- Interactive conflict resolution ---------------------------------------
+
+QString PullStore::syntheticMbox(const PullRequest &pr)
+{
+    // A flat patch carries no author/commit metadata; wrap it in a minimal,
+    // single-commit mbox so `git am` can apply it and still credit the PR author.
+    const QString name = pr.authorName.trimmed().isEmpty()
+                             ? QStringLiteral("ForkMesh contributor")
+                             : pr.authorName.trimmed();
+    // The pubkey is base64url (valid email local-part chars); fall back to a
+    // placeholder so the address is always well-formed.
+    const QString email = (pr.author.isEmpty() ? QStringLiteral("contributor")
+                                               : pr.author) +
+                          QStringLiteral("@forkmesh");
+    const QDateTime when = pr.ts > 0 ? QDateTime::fromMSecsSinceEpoch(pr.ts)
+                                     : QDateTime::currentDateTime();
+    QString out;
+    out += "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n";
+    out += "From: " + name + " <" + email + ">\n";
+    out += "Date: " + when.toString(Qt::RFC2822Date) + "\n";
+    out += "Subject: [PATCH] " + (pr.title.isEmpty() ? QStringLiteral("Pull request")
+                                                      : pr.title) +
+           "\n\n";
+    if (!pr.description.trimmed().isEmpty())
+        out += pr.description.trimmed() + "\n\n";
+    out += "---\n";
+    QString patch = pr.patch;
+    if (!patch.endsWith('\n'))
+        patch += '\n';
+    out += patch;
+    return out;
+}
+
+// Path to the in-progress `git am` state directory, or empty when none.
+static QString amStateDir(const QString &workTree)
+{
+    QByteArray out;
+    if (!runGit(workTree, {"rev-parse", "--git-path", "rebase-apply"}, &out))
+        return QString();
+    QString path = QString::fromUtf8(out).trimmed();
+    if (path.isEmpty())
+        return QString();
+    if (!QDir::isAbsolutePath(path))
+        path = workTree + "/" + path;
+    return QFileInfo::exists(path) ? path : QString();
+}
+
+// Files the merge left unresolved (unmerged index entries).
+static QStringList unmergedFiles(const QString &workTree)
+{
+    QByteArray out;
+    runGit(workTree, {"diff", "--name-only", "--diff-filter=U"}, &out);
+    return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+}
+
+bool PullStore::conflictMergeInProgress() const
+{
+    return !m_workTree.isEmpty() && !amStateDir(m_workTree).isEmpty();
+}
+
+bool PullStore::startConflictMerge(int number, QStringList *conflicted,
+                                   bool *resolvedClean, QString *error)
+{
+    if (conflicted)
+        conflicted->clear();
+    if (resolvedClean)
+        *resolvedClean = false;
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Merging needs a local working tree.");
+        return false;
+    }
+    if (conflictMergeInProgress()) {
+        if (error)
+            *error = QStringLiteral("A merge is already in progress; finish or "
+                                    "cancel it first.");
+        return false;
+    }
+    // `git am` refuses to run on a dirty tree, and resolving would entangle the
+    // user's own edits — require a clean tree up front.
+    QByteArray porcelain;
+    runGit(m_workTree, {"status", "--porcelain"}, &porcelain);
+    if (!porcelain.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Commit or stash your local changes before "
+                                    "resolving conflicts.");
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+
+    // Source mbox: the authored series when present, else a synthesized one. A
+    // synthesized mbox goes in a temp file (read once by `git am`, then removed).
+    const QString realMbox = pullDir(number) + "/commits.mbox";
+    QString mboxPath;
+    QString tempMbox;
+    if (!pr.commits.isEmpty() && QFileInfo::exists(realMbox)) {
+        mboxPath = realMbox;
+    } else {
+        tempMbox = QDir::temp().filePath(
+            QStringLiteral("forkmesh-pull-%1.mbox").arg(number));
+        if (!writeTextFile(tempMbox, syntheticMbox(pr), error))
+            return false;
+        mboxPath = tempMbox;
+    }
+
+    QProcess git;
+    git.start("git", {"-C", m_workTree, "am", "--3way", mboxPath});
+    git.waitForFinished(60000);
+    const bool ok = git.exitStatus() == QProcess::NormalExit && git.exitCode() == 0;
+    if (!tempMbox.isEmpty())
+        QFile::remove(tempMbox); // git am has already copied it into its state dir
+
+    if (ok) {
+        // Applied with no conflict — finalize straight away.
+        if (resolvedClean)
+            *resolvedClean = true;
+        return finishConflictMerge(number, error);
+    }
+    // Non-zero exit: a content conflict leaves the am session in progress with
+    // unmerged files. Anything else is a hard failure we shouldn't leave behind.
+    QStringList files = unmergedFiles(m_workTree);
+    if (amStateDir(m_workTree).isEmpty() || files.isEmpty()) {
+        const QString detail =
+            QString::fromUtf8(git.readAllStandardError()).trimmed().left(300);
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("The pull request could not be applied: %1")
+                         .arg(detail.isEmpty() ? QStringLiteral("patch did not apply")
+                                               : detail);
+        return false;
+    }
+    if (conflicted)
+        *conflicted = files;
+    return true;
+}
+
+bool PullStore::finishConflictMerge(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Merging needs a local working tree.");
+        return false;
+    }
+    // Refuse to commit a tree that still carries conflict markers.
+    for (const QString &rel : unmergedFiles(m_workTree)) {
+        QFile f(m_workTree + "/" + rel);
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        if (text.contains(QStringLiteral("\n<<<<<<< ")) ||
+            text.startsWith(QStringLiteral("<<<<<<< ")) ||
+            text.contains(QStringLiteral("\n>>>>>>> "))) {
+            if (error)
+                *error = QStringLiteral("Resolve every conflict marker in %1 first.")
+                             .arg(rel);
+            return false;
+        }
+    }
+    QString err;
+    if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
+        if (error)
+            *error = "git add failed: " + err;
+        return false;
+    }
+    // Complete the replay only if an am session is actually open (a clean apply
+    // in startConflictMerge already committed it).
+    if (!amStateDir(m_workTree).isEmpty() &&
+        !runGit(m_workTree, {"am", "--continue"}, nullptr, &err)) {
+        if (error)
+            *error = "Could not complete the merge: " + err;
+        return false;
+    }
+    // Mark the PR merged and commit the pulls/ metadata (same tail as mergePull).
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    pr.status = "merged";
+    if (!writePull(pr, error))
+        return false;
+    if (!commit(QStringLiteral("merge pull #%1: %2").arg(number).arg(pr.title), error))
+        return false;
+    return true;
+}
+
+void PullStore::abortConflictMerge()
+{
+    if (m_workTree.isEmpty())
+        return;
+    if (!amStateDir(m_workTree).isEmpty())
+        runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
+}
+
 bool PullStore::checkMergeable(int number, bool *clean,
                                QStringList *conflictFiles, QString *error) const
 {

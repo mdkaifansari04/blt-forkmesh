@@ -428,8 +428,28 @@ const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs"
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 // Show a desktop alert when a push lands on one of this node's mirrors.
 const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
-// Show a desktop alert when an action run starts and finishes.
+// Show a desktop alert when an action run starts and finishes. Retained for
+// migration: older builds stored a plain bool here; new builds read/write
+// kActionAlertModeSetting ("all" / "failed" / "none") instead.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
+// Which action runs raise a desktop alert: "all" (start + every finish),
+// "failed" (only failures), or "none" (never). Mirrors GitHub's per-account
+// Actions notification choice.
+const QString kActionAlertModeSetting = QStringLiteral("actions/runAlertMode");
+
+// Resolve the effective action-alert mode, migrating the legacy bool: an
+// explicit mode wins; otherwise the old on/off toggle maps to all/none.
+inline QString actionAlertMode()
+{
+    QSettings settings;
+    const QString mode = settings.value(kActionAlertModeSetting).toString();
+    if (mode == QLatin1String("all") || mode == QLatin1String("failed") ||
+        mode == QLatin1String("none"))
+        return mode;
+    return settings.value(kActionAlertSetting, true).toBool()
+               ? QStringLiteral("all")
+               : QStringLiteral("none");
+}
 const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
 const QString kDisbursementAlertSetting = QStringLiteral("notifications/disbursement");
 const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
@@ -1595,6 +1615,84 @@ protected:
 
 private:
     QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
+};
+
+// One conflict region in a file carrying git merge markers. Line indices are
+// 0-based into the file's lines: [start..sep) is "ours" (HEAD/base), the marker
+// lines are start, sep and end, and (sep..end) is "theirs" (the PR).
+struct ConflictRegion {
+    int startLine = -1; // the "<<<<<<<" line
+    int sepLine = -1;   // the "=======" line
+    int endLine = -1;   // the ">>>>>>>" line
+};
+
+QList<ConflictRegion> findConflicts(const QStringList &lines)
+{
+    QList<ConflictRegion> regions;
+    ConflictRegion cur;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString &l = lines.at(i);
+        if (l.startsWith(QLatin1String("<<<<<<< "))) {
+            cur = ConflictRegion();
+            cur.startLine = i;
+        } else if (l.startsWith(QLatin1String("=======")) && l.trimmed().length() == 7 &&
+                   cur.startLine >= 0 && cur.sepLine < 0) {
+            cur.sepLine = i;
+        } else if (l.startsWith(QLatin1String(">>>>>>> ")) && cur.sepLine >= 0) {
+            cur.endLine = i;
+            regions.append(cur);
+            cur = ConflictRegion();
+        }
+    }
+    return regions;
+}
+
+// Tints git conflict markers and the two sides so the merge editor reads clearly.
+class ConflictHighlighter : public QSyntaxHighlighter
+{
+public:
+    explicit ConflictHighlighter(QTextDocument *document)
+        : QSyntaxHighlighter(document)
+    {
+        const bool dark = currentThemeIsDark();
+        auto bg = [](const QColor &c) {
+            QTextCharFormat f;
+            f.setBackground(c);
+            return f;
+        };
+        m_marker.setForeground(QColor(dark ? "#8b949e" : "#6e7781"));
+        m_marker.setFontWeight(QFont::Bold);
+        m_ours = bg(QColor(dark ? "#0b2a4a" : "#ddf4ff"));    // HEAD / base side
+        m_theirs = bg(QColor(dark ? "#0b3a1e" : "#e6ffec"));  // PR side
+    }
+
+protected:
+    void highlightBlock(const QString &text) override
+    {
+        // Track which side each block sits in across the document (block states:
+        // 0 outside, 1 ours, 2 theirs).
+        int prev = previousBlockState();
+        int state = prev == 1 || prev == 2 ? prev : 0;
+        if (text.startsWith(QLatin1String("<<<<<<< "))) {
+            setFormat(0, text.length(), m_marker);
+            state = 1;
+        } else if (text.startsWith(QLatin1String("=======")) &&
+                   text.trimmed().length() == 7 && state == 1) {
+            setFormat(0, text.length(), m_marker);
+            state = 2;
+        } else if (text.startsWith(QLatin1String(">>>>>>> ")) && state == 2) {
+            setFormat(0, text.length(), m_marker);
+            state = 0;
+        } else if (state == 1) {
+            setFormat(0, text.length(), m_ours);
+        } else if (state == 2) {
+            setFormat(0, text.length(), m_theirs);
+        }
+        setCurrentBlockState(state);
+    }
+
+private:
+    QTextCharFormat m_marker, m_ours, m_theirs;
 };
 
 class CodePreviewEditor;
@@ -6643,21 +6741,53 @@ void MainWindow::selectNode(const QString &node)
     // Defer it to the next event-loop turn so the menu closes and the node
     // profile paints first, and coalesce rapid switches by re-checking the
     // selection when the deferred load actually fires.
-    QTimer::singleShot(0, this, [this, node] {
-        if (m_selectedNode != node)
-            return; // a newer node switch superseded this one
+    //
+    // Show busy feedback for the (potentially multi-second) load: a spinner on
+    // the node button, a wait cursor, and a running log of what it's doing.
+    const QString label = node.isEmpty() ? QStringLiteral("nodes") : node;
+    logSystem(QStringLiteral("Switching to %1 — loading its repositories…")
+                  .arg(label));
+    m_nodeSwitching = true;
+    startNodeSwitchSpin();
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+    QTimer::singleShot(0, this, [this, node, label] {
+        // Always balance this call's setOverrideCursor push, even when a newer
+        // switch superseded us — otherwise rapid switching leaks override cursors
+        // and the busy cursor gets stuck on. The spinner and m_nodeSwitching are
+        // owned by whichever switch is current, so the superseded path leaves
+        // those for the newer switch's lambda to clear.
+        if (m_selectedNode != node) {
+            QApplication::restoreOverrideCursor();
+            return;
+        }
+        QElapsedTimer timer;
+        timer.start();
         // Show the selected node's first real repository, or blank the panel if
         // it has none, so stale info from the previous node isn't left behind.
         int firstRepo = -1;
+        int repoCount = 0;
         for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
             if (entry.index >= 0) {
-                firstRepo = entry.index;
-                break;
+                ++repoCount;
+                if (firstRepo < 0)
+                    firstRepo = entry.index;
             }
         if (firstRepo >= 0)
             openRepoDetail(firstRepo);
         else
             clearRepoDetail();
+        m_nodeSwitching = false;
+        stopNodeSwitchSpin();
+        QApplication::restoreOverrideCursor();
+        logSystem(firstRepo >= 0
+                      ? QStringLiteral("Switched to %1 (%2 repos) in %3 ms.")
+                            .arg(label)
+                            .arg(repoCount)
+                            .arg(timer.elapsed())
+                      : QStringLiteral("Switched to %1 — no repositories to load "
+                                       "(%2 ms).")
+                            .arg(label)
+                            .arg(timer.elapsed()));
     });
 }
 
@@ -8243,11 +8373,12 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTitle->setWordWrap(true);
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
+    m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullSplitButton = new QPushButton;
-    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullCloseButton,
-                           m_pullDeleteButton, m_pullSplitButton}) {
+    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
+                           m_pullCloseButton, m_pullDeleteButton, m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -8269,15 +8400,22 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeButton->setObjectName("primaryButton");
     setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
+    setOcticon(m_pullResolveButton, "git-pull-request", 16);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
+    m_pullResolveButton->setToolTip(
+        "Open a merge editor to resolve this pull request's conflicts and commit");
+    m_pullResolveButton->hide(); // only shown when the PR has conflicts
+    connect(m_pullResolveButton, &QPushButton::clicked, this,
+            &MainWindow::resolveCurrentPullConflicts);
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -8292,9 +8430,6 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeStatus->setTextFormat(Qt::RichText);
     m_pullMergeStatus->setWordWrap(true);
     m_pullMergeStatus->hide();
-    m_pullDesc = new QLabel;
-    m_pullDesc->setObjectName("statusLine");
-    m_pullDesc->setWordWrap(true);
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
@@ -8521,7 +8656,6 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullMergeStatus);
-    detailLayout->addWidget(m_pullDesc);
     detailLayout->addLayout(subTabRow);
     detailLayout->addWidget(m_pullSubStack, 1);
 
@@ -8673,7 +8807,6 @@ void MainWindow::showPull(int number)
     if (!found) {
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
-        m_pullDesc->clear();
         m_pullDiff->clear();
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
@@ -8726,7 +8859,8 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(
             m_pullMeta->text() +
             QStringLiteral(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
-    m_pullDesc->setText(found->description.toHtmlEscaped());
+    // The description is shown as the Conversation's opening card (renderPullThread),
+    // so it is not repeated in the header.
 
     // Split the unified diff into per-file sections.
     QString currentFile;
@@ -9345,9 +9479,14 @@ void MainWindow::updatePullActionState()
         m_pullMergeButton->setEnabled(mergeable && mergeClean);
         m_pullMergeButton->setToolTip(
             mergeable && !mergeClean
-                ? QStringLiteral("Resolve conflicts before merging — update the "
-                                 "branch from its base, or rework the patch.")
+                ? QStringLiteral("This pull request has conflicts — use "
+                                 "\"Resolve conflicts\" to merge it.")
                 : QStringLiteral("Apply and merge this pull request"));
+    }
+    if (m_pullResolveButton) {
+        const bool conflicted = mergeable && !mergeClean;
+        m_pullResolveButton->setVisible(conflicted);
+        m_pullResolveButton->setEnabled(conflicted);
     }
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
@@ -9704,6 +9843,286 @@ void MainWindow::mergeCurrentPull()
     // Push the merge (closed PR + any linked issue closes) to the mirror and
     // notify peers.
     propagateRepoUpdate(m_repoDetailIndex);
+}
+
+void MainWindow::resolveCurrentPullConflicts()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    PullRequest current;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber) {
+            current = pr;
+            found = true;
+            break;
+        }
+    if (!found)
+        return;
+    const int number = m_currentPullNumber;
+    const QString workTree =
+        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    if (workTree.isEmpty()) {
+        QMessageBox::warning(this, "Resolve conflicts",
+                             "This repository is read-only on this node.");
+        return;
+    }
+
+    // Shared tail run after the PR lands (clean apply or resolved merge).
+    const auto finalizeMerged = [this, current] {
+        logSystem(QStringLiteral("Merged pull request #%1.").arg(current.number));
+        closeIssuesLinkedFromPull(current);
+        fundBountiesForMergedPull(current);
+        reloadPulls();
+        propagateRepoUpdate(m_repoDetailIndex);
+    };
+
+    PullStore store = pullStoreForCurrentRepo();
+    QStringList conflicted;
+    bool resolvedClean = false;
+    QString error;
+    if (!store.startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
+        QMessageBox::warning(this, "Resolve conflicts", error);
+        return;
+    }
+    if (resolvedClean) {
+        // Re-checked clean and merged straight away — nothing to resolve.
+        finalizeMerged();
+        return;
+    }
+
+    // ---- Merge editor dialog ------------------------------------------------
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Resolve conflicts \xE2\x80\x94 pull #%1").arg(number));
+    dlg.resize(960, 640);
+
+    auto *intro = new QLabel(QStringLiteral(
+        "Resolve each conflict, then commit. <b>Ours</b> is your base branch; "
+        "<b>theirs</b> is the pull request. You can also edit the text directly."));
+    intro->setObjectName("statusLine");
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+
+    auto *fileList = new QListWidget;
+    fileList->setObjectName("overviewList");
+    fileList->setMinimumWidth(220);
+
+    auto *editor = new QPlainTextEdit;
+    editor->setObjectName("codeEditor");
+    editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    applyLogFont(editor);
+    new ConflictHighlighter(editor->document());
+
+    auto *oursBtn = new QPushButton(QStringLiteral("Accept ours"));
+    auto *theirsBtn = new QPushButton(QStringLiteral("Accept theirs"));
+    auto *bothBtn = new QPushButton(QStringLiteral("Accept both"));
+    auto *prevBtn = new QPushButton(QStringLiteral("\xE2\x86\x91 Prev"));
+    auto *nextBtn = new QPushButton(QStringLiteral("\xE2\x86\x93 Next"));
+    for (QPushButton *b : {oursBtn, theirsBtn, bothBtn, prevBtn, nextBtn}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    oursBtn->setToolTip("Keep your base branch's version of this conflict");
+    theirsBtn->setToolTip("Take the pull request's version of this conflict");
+    bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
+    auto *toolbar = new QHBoxLayout;
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->addWidget(oursBtn);
+    toolbar->addWidget(theirsBtn);
+    toolbar->addWidget(bothBtn);
+    toolbar->addStretch();
+    toolbar->addWidget(prevBtn);
+    toolbar->addWidget(nextBtn);
+
+    auto *commitBtn = new QPushButton(QStringLiteral("Commit merge"));
+    commitBtn->setObjectName("primaryButton");
+    commitBtn->setCursor(Qt::PointingHandCursor);
+    auto *cancelBtn = new QPushButton(QStringLiteral("Cancel"));
+    cancelBtn->setObjectName("ghostButton");
+    cancelBtn->setCursor(Qt::PointingHandCursor);
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addStretch();
+    buttonRow->addWidget(cancelBtn);
+    buttonRow->addWidget(commitBtn);
+
+    auto *editorCol = new QVBoxLayout;
+    editorCol->setContentsMargins(0, 0, 0, 0);
+    editorCol->addLayout(toolbar);
+    editorCol->addWidget(editor, 1);
+    auto *editorPane = new QWidget;
+    editorPane->setLayout(editorCol);
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(fileList);
+    split->addWidget(editorPane);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({240, 680});
+
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->addWidget(intro);
+    outer->addWidget(split, 1);
+    outer->addLayout(buttonRow);
+
+    // ---- State + helpers ----------------------------------------------------
+    auto currentPath = std::make_shared<QString>();
+    const auto hasMarkers = [](const QString &text) {
+        return text.startsWith(QLatin1String("<<<<<<< ")) ||
+               text.contains(QLatin1String("\n<<<<<<< ")) ||
+               text.contains(QLatin1String("\n>>>>>>> "));
+    };
+    const auto readFile = [workTree](const QString &rel) {
+        QFile f(workTree + "/" + rel);
+        return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+    };
+    const auto saveCurrent = [=] {
+        if (currentPath->isEmpty())
+            return;
+        QFile f(workTree + "/" + *currentPath);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(editor->toPlainText().toUtf8());
+    };
+    const auto refreshStatus = [=] {
+        const QString currentText = editor->toPlainText();
+        bool allClean = true;
+        for (int i = 0; i < fileList->count(); ++i) {
+            QListWidgetItem *it = fileList->item(i);
+            const QString rel = it->data(Qt::UserRole).toString();
+            const bool markers =
+                rel == *currentPath ? hasMarkers(currentText) : hasMarkers(readFile(rel));
+            it->setText((markers ? QString::fromUtf8("\xE2\x9A\xA0 ")
+                                 : QString::fromUtf8("\xE2\x9C\x93 ")) +
+                        rel);
+            if (markers)
+                allClean = false;
+        }
+        commitBtn->setEnabled(allClean);
+        commitBtn->setToolTip(allClean
+                                  ? QStringLiteral("Commit the resolved merge")
+                                  : QStringLiteral("Resolve every conflict first"));
+    };
+
+    for (const QString &rel : std::as_const(conflicted)) {
+        auto *it = new QListWidgetItem(rel);
+        it->setData(Qt::UserRole, rel);
+        fileList->addItem(it);
+    }
+
+    connect(fileList, &QListWidget::currentItemChanged, &dlg,
+            [=](QListWidgetItem *item, QListWidgetItem *) {
+                saveCurrent();
+                if (!item) {
+                    currentPath->clear();
+                    editor->clear();
+                    return;
+                }
+                *currentPath = item->data(Qt::UserRole).toString();
+                editor->setPlainText(readFile(*currentPath));
+                refreshStatus();
+            });
+    connect(editor, &QPlainTextEdit::textChanged, &dlg, [=] { refreshStatus(); });
+
+    // Apply ours(0)/theirs(1)/both(2) to the conflict at the cursor.
+    const auto applyResolution = [=](int which) {
+        QStringList lines = editor->toPlainText().split('\n');
+        const QList<ConflictRegion> regions = findConflicts(lines);
+        if (regions.isEmpty())
+            return;
+        const int cursorLine = editor->textCursor().blockNumber();
+        int idx = -1;
+        for (int i = 0; i < regions.size(); ++i)
+            if (cursorLine >= regions.at(i).startLine &&
+                cursorLine <= regions.at(i).endLine) {
+                idx = i;
+                break;
+            }
+        if (idx < 0)
+            for (int i = 0; i < regions.size(); ++i)
+                if (regions.at(i).startLine >= cursorLine) {
+                    idx = i;
+                    break;
+                }
+        if (idx < 0)
+            idx = 0;
+        const ConflictRegion r = regions.at(idx);
+        const QStringList ours = lines.mid(r.startLine + 1, r.sepLine - r.startLine - 1);
+        const QStringList theirs = lines.mid(r.sepLine + 1, r.endLine - r.sepLine - 1);
+        QStringList repl = which == 0 ? ours : which == 1 ? theirs : (ours + theirs);
+        const QStringList out =
+            lines.mid(0, r.startLine) + repl + lines.mid(r.endLine + 1);
+        editor->setPlainText(out.join('\n'));
+        QTextCursor c = editor->textCursor();
+        c.movePosition(QTextCursor::Start);
+        c.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor,
+                       qMin(r.startLine, qMax(0, out.size() - 1)));
+        editor->setTextCursor(c);
+    };
+    connect(oursBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(0); });
+    connect(theirsBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(1); });
+    connect(bothBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(2); });
+
+    const auto jump = [=](int dir) {
+        const QStringList lines = editor->toPlainText().split('\n');
+        const QList<ConflictRegion> regions = findConflicts(lines);
+        if (regions.isEmpty())
+            return;
+        const int cursorLine = editor->textCursor().blockNumber();
+        int target = -1;
+        if (dir > 0) {
+            for (const ConflictRegion &r : regions)
+                if (r.startLine > cursorLine) {
+                    target = r.startLine;
+                    break;
+                }
+            if (target < 0)
+                target = regions.first().startLine;
+        } else {
+            for (int i = regions.size() - 1; i >= 0; --i)
+                if (regions.at(i).startLine < cursorLine) {
+                    target = regions.at(i).startLine;
+                    break;
+                }
+            if (target < 0)
+                target = regions.last().startLine;
+        }
+        QTextCursor c = editor->textCursor();
+        c.movePosition(QTextCursor::Start);
+        c.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, target);
+        editor->setTextCursor(c);
+        editor->centerCursor();
+    };
+    connect(nextBtn, &QPushButton::clicked, &dlg, [=] { jump(1); });
+    connect(prevBtn, &QPushButton::clicked, &dlg, [=] { jump(-1); });
+
+    // Cancel / close → abort the in-progress merge and restore the tree.
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    bool committed = false;
+    connect(commitBtn, &QPushButton::clicked, &dlg, [&] {
+        saveCurrent();
+        QString err;
+        if (!store.finishConflictMerge(number, &err)) {
+            QMessageBox::warning(&dlg, "Resolve conflicts", err);
+            refreshStatus();
+            return;
+        }
+        committed = true;
+        dlg.accept();
+    });
+
+    if (fileList->count() > 0)
+        fileList->setCurrentRow(0);
+    refreshStatus();
+
+    dlg.exec();
+    if (committed) {
+        finalizeMerged();
+    } else {
+        store.abortConflictMerge();
+        logSystem(QStringLiteral("Cancelled conflict resolution for pull #%1.").arg(number));
+        reloadPulls();
+    }
 }
 
 void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
@@ -12602,8 +13021,16 @@ void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
         return;
+    // Guard against re-entrancy: a node switch yields the event loop between load
+    // steps (see nodeSwitchStep), so a queued call must not start a second load
+    // on top of this one.
+    if (m_repoDetailLoading)
+        return;
+    m_repoDetailLoading = true;
     m_repoDetailIndex = repoIndex;
     const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    nodeSwitchStep(QStringLiteral("Reading %1/%2 metadata…")
+                       .arg(repo.owner, repo.name));
     if (!repo.previewOnly)
         QSettings().setValue(kLastRepositorySetting, repo.owner + "/" + repo.name);
     if (m_repoHeaderTitle)
@@ -12645,10 +13072,12 @@ void MainWindow::openRepoDetail(int repoIndex)
             m_issuesRepoCombo->setCurrentIndex(combo);
     }
     logStartup(QStringLiteral("  openRepo: info+branches+codeSize done"));
+    nodeSwitchStep(QStringLiteral("Loading issues & agents…"));
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
     logStartup(QStringLiteral("  openRepo: issues+agents loaded"));
+    nodeSwitchStep(QStringLiteral("Loading pull requests…"));
     m_currentPulls = pullStoreForCurrentRepo().loadAll();
     updateRepoPullCount();
     logStartup(QStringLiteral("  openRepo: pulls loaded"));
@@ -12666,10 +13095,13 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_repoFileTree->clear();
     m_treeLoadedForIndex = -1;
 
+    nodeSwitchStep(QStringLiteral("Indexing files for search…"));
     loadFileSearchIndex();
     logStartup(QStringLiteral("  openRepo: file search index built"));
+    nodeSwitchStep(QStringLiteral("Loading README & about…"));
     loadAboutSidebar();
     logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
+    nodeSwitchStep(QStringLiteral("Loading commit history…"));
     loadCommits();
     logStartup(QStringLiteral("  openRepo: commits loaded"));
     // Insights (contributor stats, git shortlog) are computed lazily when the
@@ -12677,6 +13109,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // doesn't pay for them up front.
     // Land on the GitHub-style overview at the repo root by default; the
     // explorer + editor is one click away via the "Edit" button.
+    nodeSwitchStep(QStringLiteral("Rendering overview…"));
     loadRepoOverview(QString());
     logStartup(QStringLiteral("  openRepo: overview loaded"));
     showRepoOverview();
@@ -12688,6 +13121,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // the start, rather than reading 0 until the Actions tab is first opened.
     refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
+    m_repoDetailLoading = false;
 }
 
 void MainWindow::updateRepoCodeSize()
@@ -15946,6 +16380,43 @@ void MainWindow::stopRefreshSpin()
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
 }
 
+void MainWindow::startNodeSwitchSpin()
+{
+    if (!m_nodeMenuButton)
+        return;
+    if (!m_nodeSwitchSpinTimer) {
+        m_nodeSwitchSpinTimer = new QTimer(this);
+        connect(m_nodeSwitchSpinTimer, &QTimer::timeout, this, [this] {
+            m_nodeSwitchAngle = (m_nodeSwitchAngle + 30) % 360;
+            m_nodeMenuButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                                    m_nodeSwitchAngle, 16)));
+        });
+    }
+    m_nodeSwitchSpinTimer->start(60);
+}
+
+void MainWindow::stopNodeSwitchSpin()
+{
+    if (m_nodeSwitchSpinTimer)
+        m_nodeSwitchSpinTimer->stop();
+    // Restore the node button's normal label + OS/online badge icon.
+    updateNodeSwitcher();
+}
+
+void MainWindow::nodeSwitchStep(const QString &what)
+{
+    // Surface a repo-load step to the in-app log, but only while a node switch is
+    // actually in progress (openRepoDetail is also called on startup and on plain
+    // repo clicks, which shouldn't spam the log). Yield to the event loop — with
+    // user input excluded so a click can't re-enter the load — so the spinner
+    // keeps animating and each line appears as the work happens.
+    if (!m_nodeSwitching)
+        return;
+    logSystem(QStringLiteral("  • ") + what);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
 int MainWindow::issuesRepoIndex() const
 {
     if (!m_issuesRepoCombo || m_issuesRepoCombo->currentIndex() < 0)
@@ -19130,16 +19601,24 @@ QWidget *MainWindow::buildSettingsSection()
     connect(pushAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kPushAlertSetting, enabled);
     });
-    auto *actionAlertCheck =
-        new QCheckBox("Show a system alert when an action runs");
-    actionAlertCheck->setChecked(
-        QSettings().value(kActionAlertSetting, true).toBool());
-    actionAlertCheck->setToolTip(
-        "Pop up a desktop notification when a .forkmesh/ workflow starts and "
-        "when it finishes.");
-    connect(actionAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        QSettings().setValue(kActionAlertSetting, enabled);
-    });
+    auto *actionAlertCombo = new QComboBox;
+    actionAlertCombo->addItem("Action alerts: all runs", QStringLiteral("all"));
+    actionAlertCombo->addItem("Action alerts: failures only",
+                              QStringLiteral("failed"));
+    actionAlertCombo->addItem("Action alerts: off", QStringLiteral("none"));
+    actionAlertCombo->setToolTip(
+        "Desktop notifications for .forkmesh/ workflows: pop one for every run "
+        "(start and finish), only when a run fails, or never. The in-app "
+        "Notifications page logs every run regardless.");
+    {
+        const int idx = actionAlertCombo->findData(actionAlertMode());
+        actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(actionAlertCombo, &QComboBox::currentIndexChanged, this,
+            [actionAlertCombo](int) {
+                QSettings().setValue(kActionAlertModeSetting,
+                                     actionAlertCombo->currentData().toString());
+            });
     auto *nodeConnectAlertCheck =
         new QCheckBox("Show a system alert when a node connects");
     nodeConnectAlertCheck->setChecked(
@@ -19508,7 +19987,7 @@ QWidget *MainWindow::buildSettingsSection()
     rightCol->setSpacing(10);
     rightCol->addWidget(notifyLabel);
     rightCol->addWidget(pushAlertCheck);
-    rightCol->addWidget(actionAlertCheck);
+    rightCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     rightCol->addWidget(nodeConnectAlertCheck);
     rightCol->addWidget(disbursementAlertCheck);
     rightCol->addSpacing(6);
@@ -23044,7 +23523,13 @@ void MainWindow::notifyActionEvent(const QString &title, const QString &body,
                                    bool warning)
 {
     addNotification(title, body, warning);
-    if (!QSettings().value(kActionAlertSetting, true).toBool())
+    // The in-app Notifications page always logs the event above; the noisy
+    // desktop toast is what these modes gate. "none" silences it entirely,
+    // "failed" lets only failures through (warning == true).
+    const QString mode = actionAlertMode();
+    if (mode == QLatin1String("none"))
+        return;
+    if (mode == QLatin1String("failed") && !warning)
         return;
     const QString icon = warning ? QStringLiteral("dialog-error")
                          : title.contains("started")

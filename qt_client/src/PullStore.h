@@ -96,6 +96,25 @@ public:
     bool checkMergeable(int number, bool *clean,
                         QStringList *conflictFiles = nullptr,
                         QString *error = nullptr) const;
+
+    // Interactive conflict resolution. startConflictMerge runs `git am --3way`
+    // (the PR's commit series, or a synthesized one-commit mbox from the flat
+    // patch) so conflict markers land in the working tree. It needs a clean tree.
+    // On a clean apply it finalizes immediately and sets *resolvedClean=true; on
+    // conflict it leaves the am session in progress, fills *conflicted with the
+    // unmerged paths, and returns true. The caller edits the files, then calls
+    // finishConflictMerge to `git am --continue` + mark merged, or
+    // abortConflictMerge to restore the pre-merge tree.
+    bool startConflictMerge(int number, QStringList *conflicted,
+                            bool *resolvedClean, QString *error = nullptr);
+    bool finishConflictMerge(int number, QString *error = nullptr);
+    void abortConflictMerge();
+    // Whether a `git am` session is currently in progress in the working tree.
+    bool conflictMergeInProgress() const;
+    // Build a minimal mbox (single commit) from a flat patch so `git am` can
+    // apply it and credit the PR author. Public for testing.
+    static QString syntheticMbox(const PullRequest &pr);
+
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
     // Remove the PR folder entirely and commit the deletion.
