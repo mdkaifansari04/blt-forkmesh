@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 139
 title: when switching between nodes in the top menu the app freezes sometimes - lets show what we're doing in the network log (rename to log)
-status: open
+status: closed
 labels: [Phase 2]
 milestone: 
 priority: 6
