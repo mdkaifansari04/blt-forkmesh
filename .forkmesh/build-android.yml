@@ -1,0 +1,59 @@
+name: Build Android app
+on: [push]
+jobs:
+  android:
+    steps:
+      # Only build when this push actually touched flutter_app/. Mirrors the
+      # deploy workflow's "skip unless changed" gate: a sentinel file written
+      # here is checked by the build step so it no-ops on unrelated commits.
+      - name: Skip unless flutter_app/ changed
+        run: |
+          changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
+          app_changes="$(printf '%s\n' "$changed_files" | sed -n '/^flutter_app\//p')"
+          if [ -z "$app_changes" ]; then
+            echo "Skipping Android build; no flutter_app/ changes in this commit."
+            touch .forkmesh-skip-android
+          else
+            echo "flutter_app/ changes detected:"
+            printf '%s\n' "$app_changes"
+          fi
+
+      # Build the release APK and copy it out of the (temporary) run worktree to
+      # a persistent artifacts dir on this node, since the worktree is removed
+      # when the run finishes. The APK path is printed to the run log — that's
+      # the attached artifact (ForkMesh has no relay artifact upload).
+      - name: Build APK and collect artifact
+        run: |
+          [ -f .forkmesh-skip-android ] && exit 0
+          set -e
+
+          # Locate Flutter (CI PATH may not include it).
+          if ! command -v flutter >/dev/null 2>&1; then
+            for d in "$HOME/flutter/bin" "$HOME/development/flutter/bin" \
+                     "$HOME/snap/flutter/common/flutter/bin" /opt/flutter/bin; do
+              if [ -x "$d/flutter" ]; then PATH="$d:$PATH"; break; fi
+            done
+          fi
+          if ! command -v flutter >/dev/null 2>&1; then
+            echo "ERROR: flutter not found on this CI host." >&2
+            echo "Install Flutter + the Android SDK to build the app." >&2
+            exit 1
+          fi
+          flutter --version
+
+          cd flutter_app
+          flutter pub get
+          flutter build apk --release
+
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$apk" ]; then
+            echo "ERROR: APK was not produced at $apk" >&2
+            exit 1
+          fi
+
+          commit="$(git rev-parse --short HEAD)"
+          dest="$HOME/forkmesh-artifacts/android/$commit"
+          mkdir -p "$dest"
+          out="$dest/forkmesh-$commit.apk"
+          cp "$apk" "$out"
+          echo "Artifact: $out ($(du -h "$out" | cut -f1))"
