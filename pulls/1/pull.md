@@ -4,7 +4,7 @@ number: 1
 title: Fix Qt shared mainnode chat room routing
 base: main
 head: fix/issue-147-shared-chat-room
-status: open
+status: closed
 ts: 1782210482883
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -24,4 +24,3 @@ Commit:
 
 Base:
 - main @ 83d4792ab6b0f7ac1dba930a536a3ef21eec6fcd
-
