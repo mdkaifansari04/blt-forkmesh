@@ -39,6 +39,45 @@ bool runCapture(const QString &dir, const QStringList &args, QByteArray *out,
     return true;
 }
 
+bool runWithInput(const QString &dir, const QStringList &args,
+                  const QByteArray &input, QString *error = nullptr)
+{
+    QProcess process;
+    process.start(QStringLiteral("git"), QStringList{QStringLiteral("-C"), dir} + args);
+    if (!process.waitForStarted(10000)) {
+        if (error)
+            *error = process.errorString();
+        return false;
+    }
+    process.write(input);
+    process.closeWriteChannel();
+    if (!process.waitForFinished(10000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        if (error)
+            *error = QStringLiteral("git timed out");
+        return false;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (error)
+            *error = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return false;
+    }
+    return true;
+}
+
+bool branchExists(const QString &dir, const QString &branchName)
+{
+    if (branchName.trimmed().isEmpty())
+        return false;
+    QByteArray ignored;
+    return runCapture(dir,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                       QStringLiteral("--quiet"),
+                       QStringLiteral("refs/heads/%1").arg(branchName)},
+                      &ignored, nullptr);
+}
+
 QString providerTitle(const QString &provider)
 {
     // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
@@ -95,6 +134,7 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     m_currentProgram.clear();
     m_phase = Phase::Idle;
     m_session = session;
+    m_restorePreviousPatch = m_session.startedAtMs > 0 || !m_session.baseRef.isEmpty();
     m_issue = issue;
     m_repoPath = repoPath;
     m_config = config;
@@ -133,28 +173,6 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
         return;
     }
 
-    QByteArray base;
-    QString gitError;
-    if (!runCapture(m_repoPath, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
-                    &base, &gitError)) {
-        complete(false, AgentStatus::Failed,
-                 QStringLiteral("Could not read the base commit: %1").arg(gitError));
-        return;
-    }
-    m_session.baseRef = QString::fromUtf8(base).trimmed();
-    // The PR targets the branch the agent forked from (typically main), not the
-    // frozen commit SHA. Fall back to the SHA only when HEAD is detached.
-    QByteArray branch;
-    if (runCapture(m_repoPath,
-                   {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                    QStringLiteral("HEAD")},
-                   &branch, nullptr)) {
-        const QString name = QString::fromUtf8(branch).trimmed();
-        if (!name.isEmpty() && name != QLatin1String("HEAD"))
-            m_session.baseBranch = name;
-    }
-    if (m_session.baseBranch.isEmpty())
-        m_session.baseBranch = m_session.baseRef;
     if (m_session.branchName.isEmpty()) {
         m_session.branchName =
             QStringLiteral("agent/issue-%1-%2-%3")
@@ -162,16 +180,49 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                 .arg(m_session.provider)
                 .arg(m_session.id);
     }
+
+    const bool existingSessionBranch = branchExists(m_repoPath, m_session.branchName);
+    if (m_session.baseRef.isEmpty()) {
+        QByteArray base;
+        QString gitError;
+        if (!runCapture(m_repoPath, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
+                        &base, &gitError)) {
+            complete(false, AgentStatus::Failed,
+                     QStringLiteral("Could not read the base commit: %1").arg(gitError));
+            return;
+        }
+        m_session.baseRef = QString::fromUtf8(base).trimmed();
+        // The PR targets the branch the agent forked from (typically main), not the
+        // frozen commit SHA. Fall back to the SHA only when HEAD is detached.
+        QByteArray branch;
+        if (runCapture(m_repoPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("HEAD")},
+                       &branch, nullptr)) {
+            const QString name = QString::fromUtf8(branch).trimmed();
+            if (!name.isEmpty() && name != QLatin1String("HEAD"))
+                m_session.baseBranch = name;
+        }
+        if (m_session.baseBranch.isEmpty())
+            m_session.baseBranch = m_session.baseRef;
+    } else if (m_session.baseBranch.isEmpty()) {
+        m_session.baseBranch = m_session.baseRef;
+    }
     m_store->saveSession(m_session);
 
     m_worktree = QDir::tempPath() + QStringLiteral("/forkmesh-agent-") +
                  QString::number(m_session.id) + QLatin1Char('-') +
                  QString::number(QDateTime::currentMSecsSinceEpoch());
     emitLog(QStringLiteral("==> Creating temporary worktree %1").arg(m_worktree));
-    launch(Phase::Worktree, QStringLiteral("git"),
-           {QStringLiteral("-C"), m_repoPath, QStringLiteral("worktree"),
-            QStringLiteral("add"), QStringLiteral("-B"), m_session.branchName,
-            m_worktree, m_session.baseRef});
+    QStringList args{QStringLiteral("-C"), m_repoPath, QStringLiteral("worktree"),
+                     QStringLiteral("add")};
+    if (existingSessionBranch) {
+        args << m_worktree << m_session.branchName;
+    } else {
+        args << QStringLiteral("-B") << m_session.branchName << m_worktree
+             << m_session.baseRef;
+    }
+    launch(Phase::Worktree, QStringLiteral("git"), args);
 }
 
 void AgentRunner::stop()
@@ -319,6 +370,8 @@ void AgentRunner::onProcessFinished(int exitCode)
                      QStringLiteral("Could not create the worktree."));
             return;
         }
+        if (!restorePreviousPatch())
+            return;
         runAgentProcess();
         return;
     }
@@ -385,6 +438,48 @@ void AgentRunner::runAgentProcess()
                                                    : QStringLiteral("/bin/sh");
     launch(Phase::Agent, shell, {QStringLiteral("-lc"), command}, m_worktree);
 #endif
+}
+
+bool AgentRunner::restorePreviousPatch()
+{
+    if (!m_store || !m_restorePreviousPatch)
+        return true;
+
+    const QString patch = m_store->readPatch(m_session);
+    if (patch.trimmed().isEmpty())
+        return true;
+
+    QByteArray currentDiff;
+    if (runCapture(m_worktree,
+                   {QStringLiteral("diff"), QStringLiteral("--binary"),
+                    m_session.baseRef},
+                   &currentDiff, nullptr) &&
+        !currentDiff.trimmed().isEmpty()) {
+        emitLog(QStringLiteral("==> Existing session branch already has changes; skipping saved patch restore."));
+        return true;
+    }
+
+    const QByteArray patchBytes = patch.toUtf8();
+    QString error;
+    if (!runWithInput(m_worktree,
+                      {QStringLiteral("apply"), QStringLiteral("--check"),
+                       QStringLiteral("--binary")},
+                      patchBytes, &error)) {
+        complete(false, AgentStatus::Failed,
+                 QStringLiteral("Could not restore the previous session patch: %1")
+                     .arg(error));
+        return false;
+    }
+    if (!runWithInput(m_worktree,
+                      {QStringLiteral("apply"), QStringLiteral("--binary")},
+                      patchBytes, &error)) {
+        complete(false, AgentStatus::Failed,
+                 QStringLiteral("Could not restore the previous session patch: %1")
+                     .arg(error));
+        return false;
+    }
+    emitLog(QStringLiteral("==> Restored previous session patch."));
+    return true;
 }
 
 void AgentRunner::complete(bool ok, const QString &status, const QString &message)
