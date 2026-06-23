@@ -133,6 +133,10 @@ QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
 // Defined further down; forward-declared so earlier callers can summarise an
 // HTTP/API failure for a user-facing message.
 QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
+// Action-run status helpers, defined near the Actions code but used earlier by
+// the pull request Checks tab.
+QString actionStatusText(const QString &status);
+QColor actionStatusColor(const QString &status);
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
@@ -8192,32 +8196,12 @@ QWidget *MainWindow::buildPullsTab()
                     renderPullDiff(item->data(Qt::UserRole).toString());
             });
 
-    // Commits that make up this PR; clicking one opens it in the commit view.
-    auto *commitsHeading = new QLabel("Commits");
-    commitsHeading->setObjectName("sectionLabel");
-    m_pullCommitsList = new QListWidget;
-    m_pullCommitsList->setObjectName("overviewList");
-    m_pullCommitsList->setMaximumHeight(140);
-    connect(m_pullCommitsList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                const QString sha = item ? item->data(Qt::UserRole).toString()
-                                         : QString();
-                if (sha.isEmpty())
-                    return;
-                if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-                    m_repoDetailTabs->button(1)->setChecked(true);
-                if (m_repoDetailStack)
-                    m_repoDetailStack->setCurrentIndex(1);
-                showCommit(sha);
-            });
-
+    // ---- Files changed page: file explorer | diff viewer.
     auto *filesPane = new QWidget;
     auto *filesPaneLayout = new QVBoxLayout(filesPane);
     filesPaneLayout->setContentsMargins(0, 0, 0, 0);
     filesPaneLayout->setSpacing(6);
     filesPaneLayout->addWidget(m_pullFiles, 1);
-    filesPaneLayout->addWidget(commitsHeading);
-    filesPaneLayout->addWidget(m_pullCommitsList);
 
     m_pullDiff = new QTextBrowser;
     m_pullDiff->setObjectName("diffView");
@@ -8234,18 +8218,103 @@ QWidget *MainWindow::buildPullsTab()
     diffSplit->setStretchFactor(0, 0);
     diffSplit->setStretchFactor(1, 1);
     diffSplit->setSizes({240, 600});
+    auto *filesPage = new QWidget;
+    auto *filesPageLayout = new QVBoxLayout(filesPage);
+    filesPageLayout->setContentsMargins(0, 0, 0, 0);
+    filesPageLayout->addWidget(diffSplit);
 
-    // --- Conversation: review thread + composer + review actions.
+    // ---- Commits page: every commit that makes up this PR; clicking one opens
+    // it in the repo's commit view.
+    m_pullCommitsList = new QListWidget;
+    m_pullCommitsList->setObjectName("overviewList");
+    connect(m_pullCommitsList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                const QString sha = item ? item->data(Qt::UserRole).toString()
+                                         : QString();
+                if (sha.isEmpty())
+                    return;
+                if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+                    m_repoDetailTabs->button(1)->setChecked(true);
+                if (m_repoDetailStack)
+                    m_repoDetailStack->setCurrentIndex(1);
+                showCommit(sha);
+            });
+
+    // ---- Checks page: action runs for this PR's commits + a manual trigger.
+    m_pullRunChecksButton = new QPushButton("Run checks against this PR");
+    m_pullRunChecksButton->setObjectName("ghostButton");
+    m_pullRunChecksButton->setProperty("buttonSize", "sm");
+    m_pullRunChecksButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_pullRunChecksButton, "workflow", 16);
+    m_pullRunChecksButton->setToolTip(
+        "Queue this repository's push workflows against the pull request's head commit");
+    connect(m_pullRunChecksButton, &QPushButton::clicked, this,
+            &MainWindow::runChecksForCurrentPull);
+    auto *checksToolbar = new QHBoxLayout;
+    checksToolbar->setContentsMargins(0, 0, 0, 0);
+    checksToolbar->addWidget(m_pullRunChecksButton);
+    checksToolbar->addStretch();
+    m_pullChecksTable = new QTableWidget(0, 4);
+    m_pullChecksTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_pullChecksTable);
+    m_pullChecksTable->setHorizontalHeaderLabels(
+        {"Status", "Workflow", "Commit", "Duration"});
+    m_pullChecksTable->verticalHeader()->setVisible(false);
+    m_pullChecksTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_pullChecksTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_pullChecksTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_pullChecksTable->setShowGrid(false);
+    m_pullChecksTable->setWordWrap(false);
+    QHeaderView *ch = m_pullChecksTable->horizontalHeader();
+    ch->setHighlightSections(false);
+    ch->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    ch->setSectionResizeMode(1, QHeaderView::Stretch);
+    ch->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    ch->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    connect(m_pullChecksTable, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QModelIndexList rows = m_pullChecksTable->selectionModel()->selectedRows();
+        if (rows.isEmpty())
+            return;
+        if (QTableWidgetItem *first = m_pullChecksTable->item(rows.first().row(), 0))
+            showPullCheckLog(first->data(Qt::UserRole).toInt());
+    });
+    m_pullChecksLog = new QPlainTextEdit;
+    m_pullChecksLog->setObjectName("actionLog");
+    m_pullChecksLog->setReadOnly(true);
+    m_pullChecksLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+    auto *checksSplit = new QSplitter(Qt::Vertical);
+    checksSplit->setChildrenCollapsible(false);
+    checksSplit->addWidget(m_pullChecksTable);
+    checksSplit->addWidget(m_pullChecksLog);
+    checksSplit->setStretchFactor(0, 1);
+    checksSplit->setStretchFactor(1, 1);
+    auto *checksPage = new QWidget;
+    auto *checksPageLayout = new QVBoxLayout(checksPage);
+    checksPageLayout->setContentsMargins(0, 0, 0, 0);
+    checksPageLayout->setSpacing(8);
+    checksPageLayout->addLayout(checksToolbar);
+    checksPageLayout->addWidget(checksSplit, 1);
+
+    // ---- Conversation page: review thread, an inline checks summary, and the
+    // composer — all in one scroll area so the whole section scrolls together.
     m_pullThreadContainer = new QWidget;
     m_pullThreadLayout = new QVBoxLayout(m_pullThreadContainer);
     m_pullThreadLayout->setContentsMargins(0, 0, 0, 0);
     m_pullThreadLayout->setSpacing(10);
     m_pullThreadLayout->addStretch();
-    m_pullThreadScroll = new QScrollArea;
-    m_pullThreadScroll->setWidgetResizable(true);
-    m_pullThreadScroll->setWidget(m_pullThreadContainer);
-    m_pullThreadScroll->setObjectName("issuePageScroll");
-    m_pullThreadScroll->setFrameShape(QFrame::NoFrame);
+
+    m_pullChecksSummary = new QLabel;
+    m_pullChecksSummary->setObjectName("issueTimelineCard");
+    m_pullChecksSummary->setTextFormat(Qt::RichText);
+    m_pullChecksSummary->setWordWrap(true);
+    m_pullChecksSummary->setContentsMargins(16, 12, 16, 12);
+    m_pullChecksSummary->hide();
+    connect(m_pullChecksSummary, &QLabel::linkActivated, this, [this](const QString &) {
+        if (m_pullTabChecks)
+            m_pullTabChecks->setChecked(true);
+        if (m_pullSubStack)
+            m_pullSubStack->setCurrentIndex(2);
+    });
 
     m_pullComposer = new MarkdownEditor;
     m_pullComposer->setPlaceholderText("Leave a comment or review\xE2\x80\xA6");
@@ -8274,22 +8343,68 @@ QWidget *MainWindow::buildPullsTab()
     composerButtons->addWidget(m_pullRequestChangesButton);
     composerButtons->addWidget(m_pullApproveButton);
     composerButtons->addWidget(m_pullCommentButton);
-    auto *conversation = new QWidget;
-    auto *conversationLayout = new QVBoxLayout(conversation);
-    conversationLayout->setContentsMargins(0, 0, 0, 0);
-    conversationLayout->setSpacing(8);
-    conversationLayout->addWidget(m_pullThreadScroll, 1);
-    conversationLayout->addWidget(m_pullComposer);
-    conversationLayout->addLayout(composerButtons);
+    auto *composerBlock = new QWidget;
+    auto *composerBlockLayout = new QVBoxLayout(composerBlock);
+    composerBlockLayout->setContentsMargins(0, 0, 0, 0);
+    composerBlockLayout->setSpacing(6);
+    composerBlockLayout->addWidget(m_pullComposer);
+    composerBlockLayout->addLayout(composerButtons);
 
-    // Stack the diff over the conversation; let the user resize the split.
-    auto *detailVSplit = new QSplitter(Qt::Vertical);
-    detailVSplit->setChildrenCollapsible(false);
-    detailVSplit->addWidget(diffSplit);
-    detailVSplit->addWidget(conversation);
-    detailVSplit->setStretchFactor(0, 3);
-    detailVSplit->setStretchFactor(1, 2);
-    detailVSplit->setSizes({440, 280});
+    auto *conversationInner = new QWidget;
+    auto *conversationInnerLayout = new QVBoxLayout(conversationInner);
+    conversationInnerLayout->setContentsMargins(0, 0, 0, 0);
+    conversationInnerLayout->setSpacing(10);
+    conversationInnerLayout->addWidget(m_pullThreadContainer);
+    conversationInnerLayout->addWidget(m_pullChecksSummary);
+    conversationInnerLayout->addWidget(composerBlock);
+    conversationInnerLayout->addStretch();
+
+    m_pullThreadScroll = new QScrollArea;
+    m_pullThreadScroll->setWidgetResizable(true);
+    m_pullThreadScroll->setWidget(conversationInner);
+    m_pullThreadScroll->setObjectName("issuePageScroll");
+    m_pullThreadScroll->setFrameShape(QFrame::NoFrame);
+
+    // ---- Sub-tab bar + stack (Conversation / Commits / Checks / Files changed).
+    m_pullSubStack = new QStackedWidget;
+    m_pullSubStack->addWidget(m_pullThreadScroll); // 0 Conversation
+    m_pullSubStack->addWidget(m_pullCommitsList);  // 1 Commits
+    m_pullSubStack->addWidget(checksPage);         // 2 Checks
+    m_pullSubStack->addWidget(filesPage);          // 3 Files changed
+
+    m_pullSubTabs = new QButtonGroup(this);
+    m_pullSubTabs->setExclusive(true);
+    auto *subTabRow = new QHBoxLayout;
+    subTabRow->setContentsMargins(0, 0, 0, 0);
+    subTabRow->setSpacing(2);
+    const QList<QPair<QString, const char *>> subTabs = {
+        {QStringLiteral("Conversation"), "comment"},
+        {QStringLiteral("Commits"), "git-branch"},
+        {QStringLiteral("Checks"), "workflow"},
+        {QStringLiteral("Files changed"), "file-diff"}};
+    for (int i = 0; i < subTabs.size(); ++i) {
+        auto *b = new QPushButton(subTabs.at(i).first);
+        b->setObjectName("repoTab");
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        setOcticon(b, QString::fromLatin1(subTabs.at(i).second), 16);
+        if (i == 0)
+            b->setChecked(true);
+        m_pullSubTabs->addButton(b, i);
+        subTabRow->addWidget(b);
+    }
+    subTabRow->addStretch();
+    m_pullTabConversation = qobject_cast<QPushButton *>(m_pullSubTabs->button(0));
+    m_pullTabCommits = qobject_cast<QPushButton *>(m_pullSubTabs->button(1));
+    m_pullTabChecks = qobject_cast<QPushButton *>(m_pullSubTabs->button(2));
+    m_pullTabFiles = qobject_cast<QPushButton *>(m_pullSubTabs->button(3));
+    connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        m_pullSubStack->setCurrentIndex(id);
+        if (id == 2) // refresh the Checks table when it's brought forward
+            for (const PullRequest &pr : std::as_const(m_currentPulls))
+                if (pr.number == m_currentPullNumber)
+                    renderPullChecks(pr);
+    });
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
     detailLayout->setContentsMargins(18, 18, 18, 18);
@@ -8298,7 +8413,8 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullMergeStatus);
     detailLayout->addWidget(m_pullDesc);
-    detailLayout->addWidget(detailVSplit, 1);
+    detailLayout->addLayout(subTabRow);
+    detailLayout->addWidget(m_pullSubStack, 1);
 
     // Open full width: the table fills the page until a pull request is
     // selected, at which point showPull() reveals the detail pane beside it.
@@ -8453,6 +8569,9 @@ void MainWindow::showPull(int number)
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
+        renderPullChecks(PullRequest());
+        renderPullChecksSummary(PullRequest());
+        updatePullSubTabCounts(PullRequest());
         if (m_pullComposer)
             m_pullComposer->setEnabled(false);
         for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
@@ -8532,6 +8651,9 @@ void MainWindow::showPull(int number)
         m_pullDiff->setPlainText("(no changes)");
     renderPullCommits(*found);
     renderPullThread(*found);
+    renderPullChecks(*found);
+    renderPullChecksSummary(*found);
+    updatePullSubTabCounts(*found);
     updatePullActionState();
 }
 
@@ -8787,6 +8909,219 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     }
 }
 
+// Full commit hashes that make up this PR (base..head), when both refs resolve
+// in the open repo. Used to tie action runs to the PR and to count commits.
+QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
+{
+    QStringList shas;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || pr.base.isEmpty() || pr.head.isEmpty())
+        return shas;
+    QByteArray out;
+    if (runGitCapture(dir, {"log", "--no-merges", "--pretty=%H",
+                            pr.base + ".." + pr.head},
+                      &out, nullptr))
+        shas = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+    return shas;
+}
+
+// Ids of action runs whose pushed commit belongs to this PR (any of its commits
+// or its resolved head tip), scoped to the open repo's owner/name. Newest first,
+// matching m_actionRuns ordering.
+QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
+{
+    QList<int> ids;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return ids;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QStringList commitShas = pullCommitShas(pr);
+    QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
+    // Also include the head tip in case base..head couldn't be enumerated.
+    const QString dir = repoGitDir();
+    if (!dir.isEmpty() && !pr.head.isEmpty()) {
+        QByteArray tip;
+        if (runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr))
+            shas.insert(QString::fromUtf8(tip).trimmed());
+    }
+    if (shas.isEmpty())
+        return ids;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (run.owner == repo.owner && run.name == repo.name &&
+            shas.contains(run.commit))
+            ids.append(run.id);
+    }
+    return ids;
+}
+
+void MainWindow::renderPullChecks(const PullRequest &pr)
+{
+    if (!m_pullChecksTable)
+        return;
+    m_pullChecksTable->setRowCount(0);
+    if (m_pullRunChecksButton)
+        m_pullRunChecksButton->setEnabled(pr.number > 0 && pr.status == "open");
+    if (pr.number <= 0) {
+        if (m_pullChecksLog)
+            m_pullChecksLog->clear();
+        return;
+    }
+    // Preserve the user's selected run across live refreshes.
+    int keepRunId = -1;
+    if (const QModelIndexList sel = m_pullChecksTable->selectionModel()->selectedRows();
+        !sel.isEmpty())
+        if (QTableWidgetItem *it = m_pullChecksTable->item(sel.first().row(), 0))
+            keepRunId = it->data(Qt::UserRole).toInt();
+    const QList<int> ids = runIdsForPull(pr);
+    for (const int id : ids) {
+        const ActionRun *run = findRun(id);
+        if (!run)
+            continue;
+        const int row = m_pullChecksTable->rowCount();
+        m_pullChecksTable->insertRow(row);
+        auto *status = new QTableWidgetItem(actionStatusText(run->status));
+        status->setForeground(actionStatusColor(run->status));
+        status->setData(Qt::UserRole, run->id);
+        m_pullChecksTable->setItem(row, 0, status);
+        m_pullChecksTable->setItem(
+            row, 1, new QTableWidgetItem(run->workflowName.isEmpty()
+                                             ? run->workflowPath
+                                             : run->workflowName));
+        m_pullChecksTable->setItem(row, 2, new QTableWidgetItem(run->commit.left(8)));
+        const qint64 dur = run->finishedAtMs > run->startedAtMs && run->startedAtMs > 0
+                               ? run->finishedAtMs - run->startedAtMs
+                               : 0;
+        m_pullChecksTable->setItem(
+            row, 3,
+            new QTableWidgetItem(dur > 0 ? formatDuration(dur)
+                                         : QString::fromUtf8("\xE2\x80\x94")));
+    }
+    if (m_pullChecksTable->rowCount() > 0) {
+        int keepRow = 0;
+        if (keepRunId >= 0)
+            for (int r = 0; r < m_pullChecksTable->rowCount(); ++r)
+                if (m_pullChecksTable->item(r, 0)->data(Qt::UserRole).toInt() == keepRunId) {
+                    keepRow = r;
+                    break;
+                }
+        m_pullChecksTable->selectRow(keepRow);
+    } else if (m_pullChecksLog)
+        m_pullChecksLog->setPlainText(
+            "No checks have run for this pull request yet. Use \"Run checks against "
+            "this PR\" to queue this repository's push workflows.");
+}
+
+// Compact pass/fail/running line shown inline at the end of the Conversation,
+// with a link that jumps to the Checks tab. Hidden when there are no runs.
+void MainWindow::renderPullChecksSummary(const PullRequest &pr)
+{
+    if (!m_pullChecksSummary)
+        return;
+    if (pr.number <= 0) {
+        m_pullChecksSummary->hide();
+        return;
+    }
+    int passed = 0, failed = 0, running = 0, pending = 0;
+    for (const int id : runIdsForPull(pr)) {
+        const ActionRun *run = findRun(id);
+        if (!run)
+            continue;
+        if (run->status == ActionStatus::Success)
+            ++passed;
+        else if (run->status == ActionStatus::Failed ||
+                 run->status == ActionStatus::Rejected)
+            ++failed;
+        else if (run->status == ActionStatus::Running)
+            ++running;
+        else
+            ++pending; // queued / awaiting approval
+    }
+    const int total = passed + failed + running + pending;
+    if (total == 0) {
+        m_pullChecksSummary->hide();
+        return;
+    }
+    QStringList parts;
+    if (passed)
+        parts << QStringLiteral("<span style='color:#3fb950'>\xE2\x9C\x93 %1 passed</span>")
+                     .arg(passed);
+    if (failed)
+        parts << QStringLiteral("<span style='color:#f85149'>\xE2\x9C\x97 %1 failed</span>")
+                     .arg(failed);
+    if (running)
+        parts << QStringLiteral("<span style='color:#58a6ff'>\xE2\x97\x8F %1 running</span>")
+                     .arg(running);
+    if (pending)
+        parts << QStringLiteral("<span style='color:#8b949e'>%1 pending</span>").arg(pending);
+    m_pullChecksSummary->setText(
+        QStringLiteral("<b>Checks</b> \xC2\xB7 %1 \xC2\xB7 <a href='#checks' "
+                       "style='color:#58a6ff;text-decoration:none'>details</a>")
+            .arg(parts.join(QStringLiteral(" \xC2\xB7 "))));
+    m_pullChecksSummary->show();
+}
+
+void MainWindow::showPullCheckLog(int runId)
+{
+    if (!m_pullChecksLog)
+        return;
+    const ActionRun *run = findRun(runId);
+    if (!run) {
+        m_pullChecksLog->clear();
+        return;
+    }
+    m_pullChecksLog->setPlainText(m_actionStore ? m_actionStore->readLog(*run)
+                                                : QString());
+    m_pullChecksLog->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::runChecksForCurrentPull()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &p : std::as_const(m_currentPulls))
+        if (p.number == m_currentPullNumber)
+            pr = &p;
+    if (!pr || pr->head.isEmpty())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Resolve the PR head to a concrete commit the runner can check out.
+    const QString dir = repoGitDir();
+    QByteArray tip;
+    if (dir.isEmpty() ||
+        !runGitCapture(dir, {"rev-parse", pr->head}, &tip, nullptr) ||
+        tip.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "Could not resolve the pull request's head commit to run checks.", true);
+        return;
+    }
+    queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
+                            QString::fromUtf8(tip).trimmed(),
+                            QStringLiteral("refs/heads/") + pr->head);
+    renderPullChecks(*pr);
+    renderPullChecksSummary(*pr);
+    updatePullSubTabCounts(*pr);
+}
+
+void MainWindow::updatePullSubTabCounts(const PullRequest &pr)
+{
+    const auto label = [](QPushButton *b, const QString &name, int n) {
+        if (b)
+            b->setText(n > 0 ? QStringLiteral("%1 %2").arg(name).arg(n) : name);
+    };
+    if (pr.number <= 0) {
+        label(m_pullTabConversation, QStringLiteral("Conversation"), 0);
+        label(m_pullTabCommits, QStringLiteral("Commits"), 0);
+        label(m_pullTabChecks, QStringLiteral("Checks"), 0);
+        label(m_pullTabFiles, QStringLiteral("Files changed"), 0);
+        return;
+    }
+    label(m_pullTabConversation, QStringLiteral("Conversation"), pr.events.size());
+    label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
+    label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
+    label(m_pullTabFiles, QStringLiteral("Files changed"), pr.filesChanged);
+}
+
 void MainWindow::submitPullComment()
 {
     if (m_currentPullNumber < 0 || !m_pullComposer)
@@ -8993,7 +9328,7 @@ void MainWindow::importPatchAsPull()
     QString error;
     const int number = store.createPull(
         title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
-        base, head, patch, &error);
+        base, head, patch, QString(), &error);
     if (number < 0) {
         setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                             : error,
@@ -9159,7 +9494,8 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     }
     QByteArray diff;
     QString diffError;
-    const bool haveDiff = sourceDir.trimmed().isEmpty()
+    const bool fromRange = sourceDir.trimmed().isEmpty();
+    const bool haveDiff = fromRange
                               ? runGitCapture(dir, {"diff", "--binary", base + ".." + head},
                                               &diff, &diffError)
                               : buildWorkingTreeDiff(dir, base, &diff, &diffError);
@@ -9178,12 +9514,21 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     pr.base = base;
     pr.head = head;
     pr.patch = QString::fromUtf8(diff);
+    // For a branch-range PR, also carry the format-patch series so the owner can
+    // replay it with `git am` and keep each commit's author/date/message. A
+    // working-tree diff has no commits, so it stays a flat patch (git apply).
+    if (fromRange) {
+        QByteArray mbox;
+        if (runGitCapture(dir, {"format-patch", "--stdout", base + ".." + head}, &mbox,
+                          nullptr))
+            pr.commits = QString::fromUtf8(mbox);
+    }
 
     PullStore store = pullStoreForCurrentRepo();
     if (store.canWrite() && targetOwner == currentRepo.owner) {
         QString error;
         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
-                                             pr.patch, &error);
+                                             pr.patch, pr.commits, &error);
         if (number < 0) {
             QMessageBox::warning(this, "New pull request", error);
             return;
@@ -11407,7 +11752,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                         .arg(session->issueNumber),
                     session->baseBranch.isEmpty() ? session->baseRef
                                                   : session->baseBranch,
-                    session->branchName, patch, &error);
+                    session->branchName, patch, QString(), &error);
                 if (pr > 0) {
                     session->prNumber = pr;
                     m_agentStore->saveSession(*session);
@@ -12649,11 +12994,16 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
             runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
             return false;
         }
+        // Capture the authored commit(s) so the merge preserves authorship.
+        QByteArray mbox;
+        runGitCapture(dir, {"format-patch", "--stdout", base + ".." + branch}, &mbox,
+                      nullptr);
         runGitCapture(dir, {"checkout", base}, nullptr, nullptr);
         PullStore store = pullStoreForCurrentRepo();
         QString error;
         const int number = store.createPull(title, description, base, branch,
-                                            QString::fromUtf8(diff), &error);
+                                            QString::fromUtf8(diff),
+                                            QString::fromUtf8(mbox), &error);
         if (number < 0) {
             setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                                 : error,
@@ -22329,6 +22679,20 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     if (!repo.actionsEnabled)
         return; // push detection only; no workflow execution for this repo
 
+    queueWorkflowsForCommit(repoIndex, owner, name, commit, ref);
+}
+
+// Enqueue every push-triggered .forkmesh/ workflow present at `commit` for
+// owner/name. Shared by the push handler and the PR "Run checks" button so both
+// reuse the same metadata-skip, approval, and queueing rules.
+void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
+                                         const QString &name, const QString &commit,
+                                         const QString &ref)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
     // bail if every one lives under a metadata folder.
@@ -22419,6 +22783,7 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
         if (m_actionWorkflowList && repoIndex == m_repoDetailIndex)
             refreshRepoActions();
         updateNotificationButton();
+        processActionQueue(); // a manual run isn't driven by the push pipeline
     } else {
         logSystem(QStringLiteral(
                       "Actions: no .forkmesh/ workflow with 'on: push' at %1 for "
@@ -22512,6 +22877,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
         }
     }
     updateNotificationButton();
+    refreshOpenPullChecks();
     if (status == ActionStatus::Running) {
         if (const ActionRun *run = findRun(runId))
             notifyActionEvent(QStringLiteral("Action started"),
@@ -22535,7 +22901,24 @@ void MainWindow::onRunFinished(int runId, bool ok)
                           !ok);
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
+    refreshOpenPullChecks();
     processActionQueue();
+}
+
+// After action-run state changes, keep an open PR's Checks tab and the inline
+// Conversation summary current without waiting for a re-select.
+void MainWindow::refreshOpenPullChecks()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number != m_currentPullNumber)
+            continue;
+        renderPullChecks(pr);
+        renderPullChecksSummary(pr);
+        updatePullSubTabCounts(pr);
+        return;
+    }
 }
 
 void MainWindow::notifyActionEvent(const QString &title, const QString &body,
