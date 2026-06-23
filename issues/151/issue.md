@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 151
 title: there are these repo 7cbaf0dc hosts on the website under /network/ please remove them and make sure they don't come back its a bug
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 16
