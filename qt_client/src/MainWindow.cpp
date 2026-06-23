@@ -23071,6 +23071,8 @@ void MainWindow::showRun(int runId)
 {
     m_selectedRunId = runId;
     const ActionRun *run = findRun(runId);
+    if (m_actionRerunButton)
+        m_actionRerunButton->setVisible(run != nullptr);
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -23159,6 +23161,42 @@ void MainWindow::rejectSelectedRun()
     refreshActionsTable();
     showRun(m_selectedRunId);
     updateNotificationButton();
+}
+
+void MainWindow::rerunSelectedRun()
+{
+    const ActionRun *prev = findRun(m_selectedRunId);
+    if (!prev || !m_actionStore)
+        return;
+
+    // Clone the run's identity, workflow content, commit and ref so it executes
+    // exactly what ran before. Approval still applies: if that content is no
+    // longer approved it waits for review rather than running silently.
+    ActionRun run;
+    run.owner = prev->owner;
+    run.name = prev->name;
+    run.workflowPath = prev->workflowPath;
+    run.workflowName = prev->workflowName;
+    run.workflowContent = prev->workflowContent;
+    run.commit = prev->commit;
+    run.ref = prev->ref;
+    const bool approved =
+        ActionStore::isApproved(run.repoKey(), run.workflowPath, run.workflowContent);
+    run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
+
+    const ActionRun created = m_actionStore->createRun(run);
+    m_actionRuns.prepend(created);
+    if (approved)
+        m_actionQueue.append(created.id);
+    logSystem(QStringLiteral("Actions: rerun %1 \"%2\" for %3/%4 @ %5")
+                  .arg(approved ? QStringLiteral("of")
+                                : QStringLiteral("awaiting approval of"),
+                       run.workflowName, run.owner, run.name, run.commit.left(8)));
+
+    refreshActionsTable();
+    showRun(created.id);
+    updateNotificationButton();
+    processActionQueue();
 }
 
 QWidget *MainWindow::buildRepoActionsTab()
@@ -23311,11 +23349,28 @@ QWidget *MainWindow::buildRepoActionsTab()
     manualRow->addStretch();
     m_actionManualRunBar->hide();
 
+    // Rerun: re-queue the selected run as-is (same workflow content, commit and
+    // ref). Sits beside the run title; hidden until a run is selected.
+    m_actionRerunButton = new QPushButton("Rerun");
+    m_actionRerunButton->setObjectName("ghostButton");
+    m_actionRerunButton->setProperty("buttonSize", "sm");
+    m_actionRerunButton->setCursor(Qt::PointingHandCursor);
+    m_actionRerunButton->setToolTip("Run this action again with the same commit");
+    setOcticon(m_actionRerunButton, "sync", 16);
+    m_actionRerunButton->hide();
+    connect(m_actionRerunButton, &QPushButton::clicked, this,
+            &MainWindow::rerunSelectedRun);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->addWidget(m_actionRunTitle);
+    titleRow->addStretch();
+    titleRow->addWidget(m_actionRerunButton);
+
     auto *detailLayout = new QVBoxLayout(detailPane);
     detailLayout->setContentsMargins(12, 22, 24, 22);
     detailLayout->setSpacing(8);
     detailLayout->addWidget(m_actionManualRunBar);
-    detailLayout->addWidget(m_actionRunTitle);
+    detailLayout->addLayout(titleRow);
     detailLayout->addWidget(m_actionRunMeta);
     detailLayout->addWidget(m_actionApprovalBanner);
     detailLayout->addWidget(m_actionApprovalBar);
