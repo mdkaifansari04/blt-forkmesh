@@ -203,3 +203,38 @@ QString ForkMeshIdentity::signData(const QByteArray &payload) const
     signature.resize(int(sigLen));
     return base64Url(signature);
 }
+
+bool ForkMeshIdentity::verifySignature(const QString &publicKeyB64url,
+                                       const QString &signatureB64url,
+                                       const QByteArray &payload)
+{
+    const QByteArray rawKey = QByteArray::fromBase64(
+        publicKeyB64url.toLatin1(), QByteArray::Base64UrlEncoding);
+    const QByteArray sig = QByteArray::fromBase64(
+        signatureB64url.toLatin1(), QByteArray::Base64UrlEncoding);
+    // Ed25519 keys are 32 bytes, signatures 64 bytes.
+    if (rawKey.size() != 32 || sig.size() != 64)
+        return false;
+
+    EVP_PKEY *key = EVP_PKEY_new_raw_public_key(
+        EVP_PKEY_ED25519, nullptr,
+        reinterpret_cast<const unsigned char *>(rawKey.constData()),
+        size_t(rawKey.size()));
+    if (!key)
+        return false;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    bool ok = false;
+    if (ctx &&
+        EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, key) == 1) {
+        ok = EVP_DigestVerify(
+                 ctx, reinterpret_cast<const unsigned char *>(sig.constData()),
+                 size_t(sig.size()),
+                 reinterpret_cast<const unsigned char *>(payload.constData()),
+                 size_t(payload.size())) == 1;
+    }
+    if (ctx)
+        EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(key);
+    return ok;
+}

@@ -32,12 +32,13 @@ NODE_SOLANA_ADDRESS = ""
 # deploy. Falls back to NODE_SOLANA_ADDRESS when unset.
 # Admins are set in the database, not here: the accounts table has an is_admin
 # column. Grant one with: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
-# Encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the blind-index
-# HMAC key. Security-critical — override in production with a real secret:
-#   uvx --from workers-py pywrangler secret put DATA_KEY
-DATA_KEY = "forkmesh-dev-data-key-change-me"
-# Legacy: still referenced if present; DATA_KEY supersedes it.
-ACCOUNTS_KEY = "forkmesh-dev-accounts-key-change-me"
+# DATA_KEY encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the
+# blind-index HMAC key — including the Ed25519 SEEDS that control custody
+# deposit/bounty wallets. It is INTENTIONALLY NOT here: a value in [vars] is
+# plaintext and committed (i.e. public), which would let anyone with a DB read
+# decrypt every custody key. It lives in .env.production (gitignored) and is
+# pushed as a Worker *secret* by deploy.sh. The code fails closed if it is unset
+# or left at a known dev placeholder.
 # Admin error dashboard creds (ADMIN_PATH / ADMIN_USER / ADMIN_PASS) are kept out
 # of this committed file. They live in .env.production (gitignored) and are pushed
 # as Worker *secrets* by deploy.sh (`pywrangler secret put`) — NOT plaintext vars,

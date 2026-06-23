@@ -83,6 +83,25 @@ int main(int argc, char *argv[])
     check(!signedProfile.value("signature").toString().isEmpty(),
           "signed profile includes a signature");
 
+    // Admin-moderation deletes are signed with signData() and authenticated by
+    // every peer via ForkMeshIdentity::verifySignature against the signer's key.
+    {
+        const QByteArray canonical =
+            QByteArrayLiteral("forkmesh-admin-delete-v1\n#general\nmsg-1\n") +
+            identity.publicKey().toUtf8() + QByteArrayLiteral("\n1700000000000");
+        const QString sig = identity.signData(canonical);
+        check(!sig.isEmpty(), "admin-delete canonical signs");
+        check(ForkMeshIdentity::verifySignature(identity.publicKey(), sig, canonical),
+              "verifySignature accepts a valid admin-delete signature");
+        check(!ForkMeshIdentity::verifySignature(identity.publicKey(), sig,
+                                                 canonical + "x"),
+              "verifySignature rejects a tampered payload");
+        check(!ForkMeshIdentity::verifySignature(identity.publicKey(),
+                                                 sig.left(sig.size() - 2) + "AA",
+                                                 canonical),
+              "verifySignature rejects a tampered signature");
+    }
+
     RoomCrypto crypto("repo:mainnode/forkmesh:room:general",
                       "correct horse battery staple");
     check(crypto.isValid(), "mainnode room crypto key derives");

@@ -79,6 +79,23 @@ public:
     virtual void editMessage(const QString &conversation, const QString &messageId,
                              const QString &newText) = 0;
     virtual void deleteMessage(const QString &conversation, const QString &messageId) = 0;
+    // Admin moderation: broadcast a signed request to delete any message (the
+    // signature, made by the admin's identity key over a canonical string, lets
+    // every peer authenticate it). Default no-op for backends without it.
+    virtual void sendAdminDelete(const QString &conversation, const QString &messageId,
+                                 qint64 ts, const QString &signature) {
+        Q_UNUSED(conversation);
+        Q_UNUSED(messageId);
+        Q_UNUSED(ts);
+        Q_UNUSED(signature);
+    }
+    // Apply an admin delete that the caller has already verified (good signature
+    // from a confirmed admin). Removes the message and emits messageDeleted.
+    virtual void applyAdminDelete(const QString &conversation,
+                                  const QString &messageId) {
+        Q_UNUSED(conversation);
+        Q_UNUSED(messageId);
+    }
     // Publish this node's avatar (PNG bytes; empty clears it).
     virtual void setAvatar(const QByteArray &pngData) = 0;
     // Update the single visible/account name used in outgoing messages.
@@ -107,6 +124,12 @@ signals:
     void messageEdited(const QString &conversation, const QString &messageId,
                        const QString &newText);
     void messageDeleted(const QString &conversation, const QString &messageId);
+    // An admin moderation delete arrived from a peer. NOT applied yet — the UI
+    // must verify the signature and the sender's admin status, then call
+    // applyAdminDelete() to actually remove it.
+    void adminDeleteRequested(const QString &conversation, const QString &messageId,
+                              const QString &adminId, const QString &adminName,
+                              qint64 ts, const QString &signature);
     // A peer's avatar became available or changed (PNG bytes).
     void avatarChanged(const QString &peerId, const QByteArray &pngData);
     // A peer started (active=true) or stopped typing in a conversation.

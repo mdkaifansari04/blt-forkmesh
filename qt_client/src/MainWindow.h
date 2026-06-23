@@ -605,6 +605,15 @@ private:
     void onMessageDeleted(const QString &conversation, const QString &messageId);
     void promptEditMessage(const QString &messageId, const QString &currentText);
     void confirmDeleteMessage(const QString &messageId);
+    // Admin moderation: delete any message (not just your own). The delete is
+    // signed by this node's identity and broadcast; peers verify the signature
+    // and the signer's admin status before applying.
+    void confirmAdminDeleteMessage(const QString &messageId);
+    void onAdminDeleteRequested(const QString &conversation, const QString &messageId,
+                                const QString &adminId, const QString &adminName,
+                                qint64 ts, const QString &sig);
+    QString adminDeleteCanonical(const QString &conversation, const QString &messageId,
+                                 const QString &adminPubkey, qint64 ts) const;
     void onAvatar(const QString &peerId, const QByteArray &pngData);
     void onTypingChanged(const QString &conversation, const QString &peerId,
                          const QString &peerName, bool active);
@@ -1235,6 +1244,9 @@ private:
     QStringList m_networkLog;
     QStringList m_openDms;                      // peerIds in sidebar order
     QSet<QString> m_unread;
+    // Node ids (pubkeys) confirmed to be admins, so repeated moderation deletes
+    // from the same admin don't re-hit the accounts API.
+    QSet<QString> m_knownAdminPubkeys;
     // Per-conversation unread message tally, summed into the red count badge on
     // the chat button. Kept in lockstep with m_unread.
     QHash<QString, int> m_unreadCounts;

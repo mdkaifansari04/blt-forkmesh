@@ -104,7 +104,7 @@ QString humanSize(qint64 bytes)
 } // namespace
 
 MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
-                       QWidget *parent)
+                       bool canModerate, QWidget *parent)
     : QFrame(parent), m_message(message), m_nameColor(nameColor)
 {
     setObjectName("messageRow");
@@ -158,6 +158,16 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         del->setToolTip("Delete message");
         connect(del, &QPushButton::clicked, this, [this] {
             emit deleteRequested(m_message.id);
+        });
+        headerRow->addWidget(del);
+    } else if (canModerate && !message.deleted) {
+        // Admins can delete other people's messages too.
+        auto *del = new QPushButton("Delete");
+        del->setObjectName("messageAction");
+        del->setCursor(Qt::PointingHandCursor);
+        del->setToolTip("Delete this message as an administrator");
+        connect(del, &QPushButton::clicked, this, [this] {
+            emit moderateDeleteRequested(m_message.id);
         });
         headerRow->addWidget(del);
     }

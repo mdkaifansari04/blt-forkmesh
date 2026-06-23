@@ -55,9 +55,11 @@
       return;
     }
     setHint(
-      body.error === "no_such_account" ? "No account found for that email."
-        : body.error === "account_not_active" ? "That account hasn’t finished signup yet."
-        : body.error === "bad_password" ? "Incorrect password."
+      // The relay returns one generic code for a bad email/password/unknown
+      // account so attackers can't enumerate which accounts exist.
+      body.error === "invalid_credentials" ? "Incorrect email or password."
+        : body.error === "too_many_attempts"
+          ? "Too many failed attempts. Wait a few minutes and try again."
         : "Could not log in. Please try again.", "bad");
   }
 

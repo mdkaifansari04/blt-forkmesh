@@ -37,6 +37,13 @@ public:
     // base64url Ed25519 signature, matching signJson's encoding.
     QString signData(const QByteArray &payload) const;
 
+    // Verify a detached Ed25519 signature against any node's public key. Both
+    // are base64url (no padding), matching publicKey()/signData(). Used to
+    // authenticate signed actions from other nodes (e.g. admin moderation).
+    static bool verifySignature(const QString &publicKeyB64url,
+                                const QString &signatureB64url,
+                                const QByteArray &payload);
+
 private:
     bool generate(const QString &keyPath);
     bool readKey(const QString &keyPath);

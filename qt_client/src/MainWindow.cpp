@@ -3305,12 +3305,14 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     QMessageBox::warning(this, "Log in",
                          err == "bad_totp"
                              ? "Incorrect authenticator code."
-                             : err == "bad_password"
-                                   ? "Incorrect password."
-                                   : err == "no_such_account"
-                                         ? "No account found for that email."
-                                   : err == "account_not_active"
-                                         ? "That account hasn't finished signup yet."
+                             // The relay returns one generic code for a bad
+                             // email/password/unknown account so attackers can't
+                             // tell which accounts exist.
+                             : err == "invalid_credentials"
+                                   ? "Incorrect email or password."
+                             : err == "too_many_attempts"
+                                   ? "Too many failed attempts. Wait a few minutes "
+                                     "and try again."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");
@@ -9316,12 +9318,25 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
         // shown so the maintainer can fund the now-completed work. The PR author
         // is passed as the payee so the worker can split a funded escrow to the
         // author + treasury automatically (no second manual step).
+        // The relay only lets the repo owner create a bounty and authorize its
+        // payee, so sign owner/repo/number/payee/ts with the node identity. The
+        // payee identifier is the PR author's node name (the relay resolves it to
+        // their registered payout wallet); lowercased to match the relay's
+        // canonical form.
+        const QString payeeNode = pr.authorName.trimmed().toLower();
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-bounty-create-v1\n" + repo.owner + "\n" + repo.name + "\n" +
+             QString::number(number) + "\n" + payeeNode + "\n" + ts).toUtf8();
+        const QString sig = m_profileIdentity.signData(canonical);
         const QJsonObject payload{{"action", "create"},
                                   {"owner", repo.owner},
                                   {"repo", repo.name},
                                   {"number", number},
                                   {"amountUsd", amount},
-                                  {"payeeNode", pr.authorName}};
+                                  {"payeeNode", payeeNode},
+                                  {"ts", ts},
+                                  {"sig", sig}};
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
@@ -19093,6 +19108,8 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::reactionChanged, this, &MainWindow::onReaction);
     connect(backend, &ChatBackend::messageEdited, this, &MainWindow::onMessageEdited);
     connect(backend, &ChatBackend::messageDeleted, this, &MainWindow::onMessageDeleted);
+    connect(backend, &ChatBackend::adminDeleteRequested, this,
+            &MainWindow::onAdminDeleteRequested);
     connect(backend, &ChatBackend::avatarChanged, this, &MainWindow::onAvatar);
     connect(backend, &ChatBackend::typingChanged, this, &MainWindow::onTypingChanged);
     connect(backend, &ChatBackend::systemMessage, this, &MainWindow::logSystem);
@@ -19283,7 +19300,9 @@ QString MainWindow::senderColor(const QString &sender) const
 
 MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
 {
-    auto *row = new MessageRow(message, senderColor(message.senderName));
+    // Admins get a Delete control on everyone's messages (moderation).
+    const bool canModerate = m_isAdmin && !message.self;
+    auto *row = new MessageRow(message, senderColor(message.senderName), canModerate);
     if (m_avatars.contains(message.senderId))
         row->setAvatar(m_avatars.value(message.senderId));
     if (m_reactions.contains(message.id))
@@ -19295,6 +19314,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
+    connect(row, &MessageRow::moderateDeleteRequested, this,
+            &MainWindow::confirmAdminDeleteMessage);
     connect(row, &MessageRow::saveFileRequested, this,
             &MainWindow::saveIncomingFile);
     // Clicking a sender's avatar or name in chat opens their node profile. The
@@ -19484,6 +19505,90 @@ void MainWindow::confirmDeleteMessage(const QString &messageId)
         this, "Delete message", "Delete this message for everyone?");
     if (result == QMessageBox::Yes)
         m_backend->deleteMessage(m_currentConversation, messageId);
+}
+
+QString MainWindow::adminDeleteCanonical(const QString &conversation,
+                                         const QString &messageId,
+                                         const QString &adminPubkey,
+                                         qint64 ts) const
+{
+    // Must match both sides byte-for-byte. Binds the delete to this exact
+    // message, conversation, admin key and timestamp.
+    return QStringLiteral("forkmesh-admin-delete-v1\n") + conversation + "\n" +
+           messageId + "\n" + adminPubkey + "\n" + QString::number(ts);
+}
+
+void MainWindow::confirmAdminDeleteMessage(const QString &messageId)
+{
+    if (!m_backend || messageId.isEmpty() || !m_isAdmin ||
+        !m_profileIdentity.isValid())
+        return;
+    const int result = QMessageBox::question(
+        this, "Delete message",
+        "Delete this message for everyone as an administrator?");
+    if (result != QMessageBox::Yes)
+        return;
+    const QString conversation = m_currentConversation;
+    const QString pubkey = m_profileIdentity.publicKey();
+    const qint64 ts = QDateTime::currentMSecsSinceEpoch();
+    const QString sig = m_profileIdentity.signData(
+        adminDeleteCanonical(conversation, messageId, pubkey, ts).toUtf8());
+    if (sig.isEmpty())
+        return;
+    // Trust ourselves: apply locally now, and broadcast the signed request so
+    // every peer can verify and apply it too.
+    m_knownAdminPubkeys.insert(pubkey);
+    m_backend->applyAdminDelete(conversation, messageId);
+    m_backend->sendAdminDelete(conversation, messageId, ts, sig);
+}
+
+void MainWindow::onAdminDeleteRequested(const QString &conversation,
+                                        const QString &messageId,
+                                        const QString &adminId,
+                                        const QString &adminName, qint64 ts,
+                                        const QString &sig)
+{
+    if (messageId.isEmpty() || adminId.isEmpty() || sig.isEmpty())
+        return;
+    // 1) The signature must be valid for the claimed admin key. This stops any
+    //    room member from forging an admin delete (chat frames are otherwise
+    //    unsigned), since they can't produce a signature for the admin's key.
+    const QByteArray canonical =
+        adminDeleteCanonical(conversation, messageId, adminId, ts).toUtf8();
+    if (!ForkMeshIdentity::verifySignature(adminId, sig, canonical)) {
+        logSystem(QStringLiteral("Ignored an admin delete with a bad signature."));
+        return;
+    }
+    // 2) The signer must actually be an admin. Trust a cached confirmation, else
+    //    ask the relay (the source of truth for admin status) and confirm the
+    //    account's published key matches the signer before applying.
+    if (m_knownAdminPubkeys.contains(adminId)) {
+        m_backend->applyAdminDelete(conversation, messageId);
+        return;
+    }
+    if (adminName.trimmed().isEmpty() || !m_networkAccess)
+        return;
+    QNetworkRequest request(accountsApiUrl(adminName.trimmed()));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    const QString conv = conversation;
+    const QString mid = messageId;
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, adminId, conv, mid]() {
+                const QByteArray body = reply->readAll();
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                reply->deleteLater();
+                if (!ok || !m_backend)
+                    return;
+                const QJsonObject rec = QJsonDocument::fromJson(body).object();
+                const bool isAdmin = rec.value("isAdmin").toBool();
+                const QString pubkey = rec.value("pubkey").toString();
+                if (!isAdmin || pubkey != adminId)
+                    return; // not an admin, or the key doesn't match: reject
+                m_knownAdminPubkeys.insert(adminId);
+                m_backend->applyAdminDelete(conv, mid);
+            });
 }
 
 void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)

@@ -33,6 +33,10 @@ public:
     void editMessage(const QString &conversation, const QString &messageId,
                      const QString &newText) override;
     void deleteMessage(const QString &conversation, const QString &messageId) override;
+    void sendAdminDelete(const QString &conversation, const QString &messageId,
+                         qint64 ts, const QString &signature) override;
+    void applyAdminDelete(const QString &conversation,
+                          const QString &messageId) override;
     void setAvatar(const QByteArray &pngData) override;
     void setUserName(const QString &name) override;
     void forgetMember(const QString &peerId) override;
@@ -91,6 +95,9 @@ private:
                    const QString &senderId, const QString &text);
     void applyDelete(const QString &conversation, const QString &target,
                      const QString &senderId);
+    // Mark a message deleted without the author check (used after an admin
+    // moderation delete has been verified by the UI).
+    void applyDeleteUnchecked(const QString &conversation, const QString &target);
     bool markSeen(const QString &messageId);
     QJsonObject makeMessage(const QString &type) const;
 
