@@ -1,0 +1,415 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index b618724..6b0e0e7 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -69,6 +69,7 @@
+ #include <QFileSystemWatcher>
+ #include <QProcess>
+ #include <QProcessEnvironment>
++#include <QProgressBar>
+ #include <QTextCursor>
+ #include <QTimeZone>
+ #include <QPushButton>
+@@ -5696,6 +5697,39 @@ QWidget *MainWindow::buildIssuesSection()
+     auto *heading = new QLabel("Issues");
+     heading->setObjectName("channelTitle");
+ 
++    auto *issueTabGroup = new QButtonGroup(page);
++    issueTabGroup->setExclusive(true);
++    auto *issuesTab = new QPushButton;
++    issuesTab->setObjectName("ghostButton");
++    issuesTab->setProperty("buttonSize", "sm");
++    issuesTab->setCheckable(true);
++    issuesTab->setChecked(true);
++    issuesTab->setCursor(Qt::PointingHandCursor);
++    issuesTab->setToolTip("Issues");
++    setOcticon(issuesTab, "issue-opened", 16);
++    auto *milestonesTab = new QPushButton("Milestones");
++    milestonesTab->setObjectName("ghostButton");
++    milestonesTab->setProperty("buttonSize", "sm");
++    milestonesTab->setCheckable(true);
++    milestonesTab->setCursor(Qt::PointingHandCursor);
++    auto *labelsTab = new QPushButton("Labels");
++    labelsTab->setObjectName("ghostButton");
++    labelsTab->setProperty("buttonSize", "sm");
++    labelsTab->setCheckable(true);
++    labelsTab->setCursor(Qt::PointingHandCursor);
++    setOcticon(milestonesTab, "graph", 16);
++    setOcticon(labelsTab, "tag", 16);
++    issueTabGroup->addButton(issuesTab, 0);
++    issueTabGroup->addButton(milestonesTab, 1);
++    issueTabGroup->addButton(labelsTab, 2);
++    auto *headingRow = new QHBoxLayout;
++    headingRow->setContentsMargins(0, 0, 0, 0);
++    headingRow->addWidget(heading);
++    headingRow->addStretch();
++    headingRow->addWidget(issuesTab);
++    headingRow->addWidget(milestonesTab);
++    headingRow->addWidget(labelsTab);
++
+     m_issuesRepoCombo = new QComboBox;
+     m_issuesRepoCombo->setToolTip("Repository whose issues you are viewing");
+     // The repo is fixed by the repo-detail view that hosts this panel; the combo
+@@ -5783,14 +5817,51 @@ QWidget *MainWindow::buildIssuesSection()
+     header->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Agent
+     header->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Author
+ 
++    m_issueMilestonesTable = new QTableWidget(0, 6);
++    m_issueMilestonesTable->setObjectName("issueTable");
++    m_issueMilestonesTable->setHorizontalHeaderLabels(
++        {"Milestone", "Open", "Closed", "Progress", "Due", "Status"});
++    m_issueMilestonesTable->verticalHeader()->setVisible(false);
++    m_issueMilestonesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
++    m_issueMilestonesTable->setSelectionMode(QAbstractItemView::SingleSelection);
++    m_issueMilestonesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    m_issueMilestonesTable->setShowGrid(false);
++    m_issueMilestonesTable->setSortingEnabled(true);
++    QHeaderView *msHeader = m_issueMilestonesTable->horizontalHeader();
++    msHeader->setHighlightSections(false);
++    msHeader->setSectionResizeMode(0, QHeaderView::Stretch);
++    for (int i = 1; i < 6; ++i)
++        msHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
++
++    m_issueLabelsTable = new QTableWidget(0, 5);
++    m_issueLabelsTable->setObjectName("issueTable");
++    m_issueLabelsTable->setHorizontalHeaderLabels(
++        {"Label", "Open", "Closed", "Total", ""});
++    m_issueLabelsTable->verticalHeader()->setVisible(false);
++    m_issueLabelsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
++    m_issueLabelsTable->setSelectionMode(QAbstractItemView::SingleSelection);
++    m_issueLabelsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    m_issueLabelsTable->setShowGrid(false);
++    m_issueLabelsTable->setSortingEnabled(true);
++    QHeaderView *labelHeader = m_issueLabelsTable->horizontalHeader();
++    labelHeader->setHighlightSections(false);
++    labelHeader->setSectionResizeMode(0, QHeaderView::Stretch);
++    for (int i = 1; i < 5; ++i)
++        labelHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
++
++    m_issueListStack = new QStackedWidget;
++    m_issueListStack->addWidget(m_issueTable);
++    m_issueListStack->addWidget(m_issueMilestonesTable);
++    m_issueListStack->addWidget(m_issueLabelsTable);
++
+     auto *listLayout = new QVBoxLayout(listPane);
+     listLayout->setContentsMargins(18, 18, 12, 18);
+     listLayout->setSpacing(8);
+-    listLayout->addWidget(heading);
++    listLayout->addLayout(headingRow);
+     listLayout->addWidget(m_issuesRepoCombo);
+     listLayout->addLayout(filterRow);
+     listLayout->addLayout(actionRow);
+-    listLayout->addWidget(m_issueTable, 1);
++    listLayout->addWidget(m_issueListStack, 1);
+ 
+     // Center: GitHub-style selected issue page: title header, status, timeline and
+     // comment composer.
+@@ -6252,6 +6323,15 @@ QWidget *MainWindow::buildIssuesSection()
+             [this](int) { refreshIssueList(); });
+     connect(m_issueSearch, &QLineEdit::textChanged, this,
+             [this] { refreshIssueList(); });
++    connect(issueTabGroup, &QButtonGroup::idClicked, this, [=](int id) {
++        m_issueListStack->setCurrentIndex(id);
++        const bool tableMode = id == 0;
++        m_issueSearch->setVisible(tableMode);
++        m_issueLabelFilter->setVisible(tableMode);
++        m_issueMilestoneFilter->setVisible(tableMode);
++        m_issueStatusFilter->setVisible(tableMode);
++        m_issueDetailToggle->setVisible(tableMode);
++    });
+     connect(m_issueTable, &QTableWidget::itemSelectionChanged, this, [this] {
+         const QModelIndexList rows = m_issueTable->selectionModel()->selectedRows();
+         if (rows.isEmpty())
+@@ -6260,6 +6340,8 @@ QWidget *MainWindow::buildIssuesSection()
+         if (first)
+             showIssue(first->data(Qt::UserRole).toInt());
+     });
++    connect(m_issueLabelsTable, &QTableWidget::cellDoubleClicked, this,
++            [this](int row, int) { editIssueLabelDefinition(row); });
+     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
+     connect(m_issueSyncButton, &QPushButton::clicked, this,
+             &MainWindow::syncIssuesInbox);
+@@ -13594,6 +13676,10 @@ void MainWindow::reloadIssues()
+         m_currentLabels.clear();
+         m_currentMilestones.clear();
+         m_issueTable->setRowCount(0);
++        if (m_issueMilestonesTable)
++            m_issueMilestonesTable->setRowCount(0);
++        if (m_issueLabelsTable)
++            m_issueLabelsTable->setRowCount(0);
+         m_currentIssueNumber = -1;
+         renderIssueThread(Issue());
+         updateIssueActionState();
+@@ -13620,6 +13706,8 @@ void MainWindow::reloadIssues()
+     msBlock.unblock();
+ 
+     refreshIssueList();
++    refreshIssueMilestones();
++    refreshIssueLabels();
+     updateIssueActionState();
+     updateRepoIssueCount();
+ }
+@@ -13809,6 +13897,239 @@ void MainWindow::refreshIssueList()
+     }
+ }
+ 
++void MainWindow::refreshIssueMilestones()
++{
++    if (!m_issueMilestonesTable)
++        return;
++
++    struct Counts {
++        int open = 0;
++        int closed = 0;
++    };
++    QHash<QString, Counts> counts;
++    QHash<QString, IssueMilestone> defs;
++    QStringList order;
++    for (const IssueMilestone &ms : std::as_const(m_currentMilestones)) {
++        if (ms.title.trimmed().isEmpty())
++            continue;
++        defs.insert(ms.title, ms);
++        if (!order.contains(ms.title))
++            order << ms.title;
++    }
++    for (const Issue &issue : std::as_const(m_currentIssues)) {
++        if (issue.milestone.trimmed().isEmpty())
++            continue;
++        if (!order.contains(issue.milestone))
++            order << issue.milestone;
++        Counts &c = counts[issue.milestone];
++        if (issue.status == "closed")
++            ++c.closed;
++        else
++            ++c.open;
++    }
++
++    m_issueMilestonesTable->setSortingEnabled(false);
++    m_issueMilestonesTable->setRowCount(0);
++    for (const QString &title : std::as_const(order)) {
++        const Counts c = counts.value(title);
++        const int total = c.open + c.closed;
++        const int pct = total > 0 ? (c.closed * 100) / total : 0;
++        const IssueMilestone ms = defs.value(title);
++
++        const int row = m_issueMilestonesTable->rowCount();
++        m_issueMilestonesTable->insertRow(row);
++        auto *titleItem = new QTableWidgetItem(title);
++        titleItem->setIcon(themedOcticon("graph", QColor("#8b949e"), 14));
++        m_issueMilestonesTable->setItem(row, 0, titleItem);
++        auto addNumber = [&](int column, int value) {
++            auto *item = new QTableWidgetItem;
++            item->setData(Qt::DisplayRole, value);
++            item->setTextAlignment(Qt::AlignCenter);
++            m_issueMilestonesTable->setItem(row, column, item);
++        };
++        addNumber(1, c.open);
++        addNumber(2, c.closed);
++
++        auto *progressItem = new QTableWidgetItem(QStringLiteral("%1%").arg(pct));
++        progressItem->setData(kTableSortRole, pct);
++        m_issueMilestonesTable->setItem(row, 3, progressItem);
++        auto *progress = new QProgressBar;
++        progress->setRange(0, 100);
++        progress->setValue(pct);
++        progress->setTextVisible(true);
++        progress->setFormat(QStringLiteral("%p%"));
++        m_issueMilestonesTable->setCellWidget(row, 3, progress);
++
++        m_issueMilestonesTable->setItem(
++            row, 4,
++            new QTableWidgetItem(
++                ms.due > 0 ? QDateTime::fromMSecsSinceEpoch(ms.due).toString("yyyy-MM-dd")
++                           : QString()));
++        m_issueMilestonesTable->setItem(
++            row, 5,
++            new QTableWidgetItem(ms.status.trimmed().isEmpty() ? QStringLiteral("open")
++                                                               : ms.status));
++    }
++    m_issueMilestonesTable->setSortingEnabled(true);
++}
++
++void MainWindow::refreshIssueLabels()
++{
++    if (!m_issueLabelsTable)
++        return;
++
++    struct Counts {
++        int open = 0;
++        int closed = 0;
++    };
++    QHash<QString, Counts> counts;
++    QHash<QString, QString> colors;
++    QStringList order;
++    for (const IssueLabel &label : std::as_const(m_currentLabels)) {
++        if (label.name.trimmed().isEmpty())
++            continue;
++        colors.insert(label.name, label.color);
++        if (!order.contains(label.name))
++            order << label.name;
++    }
++    for (const Issue &issue : std::as_const(m_currentIssues)) {
++        for (const QString &name : issue.labels) {
++            if (name.trimmed().isEmpty())
++                continue;
++            if (!order.contains(name))
++                order << name;
++            Counts &c = counts[name];
++            if (issue.status == "closed")
++                ++c.closed;
++            else
++                ++c.open;
++        }
++    }
++
++    const bool writable = issueStoreForCurrentRepo().canWrite();
++    m_issueLabelsTable->setSortingEnabled(false);
++    m_issueLabelsTable->setRowCount(0);
++    for (const QString &name : std::as_const(order)) {
++        const Counts c = counts.value(name);
++        const QString color = colors.value(name, QStringLiteral("#94a3b8"));
++        const int row = m_issueLabelsTable->rowCount();
++        m_issueLabelsTable->insertRow(row);
++
++        auto *labelItem = new QTableWidgetItem(name);
++        labelItem->setData(Qt::UserRole, name);
++        labelItem->setIcon(themedOcticon("tag", QColor(color), 14));
++        m_issueLabelsTable->setItem(row, 0, labelItem);
++        auto addNumber = [&](int column, int value) {
++            auto *item = new QTableWidgetItem;
++            item->setData(Qt::DisplayRole, value);
++            item->setTextAlignment(Qt::AlignCenter);
++            m_issueLabelsTable->setItem(row, column, item);
++        };
++        addNumber(1, c.open);
++        addNumber(2, c.closed);
++        addNumber(3, c.open + c.closed);
++
++        auto *edit = new QPushButton("Edit");
++        edit->setObjectName("ghostButton");
++        edit->setProperty("buttonSize", "sm");
++        edit->setEnabled(writable);
++        edit->setCursor(Qt::PointingHandCursor);
++        setOcticon(edit, "pencil", 14);
++        connect(edit, &QPushButton::clicked, this, [this, name] {
++            for (int r = 0; r < m_issueLabelsTable->rowCount(); ++r) {
++                QTableWidgetItem *current = m_issueLabelsTable->item(r, 0);
++                if (current && current->data(Qt::UserRole).toString() == name) {
++                    editIssueLabelDefinition(r);
++                    return;
++                }
++            }
++        });
++        m_issueLabelsTable->setCellWidget(row, 4, edit);
++    }
++    m_issueLabelsTable->setSortingEnabled(true);
++}
++
++void MainWindow::editIssueLabelDefinition(int row)
++{
++    if (!m_issueLabelsTable || row < 0 || row >= m_issueLabelsTable->rowCount())
++        return;
++    IssueStore store = issueStoreForCurrentRepo();
++    if (!store.canWrite()) {
++        setIssueInlineNotice("Labels are editable on the repository host.", true);
++        return;
++    }
++    QTableWidgetItem *item = m_issueLabelsTable->item(row, 0);
++    if (!item)
++        return;
++    const QString oldName = item->data(Qt::UserRole).toString();
++    QString oldColor = QStringLiteral("#94a3b8");
++    for (const IssueLabel &label : std::as_const(m_currentLabels))
++        if (label.name == oldName && !label.color.trimmed().isEmpty())
++            oldColor = label.color.trimmed();
++
++    bool ok = false;
++    const QString newName =
++        QInputDialog::getText(this, "Edit label", "Label name:", QLineEdit::Normal,
++                              oldName, &ok)
++            .trimmed();
++    if (!ok)
++        return;
++    if (newName.isEmpty()) {
++        setIssueInlineNotice("A label name is required.", true);
++        return;
++    }
++    const QString newColor =
++        QInputDialog::getText(this, "Edit label", "Color (#RRGGBB):",
++                              QLineEdit::Normal, oldColor, &ok)
++            .trimmed();
++    if (!ok)
++        return;
++    if (!QColor(newColor).isValid()) {
++        setIssueInlineNotice("Use a valid label color, for example #3fb950.", true);
++        return;
++    }
++
++    QList<IssueLabel> labels = m_currentLabels;
++    bool updated = false;
++    for (IssueLabel &label : labels) {
++        if (label.name == oldName) {
++            label.name = newName;
++            label.color = newColor;
++            updated = true;
++        } else if (label.name == newName) {
++            setIssueInlineNotice("That label already exists.", true);
++            return;
++        }
++    }
++    if (!updated)
++        labels.append({newName, newColor});
++
++    QString error;
++    if (newName != oldName) {
++        for (const Issue &issue : std::as_const(m_currentIssues)) {
++            if (!issue.labels.contains(oldName))
++                continue;
++            QStringList issueLabels = issue.labels;
++            issueLabels.replaceInStrings(QRegularExpression(
++                                             QStringLiteral("^%1$")
++                                                 .arg(QRegularExpression::escape(oldName))),
++                                         newName);
++            issueLabels.removeDuplicates();
++            if (!store.setLabels(issue.number, issueLabels, &error)) {
++                setIssueInlineNotice(error.isEmpty() ? "Could not rename label." : error,
++                                     true);
++                return;
++            }
++        }
++    }
++    if (!store.saveLabels(labels, &error)) {
++        setIssueInlineNotice(error.isEmpty() ? "Could not save labels." : error, true);
++        return;
++    }
++    setIssueInlineNotice("Label updated.");
++    reloadIssues();
++}
++
+ void MainWindow::showIssue(int number)
+ {
+     for (const Issue &issue : m_currentIssues) {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 79ab397..f6e055c 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -455,6 +455,9 @@ private:
+     void refreshIssuesRepoCombo();
+     void reloadIssues();        // load issues + label/milestone filters from the store
+     void refreshIssueList();    // apply filters into the list widget
++    void refreshIssueMilestones();
++    void refreshIssueLabels();
++    void editIssueLabelDefinition(int row);
+     QWidget *makeIssueRow(const Issue &issue,
+                           const QHash<QString, QString> &labelColors) const;
+     void showIssue(int number); // render the selected issue's thread
+@@ -733,6 +736,9 @@ private:
+     QComboBox *m_issueLabelFilter = nullptr;
+     QComboBox *m_issueMilestoneFilter = nullptr;
+     QTableWidget *m_issueTable = nullptr;
++    QStackedWidget *m_issueListStack = nullptr;
++    QTableWidget *m_issueMilestonesTable = nullptr;
++    QTableWidget *m_issueLabelsTable = nullptr;
+     QWidget *m_issueDetail = nullptr;          // collapsible detail panel
+     QStackedWidget *m_issueDetailStack = nullptr;
+     QWidget *m_issueComposePage = nullptr;
