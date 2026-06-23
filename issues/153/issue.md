@@ -5,7 +5,7 @@ title: make delete issue one click and then confirm instad of double click make 
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 17
 progress: 0
 assignees: []
 createdAt: 1782178776002
