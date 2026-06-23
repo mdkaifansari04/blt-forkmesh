@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 185
 title: issue when updating from a mirror node
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
