@@ -1126,6 +1126,8 @@ private:
     QComboBox *m_actionRunBranchCombo = nullptr;
     // Re-queues the selected run with its original workflow/commit/ref.
     QPushButton *m_actionRerunButton = nullptr;
+    // Copies the selected run's full log to the clipboard.
+    QPushButton *m_actionCopyLogButton = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the
