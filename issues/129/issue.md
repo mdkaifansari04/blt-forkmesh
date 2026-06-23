@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 129
 title: allow for the basic auth admin interface to be able to create, read, update, delete records, show all data in all tables and encrypted data with a decrypt icon
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 2
