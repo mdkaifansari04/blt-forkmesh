@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 14
 title: Live activity chart
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 78
