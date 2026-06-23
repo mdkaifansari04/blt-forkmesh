@@ -5,7 +5,7 @@ title: fix: screen resize issue in y-axis
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 10
 progress: 0
 assignees: []
 createdAt: 1782157501756
