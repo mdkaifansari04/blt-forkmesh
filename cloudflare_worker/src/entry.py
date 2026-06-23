@@ -547,6 +547,34 @@ async def _network_payout_nodes(env):
             "payoutEligible": eligible,
             "eligibilityReason": reason,
         })
+    # Main relay: surface online nodes federated in from approved relays too, so
+    # /network/ reflects everyone sharing the disbursement.
+    if _is_main_relay(env):
+        try:
+            fed = await d1_all(
+                env,
+                "SELECT fp.wallet AS wallet, fp.name AS name, r.label AS label "
+                "FROM federated_presence fp "
+                "JOIN relays r ON r.relay_bi = fp.relay_bi "
+                "WHERE fp.ts >= ? AND r.status = 'approved' ORDER BY fp.ts DESC",
+                cutoff)
+            for r in (fed or []):
+                wallet = (r.get("wallet") or "").strip()
+                if not wallet or not SOLANA_RE.match(wallet):
+                    continue
+                eligible = wallet not in seen_wallets
+                seen_wallets.add(wallet)
+                relay_label = clean_string(r.get("label", ""), 80) or "relay"
+                nodes.append({
+                    "name": clean_string(r.get("name", ""), MAX_NODE_NAME) or "node",
+                    "wallet": wallet,
+                    "balanceLamports": None, "balanceSol": "",
+                    "online": True, "payoutEligible": eligible,
+                    "eligibilityReason": "eligible" if eligible else "duplicate_wallet",
+                    "relay": relay_label,
+                })
+        except Exception:
+            pass
     return nodes
 
 
@@ -1020,6 +1048,32 @@ SCHEMA_STATEMENTS = [
         room_key TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL,
         body TEXT NOT NULL, PRIMARY KEY (room_key, msg_id))""",
     "CREATE INDEX IF NOT EXISTS idx_chat_history_room_ts ON chat_history(room_key, ts)",
+    # --- Relay federation (main relay only) ---------------------------------
+    # Allowlist of relays that federate with this (main) relay. A relay is known
+    # by its Ed25519 pubkey; only status='approved' relays may custody signups
+    # here or have their reported nodes count toward disbursement. Grant directly:
+    #   UPDATE relays SET status='approved' WHERE label='...';
+    """CREATE TABLE IF NOT EXISTS relays (
+        relay_bi TEXT PRIMARY KEY, pubkey TEXT NOT NULL, label TEXT,
+        base_url TEXT, status TEXT NOT NULL DEFAULT 'pending',
+        registered_at INTEGER, approved_at INTEGER)""",
+    # Online node payout wallets reported by federated relays (ts = last report),
+    # unioned into the disbursement split alongside this relay's own nodes.
+    """CREATE TABLE IF NOT EXISTS federated_presence (
+        relay_bi TEXT NOT NULL, wallet TEXT NOT NULL, name TEXT, ts INTEGER NOT NULL,
+        PRIMARY KEY (relay_bi, wallet))""",
+    "CREATE INDEX IF NOT EXISTS idx_federated_presence_ts ON federated_presence(ts)",
+    # Signups proxied here from a federated relay: this relay mints + custodies the
+    # deposit wallet and sweeps it. Encrypted blob reuses the donation_* field
+    # names so _sweep_confirmed_donation operates on it unchanged.
+    """CREATE TABLE IF NOT EXISTS federated_signup (
+        reference TEXT PRIMARY KEY, relay_bi TEXT NOT NULL, data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_federated_signup_relay ON federated_signup(relay_bi)",
+    # This relay's own federation identity (federated relays only): a single
+    # encrypted row holding the auto-generated Ed25519 keypair used to sign
+    # relay->main calls. id is always 1.
+    "CREATE TABLE IF NOT EXISTS relay_self (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
 ]
 
 
@@ -1942,6 +1996,10 @@ async def _min_join_lamports(env):
 
 
 async def _account_donation_address(env, request):
+    # Federated relay: route signup custody through the main relay rather than
+    # minting/holding a deposit key locally.
+    if not _is_main_relay(env):
+        return await _federated_donation_address(env, request)
     try:
         data = await request.json()
     except Exception:
@@ -2041,6 +2099,8 @@ async def _account_donation_address(env, request):
 # Polled while the user waits to pay. When the per-account deposit address has
 # the required balance, the account is marked confirmed and swept.
 async def _account_donation_status(env, request):
+    if not _is_main_relay(env):
+        return await _federated_donation_status(env, request)
     params = parse_qs(urlparse(request.url).query)
     name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
     name_bi, rec = await _account_row(env, name)
@@ -2376,6 +2436,23 @@ async def _online_payout_addresses(env):
             continue
         seen.add(solana)
         addresses.append(solana)
+    # Main relay: also disburse to every online node on every approved federated
+    # relay (fresh federated_presence rows), so the node split spans all relays.
+    if _is_main_relay(env):
+        try:
+            fed = await d1_all(
+                env,
+                "SELECT fp.wallet AS wallet FROM federated_presence fp "
+                "JOIN relays r ON r.relay_bi = fp.relay_bi "
+                "WHERE fp.ts >= ? AND r.status = 'approved'",
+                cutoff)
+            for r in (fed or []):
+                wallet = (r.get("wallet") or "").strip()
+                if wallet and SOLANA_RE.match(wallet) and wallet not in seen:
+                    seen.add(wallet)
+                    addresses.append(wallet)
+        except Exception:
+            pass
     return addresses
 
 
@@ -2822,6 +2899,499 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+# --- Relay federation -------------------------------------------------------
+# A relay with MAIN_RELAY_URL set is "federated": node signups custody their
+# Solana on the main relay (funds flow through it) and its online nodes join the
+# main relay's disbursement split. The main relay (no MAIN_RELAY_URL) holds an
+# admin-approved allowlist of relays, custodies their signups, and disburses to
+# every node on every approved relay. Relay->main calls are Ed25519-signed.
+
+FEDERATION_CANON = "forkmesh-federation-v1"
+
+
+def _main_relay_url(env):
+    return (getattr(env, "MAIN_RELAY_URL", "") or "").strip().rstrip("/")
+
+
+def _is_main_relay(env):
+    return not _main_relay_url(env)
+
+
+async def _new_ed25519_identity():
+    # Fresh Ed25519 keypair as (raw pubkey base64url, seed base64url) — the same
+    # base64url-raw shape the desktop identity and ed25519_verify use.
+    pair = await js_crypto.subtle.generateKey(
+        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
+    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
+    pub = bytes(Uint8Array.new(pub_raw).to_py())
+    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
+    seed = str(getattr(jwk, "d", "") or "")
+    if len(pub) != 32 or not seed:
+        return None
+    return {"pubkey": _b64url_encode(pub), "seed": seed}
+
+
+async def ed25519_sign(pubkey_b64url, seed_b64url, data_bytes):
+    # Sign with a raw-base64url Ed25519 keypair (mirrors _solana_sign_message but
+    # keyed by the base64url pubkey rather than a base58 address).
+    try:
+        jwk = {"kty": "OKP", "crv": "Ed25519", "x": pubkey_b64url,
+               "d": seed_b64url, "ext": True, "key_ops": ["sign"]}
+        key = await js_crypto.subtle.importKey(
+            "jwk", to_js(jwk), to_js({"name": "Ed25519"}), False, _to_js(["sign"]))
+        sig = await js_crypto.subtle.sign(
+            to_js({"name": "Ed25519"}), key, _to_js(data_bytes))
+        return _b64url_encode(bytes(Uint8Array.new(sig).to_py()))
+    except Exception:
+        return ""
+
+
+async def _relay_identity(env):
+    # This (federated) relay's own signing identity, auto-generated once and kept
+    # in D1 so the operator needs no key management — only MAIN_RELAY_URL.
+    row = await d1_first(env, "SELECT data FROM relay_self WHERE id=1")
+    if row:
+        ident = await decrypt_row(env, row.get("data"))
+        if ident and ident.get("pubkey") and ident.get("seed"):
+            return ident
+    ident = await _new_ed25519_identity()
+    if not ident:
+        return None
+    await d1_run(
+        env,
+        "INSERT INTO relay_self (id, data) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        await encrypt_row(env, ident))
+    return ident
+
+
+def _federation_canonical(pubkey, ts, body_hash):
+    return (FEDERATION_CANON + "\n" + pubkey + "\n" + str(ts) + "\n" +
+            body_hash).encode()
+
+
+async def _relay_sign_headers(env, body_str):
+    ident = await _relay_identity(env)
+    if not ident:
+        return None
+    ts = str(int(Date.now()))
+    body_hash = await sha256_hex(body_str)
+    sig = await ed25519_sign(
+        ident["pubkey"], ident["seed"],
+        _federation_canonical(ident["pubkey"], ts, body_hash))
+    if not sig:
+        return None
+    return {"content-type": "application/json", "X-Relay-Pubkey": ident["pubkey"],
+            "X-Relay-Ts": ts, "X-Relay-Sig": sig}
+
+
+async def _call_main_relay(env, path, body_dict):
+    from js import fetch as js_fetch
+    base = _main_relay_url(env)
+    if not base:
+        return None
+    body_str = json.dumps(body_dict)
+    headers = await _relay_sign_headers(env, body_str)
+    if not headers:
+        return None
+    try:
+        resp = await js_fetch(base + path, to_js(
+            {"method": "POST", "headers": headers, "body": body_str}))
+        text = await resp.text()
+        data = json.loads(text) if text else {}
+        if not isinstance(data, dict):
+            return None
+        data["_status"] = int(getattr(resp, "status", 0))
+        return data
+    except Exception:
+        return None
+
+
+async def _verify_relay_sig(env, request, body_str):
+    # Verify a relay->main request's Ed25519 signature (no approval check).
+    pubkey = (request.headers.get("x-relay-pubkey") or "").strip()
+    ts = (request.headers.get("x-relay-ts") or "").strip()
+    sig = (request.headers.get("x-relay-sig") or "").strip()
+    if not pubkey or not sig or not _ts_ok(ts):
+        return None
+    body_hash = await sha256_hex(body_str or "")
+    if not await ed25519_verify(
+            pubkey, sig, _federation_canonical(pubkey, ts, body_hash)):
+        return None
+    return pubkey
+
+
+async def _relay_authorized(env, request, body_str):
+    # As _verify_relay_sig, but also require the relay to be approved. Returns the
+    # relay's blind index on success, else None.
+    pubkey = await _verify_relay_sig(env, request, body_str)
+    if not pubkey:
+        return None
+    relay_bi = await blind_index(env, pubkey)
+    row = await d1_first(
+        env, "SELECT status FROM relays WHERE relay_bi=?", relay_bi)
+    if not row or row.get("status") != "approved":
+        return None
+    return relay_bi
+
+
+# --- Main-relay federation endpoints ----------------------------------------
+
+async def _federation_register(env, request):
+    if not _is_main_relay(env):
+        return json_response({"error": "not_main_relay"}, status=404)
+    body = await request.text()
+    pubkey = await _verify_relay_sig(env, request, body)
+    if not pubkey:
+        return json_response({"error": "bad_signature"}, status=401)
+    try:
+        data = json.loads(body or "{}")
+    except Exception:
+        data = {}
+    relay_bi = await blind_index(env, pubkey)
+    label = clean_string(data.get("label", ""), 80)
+    base_url = clean_string(data.get("baseUrl", ""), 200)
+    now = int(Date.now())
+    existing = await d1_first(
+        env, "SELECT status FROM relays WHERE relay_bi=?", relay_bi)
+    if existing:
+        await d1_run(
+            env, "UPDATE relays SET pubkey=?, label=?, base_url=? WHERE relay_bi=?",
+            pubkey, label, base_url, relay_bi)
+        return json_response({"ok": True, "status": existing.get("status", "pending")})
+    await d1_run(
+        env,
+        "INSERT INTO relays (relay_bi, pubkey, label, base_url, status, "
+        "registered_at) VALUES (?,?,?,?, 'pending', ?)",
+        relay_bi, pubkey, label, base_url, now)
+    return json_response({"ok": True, "status": "pending"})
+
+
+async def _federation_donation_address(env, request):
+    if not _is_main_relay(env):
+        return json_response({"error": "not_main_relay"}, status=404)
+    body = await request.text()
+    relay_bi = await _relay_authorized(env, request, body)
+    if not relay_bi:
+        return json_response({"error": "relay_not_approved"}, status=401)
+    try:
+        data = json.loads(body or "{}")
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("name", ""), MAX_NODE_NAME).lower()
+    try:
+        amount = int(data.get("amountLamports", 0) or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if not _treasury_address(env):
+        return json_response({"error": "treasury_not_configured"}, status=503)
+    addr, secret = await _new_solana_keypair()
+    if not addr:
+        return json_response({"error": "keypair_failed"}, status=500)
+    now = int(Date.now())
+    required = max(amount, await _min_join_lamports(env))
+    rec = {
+        "relay_bi": relay_bi, "name": name,
+        "donation_address": addr, "donation_secret": secret,
+        "donation_required_lamports": required, "donation_confirmed": False,
+        "donation_received_lamports": 0, "donation_created_at": now,
+    }
+    reference = bytes(_random_bytes(16)).hex()
+    await d1_run(
+        env,
+        "INSERT INTO federated_signup (reference, relay_bi, data, created_at) "
+        "VALUES (?,?,?,?)",
+        reference, relay_bi, await encrypt_row(env, rec), now)
+    price = await _sol_usd_price(env)
+    return json_response({
+        "ok": True, "reference": reference, "address": addr,
+        "requiredLamports": required, "amountSol": _amount_sol(required),
+        "uri": _solana_pay_uri(addr, required), "solUsd": price or 0,
+        "amountUsd": round((required / LAMPORTS_PER_SOL) * price, 2) if price else 0,
+    })
+
+
+async def _federation_donation_status(env, request):
+    if not _is_main_relay(env):
+        return json_response({"error": "not_main_relay"}, status=404)
+    body = await request.text()
+    relay_bi = await _relay_authorized(env, request, body)
+    if not relay_bi:
+        return json_response({"error": "relay_not_approved"}, status=401)
+    try:
+        data = json.loads(body or "{}")
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    reference = clean_string(data.get("reference", ""), 64)
+    row = await d1_first(
+        env, "SELECT data FROM federated_signup WHERE reference=? AND relay_bi=?",
+        reference, relay_bi)
+    if not row:
+        return json_response({"error": "no_such_signup"}, status=404)
+    rec = await decrypt_row(env, row.get("data"))
+    if not rec:
+        return json_response({"error": "no_such_signup"}, status=404)
+    required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
+    balance = await _solana_balance_lamports(env, rec.get("donation_address", ""))
+    changed = False
+    if balance is not None:
+        if int(balance) != int(rec.get("donation_received_lamports", 0)):
+            rec["donation_received_lamports"] = int(balance)
+            changed = True
+        if int(balance) >= required and not rec.get("donation_confirmed"):
+            rec["donation_confirmed"] = True
+            await _sweep_confirmed_donation(env, reference, rec, int(balance))
+            changed = True
+        elif rec.get("donation_confirmed") and not rec.get("donation_sweep_sig"):
+            if await _sweep_confirmed_donation(env, reference, rec, int(balance)):
+                changed = True
+    if changed:
+        await d1_run(
+            env, "UPDATE federated_signup SET data=? WHERE reference=?",
+            await encrypt_row(env, rec), reference)
+    return json_response({
+        "ok": True, "paid": bool(rec.get("donation_confirmed")),
+        "receivedLamports": int(rec.get("donation_received_lamports", 0)),
+        "requiredLamports": required,
+        "checking": balance is None,
+        "sweepSig": rec.get("donation_sweep_sig", ""),
+    })
+
+
+async def _federation_nodes(env, request):
+    if not _is_main_relay(env):
+        return json_response({"error": "not_main_relay"}, status=404)
+    body = await request.text()
+    relay_bi = await _relay_authorized(env, request, body)
+    if not relay_bi:
+        return json_response({"error": "relay_not_approved"}, status=401)
+    try:
+        data = json.loads(body or "{}")
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    nodes = data.get("nodes") or []
+    now = int(Date.now())
+    count = 0
+    for node in nodes[:500]:
+        if not isinstance(node, dict):
+            continue
+        wallet = (node.get("wallet") or "").strip()
+        if not SOLANA_RE.match(wallet):
+            continue
+        name = clean_string(node.get("name", ""), MAX_NODE_NAME)
+        await d1_run(
+            env,
+            "INSERT INTO federated_presence (relay_bi, wallet, name, ts) "
+            "VALUES (?,?,?,?) ON CONFLICT(relay_bi, wallet) DO UPDATE SET "
+            "name=excluded.name, ts=excluded.ts",
+            relay_bi, wallet, name, now)
+        count += 1
+    return json_response({"ok": True, "count": count})
+
+
+async def federation_handler(env, request):
+    await ensure_schema(env)
+    url = urlparse(request.url)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if url.path == "/api/federation/register":
+        return await _federation_register(env, request)
+    if url.path == "/api/federation/donation-address":
+        return await _federation_donation_address(env, request)
+    if url.path == "/api/federation/donation-status":
+        return await _federation_donation_status(env, request)
+    if url.path == "/api/federation/nodes":
+        return await _federation_nodes(env, request)
+    return json_response({"error": "not_found"}, status=404)
+
+
+# --- Federated-relay proxy (the "flow through main relay") -------------------
+
+async def _federated_donation_address(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    try:
+        amount = int(data.get("amountLamports", 0) or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "reserve_node_name_first"}, status=404)
+    if rec.get("status") == "active":
+        return json_response({"error": "already_active"}, status=409)
+    reply = await _call_main_relay(
+        env, "/api/federation/donation-address",
+        {"name": name, "amountLamports": amount})
+    if not reply or not reply.get("ok") or not reply.get("address"):
+        return json_response({"error": "main_relay_unavailable"}, status=503)
+    # Mirror the main relay's deposit address locally so polling works; we hold
+    # no key here (no donation_secret) — custody lives on the main relay.
+    rec["donation_address"] = reply.get("address", "")
+    rec["donation_required_lamports"] = int(reply.get("requiredLamports", 0))
+    rec["donation_confirmed"] = False
+    rec["donation_received_lamports"] = 0
+    rec["fed_reference"] = reply.get("reference", "")
+    rec["status"] = "pending_payment"
+    rec.pop("donation_secret", None)
+    await _save_account(env, name_bi, rec)
+    return json_response({
+        "ok": True, "address": reply.get("address", ""),
+        "reference": reply.get("reference", ""),
+        "uri": reply.get("uri", ""),
+        "requiredLamports": int(reply.get("requiredLamports", 0)),
+        "amountSol": reply.get("amountSol", ""),
+        "solUsd": reply.get("solUsd", 0), "amountUsd": reply.get("amountUsd", 0),
+    })
+
+
+async def _federated_donation_status(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_such_account"}, status=404)
+    reference = rec.get("fed_reference", "")
+    required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
+    if not reference:
+        return json_response({"error": "no_donation_address"}, status=400)
+    reply = await _call_main_relay(
+        env, "/api/federation/donation-status", {"reference": reference})
+    if not reply or not reply.get("ok"):
+        # Main relay unreachable: soft "still checking" so the user keeps waiting.
+        return json_response({
+            "ok": True, "paid": bool(rec.get("donation_confirmed")),
+            "checking": True,
+            "receivedLamports": int(rec.get("donation_received_lamports", 0)),
+            "requiredLamports": required})
+    received = int(reply.get("receivedLamports", 0))
+    paid = bool(reply.get("paid"))
+    changed = False
+    if received != int(rec.get("donation_received_lamports", 0)):
+        rec["donation_received_lamports"] = received
+        changed = True
+    if paid and not rec.get("donation_confirmed"):
+        rec["donation_confirmed"] = True
+        changed = True
+    if changed:
+        await _save_account(env, name_bi, rec)
+    return json_response({
+        "ok": True, "paid": paid, "checking": bool(reply.get("checking")),
+        "receivedLamports": received,
+        "requiredLamports": int(reply.get("requiredLamports", required))})
+
+
+# --- Federation cron --------------------------------------------------------
+
+async def _federation_report_nodes(env):
+    # Federated relay: report its currently-online node payout wallets to the main
+    # relay so they join the disbursement split. Reuses the presence selection.
+    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
+    rows = await d1_all(
+        env, "SELECT name_bi FROM account_presence WHERE ts >= ? ORDER BY ts DESC",
+        cutoff)
+    nodes = []
+    seen = set()
+    for r in (rows or []):
+        row = await d1_first(
+            env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            continue
+        rec = await decrypt_row(env, row["data"])
+        if not rec or rec.get("status") != "active":
+            continue
+        wallet = (rec.get("solana") or "").strip()
+        if not wallet or not SOLANA_RE.match(wallet) or wallet in seen:
+            continue
+        seen.add(wallet)
+        nodes.append({"name": rec.get("name", ""), "wallet": wallet})
+    if nodes:
+        await _call_main_relay(env, "/api/federation/nodes", {"nodes": nodes})
+
+
+async def _federation_cron(env):
+    if not _is_main_relay(env):
+        ident = await _relay_identity(env)
+        if ident:
+            label = clean_string(getattr(env, "RELAY_LABEL", "") or "", 80)
+            base = clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200)
+            await _call_main_relay(
+                env, "/api/federation/register",
+                {"label": label, "baseUrl": base})
+            await _federation_report_nodes(env)
+        return
+    # Main relay: expire stale federated presence, then sweep confirmed-but-
+    # unswept federated signups (mirrors _admin_disburse for local accounts).
+    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
+    try:
+        await d1_run(env, "DELETE FROM federated_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    rows = await d1_all(
+        env, "SELECT reference, data FROM federated_signup")
+    for row in (rows or []):
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or not rec.get("donation_confirmed"):
+            continue
+        if rec.get("donation_sweep_sig") or not rec.get("donation_secret"):
+            continue
+        bal = await _solana_balance_lamports(env, rec.get("donation_address", ""))
+        if not bal or bal <= SOLANA_SWEEP_FEE_RESERVE_LAMPORTS:
+            continue
+        if await _sweep_confirmed_donation(env, row.get("reference"), rec, bal):
+            await d1_run(
+                env, "UPDATE federated_signup SET data=? WHERE reference=?",
+                await encrypt_row(env, rec), row.get("reference"))
+
+
+# --- Admin: relay allowlist -------------------------------------------------
+
+async def _admin_relays(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    canonical = ("forkmesh-admin-relays-v1\n" + node + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    rows = await d1_all(
+        env, "SELECT pubkey, label, base_url, status, registered_at, approved_at "
+        "FROM relays ORDER BY registered_at DESC")
+    relays = [{
+        "pubkey": r.get("pubkey", ""), "label": r.get("label", ""),
+        "baseUrl": r.get("base_url", ""), "status": r.get("status", ""),
+        "registeredAt": r.get("registered_at", 0),
+        "approvedAt": r.get("approved_at", 0)} for r in (rows or [])]
+    return json_response({"ok": True, "relays": relays})
+
+
+async def _admin_relay_approve(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    pubkey = clean_string(data.get("pubkey", ""), 120)
+    action = clean_string(data.get("action", ""), 20)
+    if action not in ("approve", "block"):
+        return json_response({"error": "bad_action"}, status=400)
+    canonical = ("forkmesh-admin-relay-approve-v1\n" + node + "\n" + pubkey +
+                 "\n" + action + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    relay_bi = await blind_index(env, pubkey)
+    status = "approved" if action == "approve" else "blocked"
+    now = int(Date.now())
+    res = await d1_run(
+        env, "UPDATE relays SET status=?, approved_at=? WHERE relay_bi=?",
+        status, now if action == "approve" else None, relay_bi)
+    return json_response({"ok": True, "status": status})
+
+
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
@@ -2840,6 +3410,10 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    if url.path == "/api/accounts/admin-relays" and method == "GET":
+        return await _admin_relays(env, request)
+    if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
+        return await _admin_relay_approve(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     match = ACCOUNTS_RE.match(url.path)
@@ -3671,6 +4245,14 @@ class Default(WorkerEntrypoint):
             await sweep_funded_bounties(self.env)
         except Exception:
             pass
+        # Relay federation: a federated relay registers + reports its online nodes
+        # to the main relay; the main relay expires stale federated presence and
+        # sweeps confirmed federated signups.
+        try:
+            await ensure_schema(self.env)
+            await _federation_cron(self.env)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -3876,6 +4458,9 @@ class Default(WorkerEntrypoint):
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
         # ACCOUNTS_RE matches them and accounts_handler dispatches by path.
+        if url.path.startswith("/api/federation/"):
+            return await federation_handler(self.env, request)
+
         if ACCOUNTS_RE.match(url.path):
             return await accounts_handler(self.env, request)
 

@@ -26,6 +26,23 @@ run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_SOLANA_ADDRESS = ""
+# Relay federation. Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
+# that is what makes a deployment "the main relay": it custodies federated signup
+# deposits and disburses to every node on every approved relay.
+#
+# On a *federated* relay, set MAIN_RELAY_URL to the main relay's origin, e.g.
+#   MAIN_RELAY_URL = "https://forkmesh.com"
+# Then node signups custody their Solana on the main relay (the funds flow
+# through it) and this relay's online nodes join the main relay's payout split.
+# A federated relay auto-generates its own Ed25519 federation identity (stored
+# in D1, table relay_self) — no key to manage. Optionally set RELAY_LABEL and
+# PUBLIC_BASE_URL so it identifies itself when registering. The main operator
+# must then approve it:  UPDATE relays SET status='approved' WHERE label='<label>';
+# (or via the signed admin API /api/accounts/admin-relay-approve). Until approved,
+# its signups and reported nodes do nothing.
+# MAIN_RELAY_URL = ""
+# RELAY_LABEL = ""
+# PUBLIC_BASE_URL = ""
 # TREASURY_SOLANA_ADDRESS (receives automated sweeps from per-account join
 # deposit wallets) is NOT here — it lives in .env.production and is pushed as a
 # Worker secret by deploy.sh, so it isn't committed and can't be wiped by a

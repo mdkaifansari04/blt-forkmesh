@@ -410,6 +410,13 @@ private:
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
     void updateIssueAgentUi(const Issue &issue);
+    // IDE extension integration (see ide_extension/). Detection polls the
+    // extension's heartbeat file; startIssueInIde drops it a task request.
+    bool ideExtensionActive(QString *ideName = nullptr) const;
+    bool ideIntegrationReady(QString *ideName = nullptr) const;
+    void startIssueInIde(int issueNumber, const QString &title,
+                         const QString &provider);
+    void updateIssueIdeButtons();
     AgentRunner::Config agentConfigForProvider(const QString &provider) const;
     QString agentProviderName(const QString &provider) const;
     // Actions (CI on push to the mirror) — lives as a tab inside the repo detail.
@@ -1248,10 +1255,15 @@ private:
     QComboBox *m_issueAgentProvider = nullptr;   // OpenAI API | Claude API
     QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;
+    // "Run in IDE" hand-off (shown only when IDE integration is on + detected).
+    QLabel *m_issueIdeLabel = nullptr;
+    QPushButton *m_issueIdeClaudeButton = nullptr;
+    QPushButton *m_issueIdeCodexButton = nullptr;
     QList<Issue> m_currentIssues;
     QList<IssueLabel> m_currentLabels;
     QList<IssueMilestone> m_currentMilestones;
     int m_currentIssueNumber = -1;
+    QString m_currentIssueTitle;
     bool m_issueDeleteConfirmPending = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
