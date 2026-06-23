@@ -5,7 +5,7 @@ title: have the ability to view PR diffs in side by side mode show a selector sw
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 9
 progress: 0
 assignees: []
 createdAt: 1782152468713
