@@ -26,6 +26,7 @@ struct CommitComment; // CommitCommentStore.h
 
 class MessageRow;
 class MarkdownEditor;
+class TerminalWidget;
 class RepoHost;
 class ActionRunner;
 class QButtonGroup;
@@ -202,12 +203,17 @@ private:
                           const QString &relaunchPath = QString(),
                           const QString &buildType = QStringLiteral("Release"));
     void installAndRelaunch(const QString &built, const QString &appPath);
+    // When onFailure is set it is invoked instead of the default "Update failed"
+    // handling if the step exits non-zero, letting callers recover (e.g. re-clone
+    // a checkout that has diverged from the mirror).
     void runUpdateStep(const QString &program, const QStringList &arguments,
-                       const QString &workingDir, std::function<void()> onSuccess);
+                       const QString &workingDir, std::function<void()> onSuccess,
+                       std::function<void()> onFailure = {});
     // Like runUpdateStep, but runs the command as m_updateAsUser (via sudo -u)
     // when that is set, so root-launched updates write files owned by the user.
     void runUpdateStepUser(const QString &program, const QStringList &arguments,
-                           const QString &workingDir, std::function<void()> onSuccess);
+                           const QString &workingDir, std::function<void()> onSuccess,
+                           std::function<void()> onFailure = {});
     void setUpdateStatus(const QString &status, bool isError = false);
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
@@ -418,6 +424,10 @@ private:
                          const QString &provider);
     void updateIssueIdeButtons();
     AgentRunner::Config agentConfigForProvider(const QString &provider) const;
+    // Run the Claude Code CLI interactively in the embedded terminal for a
+    // session (instead of the headless runner).
+    void startClaudeCodeTerminal(AgentSession &session, const Issue &issue,
+                                 const QString &repoPath);
     QString agentProviderName(const QString &provider) const;
     // Actions (CI on push to the mirror) — lives as a tab inside the repo detail.
     QWidget *buildRepoActionsTab();
@@ -492,6 +502,14 @@ private:
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
     bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
+    // True when the open repo can receive a proposed change as a pull request even
+    // without a local working tree: a node mirroring someone else's repo builds the
+    // commit in a throwaway worktree off its bare mirror and sends the signed patch
+    // to the owner's inbox. False for preview-only or empty repos.
+    bool repoCanProposePull() const;
+    // No-working-tree path for "Save as PR": commit the edit in a temporary worktree
+    // off the bare mirror, then submit the resulting signed patch to the owner's inbox.
+    bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
     void loadRepoInfo();
     void loadBranchesAndTags();
     QStringList repoBranches() const;
@@ -532,6 +550,10 @@ private:
     void updateActionsTabIndicator();
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
+    // Lazily build the spinner overlay and place it just above the Agents tab.
+    void ensureAgentSpinnerOverlay();
+    void positionAgentSpinnerOverlay();
+    void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void loadRepoInsights();
@@ -582,6 +604,7 @@ private:
     void promptNewIssue();
     void quickAddIssue();
     void copyIssueToClipboard();
+    void copyIssueThreadToClipboard();
     void askAiForCurrentIssue();
     // Animated "AI is answering…" card shown in the issue thread while the
     // OpenAI request is in flight.
@@ -958,7 +981,15 @@ private:
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoAgentsTab = nullptr;
-    QLabel *m_agentActivityBadge = nullptr; // colored status badge above the Agents tab
+    // Floating strip of slowly-spinning provider marks shown just above the
+    // Agents tab while agents are busy (up to 5 visible, scroll for more).
+    QWidget *m_agentSpinnerOverlay = nullptr;
+    QScrollArea *m_agentSpinnerScroll = nullptr;
+    QHBoxLayout *m_agentSpinnerRow = nullptr;
+    QList<int> m_agentSpinnerIds; // running session ids currently shown (skip rebuilds)
+    // Purple braille "snake" activity indicator overlaid on the Agents tab while
+    // an agent runs. A separate label so the tab text keeps its normal colour.
+    QLabel *m_agentSnake = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
@@ -1180,6 +1211,9 @@ private:
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
+    QStackedWidget *m_agentOutputStack = nullptr; // log (0) | embedded terminal (1)
+    TerminalWidget *m_agentTerminal = nullptr;  // Claude Code runs here
+    int m_terminalSessionId = -1; // session currently driving the embedded terminal
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
@@ -1246,6 +1280,7 @@ private:
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issueCopyButton = nullptr;
+    QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;
     QLabel *m_issueCreditsLabel = nullptr;
     QPushButton *m_issueCommentButton = nullptr;
@@ -1276,6 +1311,10 @@ private:
     int m_currentIssueNumber = -1;
     QString m_currentIssueTitle;
     bool m_issueDeleteConfirmPending = false;
+    // Set just before a reload that closes the viewed issue: if closing drops it
+    // out of the filtered list, refreshIssueList advances selection to the issue
+    // that takes its place and keeps the detail panel open (issue #188).
+    bool m_advanceToNextOnReload = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.

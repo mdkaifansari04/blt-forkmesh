@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "TerminalWidget.h"
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
@@ -515,6 +516,17 @@ const QString kLegacyClaudeCommand =
 const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
 const QString kDefaultClaudeCodeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
+// Claude Code in the embedded terminal runs interactively (not -p headless) so
+// the user can watch and steer it. Configurable; {promptFile}/{issueNumber} are
+// substituted.
+const QString kClaudeCodeTerminalCommandSetting =
+    QStringLiteral("agents/claudeCodeTerminalCommand");
+const QString kDefaultClaudeCodeTerminalCommand =
+    QStringLiteral("claude \"$(cat {promptFile})\" --dangerously-skip-permissions");
+// Prior interactive default that prompted for every permission. Migrated to the
+// full-accept default above so existing sessions stop stalling on prompts.
+const QString kLegacyClaudeCodeTerminalCommand =
+    QStringLiteral("claude \"$(cat {promptFile})\"");
 constexpr int kNetworkLogLimit = 2000;
 
 // Provider family helper: the Anthropic-backed "Claude API" script (plus the
@@ -1717,6 +1729,105 @@ protected:
 
 private:
     QTextCharFormat m_marker, m_ours, m_theirs;
+};
+
+// A small mark that turns slowly (like a gear) while an agent is busy, tinted by
+// provider. Generic geometry by default — a coral burst for Claude, a teal gear
+// for OpenAI/Codex — but if an official logo is dropped at
+// :/icons/providers/<claude|openai>.svg it renders that (rotated) instead. The
+// current task shows on hover.
+class AgentSpinner : public QWidget
+{
+public:
+    explicit AgentSpinner(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedSize(20, 20);
+        setAttribute(Qt::WA_TranslucentBackground);
+        auto *timer = new QTimer(this);
+        timer->setInterval(60);
+        connect(timer, &QTimer::timeout, this, [this] {
+            m_angle += 2.0; // ~33°/s — a slow, steady turn
+            if (m_angle >= 360.0)
+                m_angle -= 360.0;
+            update();
+        });
+        timer->start();
+    }
+
+    void setProvider(const QString &provider)
+    {
+        m_claude = provider.contains(QLatin1String("claude"), Qt::CaseInsensitive) ||
+                   provider.contains(QLatin1String("anthropic"), Qt::CaseInsensitive);
+        update();
+    }
+    void setTask(const QString &task)
+    {
+        setToolTip(task.trimmed().isEmpty() ? QStringLiteral("Agent running\xE2\x80\xA6")
+                                            : task.trimmed());
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter g(this);
+        g.setRenderHint(QPainter::Antialiasing);
+        g.translate(width() / 2.0, height() / 2.0);
+        g.rotate(m_angle);
+        const QString svg = m_claude ? QStringLiteral(":/icons/providers/claude.svg")
+                                     : QStringLiteral(":/icons/providers/openai.svg");
+        if (QFile::exists(svg)) {
+            QSvgRenderer renderer(svg);
+            if (renderer.isValid()) {
+                renderer.render(&g, QRectF(-9, -9, 18, 18));
+                return;
+            }
+        }
+        if (m_claude)
+            drawBurst(g, QColor("#d97757"));
+        else
+            drawGear(g, QColor("#10a37f"));
+    }
+
+private:
+    // Coral radial burst (generic Claude-style spark).
+    static void drawBurst(QPainter &g, const QColor &c)
+    {
+        g.setPen(Qt::NoPen);
+        g.setBrush(c);
+        const int spokes = 12;
+        for (int i = 0; i < spokes; ++i) {
+            g.save();
+            g.rotate(360.0 * i / spokes);
+            QPainterPath p;
+            p.moveTo(-1.5, 2.2);
+            p.lineTo(1.5, 2.2);
+            p.lineTo(0.6, 9.2);
+            p.lineTo(-0.6, 9.2);
+            p.closeSubpath();
+            g.drawPath(p);
+            g.restore();
+        }
+        g.drawEllipse(QPointF(0, 0), 2.6, 2.6);
+    }
+    // Teal gear (generic OpenAI/Codex mark) with a punched-out hub.
+    static void drawGear(QPainter &g, const QColor &c)
+    {
+        g.setPen(Qt::NoPen);
+        g.setBrush(c);
+        const int teeth = 8;
+        for (int i = 0; i < teeth; ++i) {
+            g.save();
+            g.rotate(360.0 * i / teeth);
+            g.drawRoundedRect(QRectF(-1.4, 5.6, 2.8, 3.0), 0.9, 0.9);
+            g.restore();
+        }
+        g.drawEllipse(QPointF(0, 0), 6.4, 6.4);
+        g.setCompositionMode(QPainter::CompositionMode_Clear);
+        g.drawEllipse(QPointF(0, 0), 2.6, 2.6);
+    }
+
+    double m_angle = 0.0;
+    bool m_claude = false;
 };
 
 class CodePreviewEditor;
@@ -4042,7 +4153,8 @@ QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) c
 
 void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
                                const QString &workingDir,
-                               std::function<void()> onSuccess)
+                               std::function<void()> onSuccess,
+                               std::function<void()> onFailure)
 {
     const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
     logRestart(QStringLiteral("run: %1").arg(commandLine));
@@ -4065,7 +4177,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
         appendUpdateLog(chunk);
     });
     connect(process, &QProcess::finished, this,
-            [this, process, stepTimer, commandLine, onSuccess, output](
+            [this, process, stepTimer, commandLine, onSuccess, onFailure, output](
                 int exitCode, QProcess::ExitStatus) {
                 const QString tail = QString::fromUtf8(process->readAllStandardOutput());
                 if (!tail.isEmpty()) {
@@ -4081,6 +4193,10 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                                     .arg(stepTimer.elapsed())
                                     .arg(exitCode));
                 if (exitCode != 0) {
+                    if (onFailure) {
+                        onFailure();
+                        return;
+                    }
                     stopRefreshSpin();
                     setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
                     if (m_buildButton)
@@ -4133,17 +4249,20 @@ void MainWindow::runQuickUpdate()
 void MainWindow::runUpdateStepUser(const QString &program,
                                    const QStringList &arguments,
                                    const QString &workingDir,
-                                   std::function<void()> onSuccess)
+                                   std::function<void()> onSuccess,
+                                   std::function<void()> onFailure)
 {
     if (m_updateAsUser.isEmpty()) {
-        runUpdateStep(program, arguments, workingDir, std::move(onSuccess));
+        runUpdateStep(program, arguments, workingDir, std::move(onSuccess),
+                      std::move(onFailure));
         return;
     }
     // Run the command as the invoking non-root user so files it writes are owned
     // by them and land under their home, never under /root.
     QStringList wrapped{"-u", m_updateAsUser, "-H", program};
     wrapped += arguments;
-    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess));
+    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess),
+                  std::move(onFailure));
 }
 
 void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUser,
@@ -4280,28 +4399,49 @@ void MainWindow::updateRebuildRestart()
     const QString repoDir = QFileInfo(clientDir).absolutePath(); // .../src
     const bool haveCheckout = QDir(repoDir).exists(QStringLiteral(".git"));
 
+    // Clean re-clone from the live mirror, used both when there is no existing
+    // checkout and as the fallback when a fast-forward pull fails (the local
+    // checkout has diverged from the mirror, or the old origin is unreachable).
+    auto recloneFromMirror = [this, installUrl, repoDir, clientDir, user,
+                              relaunchPath] {
+        const QString parent = QFileInfo(repoDir).absolutePath();
+        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
+                          [this, installUrl, repoDir, parent, clientDir, user,
+                           relaunchPath] {
+            // Drop the stale checkout so `git clone` can recreate it in place.
+            runUpdateStepUser("rm", {"-rf", repoDir}, parent,
+                              [this, installUrl, repoDir, parent, clientDir, user,
+                               relaunchPath] {
+                runUpdateStepUser("git",
+                                  {"clone", "--depth", "1", installUrl, repoDir},
+                                  parent, [this, clientDir, user, relaunchPath] {
+                    buildAndRelaunch(clientDir, user, relaunchPath);
+                });
+            });
+        });
+    };
+
     if (haveCheckout) {
         setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
         // Repoint origin at the freshly resolved live mirror, then fast-forward.
         runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
                                   installUrl},
-                          repoDir, [this, repoDir, clientDir, user, relaunchPath] {
+                          repoDir, [this, repoDir, clientDir, user, relaunchPath,
+                                    installUrl, recloneFromMirror] {
             runUpdateStepUser("git", {"-C", repoDir, "pull", "--ff-only"}, repoDir,
                               [this, clientDir, user, relaunchPath] {
                 buildAndRelaunch(clientDir, user, relaunchPath);
+            }, [this, installUrl, recloneFromMirror] {
+                // A diverged or unreachable mirror cannot be fast-forwarded; fall
+                // back to a clean re-clone from the current live mirror.
+                setUpdateStatus("Could not fast-forward; re-cloning a fresh copy "
+                                "from " + installUrl + "...");
+                recloneFromMirror();
             });
         });
     } else {
-        const QString parent = QFileInfo(repoDir).absolutePath();
         setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
-        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
-                          [this, installUrl, repoDir, parent, clientDir, user,
-                           relaunchPath] {
-            runUpdateStepUser("git", {"clone", "--depth", "1", installUrl, repoDir},
-                              parent, [this, clientDir, user, relaunchPath] {
-                buildAndRelaunch(clientDir, user, relaunchPath);
-            });
-        });
+        recloneFromMirror();
     }
 }
 
@@ -7189,6 +7329,13 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueCopyButton->setCursor(Qt::PointingHandCursor);
     m_issueCopyButton->setToolTip("Copy the issue title to the clipboard");
     setOcticon(m_issueCopyButton, "copy", 16);
+    m_issueCopyAllButton = new QPushButton;
+    m_issueCopyAllButton->setObjectName("issueIconButton");
+    m_issueCopyAllButton->setFixedSize(30, 30);
+    m_issueCopyAllButton->setCursor(Qt::PointingHandCursor);
+    m_issueCopyAllButton->setToolTip(
+        "Copy the issue and all comments to the clipboard");
+    setOcticon(m_issueCopyAllButton, "comment", 16);
     m_issueVoteButton = new QPushButton("Vote");
     m_issueVoteButton->setObjectName("ghostButton");
     m_issueVoteButton->setCursor(Qt::PointingHandCursor);
@@ -7205,6 +7352,7 @@ QWidget *MainWindow::buildIssuesSection()
     issueTitleRow->addStretch();
     issueTitleRow->addWidget(m_issueNewButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
+    issueTitleRow->addWidget(m_issueCopyAllButton, 0, Qt::AlignTop);
     m_issueMeta = new QLabel; // Open/Closed status pill
     m_issueMeta->setObjectName("issueStatusPill");
     m_issueMeta->setTextFormat(Qt::PlainText);
@@ -7762,6 +7910,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::saveIssueTitleEdit);
     connect(m_issueCopyButton, &QPushButton::clicked, this,
             &MainWindow::copyIssueToClipboard);
+    connect(m_issueCopyAllButton, &QPushButton::clicked, this,
+            &MainWindow::copyIssueThreadToClipboard);
     connect(m_issueVoteButton, &QPushButton::clicked, this,
             &MainWindow::voteOnCurrentIssue);
     connect(m_issueCommentButton, &QPushButton::clicked, this,
@@ -7920,15 +8070,18 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoCommitsTab = b;
         if (i == 2)
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
-        if (i == 3)
-            m_repoAgentsTab = b; // handle for the Agents (N) badge
-            // Activity badge: a small colored pill overlaid above the tab button
-            // that shows running/done/failed status while an agent is active.
-            m_agentActivityBadge = new QLabel(b);
-            m_agentActivityBadge->setObjectName("agentActivityBadge");
-            m_agentActivityBadge->setAlignment(Qt::AlignCenter);
-            m_agentActivityBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-            m_agentActivityBadge->hide();
+        if (i == 3) {
+            m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
+            // Purple braille snake overlaid at the tab's right edge while an agent
+            // runs; kept separate so "Agents (N)" stays its normal colour.
+            m_agentSnake = new QLabel(b);
+            m_agentSnake->setObjectName("agentSnake");
+            m_agentSnake->setAlignment(Qt::AlignCenter);
+            m_agentSnake->setAttribute(Qt::WA_TransparentForMouseEvents);
+            m_agentSnake->setStyleSheet(
+                "#agentSnake{color:#a371f7;background:transparent;}");
+            m_agentSnake->hide();
+        }
         if (i == 4)
             m_repoPullsTab = b;
         if (i == 5)
@@ -7973,8 +8126,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
         if (id == 1)
             loadCommits();
-        else if (id == 3)
+        else if (id == 3) {
+            // Load pulls first so the agents list can show each session's PR
+            // status (open/merged/closed) from m_currentPulls.
+            reloadPulls();
             reloadAgents();
+        }
         else if (id == 4) {
             reloadPulls();
             if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
@@ -11237,6 +11394,25 @@ QWidget *MainWindow::buildAgentsTab()
     new AgentLogHighlighter(m_agentLog->document());
     m_agentLog->setMaximumBlockCount(30000);
 
+    // Claude Code runs in a real embedded terminal; API-key agents keep the piped
+    // log. Stack the two so the detail shows whichever fits the running session.
+    m_agentTerminal = new TerminalWidget;
+    connect(m_agentTerminal, &TerminalWidget::finished, this, [this](int) {
+        if (m_terminalSessionId <= 0)
+            return;
+        if (AgentSession *s = findAgentSession(m_terminalSessionId)) {
+            if (s->status == AgentStatus::Running) {
+                s->status = AgentStatus::Success;
+                s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                m_agentStore->saveSession(*s);
+                reloadAgents();
+            }
+        }
+    });
+    m_agentOutputStack = new QStackedWidget;
+    m_agentOutputStack->addWidget(m_agentLog);      // page 0: piped log
+    m_agentOutputStack->addWidget(m_agentTerminal); // page 1: embedded terminal
+
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText("Send an additional prompt to the running agent");
     m_agentPromptEdit->setMaximumHeight(92);
@@ -11281,7 +11457,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentUsage);
     detailLayout->addWidget(m_agentNetPanel);
-    detailLayout->addWidget(m_agentLog, 1);
+    detailLayout->addWidget(m_agentOutputStack, 1);
     detailLayout->addLayout(promptRow);
 
     m_agentDetail = detailPane;
@@ -11831,12 +12007,36 @@ void MainWindow::refreshAgentTable()
         auto *status = new QTableWidgetItem(agentStatusText(session.status));
         status->setForeground(agentStatusColor(session.status));
         m_agentTable->setItem(row, 3, status);
-        m_agentTable->setItem(row, 4,
-                              new QTableWidgetItem(
-                                  session.prNumber > 0
-                                      ? QStringLiteral("#%1").arg(session.prNumber)
-                                      : (session.createPr ? QStringLiteral("Requested")
-                                                          : QStringLiteral("-"))));
+        // PR column: number plus the PR's current status (open/merged/closed),
+        // looked up from the loaded pulls and colored to match the Pulls tab.
+        QString prText;
+        QColor prColor;
+        if (session.prNumber > 0) {
+            QString prStatus;
+            for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+                if (pr.number == session.prNumber) {
+                    prStatus = pr.status;
+                    break;
+                }
+            }
+            if (!prStatus.isEmpty()) {
+                prText = QStringLiteral("#%1 ").arg(session.prNumber) +
+                         QString::fromUtf8("\xC2\xB7 ") + prStatus;
+                prColor = QColor(prStatus == QLatin1String("merged") ? "#a371f7"
+                                 : prStatus == QLatin1String("closed")
+                                     ? "#f85149"
+                                     : "#3fb950");
+            } else {
+                prText = QStringLiteral("#%1").arg(session.prNumber);
+            }
+        } else {
+            prText = session.createPr ? QStringLiteral("Requested")
+                                      : QStringLiteral("-");
+        }
+        auto *prItem = new QTableWidgetItem(prText);
+        if (prColor.isValid())
+            prItem->setForeground(prColor);
+        m_agentTable->setItem(row, 4, prItem);
         auto *cost = new QTableWidgetItem;
         cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
         cost->setData(Qt::UserRole, session.costUsd);
@@ -12016,6 +12216,14 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentLog) {
         m_agentLog->setPlainText(log);
         m_agentLog->moveCursor(QTextCursor::End);
+    }
+    // Show the embedded terminal only for the Claude Code session currently
+    // running in it; every other session shows its piped log.
+    if (m_agentOutputStack) {
+        const bool live = sessionId == m_terminalSessionId && m_agentTerminal &&
+                          m_agentTerminal->isRunning();
+        m_agentOutputStack->setCurrentWidget(live ? static_cast<QWidget *>(m_agentTerminal)
+                                                  : static_cast<QWidget *>(m_agentLog));
     }
     updateAgentActionState();
 }
@@ -12380,6 +12588,12 @@ void MainWindow::processAgentQueue()
             m_agentStore->saveSession(*session);
             continue;
         }
+        // Claude Code runs interactively in the embedded terminal on the agent
+        // detail screen, not headlessly through a runner.
+        if (session->provider == QLatin1String("claude-code")) {
+            startClaudeCodeTerminal(*session, issue, repo.localPath);
+            continue;
+        }
         const AgentSession snapshot = *session;
         // A launched run consumes from this provider's rolling usage windows;
         // anchor them so the agent sessions screen can count down the time left.
@@ -12388,6 +12602,114 @@ void MainWindow::processAgentQueue()
                                     agentConfigForProvider(session->provider));
     }
     reloadAgents();
+}
+
+namespace {
+// Pre-approve a custom ANTHROPIC_API_KEY with the Claude Code CLI so it doesn't
+// stop on the interactive "Detected a custom API key… Do you want to use it?"
+// prompt at startup — which is invisible/unanswerable inside an automated run.
+// The CLI records approvals in ~/.claude.json under customApiKeyResponses.approved
+// keyed by the key's last 20 characters (cli: `tN(e){return e.slice(-20)}`); we
+// write exactly that entry, the same thing answering "Yes" once would persist.
+void approveClaudeApiKey(const QString &key)
+{
+    if (key.isEmpty())
+        return;
+    const QString id = key.right(20);
+    const QString path = QDir::homePath() + QStringLiteral("/.claude.json");
+
+    QJsonObject root;
+    if (QFile in(path); in.open(QIODevice::ReadOnly)) {
+        const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
+        if (doc.isObject())
+            root = doc.object();
+    }
+
+    QJsonObject responses = root.value(QStringLiteral("customApiKeyResponses"))
+                                .toObject();
+    QJsonArray approved = responses.value(QStringLiteral("approved")).toArray();
+    if (approved.contains(id))
+        return; // already approved; nothing to write
+    approved.append(id);
+    responses.insert(QStringLiteral("approved"), approved);
+    // Drop a stale rejection of the same key so the approval wins.
+    QJsonArray rejected = responses.value(QStringLiteral("rejected")).toArray();
+    for (int i = rejected.size() - 1; i >= 0; --i)
+        if (rejected.at(i).toString() == id)
+            rejected.removeAt(i);
+    responses.insert(QStringLiteral("rejected"), rejected);
+    root.insert(QStringLiteral("customApiKeyResponses"), responses);
+
+    if (QFile out(path); out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+} // namespace
+
+// Run Claude Code interactively in the built-in terminal on the agent detail
+// screen, working in the repo checkout. The session already exists (created by
+// assignIssueToAgent); here we just launch it and show the terminal.
+void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &issue,
+                                         const QString &repoPath)
+{
+    if (!m_agentTerminal || !m_agentStore)
+        return;
+
+    // Seed the agent with a prompt file pointing at the issue.
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+        QStringLiteral("/forkmesh-agent");
+    QDir().mkpath(dir);
+    const QString promptFile =
+        dir + QStringLiteral("/issue-%1.md").arg(session.issueNumber);
+    if (QFile pf(promptFile); pf.open(QIODevice::WriteOnly)) {
+        const QString prompt =
+            QStringLiteral(
+                "Resolve ForkMesh issue #%1: %2\n\n"
+                "The full issue is in issues/%1/issue.md. Implement the change end "
+                "to end, consistent with the surrounding code, then summarize what "
+                "you changed and how to verify it.\n")
+                .arg(session.issueNumber)
+                .arg(issue.title);
+        pf.write(prompt.toUtf8());
+        pf.close();
+    }
+
+    QString cmd = QSettings()
+                      .value(kClaudeCodeTerminalCommandSetting,
+                             kDefaultClaudeCodeTerminalCommand)
+                      .toString()
+                      .trimmed();
+    if (cmd.isEmpty() || cmd == kLegacyClaudeCodeTerminalCommand) {
+        cmd = kDefaultClaudeCodeTerminalCommand;
+        QSettings().setValue(kClaudeCodeTerminalCommandSetting, cmd);
+    }
+    cmd.replace(QStringLiteral("{promptFile}"), promptFile);
+    cmd.replace(QStringLiteral("{issueNumber}"),
+                QString::number(session.issueNumber));
+
+    QStringList env;
+    const QString key = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    if (!key.isEmpty()) {
+        env << (QStringLiteral("ANTHROPIC_API_KEY=") + key);
+        // Skip Claude Code's "use this API key?" startup prompt for this key.
+        approveClaudeApiKey(key);
+    }
+
+    session.status = AgentStatus::Running;
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("\n==> Running Claude Code in the built-in terminal:\n%1\n")
+            .arg(cmd));
+
+    m_terminalSessionId = session.id;
+    switchToAgentsTab(session.id);
+    showAgentSession(session.id);
+    reloadAgents();
+    if (m_agentOutputStack)
+        m_agentOutputStack->setCurrentWidget(m_agentTerminal);
+    m_agentTerminal->runCommand(cmd, repoPath, env);
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
@@ -13597,7 +13919,9 @@ void MainWindow::openRepoFile(const QString &path)
                       .arg(out.size());
     else {
         content = QString::fromUtf8(out);
-        editable = repoHasWorkingTree();
+        // A real working tree allows direct commits; a node mirroring someone
+        // else's repo can still edit and propose the change as a pull request.
+        editable = repoHasWorkingTree() || repoCanProposePull();
         if (path.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive) ||
             path.endsWith(QStringLiteral(".jsonc"), Qt::CaseInsensitive)) {
             const QJsonDocument doc = QJsonDocument::fromJson(out);
@@ -13624,13 +13948,15 @@ void MainWindow::updateRepoFileSaveActions()
 {
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
     const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
-    const bool canSave = editor && !editor->isReadOnly() &&
-                         !w->property("previewPath").toString().isEmpty() &&
-                         repoHasWorkingTree();
+    const bool editable = editor && !editor->isReadOnly() &&
+                          !w->property("previewPath").toString().isEmpty();
+    // Direct commits need a working tree we own; a mirrored repo can still open a
+    // pull request, which is sent to the owner's inbox.
     if (m_repoFileCommitButton)
-        m_repoFileCommitButton->setEnabled(canSave);
+        m_repoFileCommitButton->setEnabled(editable && repoHasWorkingTree());
     if (m_repoFilePullButton)
-        m_repoFilePullButton->setEnabled(canSave);
+        m_repoFilePullButton->setEnabled(
+            editable && (repoHasWorkingTree() || repoCanProposePull()));
 }
 
 void MainWindow::saveCurrentRepoFile(bool createPull)
@@ -13652,16 +13978,27 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return false;
-    if (!repoHasWorkingTree()) {
-        setRepoDetailNotice("This is a read-only mirror; files can't be edited here.",
-                            true);
-        return false;
-    }
     const QString cleanPath = QDir::cleanPath(path);
     if (cleanPath.isEmpty() || cleanPath.startsWith("../") ||
         cleanPath.contains("/../") || QDir::isAbsolutePath(cleanPath)) {
         setRepoDetailNotice("Refusing to write outside the repository.", true);
         return false;
+    }
+    if (!repoHasWorkingTree()) {
+        // A node mirroring someone else's repo has no working tree to commit to,
+        // but it can still propose the edit as a pull request to the owner.
+        if (!createPull) {
+            setRepoDetailNotice(
+                "This is a mirror; commit direct isn't available. Use \"Save as PR\".",
+                true);
+            return false;
+        }
+        if (!repoCanProposePull()) {
+            setRepoDetailNotice(
+                "This is a read-only mirror; files can't be edited here.", true);
+            return false;
+        }
+        return proposePullFromMirrorEdit(cleanPath, content);
     }
 
     const QString dir = repoGitDir();
@@ -13837,6 +14174,185 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
     refreshOpenRepoDetail();
     if (!createPull && m_filesStack)
         m_filesStack->setCurrentIndex(filesPage);
+    return true;
+}
+
+bool MainWindow::repoCanProposePull() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.previewOnly)
+        return false;
+    if (repoHasWorkingTree())
+        return true;
+    // No working tree: a bare mirror of the repo is enough — we build the commit
+    // in a throwaway worktree off it and send the patch to the owner's inbox.
+    return !repo.mirrorPath.trimmed().isEmpty() && QDir(repo.mirrorPath).exists();
+}
+
+bool MainWindow::proposePullFromMirrorEdit(const QString &cleanPath,
+                                           const QString &content)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString mirror = repo.mirrorPath.trimmed();
+    if (mirror.isEmpty() || !QDir(mirror).exists()) {
+        setRepoDetailNotice("No local mirror to base a pull request on.", true);
+        return false;
+    }
+
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (base.isEmpty()) {
+        setRepoDetailNotice("This repository has no branch to base a pull request on.",
+                            true);
+        return false;
+    }
+
+    // Branch / title / description, mirroring the working-tree "Save as PR" dialog
+    // but making clear the change is sent to the upstream owner.
+    QString branch = QStringLiteral("edit/%1-%2")
+                         .arg(repoSegment(cleanPath, QStringLiteral("file")),
+                              QString::number(QDateTime::currentSecsSinceEpoch()));
+    QString title = QStringLiteral("Edit %1").arg(cleanPath);
+    QString description;
+    {
+        QDialog dialog(this);
+        dialog.setWindowTitle("Save as pull request");
+        auto *info = new QLabel(
+            QStringLiteral("This repository is mirrored from <b>%1/%2</b>. Your "
+                           "change will be sent to its owner as a pull request.")
+                .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()),
+            &dialog);
+        info->setWordWrap(true);
+        info->setTextFormat(Qt::RichText);
+        auto *branchEdit = new QLineEdit(branch.left(80), &dialog);
+        auto *titleEdit = new QLineEdit(title, &dialog);
+        auto *bodyEdit = new QPlainTextEdit(&dialog);
+        bodyEdit->setPlaceholderText("Describe the change...");
+        auto *form = new QFormLayout;
+        form->addRow("Branch", branchEdit);
+        form->addRow("Title", titleEdit);
+        form->addRow("Description", bodyEdit);
+        auto *buttons =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                 &dialog);
+        buttons->button(QDialogButtonBox::Ok)->setText("Create pull request");
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        auto *layout = new QVBoxLayout(&dialog);
+        layout->addWidget(info);
+        layout->addLayout(form);
+        layout->addWidget(buttons);
+        dialog.resize(520, 340);
+        if (dialog.exec() != QDialog::Accepted)
+            return false;
+        branch = branchEdit->text().trimmed();
+        title = titleEdit->text().trimmed();
+        description = bodyEdit->toPlainText();
+        if (branch.isEmpty() || title.isEmpty()) {
+            setRepoDetailNotice("A pull request needs a branch and title.", true);
+            return false;
+        }
+    }
+
+    // Build the commit in a throwaway, detached worktree off the bare mirror so we
+    // never touch the mirror's refs or working state.
+    QTemporaryDir tmp;
+    if (!tmp.isValid()) {
+        setRepoDetailNotice("Could not create a temporary work area.", true);
+        return false;
+    }
+    const QString work = tmp.filePath(QStringLiteral("wt"));
+    QString err;
+    auto cleanupWorktree = [&]() {
+        runGitCapture(mirror, {"worktree", "remove", "--force", work}, nullptr,
+                      nullptr);
+        runGitCapture(mirror, {"worktree", "prune"}, nullptr, nullptr);
+    };
+    if (!runGitCapture(mirror, {"worktree", "add", "--detach", work, base}, nullptr,
+                       &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not prepare a pull request: %1").arg(err.left(200)),
+            true);
+        cleanupWorktree();
+        return false;
+    }
+
+    const QString fullPath = QDir(work).filePath(cleanPath);
+    bool wrote = QDir().mkpath(QFileInfo(fullPath).absolutePath());
+    if (wrote) {
+        QFile file(fullPath);
+        wrote = file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                          QIODevice::Text) &&
+                file.write(content.toUtf8()) >= 0;
+    }
+    if (!wrote) {
+        setRepoDetailNotice(QStringLiteral("Could not write %1.").arg(cleanPath), true);
+        cleanupWorktree();
+        return false;
+    }
+
+    if (!runGitCapture(work, {"add", "--", cleanPath}, nullptr, &err)) {
+        setRepoDetailNotice(err.isEmpty() ? "Could not stage the edited file."
+                                          : err.left(240),
+                            true);
+        cleanupWorktree();
+        return false;
+    }
+    if (runGitCapture(work, {"diff", "--cached", "--quiet"}, nullptr, nullptr)) {
+        setRepoDetailNotice("No changes to save.");
+        cleanupWorktree();
+        return false;
+    }
+    // Credit the commit to this node so format-patch carries a sensible author even
+    // when the bare mirror has no user identity configured. The PR itself is signed
+    // separately by makeSignedPull().
+    const QString authorName =
+        m_userName.trimmed().isEmpty() ? QStringLiteral("ForkMesh contributor")
+                                       : m_userName.trimmed();
+    const QString authorEmail =
+        (m_profileIdentity.publicKey().isEmpty() ? QStringLiteral("contributor")
+                                                 : m_profileIdentity.publicKey()) +
+        QStringLiteral("@forkmesh");
+    if (!runGitCapture(work,
+                       {"-c", "user.name=" + authorName,
+                        "-c", "user.email=" + authorEmail, "commit", "-m", title,
+                        "--", cleanPath},
+                       nullptr, &err)) {
+        setRepoDetailNotice(QStringLiteral("git commit failed: %1").arg(err.left(240)),
+                            true);
+        cleanupWorktree();
+        return false;
+    }
+
+    QByteArray diff;
+    if (!runGitCapture(work, {"diff", "--binary", base + "..HEAD"}, &diff, &err) ||
+        diff.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not create pull request diff: %1").arg(err.left(240)),
+            true);
+        cleanupWorktree();
+        return false;
+    }
+    QByteArray mbox;
+    runGitCapture(work, {"format-patch", "--stdout", base + "..HEAD"}, &mbox, nullptr);
+    cleanupWorktree();
+
+    PullRequest pr;
+    pr.title = title;
+    pr.description = description;
+    pr.base = base;
+    pr.head = branch;
+    pr.patch = QString::fromUtf8(diff);
+    pr.commits = QString::fromUtf8(mbox);
+
+    PullStore store = pullStoreForCurrentRepo();
+    submitPullToInbox(store.makeSignedPull(pr), repo);
+    logSystem(QStringLiteral("Sent %1 to %2/%3 as a pull request.")
+                  .arg(cleanPath, repo.owner, repo.name));
     return true;
 }
 
@@ -16876,6 +17392,23 @@ void MainWindow::refreshIssueList()
     const QString search =
         m_issueSearch ? m_issueSearch->text().trimmed() : QString();
     const int keep = m_currentIssueNumber;
+    // Remember where the viewed issue currently sits (and whether its detail pane
+    // is open) so that, if a close drops it out of the filtered list, we can land
+    // the selection on the issue that slides into its place and keep the pane
+    // open instead of collapsing to the full-width list (issue #188).
+    const bool advanceToNext = m_advanceToNextOnReload;
+    m_advanceToNextOnReload = false;
+    const bool detailWasOpen = m_issueDetail && m_issueDetail->isVisible();
+    int keepRow = -1;
+    if (keep > 0) {
+        for (int r = 0; r < m_issueTable->rowCount(); ++r) {
+            QTableWidgetItem *it = m_issueTable->item(r, 0);
+            if (it && it->data(Qt::UserRole).toInt() == keep) {
+                keepRow = r;
+                break;
+            }
+        }
+    }
 
     // Disable sorting while inserting so rows aren't reordered mid-build.
     // Block signals during the full rebuild so that setRowCount(0),
@@ -17029,6 +17562,15 @@ void MainWindow::refreshIssueList()
         // Re-select the issue the user was already viewing (fires
         // itemSelectionChanged -> showIssue).
         m_issueTable->selectRow(selRow);
+    } else if (advanceToNext && detailWasOpen && m_issueTable->rowCount() > 0) {
+        // The viewed issue just dropped out of the list (e.g. closed while
+        // filtering to Open). Keep the detail panel open and move to the issue
+        // that took its place — the next one down, or the last row if it was at
+        // the end. selectRow fires itemSelectionChanged -> showIssue, which
+        // re-shows the pane for the new issue.
+        const int nextRow =
+            qMin(keepRow < 0 ? 0 : keepRow, m_issueTable->rowCount() - 1);
+        m_issueTable->selectRow(nextRow);
     } else {
         // First load (or the viewed issue is gone): show the table full width
         // with no row selected; the detail panel stays hidden until a click.
@@ -18085,6 +18627,8 @@ void MainWindow::updateIssueActionState()
         m_issueAskAiButton->setEnabled(haveIssue);
     if (m_issueCopyButton)
         m_issueCopyButton->setEnabled(haveIssue);
+    if (m_issueCopyAllButton)
+        m_issueCopyAllButton->setEnabled(haveIssue);
     if (m_issueComposer)
         m_issueComposer->setEnabled(haveIssue);
     updateVoteUi();
@@ -18408,6 +18952,66 @@ void MainWindow::copyIssueToClipboard()
     // author/date headers — so it pastes cleanly as plain text.
     QApplication::clipboard()->setText(issue->title);
     setIssueInlineNotice("Issue title copied.");
+}
+
+void MainWindow::copyIssueThreadToClipboard()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    const Issue *issue = nullptr;
+    for (const Issue &candidate : m_currentIssues)
+        if (candidate.number == m_currentIssueNumber)
+            issue = &candidate;
+    if (!issue)
+        return;
+
+    // Pre-compute edits (target -> latest edit) and deletions, mirroring
+    // renderIssueThread so the copied text matches what's shown on screen.
+    QHash<QString, IssueEvent> edits;
+    QSet<QString> deleted;
+    for (const IssueEvent &ev : issue->events) {
+        if (ev.type == QLatin1String("edit") && !ev.target.isEmpty())
+            edits.insert(ev.target, ev);
+        else if (ev.type == QLatin1String("delete") && !ev.target.isEmpty() &&
+                 ev.target != QLatin1String("self"))
+            deleted.insert(ev.target);
+    }
+
+    // Title + status, then the opening post and every comment with an
+    // author/date header. Activity events (labels, status changes, …) are left
+    // out so the result reads as the issue conversation in plain text.
+    QStringList parts;
+    parts << QStringLiteral("#%1 %2").arg(issue->number).arg(issue->title);
+    parts << QStringLiteral("Status: %1").arg(issue->status);
+
+    int commentCount = 0;
+    for (const IssueEvent &ev : issue->events) {
+        const bool isOpen = ev.type == QLatin1String("open");
+        const bool isComment = ev.type == QLatin1String("comment");
+        if (!isOpen && !isComment)
+            continue;
+        if (isComment && deleted.contains(ev.id))
+            continue;
+        QString body = edits.contains(ev.id) ? edits.value(ev.id).body : ev.body;
+        const QString who =
+            ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+        const QString when = QDateTime::fromMSecsSinceEpoch(ev.ts).toString(
+            QStringLiteral("yyyy-MM-dd HH:mm"));
+        parts << QString()
+              << QStringLiteral("--- %1 %2 (%3) ---")
+                     .arg(who,
+                          isOpen ? QStringLiteral("opened")
+                                 : QStringLiteral("commented"),
+                          when)
+              << body.trimmed();
+        if (isComment)
+            ++commentCount;
+    }
+
+    QApplication::clipboard()->setText(parts.join(QChar('\n')));
+    setIssueInlineNotice(QStringLiteral("Issue and %1 comment%2 copied.")
+                             .arg(commentCount)
+                             .arg(commentCount == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::showIssueAiTyping()
@@ -18759,6 +19363,10 @@ void MainWindow::toggleIssueStatus()
                              true);
         return;
     }
+    // If this toggle drops the issue out of the current filter (e.g. closing it
+    // while filtering to Open), advance to the next issue and keep the detail
+    // panel open rather than collapsing back to the list.
+    m_advanceToNextOnReload = true;
     reloadIssues();
     setIssueInlineNotice(status == "open" ? "Issue closed." : "Issue reopened.");
 }
@@ -24419,58 +25027,166 @@ void MainWindow::updateActionsTabIndicator()
         m_actionsSpinTimer->start(110);
 }
 
+void MainWindow::ensureAgentSpinnerOverlay()
+{
+    if (m_agentSpinnerOverlay || !m_repoAgentsTab)
+        return;
+    QWidget *tabBar = m_repoAgentsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    // Parented to the repo-detail page (which has room above the tab bar) so the
+    // strip can float over the meta band just above the Agents tab without being
+    // clipped to the tab button.
+    m_agentSpinnerOverlay = new QWidget(page);
+    m_agentSpinnerOverlay->setObjectName("agentSpinnerOverlay");
+    m_agentSpinnerOverlay->setAttribute(Qt::WA_StyledBackground, true);
+    m_agentSpinnerOverlay->setStyleSheet(
+        "#agentSpinnerOverlay{background:rgba(130,130,150,0.16);border-radius:13px;}");
+    auto *outer = new QHBoxLayout(m_agentSpinnerOverlay);
+    outer->setContentsMargins(5, 3, 5, 3);
+    outer->setSpacing(0);
+    m_agentSpinnerScroll = new QScrollArea;
+    m_agentSpinnerScroll->setFrameShape(QFrame::NoFrame);
+    m_agentSpinnerScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_agentSpinnerScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_agentSpinnerScroll->setWidgetResizable(true);
+    m_agentSpinnerScroll->setStyleSheet("background:transparent;");
+    m_agentSpinnerScroll->viewport()->setStyleSheet("background:transparent;");
+    auto *inner = new QWidget;
+    inner->setStyleSheet("background:transparent;");
+    m_agentSpinnerRow = new QHBoxLayout(inner);
+    m_agentSpinnerRow->setContentsMargins(0, 0, 0, 0);
+    m_agentSpinnerRow->setSpacing(5);
+    m_agentSpinnerScroll->setWidget(inner);
+    outer->addWidget(m_agentSpinnerScroll);
+    m_agentSpinnerOverlay->hide();
+}
+
+void MainWindow::positionAgentSpinnerOverlay()
+{
+    if (!m_agentSpinnerOverlay || !m_repoAgentsTab || !m_agentSpinnerRow)
+        return;
+    QWidget *page = m_agentSpinnerOverlay->parentWidget();
+    if (!page)
+        return;
+    const int total = m_agentSpinnerRow->count();
+    const int visible = qMin(total, 5);
+    const int spinnerW = 20, gap = 5;
+    const int innerW = visible * spinnerW + (visible > 1 ? (visible - 1) * gap : 0);
+    const int w = innerW + 12;
+    const int h = 26 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
+    const QPoint tl = m_repoAgentsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1;
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    m_agentSpinnerOverlay->setGeometry(x, y, w, h);
+    m_agentSpinnerOverlay->raise();
+}
+
 void MainWindow::updateAgentsTabIndicator()
 {
     if (!m_repoAgentsTab)
         return;
 
-    // Count agent sessions for the currently-open repo.
+    // Sessions (and the running ones) for the currently-open repo.
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name  = m_repositories.at(m_repoDetailIndex).name;
     }
     int n = 0;
-    for (const AgentSession &s : std::as_const(m_agentSessions))
-        if (s.owner == owner && s.name == name)
-            ++n;
+    QList<const AgentSession *> running;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner != owner || s.name != name)
+            continue;
+        ++n;
+        if (s.status == AgentStatus::Running)
+            running.append(&s);
+    }
+    m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
 
-    // Is any agent running right now?
-    bool active = anyAgentRunning();
-
+    ensureAgentSpinnerOverlay();
+    const bool active = !running.isEmpty() && m_repoAgentsTab->isVisible();
     if (!active) {
         if (m_agentsSpinTimer)
             m_agentsSpinTimer->stop();
-        m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
+        m_agentSpinnerIds.clear();
+        if (m_agentSpinnerOverlay)
+            m_agentSpinnerOverlay->hide();
+        if (m_agentSnake)
+            m_agentSnake->hide();
         return;
     }
+    if (!m_agentSpinnerOverlay)
+        return;
 
+    // Only rebuild the spinners when the set of running sessions changes —
+    // recreating them every refresh would reset their rotation.
+    QList<int> ids;
+    for (const AgentSession *s : std::as_const(running))
+        ids.append(s->id);
+    if (ids != m_agentSpinnerIds) {
+        m_agentSpinnerIds = ids;
+        while (QLayoutItem *item = m_agentSpinnerRow->takeAt(0)) {
+            if (QWidget *w = item->widget())
+                w->deleteLater();
+            delete item;
+        }
+        for (const AgentSession *s : std::as_const(running)) {
+            auto *spinner = new AgentSpinner;
+            spinner->setProvider(s->provider);
+            const QString task =
+                s->issueTitle.trimmed().isEmpty()
+                    ? QStringLiteral("Agent session #%1").arg(s->id)
+                    : QStringLiteral("#%1 %2").arg(s->issueNumber)
+                          .arg(s->issueTitle.trimmed());
+            spinner->setTask(QStringLiteral("%1 \xC2\xB7 %2")
+                                 .arg(task, agentProviderName(s->provider)));
+            m_agentSpinnerRow->addWidget(spinner);
+        }
+    }
+    positionAgentSpinnerOverlay();
+    m_agentSpinnerOverlay->show();
+    m_agentSpinnerOverlay->raise();
+    if (m_agentSnake) {
+        positionAgentSnake();
+        m_agentSnake->show();
+        m_agentSnake->raise();
+    }
+
+    // Animate the purple snake and keep both indicators positioned as the window
+    // moves / tabs change.
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
         connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
-            if (!m_repoAgentsTab)
-                return;
             static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
                                            "\xE2\xA0\xB9", "\xE2\xA0\xB8",
                                            "\xE2\xA0\xBC", "\xE2\xA0\xB4",
                                            "\xE2\xA0\xA6", "\xE2\xA0\xA7",
                                            "\xE2\xA0\x87", "\xE2\xA0\x8F"};
             m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
-            QString owner2, name2;
-            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-                owner2 = m_repositories.at(m_repoDetailIndex).owner;
-                name2  = m_repositories.at(m_repoDetailIndex).name;
+            if (m_agentSnake) {
+                m_agentSnake->setText(QString::fromUtf8(frames[m_agentsSpinFrame]));
+                positionAgentSnake();
             }
-            int cnt = 0;
-            for (const AgentSession &s : std::as_const(m_agentSessions))
-                if (s.owner == owner2 && s.name == name2)
-                    ++cnt;
-            m_repoAgentsTab->setText(QStringLiteral("Agents (%1) ").arg(cnt) +
-                                     QString::fromUtf8(frames[m_agentsSpinFrame]));
+            positionAgentSpinnerOverlay();
         });
     }
     if (!m_agentsSpinTimer->isActive())
-        m_agentsSpinTimer->start(110);
+        m_agentsSpinTimer->start(120);
+}
+
+void MainWindow::positionAgentSnake()
+{
+    if (!m_agentSnake || !m_repoAgentsTab)
+        return;
+    const int w = 16;
+    m_agentSnake->setGeometry(m_repoAgentsTab->width() - w - 6, 0, w,
+                              m_repoAgentsTab->height());
 }
 
 QList<ActionWorkflow>
