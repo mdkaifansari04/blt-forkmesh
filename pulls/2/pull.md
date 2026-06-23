@@ -4,7 +4,7 @@ number: 2
 title: Agent: issue #189 add color to the agent activity indicator when an agent it working show a little activer agent head above the agents tab and show their status when active / don
 base: main
 head: agent/issue-189-claude-api-3
-status: open
+status: merged
 ts: 1782252042979
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode

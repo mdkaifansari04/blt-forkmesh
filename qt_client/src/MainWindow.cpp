@@ -7922,6 +7922,13 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
         if (i == 3)
             m_repoAgentsTab = b; // handle for the Agents (N) badge
+            // Activity badge: a small colored pill overlaid above the tab button
+            // that shows running/done/failed status while an agent is active.
+            m_agentActivityBadge = new QLabel(b);
+            m_agentActivityBadge->setObjectName("agentActivityBadge");
+            m_agentActivityBadge->setAlignment(Qt::AlignCenter);
+            m_agentActivityBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+            m_agentActivityBadge->hide();
         if (i == 4)
             m_repoPullsTab = b;
         if (i == 5)
