@@ -11,9 +11,9 @@ assignees: []
 createdAt: 1782189975462
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
-bountyUsd: 0.00
+bountyUsd: 1.00
 bountyAddress: 
-bountyStatus: 
+bountyStatus: open
 type: open
 id: open-163
 ts: 1782189975462
