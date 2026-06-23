@@ -375,6 +375,8 @@ private:
     void updateManualRunBar();
     // Queue a manual run of the selected workflow on the chosen branch.
     void runSelectedWorkflowManually();
+    // Re-queue the currently selected run (same workflow, commit and ref).
+    void rerunSelectedRun();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
@@ -1058,6 +1060,8 @@ private:
     QWidget *m_actionManualRunBar = nullptr;
     QPushButton *m_actionManualRunButton = nullptr;
     QComboBox *m_actionRunBranchCombo = nullptr;
+    // Re-queues the selected run with its original workflow/commit/ref.
+    QPushButton *m_actionRerunButton = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the
