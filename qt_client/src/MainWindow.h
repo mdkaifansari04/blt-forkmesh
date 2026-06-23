@@ -332,6 +332,8 @@ private:
     void onAgentLog(int sessionId, const QString &text);
     void onAgentStatusChanged(int sessionId, const QString &status);
     void onAgentFinished(int sessionId, bool ok);
+    // The agent CLI needs the user to act (e.g. Claude Code sign-in); surface it.
+    void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
     void updateIssueAgentUi(const Issue &issue);
     AgentRunner::Config agentConfigForProvider(const QString &provider) const;
@@ -379,6 +381,8 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    // Blank the repo-detail panel when the selected node has no repositories.
+    void clearRepoDetail();
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -633,6 +637,7 @@ private:
     QLabel *m_navSolanaBalance = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_connectionStatus = nullptr; // top-right connection indicator
+    QString m_connectionStatusHtml;       // last rendered text (skip redundant repaints)
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts

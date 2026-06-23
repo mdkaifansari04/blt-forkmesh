@@ -933,6 +933,22 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
 
 void ServerNode::updateRosterAndStatus()
 {
+    // Coalesce: incoming frames (typing/presence/hello/chat) each touch the
+    // roster, but the membership rarely actually changes. Emit at most once per
+    // short window so the UI status/roster don't thrash on every frame.
+    if (!m_rosterEmitTimer) {
+        m_rosterEmitTimer = new QTimer(this);
+        m_rosterEmitTimer->setSingleShot(true);
+        m_rosterEmitTimer->setInterval(200);
+        connect(m_rosterEmitTimer, &QTimer::timeout, this,
+                &ServerNode::flushRosterAndStatus);
+    }
+    if (!m_rosterEmitTimer->isActive())
+        m_rosterEmitTimer->start();
+}
+
+void ServerNode::flushRosterAndStatus()
+{
     MemberInfo self;
     self.id = m_nodeId;
     self.name = m_userName;
