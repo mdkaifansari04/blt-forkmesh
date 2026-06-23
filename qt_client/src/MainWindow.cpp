@@ -10339,57 +10339,81 @@ void MainWindow::refreshClaudeSpend()
     const QDateTime end(now.date().addDays(1), QTime(0, 0),
                         QTimeZone(QTimeZone::UTC));
     const QString iso = QStringLiteral("yyyy-MM-ddTHH:mm:ssZ");
+    const QString startStr = monthStart.toString(iso);
+    const QString endStr = end.toString(iso);
 
-    QUrl url(QStringLiteral("https://api.anthropic.com/v1/organizations/cost_report"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("starting_at"), monthStart.toString(iso));
-    query.addQueryItem(QStringLiteral("ending_at"), end.toString(iso));
-    query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
-    url.setQuery(query);
+    // The cost report is paginated: a daily bucketing of a whole month easily
+    // spans several pages, and the early pages can be all-empty buckets while
+    // the actual spend lands on a later page. Reading only the first page is
+    // what made this report $0.00 — walk every page via `next_page` and sum.
+    auto cents = std::make_shared<double>(0.0);
+    auto fetchPage = std::make_shared<std::function<void(const QString &)>>();
+    *fetchPage = [this, adminKey, startStr, endStr, iso, cents,
+                  fetchPage](const QString &page) {
+        QUrl url(QStringLiteral(
+            "https://api.anthropic.com/v1/organizations/cost_report"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("starting_at"), startStr);
+        query.addQueryItem(QStringLiteral("ending_at"), endStr);
+        query.addQueryItem(QStringLiteral("bucket_width"), QStringLiteral("1d"));
+        if (!page.isEmpty())
+            query.addQueryItem(QStringLiteral("page"), page);
+        url.setQuery(query);
 
-    QNetworkRequest request(url);
-    request.setRawHeader("x-api-key", adminKey.toUtf8());
-    request.setRawHeader("anthropic-version", "2023-06-01");
-    request.setRawHeader("Accept", "application/json");
+        QNetworkRequest request(url);
+        request.setRawHeader("x-api-key", adminKey.toUtf8());
+        request.setRawHeader("anthropic-version", "2023-06-01");
+        request.setRawHeader("Accept", "application/json");
 
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        const QByteArray body = reply->readAll();
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            if (m_agentClaudeStatus)
-                m_agentClaudeStatus->setText(
-                    QStringLiteral("Claude spend unavailable: %1")
-                        .arg(apiErrorSummary(reply, body)));
-            if (m_agentClaudeSpend)
-                m_agentClaudeSpend->setText("Claude spend this month: unavailable");
-            return;
-        }
-        // Sum every result's `amount`, which is a decimal STRING in cents.
-        const QJsonObject root = QJsonDocument::fromJson(body).object();
-        double cents = 0.0;
-        for (const QJsonValue &bucket : root.value("data").toArray()) {
-            for (const QJsonValue &result :
-                 bucket.toObject().value("results").toArray()) {
-                cents += result.toObject()
-                             .value("amount")
-                             .toString()
-                             .toDouble();
+        QNetworkReply *reply = m_networkAccess->get(request);
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, cents, fetchPage] {
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                if (m_agentClaudeStatus)
+                    m_agentClaudeStatus->setText(
+                        QStringLiteral("Claude spend unavailable: %1")
+                            .arg(apiErrorSummary(reply, body)));
+                if (m_agentClaudeSpend)
+                    m_agentClaudeSpend->setText(
+                        "Claude spend this month: unavailable");
+                return;
             }
-        }
-        const double usd = cents / 100.0;
-        m_claudeSpendUsd = usd;
-        if (m_agentClaudeSpend) {
-            const QString text =
-                QStringLiteral("Claude spend, month to date: $%1 USD")
-                    .arg(QString::number(usd, 'f', 2));
-            m_agentClaudeSpend->setText(text);
-            cacheSpendLabel(kClaudeSpendTextSetting, kClaudeSpendTsSetting, text);
-        }
-        if (m_agentClaudeStatus)
-            m_agentClaudeStatus->setText("Claude spend refreshed.");
-        updateAgentTotalSpend();
-    });
+            // Sum every result's `amount`, which is a decimal STRING in cents.
+            const QJsonObject root = QJsonDocument::fromJson(body).object();
+            for (const QJsonValue &bucket : root.value("data").toArray()) {
+                for (const QJsonValue &result :
+                     bucket.toObject().value("results").toArray()) {
+                    *cents += result.toObject()
+                                  .value("amount")
+                                  .toString()
+                                  .toDouble();
+                }
+            }
+            // Keep paging until the API says there is nothing more.
+            const QString next = root.value("next_page").toString();
+            if (root.value("has_more").toBool() && !next.isEmpty()) {
+                (*fetchPage)(next);
+                return;
+            }
+
+            const double usd = *cents / 100.0;
+            m_claudeSpendUsd = usd;
+            if (m_agentClaudeSpend) {
+                const QString text =
+                    QStringLiteral("Claude spend, month to date: $%1 USD")
+                        .arg(QString::number(usd, 'f', 2));
+                m_agentClaudeSpend->setText(text);
+                cacheSpendLabel(kClaudeSpendTextSetting, kClaudeSpendTsSetting,
+                                text);
+            }
+            if (m_agentClaudeStatus)
+                m_agentClaudeStatus->setText("Claude spend refreshed.");
+            updateAgentTotalSpend();
+        });
+    };
+    (*fetchPage)(QString());
 }
 
 void MainWindow::initAgents()
@@ -20561,6 +20585,30 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     outer->addSpacing(10);
 
+    // --- Actions ----------------------------------------------------------
+    auto *actionsHeading = new QLabel("Actions");
+    actionsHeading->setObjectName("sectionLabel");
+    outer->addWidget(actionsHeading);
+
+    m_settingsActionsCheck = new QCheckBox("Run actions on push");
+    m_settingsActionsCheck->setCursor(Qt::PointingHandCursor);
+    m_settingsActionsCheck->setToolTip(
+        "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
+        "workflows. Off by default for mirrored repos. Changed workflows still "
+        "require your approval before they run.");
+    connect(m_settingsActionsCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoActionsEnabled(on); });
+    outer->addWidget(m_settingsActionsCheck);
+
+    auto *actionsHint = new QLabel(
+        "Mirrored repositories start with actions disabled. Enable this only for "
+        "repos whose workflows you trust to run on this node.");
+    actionsHint->setObjectName("statusLine");
+    actionsHint->setWordWrap(true);
+    outer->addWidget(actionsHint);
+
+    outer->addSpacing(10);
+
     // --- Danger zone ------------------------------------------------------
     auto *dangerHeading = new QLabel("Danger zone");
     dangerHeading->setObjectName("sectionLabel");
@@ -20590,6 +20638,32 @@ QWidget *MainWindow::buildRepoSettingsTab()
     return page;
 }
 
+void MainWindow::setRepoActionsEnabled(bool on)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (m_repositories[m_repoDetailIndex].actionsEnabled == on)
+        return;
+    m_repositories[m_repoDetailIndex].actionsEnabled = on;
+    saveRepositories();
+    // The hook stays installed regardless (it powers the live Code refresh);
+    // just make sure it exists when enabling.
+    ensurePushHook(m_repositories.at(m_repoDetailIndex));
+    logSystem(QStringLiteral("Actions %1 for %2/%3.")
+                  .arg(on ? "enabled" : "disabled",
+                       m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
+    // Keep both toggles (Actions tab + Settings tab) in sync.
+    if (m_actionsEnabledCheck) {
+        QSignalBlocker block(m_actionsEnabledCheck);
+        m_actionsEnabledCheck->setChecked(on);
+    }
+    if (m_settingsActionsCheck) {
+        QSignalBlocker block(m_settingsActionsCheck);
+        m_settingsActionsCheck->setChecked(on);
+    }
+}
+
 void MainWindow::refreshRepoSettings()
 {
     const bool haveRepo =
@@ -20599,6 +20673,12 @@ void MainWindow::refreshRepoSettings()
         m_repoPrivateCheck->setEnabled(haveRepo);
         m_repoPrivateCheck->setChecked(
             haveRepo && m_repositories.at(m_repoDetailIndex).isPrivate);
+    }
+    if (m_settingsActionsCheck) {
+        QSignalBlocker block(m_settingsActionsCheck);
+        m_settingsActionsCheck->setEnabled(haveRepo);
+        m_settingsActionsCheck->setChecked(
+            haveRepo && m_repositories.at(m_repoDetailIndex).actionsEnabled);
     }
     if (!m_repoVisibilityHint)
         return;
