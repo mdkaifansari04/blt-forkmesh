@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 1
 title: Anti-spoofing / security hardening
-status: open
+status: closed
 labels: [security]
 milestone: MVP launch
 priority: 1
