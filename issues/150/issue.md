@@ -3,13 +3,17 @@ schema: forkmesh-issue-v1
 number: 150
 title: show if there are conflicts on the PR - have a button to assign to an agent to fix them
 status: open
-labels: []
+labels: [Phase 2]
 milestone: 
 priority: 0
+progress: 0
 assignees: []
 createdAt: 1782168775715
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-150
 ts: 1782168775715
