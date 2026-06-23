@@ -63,6 +63,9 @@ REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
+# Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
+# and split it 90/10 to the PR author + treasury when the issue's PR merges.
+REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
@@ -917,6 +920,11 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
+    # Issue bounty escrow: one row per (repo, issue number). data is the encrypted
+    # record holding the deposit address, its Ed25519 seed, the required amount,
+    # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
+    """CREATE TABLE IF NOT EXISTS issue_bounty (
+        bounty_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
     # Server-side 5xx / error log surfaced on the admin dashboard.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
@@ -2184,6 +2192,186 @@ async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
     return True
 
 
+# --- Issue bounties ---------------------------------------------------------
+# Same custody model as the signup donation funnel: each bounty gets its OWN
+# freshly generated Solana deposit address; the worker holds the key (encrypted
+# at rest) and, when the issue's pull request merges, splits the balance 90% to
+# the PR author and 10% to the treasury. Mainnet.
+BOUNTY_MIN_USD = 1.0
+BOUNTY_MAX_USD = 100000.0
+BOUNTY_TREASURY_BPS = 1000  # 10% to treasury, in basis points
+
+
+async def _usd_to_lamports(env, usd):
+    price = await _sol_usd_price(env)  # USD per SOL
+    if price <= 0:
+        return 0
+    return int(round((float(usd) / price) * LAMPORTS_PER_SOL))
+
+
+async def _bounty_bi(env, owner, repo, number):
+    return await blind_index(env, owner + "/" + repo + "#" + str(int(number)))
+
+
+async def _load_bounty(env, bounty_bi):
+    row = await d1_first(
+        env, "SELECT data FROM issue_bounty WHERE bounty_bi=?", bounty_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data", ""))
+
+
+async def _save_bounty(env, bounty_bi, rec):
+    enc = await encrypt_row(env, rec)
+    await d1_run(
+        env,
+        """INSERT INTO issue_bounty (bounty_bi, data) VALUES (?,?)
+           ON CONFLICT(bounty_bi) DO UPDATE SET data=excluded.data""",
+        bounty_bi, enc,
+    )
+
+
+def _bounty_public(rec):
+    # Never leak the deposit key; only payout-safe fields go back to clients.
+    return {
+        "address": rec.get("address", ""),
+        "amountUsd": rec.get("amount_usd", 0),
+        "requiredLamports": rec.get("required_lamports", 0),
+        "amountSol": _amount_sol(rec.get("required_lamports", 0)),
+        "receivedLamports": rec.get("received_lamports", 0),
+        "confirmed": bool(rec.get("confirmed")),
+        "status": rec.get("status", "open"),
+        "payee": rec.get("payee", ""),
+        "payoutSig": rec.get("payout_sig", ""),
+        "uri": _solana_pay_uri(
+            rec.get("address", ""), int(rec.get("required_lamports", 0))),
+    }
+
+
+async def bounties_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    action = (data.get("action") or "create").strip()
+    try:
+        number = int(data.get("number", 0))
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        return json_response({"error": "number_required"}, status=400)
+    bounty_bi = await _bounty_bi(env, owner, repo, number)
+    rec = await _load_bounty(env, bounty_bi)
+
+    if action == "create":
+        if rec and rec.get("status") == "paid":
+            return json_response({"error": "already_paid"}, status=409)
+        treasury = _treasury_address(env)
+        if not treasury:
+            return json_response({"error": "treasury_not_configured"}, status=503)
+        try:
+            amount_usd = float(data.get("amountUsd", 0))
+        except (TypeError, ValueError):
+            amount_usd = 0.0
+        if not (BOUNTY_MIN_USD <= amount_usd <= BOUNTY_MAX_USD):
+            return json_response({"error": "bad_amount"}, status=400)
+        required = await _usd_to_lamports(env, amount_usd)
+        if required <= 0:
+            return json_response({"error": "price_unavailable"}, status=503)
+        # Reuse an existing unpaid address (top-ups raise the target) so a repeat
+        # call doesn't strand funds at a stale address.
+        if rec and rec.get("address") and rec.get("status") != "paid":
+            rec["amount_usd"] = amount_usd
+            rec["required_lamports"] = required
+        else:
+            addr, secret = await _new_solana_keypair()
+            if not addr:
+                return json_response({"error": "keypair_failed"}, status=500)
+            rec = {
+                "owner": owner, "repo": repo, "number": number,
+                "address": addr, "secret": secret,
+                "amount_usd": amount_usd, "required_lamports": required,
+                "received_lamports": 0, "confirmed": False, "status": "open",
+                "created_at": int(Date.now()), "payee": "", "payout_sig": "",
+            }
+        await _save_bounty(env, bounty_bi, rec)
+        return json_response(_bounty_public(rec))
+
+    if rec is None:
+        return json_response({"error": "no_bounty"}, status=404)
+
+    if action == "status":
+        if rec.get("status") != "paid" and rec.get("address"):
+            balance = await _solana_balance_lamports(env, rec["address"])
+            if balance is not None:
+                rec["received_lamports"] = balance
+                if balance >= int(rec.get("required_lamports", 0)) and balance > 0:
+                    rec["confirmed"] = True
+                    if rec.get("status") == "open":
+                        rec["status"] = "funded"
+                await _save_bounty(env, bounty_bi, rec)
+        return json_response(_bounty_public(rec))
+
+    if action == "payout":
+        # Only the repo owner (the account that can merge the PR) may release a
+        # bounty. Signature is over a fresh, explicit canonical string.
+        payee = clean_string(data.get("payee", ""), 64)
+        try:
+            ts = int(data.get("ts", 0))
+        except (TypeError, ValueError):
+            ts = 0
+        sig = data.get("sig", "")
+        if not SOLANA_RE.match(payee or ""):
+            return json_response({"error": "bad_payee"}, status=400)
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=400)
+        pubkey = await _owner_pubkey(env, owner)
+        if not pubkey:
+            return json_response({"error": "no_owner_key"}, status=403)
+        canonical = ("forkmesh-bounty-payout-v1\n" + owner + "\n" + repo + "\n" +
+                     str(number) + "\n" + payee + "\n" + str(ts)).encode()
+        if not await ed25519_verify(pubkey, sig, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+        if rec.get("status") == "paid" and rec.get("payout_sig"):
+            return json_response(_bounty_public(rec))  # idempotent
+        treasury = _treasury_address(env)
+        if not treasury:
+            return json_response({"error": "treasury_not_configured"}, status=503)
+        from_addr = rec.get("address", "")
+        secret = rec.get("secret", "")
+        if not SOLANA_RE.match(from_addr or "") or not secret:
+            return json_response({"error": "bounty_unfunded"}, status=409)
+        balance = await _solana_balance_lamports(env, from_addr)
+        if balance is None:
+            return json_response({"error": "balance_unavailable"}, status=503)
+        transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+        if transferable <= 0:
+            return json_response({"error": "bounty_unfunded"}, status=409)
+        treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
+        payee_lamports = transferable - treasury_lamports
+        transfers = []
+        if payee_lamports > 0:
+            transfers.append((payee, payee_lamports))
+        if treasury_lamports > 0:
+            transfers.append((treasury, treasury_lamports))
+        send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
+        if not send_sig:
+            return json_response({"error": "send_transaction_failed"}, status=502)
+        rec["status"] = "paid"
+        rec["payee"] = payee
+        rec["payout_sig"] = send_sig
+        rec["paid_at"] = int(Date.now())
+        rec["payout_transfers"] = [
+            {"address": a, "lamports": l} for a, l in transfers]
+        await _save_bounty(env, bounty_bi, rec)
+        return json_response(_bounty_public(rec))
+
+    return json_response({"error": "bad_action"}, status=400)
+
+
 # --- Admins + manual email verification -------------------------------------
 # A user is "set as administrator" via the accounts.is_admin column in the DB
 # (UPDATE accounts SET is_admin=1 WHERE name='<node>'). Admins' clients are
@@ -3278,6 +3466,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await commits_handler(self.env, request, owner, repo)
+
+        bounty_match = REPO_BOUNTY_RE.match(url.path)
+        if bounty_match:
+            owner = safe_segment(bounty_match.group(1))
+            repo = safe_segment(bounty_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await bounties_handler(self.env, request, owner, repo)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:

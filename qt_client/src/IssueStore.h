@@ -27,7 +27,7 @@ struct IssueEvent {
     int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
-    QString agentProvider; // agent: codex|claude
+    QString agentProvider; // agent: openai|claude-api (legacy: codex, claude-code)
     int agentSessionId = 0; // agent
     QString agentStatus;   // agent
     bool agentCreatePr = false; // agent

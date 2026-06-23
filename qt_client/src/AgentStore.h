@@ -20,7 +20,7 @@ struct AgentSession {
     QString name;
     int issueNumber = 0;
     QString issueTitle;
-    QString provider; // codex | claude
+    QString provider; // openai | claude-api (legacy: codex, claude-code)
     bool createPr = false;
     int prNumber = 0;
     QString status = AgentStatus::Queued;
