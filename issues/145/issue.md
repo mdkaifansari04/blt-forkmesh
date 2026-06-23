@@ -5,7 +5,7 @@ title: when serving a repo from a mirror make sure it wasn't tampered with - kee
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 12
 progress: 0
 assignees: []
 createdAt: 1782158497694
