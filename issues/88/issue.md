@@ -5,10 +5,15 @@ title: the choose directory to create a pr does not get all of the files that ha
 status: closed
 labels: []
 milestone: 
+priority: 0
+progress: 100
 assignees: []
 createdAt: 1782073624784
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-88
 ts: 1782073624784
