@@ -5,7 +5,7 @@ title: delete issue seems to be taking a long time, it freezes the app
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 8
 progress: 0
 assignees: []
 createdAt: 1782152196254
