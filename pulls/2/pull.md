@@ -4,7 +4,7 @@ number: 2
 title: Remove repo Star button
 base: main
 head: issue-160-remove-star-button
-status: open
+status: merged
 ts: 1782215685827
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: mainnode

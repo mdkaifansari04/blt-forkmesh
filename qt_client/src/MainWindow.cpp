@@ -7652,20 +7652,18 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_forkButton = new QPushButton("Fork 0");
     m_mirrorButton = new QPushButton("Mirror 1");
     m_sourceButton = new QPushButton("Source");
-    m_starButton = new QPushButton("Star 0");
     // Open-in-browser link, mirroring the relay switcher's open button: takes
     // the active repo to its page on the mainnode website.
     m_repoOpenButton = new QPushButton("Open");
     for (QPushButton *b :
          {notifyButton, m_forkButton, m_mirrorButton, m_sourceButton,
-          m_starButton, m_repoOpenButton}) {
+          m_repoOpenButton}) {
         b->setObjectName("repoAction");
         b->setCursor(Qt::PointingHandCursor);
     }
     setOcticon(m_forkButton, "repo-forked", 16);
     setOcticon(m_mirrorButton, "sync", 16);
     setOcticon(m_sourceButton, "code", 16);
-    setOcticon(m_starButton, "star", 16);
     setOcticon(m_repoOpenButton, "link", 16);
     m_repoOpenButton->setToolTip("Open this repository on the web");
     connect(m_repoOpenButton, &QPushButton::clicked, this,
@@ -7702,7 +7700,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     headerRow->addWidget(m_mirrorButton);
     headerRow->addWidget(m_sourceButton);
     headerRow->addWidget(m_repoOpenButton);
-    headerRow->addWidget(m_starButton);
 
     m_repoDetailNotice = new QLabel;
     m_repoDetailNotice->setObjectName("repoInlineNotice");
@@ -13057,8 +13054,6 @@ void MainWindow::openRepoDetail(int repoIndex)
             m_mirrorButton->setToolTip("Sync this repository's mirror now");
         }
     }
-    if (m_starButton)
-        m_starButton->setText(QStringLiteral("Star %1").arg(m_repoInfo.stars));
     updateRepoDetailStatus();
     updateRepoActionMenus();
     refreshRepoSettings();

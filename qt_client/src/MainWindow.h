@@ -969,7 +969,6 @@ private:
     QMenu *m_forkMenu = nullptr;
     QMenu *m_mirrorMenu = nullptr;
     QMenu *m_sourceMenu = nullptr;
-    QPushButton *m_starButton = nullptr;
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
