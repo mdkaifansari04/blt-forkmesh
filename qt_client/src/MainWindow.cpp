@@ -6149,10 +6149,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileBalanceButton->setText("Check balance");
     }
 
-    // Show the profile as full-page: hide the code/repo area.
+    // Slide the profile in on the right at its natural width; keep the code/repo
+    // area visible to its left rather than taking over the whole page.
     if (m_repoDetailSection)
-        m_repoDetailSection->hide();
-    m_nodeProfilePanel->setMaximumWidth(QWIDGETSIZE_MAX);
+        m_repoDetailSection->show();
+    m_nodeProfilePanel->setMaximumWidth(400);
     m_nodeProfilePanel->show();
 }
 
@@ -6460,12 +6461,13 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 13);
+    m_issueTable = new QTableWidget(0, 14);
     m_issueTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
-         "Created", "Agent", "Author", "Progress", "Est. cost", "Bounty"});
+         "Created", "Agent", "Author", "Progress", "Est. cost", "Bounty",
+         "Comments"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6493,6 +6495,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Progress
     header->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Est. cost
     header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Bounty
+    header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Comments
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
@@ -15416,6 +15419,23 @@ void MainWindow::refreshIssueList()
             bountyItem->setToolTip(
                 QStringLiteral("Bounty status: %1").arg(issue.bountyStatus));
         m_issueTable->setItem(row, 12, bountyItem);
+
+        // Comment count: "comment" events minus any that were later deleted,
+        // matching what the detail thread renders. Sorted numerically.
+        QSet<QString> deletedComments;
+        for (const IssueEvent &ev : issue.events) {
+            if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
+                deletedComments.insert(ev.target);
+        }
+        int commentCount = 0;
+        for (const IssueEvent &ev : issue.events) {
+            if (ev.type == "comment" && !deletedComments.contains(ev.id))
+                ++commentCount;
+        }
+        auto *commentsItem = new QTableWidgetItem;
+        commentsItem->setData(Qt::DisplayRole, commentCount); // numeric sort
+        commentsItem->setTextAlignment(Qt::AlignCenter);
+        m_issueTable->setItem(row, 13, commentsItem);
     }
     m_issueTable->setSortingEnabled(true);
 
@@ -17861,6 +17881,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         int newIssues = 0;
         QString lastCommentAuthor;
         int lastCommentNumber = 0;
+        QString lastCommentBody;
         QString lastIssueAuthor;
         QString lastIssueTitle;
         for (const QJsonValue &value : pending) {
@@ -17886,6 +17907,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                     ++comments;
                     lastCommentAuthor = who;
                     lastCommentNumber = number;
+                    lastCommentBody = ev.body.simplified();
                 } else if (ev.type == QLatin1String("open")) {
                     ++newIssues;
                     lastIssueAuthor = who;
@@ -17914,26 +17936,40 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (newIssues > 0) {
             const QString body =
                 newIssues == 1
-                    ? QStringLiteral("%1 filed a new issue: %2")
-                          .arg(lastIssueAuthor, lastIssueTitle)
+                    ? QStringLiteral("%1 filed a new issue on %2/%3: %4")
+                          .arg(lastIssueAuthor, repo.owner, repo.name, lastIssueTitle)
                     : QStringLiteral("%1 new issues filed on %2/%3")
                           .arg(newIssues)
                           .arg(repo.owner, repo.name);
             flashMessage(body);
             notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new issue"), body);
+            // Log it on the Notifications page so it persists past the toast.
+            addNotification(QStringLiteral("New issue"), body);
             if (m_trayIcon && QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new issue", body,
                                         QSystemTrayIcon::Information, 6000);
         }
         if (comments > 0) {
-            const QString body =
-                comments == 1
-                    ? QStringLiteral("%1 commented on issue #%2")
-                          .arg(lastCommentAuthor)
-                          .arg(lastCommentNumber)
-                    : QStringLiteral("%1 new comments on your issues").arg(comments);
+            QString body;
+            if (comments == 1) {
+                body = QStringLiteral("%1 commented on %2/%3 issue #%4")
+                           .arg(lastCommentAuthor, repo.owner, repo.name)
+                           .arg(lastCommentNumber);
+                if (!lastCommentBody.isEmpty()) {
+                    const QString snippet = lastCommentBody.left(140) +
+                        (lastCommentBody.size() > 140 ? QStringLiteral("\xE2\x80\xA6")
+                                                      : QString());
+                    body += QStringLiteral(": \xE2\x80\x9C%1\xE2\x80\x9D").arg(snippet);
+                }
+            } else {
+                body = QStringLiteral("%1 new comments on %2/%3 issues")
+                           .arg(comments)
+                           .arg(repo.owner, repo.name);
+            }
             notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new comment"),
                              body);
+            // Log it on the Notifications page so it persists past the toast.
+            addNotification(QStringLiteral("New comment"), body);
             if (m_trayIcon && QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new comment", body,
                                         QSystemTrayIcon::Information, 6000);
@@ -18085,11 +18121,38 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);
 
+    // Right column: online members, each with avatar + green/grey status dot.
+    // Mirrors the node-card look used elsewhere; refreshed from setRoster().
+    auto *membersPanel = new QWidget;
+    membersPanel->setObjectName("sidebar");
+    membersPanel->setFixedWidth(220);
+    m_chatMembersHeading = new QLabel("ONLINE \xE2\x80\x94 0");
+    m_chatMembersHeading->setObjectName("sectionLabel");
+    auto *membersScroll = new QScrollArea;
+    membersScroll->setObjectName("messageView");
+    membersScroll->setWidgetResizable(true);
+    membersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    membersScroll->setFrameShape(QFrame::NoFrame);
+    auto *membersContainer = new QWidget;
+    m_chatMembersLayout = new QVBoxLayout(membersContainer);
+    m_chatMembersLayout->setContentsMargins(0, 0, 0, 0);
+    m_chatMembersLayout->setSpacing(4);
+    m_chatMembersLayout->addStretch();
+    membersScroll->setWidget(membersContainer);
+    auto *membersLayout = new QVBoxLayout(membersPanel);
+    membersLayout->setContentsMargins(14, 16, 14, 12);
+    membersLayout->setSpacing(8);
+    membersLayout->addWidget(m_chatMembersHeading);
+    membersLayout->addWidget(membersScroll, 1);
+
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(sidebar);
     layout->addLayout(mainColumn, 1);
+    layout->addWidget(membersPanel);
+
+    refreshChatMembers();
 
     connect(m_channelList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -19193,6 +19256,8 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
         if (it.value()->senderId() == peerId)
             it.value()->setAvatar(pixmap);
     }
+    // Repaint the online-members column so its avatar tile picks up the image.
+    refreshChatMembers();
 }
 
 void MainWindow::onTypingChanged(const QString &conversation, const QString &peerId,
@@ -19259,6 +19324,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     }
 
     m_homeRoster = visibleMembers;
+    refreshChatMembers();
     // The members list is gone (nodes are the members); keep DM tab titles in
     // sync with renamed/rediscovered nodes.
     for (const MemberInfo &member : visibleMembers) {
@@ -19279,6 +19345,71 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // come and go or re-advertise fresher mirrors.
     if (m_repoDetailIndex >= 0)
         loadMirrorNodesPanel();
+}
+
+void MainWindow::refreshChatMembers()
+{
+    if (!m_chatMembersLayout)
+        return;
+
+    // Clear every card but keep the trailing stretch (the last layout item).
+    while (m_chatMembersLayout->count() > 1) {
+        QLayoutItem *item = m_chatMembersLayout->takeAt(0);
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    // Show online nodes first, then ourselves if offline; sort by name so the
+    // column doesn't reshuffle on every roster tick.
+    QList<MemberInfo> members = m_homeRoster;
+    std::sort(members.begin(), members.end(),
+              [](const MemberInfo &a, const MemberInfo &b) {
+                  const bool aOnline = a.self ? true : a.online;
+                  const bool bOnline = b.self ? true : b.online;
+                  if (aOnline != bOnline)
+                      return aOnline; // online before offline
+                  return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+              });
+
+    int onlineCount = 0;
+    for (const MemberInfo &member : std::as_const(members)) {
+        const bool online = member.self ? (m_backend != nullptr) : member.online;
+        if (online)
+            ++onlineCount;
+
+        auto *card = new QWidget;
+        auto *row = new QHBoxLayout(card);
+        row->setContentsMargins(4, 4, 4, 4);
+        row->setSpacing(10);
+
+        // Avatar: real one if known, else a generated letter tile.
+        QPixmap avatar = m_avatars.value(member.id);
+        if (avatar.isNull())
+            avatar = letterFavicon(member.name);
+        auto *icon = new QLabel;
+        icon->setPixmap(roundedRectPixmap(avatar, 28, 8));
+        icon->setFixedSize(28, 28);
+        row->addWidget(icon, 0);
+
+        // Name prefixed with a status dot (green online, grey offline).
+        auto *nameLabel = new QLabel(
+            QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> %2%3")
+                .arg(online ? "#3fb950" : "#8b949e",
+                     member.name.toHtmlEscaped(),
+                     member.self ? " <span style='color:#8b949e'>(you)</span>"
+                                 : QString()));
+        nameLabel->setTextFormat(Qt::RichText);
+        nameLabel->setToolTip(online ? QStringLiteral("Online")
+                                     : QStringLiteral("Offline"));
+        row->addWidget(nameLabel, 1);
+
+        m_chatMembersLayout->insertWidget(m_chatMembersLayout->count() - 1, card);
+    }
+
+    if (m_chatMembersHeading)
+        m_chatMembersHeading->setText(
+            QStringLiteral("ONLINE \xE2\x80\x94 %1").arg(onlineCount));
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)

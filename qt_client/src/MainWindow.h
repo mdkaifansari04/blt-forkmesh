@@ -614,6 +614,8 @@ private:
     void openDirectChat(const QString &peerId, const QString &peerName);
     void refreshChannelList();
     void refreshDmList();
+    // Rebuild the chat's right-hand online-members column from m_homeRoster.
+    void refreshChatMembers();
     void promptAddChannel();
     void sendCurrentMessage();
     void onComposerEdited(const QString &text);
@@ -787,6 +789,10 @@ private:
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
+    // Right-hand online-members column in the chat view: a scroll area whose
+    // inner layout holds one card per online (or self) node.
+    QVBoxLayout *m_chatMembersLayout = nullptr;
+    QLabel *m_chatMembersHeading = nullptr;
     QWidget *m_firewallBanner;
     QLabel *m_firewallBannerLabel;
     QPushButton *m_firewallAllowButton;
