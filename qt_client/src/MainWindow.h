@@ -1027,8 +1027,11 @@ private:
     QPushButton *m_actionRejectButton = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
-    // Repos panel: per-repo "run actions on push" toggle for the selection.
+    // Per-repo "run actions on push" toggle. Mirrored repos default off; the
+    // user opts in either on the Actions tab or the repo Settings tab — both
+    // checkboxes drive the same state via setRepoActionsEnabled().
     QCheckBox *m_actionsEnabledCheck = nullptr;
+    QCheckBox *m_settingsActionsCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
     QCheckBox *m_repoPrivateCheck = nullptr;
