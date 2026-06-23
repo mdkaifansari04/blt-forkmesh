@@ -177,7 +177,8 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #aboutSidebar { background: transparent; }
 #aboutSidebar QLabel { background: transparent; }
 #aboutHeading { font-size: 15px; font-weight: 700; }
-#langBar { background-color: #161b22; border-radius: 4px; }
+#langBar { background-color: #161b22; border-radius: 5px; }
+#aboutRule { background-color: #21262d; border: none; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -216,6 +217,23 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
+/* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
+#connectionDot { border: 2px solid #0d1117; }
+/* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
+   always visible, with a clear selected state. */
+#topNavBar { background: transparent; }
+QPushButton#topNavButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #8b949e; font-size: 13px; font-weight: 600; padding: 5px 12px;
+}
+QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
+QPushButton#topNavButton:checked {
+    background-color: #21262d; color: #e6edf3; border-color: #30363d;
+}
+QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
+QPushButton#topNavButton[alert="true"]:checked {
+    background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
+}
 /* Top-row switchers (relay / node / repo): favicon + dropdown + open-in-browser */
 QPushButton#relayIconButton, QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
@@ -230,8 +248,9 @@ QPushButton#repoMenuButton:hover {
     background-color: #161b22; color: #e6edf3;
 }
 #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
+#navNodeName { background: transparent; color: #8b949e; font-size: 11px; font-weight: 600; }
 #navSolanaBalance {
-    background: transparent; border: 1px solid #30363d; border-radius: 8px;
+    background: transparent; border: none; border-radius: 8px;
     color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
@@ -355,6 +374,36 @@ QPushButton#memberDeleteButton:hover {
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
 #encryptionLabel { color: #8b949e; font-size: 12px; }
+
+/* --- Node profile control panel --- */
+#nodeProfilePanel { background: transparent; border-left: 1px solid #30363d; }
+#nodeProfileContent { background-color: #0d1117; }
+#profileBanner { border-radius: 16px; }
+#profileName { font-size: 20px; font-weight: 800; }
+QPushButton#profileActionButton {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    color: #c9d1d9;
+}
+QPushButton#profileActionButton:hover {
+    background-color: #1f2937; border-color: #58a6ff; color: #e6edf3;
+}
+QPushButton#profileActionButton:pressed { background-color: #0d1117; }
+#statTile {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 10px 4px; color: #e6edf3;
+}
+#profileCard {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 10px 12px; color: #c9d1d9;
+}
+#profileMono {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 8px 10px; color: #c9d1d9; font-family: monospace;
+}
+#profileQr {
+    background-color: #ffffff; border-radius: 10px; padding: 8px;
+}
+
 #firewallBanner {
     background-color: #341a00;
     border-bottom: 1px solid #9e6a03;
@@ -897,7 +946,8 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #aboutSidebar { background: transparent; }
 #aboutSidebar QLabel { background: transparent; }
 #aboutHeading { font-size: 15px; font-weight: 700; }
-#langBar { background-color: #eaeef2; border-radius: 4px; }
+#langBar { background-color: #eaeef2; border-radius: 5px; }
+#aboutRule { background-color: #d0d7de; border: none; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
@@ -936,6 +986,23 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
+/* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
+#connectionDot { border: 2px solid #ffffff; }
+/* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
+   always visible, with a clear selected state. */
+#topNavBar { background: transparent; }
+QPushButton#topNavButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #656d76; font-size: 13px; font-weight: 600; padding: 5px 12px;
+}
+QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
+QPushButton#topNavButton:checked {
+    background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
+}
+QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; }
+QPushButton#topNavButton[alert="true"]:checked {
+    background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
+}
 /* Top-row switchers (relay / node / repo): favicon + dropdown + open-in-browser */
 QPushButton#relayIconButton, QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
@@ -950,8 +1017,9 @@ QPushButton#repoMenuButton:hover {
     background-color: #eaeef2; color: #1f2328;
 }
 #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
+#navNodeName { background: transparent; color: #656d76; font-size: 11px; font-weight: 600; }
 #navSolanaBalance {
-    background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
+    background: transparent; border: none; border-radius: 8px;
     color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
@@ -1073,6 +1141,37 @@ QPushButton#memberDeleteButton:hover {
 #chatHeader QLabel { background: transparent; }
 #channelTitle { font-size: 16px; font-weight: 700; }
 #encryptionLabel { color: #656d76; font-size: 12px; }
+
+/* --- Node profile control panel --- */
+#nodeProfilePanel { background: transparent; border-left: 1px solid #d0d7de; }
+#nodeProfileContent { background-color: #ffffff; }
+#profileBanner { border-radius: 16px; }
+#profileName { font-size: 20px; font-weight: 800; }
+QPushButton#profileActionButton {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
+    color: #1f2328;
+}
+QPushButton#profileActionButton:hover {
+    background-color: #eaeef2; border-color: #0969da; color: #1f2328;
+}
+QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
+#statTile {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
+    padding: 10px 4px; color: #1f2328;
+}
+#profileCard {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
+    padding: 10px 12px; color: #1f2328;
+}
+#profileMono {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+    padding: 8px 10px; color: #1f2328; font-family: monospace;
+}
+#profileQr {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
+    padding: 8px;
+}
+
 #firewallBanner {
     background-color: #fff8c5;
     border-bottom: 1px solid #d4a72c;
