@@ -5,7 +5,7 @@ title: get relay server federation going so we can have a second relay
 status: open
 labels: [Phase 2]
 milestone: Phase 2
-priority: 3
+priority: 1
 progress: 10
 assignees: []
 createdAt: 1782143713976
