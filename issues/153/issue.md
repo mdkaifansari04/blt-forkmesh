@@ -4,7 +4,7 @@ number: 153
 title: make delete issue one click and then confirm instad of double click make sure it's optimized
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 17
 progress: 0
 assignees: []

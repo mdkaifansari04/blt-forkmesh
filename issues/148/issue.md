@@ -4,7 +4,7 @@ number: 148
 title: #147 don't create a new chat room for each node / repo
 status: closed
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 14
 progress: 10
 assignees: []

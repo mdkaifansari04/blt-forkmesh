@@ -4,7 +4,7 @@ number: 156
 title: when the agent takes and completes an issue make sure to link the PR back to the issue through the development section - also let users link PRs there
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 20
 progress: 0
 assignees: []

@@ -4,7 +4,7 @@ number: 151
 title: there are these repo 7cbaf0dc hosts on the website under /network/ please remove them and make sure they don't come back its a bug
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 16
 progress: 0
 assignees: []

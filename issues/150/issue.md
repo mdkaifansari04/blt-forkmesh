@@ -4,7 +4,7 @@ number: 150
 title: show if there are conflicts on the PR - have a button to assign to an agent to fix them
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 15
 progress: 0
 assignees: []

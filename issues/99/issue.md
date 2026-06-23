@@ -5,7 +5,7 @@ title: have a delete button on the pr list to fully delete them
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 50
+priority: 13
 progress: 0
 assignees: []
 createdAt: 1782078628193

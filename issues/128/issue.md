@@ -4,7 +4,7 @@ number: 128
 title: update issue storage to not have seprate files for lables, milestone or priority - have these all just in the issue.md header like we have
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 1
 progress: 0
 assignees: []

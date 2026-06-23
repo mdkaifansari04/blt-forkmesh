@@ -5,7 +5,7 @@ title: action tab shows 0 when first started it should show the correct amount
 status: open
 labels: [bug]
 milestone: MVP launch
-priority: 16
+priority: 17
 progress: 0
 assignees: []
 createdAt: 1782091149169

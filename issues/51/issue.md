@@ -5,7 +5,7 @@ title: security is always number one we need to have this documented everywhere 
 status: open
 labels: [security]
 milestone: MVP launch
-priority: 3
+priority: 2
 progress: 0
 assignees: []
 createdAt: 1781732513363

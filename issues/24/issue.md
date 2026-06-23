@@ -4,7 +4,7 @@ number: 24
 title: make it so the issue comments are in the json file and not separate md
 status: open
 labels: [issues]
-milestone: 
+milestone: Phase 2
 priority: 72
 progress: 0
 assignees: []

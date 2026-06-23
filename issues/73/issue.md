@@ -5,7 +5,7 @@ title: have the ability to continue the session with the agent, currently it see
 status: open
 labels: [bug]
 milestone: MVP launch
-priority: 52
+priority: 11
 progress: 0
 assignees: []
 createdAt: 1782065372503

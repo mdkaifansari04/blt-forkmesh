@@ -5,7 +5,7 @@ title: if a user needs a bch wallet suggest exodus - also show on the join scree
 status: open
 labels: [enhancement]
 milestone: MVP launch
-priority: 34
+priority: 10
 progress: 0
 assignees: []
 createdAt: 1781731934463

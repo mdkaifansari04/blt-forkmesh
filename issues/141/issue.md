@@ -4,7 +4,7 @@ number: 141
 title: delete issue seems to be taking a long time, it freezes the app
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 8
 progress: 0
 assignees: []

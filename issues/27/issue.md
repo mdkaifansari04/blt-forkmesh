@@ -5,7 +5,7 @@ title: show the size of the repos and how much data each node is mirroring
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 14
+priority: 25
 progress: 0
 assignees: []
 createdAt: 1781663751017

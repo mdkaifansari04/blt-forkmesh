@@ -4,7 +4,7 @@ number: 34
 title: Make it so you can download the app and mirror on your phone
 status: open
 labels: [feature]
-milestone: 
+milestone: Phase 2
 priority: 86
 progress: 0
 assignees: []

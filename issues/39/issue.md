@@ -5,7 +5,7 @@ title: when I click the fork button on a repo it should ask me where to fork it 
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 40
+priority: 14
 progress: 0
 assignees: []
 createdAt: 1781713627748

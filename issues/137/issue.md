@@ -4,7 +4,7 @@ number: 137
 title: refresh issues and prs on the mirroring nodes when it receives a new commit
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 4
 progress: 0
 assignees: []

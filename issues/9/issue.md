@@ -5,7 +5,7 @@ title: Allow private repos to be shared to other nodes but hidden from the websi
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 9
+priority: 6
 progress: 0
 assignees: []
 createdAt: 1781642499087

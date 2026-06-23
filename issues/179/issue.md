@@ -4,8 +4,8 @@ number: 179
 title: add a close with comment button  to the issue
 status: open
 labels: []
-milestone: 
-priority: 0
+milestone: MVP launch
+priority: 22
 progress: 0
 assignees: []
 createdAt: 1782207063346

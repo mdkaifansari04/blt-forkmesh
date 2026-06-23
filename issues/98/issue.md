@@ -5,7 +5,7 @@ title: make a gitlab and github repo importer that pulls everything from them
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 10
+priority: 15
 progress: 0
 assignees: []
 createdAt: 1782078460630

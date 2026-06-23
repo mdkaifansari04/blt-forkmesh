@@ -5,7 +5,7 @@ title: show releases in the code right column and allow for creating new release
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 44
+priority: 16
 progress: 0
 assignees: []
 createdAt: 1781731509057

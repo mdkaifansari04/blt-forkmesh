@@ -4,7 +4,7 @@ number: 142
 title: have the ability to view PR diffs in side by side mode show a selector switch icon there - do the other pr enhancement first though
 status: open
 labels: [Phase 2]
-milestone: 
+milestone: Phase 2
 priority: 9
 progress: 0
 assignees: []

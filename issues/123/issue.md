@@ -5,7 +5,7 @@ title: make the commits table open up more on initial load 3/4th of evertything 
 status: open
 labels: [bug]
 milestone: MVP launch
-priority: 26
+priority: 18
 progress: 0
 assignees: []
 createdAt: 1782098709951

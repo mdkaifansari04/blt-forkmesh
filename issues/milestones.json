@@ -10,5 +10,11 @@
         "due": 0,
         "status": "open",
         "title": "MVP launch"
+    },
+    {
+        "description": "Post-launch backlog: enhancements and infra deferred past the MVP.",
+        "due": 0,
+        "status": "open",
+        "title": "Phase 2"
     }
 ]

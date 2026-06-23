@@ -5,7 +5,7 @@ title: Leaderboards
 status: open
 labels: [feature]
 milestone: MVP launch
-priority: 75
+priority: 27
 progress: 0
 assignees: []
 createdAt: 1781642499089
