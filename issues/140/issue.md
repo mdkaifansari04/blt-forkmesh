@@ -11,9 +11,9 @@ assignees: []
 createdAt: 1782152082182
 author: DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI
 authorName: nodedbstpqc2
-bountyUsd: 0.00
+bountyUsd: 1.00
 bountyAddress: 
-bountyStatus: 
+bountyStatus: open
 type: open
 id: open-139
 ts: 1782152082182
