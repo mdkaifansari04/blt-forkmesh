@@ -495,6 +495,9 @@ private:
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
     void refreshIssueList();    // apply filters into the list widget
+    // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels) and toggle
+    // the filter controls, which only apply to the Issues table.
+    void selectIssueListTab(int id);
     void refreshIssueMilestones();
     void refreshIssueLabels();
     void editIssueLabelDefinition(int row);
@@ -854,6 +857,7 @@ private:
 
     // Repo detail view
     int m_repoDetailIndex = -1;
+    QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
     QPushButton *m_repoCommitsTab = nullptr;
