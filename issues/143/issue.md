@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 143
 title: fix: screen resize issue in y-axis
-status: open
+status: closed
 labels: [Phase 2]
 milestone: 
 priority: 10
