@@ -5,7 +5,7 @@ title: allow for the basic auth admin interface to be able to create, read, upda
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 2
 progress: 0
 assignees: []
 createdAt: 1782142060846
