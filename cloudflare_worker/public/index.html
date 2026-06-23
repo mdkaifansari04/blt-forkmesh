@@ -263,18 +263,46 @@
         </div>
       </div>
 
+      <div id="profile-view" hidden>
+        <section class="profile-header panel">
+          <a class="back-link" href="/">← Repositories</a>
+          <div class="profile-title-row">
+            <span class="profile-avatar" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="12" cy="8" r="4"></circle>
+                <path d="M4 21a8 8 0 0 1 16 0"></path>
+              </svg>
+            </span>
+            <div>
+              <h1 id="profile-title">Profile</h1>
+              <p id="profile-subtitle">ForkMesh account</p>
+            </div>
+          </div>
+          <div class="profile-meta" id="profile-meta"></div>
+        </section>
+
+        <section class="panel profile-repos" aria-labelledby="profile-repos-title">
+          <div class="panel-header">
+            <div>
+              <h2 id="profile-repos-title">Repositories</h2>
+              <p>Repositories published by this profile.</p>
+            </div>
+            <span id="profile-repos-count" class="count-pill">0 mirrored</span>
+          </div>
+          <div id="profile-repos-list" class="catalog-list" aria-live="polite"></div>
+        </section>
+      </div>
+
       <div id="repo-view" hidden>
         <section class="repo-header">
           <div class="repo-header-inner">
             <a class="back-link" href="/">← Repositories</a>
             <div class="repo-title-row">
-              <span class="repo-icon" aria-hidden="true"
+              <a id="repo-owner-profile" class="repo-icon" href="/" aria-label="Open owner profile"
                 ><svg viewBox="0 0 24 24">
-                  <path
-                    d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"
-                  ></path>
-                  <path d="M8 9h8M8 13h5"></path></svg
-              ></span>
+                  <circle cx="12" cy="8" r="4"></circle>
+                  <path d="M4 21a8 8 0 0 1 16 0"></path></svg
+              ></a>
               <h1 id="repo-page-title">repository</h1>
               <span class="badge">Public</span>
               <span id="repo-status" class="status-pill cached"

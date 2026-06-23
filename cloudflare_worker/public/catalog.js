@@ -148,6 +148,9 @@ function blobUrl(owner, name, path) {
 function repoRoute(owner, name) {
   return repoUrl(owner, name);
 }
+function profileUrl(owner) {
+  return `/profile/${encodeURIComponent(owner)}`;
+}
 
 function formatDate(value) {
   if (!value) return "not synced yet";
@@ -197,6 +200,12 @@ function routeCatalogClick(event, owner, name) {
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   event.preventDefault();
   go(repoUrl(owner, name));
+}
+
+function routeProfileClick(event, owner) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  event.preventDefault();
+  go(profileUrl(owner));
 }
 
 function createCatalogGroupItem(group) {
@@ -1163,9 +1172,11 @@ if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("netw
 // ---- Routing: home (repo list) vs. a single repository page ----------------
 
 const homeView = document.querySelector("#home-view");
+const profileView = document.querySelector("#profile-view");
 const repoView = document.querySelector("#repo-view");
 const notFoundView = document.querySelector("#not-found-view");
 let currentRepo = null;
+let currentProfile = null;
 let catalogLoaded = false;
 
 function decodeSeg(s) {
@@ -1180,6 +1191,9 @@ function parseRoute() {
   const path = location.pathname.replace(/^\/+|\/+$/g, "");
   if (!path) return { view: "home" };
   const segs = path.split("/").map(decodeSeg);
+  if (segs.length === 2 && segs[0] === "profile" && segs[1]) {
+    return { view: "profile", owner: segs[1] };
+  }
   if (segs.length >= 2 && segs[0] && segs[1]) {
     let mode = null;
     let filePath = "";
@@ -1200,7 +1214,9 @@ function findPublishedRepo(owner, name) {
 
 function showNotFound() {
   currentRepo = null;
+  currentProfile = null;
   if (homeView) homeView.hidden = true;
+  if (profileView) profileView.hidden = true;
   if (repoView) repoView.hidden = true;
   if (notFoundView) notFoundView.hidden = false;
   document.title = "Page not found · ForkMesh";
@@ -1208,7 +1224,16 @@ function showNotFound() {
 
 function route() {
   const r = parseRoute();
-  if (r.view === "repo") {
+  if (r.view === "profile") {
+    currentRepo = null;
+    currentProfile = r.owner;
+    if (homeView) homeView.hidden = true;
+    if (repoView) repoView.hidden = true;
+    if (profileView) profileView.hidden = false;
+    if (notFoundView) notFoundView.hidden = true;
+    window.scrollTo(0, 0);
+    openProfilePage(r.owner);
+  } else if (r.view === "repo") {
     if (catalogLoaded && !findPublishedRepo(r.owner, r.name)) {
       showNotFound();
       return;
@@ -1222,7 +1247,9 @@ function route() {
       repoView &&
       !repoView.hidden;
     currentRepo = { owner: r.owner, name: r.name };
+    currentProfile = null;
     if (homeView) homeView.hidden = true;
+    if (profileView) profileView.hidden = true;
     if (repoView) repoView.hidden = false;
     if (notFoundView) notFoundView.hidden = true;
     document.title = `${r.owner}/${r.name} · ForkMesh`;
@@ -1236,7 +1263,9 @@ function route() {
     showNotFound();
   } else {
     currentRepo = null;
+    currentProfile = null;
     if (repoView) repoView.hidden = true;
+    if (profileView) profileView.hidden = true;
     if (homeView) homeView.hidden = false;
     if (notFoundView) notFoundView.hidden = true;
     document.title = "ForkMesh";
@@ -1295,6 +1324,7 @@ function renderMirrorNodes(owner, name, repo) {
 
 function openRepoPage(owner, name, mode = null, filePath = "") {
   const titleEl = document.querySelector("#repo-page-title");
+  const profileLink = document.querySelector("#repo-owner-profile");
   const descEl = document.querySelector("#repo-page-desc");
   const cloneInput = document.querySelector("#repo-clone-input");
   const cloneNote = document.querySelector("#repo-clone-note");
@@ -1307,6 +1337,11 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
     const nameStrong = document.createElement("strong");
     nameStrong.textContent = name;
     titleEl.append(ownerSpan, nameStrong);
+  }
+  if (profileLink) {
+    profileLink.href = profileUrl(owner);
+    profileLink.setAttribute("aria-label", `Open ${owner} profile`);
+    profileLink.onclick = (event) => routeProfileClick(event, owner);
   }
   const repo = findPublishedRepo(owner, name);
   if (descEl) descEl.textContent = repo ? text(repo.description, "") : "";
@@ -1338,6 +1373,70 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   renderRepoPath(owner, name, mode, filePath);
   loadPullCount();
   loadLatestCommit(owner, name);
+}
+
+async function loadProfileAccount(owner) {
+  try {
+    const response = await fetch(`/api/accounts/${encodeURIComponent(owner)}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data && data.exists ? data : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function profileMetaItem(label, value) {
+  const item = document.createElement("div");
+  item.className = "mini-metric";
+  const labelEl = document.createElement("span");
+  labelEl.textContent = label;
+  const valueEl = document.createElement("strong");
+  valueEl.textContent = value;
+  item.append(labelEl, valueEl);
+  return item;
+}
+
+async function openProfilePage(owner) {
+  const title = document.querySelector("#profile-title");
+  const subtitle = document.querySelector("#profile-subtitle");
+  const meta = document.querySelector("#profile-meta");
+  const reposList = document.querySelector("#profile-repos-list");
+  const reposCount = document.querySelector("#profile-repos-count");
+  if (title) title.textContent = owner;
+  if (subtitle) subtitle.textContent = "ForkMesh profile";
+  document.title = `${owner} · ForkMesh`;
+
+  const repos = allRepositories.filter((repo) => repo.owner === owner);
+  const groups = groupRepositories(repos);
+  if (reposCount) reposCount.textContent = `${groups.length} mirrored`;
+  if (reposList) {
+    reposList.replaceChildren(
+      ...(groups.length
+        ? groups.map(createCatalogGroupItem)
+        : [Object.assign(document.createElement("div"), {
+            className: "catalog-empty",
+            textContent: catalogLoaded
+              ? "This profile has not published any repositories."
+              : "Loading profile repositories…",
+          })])
+    );
+  }
+
+  if (meta) {
+    meta.replaceChildren(
+      profileMetaItem("Published repos", String(groups.length)),
+      profileMetaItem("Live hosts", String(repos.reduce((n, repo) => n + (repo.liveHost ? 1 : 0), 0))),
+      profileMetaItem("Account", "checking")
+    );
+    const account = await loadProfileAccount(owner);
+    if (currentProfile !== owner || !meta) return;
+    meta.lastElementChild.replaceWith(
+      profileMetaItem("Account", account ? text(account.status, "registered") : "not registered")
+    );
+  }
 }
 
 // Render just the Code tab's file view for a route (root, a tree dir, or a blob).

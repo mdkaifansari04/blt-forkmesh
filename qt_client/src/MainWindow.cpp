@@ -22596,21 +22596,8 @@ QWidget *MainWindow::buildRepoActionsTab()
         "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
         "workflows. Changed workflows still require approval below before they "
         "run.");
-    connect(m_actionsEnabledCheck, &QCheckBox::toggled, this, [this](bool on) {
-        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-            return;
-        if (m_repositories[m_repoDetailIndex].actionsEnabled == on)
-            return;
-        m_repositories[m_repoDetailIndex].actionsEnabled = on;
-        saveRepositories();
-        // The hook stays installed regardless (it powers the live Code refresh);
-        // just make sure it exists when enabling.
-        ensurePushHook(m_repositories.at(m_repoDetailIndex));
-        logSystem(QStringLiteral("Actions %1 for %2/%3.")
-                      .arg(on ? "enabled" : "disabled",
-                           m_repositories.at(m_repoDetailIndex).owner,
-                           m_repositories.at(m_repoDetailIndex).name));
-    });
+    connect(m_actionsEnabledCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoActionsEnabled(on); });
 
     auto *wfLayout = new QVBoxLayout(wfPane);
     wfLayout->setContentsMargins(16, 22, 8, 22);

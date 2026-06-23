@@ -447,6 +447,8 @@ private:
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
     void refreshRepoSettings(); // sync the Settings controls to the open repo
+    // Set "run actions on push" for the open repo and keep both toggles in sync.
+    void setRepoActionsEnabled(bool on);
     void loadMirrorNodesPanel();
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
