@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 175
-title: turn off the auto publishing
+title: turn off the auto publishing have a setting for it
 status: open
 labels: []
 milestone: 
