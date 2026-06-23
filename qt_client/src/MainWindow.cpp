@@ -23803,6 +23803,8 @@ void MainWindow::showRun(int runId)
     const ActionRun *run = findRun(runId);
     if (m_actionRerunButton)
         m_actionRerunButton->setVisible(run != nullptr);
+    if (m_actionCopyLogButton)
+        m_actionCopyLogButton->setVisible(run != nullptr);
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -24090,10 +24092,33 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionRerunButton->hide();
     connect(m_actionRerunButton, &QPushButton::clicked, this,
             &MainWindow::rerunSelectedRun);
+
+    // Copy log: drop the selected run's full log on the clipboard. Sits beside
+    // Rerun and shares its visible-when-a-run-is-selected lifecycle.
+    m_actionCopyLogButton = new QPushButton("Copy log");
+    m_actionCopyLogButton->setObjectName("ghostButton");
+    m_actionCopyLogButton->setProperty("buttonSize", "sm");
+    m_actionCopyLogButton->setCursor(Qt::PointingHandCursor);
+    m_actionCopyLogButton->setToolTip("Copy this run's full log to the clipboard");
+    setOcticon(m_actionCopyLogButton, "copy", 16);
+    m_actionCopyLogButton->hide();
+    connect(m_actionCopyLogButton, &QPushButton::clicked, this, [this] {
+        const ActionRun *run = findRun(m_selectedRunId);
+        const QString log = run && m_actionStore ? m_actionStore->readLog(*run)
+                                                 : (m_actionLog ? m_actionLog->toPlainText()
+                                                                : QString());
+        if (log.isEmpty()) {
+            flashMessage(QStringLiteral("No log to copy yet."));
+            return;
+        }
+        QApplication::clipboard()->setText(log);
+        flashMessage(QStringLiteral("Run log copied to the clipboard."));
+    });
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
+    titleRow->addWidget(m_actionCopyLogButton);
     titleRow->addWidget(m_actionRerunButton);
 
     auto *detailLayout = new QVBoxLayout(detailPane);

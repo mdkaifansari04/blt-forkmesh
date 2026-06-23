@@ -387,7 +387,8 @@ int main(int argc, char *argv[])
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
-            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n", &err);
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n",
+            QString(), &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
