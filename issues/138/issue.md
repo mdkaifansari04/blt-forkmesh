@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 138
 title: test that issue sends to nodes quickly
-status: open
+status: closed
 labels: [Phase 2]
 milestone: 
 priority: 5
