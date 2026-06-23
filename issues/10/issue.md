@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 10
 title: Extend mainnode repository catalogs
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 8
