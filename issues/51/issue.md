@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 51
 title: security is always number one we need to have this documented everywhere and continually scan and check that everything is secure on every commit
-status: open
+status: closed
 labels: [security]
 milestone: MVP launch
 priority: 2
