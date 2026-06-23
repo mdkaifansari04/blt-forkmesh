@@ -21,7 +21,20 @@ from workers import DurableObject, Response, WorkerEntrypoint
 MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
 MAX_CONNECTIONS = 128
-MAX_TEXT_BYTES = 96 * 1024 * 1024
+# Room frame cap. Kept small (4 MB) to limit relay amplification/abuse; chat plus
+# small inline images/files fit, larger attachments are rejected. MUST match the
+# client's RoomCrypto kMaxPlainBytes so both ends agree.
+MAX_TEXT_BYTES = 4 * 1024 * 1024
+# Per-socket room message rate limit: at most this many frames per window.
+ROOM_MSG_WINDOW_MS = 10 * 1000
+ROOM_MSG_MAX_PER_WINDOW = 20
+# Catalog write throttle per owner, and a hard cap on records an owner may hold.
+CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
+CATALOG_MAX_RECORDS_PER_OWNER = 50
+# Per-repo host tunnel/git request rate limit (generous: real clones make a
+# handful of requests; this only blunts floods).
+HOST_RATE_WINDOW_MS = 10 * 1000
+HOST_RATE_MAX_PER_WINDOW = 200
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -866,6 +879,9 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # Catalog write throttle: last write time per owner (blind index). Plaintext
+    # timestamp only — no user content.
+    "CREATE TABLE IF NOT EXISTS catalog_rate (owner_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
     """CREATE TABLE IF NOT EXISTS issue_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
@@ -1085,6 +1101,28 @@ async def totp_verify(secret_b32, code):
 
 # --- Catalog (repositories table) -------------------------------------------
 
+async def catalog_rate_check(env, owner_bi):
+    # Throttle catalog writes per owner: at most one write per cooldown window.
+    # Returns a 429 response when throttled, else None (and records this write).
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT ts FROM catalog_rate WHERE owner_bi=?", owner_bi)
+    if row:
+        try:
+            last = int(row["ts"])
+        except (TypeError, ValueError):
+            last = 0
+        if now - last < CATALOG_WRITE_COOLDOWN_MS:
+            return json_response({"error": "rate_limited"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO catalog_rate (owner_bi, ts) VALUES (?,?) "
+        "ON CONFLICT(owner_bi) DO UPDATE SET ts=excluded.ts",
+        owner_bi, now,
+    )
+    return None
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -1126,27 +1164,37 @@ async def catalog_handler(env, request):
                 {"error": "owner_name_and_maintainer_required"}, status=400
             )
         owner = record["owner"]
-        # Repos are namespaced under a registered account, and only that
-        # account's key holder may write its namespace. This ties repo identity
-        # to the account (fixes duplicate forks) and prevents impersonation.
-        #
-        # Account registration is temporarily disabled client-side, so when an
-        # owner has no registered account we fall back to verifying the publish
-        # against its own self-asserted maintainer key (the pre-accounts
-        # behaviour). Re-enable strictness by registering accounts again — the
-        # registered-owner branch below already enforces it.
+        # Repos are namespaced under a registered account, and only that account's
+        # key holder may write its namespace. This ties repo identity to the
+        # account (fixes duplicate forks) and prevents impersonation. A registered
+        # account is REQUIRED — there is no self-asserted-maintainer fallback.
         owner_pub = await _owner_pubkey(env, owner)
-        verify_pub = owner_pub or record["maintainer"]
-        if owner_pub and record["maintainer"] != owner_pub:
+        if not owner_pub:
+            return json_response({"error": "account_required"}, status=403)
+        if record["maintainer"] != owner_pub:
             return json_response({"error": "maintainer_mismatch"}, status=403)
         catalog_sig = clean_string(data.get("catalogSig", ""), 200)
         canonical = ("forkmesh-catalog-v1\n" + owner + "\n" + record["name"] +
                      "\n" + record["updatedAt"]).encode()
-        if not await ed25519_verify(verify_pub, catalog_sig, canonical):
+        if not await ed25519_verify(owner_pub, catalog_sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
 
-        key_bi = await blind_index(env, owner + "/" + record["name"])
         owner_bi = await blind_index(env, owner)
+        # Anti-spam: throttle writes per owner and cap how many repos one owner may
+        # publish, so a single key can't flood the catalog.
+        limited = await catalog_rate_check(env, owner_bi)
+        if limited is not None:
+            return limited
+
+        key_bi = await blind_index(env, owner + "/" + record["name"])
+        # Per-owner record cap (an update to an existing repo is always allowed).
+        exists = await d1_first(
+            env, "SELECT 1 AS x FROM repositories WHERE key_bi=?", key_bi)
+        if not exists:
+            cnt = await d1_first(
+                env, "SELECT COUNT(*) AS c FROM repositories WHERE owner_bi=?", owner_bi)
+            if cnt and cnt.get("c", 0) >= CATALOG_MAX_RECORDS_PER_OWNER:
+                return json_response({"error": "too_many_repos"}, status=429)
         enc = await encrypt_row(env, record)
         await d1_run(
             env,
@@ -1191,10 +1239,11 @@ async def catalog_handler(env, request):
         if not existing:
             return json_response({"error": "catalog_record_unreadable"}, status=500)
         owner_pub = await _owner_pubkey(env, owner)
-        verify_pub = owner_pub or clean_string(existing.get("maintainer", ""), 120)
+        if not owner_pub:
+            return json_response({"error": "account_required"}, status=403)
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
-        if not verify_pub or not await ed25519_verify(verify_pub, sig, canonical):
+        if not await ed25519_verify(owner_pub, sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
         await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
         await edge_cache_delete(CATALOG_CACHE_KEY)
@@ -1223,6 +1272,20 @@ def _ts_ok(ts):
         return abs(int(Date.now()) - int(ts)) <= LOGIN_MAX_SKEW_MS
     except (TypeError, ValueError):
         return False
+
+
+async def verify_host_token(env, owner, repo, ts, sig):
+    # Only the holder of the owner account's registered key may register as a host
+    # for owner/repo. Mirrors _account_heartbeat: fresh ts + ed25519 over an
+    # explicit canonical string, verified against the account's pubkey. Returns
+    # False when there is no registered account (hard gate — no self-assert).
+    if not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, owner)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-host-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
 
 
 async def _save_account(env, name_bi, rec, email_bi=None):
@@ -3001,6 +3064,16 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(host_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
+            # Registering as a host (the WebSocket upgrade) requires a token signed
+            # by the owner account's registered key. Read-only browse/clone of a
+            # repo someone else hosts stays public, so only gate the upgrade.
+            upgrade = (request.headers.get("upgrade") or "").lower()
+            if upgrade == "websocket":
+                params = parse_qs(url.query)
+                ts = params.get("ts", [""])[0]
+                sig = params.get("sig", [""])[0]
+                if not await verify_host_token(self.env, owner, repo, ts, sig):
+                    return json_response({"error": "unauthorized"}, status=401)
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             return await host_object.fetch(request)
@@ -3115,12 +3188,37 @@ class ForkMeshRoom(DurableObject):
         except Exception:
             return 0
 
+    def _rate_ok(self, ws):
+        # Per-socket token bucket kept in the hibernation attachment: at most
+        # ROOM_MSG_MAX_PER_WINDOW frames per ROOM_MSG_WINDOW_MS. Returns False when
+        # the sender is over budget (the frame should be dropped).
+        now = int(Date.now())
+        try:
+            start = int(_ws_attr(ws, "rl_start", 0) or 0)
+            count = int(_ws_attr(ws, "rl_count", 0) or 0)
+        except (TypeError, ValueError):
+            start, count = 0, 0
+        if now - start >= ROOM_MSG_WINDOW_MS:
+            start, count = now, 0
+        count += 1
+        try:
+            ws.serializeAttachment(to_js({
+                "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
+                "rl_start": start, "rl_count": count,
+            }))
+        except Exception:
+            pass
+        return count <= ROOM_MSG_MAX_PER_WINDOW
+
     async def webSocketMessage(self, ws, message):
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
         if len(message.encode("utf-8")) > MAX_TEXT_BYTES:
             self._safe_close(ws, 1009, "message too large")
+            return
+        # Drop frames from a socket that is flooding (don't relay or retain them).
+        if not self._rate_ok(ws):
             return
         sender_id = _ws_attr(ws, "id")
         for peer in self.ctx.getWebSockets("chat"):
@@ -3197,6 +3295,20 @@ class ForkMeshHost(DurableObject):
             self._repo_bi = None   # blind index of this DO's owner/repo
         if not hasattr(self, "_last_presence"):
             self._last_presence = 0  # ms of last host_presence write (throttle)
+        if not hasattr(self, "_req_window"):
+            self._req_window = 0   # start ms of the current rate window
+        if not hasattr(self, "_req_count"):
+            self._req_count = 0    # requests served in the current window
+
+    def _rate_ok(self):
+        # Generous per-repo request rate limit on the tunnel/git proxy to blunt
+        # floods without breaking real clones (which make a handful of requests).
+        now = int(Date.now())
+        if now - self._req_window >= HOST_RATE_WINDOW_MS:
+            self._req_window = now
+            self._req_count = 0
+        self._req_count += 1
+        return self._req_count <= HOST_RATE_MAX_PER_WINDOW
 
     async def _repo_blind_index(self, path):
         # This DO is per-repo; derive its blind index from the request path once
@@ -3235,6 +3347,11 @@ class ForkMeshHost(DurableObject):
         path = url.path
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
+
+        # Rate-limit the request-serving paths (not the host's own WS upgrade,
+        # which is already gated by a signed token in _route).
+        if not is_websocket and not self._rate_ok():
+            return json_response({"error": "rate_limited"}, status=429)
 
         # Git smart-HTTP clone endpoints proxied to the host's git upload-pack.
         if path.endswith("/info/refs"):

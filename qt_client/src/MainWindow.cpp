@@ -29,6 +29,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -203,11 +204,12 @@ const QString kLocalServerUrl =
 const QString kDefaultServerUrl =
     QStringLiteral("wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws");
 const QString kRoomNameSetting = QStringLiteral("server/room");
-const QString kPassphraseSetting = QStringLiteral("server/passphrase");
+// Last account this node key authenticated as; lets the app start offline once a
+// registered account has been confirmed at least once on this machine.
+const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
 const QString kServersArray = QStringLiteral("servers/items");
 const QString kActiveServerSetting = QStringLiteral("servers/active");
 const QString kDefaultRoomName = QStringLiteral("general");
-const QString kDefaultPassphrase = QStringLiteral("forkmesh-public-room");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
@@ -1943,8 +1945,27 @@ void setAutostartEnabled(bool enabled)
 
 } // namespace
 
+namespace {
+// Detailed, timestamped startup logging so a slow launch can be diagnosed from
+// the terminal: each phase prints "[startup +<ms>ms] <phase>". Always on (cheap).
+QElapsedTimer &startupClock()
+{
+    static QElapsedTimer t;
+    if (!t.isValid())
+        t.start();
+    return t;
+}
+void logStartup(const QString &phase)
+{
+    qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
+                             .arg(startupClock().elapsed(), 5)
+                             .arg(phase);
+}
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
+    logStartup(QStringLiteral("MainWindow ctor begin"));
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     resize(1060, 700);
@@ -1965,15 +1986,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
     loadServers();
     loadCachedFavicons();
+    logStartup(QStringLiteral("servers + favicons loaded"));
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildSetupPage());
+    logStartup(QStringLiteral("setup page built"));
     m_stack->addWidget(buildChatPage());
+    logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
     loadRepositories();
     refreshRepositoryList();
+    logStartup(QStringLiteral("repositories loaded"));
     initActions();
     initAgents();
+    logStartup(QStringLiteral("actions + agents initialized"));
     const QString lastRepository =
         QSettings().value(kLastRepositorySetting).toString();
     if (!lastRepository.isEmpty()) {
@@ -2032,7 +2058,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
         if (m_nameEdit->text().trimmed().isEmpty())
             m_nameEdit->setText(defaultDisplayName(m_profileIdentity));
-        QTimer::singleShot(0, this, &MainWindow::startSession);
+        // Auto-connect on launch only when we can authenticate silently (this
+        // node key already owns a registered active account). Otherwise stay on
+        // the setup screen so the user logs in / joins without a surprise dialog
+        // on startup (and so headless launches never block on a prompt).
+        QTimer::singleShot(0, this, [this] {
+            const QString name = accountNameFromInput(m_nameEdit->text(), QString());
+            if (!name.isEmpty() && authenticateSilently(name))
+                startSession();
+        });
     }
     updateHomeStats();
 }
@@ -2068,7 +2102,7 @@ QString MainWindow::chatHistoryKey() const
     if (m_activeServer < 0 || m_activeServer >= m_servers.size())
         return {};
     const ServerConfig &s = m_servers.at(m_activeServer);
-    const QByteArray seed = (s.url + "\n" + s.room + "\n" + s.passphrase).toUtf8();
+    const QByteArray seed = (s.url + "\n" + s.room).toUtf8();
     return QString::fromLatin1(
         QCryptographicHash::hash(seed, QCryptographicHash::Sha256).toHex());
 }
@@ -2261,16 +2295,15 @@ QWidget *MainWindow::buildSetupPage()
                 legacyWorkersDevUrl
             ? kDefaultServerUrl
             : savedServerUrl);
+    // The default repository room is fixed so every node converges on the same
+    // shared rooms (issue #116). Shown read-only; no passphrase — the room is
+    // encrypted with a baked-in app key (the relay only ever sees ciphertext).
     m_roomNameEdit = new QLineEdit;
-    m_roomNameEdit->setPlaceholderText("Default repository room");
     m_roomNameEdit->setMaxLength(80);
-    m_roomNameEdit->setText(QSettings().value(kRoomNameSetting, kDefaultRoomName).toString());
-    m_passphraseEdit = new QLineEdit;
-    m_passphraseEdit->setPlaceholderText("Mainnode room passphrase");
-    m_passphraseEdit->setMaxLength(256);
-    m_passphraseEdit->setEchoMode(QLineEdit::Password);
-    m_passphraseEdit->setText(
-        QSettings().value(kPassphraseSetting, kDefaultPassphrase).toString());
+    m_roomNameEdit->setText(kDefaultRoomName);
+    m_roomNameEdit->setReadOnly(true);
+    m_roomNameEdit->setToolTip("The default room is shared across the network and "
+                               "can't be changed.");
 
     auto *mainnodeHint = new QLabel(
         "Mainnodes relay encrypted repository-room ciphertext only.");
@@ -2317,7 +2350,6 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addSpacing(8);
     cardLayout->addWidget(m_serverUrlEdit);
     cardLayout->addWidget(m_roomNameEdit);
-    cardLayout->addWidget(m_passphraseEdit);
     cardLayout->addSpacing(8);
     cardLayout->addWidget(mainnodeHint);
     cardLayout->addSpacing(8);
@@ -2372,14 +2404,6 @@ QWidget *MainWindow::buildSetupPage()
     connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &url) {
         QSettings().setValue(kServerUrlSetting, url.trimmed());
     });
-    connect(m_roomNameEdit, &QLineEdit::textEdited, this, [](const QString &room) {
-        QSettings().setValue(kRoomNameSetting, room.trimmed());
-    });
-    // Persisted so the room can be rejoined automatically after a restart.
-    connect(m_passphraseEdit, &QLineEdit::textEdited, this,
-            [](const QString &passphrase) {
-                QSettings().setValue(kPassphraseSetting, passphrase);
-            });
     connect(m_updateButton, &QPushButton::clicked, this, &MainWindow::runQuickUpdate);
 
     return page;
@@ -2402,16 +2426,19 @@ void MainWindow::startSession()
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(kDefaultServerUrl);
 
-    // The one visible name is also the account owner / repo namespace. The
-    // registration/login gate is still disabled; re-enable ensureNodeAccount()
-    // here when the full account flow returns.
+    // The one visible name is also the account owner / repo namespace. The app
+    // must be authenticated: log in (or sign up) before any networking starts, so
+    // the node key is bound to a registered account that the relay verifies for
+    // hosting/publishing. If the user cancels, stay on the setup screen.
+    if (!ensureNodeAccount(name, m_solanaEdit->text().trimmed())) {
+        m_setupError->setText("Log in to your node account to join the network.");
+        m_setupError->show();
+        return;
+    }
     m_accountName = name;
     QSettings().setValue(kAccountNameSetting, name);
 
-    if (m_roomNameEdit->text().trimmed().isEmpty())
-        m_roomNameEdit->setText(kDefaultRoomName);
-    if (m_passphraseEdit->text().isEmpty())
-        m_passphraseEdit->setText(kDefaultPassphrase);
+    m_roomNameEdit->setText(kDefaultRoomName); // fixed shared room (read-only)
     m_setupError->hide();
     m_userName = name;
     persistProfile();
@@ -2443,13 +2470,11 @@ void MainWindow::startSession()
     rebuildConversationView();
 
     QSettings().setValue(kServerUrlSetting, m_serverUrlEdit->text().trimmed());
-    QSettings().setValue(kRoomNameSetting, m_roomNameEdit->text().trimmed());
-    QSettings().setValue(kPassphraseSetting, m_passphraseEdit->text());
+    QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
     persistEditsToActiveServer();
     const QUrl url(m_serverUrlEdit->text().trimmed());
     auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
-                                  m_roomNameEdit->text().trimmed(),
-                                  m_passphraseEdit->text(),
+                                  kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
     attachBackend(server);
     if (!server->start())
@@ -2465,8 +2490,10 @@ void MainWindow::startSession()
         // Broadcast the generated identicon when no custom avatar is set, so
         // peers always see something on-brand for this node.
         m_backend->setAvatar(effectiveAvatar());
-        for (const RepositoryRecord &repo : std::as_const(m_repositories))
-            m_backend->addChannel(repositoryChannel(repo));
+        // Fixed shared channels for the whole network — no per-repo rooms. Every
+        // node joins the same #general and #random over the one encrypted room.
+        m_backend->addChannel(QStringLiteral("general"));
+        m_backend->addChannel(QStringLiteral("random"));
         m_encryptionLabel->setText("Mainnode encrypted");
         logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
         const QJsonObject signedProfile =
@@ -2870,14 +2897,54 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
         return false;
     }
 
+    if (authenticateSilently(accountName))
+        return true;
+
     int status = 0;
     const QJsonObject lookup = getAccountSync(accountName, &status);
-    // An account that has already been finalized logs in; anything else (new,
-    // reserved, or mid-donation) runs the staged join.
+    // An active account owned by a different key — fall back to password login
+    // (universal cross-device access).
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == "active")
         return runLoginFlow(accountName);
+
+    // New (or unfinished) account: run the staged join (reserve → donate →
+    // set credentials).
     return runSignupFlow(accountName, solana);
+}
+
+// Silent (no dialogs, no signup) authentication: the app is authenticated when
+// this node already holds the key registered to an active account. The node key —
+// not a password — is what the relay verifies for hosting/publishing, so this can
+// run on launch without prompting. Returns false (quietly) when it can't confirm.
+bool MainWindow::authenticateSilently(const QString &accountName)
+{
+    if (m_accountAuthenticated && m_accountName == accountName)
+        return true;
+    if (!isValidNodeName(accountName))
+        return false;
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(accountName, &status);
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == "active" &&
+        lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
+        QSettings().setValue(kAuthedAccountSetting, accountName);
+        return true;
+    }
+    // Offline fallback: if the relay is unreachable but this exact name was
+    // confirmed on this machine before, trust the cached state so the app still
+    // starts (the relay still enforces the signed token for any real hosting).
+    if (status == 0 &&
+        QSettings().value(kAuthedAccountSetting).toString() == accountName) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        return true;
+    }
+    return false;
 }
 
 // POST /api/accounts/login — log in by node name or email (+ optional TOTP).
@@ -3507,7 +3574,6 @@ void MainWindow::loadServers()
         ServerConfig server;
         server.url = url;
         server.room = obj.value("room").toString(kDefaultRoomName);
-        server.passphrase = obj.value("passphrase").toString(kDefaultPassphrase);
         m_servers.append(server);
     }
 
@@ -3524,8 +3590,6 @@ void MainWindow::loadServers()
                          : savedUrl;
         server.room =
             QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
-        server.passphrase =
-            QSettings().value(kPassphraseSetting, kDefaultPassphrase).toString();
         m_servers.append(server);
     }
 
@@ -3542,8 +3606,7 @@ void MainWindow::saveServers()
     QJsonArray array;
     for (const ServerConfig &server : std::as_const(m_servers)) {
         array.append(QJsonObject{{"url", server.url},
-                                 {"room", server.room},
-                                 {"passphrase", server.passphrase}});
+                                 {"room", server.room}});
     }
     QSettings settings;
     settings.setValue(kServersArray,
@@ -3555,7 +3618,6 @@ void MainWindow::saveServers()
         const ServerConfig &active = m_servers.at(m_activeServer);
         settings.setValue(kServerUrlSetting, active.url);
         settings.setValue(kRoomNameSetting, active.room);
-        settings.setValue(kPassphraseSetting, active.passphrase);
     }
 }
 
@@ -3568,8 +3630,6 @@ void MainWindow::loadActiveServerIntoEdits()
         m_serverUrlEdit->setText(active.url);
     if (m_roomNameEdit)
         m_roomNameEdit->setText(active.room);
-    if (m_passphraseEdit)
-        m_passphraseEdit->setText(active.passphrase);
 }
 
 void MainWindow::persistEditsToActiveServer()
@@ -3579,7 +3639,6 @@ void MainWindow::persistEditsToActiveServer()
     ServerConfig &active = m_servers[m_activeServer];
     active.url = m_serverUrlEdit->text().trimmed();
     active.room = m_roomNameEdit->text().trimmed();
-    active.passphrase = m_passphraseEdit->text();
     saveServers();
 }
 
@@ -3616,13 +3675,13 @@ void MainWindow::promptAddServer()
     dialog.setWindowTitle("Add mainnode server");
     auto *urlEdit = new QLineEdit(&dialog);
     urlEdit->setPlaceholderText(kDefaultServerUrl);
+    // Room is fixed network-wide; only the relay URL is configurable.
     auto *roomEdit = new QLineEdit(kDefaultRoomName, &dialog);
-    auto *passEdit = new QLineEdit(kDefaultPassphrase, &dialog);
+    roomEdit->setReadOnly(true);
 
     auto *form = new QFormLayout;
     form->addRow("Server URL", urlEdit);
     form->addRow("Room", roomEdit);
-    form->addRow("Passphrase", passEdit);
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -3638,10 +3697,7 @@ void MainWindow::promptAddServer()
     server.url = urlEdit->text().trimmed();
     if (server.url.isEmpty())
         server.url = kDefaultServerUrl;
-    server.room = roomEdit->text().trimmed().isEmpty() ? kDefaultRoomName
-                                                       : roomEdit->text().trimmed();
-    server.passphrase =
-        passEdit->text().isEmpty() ? kDefaultPassphrase : passEdit->text();
+    server.room = kDefaultRoomName;
     m_servers.append(server);
     const int newIndex = m_servers.size() - 1;
     saveServers();
@@ -16769,8 +16825,10 @@ void MainWindow::changePreviewCacheLocation()
 
 QString MainWindow::repositoryChannel(const RepositoryRecord &repo) const
 {
-    return "#" + repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
-           repoSegment(repo.name, QStringLiteral("repository"));
+    // Repo activity is routed to the single shared #general channel rather than a
+    // per-repo room, so the network doesn't fragment into a room per node/repo.
+    Q_UNUSED(repo);
+    return QStringLiteral("#general");
 }
 
 QString MainWindow::repositorySource(const RepositoryRecord &repo) const
@@ -17672,6 +17730,20 @@ void MainWindow::startRepoHosts()
             continue;
         auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
                                   hostWsUrl(repo), this);
+        // Sign a fresh host-auth token on every (re)connect so the relay can
+        // verify this node holds the owner account's key before it may host.
+        const QString tokenOwner = catalogOwner(repo);
+        const QString tokenRepo = repo.name;
+        host->setTokenProvider([this, tokenOwner, tokenRepo]() -> QString {
+            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+            const QByteArray canonical =
+                ("forkmesh-host-v1\n" + tokenOwner + "\n" + tokenRepo + "\n" + ts)
+                    .toUtf8();
+            QUrlQuery q;
+            q.addQueryItem(QStringLiteral("ts"), ts);
+            q.addQueryItem(QStringLiteral("sig"), m_profileIdentity.signData(canonical));
+            return q.query();
+        });
         connect(host, &RepoHost::log, this, &MainWindow::logSystem);
         connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
         host->start();

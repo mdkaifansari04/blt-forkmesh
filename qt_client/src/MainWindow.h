@@ -57,7 +57,6 @@ class QVBoxLayout;
 struct ServerConfig {
     QString url;
     QString room;
-    QString passphrase;
 };
 
 // Per-repository metadata that git can't provide, stored in the repo's info.json
@@ -117,6 +116,9 @@ private:
     // Account = node identity. Registration (name + Solana + password + TOTP) gates
     // joining the network; the account name is the canonical repo owner.
     bool ensureNodeAccount(const QString &accountName, const QString &solana);
+    // Non-interactive auth used on launch: true only if this node key already
+    // matches a registered active account (or was confirmed before, offline).
+    bool authenticateSilently(const QString &accountName);
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     // Staged-join helpers: pick repos to mirror, then donate + poll.
@@ -641,7 +643,6 @@ private:
     QLabel *m_pubkeyLabel;
     QLineEdit *m_serverUrlEdit;
     QLineEdit *m_roomNameEdit;
-    QLineEdit *m_passphraseEdit;
     QLabel *m_setupError;
     QPushButton *m_updateButton;
     QLabel *m_updateStatus;

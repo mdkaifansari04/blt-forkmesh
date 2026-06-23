@@ -177,7 +177,7 @@ QString stableOrRandomNodeId(const QString &stableNodeId)
 
 ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
                        const QUrl &serverUrl,
-                       const QString &roomName, const QString &passphrase,
+                       const QString &roomName,
                        const QString &solanaAddress,
                        QObject *parent)
     : ChatBackend(parent),
@@ -188,10 +188,10 @@ ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
       m_platform(currentPlatform()),
       m_version(QStringLiteral(FORKMESH_VERSION).left(kMaxVersionChars)),
       m_nodeId(stableOrRandomNodeId(stableNodeId)),
-      m_crypto(m_roomName, passphrase)
+      m_crypto(m_roomName)
 {
     const QByteArray material = m_url.toString().toUtf8() + '\n' +
-                                m_roomName.toUtf8() + '\n' + passphrase.toUtf8();
+                                m_roomName.toUtf8();
     m_rosterStorageKey =
         QString::fromLatin1(QCryptographicHash::hash(material, QCryptographicHash::Sha256)
                                 .toHex());
