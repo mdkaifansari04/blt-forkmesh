@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 173
 title: clear notifications is not working
-status: open
+status: closed
 labels: []
 milestone: MVP launch
 priority: 19
