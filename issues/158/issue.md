@@ -5,7 +5,7 @@ title: fixing an issue with claude code gets stuck here - please fix it so we se
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 22
 progress: 0
 assignees: []
 createdAt: 1782184654462
