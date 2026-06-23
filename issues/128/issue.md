@@ -3,13 +3,17 @@ schema: forkmesh-issue-v1
 number: 128
 title: update issue storage to not have seprate files for lables, milestone or priority - have these all just in the issue.md header like we have
 status: open
-labels: []
+labels: [Phase 2]
 milestone: 
 priority: 0
+progress: 0
 assignees: []
 createdAt: 1782141634338
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-128
 ts: 1782141634338
