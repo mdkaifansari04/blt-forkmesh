@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 169
 title: when you click on the avatar in the app show the whole page and don't show the code
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
