@@ -64,6 +64,7 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
 
     m_busy = true;
     m_stopping = false;
+    m_attentionRaised = false;
     m_phase = Phase::Idle;
     m_session = session;
     m_issue = issue;
@@ -221,7 +222,13 @@ void AgentRunner::launch(Phase phase, const QString &program,
     m_process->setProcessEnvironment(env);
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
-        emitLog(QString::fromUtf8(m_process->readAllStandardOutput()));
+        const QString chunk = QString::fromUtf8(m_process->readAllStandardOutput());
+        emitLog(chunk);
+        const QString hint = detectAuthIssue(chunk);
+        if (!hint.isEmpty()) {
+            emitLog(QStringLiteral("==> ") + hint);
+            emit needsAttention(m_session.id, hint);
+        }
     });
     connect(m_process, &QProcess::finished, this,
             [this](int exitCode, QProcess::ExitStatus) {
@@ -438,6 +445,41 @@ QString AgentRunner::redact(QString text) const
     text.replace(QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}")),
                  QStringLiteral("sk-***"));
     return text;
+}
+
+QString AgentRunner::detectAuthIssue(const QString &chunk)
+{
+    if (m_attentionRaised)
+        return QString();
+    const QString low = chunk.toLower();
+    const bool claude = m_session.provider.startsWith(QLatin1String("claude"));
+    const bool openai = m_session.provider == QLatin1String("codex") ||
+                        m_session.provider == QLatin1String("openai");
+    // Strong, specific markers so normal agent output doesn't trip this.
+    const auto has = [&](const char *needle) { return low.contains(QLatin1String(needle)); };
+    if (claude &&
+        (has("invalid api key") || has("please run /login") || has("claude login") ||
+         has("not logged in") || has("logged out") || has("authentication_error") ||
+         has("oauth"))) {
+        m_attentionRaised = true;
+        return QStringLiteral(
+            "Claude Code needs you to sign in. Run \"claude login\" in a terminal "
+            "(or set an Anthropic API key in Settings), then click Continue.");
+    }
+    if (claude && has("credit balance is too low")) {
+        m_attentionRaised = true;
+        return QStringLiteral(
+            "Claude Code reports the credit balance is too low. Top up your plan, "
+            "switch to the Claude API with a funded key in Settings, then Continue.");
+    }
+    if (openai && (has("401 unauthorized") || has("invalid api key") ||
+                   has("please run codex login") || has("not logged in"))) {
+        m_attentionRaised = true;
+        return QStringLiteral(
+            "Codex needs you to sign in. Run \"codex login\" in a terminal (or set "
+            "an OpenAI API key in Settings), then click Continue.");
+    }
+    return QString();
 }
 
 void AgentRunner::emitLog(const QString &text)

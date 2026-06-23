@@ -4186,10 +4186,16 @@ void MainWindow::updateConnectionStatus()
         text = QStringLiteral("Offline");
     }
     // The whole pill is a link so a click anywhere opens the nodes window.
-    m_connectionStatus->setText(
+    const QString html =
         QStringLiteral("<a href='nodes' style='text-decoration:none; color:%1'>"
                        "<span style='color:%1'>%2</span> %3</a>")
-            .arg(color, dot, text.toHtmlEscaped()));
+            .arg(color, dot, text.toHtmlEscaped());
+    // Skip the repaint when nothing changed, so a burst of roster updates doesn't
+    // visibly flicker the status pill.
+    if (html == m_connectionStatusHtml)
+        return;
+    m_connectionStatusHtml = html;
+    m_connectionStatus->setText(html);
 }
 
 void MainWindow::updateBreadcrumb()
@@ -5578,6 +5584,48 @@ void MainWindow::selectNode(const QString &node)
         return;
     m_selectedNode = node;
     refreshRepositoryList();
+    // Show the selected node's first real repository, or blank the panel if it
+    // has none, so stale info from the previous node isn't left on screen.
+    int firstRepo = -1;
+    for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
+        if (entry.index >= 0) {
+            firstRepo = entry.index;
+            break;
+        }
+    if (firstRepo >= 0)
+        openRepoDetail(firstRepo);
+    else
+        clearRepoDetail();
+}
+
+void MainWindow::clearRepoDetail()
+{
+    m_repoDetailIndex = -1;
+    m_repoInfo = RepoInfo();
+    m_repoBranch.clear();
+    if (m_repoHeaderTitle)
+        m_repoHeaderTitle->clear();
+    // The loaders below all key off repoGitDir(), which is empty with no repo,
+    // so they render empty states (no commits, no files, no issues/PRs).
+    loadBranchesAndTags();
+    updateRepoCodeSize();
+    updateRepoDetailStatus();
+    reloadIssues();
+    reloadAgents();
+    updateRepoIssueCount();
+    m_currentPulls.clear();
+    refreshPullList();
+    updateRepoPullCount();
+    loadCommits();
+    loadRepoOverview(QString());
+    if (m_commitBar)
+        m_commitBar->setText(
+            "<span style='color:#8b949e'>This node has no repositories.</span>");
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0); // Code/overview
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    updateBreadcrumb();
 }
 
 // ---- Issues section --------------------------------------------------------
@@ -9773,6 +9821,8 @@ AgentRunner *MainWindow::acquireAgentRunner()
     connect(runner, &AgentRunner::statusChanged, this,
             &MainWindow::onAgentStatusChanged);
     connect(runner, &AgentRunner::finished, this, &MainWindow::onAgentFinished);
+    connect(runner, &AgentRunner::needsAttention, this,
+            &MainWindow::onAgentNeedsAttention);
     m_agentRunners.append(runner);
     return runner;
 }
@@ -9853,6 +9903,15 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
+}
+
+void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
+{
+    // Bring the session into view and surface the actionable guidance so the run
+    // doesn't just appear stuck while the CLI waits on sign-in / credits.
+    switchToAgentsTab(sessionId);
+    flashMessage(message, true);
+    QMessageBox::warning(this, QStringLiteral("Agent needs attention"), message);
 }
 
 void MainWindow::onAgentFinished(int sessionId, bool ok)
@@ -14822,22 +14881,20 @@ void MainWindow::deleteCurrentIssue()
 {
     if (m_currentIssueNumber < 0)
         return;
-    if (!m_issueDeleteConfirmPending) {
-        m_issueDeleteConfirmPending = true;
-        setIssueInlineNotice(
-            QStringLiteral("Delete issue #%1? Click Delete issue again to confirm.")
-                .arg(m_currentIssueNumber),
-            true);
+    // One click, then a single confirm dialog (no more double-click-to-confirm).
+    const int number = m_currentIssueNumber;
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete issue"),
+            QStringLiteral("Delete issue #%1? This can't be undone.").arg(number),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
-    }
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.deleteIssue(m_currentIssueNumber, &error)) {
+    if (!store.deleteIssue(number, &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not delete the issue." : error,
                              true);
         return;
     }
-    m_issueDeleteConfirmPending = false;
     m_currentIssueNumber = -1;
     reloadIssues();
     setIssueInlineNotice("Issue deleted.");

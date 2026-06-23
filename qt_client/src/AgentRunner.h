@@ -37,6 +37,10 @@ signals:
     void logLine(int sessionId, const QString &text);
     void statusChanged(int sessionId, const QString &status);
     void finished(int sessionId, bool ok);
+    // The agent CLI needs the user to act (e.g. Claude Code isn't logged in).
+    // Carries an actionable message for the UI to surface instead of appearing
+    // stuck.
+    void needsAttention(int sessionId, const QString &message);
 
 private:
     enum class Phase { Idle, Worktree, Agent };
@@ -51,6 +55,9 @@ private:
     QString expandCommand(const QString &promptPath) const;
     QString redact(QString text) const;
     void emitLog(const QString &text);
+    // Scan agent output for "needs sign-in / out of credit" markers; returns an
+    // actionable message the first time one is seen (else empty).
+    QString detectAuthIssue(const QString &chunk);
     void refreshUsage();
     static int estimateTokens(const QString &text);
 
@@ -65,4 +72,5 @@ private:
     QString m_worktree;
     QString m_prompt;
     QProcess *m_process = nullptr;
+    bool m_attentionRaised = false; // emit needsAttention only once per run
 };

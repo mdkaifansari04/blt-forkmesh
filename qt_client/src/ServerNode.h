@@ -76,7 +76,10 @@ private:
                       const QString &solanaAddress = QString(),
                       const QString &platform = QString(),
                       const QString &version = QString(), bool online = true);
+    // Coalesced: schedules a roster/status emit shortly after the last change so
+    // a burst of frames (typing, presence, hellos) collapses into one update.
     void updateRosterAndStatus();
+    void flushRosterAndStatus(); // does the actual roster build + emit
     void storeHistory(const QJsonObject &message);
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
     bool messageIsAuthoredBy(const QString &messageId, const QString &senderId) const;
@@ -109,6 +112,7 @@ private:
     QTimer *m_reconnectTimer = nullptr;
     int m_reconnectAttempt = 0;
     bool m_userStopped = false;
+    QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
 
     QStringList m_channels{"#general", "#random"};
     QHash<QString, Peer> m_peers;
