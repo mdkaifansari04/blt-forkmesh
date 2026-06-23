@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 167
 title: newtest
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
