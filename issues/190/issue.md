@@ -2,11 +2,11 @@
 schema: forkmesh-issue-v1
 number: 190
 title: warning when restarting
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
-progress: 0
+progress: 100
 assignees: []
 createdAt: 1782257145073
 author: DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI
