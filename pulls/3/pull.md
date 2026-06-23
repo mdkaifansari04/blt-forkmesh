@@ -4,7 +4,7 @@ number: 3
 title: Agent: issue #188 when I close an isuse and the show detail is open then go to the next issue
 base: main
 head: agent/issue-188-claude-api-4
-status: open
+status: merged
 ts: 1782252641664
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
