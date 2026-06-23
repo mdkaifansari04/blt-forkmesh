@@ -5,7 +5,7 @@ title: no need to run actions if we're only adding an issue
 status: open
 labels: [Phase 2]
 milestone: 
-priority: 0
+priority: 11
 progress: 0
 assignees: []
 createdAt: 1782157911914
