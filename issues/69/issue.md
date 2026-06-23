@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 69
 title: when an agent is working show an activity indicator in the agenets tab
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 24
