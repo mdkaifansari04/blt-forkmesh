@@ -84,8 +84,10 @@
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QStyleHints>
 #include <QSyntaxHighlighter>
+#include <QAbstractItemView>
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -155,6 +157,69 @@ public:
         return QTableWidgetItem::operator<(other);
     }
 };
+
+// Paints a light-green highlight across the FULL row under the mouse. Qt's
+// `::item:hover` stylesheet only covers the single hovered cell, so we track the
+// hovered row ourselves and fill every cell in it. The per-cell grey hover is
+// suppressed by clearing State_MouseOver before the base paint, and nothing
+// about the geometry changes on hover (no padding/border tweaks), so text never
+// shifts.
+class HoverRowDelegate : public QStyledItemDelegate
+{
+public:
+    explicit HoverRowDelegate(QTableWidget *table)
+        : QStyledItemDelegate(table), m_table(table)
+    {
+        m_table->setMouseTracking(true);
+        m_table->viewport()->setMouseTracking(true);
+        m_table->viewport()->installEventFilter(this);
+        connect(m_table, &QAbstractItemView::entered, this,
+                [this](const QModelIndex &index) {
+                    setHoveredRow(index.isValid() ? index.row() : -1);
+                });
+        connect(m_table, &QAbstractItemView::viewportEntered, this,
+                [this] { setHoveredRow(-1); });
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        // Never let the base/style draw the per-cell grey hover.
+        opt.state &= ~QStyle::State_MouseOver;
+        if (index.row() == m_hoveredRow && !(opt.state & QStyle::State_Selected))
+            painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
+        QStyledItemDelegate::paint(painter, opt, index);
+    }
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override
+    {
+        if (event->type() == QEvent::Leave)
+            setHoveredRow(-1);
+        return QStyledItemDelegate::eventFilter(obj, event);
+    }
+
+private:
+    void setHoveredRow(int row)
+    {
+        if (row == m_hoveredRow)
+            return;
+        m_hoveredRow = row;
+        if (m_table)
+            m_table->viewport()->update();
+    }
+
+    QTableWidget *m_table = nullptr;
+    int m_hoveredRow = -1;
+};
+
+// Give a list-style table a full-row light-green hover highlight.
+void enableHoverRowHighlight(QTableWidget *table)
+{
+    if (table)
+        table->setItemDelegate(new HoverRowDelegate(table));
+}
 
 QString formatByteSize(qint64 bytes)
 {
@@ -5861,6 +5926,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueTable = new QTableWidget(0, 13);
     m_issueTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
          "Created", "Agent", "Author", "Progress", "Est. cost", "Bounty"});
@@ -5873,7 +5939,9 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueTable->setSortingEnabled(true);
     // The launch backlog opens in execution order: 1 is highest, 99 lowest.
     m_issueTable->sortByColumn(2, Qt::AscendingOrder);
-    m_issueTable->setToolTip("Click a column header to sort");
+    m_issueTable->setToolTip("Click a column header to sort. Double-click an "
+                             "editable cell (title, priority, status, labels, "
+                             "milestone, progress, bounty) to edit it.");
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
@@ -5892,6 +5960,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_issueMilestonesTable);
     m_issueMilestonesTable->setHorizontalHeaderLabels(
         {"Milestone", "Open", "Closed", "Progress", "Due", "Status"});
     m_issueMilestonesTable->verticalHeader()->setVisible(false);
@@ -5908,6 +5977,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueLabelsTable = new QTableWidget(0, 5);
     m_issueLabelsTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_issueLabelsTable);
     m_issueLabelsTable->setHorizontalHeaderLabels(
         {"Label", "Open", "Closed", "Total", ""});
     m_issueLabelsTable->verticalHeader()->setVisible(false);
@@ -6429,6 +6499,28 @@ QWidget *MainWindow::buildIssuesSection()
         QTableWidgetItem *first = m_issueTable->item(rows.first().row(), 0);
         if (first)
             showIssue(first->data(Qt::UserRole).toInt());
+    });
+    // Double-clicking a cell opens that field's editor for the row's issue (the
+    // same signed-write editors the detail-panel buttons use). Columns that hold
+    // derived or signed-immutable values just open the issue in the detail pane.
+    connect(m_issueTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int col) {
+        QTableWidgetItem *first = m_issueTable->item(row, 0);
+        if (!first)
+            return;
+        showIssue(first->data(Qt::UserRole).toInt());
+        if (m_currentIssueNumber < 0)
+            return;
+        switch (col) {
+        case 1:  promptEditIssueTitle(); break; // Title
+        case 2:  editIssuePriority();    break; // Priority
+        case 3:  toggleIssueStatus();    break; // Status (open <-> closed)
+        case 5:  editIssueLabels();      break; // Labels
+        case 6:  editIssueMilestone();   break; // Milestone
+        case 10: editIssueProgress();    break; // Progress
+        case 12: editIssueBounty();      break; // Bounty
+        default: break; // #, Votes, Created, Agent, Author, Est. cost
+        }
     });
     connect(m_issueLabelsTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) { editIssueLabelDefinition(row); });
@@ -7041,6 +7133,7 @@ QWidget *MainWindow::buildInsightsTab()
 
     auto configureTable = [](QTableWidget *table) {
         table->setObjectName("issueTable");
+        enableHoverRowHighlight(table);
         table->verticalHeader()->setVisible(false);
         table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -7160,6 +7253,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullTable = new QTableWidget(0, 8);
     m_pullTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_pullTable);
     m_pullTable->setHorizontalHeaderLabels(
         {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
          "Author", "Agent cost"});
@@ -9093,6 +9187,7 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 7);
     m_agentTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_agentTable);
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "PR", "Cost", "When"});
     m_agentTable->verticalHeader()->setVisible(false);
@@ -13184,6 +13279,7 @@ QWidget *MainWindow::buildBranchesTab()
 
     m_branchesTable = new QTableWidget(0, 4);
     m_branchesTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
         {"Branch", "Status", "Updated", ""});
     m_branchesTable->verticalHeader()->setVisible(false);
