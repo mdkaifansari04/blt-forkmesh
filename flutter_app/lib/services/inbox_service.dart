@@ -171,6 +171,31 @@ class InboxService {
       case 'line-comment':
         final line = '${(ev['line'] as num?)?.toInt() ?? 0}';
         return [ev['path'] ?? '', ev['side'] ?? '', line, ev['body'] ?? ''].join('\x00');
+      case 'thread-comment':
+        final lineStart = '${(ev['lineStart'] as num?)?.toInt() ?? 0}';
+        final lineEnd = '${(ev['lineEnd'] as num?)?.toInt() ?? 0}';
+        return [
+          ev['threadId'] ?? '',
+          ev['path'] ?? '',
+          ev['side'] ?? '',
+          lineStart,
+          lineEnd,
+          ev['body'] ?? '',
+          ev['suggestionPatch'] ?? '',
+        ].join('\x00');
+      case 'thread-reply':
+        return [ev['threadId'] ?? '', ev['parentId'] ?? '', ev['body'] ?? '']
+            .join('\x00');
+      case 'thread-state':
+        return [ev['threadId'] ?? '', ev['state'] ?? '', ev['body'] ?? '']
+            .join('\x00');
+      case 'suggestion-state':
+        return [
+          ev['threadId'] ?? '',
+          ev['state'] ?? '',
+          ev['appliedCommit'] ?? '',
+          ev['body'] ?? '',
+        ].join('\x00');
       default:
         return '';
     }

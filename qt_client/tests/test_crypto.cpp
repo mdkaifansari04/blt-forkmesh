@@ -246,6 +246,64 @@ int main(int argc, char *argv[])
     check(PullStore::canonicalString(5, pullLine) == expectedPullLine,
           "pull line-comment canonical string matches the cross-language vector");
 
+    PullEvent pullThread;
+    pullThread.type = "thread-comment";
+    pullThread.author = "TESTPUB";
+    pullThread.ts = 2600;
+    pullThread.threadId = "thread-1";
+    pullThread.path = "src/x.cpp";
+    pullThread.side = "new";
+    pullThread.lineStart = 42;
+    pullThread.lineEnd = 44;
+    pullThread.body = "Use guard";
+    pullThread.suggestionPatch = "@@ -1 +1 @@\n-old\n+new\n";
+    const QByteArray expectedPullThread =
+        "forkmesh-pull-comment-v1\nthread-comment\n5\nTESTPUB\n2600\n"
+        "adbf1313d68a9d32f69734e23b1b7713d6c30dcd77b628513f8b04b5a459fe81";
+    check(PullStore::canonicalString(5, pullThread) == expectedPullThread,
+          "pull thread-comment canonical string matches the cross-language vector");
+
+    PullEvent pullReply;
+    pullReply.type = "thread-reply";
+    pullReply.author = "TESTPUB";
+    pullReply.ts = 2700;
+    pullReply.threadId = "thread-1";
+    pullReply.parentId = "event-1";
+    pullReply.body = "I pushed a fix";
+    const QByteArray expectedPullReply =
+        "forkmesh-pull-comment-v1\nthread-reply\n5\nTESTPUB\n2700\n"
+        "cd9fc0caa43648948f6a976d570191b9a4d85bee1d984a7aacc483a7487196dd";
+    check(PullStore::canonicalString(5, pullReply) == expectedPullReply,
+          "pull thread-reply canonical string matches the cross-language vector");
+
+    PullEvent pullThreadState;
+    pullThreadState.type = "thread-state";
+    pullThreadState.author = "TESTPUB";
+    pullThreadState.ts = 2800;
+    pullThreadState.threadId = "thread-1";
+    pullThreadState.state = "resolved";
+    pullThreadState.body = "resolved after update";
+    const QByteArray expectedPullThreadState =
+        "forkmesh-pull-comment-v1\nthread-state\n5\nTESTPUB\n2800\n"
+        "b652054bd993fa340a565f6ec3e0c88dc728c8b69d7fdf723acc6bdccc1c07df";
+    check(PullStore::canonicalString(5, pullThreadState) == expectedPullThreadState,
+          "pull thread-state canonical string matches the cross-language vector");
+
+    PullEvent pullSuggestionState;
+    pullSuggestionState.type = "suggestion-state";
+    pullSuggestionState.author = "TESTPUB";
+    pullSuggestionState.ts = 2900;
+    pullSuggestionState.threadId = "thread-1";
+    pullSuggestionState.state = "applied";
+    pullSuggestionState.appliedCommit = "abc123def456";
+    pullSuggestionState.body = "applied in follow-up";
+    const QByteArray expectedPullSuggestionState =
+        "forkmesh-pull-comment-v1\nsuggestion-state\n5\nTESTPUB\n2900\n"
+        "07ce71665f21bcb839faeb956910a9ca369d79167e6f6e52f60c4d01344f3c52";
+    check(PullStore::canonicalString(5, pullSuggestionState) ==
+              expectedPullSuggestionState,
+          "pull suggestion-state canonical string matches the cross-language vector");
+
     // --- Commit comment signing ------------------------------------------
     CommitComment commitVec;
     commitVec.author = "TESTPUB";
@@ -443,16 +501,50 @@ int main(int argc, char *argv[])
         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
         check(pulls.addLineComment(pn, "x", "new", 1, "inline note", &err),
               "PR addLineComment succeeds");
+        check(pulls.addThreadComment(pn, "x", "new", 1, 2, "thread note",
+                                     "@@ -0,0 +1 @@\n+suggested\n", &err),
+              "PR addThreadComment succeeds");
+        check(pulls.addThreadReply(pn, "thread-1", "event-1", "reply note", &err),
+              "PR addThreadReply succeeds");
+        check(pulls.setThreadState(pn, "thread-1", "resolved", "fixed", &err),
+              "PR setThreadState succeeds");
+        check(pulls.setSuggestionState(pn, "thread-1", "applied", "abc123",
+                                       "applied", &err),
+              "PR setSuggestionState succeeds");
         QList<PullRequest> loadedPulls = pulls.loadAll();
-        check(!loadedPulls.isEmpty() && loadedPulls.first().events.size() == 3,
+        check(!loadedPulls.isEmpty() && loadedPulls.first().events.size() == 7,
               "PR conversation events round-trip from NNNN-*.md");
-        bool sawLine = false;
-        if (!loadedPulls.isEmpty())
-            for (const PullEvent &e : loadedPulls.first().events)
+        bool sawLine = false, sawThread = false, sawReply = false;
+        bool sawResolved = false, sawSuggestionApplied = false;
+        if (!loadedPulls.isEmpty()) {
+            for (const PullEvent &e : loadedPulls.first().events) {
                 if (e.type == "line-comment" && e.path == "x" && e.side == "new" &&
-                    e.line == 1 && e.body == "inline note")
+                    e.line == 1 && e.body == "inline note") {
                     sawLine = true;
+                } else if (e.type == "thread-comment" && e.path == "x" &&
+                           e.side == "new" && e.lineStart == 1 && e.lineEnd == 2 &&
+                           e.body == "thread note" &&
+                           e.suggestionPatch.contains("+suggested")) {
+                    sawThread = true;
+                } else if (e.type == "thread-reply" && e.threadId == "thread-1" &&
+                           e.parentId == "event-1" && e.body == "reply note") {
+                    sawReply = true;
+                } else if (e.type == "thread-state" && e.threadId == "thread-1" &&
+                           e.state == "resolved" && e.body == "fixed") {
+                    sawResolved = true;
+                } else if (e.type == "suggestion-state" &&
+                           e.threadId == "thread-1" && e.state == "applied" &&
+                           e.appliedCommit == "abc123") {
+                    sawSuggestionApplied = true;
+                }
+            }
+        }
         check(sawLine, "line-comment round-trips with path/side/line");
+        check(sawThread, "thread-comment round-trips with anchor and suggestion");
+        check(sawReply, "thread-reply round-trips with thread and parent");
+        check(sawResolved, "thread-state round-trips with resolved state");
+        check(sawSuggestionApplied,
+              "suggestion-state round-trips with applied commit");
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "approved",
               "PR review summary folds to approved");
