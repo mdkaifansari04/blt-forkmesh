@@ -28,6 +28,8 @@ set(FORKMESH_APP_SOURCES
     src/ServerNode.cpp
     src/RepoHost.h
     src/RepoHost.cpp
+    src/RepoSecurity.h
+    src/RepoSecurity.cpp
     src/IssueStore.h
     src/IssueStore.cpp
     src/IssueBurnup.h

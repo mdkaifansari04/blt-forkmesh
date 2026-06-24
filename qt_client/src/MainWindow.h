@@ -30,6 +30,7 @@ class TerminalWidget;
 class RepoHost;
 class ActionRunner;
 class QButtonGroup;
+class QGridLayout;
 class QFileSystemWatcher;
 class QSplitter;
 class QTextEdit;
@@ -376,6 +377,7 @@ private:
                              const QString &headerHtml, const QString &body,
                              const QString &accent = QString());
     QWidget *buildAboutSidebar();
+    QWidget *buildRepoSecurityTab();
     QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
 
@@ -688,6 +690,7 @@ private:
     void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
+    void refreshRepoSecurity();
     void loadRepoInsights();
     void setRepoBranch(const QString &branch);
     QString currentRef() const;
@@ -1277,6 +1280,11 @@ private:
     QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
+    QLabel *m_securitySummary = nullptr;
+    QWidget *m_securitySignalsPanel = nullptr;
+    QGridLayout *m_securitySignalsGrid = nullptr;
+    QTableWidget *m_securityFindingsTable = nullptr;
+    QPushButton *m_securityRefreshButton = nullptr;
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;
