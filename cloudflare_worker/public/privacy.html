@@ -75,6 +75,19 @@
         hidden with a warning, and are removed after a five-minute grace period.
       </p>
 
+      <h2>Install diagnostics</h2>
+      <p>
+        The desktop installer reports anonymous, aggregate diagnostics about each
+        install &mdash; which step it reached (finding a mirror, prerequisites,
+        clone, build, install, first launch), whether that step succeeded, and
+        coarse platform facts (operating system, CPU architecture, package
+        manager, distribution id, installer version). Each run uses a fresh
+        random id that is never linked to your account, email, node name, or IP
+        address, and the server does not record the requesting IP for these
+        events. This helps us see where installs fail. Opt out by setting
+        <code>FORKMESH_NO_DIAG=1</code> before running the installer.
+      </p>
+
       <h2>Payments</h2>
       <p>
         Solana transactions are public on the Solana network. ForkMesh checks
@@ -97,9 +110,10 @@
       <h2>Your choices</h2>
       <p>
         You can avoid adding optional profile fields, avoid publishing a payout
-        address, stop running the desktop node, or use your own repository
-        mirrors. Public blockchain transactions cannot be made private by
-        ForkMesh after they are sent.
+        address, stop running the desktop node, use your own repository
+        mirrors, or skip install diagnostics with <code>FORKMESH_NO_DIAG=1</code>.
+        Public blockchain transactions cannot be made private by ForkMesh after
+        they are sent.
       </p>
 
       <p class="row-links"><a href="/terms.html">Terms</a> · <a href="/signup.html">Back to signup</a></p>

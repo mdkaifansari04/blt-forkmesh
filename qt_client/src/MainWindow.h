@@ -167,11 +167,10 @@ private:
     // Non-interactive auth used on launch: true only if this node key already
     // matches a registered active account (or was confirmed before, offline).
     bool authenticateSilently(const QString &accountName);
+    // In-app join wizard: reserve node name -> donate -> email/password, mirroring
+    // the website signup funnel (signup.html / signup.js) as one staged dialog.
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
-    // Staged-join helpers: pick repos to mirror, then donate + poll.
-    bool runRepoPickStep();
-    bool runDonationStep(const QString &accountName);
     QJsonArray fetchCatalogRepos();
     int fetchNodesOnline();
     bool hasActiveAccountSession() const;
@@ -686,9 +685,13 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
-    // Pop up a modal with a Solana QR + address so a funder can pay a bounty.
-    void showBountyQrDialog(const QString &uri, const QString &address,
-                            double amountUsd);
+    // Pop up a modal with a Solana QR + address so a funder can pay a bounty,
+    // showing the exact SOL to send and polling for the deposit like the signup
+    // flow. On confirmation the worker splits the escrow 90% author / 10%
+    // treasury; the dialog records the paid state on the issue.
+    void showBountyQrDialog(const RepositoryRecord &repo, int number,
+                            const QString &uri, const QString &address,
+                            double amountUsd, const QString &amountSol);
     void submitIssueCommentToInbox(const QString &body);
     // Mirror node path: send a signed new-issue ("open") event to the source of
     // truth's inbox. Returns false only when there is no repo to target.

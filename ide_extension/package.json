@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "forkmesh",
   "license": "MIT",
+  "icon": "media/forkmesh.png",
   "repository": {
     "type": "git",
     "url": "https://forkmesh.com/forkmesh"
@@ -83,6 +84,12 @@
         "title": "Open ForkMesh Settings",
         "category": "ForkMesh",
         "icon": "$(gear)"
+      },
+      {
+        "command": "forkmesh.reload",
+        "title": "Update & Reload ForkMesh",
+        "category": "ForkMesh",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -94,6 +101,11 @@
         },
         {
           "command": "forkmesh.openSettings",
+          "when": "view == forkmeshIssues",
+          "group": "navigation"
+        },
+        {
+          "command": "forkmesh.reload",
           "when": "view == forkmeshIssues",
           "group": "navigation"
         }
@@ -108,6 +120,11 @@
           "command": "forkmesh.startCodex",
           "when": "view == forkmeshIssues && viewItem == forkmeshIssue",
           "group": "inline@2"
+        },
+        {
+          "command": "forkmesh.reload",
+          "when": "view == forkmeshIssues && viewItem == forkmeshVersion",
+          "group": "inline@1"
         }
       ]
     },

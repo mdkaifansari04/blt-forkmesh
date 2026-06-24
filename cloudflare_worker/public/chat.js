@@ -31,6 +31,9 @@ let socket = null;
 let connecting = false;
 let openCallbacks = [];
 const seen = new Set();
+// messageId -> { el, senderId } for messages currently on screen, so an edit or
+// a (regular / admin) delete can find and update or remove the right row.
+const rows = new Map();
 
 // ---- base64 <-> bytes -------------------------------------------------------
 
@@ -46,6 +49,36 @@ function b64ToBytes(value) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+// The desktop identity encodes keys/signatures as unpadded base64url.
+function b64urlToBytes(value) {
+  let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  return b64ToBytes(s);
+}
+
+// Verify an Ed25519 signature (raw 32-byte key, 64-byte sig) over a UTF-8
+// string. Returns false on any unsupported-browser / malformed-input error, so
+// a delete we can't authenticate is simply ignored rather than applied.
+async function ed25519Verify(pubB64url, sigB64url, dataStr) {
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      b64urlToBytes(pubB64url),
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    return await crypto.subtle.verify(
+      { name: "Ed25519" },
+      key,
+      b64urlToBytes(sigB64url),
+      enc.encode(dataStr)
+    );
+  } catch (error) {
+    return false;
+  }
 }
 
 // ---- room crypto (matches RoomCrypto.cpp) -----------------------------------
@@ -128,7 +161,7 @@ function clearEmpty() {
   if (empty) empty.remove();
 }
 
-function appendMessage(kind, who, text) {
+function appendMessage(kind, who, text, id, senderId) {
   clearEmpty();
   const row = document.createElement("div");
   row.className = `chat-msg chat-msg-${kind}`;
@@ -141,6 +174,18 @@ function appendMessage(kind, who, text) {
   row.append(author, body);
   logEl.append(row);
   logEl.scrollTop = logEl.scrollHeight;
+  if (id) {
+    rows.set(id, { el: row, senderId: senderId || "", body });
+  }
+}
+
+// Drop a message row from the screen (a deletion leaves no tombstone, matching
+// the desktop client). Keep its id in `seen` so a late duplicate can't reappear.
+function removeMessage(id) {
+  const rec = rows.get(id);
+  if (!rec) return;
+  if (rec.el && rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
+  rows.delete(id);
 }
 
 function appendSystem(text) {
@@ -181,7 +226,38 @@ function renderChatEntry(entry, kind) {
   const text = entry.fileName
     ? "📎 " + entry.fileName
     : entry.text || "";
-  if (text) appendMessage(kind, who, text);
+  if (text) appendMessage(kind, who, text, entry.id, entry.senderId);
+}
+
+// An admin-delete frame is signed by the admin's identity key over a canonical
+// string (must match the desktop's adminDeleteCanonical byte-for-byte). We only
+// remove the message after verifying that signature AND confirming the signer's
+// account is flagged admin on the relay — otherwise any room member could forge
+// one (chat frames are otherwise unsigned).
+async function verifyAdminDelete(plain) {
+  const target = plain.target;
+  const adminId = plain.senderId; // desktop node id == identity pubkey (b64url)
+  const sig = plain.sig;
+  if (!target || !sig || !adminId) return false;
+  const canonical =
+    "forkmesh-admin-delete-v1\n" +
+    (plain.conversation || "") +
+    "\n" +
+    target +
+    "\n" +
+    adminId +
+    "\n" +
+    String(plain.ts);
+  if (!(await ed25519Verify(adminId, sig, canonical))) return false;
+  try {
+    const name = (plain.sender || "").trim().toLowerCase();
+    if (!name) return false;
+    const res = await fetch("/api/accounts/" + encodeURIComponent(name));
+    const rec = await res.json();
+    return rec && rec.isAdmin === true && rec.pubkey === adminId;
+  } catch (error) {
+    return false;
+  }
 }
 
 function handlePlain(plain) {
@@ -195,6 +271,23 @@ function handlePlain(plain) {
         renderChatEntry(entry, "peer");
       }
     }
+  } else if (type === "edit") {
+    // The author edited their own message; only honour it from that author.
+    const rec = rows.get(plain.target);
+    if (rec && rec.senderId === plain.senderId && rec.body) {
+      rec.body.textContent = plain.text || "";
+    }
+  } else if (type === "delete") {
+    // A plain delete is only valid from the message's own author.
+    const rec = rows.get(plain.target);
+    if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
+  } else if (type === "admin-delete") {
+    // Moderation: remove any message once the admin signature checks out.
+    verifyAdminDelete(plain).then((ok) => {
+      if (!ok) return;
+      seen.add(plain.target); // also suppress a copy that arrives after the delete
+      removeMessage(plain.target);
+    });
   } else if (type === "hello" && !plain.to) {
     appendSystem(sender + " joined");
   } else if (type === "bye") {
@@ -273,7 +366,8 @@ function sendCurrentMessage() {
   runWhenConnected(() => {
     const plain = makePlain("chat", { channel: CHANNEL, text: text.slice(0, MAX_TEXT) });
     send(plain);
-    appendMessage("self", plain.sender, text.slice(0, MAX_TEXT));
+    seen.add(plain.id); // we render it here; ignore the echo if one comes back
+    appendMessage("self", plain.sender, text.slice(0, MAX_TEXT), plain.id, plain.senderId);
   });
 }
 
