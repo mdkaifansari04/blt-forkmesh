@@ -376,6 +376,17 @@ private:
     // author + treasury, and this records the paid state on the issue.
     void pollBountyPayout(const RepositoryRecord &repo, int number, double amount);
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
+    // Pull requests linked to an issue: PRs whose references (closes/fixes/issue
+    // #N, agent-created, or an explicit "Linked issue #N" note) point at this
+    // issue, plus "Linked pull request #M" notes in the issue's own thread.
+    QList<int> pullsLinkedToIssue(int issueNumber) const;
+    // Prompt for the other side and cross-post a link note on both threads.
+    void linkPullToIssueFromIssuePage(); // issue page: pick a PR to link
+    void linkIssueToPullFromPullPage();  // PR page: pick an issue to link
+    // Post a plain link note to an issue / PR, writing directly when this node
+    // owns the repo and falling back to the maintainer's relay inbox otherwise.
+    void postIssueLinkComment(int issueNumber, const QString &body);
+    void postPullLinkComment(int pullNumber, const QString &body);
     void closeCurrentPull();
     void deleteCurrentPull();
     void syncPullsInbox();
@@ -651,6 +662,8 @@ private:
     void submitIssueVoteToInbox();
     void updateVoteUi();
     void addIssueComment();
+    // Post the composer's comment and close the issue in one action (owner-only).
+    void closeIssueWithComment();
     void attachIssueImage();
     void queueIssueAttachment(const QString &path); // dedupe + reference + count
     void toggleIssueStatus();
@@ -1206,6 +1219,8 @@ private:
     QPushButton *m_pullCommentButton = nullptr;
     QPushButton *m_pullApproveButton = nullptr;
     QPushButton *m_pullRequestChangesButton = nullptr;
+    QPushButton *m_pullLinkIssueButton = nullptr; // "Link issue" in the PR header
+    QLabel *m_pullLinksValue = nullptr;           // linked issues card in the thread
     // Checks tab: action runs for this PR's commits + a manual trigger.
     QTableWidget *m_pullChecksTable = nullptr;
     QPlainTextEdit *m_pullChecksLog = nullptr;
@@ -1358,6 +1373,7 @@ private:
     QPushButton *m_issueAskAiButton = nullptr;
     QPushButton *m_issueAttachButton = nullptr;
     QPushButton *m_issueCloseButton = nullptr;
+    QPushButton *m_issueCloseCommentButton = nullptr;
     QPushButton *m_issueLabelsButton = nullptr;
     QPushButton *m_issueMilestoneButton = nullptr;
     QPushButton *m_issuePriorityButton = nullptr;
@@ -1367,6 +1383,8 @@ private:
     QPushButton *m_issueProgressBoostButton = nullptr;
     QPushButton *m_issueBountyButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;
+    QLabel *m_issueDevelopmentValue = nullptr;    // linked pull requests list
+    QPushButton *m_issueLinkPullButton = nullptr; // "Link pull request"
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;

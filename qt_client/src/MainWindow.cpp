@@ -1719,12 +1719,18 @@ protected:
         if (trimmed.startsWith(QLatin1String("==> [net]")) ||
             trimmed.startsWith(QLatin1String("[net]"))) {
             setFormat(0, len, m_net);
-        } else if (trimmed.startsWith(QLatin1String("==> SUCCESS")) ||
-                   trimmed.startsWith(QLatin1String("==> Agent finished")) ||
-                   trimmed.startsWith(QLatin1String("==> Created pull request"))) {
-            setFormat(0, len, m_success);
         } else if (trimmed.startsWith(QLatin1String("==>"))) {
-            setFormat(0, len, m_system);
+            // A "==>" marker may carry a leading emoji (✅/❌/🔧/…); key the
+            // colour off the words rather than an exact prefix so the emoji
+            // decorations in the workflow log still colourise.
+            if (trimmed.contains(QLatin1String("SUCCESS")) ||
+                trimmed.contains(QLatin1String("Agent finished")) ||
+                trimmed.contains(QLatin1String("Created pull request")))
+                setFormat(0, len, m_success);
+            else if (trimmed.contains(QLatin1String("FAILED")))
+                setFormat(0, len, m_error);
+            else
+                setFormat(0, len, m_system);
         } else if (trimmed.startsWith(QLatin1String("!!")) ||
                    trimmed.contains(QLatin1String("Traceback"))) {
             setFormat(0, len, m_error);
@@ -1852,7 +1858,7 @@ public:
     }
     void setTask(const QString &task)
     {
-        setToolTip(task.trimmed().isEmpty() ? QStringLiteral("Agent running\xE2\x80\xA6")
+        setToolTip(task.trimmed().isEmpty() ? QString::fromUtf8("Agent running\xE2\x80\xA6")
                                             : task.trimmed());
     }
 
@@ -4052,7 +4058,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                 styleHint(hint, "That name is already taken — try another.", "#f85149");
                 cont->setEnabled(false);
             } else {
-                styleHint(hint, QStringLiteral("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
+                styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
                                     .arg(v), "#3fb950");
                 cont->setEnabled(true);
             }
@@ -4189,7 +4195,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                            "node. ForkMesh watches the payment reference and continues "
                            "automatically once it confirms.")
                 .arg(amountSol,
-                     amountUsd > 0 ? QStringLiteral(" (\xE2\x89\x88 $%1)")
+                     amountUsd > 0 ? QString::fromUtf8(" (\xE2\x89\x88 $%1)")
                                          .arg(amountUsd, 0, 'f', 2)
                                    : QString()));
         const QImage qr = QrCode::encodeToImage(uri, 5, 3);
@@ -4318,7 +4324,7 @@ void MainWindow::verifyWallet()
     if (ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed() : QString())) {
         if (m_profileEligibility)
             m_profileEligibility->setText(
-                QStringLiteral("<span style='color:#3fb950'>Active "
+                QString::fromUtf8("<span style='color:#3fb950'>Active "
                                "\xC2\xB7 network member</span>"));
         // Verified now: hide the "verify your wallet" banner.
         updateSolanaNotice();
@@ -4454,7 +4460,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                                .arg(stepTimer.elapsed())
                                .arg(exitCode)
                                .arg(commandLine));
-                appendUpdateLog(QStringLiteral("\xE2\x80\x94 finished in %1ms (exit %2)\n")
+                appendUpdateLog(QString::fromUtf8("\xE2\x80\x94 finished in %1ms (exit %2)\n")
                                     .arg(stepTimer.elapsed())
                                     .arg(exitCode));
                 if (exitCode != 0) {
@@ -5302,7 +5308,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_logNavButton->setObjectName("topNavButton");
     m_logNavButton->setCheckable(true);
     m_logNavButton->setCursor(Qt::PointingHandCursor);
-    m_logNavButton->setToolTip(QStringLiteral("Network log \xE2\x80\x94 all activity"));
+    m_logNavButton->setToolTip(QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
     setOcticon(m_logNavButton, "list-unordered", 16);
     m_navGroup->addButton(m_logNavButton, 4); // section 4: Log
     connect(m_logNavButton, &QPushButton::clicked, this,
@@ -5413,7 +5419,7 @@ void MainWindow::updateConnectionStatus()
     // always refreshed but the dot stylesheet is only rewritten on colour change.)
     if (m_avatarNavButton)
         m_avatarNavButton->setToolTip(
-            QStringLiteral("%1 \xC2\xB7 your node profile").arg(text));
+            QString::fromUtf8("%1 \xC2\xB7 your node profile").arg(text));
     if (color == m_connectionStatusColor)
         return;
     m_connectionStatusColor = color;
@@ -5942,7 +5948,7 @@ void MainWindow::showNodesWindow()
             if (m.online || m.self)
                 ++online;
         heading->setText(
-            QStringLiteral("<b>%1</b> node%2 \xC2\xB7 <span style='color:#3fb950'>"
+            QString::fromUtf8("<b>%1</b> node%2 \xC2\xB7 <span style='color:#3fb950'>"
                            "%3 online</span>")
                 .arg(nodes.size())
                 .arg(nodes.size() == 1 ? "" : "s")
@@ -5981,7 +5987,7 @@ void MainWindow::showNodesWindow()
             info->setSpacing(3);
             const bool isOnline = node.self ? (m_backend != nullptr) : node.online;
             auto *title = new QLabel(
-                QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> "
+                QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
                                "<b>%2</b>%3")
                     .arg(isOnline ? "#3fb950" : "#8b949e",
                          node.name.toHtmlEscaped(),
@@ -5999,7 +6005,7 @@ void MainWindow::showNodesWindow()
                 lines << QStringLiteral("Version: %1").arg(node.version.toHtmlEscaped());
             lines << QStringLiteral("Earnings: %1")
                          .arg(node.solanaBalance.trimmed().isEmpty()
-                                  ? QStringLiteral("\xE2\x80\x94")
+                                  ? QString::fromUtf8("\xE2\x80\x94")
                                   : node.solanaBalance.trimmed().toHtmlEscaped() +
                                         " SOL");
             if (!node.solanaAddress.trimmed().isEmpty())
@@ -6448,7 +6454,7 @@ void MainWindow::updateChatButton()
     }
 
     m_chatButton->setToolTip(
-        total > 0 ? QStringLiteral("Chat \xE2\x80\x94 %1 unread message%2")
+        total > 0 ? QString::fromUtf8("Chat \xE2\x80\x94 %1 unread message%2")
                         .arg(total)
                         .arg(total == 1 ? QString() : QStringLiteral("s"))
                   : QStringLiteral("Chat"));
@@ -7117,9 +7123,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (info.self)
             m_profileEligibility->setText(
                 m_accountSolanaVerified
-                    ? QStringLiteral("<span style='color:#3fb950'>Active "
+                    ? QString::fromUtf8("<span style='color:#3fb950'>Active "
                                      "\xC2\xB7 revenue-sharing eligible</span>")
-                    : QStringLiteral("<span style='color:#d29922'>Not yet eligible "
+                    : QString::fromUtf8("<span style='color:#d29922'>Not yet eligible "
                                      "\xE2\x80\x94 deposit >= 0.001 SOL and "
                                      "verify.</span>"));
     }
@@ -7165,7 +7171,7 @@ void MainWindow::refreshProfileHostingStats()
         if (repo.previewOnly)
             continue;
         const QPair<int, int> stats = m_repoStats.value(repo.owner + "/" + repo.name);
-        lines << QStringLiteral(
+        lines << QString::fromUtf8(
                      "<b>%1</b> \xC2\xB7 %2 served \xC2\xB7 %3 clone%4<br>"
                      "<span style='color:#8b949e'>hosted since %5 \xC2\xB7 "
                      "last sync %6</span>")
@@ -7680,11 +7686,15 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAttachButton = new QPushButton("Paste, drop, or click to add files");
     m_issueAskAiButton = new QPushButton("Ask AI");
     m_issueCloseButton = new QPushButton("Close issue");
+    m_issueCloseCommentButton = new QPushButton("Close with comment");
+    m_issueCloseCommentButton->setToolTip(
+        "Post the comment above and close the issue in one step");
     m_issueCommentButton = new QPushButton("Comment");
     m_issueCommentButton->setObjectName("primaryButton");
     m_issueCommentButton->setCursor(Qt::PointingHandCursor);
     for (QPushButton *b : {m_issueAttachButton, m_issueAskAiButton,
-                           m_issueCloseButton, m_issueVoteButton}) {
+                           m_issueCloseButton, m_issueCloseCommentButton,
+                           m_issueVoteButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
     }
@@ -7699,6 +7709,7 @@ QWidget *MainWindow::buildIssuesSection()
     commentButtonRow->addWidget(m_issueAskAiButton);
     commentButtonRow->addWidget(m_issueVoteButton);
     commentButtonRow->addWidget(m_issueCloseButton);
+    commentButtonRow->addWidget(m_issueCloseCommentButton);
     commentButtonRow->addWidget(m_issueCommentButton);
     auto *commentColumn = new QVBoxLayout;
     commentColumn->setContentsMargins(0, 0, 0, 0);
@@ -8055,8 +8066,24 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
-    addMetaSection("Development",
-                   makeValue("Agent sessions and pull requests are linked here."));
+    m_issueDevelopmentValue = makeValue("No linked pull requests.");
+    m_issueDevelopmentValue->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    m_issueDevelopmentValue->setOpenExternalLinks(false);
+    connect(m_issueDevelopmentValue, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                const int n = href.section(QLatin1Char(':'), 1).toInt();
+                if (n > 0)
+                    switchToPullTab(n);
+            });
+    m_issueLinkPullButton = new QPushButton;
+    m_issueLinkPullButton->setObjectName("issueIconButton");
+    m_issueLinkPullButton->setFixedSize(28, 28);
+    m_issueLinkPullButton->setCursor(Qt::PointingHandCursor);
+    m_issueLinkPullButton->setToolTip("Link a pull request to this issue");
+    setOcticon(m_issueLinkPullButton, "git-pull-request", 15);
+    connect(m_issueLinkPullButton, &QPushButton::clicked, this,
+            &MainWindow::linkPullToIssueFromIssuePage);
+    addMetaSection("Development", m_issueDevelopmentValue, m_issueLinkPullButton);
     addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
@@ -8218,6 +8245,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::attachIssueImage);
     connect(m_issueCloseButton, &QPushButton::clicked, this,
             &MainWindow::toggleIssueStatus);
+    connect(m_issueCloseCommentButton, &QPushButton::clicked, this,
+            &MainWindow::closeIssueWithComment);
     connect(m_issueDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentIssue);
     connect(m_issueLabelsButton, &QPushButton::clicked, this,
@@ -9064,9 +9093,11 @@ QWidget *MainWindow::buildPullsTab()
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
+    m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullCloseButton, m_pullDeleteButton, m_pullSplitButton}) {
+                           m_pullCloseButton, m_pullDeleteButton, m_pullLinkIssueButton,
+                           m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -9089,6 +9120,10 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
     setOcticon(m_pullResolveButton, "git-pull-request", 16);
+    setOcticon(m_pullLinkIssueButton, "link", 16);
+    m_pullLinkIssueButton->setToolTip("Link an issue to this pull request");
+    connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
+            &MainWindow::linkIssueToPullFromPullPage);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
@@ -9105,6 +9140,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
@@ -9248,6 +9284,25 @@ QWidget *MainWindow::buildPullsTab()
             m_pullSubStack->setCurrentIndex(2);
     });
 
+    // Linked issues card: shown inline in the thread, with links that jump to the
+    // referenced issue on the Issues tab.
+    m_pullLinksValue = new QLabel;
+    m_pullLinksValue->setObjectName("issueTimelineCard");
+    m_pullLinksValue->setTextFormat(Qt::RichText);
+    m_pullLinksValue->setWordWrap(true);
+    m_pullLinksValue->setContentsMargins(16, 12, 16, 12);
+    m_pullLinksValue->setOpenExternalLinks(false);
+    m_pullLinksValue->hide();
+    connect(m_pullLinksValue, &QLabel::linkActivated, this, [this](const QString &href) {
+        const int n = href.section(QLatin1Char(':'), 1).toInt();
+        if (n <= 0)
+            return;
+        if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+            m_repoDetailTabs->button(2)->click();
+        reloadIssues();
+        showIssue(n);
+    });
+
     m_pullComposer = new MarkdownEditor;
     m_pullComposer->setPlaceholderText("Leave a comment or review\xE2\x80\xA6");
     m_pullComposer->setMinimumHeight(90);
@@ -9287,6 +9342,7 @@ QWidget *MainWindow::buildPullsTab()
     conversationInnerLayout->setContentsMargins(0, 0, 0, 0);
     conversationInnerLayout->setSpacing(10);
     conversationInnerLayout->addWidget(m_pullThreadContainer);
+    conversationInnerLayout->addWidget(m_pullLinksValue);
     conversationInnerLayout->addWidget(m_pullChecksSummary);
     conversationInnerLayout->addWidget(composerBlock);
     conversationInnerLayout->addStretch();
@@ -9445,7 +9501,7 @@ void MainWindow::refreshPullList()
         // Author: the node that filed the PR (the submitter for inbox PRs).
         const QString author =
             pr.authorName.trimmed().isEmpty()
-                ? (pr.author.isEmpty() ? QStringLiteral("\xE2\x80\x94")
+                ? (pr.author.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
                                        : pr.author.left(8))
                 : pr.authorName.trimmed();
         auto *authorItem = new QTableWidgetItem(author);
@@ -9460,7 +9516,7 @@ void MainWindow::refreshPullList()
             costItem->setToolTip(
                 QStringLiteral("Estimated cost of the agent task for this PR"));
         } else {
-            costItem->setData(Qt::DisplayRole, QStringLiteral("\xE2\x80\x94"));
+            costItem->setData(Qt::DisplayRole, QString::fromUtf8("\xE2\x80\x94"));
             costItem->setData(Qt::UserRole, 0.0);
         }
         m_pullTable->setItem(row, 7, costItem);
@@ -9538,17 +9594,17 @@ void MainWindow::showPull(int number)
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
         m_pullMeta->setText(m_pullMeta->text() +
-                            QStringLiteral(" \xC2\xB7 <span style='color:#3fb950'>"
+                            QString::fromUtf8(" \xC2\xB7 <span style='color:#3fb950'>"
                                            "\xE2\x9C\x93 Approved</span>"));
     else if (review == QLatin1String("changes_requested"))
         m_pullMeta->setText(m_pullMeta->text() +
-                            QStringLiteral(" \xC2\xB7 <span style='color:#f85149'>"
+                            QString::fromUtf8(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
     // If an agent task produced this PR, surface its estimated cost.
     if (const AgentSession *agent = agentSessionForPull(found->number))
         m_pullMeta->setText(
             m_pullMeta->text() +
-            QStringLiteral(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
+            QString::fromUtf8(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
     // The description is shown as the Conversation's opening card (renderPullThread),
     // so it is not repeated in the header.
 
@@ -9755,8 +9811,29 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         delete item;
     }
     if (pr.number == 0) {
+        if (m_pullLinksValue)
+            m_pullLinksValue->hide();
         m_pullThreadLayout->addStretch();
         return;
+    }
+
+    // Linked issues card (reflects "closes #N" references and explicit links).
+    if (m_pullLinksValue) {
+        const QList<int> issues = issuesLinkedFromPull(pr);
+        if (issues.isEmpty()) {
+            m_pullLinksValue->hide();
+        } else {
+            QStringList links;
+            for (const int n : issues)
+                links << QStringLiteral(
+                             "<a href='issue:%1' style='color:#58a6ff;"
+                             "text-decoration:none'>issue #%1</a>")
+                             .arg(n);
+            m_pullLinksValue->setText(
+                QStringLiteral("<b>Linked issues</b> \xC2\xB7 %1")
+                    .arg(links.join(QStringLiteral(" \xC2\xB7 "))));
+            m_pullLinksValue->show();
+        }
     }
 
     // The PR description as the opening card.
@@ -9822,7 +9899,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 if (f.size() < 5)
                     continue;
                 auto *item = new QListWidgetItem(
-                    QStringLiteral("%1  %2 \xC2\xB7 %3")
+                    QString::fromUtf8("%1  %2 \xC2\xB7 %3")
                         .arg(f.at(1), f.at(2), f.at(3)));
                 item->setData(Qt::UserRole, f.at(0));
                 item->setToolTip(f.at(4));
@@ -9833,7 +9910,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     }
     if (!listed) {
         auto *item = new QListWidgetItem(
-            QStringLiteral("%1 file(s) changed \xC2\xB7 +%2 -%3")
+            QString::fromUtf8("%1 file(s) changed \xC2\xB7 +%2 -%3")
                 .arg(formatCount(pr.filesChanged))
                 .arg(formatCount(pr.additions))
                 .arg(formatCount(pr.deletions)));
@@ -9975,20 +10052,20 @@ void MainWindow::renderPullChecksSummary(const PullRequest &pr)
     }
     QStringList parts;
     if (passed)
-        parts << QStringLiteral("<span style='color:#3fb950'>\xE2\x9C\x93 %1 passed</span>")
+        parts << QString::fromUtf8("<span style='color:#3fb950'>\xE2\x9C\x93 %1 passed</span>")
                      .arg(passed);
     if (failed)
-        parts << QStringLiteral("<span style='color:#f85149'>\xE2\x9C\x97 %1 failed</span>")
+        parts << QString::fromUtf8("<span style='color:#f85149'>\xE2\x9C\x97 %1 failed</span>")
                      .arg(failed);
     if (running)
-        parts << QStringLiteral("<span style='color:#58a6ff'>\xE2\x97\x8F %1 running</span>")
+        parts << QString::fromUtf8("<span style='color:#58a6ff'>\xE2\x97\x8F %1 running</span>")
                      .arg(running);
     if (pending)
         parts << QStringLiteral("<span style='color:#8b949e'>%1 pending</span>").arg(pending);
     m_pullChecksSummary->setText(
-        QStringLiteral("<b>Checks</b> \xC2\xB7 %1 \xC2\xB7 <a href='#checks' "
+        QString::fromUtf8("<b>Checks</b> \xC2\xB7 %1 \xC2\xB7 <a href='#checks' "
                        "style='color:#58a6ff;text-decoration:none'>details</a>")
-            .arg(parts.join(QStringLiteral(" \xC2\xB7 "))));
+            .arg(parts.join(QString::fromUtf8(" \xC2\xB7 "))));
     m_pullChecksSummary->show();
 }
 
@@ -10584,7 +10661,7 @@ void MainWindow::resolveCurrentPullConflicts()
 
     // ---- Merge editor dialog ------------------------------------------------
     QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Resolve conflicts \xE2\x80\x94 pull #%1").arg(number));
+    dlg.setWindowTitle(QString::fromUtf8("Resolve conflicts \xE2\x80\x94 pull #%1").arg(number));
     dlg.resize(960, 640);
 
     auto *intro = new QLabel(QStringLiteral(
@@ -10607,8 +10684,8 @@ void MainWindow::resolveCurrentPullConflicts()
     auto *oursBtn = new QPushButton(QStringLiteral("Accept ours"));
     auto *theirsBtn = new QPushButton(QStringLiteral("Accept theirs"));
     auto *bothBtn = new QPushButton(QStringLiteral("Accept both"));
-    auto *prevBtn = new QPushButton(QStringLiteral("\xE2\x86\x91 Prev"));
-    auto *nextBtn = new QPushButton(QStringLiteral("\xE2\x86\x93 Next"));
+    auto *prevBtn = new QPushButton(QString::fromUtf8("\xE2\x86\x91 Prev"));
+    auto *nextBtn = new QPushButton(QString::fromUtf8("\xE2\x86\x93 Next"));
     for (QPushButton *b : {oursBtn, theirsBtn, bothBtn, prevBtn, nextBtn}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
@@ -10898,8 +10975,13 @@ QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
         QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
                        "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
         QRegularExpression::CaseInsensitiveOption);
-    const QString haystack =
-        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
+    // Scan the PR text and every comment/review body so explicit "Linked issue
+    // #N" notes posted into the conversation are picked up too.
+    QStringList haystackParts{pr.title, pr.description, pr.head, pr.base};
+    for (const PullEvent &ev : pr.events)
+        if (!ev.body.isEmpty())
+            haystackParts << ev.body;
+    const QString haystack = haystackParts.join('\n');
     auto it = issueRefRe.globalMatch(haystack);
     while (it.hasNext()) {
         const QRegularExpressionMatch match = it.next();
@@ -10908,7 +10990,206 @@ QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
         if (number > 0)
             linked.insert(number);
     }
-    return linked.values();
+    QList<int> result = linked.values();
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+QList<int> MainWindow::pullsLinkedToIssue(int issueNumber) const
+{
+    if (issueNumber <= 0)
+        return {};
+    QSet<int> linked;
+    // Primary direction: any PR whose references point back at this issue.
+    for (const PullRequest &pr : m_currentPulls)
+        if (issuesLinkedFromPull(pr).contains(issueNumber))
+            linked.insert(pr.number);
+    // Secondary direction: explicit "pull request #M" / "PR #M" notes left in
+    // this issue's own thread.
+    static const QRegularExpression pullRefRe(
+        QStringLiteral("\\b(?:pull[-\\s]request|pr)[-\\s]*#?(\\d+)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (const Issue &issue : m_currentIssues) {
+        if (issue.number != issueNumber)
+            continue;
+        for (const IssueEvent &ev : issue.events) {
+            if (ev.body.isEmpty())
+                continue;
+            auto pit = pullRefRe.globalMatch(ev.body);
+            while (pit.hasNext()) {
+                const int number = pit.next().captured(1).toInt();
+                if (number > 0)
+                    linked.insert(number);
+            }
+        }
+        break;
+    }
+    QList<int> result = linked.values();
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+void MainWindow::postIssueLinkComment(int issueNumber, const QString &body)
+{
+    if (issueNumber <= 0)
+        return;
+    IssueStore store = issueStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addComment(issueNumber, body, {}, &error))
+            logSystem(QStringLiteral("Issue #%1: could not post link note: %2")
+                          .arg(issueNumber)
+                          .arg(error));
+        return;
+    }
+    // Read-only mirror: deliver a signed comment to the maintainer's inbox.
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || !m_networkAccess)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    IssueEvent ev;
+    ev.type = QStringLiteral("comment");
+    ev.body = body;
+    ev = store.makeSignedEvent(issueNumber, ev);
+    ev.bodyFile = "comments/" + ev.id + ".md";
+    QJsonObject eventJson = ev.toJson();
+    eventJson.insert("body", ev.body);
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", issueNumber},
+                              {"event", eventJson}};
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
+void MainWindow::postPullLinkComment(int pullNumber, const QString &body)
+{
+    if (pullNumber <= 0)
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addComment(pullNumber, body, &error))
+            logSystem(QStringLiteral("Pull request #%1: could not post link note: %2")
+                          .arg(pullNumber)
+                          .arg(error));
+        return;
+    }
+    PullEvent ev;
+    ev.type = QStringLiteral("comment");
+    ev.body = body;
+    ev = store.makeSignedEvent(pullNumber, ev);
+    submitPullEventToInbox(pullNumber, ev);
+}
+
+void MainWindow::linkPullToIssueFromIssuePage()
+{
+    if (m_currentIssueNumber <= 0) {
+        setIssueInlineNotice("Open an issue first.", true);
+        return;
+    }
+    const int issueNumber = m_currentIssueNumber;
+    const QList<int> linked = pullsLinkedToIssue(issueNumber);
+    const QSet<int> already(linked.cbegin(), linked.cend());
+    QStringList labels;
+    QList<int> numbers;
+    for (const PullRequest &pr : m_currentPulls) {
+        if (already.contains(pr.number))
+            continue;
+        labels << QStringLiteral("#%1  %2").arg(pr.number).arg(pr.title);
+        numbers << pr.number;
+    }
+    int chosen = -1;
+    if (numbers.isEmpty()) {
+        // No (unlinked) PRs loaded: let the user type a number directly.
+        bool ok = false;
+        const int n = QInputDialog::getInt(
+            this, QStringLiteral("Link pull request"),
+            QStringLiteral("Pull request number to link to issue #%1:").arg(issueNumber),
+            1, 1, 1000000, 1, &ok);
+        if (!ok)
+            return;
+        chosen = n;
+    } else {
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, QStringLiteral("Link pull request"),
+            QStringLiteral("Link a pull request to issue #%1:").arg(issueNumber),
+            labels, 0, false, &ok);
+        if (!ok || pick.isEmpty())
+            return;
+        chosen = numbers.at(labels.indexOf(pick));
+    }
+    if (chosen <= 0)
+        return;
+    postIssueLinkComment(issueNumber,
+                         QStringLiteral("Linked pull request #%1.").arg(chosen));
+    postPullLinkComment(chosen,
+                        QStringLiteral("Linked issue #%1.").arg(issueNumber));
+    reloadIssues();
+    reloadPulls();
+    showIssue(issueNumber);
+    flashMessage(QStringLiteral("Linked pull request #%1 to issue #%2.")
+                     .arg(chosen)
+                     .arg(issueNumber));
+}
+
+void MainWindow::linkIssueToPullFromPullPage()
+{
+    if (m_currentPullNumber <= 0) {
+        flashMessage(QStringLiteral("Open a pull request first."));
+        return;
+    }
+    const int pullNumber = m_currentPullNumber;
+    QSet<int> already;
+    for (const PullRequest &pr : m_currentPulls)
+        if (pr.number == pullNumber) {
+            const QList<int> linked = issuesLinkedFromPull(pr);
+            already = QSet<int>(linked.cbegin(), linked.cend());
+        }
+    QStringList labels;
+    QList<int> numbers;
+    for (const Issue &issue : m_currentIssues) {
+        if (already.contains(issue.number) || issue.isDeleted())
+            continue;
+        labels << QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title);
+        numbers << issue.number;
+    }
+    int chosen = -1;
+    if (numbers.isEmpty()) {
+        bool ok = false;
+        const int n = QInputDialog::getInt(
+            this, QStringLiteral("Link issue"),
+            QStringLiteral("Issue number to link to pull request #%1:").arg(pullNumber),
+            1, 1, 1000000, 1, &ok);
+        if (!ok)
+            return;
+        chosen = n;
+    } else {
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, QStringLiteral("Link issue"),
+            QStringLiteral("Link an issue to pull request #%1:").arg(pullNumber),
+            labels, 0, false, &ok);
+        if (!ok || pick.isEmpty())
+            return;
+        chosen = numbers.at(labels.indexOf(pick));
+    }
+    if (chosen <= 0)
+        return;
+    postPullLinkComment(pullNumber,
+                        QStringLiteral("Linked issue #%1.").arg(chosen));
+    postIssueLinkComment(chosen,
+                         QStringLiteral("Linked pull request #%1.").arg(pullNumber));
+    reloadIssues();
+    reloadPulls();
+    showPull(pullNumber);
+    flashMessage(QStringLiteral("Linked issue #%1 to pull request #%2.")
+                     .arg(chosen)
+                     .arg(pullNumber));
 }
 
 void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
@@ -10997,7 +11278,7 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                     QString error;
                     writeStore.setBounty(number, amount, address,
                                          QStringLiteral("open"), &error);
-                    logSystem(QStringLiteral("Bounty escrow for issue #%1 ready to "
+                    logSystem(QString::fromUtf8("Bounty escrow for issue #%1 ready to "
                                              "fund ($%2 \xE2\x89\x88 %3 SOL).")
                                   .arg(number)
                                   .arg(QString::number(amount, 'f', 2))
@@ -11379,7 +11660,7 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             flashMessage(body);
             if (notifyEnabled(kPullAlertSetting))
                 notifyIfInactive(
-                    QStringLiteral("ForkMesh \xE2\x80\x94 new pull request"), body);
+                    QString::fromUtf8("ForkMesh \xE2\x80\x94 new pull request"), body);
             if (notifyEnabled(kPullAlertSetting) && m_trayIcon &&
                 QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new pull request", body,
@@ -12200,9 +12481,9 @@ void MainWindow::updateAgentTotalSpend()
                          (haveClaude ? m_claudeSpendUsd : 0.0);
     QString note;
     if (!haveOpenAi)
-        note = QStringLiteral(" (Claude only \xE2\x80\x94 refresh OpenAI)");
+        note = QString::fromUtf8(" (Claude only \xE2\x80\x94 refresh OpenAI)");
     else if (!haveClaude)
-        note = QStringLiteral(" (OpenAI only \xE2\x80\x94 refresh Claude)");
+        note = QString::fromUtf8(" (OpenAI only \xE2\x80\x94 refresh Claude)");
     m_agentTotalSpend->setText(
         QStringLiteral("Total Agent API spend, month to date: $%1 USD%2")
             .arg(QString::number(total, 'f', 2), note));
@@ -12550,14 +12831,14 @@ void MainWindow::showAgentSession(int sessionId)
         const int pct = window > 0 ? qMin(100, session->contextTokens * 100 / window) : 0;
         m_agentUsage->setText(
             QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
-                .arg(session->totalTokens)
-                .arg(session->promptTokens)
-                .arg(session->completionTokens)
-                .arg(session->contextTokens)
-                .arg(window)
+                .arg(formatCount(session->totalTokens))
+                .arg(formatCount(session->promptTokens))
+                .arg(formatCount(session->completionTokens))
+                .arg(formatCount(session->contextTokens))
+                .arg(formatCount(window))
                 .arg(pct)
-                .arg(maxOutput)
-                .arg(session->estimatedCredits)
+                .arg(formatCount(maxOutput))
+                .arg(formatCount(session->estimatedCredits))
                 .arg(agentCostText(session->costUsd)));
     }
     // Connected / working status pill.
@@ -15023,7 +15304,7 @@ void MainWindow::populateOverviewTree()
         m_overviewList->setItemWidget(item, 1,
                                       makeOverviewSizeBar(frac, formatByteSize(e.size)));
         const double pct = frac * 100.0;
-        item->setToolTip(1, QStringLiteral("%1 \xC2\xB7 %2% of the repository")
+        item->setToolTip(1, QString::fromUtf8("%1 \xC2\xB7 %2% of the repository")
                                 .arg(formatByteSize(e.size),
                                      QString::number(pct, 'f', pct < 10 ? 1 : 0)));
     }
@@ -15131,15 +15412,15 @@ void MainWindow::loadCommits()
         switch (commitStatusCode(f.at(0))) {
         case 1:
             summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            summary->setToolTip(QStringLiteral("Checks passed \xC2\xB7 %1").arg(f.at(1)));
+            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 2:
             summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            summary->setToolTip(QStringLiteral("Checks failed \xC2\xB7 %1").arg(f.at(1)));
+            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 3:
             summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            summary->setToolTip(QStringLiteral("Checks running \xC2\xB7 %1").arg(f.at(1)));
+            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1").arg(f.at(1)));
             break;
         default:
             summary->setToolTip(
@@ -15372,7 +15653,7 @@ void MainWindow::applyCommitIssueClosures()
 
             QString err;
             const QString note =
-                QStringLiteral("Closed by commit `%1` \xE2\x80\x94 %2")
+                QString::fromUtf8("Closed by commit `%1` \xE2\x80\x94 %2")
                     .arg(shortHash, subject);
             if (!store.addComment(number, note, {}, &err)) {
                 logSystem(QStringLiteral("Issue #%1: could not link commit %2: %3")
@@ -15542,7 +15823,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             badgeText = QStringLiteral("RENAMED");
         }
         const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
-        html += QStringLiteral(
+        html += QString::fromUtf8(
                     "<a name=\"%1\"></a><div class='fileblock'>"
                     "<div class='fileheader'>"
                     "<span class='stbadge %2'>%3</span>"
@@ -15727,7 +16008,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             badgeText = QStringLiteral("RENAMED");
         }
         const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
-        html += QStringLiteral(
+        html += QString::fromUtf8(
                     "<a name=\"%1\"></a><div class='fileblock'>"
                     "<div class='fileheader'>"
                     "<span class='stbadge %2'>%3</span>"
@@ -15919,9 +16200,9 @@ void MainWindow::updateDiffSplitButton(QPushButton *button)
     button->setText(split ? QStringLiteral("Side-by-side")
                           : QStringLiteral("Unified"));
     button->setToolTip(split
-                           ? QStringLiteral("Showing a side-by-side diff \xE2\x80\x94 "
+                           ? QString::fromUtf8("Showing a side-by-side diff \xE2\x80\x94 "
                                             "click for a unified diff")
-                           : QStringLiteral("Showing a unified diff \xE2\x80\x94 "
+                           : QString::fromUtf8("Showing a unified diff \xE2\x80\x94 "
                                             "click for a side-by-side diff"));
 }
 
@@ -16052,7 +16333,7 @@ void MainWindow::showCommit(const QString &hash)
             }
             item->setIcon(themedOcticon(icon, tint, 14));
             item->setData(Qt::UserRole, f.anchor);
-            item->setToolTip(QStringLiteral("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_commitFileList->addItem(item);
         }
     }
@@ -16675,7 +16956,7 @@ void MainWindow::loadBranchesPanel()
 
     if (m_branchesSummary)
         m_branchesSummary->setText(
-            QStringLiteral("\xC2\xB7 %1 total \xC2\xB7 default: %2")
+            QString::fromUtf8("\xC2\xB7 %1 total \xC2\xB7 default: %2")
                 .arg(branches.size())
                 .arg(base.isEmpty() ? "none" : base));
 
@@ -16704,7 +16985,7 @@ void MainWindow::loadBranchesPanel()
                         QString::fromUtf8(counts).trimmed().split(
                             QRegularExpression(QStringLiteral("\\s+")));
                     if (parts.size() >= 2)
-                        status = QStringLiteral("%1 behind \xC2\xB7 %2 ahead")
+                        status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
                                      .arg(parts.at(0), parts.at(1));
                 }
             }
@@ -16901,7 +17182,7 @@ void MainWindow::loadReleasesPanel()
     }
     if (m_releasesSummary)
         m_releasesSummary->setText(
-            QStringLiteral("\xC2\xB7 %1 release%2")
+            QString::fromUtf8("\xC2\xB7 %1 release%2")
                 .arg(count)
                 .arg(count == 1 ? "" : "s"));
     if (count == 0) {
@@ -17099,7 +17380,7 @@ void MainWindow::loadMirrorNodesPanel()
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                               node.name.toLower());
         nameItem->setToolTip(isSource
-                                 ? QStringLiteral("Source of truth \xC2\xB7 %1")
+                                 ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                                        .arg(online ? "online" : "offline")
                                  : (online ? "Online now" : "Offline"));
         m_mirrorNodesTable->setItem(row, 0, nameItem);
@@ -17145,7 +17426,7 @@ void MainWindow::loadMirrorNodesPanel()
         if (behind) {
             syncedItem->setData(kPacmanAnchorRole,
                                 static_cast<qlonglong>(advert->updatedMs));
-            syncedItem->setToolTip(QStringLiteral(
+            syncedItem->setToolTip(QString::fromUtf8(
                 "Behind the source \xC2\xB7 catches up at its next heartbeat"));
         }
         m_mirrorNodesTable->setItem(row, 2, syncedItem);
@@ -17171,7 +17452,7 @@ void MainWindow::loadMirrorNodesPanel()
 
     if (m_mirrorNodesSummary)
         m_mirrorNodesSummary->setText(
-            QStringLiteral("\xC2\xB7 %1 node%2 mirroring %3")
+            QString::fromUtf8("\xC2\xB7 %1 node%2 mirroring %3")
                 .arg(count)
                 .arg(count == 1 ? "" : "s")
                 .arg(source));
@@ -18278,7 +18559,7 @@ void MainWindow::refreshIssueList()
         // this is the submitting node, preserved through the inbox merge.
         const QString author =
             issue.authorName.trimmed().isEmpty()
-                ? (issue.author.isEmpty() ? QStringLiteral("\xE2\x80\x94")
+                ? (issue.author.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
                                           : issue.author.left(8))
                 : issue.authorName.trimmed();
         auto *authorItem = new QTableWidgetItem(author);
@@ -18816,6 +19097,20 @@ void MainWindow::renderIssueThread(const Issue &issue)
         }
     }
     updateIssueAgentUi(issue);
+    if (m_issueDevelopmentValue) {
+        const QList<int> pulls = pullsLinkedToIssue(issue.number);
+        if (pulls.isEmpty()) {
+            m_issueDevelopmentValue->setText("No linked pull requests.");
+        } else {
+            QStringList links;
+            for (const int n : pulls)
+                links << QStringLiteral(
+                             "<a href='pull:%1' style='color:#58a6ff;"
+                             "text-decoration:none'>pull request #%1</a>")
+                             .arg(n);
+            m_issueDevelopmentValue->setText(links.join("<br>"));
+        }
+    }
     if (m_issueAssigneesEdit)
         m_issueAssigneesEdit->setText(issue.assignees.join(", "));
     if (m_issueLabelsEdit)
@@ -19420,7 +19715,8 @@ void MainWindow::updateIssueActionState()
     if (!haveIssue || !writable)
         m_issueDeleteConfirmPending = false;
     // Owner-only structural edits.
-    for (QPushButton *b : {m_issueCloseButton, m_issueLabelsButton,
+    for (QPushButton *b : {m_issueCloseButton, m_issueCloseCommentButton,
+                           m_issueLabelsButton,
                            m_issueMilestoneButton, m_issuePriorityButton,
                            m_issuePriorityRaiseButton, m_issuePriorityLowerButton,
                            m_issueAssigneesButton,
@@ -19452,12 +19748,18 @@ void MainWindow::updateIssueActionState()
     }
     updateVoteUi();
 
-    // Reflect current status on the close/reopen button.
-    if (m_issueCloseButton && haveIssue) {
+    // Reflect current status on the close/reopen button, and only offer "Close
+    // with comment" while the issue is open (it has no meaning once closed).
+    if (haveIssue) {
         for (const Issue &issue : m_currentIssues) {
             if (issue.number == m_currentIssueNumber) {
-                m_issueCloseButton->setText(issue.status == "closed" ? "Reopen"
-                                                                     : "Close issue");
+                const bool open = issue.status != QLatin1String("closed");
+                if (m_issueCloseButton)
+                    m_issueCloseButton->setText(open ? "Close issue" : "Reopen");
+                if (m_issueCloseCommentButton) {
+                    m_issueCloseCommentButton->setEnabled(writable && open);
+                    m_issueCloseCommentButton->setVisible(open);
+                }
                 break;
             }
         }
@@ -20162,6 +20464,63 @@ void MainWindow::addIssueComment()
     });
 }
 
+void MainWindow::closeIssueWithComment()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    const int number = m_currentIssueNumber;
+    const QString body = m_issueComposer ? m_issueComposer->markdown() : QString();
+    const QStringList attachments =
+        m_issueComposer ? m_issueComposer->pendingAttachments()
+                        : m_pendingIssueAttachments;
+    // The whole point of this button is closing *with* a comment; an empty box
+    // should use plain "Close issue" instead.
+    if (body.trimmed().isEmpty() && attachments.isEmpty()) {
+        setIssueInlineNotice(
+            "Write a comment to close with, or use \xE2\x80\x9C" "Close issue\xE2\x80\x9D.",
+            true);
+        if (m_issueComposer)
+            m_issueComposer->setFocus();
+        return;
+    }
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        // Mirror nodes can't close (the button is disabled for them anyway).
+        setIssueInlineNotice("This repo is read-only here; can't close the issue.",
+                             true);
+        return;
+    }
+    // Persist the comment, then flip the status — both as one synchronous action
+    // so the comment is guaranteed to land before the close event.
+    QString error;
+    if (!store.addComment(number, body, attachments, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
+                             true);
+        return;
+    }
+    if (!store.setStatus(number, QStringLiteral("closed"), &error)) {
+        setIssueInlineNotice(error.isEmpty()
+                                 ? "Comment added, but could not close the issue."
+                                 : error,
+                             true);
+        reloadIssues();
+        return;
+    }
+    if (m_issueComposer) {
+        m_issueComposer->setMarkdown(QString());
+        m_issueComposer->clearPendingAttachments();
+    }
+    m_pendingIssueAttachments.clear();
+    if (m_issueAttachButton)
+        m_issueAttachButton->setText("Paste, drop, or click to add files");
+    // Closing may drop the issue out of the current filter; keep the detail panel
+    // on the next issue rather than collapsing to the list (mirrors toggleIssueStatus).
+    m_advanceToNextOnReload = true;
+    reloadIssues();
+    propagateRepoUpdate(issuesRepoIndex());
+    setIssueInlineNotice("Comment added and issue closed.");
+}
+
 void MainWindow::attachIssueImage()
 {
     const QStringList files = QFileDialog::getOpenFileNames(
@@ -20498,7 +20857,7 @@ void MainWindow::editIssueProgress()
     bool ok = false;
     const int progress = QInputDialog::getInt(
         this, QStringLiteral("Set progress"),
-        QStringLiteral("Percent complete (0\xE2\x80\x93""100):"), current, 0, 100, 5,
+        QString::fromUtf8("Percent complete (0\xE2\x80\x93""100):"), current, 0, 100, 5,
         &ok);
     if (!ok)
         return;
@@ -20706,7 +21065,7 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
     auto *layout = new QVBoxLayout(&dialog);
     auto *intro = new QLabel(
-        QStringLiteral("The pull request is merged. Send <b>%1 SOL</b> (\xE2\x89\x88 "
+        QString::fromUtf8("The pull request is merged. Send <b>%1 SOL</b> (\xE2\x89\x88 "
                        "$%2) to this escrow address to fund the bounty. On "
                        "confirmation, 90%% is paid to the pull request author and "
                        "10%% to the ForkMesh treasury.")
@@ -21100,7 +21459,7 @@ void MainWindow::updateVoteUi()
         credits > 0
             ? QStringLiteral("Upvote this issue (spends 1 of %1 voting credits)")
                   .arg(credits)
-            : QStringLiteral("No voting credits yet \xE2\x80\x94 you earn 1 per "
+            : QString::fromUtf8("No voting credits yet \xE2\x80\x94 you earn 1 per "
                              "hour online"));
 }
 
@@ -21228,7 +21587,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                           .arg(repo.owner, repo.name);
             flashMessage(body);
             if (notifyEnabled(kIssueAlertSetting))
-                notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new issue"),
+                notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new issue"),
                                  body);
             // Log it on the Notifications page so it persists past the toast.
             addNotification(QStringLiteral("New issue"), body);
@@ -21245,9 +21604,9 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                            .arg(lastCommentNumber);
                 if (!lastCommentBody.isEmpty()) {
                     const QString snippet = lastCommentBody.left(140) +
-                        (lastCommentBody.size() > 140 ? QStringLiteral("\xE2\x80\xA6")
+                        (lastCommentBody.size() > 140 ? QString::fromUtf8("\xE2\x80\xA6")
                                                       : QString());
-                    body += QStringLiteral(": \xE2\x80\x9C%1\xE2\x80\x9D").arg(snippet);
+                    body += QString::fromUtf8(": \xE2\x80\x9C%1\xE2\x80\x9D").arg(snippet);
                 }
             } else {
                 body = QStringLiteral("%1 new comments on %2/%3 issues")
@@ -21255,7 +21614,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                            .arg(repo.owner, repo.name);
             }
             if (notifyEnabled(kCommentAlertSetting))
-                notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new comment"),
+                notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new comment"),
                                  body);
             // Log it on the Notifications page so it persists past the toast.
             addNotification(QStringLiteral("New comment"), body);
@@ -21495,7 +21854,7 @@ QString MainWindow::selfNodeStats() const
                           [](const RepositoryRecord &repo) {
                               return !repo.previewOnly;
                           }));
-    return QStringLiteral(
+    return QString::fromUtf8(
                "%1 repos \xC2\xB7 %2 mirrored \xC2\xB7 %3 online \xC2\xB7 %4 chats")
                .arg(permanentRepoCount)
                .arg(mirrored)
@@ -21698,7 +22057,7 @@ QWidget *MainWindow::buildSettingsSection()
         }
         QString ideName;
         if (ideExtensionActive(&ideName))
-            ideStatus->setText(QStringLiteral("\xE2\x97\x8F Connected to %1.")
+            ideStatus->setText(QString::fromUtf8("\xE2\x97\x8F Connected to %1.")
                                    .arg(ideName));
         else
             ideStatus->setText(
@@ -22466,7 +22825,7 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
             QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
                 .toString(QStringLiteral("dddd, d MMMM yyyy"));
         m_settingsLog->appendHtml(
-            QStringLiteral(
+            QString::fromUtf8(
                 "<span style='color:#484f58'>"
                 "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
                 "<span style='color:#8b949e; font-weight:600'>%1</span>"
@@ -23036,7 +23395,7 @@ void MainWindow::refreshChatMembers()
 
         // Name prefixed with a status dot (green online, grey offline).
         auto *nameLabel = new QLabel(
-            QStringLiteral("<span style='color:%1'>\xE2\x97\x8F</span> %2%3")
+            QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2%3")
                 .arg(online ? "#3fb950" : "#8b949e",
                      member.name.toHtmlEscaped(),
                      member.self ? " <span style='color:#8b949e'>(you)</span>"
@@ -23051,7 +23410,7 @@ void MainWindow::refreshChatMembers()
 
     if (m_chatMembersHeading)
         m_chatMembersHeading->setText(
-            QStringLiteral("ONLINE \xE2\x80\x94 %1").arg(onlineCount));
+            QString::fromUtf8("ONLINE \xE2\x80\x94 %1").arg(onlineCount));
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)
@@ -24504,8 +24863,8 @@ void MainWindow::updateRepoDetailStatus()
                     .arg(stats.second)
                     .arg(stats.second == 1 ? QString()
                                            : QStringLiteral("s"));
-        QString details = bits.join(QStringLiteral(" \xC2\xB7 "));
-        details += QStringLiteral("<br><span style='color:#8b949e'>Cache %1 "
+        QString details = bits.join(QString::fromUtf8(" \xC2\xB7 "));
+        details += QString::fromUtf8("<br><span style='color:#8b949e'>Cache %1 "
                                   "\xC2\xB7 Last refresh %2</span>")
                        .arg(repo.mirrorPath.toHtmlEscaped(),
                             formatRepoDate(repo.lastSyncMs));
@@ -24518,8 +24877,8 @@ void MainWindow::updateRepoDetailStatus()
                 .arg(stats.second)
                 .arg(stats.second == 1 ? QString() : QStringLiteral("s"));
 
-    QString details = bits.join(QStringLiteral(" \xC2\xB7 "));
-    details += QStringLiteral("<br><span style='color:#8b949e'>Hosted since %1 "
+    QString details = bits.join(QString::fromUtf8(" \xC2\xB7 "));
+    details += QString::fromUtf8("<br><span style='color:#8b949e'>Hosted since %1 "
                               "\xC2\xB7 Last sync %2</span>")
                    .arg(formatRepoDate(repo.hostedSinceMs),
                         formatRepoDate(repo.lastSyncMs));
@@ -25034,9 +25393,9 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                                 : authorName.trimmed();
         QString snippet = text.simplified();
         if (snippet.size() > 160)
-            snippet = snippet.left(157) + QStringLiteral("\xE2\x80\xA6");
+            snippet = snippet.left(157) + QString::fromUtf8("\xE2\x80\xA6");
         const QString body =
-            QStringLiteral("%1 mentioned you in %2 %3#%4: \xE2\x80\x9C%5\xE2\x80\x9D")
+            QString::fromUtf8("%1 mentioned you in %2 %3#%4: \xE2\x80\x9C%5\xE2\x80\x9D")
                 .arg(who, repoKey, context)
                 .arg(number)
                 .arg(snippet);
@@ -25767,7 +26126,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         };
         if (!changed.isEmpty() &&
             std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
-            logSystem(QStringLiteral(
+            logSystem(QString::fromUtf8(
                           "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
                           "skipping workflows.")
                           .arg(owner, name, commit.left(8)));
@@ -25839,7 +26198,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         updateNotificationButton();
         processActionQueue(); // a manual run isn't driven by the push pipeline
     } else {
-        logSystem(QStringLiteral(
+        logSystem(QString::fromUtf8(
                       "Actions: no .forkmesh/ workflow with 'on: push' at %1 for "
                       "%2/%3 \xE2\x80\x94 nothing to run.")
                       .arg(commit.left(8), owner, name));
@@ -26388,13 +26747,13 @@ QString MainWindow::commitStatusGlyph(const QString &sha) const
 {
     switch (commitStatusCode(sha)) {
     case 3:
-        return QStringLiteral(" <span style='color:#58a6ff' "
+        return QString::fromUtf8(" <span style='color:#58a6ff' "
                               "title='Checks running'>\xE2\x97\x90</span>"); // ◐
     case 2:
-        return QStringLiteral(" <span style='color:#f85149' "
+        return QString::fromUtf8(" <span style='color:#f85149' "
                               "title='Checks failed'>\xE2\x9C\x95</span>"); // ✕
     case 1:
-        return QStringLiteral(" <span style='color:#3fb950' "
+        return QString::fromUtf8(" <span style='color:#3fb950' "
                               "title='Checks passed'>\xE2\x9C\x93</span>"); // ✓
     default:
         return QString();
@@ -26725,7 +27084,7 @@ void MainWindow::updateAgentsTabIndicator()
                     ? QStringLiteral("Agent session #%1").arg(s->id)
                     : QStringLiteral("#%1 %2").arg(s->issueNumber)
                           .arg(s->issueTitle.trimmed());
-            spinner->setTask(QStringLiteral("%1 \xC2\xB7 %2")
+            spinner->setTask(QString::fromUtf8("%1 \xC2\xB7 %2")
                                  .arg(task, agentProviderName(s->provider)));
             m_agentSpinnerRow->addWidget(spinner);
         }
@@ -26886,7 +27245,7 @@ void MainWindow::updateManualRunBar()
     if (!show)
         return;
     m_actionManualRunButton->setText(
-        QStringLiteral("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
+        QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
 
     // Populate the branch list from the repo's mirror, keeping the user's choice
     // (or defaulting to main) selected.
@@ -26964,7 +27323,7 @@ void MainWindow::runSelectedWorkflowManually()
                 commit + QLatin1Char(':') + path});
     show.waitForFinished(10000);
     if (show.exitCode() != 0) {
-        flashMessage(QStringLiteral("\xE2\x80\x9C%1\xE2\x80\x9D doesn't exist on %2.")
+        flashMessage(QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D doesn't exist on %2.")
                          .arg(path, branch));
         return;
     }

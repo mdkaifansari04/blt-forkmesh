@@ -32,11 +32,12 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_store->saveRun(m_run);
     emit statusChanged(m_run.id, m_run.status);
 
-    emitLog(QStringLiteral("==> Workflow: %1 (%2)")
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x9A\x80 Workflow: %1 (%2)") // 🚀
                 .arg(m_workflow.name, m_workflow.path));
-    emitLog(QStringLiteral("==> Commit:   %1 on %2")
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x93\x8D Commit:   %1 on %2") // 📍
                 .arg(m_run.commit.left(12), m_run.ref));
-    emitLog(QStringLiteral("==> Checking out into a temporary worktree..."));
+    emitLog(QString::fromUtf8(
+        "==> \xF0\x9F\x8C\xBF Checking out into a temporary worktree\xE2\x80\xA6")); // 🌿 …
 
     m_worktree =
         QDir::tempPath() + QStringLiteral("/forkmesh-run-") +
@@ -83,7 +84,8 @@ void ActionRunner::launch(Phase phase, const QString &program,
     connect(m_process, &QProcess::errorOccurred, this,
             [this](QProcess::ProcessError) {
                 if (m_process)
-                    emitLog(QStringLiteral("!! ") + m_process->errorString());
+                    emitLog(QString::fromUtf8("!! \xE2\x9A\xA0\xEF\xB8\x8F  ") + // ⚠️
+                            m_process->errorString());
             });
 
     m_process->setProgram(program);
@@ -134,7 +136,7 @@ void ActionRunner::runNextStep()
         step.name.isEmpty() ? QStringLiteral("Step %1").arg(m_stepIndex + 1)
                             : step.name;
     emitLog(QString());
-    emitLog(QStringLiteral("==> %1").arg(label));
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x94\xA7 %1").arg(label)); // 🔧
 
 #ifdef Q_OS_WIN
     launch(Phase::Step, QStringLiteral("cmd"),
@@ -150,8 +152,8 @@ void ActionRunner::runNextStep()
 void ActionRunner::complete(bool ok, const QString &finalMessage)
 {
     emitLog(QString());
-    emitLog((ok ? QStringLiteral("==> SUCCESS: ")
-                : QStringLiteral("==> FAILED: ")) +
+    emitLog((ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ")  // ✅
+                : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) + // ❌
             finalMessage);
 
     cleanupWorktree();

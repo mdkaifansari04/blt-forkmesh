@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.7.0 (2026-06-23)"
+INSTALLER_VERSION="0.8.0 (2026-06-23)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -326,68 +326,92 @@ fi
 # so the funnel shows how often a machine already met the requirements.
 diag deps 1 "${DIAG_MISSING:-none}"
 
-# --- fetch / update ---------------------------------------------------------
-CURRENT_STEP="fetch"
-mkdir -p "$(dirname "$SRC")"
-if [ -d "$SRC/.git" ]; then
-  say "Updating existing checkout in $SRC"
-  # The stored remote was baked with the node id that was live at the original
-  # install. That node may now be offline (its hosted tunnel gone) while a
-  # different mirror is online, so pulling from the old URL returns 503. Repoint
-  # origin at the freshly resolved live mirror before pulling, and fall back to a
-  # clean re-clone if the fast-forward pull still cannot reach a host.
-  git -C "$SRC" remote set-url origin "$REPO" 2>/dev/null || true
-  if ! git -C "$SRC" pull --ff-only; then
-    warn "Could not update from $REPO; re-cloning from the current live mirror."
-    rm -rf "$SRC"
-    git clone --depth 1 "$REPO" "$SRC"
-  fi
-else
+# --- fetch + build + install (clean-reclone retry on any failure) -----------
+# A leftover checkout from an interrupted earlier run can be stale or incomplete
+# (e.g. the directory exists but qt_client/CMakeLists.txt is missing), which
+# breaks the build in confusing ways. Each phase below returns non-zero instead
+# of aborting, so on ANY failure we can wipe the source tree and run the whole
+# pipeline once more from a clean clone.
+
+clean_clone() {
+  rm -rf "$SRC"
   say "Cloning $REPO"
   git clone --depth 1 "$REPO" "$SRC"
-fi
-# A pull can report "Already up to date" yet leave a checkout that is missing the
-# Qt sources (stale/partial mirror, or a mirror whose default branch lacks
-# qt_client). The success of git pull is not proof the tree CMake needs is
-# present, so verify it explicitly and re-clone from scratch if it is not.
-if [ ! -d "$SRC/qt_client" ]; then
-  warn "Checkout in $SRC is missing qt_client; fetching a fresh copy."
+}
+
+fetch_source() {
+  mkdir -p "$(dirname "$SRC")" || return 1
+  if [ -d "$SRC/.git" ]; then
+    say "Updating existing checkout in $SRC"
+    # The stored remote was baked with the node id live at the original install.
+    # That node may now be offline while a different mirror is online, so pulling
+    # the old URL returns 503. Repoint origin at the freshly resolved live mirror
+    # before pulling, and fall back to a clean re-clone if the pull still fails.
+    git -C "$SRC" remote set-url origin "$REPO" 2>/dev/null || true
+    if ! git -C "$SRC" pull --ff-only; then
+      warn "Could not update from $REPO; re-cloning from the current live mirror."
+      clean_clone || return 1
+    fi
+  else
+    clean_clone || return 1
+  fi
+  # git pull can say "Already up to date" yet leave a tree missing the Qt sources
+  # CMake builds from (stale/partial mirror). Success of the fetch is not proof
+  # the build inputs exist, so verify the actual file and re-clone if it is gone.
+  if [ ! -f "$SRC/qt_client/CMakeLists.txt" ]; then
+    warn "Checkout in $SRC is incomplete (no qt_client/CMakeLists.txt); re-cloning."
+    clean_clone || return 1
+  fi
+  [ -f "$SRC/qt_client/CMakeLists.txt" ] || return 1
+}
+
+build_client() {
+  local jobs build_dir
+  jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
+  build_dir="$SRC/qt_client/build"
+  local cmake_args=(-S "$SRC/qt_client" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF)
+  if command -v brew >/dev/null 2>&1; then
+    local qt_prefix ssl_prefix
+    qt_prefix="$(brew --prefix qt 2>/dev/null || true)"
+    ssl_prefix="$(brew --prefix openssl@3 2>/dev/null || true)"
+    [ -n "$qt_prefix" ] && cmake_args+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
+    [ -n "$ssl_prefix" ] && cmake_args+=("-DOPENSSL_ROOT_DIR=$ssl_prefix")
+  fi
+  say "Configuring"
+  cmake "${cmake_args[@]}" || return 1
+  say "Building (this can take a few minutes)"
+  cmake --build "$build_dir" -j"$jobs" || return 1
+  BUILD="$build_dir"  # used by the install/launch phases below
+}
+
+install_client() {
+  local built
+  if [ -x "$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh" ]; then
+    built="$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh"
+  else
+    built="$BUILD/forkmesh"
+  fi
+  [ -x "$built" ] || { warn "Build did not produce an executable at $built."; return 1; }
+  mkdir -p "$BIN_DIR" || return 1
+  install -m 0755 "$built" "$BIN" 2>/dev/null \
+    || { cp "$built" "$BIN" && chmod 0755 "$BIN"; } || return 1
+  say "Installed to $BIN"
+}
+
+# Fetch -> build -> install, tagging the active phase for diagnostics. Returns
+# non-zero (rather than exiting) on the first failure so the caller can retry.
+attempt_install() {
+  CURRENT_STEP="fetch";   fetch_source   || return 1; diag fetch 1
+  CURRENT_STEP="build";   build_client   || return 1; diag build 1
+  CURRENT_STEP="install"; install_client || return 1; diag install 1
+}
+
+if ! attempt_install; then
+  warn "Install failed; removing $SRC and retrying once from a clean clone."
   rm -rf "$SRC"
-  git clone --depth 1 "$REPO" "$SRC"
-  [ -d "$SRC/qt_client" ] || die "Fresh clone of $REPO does not contain qt_client."
+  attempt_install \
+    || die "Install failed again after a clean re-clone; see the messages above for the cause."
 fi
-diag fetch 1
-
-# --- build ------------------------------------------------------------------
-CURRENT_STEP="build"
-JOBS="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
-BUILD="$SRC/qt_client/build"
-say "Configuring"
-CMAKE_ARGS=(-S "$SRC/qt_client" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF)
-if command -v brew >/dev/null 2>&1; then
-  qt_prefix="$(brew --prefix qt 2>/dev/null || true)"
-  ssl_prefix="$(brew --prefix openssl@3 2>/dev/null || true)"
-  [ -n "$qt_prefix" ] && CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
-  [ -n "$ssl_prefix" ] && CMAKE_ARGS+=("-DOPENSSL_ROOT_DIR=$ssl_prefix")
-fi
-cmake "${CMAKE_ARGS[@]}"
-say "Building (this can take a few minutes)"
-cmake --build "$BUILD" -j"$JOBS"
-diag build 1
-
-# --- install ----------------------------------------------------------------
-CURRENT_STEP="install"
-if [ -x "$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh" ]; then
-  BUILT="$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh"
-else
-  BUILT="$BUILD/forkmesh"
-fi
-[ -x "$BUILT" ] || die "Build succeeded but the executable was not found at $BUILT."
-
-mkdir -p "$BIN_DIR"
-install -m 0755 "$BUILT" "$BIN" 2>/dev/null || { cp "$BUILT" "$BIN"; chmod 0755 "$BIN"; }
-say "Installed to $BIN"
-diag install 1
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
