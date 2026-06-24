@@ -509,7 +509,6 @@ attempt_install() {
 
 if ! attempt_install; then
   warn "Install failed; retrying once from a clean clone."
-  guard_src_removable
   rm -rf "$SRC"
   attempt_install \
     || die "Install failed again after a clean re-clone; see the messages above for the cause."
