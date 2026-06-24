@@ -853,32 +853,38 @@ bool PullStore::conflictMergeInProgress() const
     return !m_workTree.isEmpty() && !amStateDir(m_workTree).isEmpty();
 }
 
-bool PullStore::startConflictMerge(int number, QStringList *conflicted,
-                                   bool *resolvedClean, QString *error)
+// Check out a fresh work-branch for the PR (its named head, or pull/<N>, started
+// from the base) and `git am` the PR onto it, so any changes stay isolated from
+// the base branch. Sets the m_am* state. Returns false on a hard failure (already
+// torn down); on success sets *cleanApply (true = applied with no conflict and
+// committed on the branch; false = conflict markers left in the tree with the am
+// session open) and, when conflicting, fills *conflicted with the unmerged paths.
+// Shared by startConflictMerge (resolve) and startPullFileEdit (edit a file).
+bool PullStore::beginPullBranch(int number, QStringList *conflicted,
+                                bool *cleanApply, QString *error)
 {
     if (conflicted)
         conflicted->clear();
-    if (resolvedClean)
-        *resolvedClean = false;
+    if (cleanApply)
+        *cleanApply = false;
     if (!canWrite()) {
         if (error)
-            *error = QStringLiteral("Merging needs a local working tree.");
+            *error = QStringLiteral("This needs a local working tree.");
         return false;
     }
     if (conflictMergeInProgress()) {
         if (error)
-            *error = QStringLiteral("A merge is already in progress; finish or "
-                                    "cancel it first.");
+            *error = QStringLiteral("Another pull-request operation is already in "
+                                    "progress; finish or cancel it first.");
         return false;
     }
-    // `git am` refuses to run on a dirty tree, and resolving would entangle the
+    // `git am` refuses to run on a dirty tree, and the work would entangle the
     // user's own edits — require a clean tree up front.
     QByteArray porcelain;
     runGit(m_workTree, {"status", "--porcelain"}, &porcelain);
     if (!porcelain.trimmed().isEmpty()) {
         if (error)
-            *error = QStringLiteral("Commit or stash your local changes before "
-                                    "resolving conflicts.");
+            *error = QStringLiteral("Commit or stash your local changes first.");
         return false;
     }
     PullRequest pr;
@@ -893,6 +899,58 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
         return false;
     }
 
+    // Work on the PR's own branch so changes stay isolated from the base branch —
+    // a later mergePull is what lands them. Remember where to return to.
+    QString err;
+    QByteArray originalBranch;
+    QByteArray originalCommit;
+    runGit(m_workTree, {"rev-parse", "--abbrev-ref", "HEAD"}, &originalBranch, nullptr);
+    runGit(m_workTree, {"rev-parse", "--verify", "HEAD"}, &originalCommit, nullptr);
+    const QString current = QString::fromUtf8(originalBranch).trimmed();
+    m_amRestoreRef = (current.isEmpty() || current == QLatin1String("HEAD"))
+                         ? QString::fromUtf8(originalCommit).trimmed()
+                         : current;
+
+    // Branch to commit onto: the PR's named head, or a synthesized pull/<N>.
+    // Never the base branch itself (that would defeat the isolation).
+    QString branchName = pr.head.trimmed();
+    if (branchName.isEmpty() || branchName == m_amRestoreRef ||
+        branchName == pr.base.trimmed())
+        branchName = QStringLiteral("pull/%1").arg(number);
+    m_amBranch = branchName;
+
+    // Start point: the PR's recorded base when it resolves to a commit, else the
+    // current checkout. Capture it as a stable SHA so the regenerated diff is
+    // unaffected by later ref movement.
+    QString startPoint = m_amRestoreRef;
+    if (!pr.base.trimmed().isEmpty()) {
+        QByteArray baseSha;
+        if (runGit(m_workTree,
+                   {"rev-parse", "--verify", "--quiet",
+                    pr.base.trimmed() + "^{commit}"},
+                   &baseSha) &&
+            !baseSha.trimmed().isEmpty())
+            startPoint = pr.base.trimmed();
+    }
+    QByteArray startSha;
+    runGit(m_workTree, {"rev-parse", "--verify", startPoint}, &startSha, nullptr);
+    m_amBase = QString::fromUtf8(startSha).trimmed();
+    if (m_amBase.isEmpty())
+        m_amBase = startPoint;
+
+    if (!runGit(m_workTree, {"checkout", "-B", m_amBranch, startPoint}, nullptr,
+                &err)) {
+        const QString branch = m_amBranch;
+        m_amBranch.clear();
+        m_amBase.clear();
+        m_amRestoreRef.clear();
+        if (error)
+            *error =
+                QStringLiteral("Could not create the pull request branch %1: %2")
+                    .arg(branch, err);
+        return false;
+    }
+
     // Source mbox: the authored series when present, else a synthesized one. A
     // synthesized mbox goes in a temp file (read once by `git am`, then removed).
     const QString realMbox = pullDir(number) + "/commits.mbox";
@@ -903,8 +961,10 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
     } else {
         tempMbox = QDir::temp().filePath(
             QStringLiteral("forkmesh-pull-%1.mbox").arg(number));
-        if (!writeTextFile(tempMbox, syntheticMbox(pr), error))
+        if (!writeTextFile(tempMbox, syntheticMbox(pr), error)) {
+            abortConflictMerge();
             return false;
+        }
         mboxPath = tempMbox;
     }
 
@@ -916,10 +976,9 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
         QFile::remove(tempMbox); // git am has already copied it into its state dir
 
     if (ok) {
-        // Applied with no conflict — finalize straight away.
-        if (resolvedClean)
-            *resolvedClean = true;
-        return finishConflictMerge(number, error);
+        if (cleanApply)
+            *cleanApply = true;
+        return true; // applied with no conflict; committed on the branch
     }
     // Non-zero exit: a content conflict leaves the am session in progress with
     // unmerged files. Anything else is a hard failure we shouldn't leave behind.
@@ -937,6 +996,138 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
     if (conflicted)
         *conflicted = files;
     return true;
+}
+
+bool PullStore::startConflictMerge(int number, QStringList *conflicted,
+                                   bool *resolvedClean, QString *error)
+{
+    if (resolvedClean)
+        *resolvedClean = false;
+    bool clean = false;
+    if (!beginPullBranch(number, conflicted, &clean, error))
+        return false;
+    if (clean) {
+        // Applied with no markers to edit — finalize on the branch straight away.
+        if (resolvedClean)
+            *resolvedClean = true;
+        return finishConflictMerge(number, error);
+    }
+    return true; // conflicts left in the tree for the caller to resolve
+}
+
+bool PullStore::startPullFileEdit(int number, const QString &relPath,
+                                  QString *content, QString *error)
+{
+    QStringList conflicted;
+    bool clean = false;
+    if (!beginPullBranch(number, &conflicted, &clean, error))
+        return false;
+    if (!clean) {
+        // We can't edit through conflict markers; the PR must be resolved first.
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("This pull request has conflicts - use "
+                                    "\"Resolve conflicts\" first, then edit.");
+        return false;
+    }
+    // The PR is now applied on m_amBranch; hand back the file to edit.
+    const QString abs = m_workTree + "/" + relPath;
+    QFile f(abs);
+    if (!QFileInfo::exists(abs) || !f.open(QIODevice::ReadOnly)) {
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("'%1' is not a file in this pull request.")
+                         .arg(relPath);
+        return false;
+    }
+    if (content)
+        *content = QString::fromUtf8(f.readAll());
+    f.close();
+    return true; // branch left checked out; finishPullFileEdit commits the edit
+}
+
+bool PullStore::finishPullFileEdit(int number, const QString &relPath,
+                                   const QString &content, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Editing needs a local working tree.");
+        return false;
+    }
+    if (!writeTextFile(m_workTree + "/" + relPath, content, error))
+        return false;
+    QString err;
+    if (!runGit(m_workTree, {"add", "--", relPath}, nullptr, &err)) {
+        if (error)
+            *error = "git add failed: " + err;
+        return false;
+    }
+    QByteArray staged;
+    runGit(m_workTree, {"diff", "--cached", "--name-only"}, &staged);
+    if (staged.trimmed().isEmpty()) {
+        // The file is unchanged — nothing to commit; tear the work branch down.
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("No changes to commit.");
+        return false;
+    }
+    if (!runGit(m_workTree,
+                {"commit", "-m",
+                 QStringLiteral("pull #%1: edit %2").arg(number).arg(relPath)},
+                nullptr, &err)) {
+        if (error)
+            *error = "git commit failed: " + err;
+        return false;
+    }
+    return finalizeOnPullBranch(
+        number, QStringLiteral("pull #%1: edit %2").arg(number).arg(relPath),
+        error);
+}
+
+// Shared tail for the on-branch PR operations (resolve, edit): leave the work
+// branch, regenerate the PR's patch + commit series against the current base so
+// it stays cleanly mergeable, keep it open, and commit the refreshed pulls/
+// metadata onto the original branch. Consumes (and clears) the m_am* state.
+bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
+                                     QString *error)
+{
+    QString err;
+    if (!m_amRestoreRef.isEmpty() && m_amRestoreRef != m_amBranch &&
+        !runGit(m_workTree, {"checkout", m_amRestoreRef}, nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("Committed on %1, but could not return to %2: %3")
+                         .arg(m_amBranch, m_amRestoreRef, err);
+        return false;
+    }
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    const QString range = m_amBase + ".." + m_amBranch;
+    QByteArray diff;
+    if (!runGit(m_workTree, {"diff", range}, &diff, &err)) {
+        if (error)
+            *error = "Could not refresh the pull request patch: " + err;
+        return false;
+    }
+    QByteArray mbox;
+    if (!runGit(m_workTree, {"format-patch", "--stdout", range}, &mbox, &err)) {
+        if (error)
+            *error = "Could not refresh the pull request commits: " + err;
+        return false;
+    }
+    pr.patch = QString::fromUtf8(diff);
+    pr.commits = QString::fromUtf8(mbox);
+    pr.head = m_amBranch;
+    computeStats(pr);
+    if (!writePull(pr, error))
+        return false;
+    m_amBranch.clear();
+    m_amBase.clear();
+    m_amRestoreRef.clear();
+    return commit(commitMsg, error);
 }
 
 bool PullStore::finishConflictMerge(int number, QString *error)
@@ -975,19 +1166,15 @@ bool PullStore::finishConflictMerge(int number, QString *error)
             *error = "Could not complete the merge: " + err;
         return false;
     }
-    // Mark the PR merged and commit the pulls/ metadata (same tail as mergePull).
-    PullRequest pr;
-    if (!readPull(number, pr)) {
-        if (error)
-            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
-        return false;
-    }
-    pr.status = "merged";
-    if (!writePull(pr, error))
-        return false;
-    if (!commit(QStringLiteral("merge pull #%1: %2").arg(number).arg(pr.title), error))
-        return false;
-    return true;
+    // The resolution now lives on m_amBranch. Return to the original branch,
+    // regenerate the PR from it, and leave it open — the base branch only gets
+    // the refreshed pulls/ metadata; merging stays the owner's separate step.
+    return finalizeOnPullBranch(
+        number,
+        QStringLiteral("pull #%1: resolve conflicts on %2")
+            .arg(number)
+            .arg(m_amBranch),
+        error);
 }
 
 void PullStore::abortConflictMerge()
@@ -996,6 +1183,15 @@ void PullStore::abortConflictMerge()
         return;
     if (!amStateDir(m_workTree).isEmpty())
         runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
+    // Return to the branch we started from and drop the throwaway PR branch so a
+    // cancelled resolution leaves no trace.
+    if (!m_amRestoreRef.isEmpty() && m_amRestoreRef != m_amBranch)
+        runGit(m_workTree, {"checkout", m_amRestoreRef}, nullptr, nullptr);
+    if (!m_amBranch.isEmpty())
+        runGit(m_workTree, {"branch", "-D", m_amBranch}, nullptr, nullptr);
+    m_amBranch.clear();
+    m_amBase.clear();
+    m_amRestoreRef.clear();
 }
 
 bool PullStore::checkMergeable(int number, bool *clean,

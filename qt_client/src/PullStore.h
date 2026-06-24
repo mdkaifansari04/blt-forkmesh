@@ -97,20 +97,40 @@ public:
                         QStringList *conflictFiles = nullptr,
                         QString *error = nullptr) const;
 
-    // Interactive conflict resolution. startConflictMerge runs `git am --3way`
-    // (the PR's commit series, or a synthesized one-commit mbox from the flat
-    // patch) so conflict markers land in the working tree. It needs a clean tree.
-    // On a clean apply it finalizes immediately and sets *resolvedClean=true; on
-    // conflict it leaves the am session in progress, fills *conflicted with the
-    // unmerged paths, and returns true. The caller edits the files, then calls
-    // finishConflictMerge to `git am --continue` + mark merged, or
-    // abortConflictMerge to restore the pre-merge tree.
+    // Interactive conflict resolution that isolates the fix on the PR's own
+    // branch instead of merging into the checked-out (base) branch.
+    // startConflictMerge checks out a dedicated branch (pr.head, or pull/<N>)
+    // started from the base, then runs `git am --3way` (the PR's commit series,
+    // or a synthesized one-commit mbox from the flat patch) so conflict markers
+    // land in the working tree. It needs a clean tree. On a clean apply it
+    // finalizes immediately and sets *resolvedClean=true; on conflict it leaves
+    // the am session in progress, fills *conflicted with the unmerged paths, and
+    // returns true. The caller edits the files, then calls finishConflictMerge —
+    // `git am --continue`, return to the original branch, regenerate the PR's
+    // patch from the resolved branch, and leave the PR *open* (a later mergePull
+    // lands it on the base) — or abortConflictMerge to restore the prior state
+    // and drop the throwaway branch.
     bool startConflictMerge(int number, QStringList *conflicted,
                             bool *resolvedClean, QString *error = nullptr);
     bool finishConflictMerge(int number, QString *error = nullptr);
+    // Tears down any in-progress PR-branch operation (resolve or edit): aborts a
+    // pending `git am`, returns to the original branch, and drops the work branch.
     void abortConflictMerge();
     // Whether a `git am` session is currently in progress in the working tree.
     bool conflictMergeInProgress() const;
+
+    // Edit a single file in an open PR, committing the change onto the PR's own
+    // branch (like the conflict editor) and leaving the PR open + mergeable.
+    // startPullFileEdit checks out the PR's branch with the PR applied (it needs a
+    // clean tree and a conflict-free PR — resolve conflicts first otherwise) and
+    // hands back the file's current contents via *content, leaving the branch
+    // checked out. finishPullFileEdit writes the new contents, commits them on the
+    // branch, returns to the original branch and regenerates the PR's patch. Cancel
+    // with abortConflictMerge to discard the edit and drop the branch.
+    bool startPullFileEdit(int number, const QString &relPath, QString *content,
+                           QString *error = nullptr);
+    bool finishPullFileEdit(int number, const QString &relPath,
+                            const QString &content, QString *error = nullptr);
     // Build a minimal mbox (single commit) from a flat patch so `git am` can
     // apply it and credit the PR author. Public for testing.
     static QString syntheticMbox(const PullRequest &pr);
@@ -149,6 +169,16 @@ public:
     static void computeStats(PullRequest &pr);
 
 private:
+    // Shared machinery for the on-branch PR operations (resolve, edit file):
+    // beginPullBranch checks out the PR's work branch and `git am`s the PR onto
+    // it; finalizeOnPullBranch returns to the original branch, regenerates the
+    // PR's patch/commits from the work branch, keeps it open, and commits the
+    // refreshed pulls/ metadata. Both use the m_am* state.
+    bool beginPullBranch(int number, QStringList *conflicted, bool *cleanApply,
+                         QString *error);
+    bool finalizeOnPullBranch(int number, const QString &commitMsg,
+                              QString *error);
+
     QString pullsDir() const;
     QString pullDir(int number) const;
     int nextNumber() const;
@@ -170,4 +200,12 @@ private:
     QString m_mirror;
     const ForkMeshIdentity *m_identity;
     QString m_authorName;
+
+    // In-progress conflict-resolution state, carried from startConflictMerge to
+    // finishConflictMerge/abortConflictMerge. The resolution is committed onto
+    // m_amBranch (started from m_amBase); m_amRestoreRef is the branch/commit to
+    // return to afterwards. All empty when no resolution is in progress.
+    QString m_amBranch;
+    QString m_amBase;
+    QString m_amRestoreRef;
 };

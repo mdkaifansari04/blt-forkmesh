@@ -1338,9 +1338,14 @@ SCHEMA_STATEMENTS = [
     # node name (migration 0003). is_admin is an operator-settable flag and name
     # is the public node name in plaintext, so an admin can be granted directly
     # in the DB: UPDATE accounts SET is_admin=1 WHERE name='alice' (migration 0006).
+    # ip_bi is the blind index (keyed HMAC) of the signup IP — never the IP itself,
+    # which lives only inside the encrypted `data` blob. It lets anti-abuse count
+    # how many accounts share a source IP for uniqueness without storing or
+    # exposing a reversible address (migration 0015).
     "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, "
-    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0)",
+    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
+    "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
@@ -1507,6 +1512,14 @@ async def ensure_schema(env):
                 "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
         except Exception:
             pass
+    # Blind index of the signup IP for duplicate-signup detection (migration 0015);
+    # added separately for accounts tables that predate it. Idempotent — a second
+    # run raises "duplicate column name", which we swallow.
+    try:
+        await env.DB.prepare(
+            "ALTER TABLE accounts ADD COLUMN ip_bi TEXT").run()
+    except Exception:
+        pass
     _schema_ready = True
 
 
@@ -2073,29 +2086,35 @@ def _basic_auth_challenge():
     )
 
 
-async def _save_account(env, name_bi, rec, email_bi=None):
-    # Persist the encrypted record; pass email_bi to (re)index for email login.
-    # The plaintext `name` column mirrors the (public) node name so an operator
-    # can grant admin in the DB by name; is_admin is never written here, so a
-    # value set directly in the DB survives ordinary account updates.
+async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
+    # Persist the encrypted record; pass email_bi to (re)index for email login and
+    # ip_bi to (re)index the signup IP for duplicate detection. Both are only
+    # written when supplied, so a caller that doesn't have them in hand (e.g. a
+    # donation-poll save) never clobbers a value set at finalize. The plaintext
+    # `name` column mirrors the (public) node name so an operator can grant admin
+    # in the DB by name; is_admin is never written here, so a value set directly in
+    # the DB survives ordinary account updates.
     enc = await encrypt_row(env, rec)
     name = rec.get("name", "")
-    if email_bi is None:
-        await d1_run(
-            env,
-            """INSERT INTO accounts (name_bi, data, name) VALUES (?,?,?)
-               ON CONFLICT(name_bi) DO UPDATE SET
-                 data=excluded.data, name=excluded.name""",
-            name_bi, enc, name,
-        )
-    else:
-        await d1_run(
-            env,
-            """INSERT INTO accounts (name_bi, data, email_bi, name) VALUES (?,?,?,?)
-               ON CONFLICT(name_bi) DO UPDATE SET
-                 data=excluded.data, email_bi=excluded.email_bi, name=excluded.name""",
-            name_bi, enc, email_bi, name,
-        )
+    # Column names here are fixed literals (never user input), so building the
+    # statement by name is safe.
+    cols = ["data", "name"]
+    vals = [enc, name]
+    if email_bi is not None:
+        cols.append("email_bi")
+        vals.append(email_bi)
+    if ip_bi is not None:
+        cols.append("ip_bi")
+        vals.append(ip_bi)
+    insert_cols = ", ".join(["name_bi"] + cols)
+    placeholders = ", ".join(["?"] * (1 + len(vals)))
+    set_clause = ", ".join(c + "=excluded." + c for c in cols)
+    await d1_run(
+        env,
+        "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
+        "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
+        name_bi, *vals,
+    )
 
 
 def _donation_expiry_fields(rec, now):
@@ -2703,6 +2722,30 @@ async def _account_donation_status(env, request):
     })
 
 
+def _signup_metadata(request):
+    # Uniqueness/anti-abuse signals captured at signup. Cloudflare sets these on
+    # every inbound request. They are PRIVACY-SENSITIVE, so the values only ever
+    # live inside the AES-GCM-encrypted `data` blob (decryptable solely with
+    # DATA_KEY); the IP additionally gets a one-way blind index (see ip_bi) so
+    # duplicate signups can be counted without storing a reversible address.
+    try:
+        headers = request.headers
+    except Exception:
+        return {"ip": "", "ua": "", "country": "", "at": int(Date.now())}
+    ip = (headers.get("cf-connecting-ip") or "").strip()
+    if not ip:
+        # Fall back to the first hop of X-Forwarded-For only if CF's header is
+        # somehow absent (e.g. a non-CF test/proxy path).
+        fwd = (headers.get("x-forwarded-for") or "").strip()
+        ip = fwd.split(",")[0].strip() if fwd else ""
+    return {
+        "ip": ip[:64],
+        "ua": (headers.get("user-agent") or "").strip()[:256],
+        "country": (headers.get("cf-ipcountry") or "").strip()[:8],
+        "at": int(Date.now()),
+    }
+
+
 # Step 3: after a confirmed donation, set the email + password that unlock
 # universal (any-surface) login. Email + password hash are stored encrypted.
 async def _account_finalize(env, request):
@@ -2755,7 +2798,14 @@ async def _account_finalize(env, request):
         rec["solana"] = solana
     rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
-    await _save_account(env, name_bi, rec, email_bi=email_bi)
+    # Capture the signup IP (encrypted in the record) plus a blind index of it for
+    # privacy-respecting duplicate-signup detection. The first finalize wins: keep
+    # the original signup fingerprint rather than overwriting it on a re-finalize,
+    # and derive the blind index from the IP we actually store so the two agree.
+    rec.setdefault("signup", _signup_metadata(request))
+    signup_ip = (rec.get("signup") or {}).get("ip") or ""
+    ip_bi = await blind_index(env, signup_ip) if signup_ip else None
+    await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     # Until a real email service exists, an admin verifies the email by hand:
     # enqueue the new account so admins are notified and can verify it.
     if not rec["email_verified"]:
