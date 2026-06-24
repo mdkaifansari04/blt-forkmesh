@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 186
 title: similar to how we can assign an issue to claude code from the vs code extension add claude code as an agent to the quick issue and the issue detail page
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
