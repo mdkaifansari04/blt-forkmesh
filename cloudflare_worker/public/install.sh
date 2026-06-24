@@ -416,10 +416,17 @@ diag deps 1 "${DIAG_MISSING:-none}"
 MANAGED_MARKER=".forkmesh-managed"
 owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
 
-# Refuse to remove $SRC unless we created it (or it does not exist yet).
+# Opt-out for the unmanaged-checkout guards below: when the user knows $SRC is
+# disposable (e.g. a stale pre-marker installer checkout) they can authorize the
+# installer to take it over and wipe it. Off by default so a hand-made developer
+# checkout sitting on the default path is never silently destroyed.
+FORKMESH_FORCE="${FORKMESH_FORCE:-0}"
+
+# Refuse to remove $SRC unless we created it (or it does not exist yet), unless
+# the user explicitly forced a takeover.
 guard_src_removable() {
-  if [ -e "$SRC" ] && ! owns_src; then
-    die "$SRC already exists and was not created by this installer; refusing to delete it. Set FORKMESH_DIR to a fresh path, or remove it yourself if you are sure it is disposable."
+  if [ -e "$SRC" ] && ! owns_src && [ "$FORKMESH_FORCE" != "1" ]; then
+    die "$SRC already exists and was not created by this installer; refusing to delete it. Set FORKMESH_DIR to a fresh path, remove it yourself, or re-run with FORKMESH_FORCE=1 to let the installer overwrite it."
   fi
 }
 
@@ -445,7 +452,12 @@ fetch_source() {
   mkdir -p "$(dirname "$SRC")" || return 1
   if [ -d "$SRC/.git" ]; then
     if ! owns_src; then
-      die "$SRC is an existing git checkout not created by this installer; refusing to modify it. Set FORKMESH_DIR to a different path to install alongside it."
+      if [ "$FORKMESH_FORCE" = "1" ]; then
+        warn "$SRC is an existing checkout not created by this installer; FORKMESH_FORCE=1 set, replacing it with a fresh clone."
+        clean_clone || return 1
+        return 0
+      fi
+      die "$SRC is an existing git checkout not created by this installer; refusing to modify it. Set FORKMESH_DIR to a different path to install alongside it, or re-run with FORKMESH_FORCE=1 to overwrite it."
     fi
     say "Updating existing checkout in $SRC"
     # The stored remote was baked with the node id live at the original install.
