@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 50
 title: if a user needs a SOL wallet suggest exodus - also show on the join screen exactly how their money will be divided among the nodes and servers
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 10
