@@ -1246,6 +1246,7 @@ private:
     QVBoxLayout *m_actionStripCol = nullptr;
     QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
+    QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     int m_branchesTabIndex = -1; // index of the Branches page
