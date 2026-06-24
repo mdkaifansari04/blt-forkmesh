@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 157
 title: when you type @ in an issue have a dropdown of all node names that have every committed or created an issues or added prs so we can notify them
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 21
