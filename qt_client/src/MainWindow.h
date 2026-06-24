@@ -509,6 +509,9 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    // Open a repo from the top-bar switcher: paint a spinner, then run the heavy
+    // (synchronous) load on the next event-loop turn so the menu closes snappily.
+    void openRepoDetailDeferred(int repoIndex);
     // Blank the repo-detail panel when the selected node has no repositories.
     void clearRepoDetail();
     void openRepositoryWebsite(); // open the current repo's page in the browser
@@ -601,6 +604,8 @@ private:
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
     void startNodeSwitchSpin();
     void stopNodeSwitchSpin();
+    void startRepoSwitchSpin();
+    void stopRepoSwitchSpin();
     void nodeSwitchStep(const QString &what);
 
     // If this node owns a writable working-tree copy of the same logical repo as
@@ -1327,12 +1332,16 @@ private:
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
+    // Repo-switch busy indicator (spinner on the top-nav repo button).
+    QTimer *m_repoSwitchSpinTimer = nullptr;
+    int m_repoSwitchAngle = 0;
     // Per-row spinner in the issue list's Agent column while a session is active.
     QTimer *m_issueSpinTimer = nullptr;
     int m_issueSpinFrame = 0;
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
+    int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     QLabel *m_issueTitle = nullptr;
     QLineEdit *m_issueTitleEditor = nullptr;
     QPushButton *m_issueTitleEditButton = nullptr;
