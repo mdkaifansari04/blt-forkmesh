@@ -12,4 +12,3 @@ sig: Bg8VVFympDl6hp2CuGO6Ev-W7CxUKAs8OX5wGFwF4pN_DwMZ8weG1T03vyugOXQMeXIf6PwKwRG
 ---
 
 - feat: add editable repository about details
-
