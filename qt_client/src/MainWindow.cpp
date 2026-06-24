@@ -27939,7 +27939,9 @@ void MainWindow::nodeSwitchStep(const QString &what)
     if (!m_nodeSwitching && !m_repoLoadActive)
         return;
     showLoadStatus(what);
-    logSystem(QStringLiteral("  • ") + what);
+    QString plain = what;
+    plain.replace(QChar(0x2026), QStringLiteral("..."));
+    logSystem(QStringLiteral("  - ") + plain);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
@@ -33451,7 +33453,10 @@ void MainWindow::logSystem(const QString &text)
 {
     const QString time =
         QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
-    const QString line = time + "  " + text;
+    QString plain = text;
+    plain.replace(QChar(0x2014), QLatin1Char('-'));
+    plain.replace(QChar(0x2026), QStringLiteral("..."));
+    const QString line = time + "  " + plain;
     m_networkLog.append(line);
     while (m_networkLog.size() > kNetworkLogLimit)
         m_networkLog.removeFirst();
