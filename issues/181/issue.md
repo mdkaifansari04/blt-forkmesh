@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 181
 title: allow for linking an issue to a PR and linking a PR to an issue from the issue or pr pages
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
