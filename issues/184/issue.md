@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 184
 title: fix the fund bounty to show the correct sol to send and have it check for the deposit on the pr
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
