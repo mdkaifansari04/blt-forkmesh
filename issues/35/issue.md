@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 35
 title: for the native app To-do: Keep repo service reachable while app is foregrounded/backgrounded,
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 7
