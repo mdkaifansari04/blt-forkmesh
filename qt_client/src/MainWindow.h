@@ -867,6 +867,9 @@ private:
     // offline). Sorted, de-duplicated, and cheap to build from in-memory state.
     QStringList mentionCandidateNames() const;
     void promptAddRepository();
+    // Create a brand-new, empty Git repository: ask for a name and parent folder,
+    // run `git init`, then mirror + publish it under this node like a local repo.
+    void createNewRepository();
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.

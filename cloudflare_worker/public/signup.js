@@ -3,6 +3,10 @@
   // client: a single DNS-like label, lowercase, hyphens allowed, no underscores.
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   const PAYOUT_PER_JOIN_SOL = 0.0001; // illustrative only — reward engine WIP
+  // Mirror of TREASURY_SPLIT_NUMERATOR / TREASURY_SPLIT_DENOMINATOR in
+  // cloudflare_worker/src/entry.py: half of each join donation funds ForkMesh's
+  // servers, the other half is shared evenly across online payout nodes.
+  const TREASURY_SHARE = 0.5;
   const POLL_MS = 5000;
   const ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000;
 
@@ -21,6 +25,8 @@
   let solUsd = 0;                 // SOL→USD spot price, 0 until fetched
   let currentDonationSol = 0;     // required donation for this signup, in SOL
   let currentDonationUsd = 0;     // server-computed USD value of the requirement
+  let minDonationUsd = 0;         // ~$1 minimum, used before an address is requested
+  let nodesOnline = 0;            // live count of mirror nodes, for the money split
 
   function showStep(id) {
     for (const el of document.querySelectorAll(".step")) {
@@ -45,6 +51,7 @@
     try {
       const { body } = await api("/api/network/stats");
       const nodes = Number(body.hosts) || 0;
+      nodesOnline = nodes;
       $("#stat-nodes").textContent = String(nodes);
       $("#stat-repos").textContent = String(Number(body.repos) || 0);
       $("#stat-clients").textContent = String(Number(body.clients) || 0);
@@ -54,6 +61,7 @@
       // Live minimum donation (~$1), computed server-side from the SOL price.
       const minSol = Number(body.minSol) || 0;
       const minUsd = Number(body.minUsd) || 0;
+      if (minUsd > 0) minDonationUsd = minUsd;
       if (Number(body.solUsd) > 0) solUsd = Number(body.solUsd);
       const minSolEl = $("#min-donation-sol");
       if (minSolEl && minSol > 0) minSolEl.textContent = trimAmount(minSol.toFixed(9)) + " SOL";
@@ -64,7 +72,33 @@
               { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : "";
       }
+      renderSplit();
     } catch (_) { /* leave placeholders */ }
+  }
+
+  // Show exactly how a join donation is divided: half to ForkMesh's servers,
+  // half split evenly across the mirror nodes online right now.
+  function money(n) {
+    return "$" + n.toLocaleString(undefined,
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function renderSplit() {
+    const usd = currentDonationUsd > 0 ? currentDonationUsd : minDonationUsd;
+    const serversUsd = usd * TREASURY_SHARE;
+    const nodesUsd = usd * (1 - TREASURY_SHARE);
+    const online = Math.max(nodesOnline, 0);
+    const perNode = online > 0 ? nodesUsd / online : 0;
+    const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
+    setText("#split-node-count", String(online));
+    setText("#split-node-count-2", String(online));
+    setText("#split-servers-usd",
+      serversUsd > 0 ? "≈ " + money(serversUsd) : "infrastructure & relay");
+    setText("#split-nodes-usd",
+      nodesUsd > 0 ? "≈ " + money(nodesUsd) : "shared by uptime & data");
+    setText("#split-per-node",
+      online <= 0 ? "no nodes yet"
+        : perNode > 0 ? "≈ " + money(perNode) : "—");
   }
 
   // --- Step 1: node name -----------------------------------------------------
@@ -403,6 +437,7 @@
     // USD value next to the amount the user is being asked to send.
     const pay = $("#pay-amount-usd");
     if (pay) pay.textContent = usd;
+    renderSplit();
   }
 
   // The minimum is computed and enforced server-side; this is best-effort and
