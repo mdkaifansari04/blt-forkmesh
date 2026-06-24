@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 153
 title: make delete issue one click and then confirm instad of double click make sure it's optimized
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 17
