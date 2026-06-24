@@ -10,6 +10,7 @@
 
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
+#include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
 #include "ServerNode.h"
@@ -12304,6 +12305,35 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeStatus->setWordWrap(true);
     m_pullMergeStatus->hide();
 
+    m_pullReviewSummary = new QLabel;
+    m_pullReviewSummary->setObjectName("pullReviewSummary");
+    m_pullReviewSummary->setTextFormat(Qt::RichText);
+    m_pullReviewSummary->setWordWrap(true);
+    m_pullReviewSummary->setOpenExternalLinks(false);
+    m_pullReviewSummary->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    m_pullReviewSummary->setContentsMargins(14, 10, 14, 10);
+    m_pullReviewSummary->hide();
+    connect(m_pullReviewSummary, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                int index = -1;
+                QPushButton *button = nullptr;
+                if (href == QLatin1String("tab:conversation")) {
+                    index = 0;
+                    button = m_pullTabConversation;
+                } else if (href == QLatin1String("tab:checks")) {
+                    index = 2;
+                    button = m_pullTabChecks;
+                } else if (href == QLatin1String("tab:files")) {
+                    index = 3;
+                    button = m_pullTabFiles;
+                }
+                if (index < 0 || !m_pullSubStack)
+                    return;
+                if (button)
+                    button->setChecked(true);
+                m_pullSubStack->setCurrentIndex(index);
+            });
+
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
     m_pullFiles->setMinimumWidth(180);
@@ -12579,6 +12609,7 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullMergeStatus);
+    detailLayout->addWidget(m_pullReviewSummary);
     detailLayout->addLayout(subTabRow);
     detailLayout->addWidget(m_pullSubStack, 1);
 
@@ -12720,6 +12751,111 @@ void MainWindow::refreshPullList()
     }
 }
 
+void MainWindow::renderPullReviewSummary(const PullRequest &pr)
+{
+    if (!m_pullReviewSummary)
+        return;
+    if (pr.number <= 0) {
+        m_pullReviewSummary->hide();
+        return;
+    }
+
+    const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
+    const auto gate = [](const QString &label, const QString &value,
+                         const QString &color, const QString &href) {
+        return QStringLiteral(
+                   "<a href='%4' style='color:%3;text-decoration:none'>"
+                   "<b>%1</b>: %2</a>")
+            .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), color, href);
+    };
+
+    QString reviewValue = QStringLiteral("Waiting");
+    QString reviewColor = QStringLiteral("#8b949e");
+    if (snapshot.reviewSummary == QLatin1String("approved")) {
+        reviewValue = QStringLiteral("Approved");
+        reviewColor = QStringLiteral("#3fb950");
+    } else if (snapshot.reviewSummary == QLatin1String("changes_requested")) {
+        reviewValue = QStringLiteral("Changes requested");
+        reviewColor = QStringLiteral("#f85149");
+    }
+
+    int passed = 0, failed = 0, running = 0, pending = 0;
+    for (const int id : runIdsForPull(pr)) {
+        const ActionRun *run = findRun(id);
+        if (!run)
+            continue;
+        if (run->status == ActionStatus::Success)
+            ++passed;
+        else if (run->status == ActionStatus::Failed ||
+                 run->status == ActionStatus::Rejected)
+            ++failed;
+        else if (run->status == ActionStatus::Running)
+            ++running;
+        else
+            ++pending;
+    }
+    const int totalChecks = passed + failed + running + pending;
+    QString checksValue = QStringLiteral("Not run");
+    QString checksColor = QStringLiteral("#8b949e");
+    if (failed > 0) {
+        checksValue = QStringLiteral("%1 failed").arg(failed);
+        checksColor = QStringLiteral("#f85149");
+    } else if (running > 0) {
+        checksValue = QStringLiteral("%1 running").arg(running);
+        checksColor = QStringLiteral("#58a6ff");
+    } else if (pending > 0) {
+        checksValue = QStringLiteral("%1 pending").arg(pending);
+    } else if (totalChecks > 0) {
+        checksValue = QStringLiteral("%1 passed").arg(passed);
+        checksColor = QStringLiteral("#3fb950");
+    }
+
+    QString mergeValue =
+        pr.status == QLatin1String("merged")
+            ? QStringLiteral("Merged")
+            : pr.status == QLatin1String("closed")
+                  ? QStringLiteral("Closed")
+                  : QStringLiteral("Open");
+    QString mergeColor =
+        pr.status == QLatin1String("merged")
+            ? QStringLiteral("#a371f7")
+            : pr.status == QLatin1String("closed") ? QStringLiteral("#f85149")
+                                                    : QStringLiteral("#3fb950");
+
+    const QString threadsValue =
+        snapshot.totalThreads == 0
+            ? QStringLiteral("No threads")
+            : QStringLiteral("%1 unresolved, %2 resolved")
+                  .arg(snapshot.unresolvedThreads)
+                  .arg(snapshot.resolvedThreads);
+    const QString threadsColor =
+        snapshot.unresolvedThreads > 0 ? QStringLiteral("#d29922")
+                                       : QStringLiteral("#3fb950");
+    const int linkedIssues = issuesLinkedFromPull(pr).size();
+    const QString linksValue =
+        linkedIssues == 0
+            ? QStringLiteral("None")
+            : QStringLiteral("%1 issue%2")
+                  .arg(linkedIssues)
+                  .arg(linkedIssues == 1 ? QString() : QStringLiteral("s"));
+
+    const QStringList gates{
+        gate(QStringLiteral("Review"), reviewValue, reviewColor,
+             QStringLiteral("tab:conversation")),
+        gate(QStringLiteral("Checks"), checksValue, checksColor,
+             QStringLiteral("tab:checks")),
+        gate(QStringLiteral("Merge"), mergeValue, mergeColor,
+             QStringLiteral("tab:conversation")),
+        gate(QStringLiteral("Threads"), threadsValue, threadsColor,
+             QStringLiteral("tab:files")),
+        gate(QStringLiteral("Links"), linksValue, QStringLiteral("#58a6ff"),
+             QStringLiteral("tab:conversation"))};
+    m_pullReviewSummary->setText(
+        QStringLiteral("<b>Review summary</b><br>%1")
+            .arg(gates.join(QStringLiteral(" &nbsp; "))));
+    m_pullReviewSummary->show();
+}
+
 void MainWindow::showPull(int number)
 {
     const PullRequest *found = nullptr;
@@ -12739,6 +12875,7 @@ void MainWindow::showPull(int number)
         renderPullThread(PullRequest());
         renderPullChecks(PullRequest());
         renderPullChecksSummary(PullRequest());
+        renderPullReviewSummary(PullRequest());
         updatePullSubTabCounts(PullRequest());
         if (m_pullComposer)
             m_pullComposer->setEnabled(false);
@@ -12791,6 +12928,7 @@ void MainWindow::showPull(int number)
     // so it is not repeated in the header.
 
     // Split the unified diff into per-file sections.
+    const PullReviewSnapshot reviewSnapshot = buildPullReviewSnapshot(*found);
     QString currentFile;
     QStringList currentLines;
     const auto flush = [&] {
@@ -12811,8 +12949,22 @@ void MainWindow::showPull(int number)
 
     for (auto it = m_pullFileDiffs.constBegin(); it != m_pullFileDiffs.constEnd(); ++it) {
         const QString name = it.key().section('/', -1);
-        auto *item = new QListWidgetItem(iconForFile(name), it.key());
+        QString label = it.key();
+        const auto summaryIt = reviewSnapshot.files.constFind(it.key());
+        if (summaryIt != reviewSnapshot.files.constEnd() &&
+            summaryIt->unresolvedThreads > 0) {
+            label += QStringLiteral("  (%1 unresolved)")
+                         .arg(summaryIt->unresolvedThreads);
+        }
+        auto *item = new QListWidgetItem(iconForFile(name), label);
         item->setData(Qt::UserRole, it.key());
+        if (summaryIt != reviewSnapshot.files.constEnd()) {
+            item->setToolTip(QStringLiteral("%1 thread(s), %2 unresolved, %3 resolved, %4 suggestion(s)")
+                                 .arg(summaryIt->totalThreads)
+                                 .arg(summaryIt->unresolvedThreads)
+                                 .arg(summaryIt->resolvedThreads)
+                                 .arg(summaryIt->suggestions));
+        }
         m_pullFiles->addItem(item);
     }
     m_pullFiles->sortItems();
@@ -12825,6 +12977,7 @@ void MainWindow::showPull(int number)
     renderPullThread(*found);
     renderPullChecks(*found);
     renderPullChecksSummary(*found);
+    renderPullReviewSummary(*found);
     updatePullSubTabCounts(*found);
     updatePullActionState();
 }
@@ -12856,26 +13009,97 @@ void MainWindow::renderPullDiff(const QString &filePath)
         return;
     const QString diff = m_pullFileDiffs.value(filePath);
 
-    // Collect already-posted inline comments for this file, keyed by side:line,
-    // so the renderer can drop them in beneath the lines they annotate.
+    // Collect already-posted review threads for this file, keyed by side:line,
+    // so the renderer can drop them beneath the lines they annotate.
     QHash<QString, QString> notes;
     const PullRequest *pr = nullptr;
     for (const PullRequest &p : m_currentPulls)
         if (p.number == m_currentPullNumber)
             pr = &p;
     if (pr) {
-        for (const PullEvent &ev : pr->events) {
-            if (ev.type != QLatin1String("line-comment") || ev.path != filePath)
+        const auto htmlBody = [](QString text) {
+            text = text.toHtmlEscaped();
+            text.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+            return text;
+        };
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(*pr);
+        for (const PullReviewThread &thread : snapshot.threads) {
+            if (thread.path != filePath || thread.lineStart <= 0)
                 continue;
-            const QString who =
-                ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
-            QString body = ev.body.toHtmlEscaped();
-            body.replace('\n', QStringLiteral("<br>"));
+            const QString side =
+                thread.side.isEmpty() ? QStringLiteral("new") : thread.side;
             const QString key =
-                ev.side + QStringLiteral(":") + QString::number(ev.line);
-            notes[key] +=
-                QStringLiteral("<div class='notehdr'><b>%1</b> commented %2</div>%3")
-                    .arg(who.toHtmlEscaped(), formatIssueRelativeTime(ev.ts), body);
+                side + QStringLiteral(":") + QString::number(thread.lineStart);
+            QString note =
+                QStringLiteral("<div class='reviewthread'><div class='threadhead'>"
+                               "<b>Review thread</b> on %1 line %2 "
+                               "<span class='threadstate %3'>%4</span></div>")
+                    .arg(side.toHtmlEscaped())
+                    .arg(thread.lineStart)
+                    .arg(thread.resolved ? QStringLiteral("resolved")
+                                         : QStringLiteral("unresolved"),
+                         thread.resolved ? QStringLiteral("Resolved")
+                                         : QStringLiteral("Unresolved"));
+            for (const PullEvent &ev : thread.events) {
+                const QString who =
+                    ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+                const QString when = formatIssueRelativeTime(ev.ts);
+                if (ev.type == QLatin1String("thread-state")) {
+                    const QString action =
+                        ev.state == QLatin1String("resolved")
+                            ? QStringLiteral("resolved this thread")
+                            : QStringLiteral("reopened this thread");
+                    note += QStringLiteral(
+                                "<div class='threadsystem'><b>%1</b> %2 %3</div>")
+                                .arg(who.toHtmlEscaped(), action, when);
+                    continue;
+                }
+                if (ev.type == QLatin1String("suggestion-state")) {
+                    const QString action =
+                        ev.state == QLatin1String("applied")
+                            ? QStringLiteral("marked the suggestion applied")
+                            : QStringLiteral("updated the suggestion");
+                    note += QStringLiteral(
+                                "<div class='threadsystem'><b>%1</b> %2 %3</div>")
+                                .arg(who.toHtmlEscaped(), action, when);
+                    if (!ev.body.isEmpty())
+                        note += QStringLiteral("<div class='threadbody'>%1</div>")
+                                    .arg(htmlBody(ev.body));
+                    continue;
+                }
+                QString verb = QStringLiteral("commented");
+                if (ev.type == QLatin1String("thread-comment"))
+                    verb = QStringLiteral("started this thread");
+                else if (ev.type == QLatin1String("thread-reply"))
+                    verb = QStringLiteral("replied");
+                note += QStringLiteral("<div class='threadevent'>"
+                                       "<div class='notehdr'><b>%1</b> %2 %3</div>"
+                                       "<div class='threadbody'>%4</div>")
+                            .arg(who.toHtmlEscaped(), verb, when, htmlBody(ev.body));
+                if (!ev.suggestionPatch.isEmpty()) {
+                    note += QStringLiteral(
+                                "<pre class='suggestion'>%1</pre>")
+                                .arg(ev.suggestionPatch.toHtmlEscaped());
+                }
+                note += QStringLiteral("</div>");
+            }
+            if (!thread.id.isEmpty() && !thread.id.startsWith(QLatin1String("legacy:"))) {
+                note += QStringLiteral("<div class='threadactions'>"
+                                       "<a href='thread:reply:%1'>Reply</a>")
+                            .arg(thread.id.toHtmlEscaped());
+                if (thread.resolved) {
+                    note += QStringLiteral(
+                        " &nbsp; <a href='thread:unresolve:%1'>Reopen</a>")
+                                .arg(thread.id.toHtmlEscaped());
+                } else {
+                    note += QStringLiteral(
+                        " &nbsp; <a href='thread:resolve:%1'>Resolve</a>")
+                                .arg(thread.id.toHtmlEscaped());
+                }
+                note += QStringLiteral("</div>");
+            }
+            note += QStringLiteral("</div>");
+            notes[key] += note;
         }
     }
 
@@ -12895,6 +13119,21 @@ void MainWindow::renderPullDiff(const QString &filePath)
 
 void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
 {
+    const QString href = url.toString(QUrl::FullyDecoded);
+    if (href.startsWith(QLatin1String("thread:"))) {
+        const QStringList parts = href.split(QLatin1Char(':'));
+        if (parts.size() < 3)
+            return;
+        const QString action = parts.at(1);
+        const QString threadId = parts.mid(2).join(QStringLiteral(":"));
+        if (action == QLatin1String("reply"))
+            submitPullThreadReply(threadId);
+        else if (action == QLatin1String("resolve"))
+            setPullThreadState(threadId, QStringLiteral("resolved"));
+        else if (action == QLatin1String("unresolve"))
+            setPullThreadState(threadId, QStringLiteral("unresolved"));
+        return;
+    }
     // "viewed:<path>" toggles a file's reviewed state and re-renders it.
     if (url.scheme() == QLatin1String("viewed")) {
         const QString path = url.path();
@@ -12940,7 +13179,7 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
         return;
     }
     // Anchor format: "cmt:<side>:<line>" where side is old|new.
-    const QStringList parts = url.toString().split(QLatin1Char(':'));
+    const QStringList parts = href.split(QLatin1Char(':'));
     if (parts.size() != 3 || parts.at(0) != QLatin1String("cmt"))
         return;
     const QString side = parts.at(1);
@@ -12960,18 +13199,94 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
     PullStore store = pullStoreForCurrentRepo();
     if (store.canWrite()) {
         QString error;
-        if (!store.addLineComment(m_currentPullNumber, filePath, side, line,
-                                  body.trimmed(), &error)) {
+        if (!store.addThreadComment(m_currentPullNumber, filePath, side, line,
+                                    line, body.trimmed(), QString(), &error)) {
             QMessageBox::warning(this, "Comment", error);
             return;
         }
     } else {
         PullEvent ev;
-        ev.type = QStringLiteral("line-comment");
+        ev.type = QStringLiteral("thread-comment");
         ev.path = filePath;
         ev.side = side;
-        ev.line = line;
+        ev.lineStart = line;
+        ev.lineEnd = line;
         ev.body = body.trimmed();
+        ev = store.makeSignedEvent(m_currentPullNumber, ev);
+        submitPullEventToInbox(m_currentPullNumber, ev);
+    }
+    reloadPulls();
+    showPull(m_currentPullNumber);
+}
+
+void MainWindow::submitPullThreadReply(const QString &threadId)
+{
+    if (m_currentPullNumber < 0 || threadId.isEmpty())
+        return;
+    QString parentId;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number != m_currentPullNumber)
+            continue;
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
+        for (const PullReviewThread &thread : snapshot.threads) {
+            if (thread.id != threadId)
+                continue;
+            for (int i = thread.events.size() - 1; i >= 0; --i) {
+                if (!thread.events.at(i).id.isEmpty()) {
+                    parentId = thread.events.at(i).id;
+                    break;
+                }
+            }
+            break;
+        }
+        break;
+    }
+
+    bool ok = false;
+    const QString body = QInputDialog::getMultiLineText(
+        this, QStringLiteral("Reply to review thread"),
+        QStringLiteral("Reply"), QString(), &ok);
+    if (!ok || body.trimmed().isEmpty())
+        return;
+
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.addThreadReply(m_currentPullNumber, threadId, parentId,
+                                  body.trimmed(), &error)) {
+            QMessageBox::warning(this, "Reply", error);
+            return;
+        }
+    } else {
+        PullEvent ev;
+        ev.type = QStringLiteral("thread-reply");
+        ev.threadId = threadId;
+        ev.parentId = parentId;
+        ev.body = body.trimmed();
+        ev = store.makeSignedEvent(m_currentPullNumber, ev);
+        submitPullEventToInbox(m_currentPullNumber, ev);
+    }
+    reloadPulls();
+    showPull(m_currentPullNumber);
+}
+
+void MainWindow::setPullThreadState(const QString &threadId, const QString &state)
+{
+    if (m_currentPullNumber < 0 || threadId.isEmpty() || state.isEmpty())
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        if (!store.setThreadState(m_currentPullNumber, threadId, state,
+                                  QString(), &error)) {
+            QMessageBox::warning(this, "Thread", error);
+            return;
+        }
+    } else {
+        PullEvent ev;
+        ev.type = QStringLiteral("thread-state");
+        ev.threadId = threadId;
+        ev.state = state;
         ev = store.makeSignedEvent(m_currentPullNumber, ev);
         submitPullEventToInbox(m_currentPullNumber, ev);
     }
@@ -13079,10 +13394,36 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         const QString when = formatIssueRelativeTime(ev.ts);
         QString verb = QStringLiteral("commented");
         QString accent;
+        QString body = ev.body;
         if (ev.type == QLatin1String("line-comment")) {
             verb = QStringLiteral("commented on <code>%1:%2</code>")
                        .arg(ev.path.toHtmlEscaped())
                        .arg(ev.line);
+        } else if (ev.type == QLatin1String("thread-comment")) {
+            verb = QStringLiteral("started a review thread on <code>%1:%2</code>")
+                       .arg(ev.path.toHtmlEscaped())
+                       .arg(ev.lineStart);
+            accent = ev.suggestionPatch.isEmpty() ? QStringLiteral("#d29922")
+                                                  : QStringLiteral("#58a6ff");
+            if (!ev.suggestionPatch.isEmpty())
+                body += QStringLiteral("\n\n```diff\n%1\n```").arg(ev.suggestionPatch);
+        } else if (ev.type == QLatin1String("thread-reply")) {
+            verb = QStringLiteral("replied in a review thread");
+        } else if (ev.type == QLatin1String("thread-state")) {
+            if (ev.state == QLatin1String("resolved")) {
+                verb = QStringLiteral("<span style='color:#3fb950'>resolved a "
+                                      "review thread</span>");
+                accent = QStringLiteral("#3fb950");
+            } else {
+                verb = QStringLiteral("reopened a review thread");
+                accent = QStringLiteral("#d29922");
+            }
+        } else if (ev.type == QLatin1String("suggestion-state")) {
+            verb = ev.state == QLatin1String("applied")
+                       ? QStringLiteral("<span style='color:#3fb950'>applied a "
+                                        "suggested change</span>")
+                       : QStringLiteral("updated a suggested change");
+            accent = QStringLiteral("#58a6ff");
         } else if (ev.type == QLatin1String("review")) {
             if (ev.state == QLatin1String("approved")) {
                 verb = QStringLiteral("<span style='color:#3fb950'>approved these "
@@ -13339,6 +13680,7 @@ void MainWindow::runChecksForCurrentPull()
                             QStringLiteral("refs/heads/") + pr->head);
     renderPullChecks(*pr);
     renderPullChecksSummary(*pr);
+    renderPullReviewSummary(*pr);
     updatePullSubTabCounts(*pr);
 }
 
@@ -13355,7 +13697,9 @@ void MainWindow::updatePullSubTabCounts(const PullRequest &pr)
         label(m_pullTabFiles, QStringLiteral("Files changed"), 0);
         return;
     }
-    label(m_pullTabConversation, QStringLiteral("Conversation"), pr.events.size());
+    const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
+    label(m_pullTabConversation, QStringLiteral("Conversation"),
+          snapshot.topLevelItems + snapshot.totalThreads);
     label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
     label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
     label(m_pullTabFiles, QStringLiteral("Files changed"), pr.filesChanged);
@@ -21920,6 +22264,20 @@ QString diffStyleSheet()
                "td.lnlink a { color:%2; text-decoration:none; }"
                "td.notecell { padding:8px 12px; background:%1; "
                "border:1px solid %7; color:%8; white-space:normal; }"
+               ".reviewthread { font-family:sans-serif; }"
+               ".threadhead { color:%8; font-size:12px; margin-bottom:8px; }"
+               ".threadstate { font-size:10px; font-weight:700; padding:1px 6px; "
+               "border:1px solid %7; }"
+               ".threadstate.resolved { color:#3fb950; }"
+               ".threadstate.unresolved { color:#d29922; }"
+               ".threadevent { margin-top:8px; padding-top:8px; "
+               "border-top:1px solid %7; }"
+               ".threadbody { color:%8; }"
+               ".threadsystem { color:%2; font-size:11px; margin-top:6px; }"
+               ".threadactions { margin-top:8px; }"
+               ".threadactions a { color:#58a6ff; text-decoration:none; }"
+               ".suggestion { background:%9; border:1px solid %7; color:%8; "
+               "padding:8px; margin-top:6px; white-space:pre; }"
                ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
         .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg);
 }
@@ -34965,6 +35323,7 @@ void MainWindow::refreshOpenPullChecks()
             continue;
         renderPullChecks(pr);
         renderPullChecksSummary(pr);
+        renderPullReviewSummary(pr);
         updatePullSubTabCounts(pr);
         return;
     }
