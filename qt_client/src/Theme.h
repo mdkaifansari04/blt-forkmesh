@@ -66,6 +66,9 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { border-color: #1f6feb; background: #1f6feb; }
 #modeHint { color: #8b949e; font-size: 12px; padding-left: 26px; background: transparent; }
+/* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
+#relayHostEdit { color: #8b949e; }
+#relayHostEdit:focus { color: #e6edf3; }
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #0d1117;
@@ -378,6 +381,23 @@ QPushButton#memberDeleteButton:hover {
     background-color: #161b22; color: #8b949e; padding: 6px 8px;
     border: none; border-bottom: 1px solid #30363d; font-weight: 700;
 }
+
+/* --- Kanban issue board --- */
+#issueBoardScroll { border: none; background: transparent; }
+#issueBoardColumn {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+}
+#issueBoardHeader {
+    color: #c9d1d9; font-weight: 700; padding: 2px 2px 4px 2px;
+}
+#issueBoardList {
+    background-color: transparent; border: none;
+}
+#issueBoardList::item {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    color: #c9d1d9; padding: 8px 8px; margin: 3px 1px;
+}
+#issueBoardList::item:selected { border-color: #1f6feb; color: #c9d1d9; }
 
 /* --- Chat area --- */
 #chatHeader {
@@ -878,6 +898,9 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { border-color: #0969da; background: #0969da; }
 #modeHint { color: #656d76; font-size: 12px; padding-left: 26px; background: transparent; }
+/* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
+#relayHostEdit { color: #8c959f; }
+#relayHostEdit:focus { color: #1f2328; }
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #ffffff;
@@ -1189,6 +1212,23 @@ QPushButton#memberDeleteButton:hover {
     background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
     border: none; border-bottom: 1px solid #d0d7de; font-weight: 700;
 }
+
+/* --- Kanban issue board --- */
+#issueBoardScroll { border: none; background: transparent; }
+#issueBoardColumn {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+}
+#issueBoardHeader {
+    color: #1f2328; font-weight: 700; padding: 2px 2px 4px 2px;
+}
+#issueBoardList {
+    background-color: transparent; border: none;
+}
+#issueBoardList::item {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #1f2328; padding: 8px 8px; margin: 3px 1px;
+}
+#issueBoardList::item:selected { border-color: #0969da; color: #1f2328; }
 
 /* --- Chat area --- */
 #chatHeader {

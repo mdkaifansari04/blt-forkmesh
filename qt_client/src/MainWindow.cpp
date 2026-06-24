@@ -307,6 +307,53 @@ public:
     }
 };
 
+// One column of the Kanban issue board: a QListWidget that accepts cards dragged
+// from any sibling column. On a cross-column drop it doesn't move the item itself
+// (the board is rebuilt from the store after the issue's status label changes);
+// instead it reads the dragged card's issue number and invokes onDrop with this
+// column's name. A plain callback avoids needing Q_OBJECT/moc in this .cpp.
+class BoardColumnList : public QListWidget
+{
+public:
+    explicit BoardColumnList(QString column, QWidget *parent = nullptr)
+        : QListWidget(parent), m_column(std::move(column))
+    {
+        setObjectName("issueBoardList");
+        setDragEnabled(true);
+        setAcceptDrops(true);
+        setDragDropMode(QAbstractItemView::DragDrop);
+        setDefaultDropAction(Qt::MoveAction);
+        setSelectionMode(QAbstractItemView::SingleSelection);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setWordWrap(true);
+        setUniformItemSizes(false);
+    }
+
+    // Invoked with (issueNumber, targetColumn) when a card is dropped here from
+    // another column.
+    std::function<void(int number, const QString &column)> onDrop;
+
+protected:
+    void dropEvent(QDropEvent *event) override
+    {
+        auto *src = qobject_cast<QListWidget *>(event->source());
+        QListWidgetItem *item = src ? src->currentItem() : nullptr;
+        if (src && src != this && item && onDrop) {
+            const int number = item->data(Qt::UserRole).toInt();
+            // We rebuild the board from the store rather than letting the view
+            // physically move the row, so don't apply the drag's move action.
+            event->setDropAction(Qt::IgnoreAction);
+            event->accept();
+            onDrop(number, m_column);
+            return;
+        }
+        event->ignore();
+    }
+
+private:
+    QString m_column;
+};
+
 // Draws the cell's relative-time text (via the base) and, when the cell carries
 // kPacmanAnchorRole (a behind-but-online node), a small pac-man pie at the right
 // edge that fills toward a closed mouth as the node nears its next heartbeat and
@@ -2065,6 +2112,40 @@ QString serverHost(const QString &serverUrl)
     return QUrl(serverUrl).host();
 }
 
+// The first-run setup screen shows only the relay *host* (e.g. "forkmesh.com").
+// The full wss:// API/room path is an implementation detail assembled here, so
+// users never see or have to type it. A bare host is expanded to the standard
+// relay URL; an explicit scheme (advanced override / local ws:// relay) is kept
+// as-is.
+QString canonicalServerUrl(const QString &input)
+{
+    QString s = input.trimmed();
+    if (s.isEmpty())
+        return kDefaultServerUrl;
+    if (s.contains(QStringLiteral("://")))
+        return s; // already a full URL
+    int slash = s.indexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        s = s.left(slash); // strip any accidental path, keep host[:port]
+    const bool local = s.startsWith(QStringLiteral("127.0.0.1")) ||
+                       s.startsWith(QStringLiteral("localhost"));
+    return QStringLiteral("%1://%2/api/repo/mainnode/forkmesh/rooms/general/ws")
+        .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
+}
+
+// Inverse of canonicalServerUrl for display: the host (with port when present)
+// pulled back out of a stored full URL.
+QString serverHostDisplay(const QString &fullUrl)
+{
+    const QUrl u(fullUrl);
+    QString host = u.host();
+    if (host.isEmpty())
+        return fullUrl.trimmed();
+    if (u.port() > 0)
+        host += QStringLiteral(":") + QString::number(u.port());
+    return host;
+}
+
 // Map a file name to a vscode-icons SVG base name (without ".svg"). Falls back
 // to "default_file"; the caller verifies the file exists.
 QString fileTypeIconName(const QString &fileNameLower)
@@ -2966,34 +3047,48 @@ QWidget *MainWindow::buildSetupPage()
         "Start with a letter; up to 63 characters.");
     nameHint->setObjectName("modeHint");
     nameHint->setWordWrap(true);
-    m_solanaEdit = new QLineEdit;
-    m_solanaEdit->setPlaceholderText("Your Solana address (for payouts, optional)");
+    // Payout Solana address is no longer collected on first run — it is set later
+    // from Settings once the user is logged in. The widget is kept (hidden) as a
+    // data-holder so the profile/settings sync and session start paths that read
+    // it keep working unchanged.
+    m_solanaEdit = new QLineEdit(card);
     m_solanaEdit->setMaxLength(64);
     m_solanaEdit->setText(savedSolanaAddress());
+    m_solanaEdit->hide();
     m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
     m_pubkeyLabel->setObjectName("modeHint");
     m_pubkeyLabel->setWordWrap(true);
 
+    // Relay server: users only ever see the host (e.g. "forkmesh.com"). The full
+    // wss:// API/room URL is assembled in code (canonicalServerUrl). The field is
+    // pre-filled with the default host and styled muted ("greyed out") to signal
+    // that most people can leave it alone — but it stays editable for anyone
+    // self-hosting a relay.
+    auto *serverLabel = new QLabel("Relay server");
+    serverLabel->setObjectName("modeHint");
     m_serverUrlEdit = new QLineEdit;
-    m_serverUrlEdit->setPlaceholderText(kDefaultServerUrl);
+    m_serverUrlEdit->setPlaceholderText(serverHostDisplay(kDefaultServerUrl));
     m_serverUrlEdit->setMaxLength(2048);
+    m_serverUrlEdit->setObjectName("relayHostEdit");
     const QString savedServerUrl = QSettings().value(kServerUrlSetting).toString().trimmed();
     const bool legacyWorkersDevUrl = QUrl(savedServerUrl).host().endsWith(
         QStringLiteral(".workers.dev"));
-    m_serverUrlEdit->setText(
+    const QString effectiveServerUrl =
         savedServerUrl.isEmpty() || savedServerUrl == kLocalServerUrl ||
                 legacyWorkersDevUrl
             ? kDefaultServerUrl
-            : savedServerUrl);
+            : savedServerUrl;
+    m_serverUrlEdit->setText(serverHostDisplay(effectiveServerUrl));
+
     // The default repository room is fixed so every node converges on the same
-    // shared rooms (issue #116). Shown read-only; no passphrase — the room is
-    // encrypted with a baked-in app key (the relay only ever sees ciphertext).
-    m_roomNameEdit = new QLineEdit;
+    // shared rooms (issue #116). It is no longer shown on the setup screen — the
+    // widget is kept as a hidden data-holder so the multi-server config and the
+    // session start path keep working unchanged. It always holds the default.
+    m_roomNameEdit = new QLineEdit(card);
     m_roomNameEdit->setMaxLength(80);
     m_roomNameEdit->setText(kDefaultRoomName);
     m_roomNameEdit->setReadOnly(true);
-    m_roomNameEdit->setToolTip("The default room is shared across the network and "
-                               "can't be changed.");
+    m_roomNameEdit->hide();
 
     auto *mainnodeHint = new QLabel(
         "Mainnodes relay encrypted repository-room ciphertext only.");
@@ -3008,19 +3103,14 @@ QWidget *MainWindow::buildSetupPage()
     startButton->setObjectName("primaryButton");
     startButton->setMinimumHeight(40);
 
-    auto *joinButton = new QPushButton("Join the network (donate \xE2\x89\xA5 $1)");
-    joinButton->setObjectName("ghostButton");
-    joinButton->setCursor(Qt::PointingHandCursor);
-    joinButton->setToolTip("Reserve your node name, pick repos to mirror, and "
-                           "donate to become an active member. You can also keep "
-                           "using ForkMesh free (view-only) by just starting the node.");
-
-    m_updateButton = new QPushButton("Quick update");
-    m_updateButton->setObjectName("ghostButton");
-    m_updateButton->setCursor(Qt::PointingHandCursor);
-    m_updateButton->setToolTip("Pull the latest version, rebuild, and relaunch");
-    setOcticon(m_updateButton, "sync", 16);
-    m_updateStatus = new QLabel;
+    // "Join the network (donate)" was removed from first run — joining/donating
+    // now happens in-app after starting, mirroring the website flow (browse first,
+    // then sign up). The Quick update button is likewise gone from this screen;
+    // its widgets are kept (hidden) so runQuickUpdate()/setUpdateStatus() — which
+    // are also reachable from the in-app rebuild path — keep functioning.
+    m_updateButton = new QPushButton(card);
+    m_updateButton->hide();
+    m_updateStatus = new QLabel(card);
     m_updateStatus->setObjectName("modeHint");
     m_updateStatus->setWordWrap(true);
     m_updateStatus->setAlignment(Qt::AlignHCenter);
@@ -3035,20 +3125,15 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addSpacing(14);
     cardLayout->addWidget(m_nameEdit);
     cardLayout->addWidget(nameHint);
-    cardLayout->addWidget(m_solanaEdit);
     cardLayout->addWidget(m_pubkeyLabel);
     cardLayout->addSpacing(8);
+    cardLayout->addWidget(serverLabel);
     cardLayout->addWidget(m_serverUrlEdit);
-    cardLayout->addWidget(m_roomNameEdit);
-    cardLayout->addSpacing(8);
     cardLayout->addWidget(mainnodeHint);
     cardLayout->addSpacing(8);
     cardLayout->addWidget(m_setupError);
     cardLayout->addSpacing(10);
     cardLayout->addWidget(startButton);
-    cardLayout->addWidget(joinButton);
-    cardLayout->addWidget(m_updateButton, 0, Qt::AlignHCenter);
-    cardLayout->addWidget(m_updateStatus);
 
     auto *setupContent = new QWidget;
     auto *setupContentLayout = new QVBoxLayout(setupContent);
@@ -3070,42 +3155,15 @@ QWidget *MainWindow::buildSetupPage()
     layout->addWidget(setupScroll);
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
-    connect(joinButton, &QPushButton::clicked, this, [this]() {
-        const QString name = accountNameFromInput(m_nameEdit->text(), QString());
-        if (name.isEmpty()) {
-            if (m_setupError) {
-                m_setupError->setText("Choose a node name first.");
-                m_setupError->show();
-            }
-            return;
-        }
-        m_nameEdit->setText(name);
-        saveProfileName(name);
-        saveSolanaAddress(m_solanaEdit->text().trimmed());
-        if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
-            m_setupError->setText(m_profileIdentity.errorString());
-            m_setupError->show();
-            return;
-        }
-        if (!ensureNodeAccount(name, m_solanaEdit->text().trimmed())) {
-            m_setupError->setText("Log in to your node account to join the network.");
-            m_setupError->show();
-            return;
-        }
-        startSession();
-    });
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
         saveProfileName(name);
     });
-    connect(m_solanaEdit, &QLineEdit::textEdited, this, [this](const QString &address) {
-        saveSolanaAddress(address);
-        updateSolanaNotice();
+    // The field holds a bare host; persist the canonical full relay URL so every
+    // other consumer (which expects a complete wss:// URL) keeps working.
+    connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &host) {
+        QSettings().setValue(kServerUrlSetting, canonicalServerUrl(host));
     });
-    connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &url) {
-        QSettings().setValue(kServerUrlSetting, url.trimmed());
-    });
-    connect(m_updateButton, &QPushButton::clicked, this, &MainWindow::runQuickUpdate);
 
     return page;
 }
@@ -3158,7 +3216,7 @@ void MainWindow::startSession()
         return;
     }
     if (m_serverUrlEdit->text().trimmed().isEmpty())
-        m_serverUrlEdit->setText(kDefaultServerUrl);
+        m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
     saveSolanaAddress(m_solanaEdit->text().trimmed());
     if (m_accountAuthenticated && m_accountName != name) {
@@ -3208,10 +3266,11 @@ void MainWindow::startSession()
     m_dmList->clear();
     rebuildConversationView();
 
-    QSettings().setValue(kServerUrlSetting, m_serverUrlEdit->text().trimmed());
+    const QString fullServerUrl = canonicalServerUrl(m_serverUrlEdit->text());
+    QSettings().setValue(kServerUrlSetting, fullServerUrl);
     QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
     persistEditsToActiveServer();
-    const QUrl url(m_serverUrlEdit->text().trimmed());
+    const QUrl url(fullServerUrl);
     auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
@@ -4590,7 +4649,7 @@ void MainWindow::loadActiveServerIntoEdits()
         return;
     const ServerConfig &active = m_servers.at(m_activeServer);
     if (m_serverUrlEdit)
-        m_serverUrlEdit->setText(active.url);
+        m_serverUrlEdit->setText(serverHostDisplay(active.url)); // show host only
     if (m_roomNameEdit)
         m_roomNameEdit->setText(active.room);
 }
@@ -4600,7 +4659,7 @@ void MainWindow::persistEditsToActiveServer()
     if (m_activeServer < 0 || m_activeServer >= m_servers.size())
         return;
     ServerConfig &active = m_servers[m_activeServer];
-    active.url = m_serverUrlEdit->text().trimmed();
+    active.url = canonicalServerUrl(m_serverUrlEdit->text()); // host -> full URL
     active.room = m_roomNameEdit->text().trimmed();
     saveServers();
 }
@@ -7173,16 +7232,25 @@ QWidget *MainWindow::buildIssuesSection()
     labelsTab->setProperty("buttonSize", "sm");
     labelsTab->setCheckable(true);
     labelsTab->setCursor(Qt::PointingHandCursor);
+    auto *boardTab = new QPushButton("Board");
+    boardTab->setObjectName("ghostButton");
+    boardTab->setProperty("buttonSize", "sm");
+    boardTab->setCheckable(true);
+    boardTab->setCursor(Qt::PointingHandCursor);
+    boardTab->setToolTip("Kanban board: drag issues between status columns");
     setOcticon(milestonesTab, "graph", 16);
     setOcticon(labelsTab, "tag", 16);
+    setOcticon(boardTab, "workflow", 16);
     issueTabGroup->addButton(issuesTab, 0);
     issueTabGroup->addButton(milestonesTab, 1);
     issueTabGroup->addButton(labelsTab, 2);
+    issueTabGroup->addButton(boardTab, 3);
     auto *headingRow = new QHBoxLayout;
     headingRow->setContentsMargins(0, 0, 0, 0);
     headingRow->addWidget(heading);
     headingRow->addStretch();
     headingRow->addWidget(issuesTab);
+    headingRow->addWidget(boardTab);
     headingRow->addWidget(milestonesTab);
     headingRow->addWidget(labelsTab);
 
@@ -7288,13 +7356,13 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 14);
+    m_issueTable = new QTableWidget(0, 15);
     m_issueTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
-         "Created", "Agent", "Author", "Progress", "Est. cost", "Bounty",
-         "Comments"});
+         "Created", "Updated", "Agent", "Author", "Progress", "Est. cost",
+         "Bounty", "Comments"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -7316,15 +7384,16 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Votes
     header->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Labels
     header->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Milestone
-    header->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Created
-    header->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Agent
-    header->setSectionResizeMode(9, QHeaderView::ResizeToContents);  // Author
-    header->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Progress
-    header->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Est. cost
-    header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Bounty
-    header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Comments
+    header->setSectionResizeMode(7, QHeaderView::ResizeToContents);  // Created
+    header->setSectionResizeMode(8, QHeaderView::ResizeToContents);  // Updated
+    header->setSectionResizeMode(9, QHeaderView::ResizeToContents);  // Agent
+    header->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Author
+    header->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Progress
+    header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Est. cost
+    header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Bounty
+    header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
-    m_issueTable->setItemDelegateForColumn(10, new ProgressBarDelegate(m_issueTable));
+    m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
@@ -7361,9 +7430,10 @@ QWidget *MainWindow::buildIssuesSection()
         labelHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
 
     m_issueListStack = new QStackedWidget;
-    m_issueListStack->addWidget(m_issueTable);
-    m_issueListStack->addWidget(m_issueMilestonesTable);
-    m_issueListStack->addWidget(m_issueLabelsTable);
+    m_issueListStack->addWidget(m_issueTable);          // 0 Issues
+    m_issueListStack->addWidget(m_issueMilestonesTable); // 1 Milestones
+    m_issueListStack->addWidget(m_issueLabelsTable);     // 2 Labels
+    m_issueListStack->addWidget(buildIssueBoard());      // 3 Board (Kanban)
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -7975,9 +8045,9 @@ QWidget *MainWindow::buildIssuesSection()
         case 3:  toggleIssueStatus();    break; // Status (open <-> closed)
         case 5:  editIssueLabels();      break; // Labels
         case 6:  editIssueMilestone();   break; // Milestone
-        case 10: editIssueProgress();    break; // Progress
-        case 12: editIssueBounty();      break; // Bounty
-        default: break; // #, Votes, Created, Agent, Author, Est. cost
+        case 11: editIssueProgress();    break; // Progress
+        case 13: editIssueBounty();      break; // Bounty
+        default: break; // #, Votes, Created, Updated, Agent, Author, Est. cost
         }
     });
     connect(m_issueLabelsTable, &QTableWidget::cellDoubleClicked, this,
@@ -17449,12 +17519,319 @@ void MainWindow::selectIssueListTab(int id)
     if (!m_issueListStack)
         return;
     m_issueListStack->setCurrentIndex(id);
-    const bool tableMode = id == 0; // filters only make sense on the Issues table
-    m_issueSearch->setVisible(tableMode);
-    m_issueLabelFilter->setVisible(tableMode);
-    m_issueMilestoneFilter->setVisible(tableMode);
+    const bool tableMode = id == 0; // the Issues table
+    const bool boardMode = id == 3; // the Kanban board
+    // Search + label/milestone filters apply to both the table and the board; the
+    // Open/Closed status filter is table-only (the board's Done column *is* the
+    // closed state). The detail toggle drives the shared right-hand issue panel.
+    m_issueSearch->setVisible(tableMode || boardMode);
+    m_issueLabelFilter->setVisible(tableMode || boardMode);
+    m_issueMilestoneFilter->setVisible(tableMode || boardMode);
     m_issueStatusFilter->setVisible(tableMode);
-    m_issueDetailToggle->setVisible(tableMode);
+    m_issueDetailToggle->setVisible(tableMode || boardMode);
+    if (boardMode)
+        refreshIssueBoard();
+}
+
+namespace {
+// Default Kanban columns for a repo that hasn't customized them. The final column
+// is treated as "done" and maps to the issue's closed status.
+const QStringList kDefaultBoardColumns = {QStringLiteral("Backlog"),
+                                          QStringLiteral("Todo"),
+                                          QStringLiteral("In Progress"),
+                                          QStringLiteral("Done")};
+
+// The reserved label that encodes a card's board column (case-insensitive).
+QString boardStatusLabel(const QString &column)
+{
+    return QStringLiteral("status:") + column.trimmed().toLower();
+}
+
+bool isBoardStatusLabel(const QString &label)
+{
+    return label.startsWith(QStringLiteral("status:"), Qt::CaseInsensitive);
+}
+} // namespace
+
+QStringList MainWindow::boardColumns() const
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return kDefaultBoardColumns;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    QSettings settings;
+    const QString key =
+        QStringLiteral("issueBoard/columns/%1/%2").arg(repo.owner, repo.name);
+    const QStringList saved = settings.value(key).toStringList();
+    QStringList cleaned;
+    for (const QString &c : saved) {
+        const QString t = c.trimmed();
+        if (!t.isEmpty() && !cleaned.contains(t, Qt::CaseInsensitive))
+            cleaned << t;
+    }
+    return cleaned.isEmpty() ? kDefaultBoardColumns : cleaned;
+}
+
+void MainWindow::setBoardColumns(const QStringList &cols)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    QStringList cleaned;
+    for (const QString &c : cols) {
+        const QString t = c.trimmed();
+        if (!t.isEmpty() && !cleaned.contains(t, Qt::CaseInsensitive))
+            cleaned << t;
+    }
+    if (cleaned.size() < 2) {
+        setIssueInlineNotice("A board needs at least two columns.", true);
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    QSettings settings;
+    const QString key =
+        QStringLiteral("issueBoard/columns/%1/%2").arg(repo.owner, repo.name);
+    settings.setValue(key, cleaned);
+    refreshIssueBoard();
+}
+
+void MainWindow::editBoardColumns()
+{
+    bool ok = false;
+    const QString current = boardColumns().join(QStringLiteral(", "));
+    const QString text = QInputDialog::getText(
+        this, tr("Edit board columns"),
+        tr("Column names, left to right (comma separated).\nThe last column is the "
+           "\"done\" column and maps to closed issues."),
+        QLineEdit::Normal, current, &ok);
+    if (!ok)
+        return;
+    const QStringList cols = text.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    setBoardColumns(cols);
+}
+
+QString MainWindow::issueBoardColumn(const Issue &issue) const
+{
+    const QStringList cols = boardColumns();
+    if (cols.isEmpty())
+        return QString();
+    // Closed issues live in the final ("done") column regardless of any label.
+    if (issue.status == QStringLiteral("closed"))
+        return cols.last();
+    // Otherwise the column is named by the issue's "status:<name>" label.
+    for (const QString &col : cols) {
+        const QString want = boardStatusLabel(col);
+        for (const QString &lbl : issue.labels)
+            if (lbl.compare(want, Qt::CaseInsensitive) == 0)
+                return col;
+    }
+    // No status label yet: an unlabeled open issue starts in the first column.
+    return cols.first();
+}
+
+void MainWindow::moveIssueToColumn(int number, const QString &column)
+{
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        setIssueInlineNotice(
+            "This repository is read-only here, so issues can't be moved. Open it "
+            "on the owning node to organize the board.",
+            true);
+        return;
+    }
+    const Issue *cur = nullptr;
+    for (const Issue &i : m_currentIssues)
+        if (i.number == number) {
+            cur = &i;
+            break;
+        }
+    if (!cur)
+        return;
+    const QStringList cols = boardColumns();
+    if (cols.isEmpty() || issueBoardColumn(*cur).compare(column, Qt::CaseInsensitive) == 0)
+        return; // already there (or nothing to move to)
+    const bool toDone = column.compare(cols.last(), Qt::CaseInsensitive) == 0;
+
+    // Rewrite the issue's labels: drop any existing status:* label, then tag the
+    // target column (the done column relies on the closed status, not a label).
+    QStringList labels;
+    for (const QString &lbl : cur->labels)
+        if (!isBoardStatusLabel(lbl))
+            labels << lbl;
+    if (!toDone)
+        labels << boardStatusLabel(column);
+
+    QString error;
+    if (!store.setLabels(number, labels, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not move the issue." : error,
+                             true);
+        return;
+    }
+    // Keep open/closed in step with the board: the done column == closed.
+    const QString wantStatus =
+        toDone ? QStringLiteral("closed") : QStringLiteral("open");
+    if (cur->status != wantStatus &&
+        !store.setStatus(number, wantStatus, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update issue status."
+                                             : error,
+                             true);
+        return;
+    }
+    propagateRepoUpdate(issuesRepoIndex());
+    reloadIssues();
+    setIssueInlineNotice(
+        QStringLiteral("Moved #%1 to %2.").arg(number).arg(column));
+}
+
+QWidget *MainWindow::buildIssueBoard()
+{
+    auto *wrap = new QWidget;
+    auto *outer = new QVBoxLayout(wrap);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(8);
+
+    auto *editCols = new QPushButton("Edit columns");
+    editCols->setObjectName("ghostButton");
+    editCols->setProperty("buttonSize", "sm");
+    editCols->setCursor(Qt::PointingHandCursor);
+    editCols->setToolTip("Rename, add or remove the board's status columns");
+    setOcticon(editCols, "gear", 16);
+    connect(editCols, &QPushButton::clicked, this, &MainWindow::editBoardColumns);
+    auto *hint = new QLabel("Drag a card to another column to change its status.");
+    hint->setObjectName("statusLine");
+    auto *bar = new QHBoxLayout;
+    bar->setContentsMargins(0, 0, 0, 0);
+    bar->addWidget(hint);
+    bar->addStretch();
+    bar->addWidget(editCols);
+    outer->addLayout(bar);
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("issueBoardScroll");
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *inner = new QWidget;
+    m_issueBoardColumns = new QHBoxLayout(inner);
+    m_issueBoardColumns->setContentsMargins(2, 2, 2, 2);
+    m_issueBoardColumns->setSpacing(10);
+    scroll->setWidget(inner);
+    outer->addWidget(scroll, 1);
+
+    m_issueBoard = wrap;
+    return wrap;
+}
+
+void MainWindow::refreshIssueBoard()
+{
+    if (!m_issueBoardColumns)
+        return;
+
+    // Tear down the previous columns (widgets and the trailing stretch).
+    while (QLayoutItem *child = m_issueBoardColumns->takeAt(0)) {
+        if (QWidget *w = child->widget())
+            w->deleteLater();
+        delete child;
+    }
+
+    const QStringList cols = boardColumns();
+    QHash<QString, QString> labelColors;
+    for (const IssueLabel &label : std::as_const(m_currentLabels))
+        labelColors.insert(label.name, label.color);
+
+    // Honor the same label/milestone/search filters as the table (but not the
+    // Open/Closed filter — the board shows every issue across its columns).
+    const QString labelFilter =
+        m_issueLabelFilter ? m_issueLabelFilter->currentData().toString() : QString();
+    const QString msFilter =
+        m_issueMilestoneFilter ? m_issueMilestoneFilter->currentData().toString()
+                               : QString();
+    const QString search =
+        m_issueSearch ? m_issueSearch->text().trimmed() : QString();
+
+    // Bucket the (filtered) issues by their column, preserving column order.
+    QHash<QString, QList<const Issue *>> buckets;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (!labelFilter.isEmpty() && !issue.labels.contains(labelFilter))
+            continue;
+        if (!msFilter.isEmpty() && issue.milestone != msFilter)
+            continue;
+        if (!search.isEmpty()) {
+            const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
+                                    .arg(issue.number)
+                                    .arg(issue.title)
+                                    .arg(issue.priority)
+                                    .arg(issue.labels.join(" "), issue.milestone);
+            if (!hay.contains(search, Qt::CaseInsensitive))
+                continue;
+        }
+        buckets[issueBoardColumn(issue)].append(&issue);
+    }
+
+    const bool writable = issueStoreForCurrentRepo().canWrite();
+    for (const QString &col : cols) {
+        const QList<const Issue *> items = buckets.value(col);
+
+        auto *column = new QWidget;
+        column->setObjectName("issueBoardColumn");
+        column->setMinimumWidth(230);
+        column->setMaximumWidth(320);
+        auto *cl = new QVBoxLayout(column);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *hdr = new QLabel(QStringLiteral("%1  ·  %2").arg(col).arg(items.size()));
+        hdr->setObjectName("issueBoardHeader");
+        cl->addWidget(hdr);
+
+        auto *list = new BoardColumnList(col);
+        enableHoverRowHighlight(list);
+        // Read-only repos can't reorganize, but can still click through to issues.
+        list->setDragEnabled(writable);
+        list->setAcceptDrops(writable);
+        if (writable)
+            list->onDrop = [this](int number, const QString &target) {
+                moveIssueToColumn(number, target);
+            };
+        for (const Issue *ip : items) {
+            const Issue &issue = *ip;
+            QString text = QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title);
+            QStringList shownLabels;
+            for (const QString &lbl : issue.labels)
+                if (!isBoardStatusLabel(lbl))
+                    shownLabels << lbl;
+            if (!shownLabels.isEmpty())
+                text += QStringLiteral("\n") + shownLabels.join(QStringLiteral(", "));
+            auto *item = new QListWidgetItem(text);
+            item->setData(Qt::UserRole, issue.number);
+
+            QStringList tip;
+            tip << QStringLiteral("#%1  %2").arg(issue.number).arg(issue.title);
+            if (issue.priority > 0)
+                tip << QStringLiteral("Priority %1").arg(issue.priority);
+            if (issue.progress > 0)
+                tip << QStringLiteral("%1%% complete").arg(issue.progress);
+            if (!issue.milestone.isEmpty())
+                tip << QStringLiteral("Milestone: %1").arg(issue.milestone);
+            if (issue.bountyUsd > 0)
+                tip << QStringLiteral("Bounty $%1")
+                           .arg(QString::number(issue.bountyUsd, 'f', 2));
+            if (writable)
+                tip << QStringLiteral("Drag to another column to change status");
+            item->setToolTip(tip.join(QStringLiteral("\n")));
+            if (issue.status == QStringLiteral("closed"))
+                item->setForeground(QColor("#8b949e"));
+            list->addItem(item);
+        }
+        connect(list, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem *it) {
+                    if (it)
+                        showIssue(it->data(Qt::UserRole).toInt());
+                });
+        cl->addWidget(list, 1);
+        m_issueBoardColumns->addWidget(column);
+    }
+    m_issueBoardColumns->addStretch();
 }
 
 namespace {
@@ -17599,6 +17976,20 @@ void MainWindow::refreshIssueList()
                 : QString());
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 7, created);
+
+        // Updated date: the most recent activity on the issue (latest signed
+        // event, falling back to the created time). ISO yyyy-MM-dd sorts
+        // chronologically as plain text; the tooltip carries the "x ago" form.
+        qint64 updatedAt = issue.createdAt;
+        for (const IssueEvent &ev : issue.events)
+            updatedAt = qMax(updatedAt, ev.ts);
+        auto *updated = new QTableWidgetItem(
+            updatedAt > 0
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                : QString());
+        updated->setToolTip(formatIssueRelativeTime(updatedAt));
+        m_issueTable->setItem(row, 8, updated);
+
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
             // Provider name, prefixed with a spinner frame while the agent is
             // still working so the list shows live activity at a glance.
@@ -17608,9 +17999,9 @@ void MainWindow::refreshIssueList()
                        QStringLiteral(" ") + text;
             auto *agentItem = new QTableWidgetItem(text);
             agentItem->setData(Qt::UserRole, session->id);
-            m_issueTable->setItem(row, 8, agentItem);
+            m_issueTable->setItem(row, 9, agentItem);
         } else {
-            m_issueTable->setItem(row, 8, new QTableWidgetItem(QString()));
+            m_issueTable->setItem(row, 9, new QTableWidgetItem(QString()));
         }
         // Author: the node that opened the issue. For mirror-authored issues
         // this is the submitting node, preserved through the inbox merge.
@@ -17621,7 +18012,7 @@ void MainWindow::refreshIssueList()
                 : issue.authorName.trimmed();
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(issue.author);
-        m_issueTable->setItem(row, 9, authorItem);
+        m_issueTable->setItem(row, 10, authorItem);
 
         // Progress: percent complete. Drawn as a mini bar by ProgressBarDelegate
         // (value via kProgressBarRole); display text stays empty. Still sorts
@@ -17631,7 +18022,7 @@ void MainWindow::refreshIssueList()
         progressItem->setData(kTableSortRole, pct);
         progressItem->setData(kProgressBarRole, pct);
         progressItem->setToolTip(QStringLiteral("%1% complete").arg(pct));
-        m_issueTable->setItem(row, 10, progressItem);
+        m_issueTable->setItem(row, 11, progressItem);
 
         // Estimated OpenAI cost to implement, sorted numerically.
         const double estUsd = openAiEstimateUsd(issue);
@@ -17639,7 +18030,7 @@ void MainWindow::refreshIssueList()
             QStringLiteral("$%1").arg(QString::number(estUsd, 'f', 2)));
         estItem->setData(kTableSortRole, estUsd);
         estItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_issueTable->setItem(row, 11, estItem);
+        m_issueTable->setItem(row, 12, estItem);
 
         // Bounty pledged on the issue (em dash + sorts first when none).
         auto *bountyItem = new SortTableWidgetItem(
@@ -17651,7 +18042,7 @@ void MainWindow::refreshIssueList()
         if (!issue.bountyStatus.isEmpty())
             bountyItem->setToolTip(
                 QStringLiteral("Bounty status: %1").arg(issue.bountyStatus));
-        m_issueTable->setItem(row, 12, bountyItem);
+        m_issueTable->setItem(row, 13, bountyItem);
 
         // Comment count: "comment" events minus any that were later deleted,
         // matching what the detail thread renders. Sorted numerically.
@@ -17668,7 +18059,7 @@ void MainWindow::refreshIssueList()
         auto *commentsItem = new QTableWidgetItem;
         commentsItem->setData(Qt::DisplayRole, commentCount); // numeric sort
         commentsItem->setTextAlignment(Qt::AlignCenter);
-        m_issueTable->setItem(row, 13, commentsItem);
+        m_issueTable->setItem(row, 14, commentsItem);
     }
     m_issueTable->setSortingEnabled(true);
     m_issueTable->blockSignals(false);
@@ -17727,6 +18118,11 @@ void MainWindow::refreshIssueList()
     } else if (m_issueSpinTimer) {
         m_issueSpinTimer->stop();
     }
+
+    // Keep the Kanban board in sync with the same data + filters whenever it's the
+    // visible list view (cheap to skip rebuilding it while hidden).
+    if (m_issueListStack && m_issueListStack->currentIndex() == 3)
+        refreshIssueBoard();
 }
 
 // Advance the Agent-column spinner one frame for every issue row whose agent is
@@ -17740,7 +18136,7 @@ void MainWindow::tickIssueListSpinners()
     bool anyActive = false;
     for (int r = 0; r < m_issueTable->rowCount(); ++r) {
         QTableWidgetItem *numItem = m_issueTable->item(r, 0);
-        QTableWidgetItem *cell = m_issueTable->item(r, 8);
+        QTableWidgetItem *cell = m_issueTable->item(r, 9);
         if (!numItem || !cell)
             continue;
         const AgentSession *session =
@@ -23640,7 +24036,7 @@ void MainWindow::updateRepoDetailStatus()
 
 QUrl MainWindow::catalogApiUrl() const
 {
-    QUrl url(m_serverUrlEdit ? m_serverUrlEdit->text().trimmed() : kDefaultServerUrl);
+    QUrl url(canonicalServerUrl(m_serverUrlEdit ? m_serverUrlEdit->text() : QString()));
     if (!url.isValid() || url.host().isEmpty())
         url = QUrl(kDefaultServerUrl);
     if (url.scheme() == "ws")
@@ -23731,7 +24127,7 @@ void MainWindow::migrateReposForProfileName(const QString &oldOwner,
 
 QUrl MainWindow::hostWsUrl(const RepositoryRecord &repo) const
 {
-    QUrl url(m_serverUrlEdit ? m_serverUrlEdit->text().trimmed() : kDefaultServerUrl);
+    QUrl url(canonicalServerUrl(m_serverUrlEdit ? m_serverUrlEdit->text() : QString()));
     if (!url.isValid() || url.host().isEmpty())
         url = QUrl(kDefaultServerUrl);
     if (url.scheme() == "http")
@@ -25554,7 +25950,7 @@ void MainWindow::ensureActionStrip()
     m_actionStrip->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto *col = new QVBoxLayout(m_actionStrip);
     col->setContentsMargins(0, 0, 0, 0);
-    col->setSpacing(3);
+    col->setSpacing(4);
     m_actionStripCol = col;
     m_actionStrip->hide();
 }
@@ -25598,11 +25994,22 @@ void MainWindow::updateActionStrip()
                 w->deleteLater();
             delete item;
         }
+        // A muted header that sums the wall-clock time across every running bar.
+        // positionActionStrip() fills in its text each tick.
+        auto *total = new QLabel;
+        total->setObjectName("actionStripTotal");
+        total->setAttribute(Qt::WA_TransparentForMouseEvents);
+        total->setFixedHeight(18);
+        total->setStyleSheet(
+            "#actionStripTotal{color:#8b949e;background:rgba(110,118,129,0.16);"
+            "border-radius:8px;padding:0 10px;font-size:10px;font-weight:600;}");
+        m_actionStripCol->addWidget(total);
         for (const ActionRun *r : std::as_const(live)) {
-            auto *box = new QLabel(r->workflowName.trimmed().isEmpty()
-                                       ? QStringLiteral("workflow")
-                                       : r->workflowName.trimmed());
+            auto *box = new QLabel;
             box->setObjectName("actionStripBox");
+            box->setProperty("wfName", r->workflowName.trimmed().isEmpty()
+                                           ? QStringLiteral("workflow")
+                                           : r->workflowName.trimmed());
             // When the bar should have started growing from. startedAtMs is set
             // once the runner picks the run up; fall back to createdAtMs.
             box->setProperty("startedAtMs",
@@ -25610,11 +26017,11 @@ void MainWindow::updateActionStrip()
                                                         ? r->startedAtMs
                                                         : r->createdAtMs));
             box->setAttribute(Qt::WA_TransparentForMouseEvents);
-            box->setFixedHeight(15);
+            box->setFixedHeight(26);
             box->setStyleSheet(
-                "#actionStripBox{color:#cdd9e5;background:rgba(56,139,253,0.22);"
-                "border:1px solid #1f6feb;border-radius:7px;padding:0 7px;"
-                "font-size:10px;}");
+                "#actionStripBox{color:#e6edf3;background:rgba(56,139,253,0.28);"
+                "border:1px solid #1f6feb;border-radius:8px;padding:0 11px;"
+                "font-size:12px;}");
             m_actionStripCol->addWidget(box);
         }
     }
@@ -25642,26 +26049,63 @@ void MainWindow::positionActionStrip()
     if (!page)
         return;
 
+    // mm:ss, rolling over to h:mm:ss past the hour.
+    auto fmtElapsed = [](qint64 secs) {
+        const qint64 m = secs / 60, s = secs % 60;
+        if (m >= 60)
+            return QStringLiteral("%1:%2:%3")
+                .arg(m / 60)
+                .arg(m % 60, 2, 10, QLatin1Char('0'))
+                .arg(s, 2, 10, QLatin1Char('0'));
+        return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
+    };
+
     // Each bar's width tracks how long its run has been going: a couple of pixels
-    // per elapsed second on top of a base that always fits the workflow name.
+    // per elapsed second on top of a base that always fits its label.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    int widest = 0;
     const int rows = m_actionStripCol->count();
+    int widest = 0, bars = 0, h = 0;
+    qint64 earliest = 0;
+    QLabel *totalLabel = nullptr;
     for (int i = 0; i < rows; ++i) {
         auto *box = qobject_cast<QLabel *>(m_actionStripCol->itemAt(i)->widget());
         if (!box)
             continue;
+        h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
+        if (box->objectName() == QLatin1String("actionStripTotal")) {
+            totalLabel = box; // filled in below, once the earliest start is known
+            continue;
+        }
         const qint64 started = box->property("startedAtMs").toLongLong();
-        const qint64 elapsedS = started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
-        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 20;
-        const int w = qBound(base, base + static_cast<int>(elapsedS) * 2, 360);
+        if (started > 0 && (earliest == 0 || started < earliest))
+            earliest = started;
+        const qint64 elapsedS =
+            started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
+        const QString name = box->property("wfName").toString();
+        const QString elapsed = fmtElapsed(elapsedS);
+        box->setText(QStringLiteral("<b>%1</b>&nbsp;&nbsp;&nbsp;%2")
+                         .arg(name.toHtmlEscaped(), elapsed));
+        // Measure the plain text (bold name + gap + time) so the box always fits
+        // it, then let elapsed seconds push the right edge out further.
+        const int base = box->fontMetrics().horizontalAdvance(
+                             name + QStringLiteral("    ") + elapsed) + 28;
+        const int w = qBound(base, base + static_cast<int>(elapsedS) * 2, 380);
         box->setFixedWidth(w);
         widest = qMax(widest, w);
+        ++bars;
     }
     if (widest <= 0)
         return;
 
-    const int h = rows * 15 + (rows - 1) * 3;
+    if (totalLabel) {
+        const qint64 totalS =
+            earliest > 0 ? qMax<qint64>(0, (now - earliest) / 1000) : 0;
+        totalLabel->setText(QStringLiteral("%1 running \xC2\xB7 total %2")
+                                .arg(bars)
+                                .arg(fmtElapsed(totalS)));
+        totalLabel->setFixedWidth(widest);
+    }
+
     m_actionStrip->resize(widest, h);
 
     const QPoint tl = m_repoActionsTab->mapTo(page, QPoint(0, 0));
