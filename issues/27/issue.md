@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 27
 title: show the size of the repos and how much data each node is mirroring
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 25
