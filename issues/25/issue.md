@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 25
 title: show the issues as a table and have an option view as kanban have statuses todo, backlog, in progress or customizable status names
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 26
