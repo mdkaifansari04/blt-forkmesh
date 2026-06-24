@@ -21704,6 +21704,11 @@ void MainWindow::loadBranchesPanel()
 
         // Row actions: open a pull request from this branch, and delete it.
         auto *actions = new QWidget;
+        // Keep the container transparent so the row's hover/selection highlight
+        // shows through it; the global "QWidget { background }" rule would
+        // otherwise paint an opaque box over the highlighted row.
+        actions->setObjectName("branchActions");
+        actions->setStyleSheet("#branchActions { background: transparent; }");
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(0, 0, 8, 0);
         actionRow->setSpacing(4);
@@ -21768,18 +21773,25 @@ void MainWindow::loadBranchesPanel()
         actionRow->addWidget(del);
 
         m_branchesTable->setCellWidget(row, 3, actions);
-        // Polish before measuring: the sm-button stylesheet (font-size/padding)
-        // only affects sizeHint() once the style is applied, so an unpolished
-        // measurement underestimates and the column clips "Pull main"/"Create PR".
+        // Measure the true width the buttons need:
+        //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
+        //    which sizeHint() ignores until the style is in effect;
+        //  - pin each button to its natural width so a tight column can't
+        //    compress and clip "Pull main" / "Create PR";
+        //  - invalidate the row layout so it recomputes its hint from the now
+        //    polished buttons instead of the stale (too-small) cached value.
         actions->ensurePolished();
-        for (QWidget *child : actions->findChildren<QWidget *>())
-            child->ensurePolished();
+        for (QPushButton *b : actions->findChildren<QPushButton *>()) {
+            b->ensurePolished();
+            b->setMinimumWidth(b->sizeHint().width());
+        }
+        actionRow->invalidate();
         actionWidth = qMax(actionWidth, actions->sizeHint().width());
     }
     if (actionWidth > 0)
-        // A few px of slack so the rightmost button never sits flush against the
+        // A little slack so the rightmost button never sits flush against the
         // column edge (the action row already carries an 8px right margin).
-        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 6);
+        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 8);
     if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
