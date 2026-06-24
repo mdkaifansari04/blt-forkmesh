@@ -139,6 +139,14 @@ public:
     bool assignAgent(int number, const QString &provider, int sessionId,
                      bool createPr, const QString &status, QString *error = nullptr);
     bool deleteEvent(int number, const QString &eventId, QString *error = nullptr);
+    // Fast "regular" delete: append a signed delete/self tombstone event and
+    // commit. The issue disappears from every list (see Issue::isDeleted) and the
+    // tombstone syncs through the inbox like any other event. Cheap — no history
+    // rewrite, so it never freezes the UI.
+    bool tombstoneIssue(int number, QString *error = nullptr);
+    // Destructive "delete with history": purge the issue from all of git history
+    // via filter-branch + gc. Thorough but slow; callers should run it off the UI
+    // thread.
     bool deleteIssue(int number, QString *error = nullptr);
 
     bool saveLabels(const QList<IssueLabel> &labels, QString *error = nullptr);

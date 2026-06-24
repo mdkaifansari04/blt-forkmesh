@@ -734,6 +734,15 @@ QPlainTextEdit#markdownSource, QTextBrowser#markdownPreview {
     selection-background-color: #1f6feb;
 }
 QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
+#mentionPopup {
+    background-color: #161b22;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    outline: 0;
+}
+#mentionPopup::item { padding: 4px 10px; }
+#mentionPopup::item:selected { background-color: #1f6feb; color: #ffffff; }
 #issueTable {
     background-color: #0d1117;
     alternate-background-color: #161b22;
@@ -1538,6 +1547,15 @@ QPlainTextEdit#markdownSource, QTextBrowser#markdownPreview {
     selection-color: #ffffff;
 }
 QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
+#mentionPopup {
+    background-color: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    outline: 0;
+}
+#mentionPopup::item { padding: 4px 10px; }
+#mentionPopup::item:selected { background-color: #0969da; color: #ffffff; }
 #issueTable {
     background-color: #ffffff;
     alternate-background-color: #ffffff;

@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 
 #include <openssl/evp.h>
+#include <algorithm>
 
 namespace {
 
@@ -338,8 +339,27 @@ int main(int argc, char *argv[])
         check(sawAgentClear, "agent clear event round-trips");
         check(loaded.first().status == "closed", "status reflects close event");
 
+        // Fast "regular" delete: a tombstone hides the issue from every list but
+        // leaves its history intact in git (and recoverable).
+        const int tomb = repo.createIssue("Tombstone me", "body", {}, QString(),
+                                          0, {}, {}, &err);
+        check(repo.tombstoneIssue(tomb, &err), "tombstoneIssue succeeds");
+        const QList<Issue> afterTombstone = repo.loadAll();
+        check(!afterTombstone.isEmpty() &&
+                  std::none_of(afterTombstone.begin(), afterTombstone.end(),
+                               [&](const Issue &i) { return i.number == tomb; }),
+              "tombstoned issue no longer loads but others remain");
+        check(!gitOutput({"log", "--all", "--",
+                          QStringLiteral("issues/%1").arg(tomb)})
+                   .trimmed()
+                   .isEmpty(),
+              "tombstoned issue is preserved in git history");
+
         check(repo.deleteIssue(n, &err), "deleteIssue succeeds");
-        check(repo.loadAll().isEmpty(), "deleted issue no longer loads");
+        const QList<Issue> afterDelete = repo.loadAll();
+        check(std::none_of(afterDelete.begin(), afterDelete.end(),
+                           [&](const Issue &i) { return i.number == n; }),
+              "deleted issue no longer loads");
         check(gitOutput({"log", "--all", "--", QStringLiteral("issues/%1").arg(n)})
                   .trimmed()
                   .isEmpty(),

@@ -1306,19 +1306,42 @@ async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
     if method == "GET":
-        cached = await edge_cache_match(CATALOG_CACHE_KEY)
-        if cached is not None:
-            return cached
+        # A logged-in owner may sign a short-lived forkmesh-catalog-view-v1 token to
+        # additionally receive their OWN private repos (anonymous callers, and the
+        # static website with no key, still get the public-only list). The result is
+        # per-viewer, so an authenticated request must never read from or write to
+        # the SHARED public edge cache — that would leak private repos to everyone.
+        params = parse_qs(urlparse(request.url).query)
+        viewer = safe_segment(params.get("viewer", [""])[0])
+        view_ts = clean_string(params.get("ts", [""])[0], 20)
+        view_sig = clean_string(params.get("sig", [""])[0], 200)
+        authed_viewer = ""
+        if viewer and view_sig:
+            authed_viewer = await verify_catalog_view_token(
+                env, viewer, view_ts, view_sig)
+        if not authed_viewer:
+            cached = await edge_cache_match(CATALOG_CACHE_KEY)
+            if cached is not None:
+                return cached
         # Drop any blocked phantom entries from D1 before listing (idempotent,
         # only runs on a cache miss).
         try:
             await purge_blocked_catalog(env)
         except Exception:
             pass
-        # Private repos are never listed publicly (and never even decrypted here);
-        # the owner's client tracks its own private repos locally.
-        rows = await d1_all(
-            env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
+        # Public repos are listed for everyone; an authenticated owner additionally
+        # gets the private repos they own (matched by blind index, so no other
+        # owner's private repos are ever returned).
+        if authed_viewer:
+            viewer_bi = await blind_index(env, authed_viewer)
+            rows = await d1_all(
+                env,
+                "SELECT key_bi, data FROM repositories "
+                "WHERE is_private = 0 OR owner_bi = ?",
+                viewer_bi)
+        else:
+            rows = await d1_all(
+                env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
         # Annotate each repo with whether a host is currently live, computed once
         # here from the presence table (keyed by the same blind index as the repo)
         # instead of the catalog page probing every repo's tunnel DO per visit.
@@ -1337,12 +1360,17 @@ async def catalog_handler(env, request):
                         env, rec.get("owner"), rec.get("name")):
                     continue
                 rec["liveHost"] = r["key_bi"] in live
+                # Plaintext flag so clients can badge private repos without
+                # re-deriving it from the visibility string.
+                rec["isPrivate"] = rec.get("visibility") == "private"
                 repos.append(rec)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
-        resp = json_response(
-            {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]},
-            cache_seconds=CATALOG_TTL,
-        )
+        payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
+        # Per-viewer responses (with private repos) must not be cached at the shared
+        # edge; only the public-only list is cacheable.
+        if authed_viewer:
+            return json_response(payload)
+        resp = json_response(payload, cache_seconds=CATALOG_TTL)
         await edge_cache_put(CATALOG_CACHE_KEY, resp)
         return resp
 
@@ -1500,6 +1528,24 @@ async def verify_view_token(env, owner, repo, ts, sig):
         return False
     canonical = ("forkmesh-view-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
     return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def verify_catalog_view_token(env, viewer, ts, sig):
+    # Listing gate: lets a logged-in owner additionally see their OWN private repos
+    # in the catalog, which is otherwise public-only. Not bound to a single repo
+    # (it authorizes a listing, not one clone) and uses a distinct canonical string
+    # so a per-repo forkmesh-view-v1 token can't be replayed as a listing token and
+    # vice versa. Returns the viewer's account name on success, "" otherwise — an
+    # unknown/garbled viewer simply falls back to the public-only catalog.
+    if not viewer or not sig or not _ts_ok(ts):
+        return ""
+    pubkey = await _owner_pubkey(env, viewer)
+    if not pubkey:
+        return ""
+    canonical = ("forkmesh-catalog-view-v1\n" + viewer + "\n" + str(ts)).encode()
+    if await ed25519_verify(pubkey, sig, canonical):
+        return viewer
+    return ""
 
 
 async def _repo_is_private(env, owner, repo):

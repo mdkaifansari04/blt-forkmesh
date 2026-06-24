@@ -70,3 +70,35 @@ def test_only_literal_private_hides_a_repo():
 def test_missing_required_fields_still_rejected():
     assert safe_catalog_record({"owner": "", "name": "x", "maintainer": "k"}) is None
     assert safe_catalog_record("not a dict") is None
+
+
+# --- Logged-in viewer: catalog listing token contract -----------------------
+# A logged-in owner additionally receives their own private repos from the
+# catalog GET, gated by a forkmesh-catalog-view-v1 token. The signature is
+# produced by the Qt client and verified by the worker, so the canonical string
+# must match byte-for-byte on both sides; these tests pin that contract (and the
+# owner-scoped SQL) so a one-sided edit can't silently break it.
+QT_MAIN = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.cpp"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+QT_TEXT = QT_MAIN.read_text(encoding="utf-8") if QT_MAIN.exists() else ""
+
+
+def test_listing_token_canonical_matches_across_worker_and_client():
+    # Worker builds:  "forkmesh-catalog-view-v1\n" + viewer + "\n" + str(ts)
+    assert (
+        '"forkmesh-catalog-view-v1\\n" + viewer + "\\n" + str(ts)' in ENTRY_TEXT
+    )
+    # Qt client signs the same prefix + viewer + ts (separated by newlines).
+    assert '"forkmesh-catalog-view-v1\\n" + viewer + "\\n" + ts' in QT_TEXT
+
+
+def test_authenticated_listing_is_scoped_to_the_viewers_own_repos():
+    # Only the viewer's own private repos are added (matched by owner blind index);
+    # public repos stay visible to everyone.
+    assert "is_private = 0 OR owner_bi = ?" in ENTRY_TEXT
+
+
+def test_authenticated_listing_is_not_edge_cached():
+    # Per-viewer responses (with private repos) must never touch the shared public
+    # cache, or private repos would leak to anonymous visitors.
+    assert "if authed_viewer:\n            return json_response(payload)" in ENTRY_TEXT

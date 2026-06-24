@@ -172,6 +172,11 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
             }
         envStore.append(prefix + val);
     };
+    auto unsetVar = [&](const QByteArray &key) {
+        const QByteArray prefix = key + '=';
+        envStore.removeIf(
+            [&](const QByteArray &e) { return e.startsWith(prefix); });
+    };
     for (char **e = environ; e && *e; ++e)
         envStore.append(QByteArray(*e));
     setVar(QByteArrayLiteral("TERM"), QByteArrayLiteral("xterm-256color"));
@@ -180,6 +185,8 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
         const int eq = kv.indexOf(QLatin1Char('='));
         if (eq > 0)
             setVar(kv.left(eq).toLocal8Bit(), kv.mid(eq + 1).toLocal8Bit());
+        else if (eq < 0 && !kv.isEmpty())
+            unsetVar(kv.toLocal8Bit());
     }
     QVector<char *> envp;
     envp.reserve(envStore.size() + 1);
