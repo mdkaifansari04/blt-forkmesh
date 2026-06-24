@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 155
 title: on the code page show how much space each folder is taking along with it's lattest commit message and x ago time have the option for explorer or list view
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 19
