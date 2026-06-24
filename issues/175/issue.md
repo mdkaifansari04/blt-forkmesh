@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 175
 title: turn off the auto publishing have a setting for it
-status: open
+status: closed
 labels: []
 milestone: MVP launch
 priority: 20
