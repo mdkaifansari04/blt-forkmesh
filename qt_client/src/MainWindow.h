@@ -419,6 +419,7 @@ private:
     void postPullLinkComment(int pullNumber, const QString &body);
     void closeCurrentPull();
     void deleteCurrentPull();
+    void deleteCurrentPullAndBranch();
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
     void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
@@ -1292,6 +1293,7 @@ private:
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
+    QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     bool m_pullDeleteConfirmPending = false;
     QListWidget *m_pullFiles = nullptr;
     QTextBrowser *m_pullDiff = nullptr;
