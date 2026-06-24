@@ -29,28 +29,47 @@ export class IssueItem extends vscode.TreeItem {
   }
 }
 
-export class IssuesProvider implements vscode.TreeDataProvider<IssueItem> {
+// Header row showing the installed extension version. Clicking it (or the
+// inline button contributed for its contextValue) updates & reloads ForkMesh.
+export class VersionItem extends vscode.TreeItem {
+  constructor(version: string) {
+    super(`ForkMesh v${version}`, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = "forkmeshVersion";
+    this.iconPath = new vscode.ThemeIcon("versions");
+    this.tooltip = "Update & reload the ForkMesh extension";
+    this.command = {
+      command: "forkmesh.reload",
+      title: "Update & Reload ForkMesh",
+    };
+  }
+}
+
+export class IssuesProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
+
+  constructor(private readonly version: string) {}
 
   refresh(): void {
     this._onDidChange.fire();
   }
 
-  getTreeItem(element: IssueItem): vscode.TreeItem {
+  getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
     return element;
   }
 
-  getChildren(): IssueItem[] {
+  getChildren(): vscode.TreeItem[] {
+    const items: vscode.TreeItem[] = [new VersionItem(this.version)];
     const cfg = vscode.workspace.getConfiguration("forkmesh");
     const roots = (vscode.workspace.workspaceFolders ?? []).map(
       (f) => f.uri.fsPath
     );
     const dir = findIssuesDir(roots, cfg.get<string>("issuesPath") || "");
     if (!dir) {
-      return [];
+      return items;
     }
     const issues = loadIssues(dir, cfg.get<boolean>("showClosedIssues") || false);
-    return issues.map((i) => new IssueItem(i));
+    items.push(...issues.map((i) => new IssueItem(i)));
+    return items;
   }
 }

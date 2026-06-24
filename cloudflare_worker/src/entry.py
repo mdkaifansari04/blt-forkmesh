@@ -41,6 +41,10 @@ CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
 CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
+# Anonymous installer diagnostics: one row per reported install step. Bounded the
+# same way as the error log so the unauthenticated POST endpoint can't grow D1.
+MAX_INSTALL_DIAG = 5000
+INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
 MAX_FILES = 5000
 # Issue inbox: a single signed event body is small text; cap it and the number
 # of un-merged submissions a repo's inbox will hold.
@@ -1010,6 +1014,17 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
         status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
+    # Anonymous installer diagnostics surfaced on the admin dashboard. One row per
+    # reported install step (start/mirror/deps/fetch/build/install/launch/done).
+    # `run` is a random id the installer mints per run — it is NOT tied to any
+    # account, email, or IP; nothing user-identifying is stored here (plaintext
+    # operational diagnostics only, like error_log).
+    """CREATE TABLE IF NOT EXISTS install_diag (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        run TEXT NOT NULL, step TEXT NOT NULL, ok INTEGER NOT NULL,
+        os TEXT, arch TEXT, pm TEXT, distro TEXT, version TEXT, detail TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_install_diag_ts ON install_diag(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_install_diag_run ON install_diag(run)",
     # Live host presence: lets /api/network/stats report "hosts online" without
     # probing every repo's tunnel Durable Object on every page view. repo_bi is a
     # blind index (no plaintext repo name), ts is refreshed while a host is active
@@ -1760,13 +1775,13 @@ def _amount_sol(lamports):
     return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
 
 
-def _solana_pay_uri(address, amount_lamports, reference=""):
+def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMesh"):
     uri = ("solana:" + address +
            "?amount=" + _amount_sol(amount_lamports))
     if reference:
         uri += "&reference=" + reference
     uri += ("&label=" + quote("ForkMesh") +
-            "&message=" + quote("Join ForkMesh"))
+            "&message=" + quote(message))
     return uri
 
 
@@ -2619,7 +2634,8 @@ def _bounty_public(rec):
         "payee": rec.get("payee", ""),
         "payoutSig": rec.get("payout_sig", ""),
         "uri": _solana_pay_uri(
-            rec.get("address", ""), int(rec.get("required_lamports", 0))),
+            rec.get("address", ""), int(rec.get("required_lamports", 0)),
+            message="ForkMesh bounty"),
     }
 
 
@@ -3472,10 +3488,13 @@ async def accounts_handler(env, request):
         # Public lookup never returns email/secret material. A name is only
         # unavailable once it has been paid for / finalized.
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
+        # isAdmin + pubkey let any client authenticate a signed admin-moderation
+        # action (e.g. a chat admin-delete) made by this account's identity key.
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
+             "isAdmin": await _is_admin(env, rec.get("name", name)),
              "createdAt": rec.get("created_at", 0)}
         )
     return json_response({"error": "not_found"}, status=404)
@@ -3783,6 +3802,97 @@ async def log_error(env, status, method, path, message, ray=""):
         pass
 
 
+# Ordered install funnel: every step the installer reports, in the order it runs.
+# Used both to validate incoming events and to render the admin funnel in order.
+INSTALL_DIAG_STEPS = (
+    "start",    # installer launched
+    "mirror",   # resolved an online mirror to clone from
+    "deps",     # build prerequisites present / installed
+    "fetch",    # repository cloned or updated
+    "build",    # cmake configure + build
+    "install",  # binary installed to ~/.local/bin
+    "launch",   # first launch (or intentionally skipped)
+    "done",     # whole install finished
+)
+
+
+def _sanitize_diag_field(value, max_length=64):
+    # Coarse, non-identifying tokens only (platform/pm/distro/version/detail).
+    # Strip to a safe charset so a crafted POST can't smuggle markup or control
+    # characters into the admin HTML, and clamp the length.
+    if not isinstance(value, str):
+        value = "" if value is None else str(value)
+    cleaned = "".join(
+        c for c in value if c.isalnum() or c in " ._:+-,/()"
+    ).strip()
+    return cleaned[:max_length]
+
+
+def _install_diag_fields(payload):
+    """Normalize a posted install-diag event into stored columns, or None.
+
+    Pure (no I/O) so it can be unit-tested. Rejects anything outside the known
+    step set; clamps/sanitizes every other field. Returns
+    (run, step, ok, os, arch, pm, distro, version, detail) on success.
+    """
+    if not isinstance(payload, dict):
+        return None
+    step = payload.get("step")
+    if step not in INSTALL_DIAG_STEPS:
+        return None
+    run = _sanitize_diag_field(payload.get("run"), 64)
+    if not run:
+        return None
+    ok = 1 if payload.get("ok") in (1, True, "1", "true", "True") else 0
+    return (
+        run,
+        step,
+        ok,
+        _sanitize_diag_field(payload.get("os"), 32),
+        _sanitize_diag_field(payload.get("arch"), 32),
+        _sanitize_diag_field(payload.get("pm"), 32),
+        _sanitize_diag_field(payload.get("distro"), 32),
+        _sanitize_diag_field(payload.get("version"), 48),
+        _sanitize_diag_field(payload.get("detail"), 200),
+    )
+
+
+async def install_diag_handler(env, request):
+    # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
+    # never errors out the caller (the installer fires these fire-and-forget). We
+    # deliberately do not read or store the client IP / CF-Ray — see SCHEMA note.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    fields = _install_diag_fields(payload)
+    if not fields:
+        # Swallow malformed input rather than 4xx-ing the installer's background
+        # curl; nothing actionable for the client to do.
+        return json_response({"ok": True}, cache_control="no-store")
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            """INSERT INTO install_diag
+               (ts, run, step, ok, os, arch, pm, distro, version, detail)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            int(Date.now()), *fields,
+        )
+        # Bound the table so this open endpoint can't grow D1 without limit.
+        await d1_run(
+            env,
+            """DELETE FROM install_diag WHERE id NOT IN
+               (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
+            MAX_INSTALL_DIAG,
+        )
+    except Exception:
+        pass
+    return json_response({"ok": True}, cache_control="no-store")
+
+
 def _admin_path(env):
     # Dynamic, secret admin URL segment. Set ADMIN_PATH in Cloudflare vars.
     return str(getattr(env, "ADMIN_PATH", "") or "").strip("/")
@@ -3802,15 +3912,85 @@ async def admin_stats(env):
     host_row = await d1_first(
         env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff
     )
+    day_ago = int(Date.now()) - 24 * 60 * 60 * 1000
     err_row = await d1_first(
-        env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
-        int(Date.now()) - 24 * 60 * 60 * 1000,
+        env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?", day_ago,
     )
+    # Installs started in the last 24h = distinct anonymous runs that reported the
+    # opening "start" step. Best-effort; the table may not exist on a fresh DB.
+    try:
+        inst_row = await d1_first(
+            env,
+            "SELECT COUNT(DISTINCT run) AS n FROM install_diag "
+            "WHERE step='start' AND ts >= ?",
+            day_ago,
+        )
+    except Exception:
+        inst_row = None
     return {
         "repos": int((repo_row or {}).get("n", 0) or 0),
         "hosts": int((host_row or {}).get("n", 0) or 0),
         "clients": await _flagship_client_count(env),
+        "installs_24h": int((inst_row or {}).get("n", 0) or 0),
         "errors_24h": int((err_row or {}).get("n", 0) or 0),
+    }
+
+
+async def install_diag_summary(env):
+    # Aggregate the anonymous install events into an install funnel plus coarse
+    # platform / package-manager / distro breakdowns, over the retained window.
+    # All counts are over DISTINCT runs so one chatty install counts once.
+    await ensure_schema(env)
+    since = int(Date.now()) - INSTALL_DIAG_RETAIN_MS
+    funnel_rows = await d1_all(
+        env,
+        """SELECT step,
+                  COUNT(DISTINCT run) AS runs,
+                  COUNT(DISTINCT CASE WHEN ok=1 THEN run END) AS ok_runs,
+                  COUNT(DISTINCT CASE WHEN ok=0 THEN run END) AS fail_runs
+             FROM install_diag WHERE ts >= ? GROUP BY step""",
+        since,
+    )
+    by_step = {str(r.get("step", "")): r for r in funnel_rows}
+    funnel = []
+    for step in INSTALL_DIAG_STEPS:
+        r = by_step.get(step) or {}
+        funnel.append({
+            "step": step,
+            "runs": int(r.get("runs", 0) or 0),
+            "ok": int(r.get("ok_runs", 0) or 0),
+            "failed": int(r.get("fail_runs", 0) or 0),
+        })
+    total_row = await d1_first(
+        env, "SELECT COUNT(DISTINCT run) AS n FROM install_diag WHERE ts >= ?",
+        since,
+    )
+    done_row = await d1_first(
+        env,
+        "SELECT COUNT(DISTINCT run) AS n FROM install_diag "
+        "WHERE step='done' AND ok=1 AND ts >= ?",
+        since,
+    )
+
+    async def _breakdown(expr):
+        return await d1_all(
+            env,
+            "SELECT COALESCE(NULLIF(%s,''),'(unknown)') AS k, "
+            "COUNT(DISTINCT run) AS runs FROM install_diag WHERE ts >= ? "
+            "GROUP BY k ORDER BY runs DESC LIMIT 20" % expr,
+            since,
+        )
+
+    platforms = await _breakdown("os || ' ' || arch")
+    managers = await _breakdown("pm")
+    distros = await _breakdown("distro")
+    return {
+        "total": int((total_row or {}).get("n", 0) or 0),
+        "completed": int((done_row or {}).get("n", 0) or 0),
+        "funnel": funnel,
+        "platforms": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in platforms],
+        "managers": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in managers],
+        "distros": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in distros],
     }
 
 
@@ -3893,6 +4073,10 @@ ADMIN_STYLE = """
         border:1px solid #30363d;border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .tools .navlink{padding:8px 4px}
+ .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
+ .diagcol{min-width:240px}
+ .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
+ .diagcol table{width:auto;min-width:220px}
 """
 
 # Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
@@ -4038,6 +4222,49 @@ async def _admin_insert_row(env, table, form):
     return "Added a row to %s." % table
 
 
+def _render_diag_breakdown(title, pairs):
+    if not pairs:
+        return ""
+    rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (_html_escape(k or "(unknown)"),
+                                             _html_escape(n))
+        for k, n in pairs)
+    return ('<div class="diagcol"><h3>%s</h3><table><thead><tr>'
+            '<th>%s</th><th>runs</th></tr></thead><tbody>%s</tbody></table></div>'
+            % (_html_escape(title), _html_escape(title), rows))
+
+
+def _render_install_diag_overview(summary):
+    # Anonymous install funnel: per-step distinct-run counts (reached / ok /
+    # failed) plus coarse platform breakdowns. Counts are over a 30-day window.
+    total = summary.get("total", 0)
+    completed = summary.get("completed", 0)
+    funnel_rows = []
+    for f in summary.get("funnel", []):
+        runs = f["runs"]
+        pct = ("%d%%" % round(100 * f["ok"] / runs)) if runs else "—"
+        fail_cls = ' class="s5"' if f["failed"] else ""
+        funnel_rows.append(
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td%s>%s</td><td>%s</td></tr>"
+            % (_html_escape(f["step"]), _html_escape(runs), _html_escape(f["ok"]),
+               fail_cls, _html_escape(f["failed"]), pct))
+    funnel_table = (
+        '<div class="diagcol"><h3>Install funnel (30d)</h3>'
+        '<table><thead><tr><th>Step</th><th>Reached</th><th>OK</th>'
+        '<th>Failed</th><th>OK %</th></tr></thead><tbody>'
+        + "".join(funnel_rows) + "</tbody></table></div>")
+    return (
+        '<div class="title">Install diagnostics · %d run(s), %d completed</div>'
+        '<div class="meta">Anonymous: each row is a random per-run id, never tied '
+        'to an account, email, or IP. 30-day window.</div>'
+        '<div class="diaggrid">%s%s%s%s</div>'
+        % (total, completed, funnel_table,
+           _render_diag_breakdown("Platform", summary.get("platforms", [])),
+           _render_diag_breakdown("Pkg manager", summary.get("managers", [])),
+           _render_diag_breakdown("Distro", summary.get("distros", [])))
+    )
+
+
 async def _render_table_view(env, table, csrf_field=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
@@ -4069,6 +4296,42 @@ async def _render_table_view(env, table, csrf_field=""):
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
         )
+
+    if table == "install_diag":
+        # Purpose-built anonymous install funnel + recent events, newest first.
+        summary = await install_diag_summary(env)
+        recent = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_, * FROM install_diag ORDER BY id DESC LIMIT 200")
+        body = []
+        for r in recent:
+            ok = int(r.get("ok", 0) or 0)
+            cls = "" if ok else "s5"
+            body.append(
+                "<tr>"
+                + _admin_row_checkbox(r.get("_rowid_", ""))
+                + '<td data-ts="%s">%s</td>'
+                '<td>%s</td><td class="%s">%s</td><td>%s</td><td>%s</td>'
+                "<td>%s</td><td>%s</td><td>%s</td></tr>"
+                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   _html_escape(r.get("step", "")), cls,
+                   "ok" if ok else "fail",
+                   _html_escape(r.get("os", "")), _html_escape(r.get("arch", "")),
+                   _html_escape(r.get("pm", "")), _html_escape(r.get("distro", "")),
+                   _html_escape(r.get("detail", "")))
+            )
+        if not body:
+            events = '<div class="empty">No install events recorded yet.</div>'
+        else:
+            events = (_admin_bulk_form_open(table, csrf_field)
+                      + "<table><thead><tr>" + _admin_select_all_th()
+                      + "<th>Time</th><th>Step</th><th>Result</th><th>OS</th>"
+                      "<th>Arch</th><th>PM</th><th>Distro</th><th>Detail</th>"
+                      "</tr></thead><tbody>" + "".join(body)
+                      + "</tbody></table></form>")
+        return (_render_install_diag_overview(summary)
+                + '<div class="title">Recent events · %d of %d row(s)</div>'
+                % (len(recent), total) + events)
 
     if table == "error_log":
         # Keep the purpose-built, time-formatted error view.
@@ -4148,6 +4411,7 @@ def _render_admin_stats(stats):
         ("hosts", "live hosts", False),
         ("clients", "chat clients", False),
         ("repos", "catalog repos", False),
+        ("installs_24h", "installs (24h)", False),
         ("errors_24h", "errors (24h)", True),
     ]
     out = []
@@ -4498,6 +4762,10 @@ class Default(WorkerEntrypoint):
         # the most retained uptime instead of baking one node id into install.sh.
         if url.path in ("/api/install-source", "/api/install-source/"):
             return await install_source(self.env)
+
+        # Anonymous per-step diagnostics posted by install.sh (no auth, no IP).
+        if url.path in ("/api/install-diag", "/api/install-diag/"):
+            return await install_diag_handler(self.env, request)
 
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):

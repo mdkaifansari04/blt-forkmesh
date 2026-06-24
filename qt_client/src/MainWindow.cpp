@@ -917,11 +917,17 @@ bool textMentionsNodeName(const QString &text, const QString &nodeName)
 
 QString savedProfileName()
 {
+    // A node has exactly one identity string. It used to be stored three times
+    // (profile/handle, profile/displayName, account/nodeName); it now lives only
+    // under account/nodeName. Fall back to the legacy keys so existing installs
+    // keep their name on first read after upgrading.
     QSettings settings;
-    const QString handle = settings.value(kHandleSetting).toString().trimmed();
-    if (!handle.isEmpty())
-        return handle;
-    return settings.value(kDisplayNameSetting).toString().trimmed();
+    QString name = settings.value(kAccountNameSetting).toString().trimmed();
+    if (name.isEmpty())
+        name = settings.value(kHandleSetting).toString().trimmed();
+    if (name.isEmpty())
+        name = settings.value(kDisplayNameSetting).toString().trimmed();
+    return name;
 }
 
 QString formatRepoDate(qint64 timestampMs)
@@ -1384,13 +1390,11 @@ QString defaultDisplayName(const ForkMeshIdentity &identity)
 
 void saveProfileName(const QString &name)
 {
+    // Single source of truth for the node identity (was triplicated across
+    // profile/handle, profile/displayName and account/nodeName).
     const QString trimmed = accountNameFromInput(name, QString());
-    if (!trimmed.isEmpty()) {
-        QSettings settings;
-        settings.setValue(kDisplayNameSetting, trimmed);
-        settings.setValue(kHandleSetting, trimmed);
-        settings.setValue(kAccountNameSetting, trimmed);
-    }
+    if (!trimmed.isEmpty())
+        QSettings().setValue(kAccountNameSetting, trimmed);
 }
 
 QIcon statusDotIcon(bool online)
@@ -2726,8 +2730,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_pubkeyLabel->setText("Ed25519 public key: " +
                                m_profileIdentity.shortPublicKey());
         m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
-        if (m_nameEdit->text().trimmed().isEmpty())
-            m_nameEdit->setText(defaultDisplayName(m_profileIdentity));
+        // Don't pre-fill a generated "nodeXXXX" name on first run: picking a real
+        // node name is the first deliberate step (see startSession), so leave the
+        // field empty with its placeholder when this machine has no saved name.
         // Auto-connect on launch only when we can authenticate silently (this
         // node key already owns a registered active account). Otherwise stay on
         // the setup screen so the user logs in / joins without a surprise dialog
@@ -3203,10 +3208,17 @@ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &
 
 void MainWindow::startSession()
 {
+    // Picking a node name is the very first thing on first run — we don't quietly
+    // assign a generated one and drop the user into an anonymous "browse" mode.
+    // An empty/invalid name blocks here with a prompt so identity comes first.
     QString name = accountNameFromInput(m_nameEdit->text(), QString());
     if (name.isEmpty()) {
-        name = defaultDisplayName(m_profileIdentity);
-        m_nameEdit->setText(name);
+        m_setupError->setText("Pick a node name to get started "
+                              "(lowercase letters, numbers and hyphens; "
+                              "start with a letter).");
+        m_setupError->show();
+        m_nameEdit->setFocus();
+        return;
     }
     m_nameEdit->setText(name);
     saveProfileName(name);
@@ -3891,299 +3903,375 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     return false;
 }
 
-// Staged "join the network" flow: reserve the node name (signed) → pick at
-// least one repo to mirror → donate with Solana → set the email + password that
-// unlock universal login. Replaces the old one-shot signup. Returns true once
-// the account is finalized (active).
+// In-app join wizard — web parity with signup.html / signup.js. One modal
+// dialog with three stacked pages: (1) reserve a public node name, (2) donate
+// with Solana and poll for confirmation, (3) set the email + password that
+// unlock universal login. Each step is signed with the local identity so the
+// reserved name is bound to this key. Returns true once the account is active.
 bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
 {
     Q_UNUSED(solana);
-
-    // Step 1 — reserve the node name, signed with the local identity so the
-    // name is bound to this key.
-    {
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-reserve-v1\n" + accountName + "\n" + ts).toUtf8();
-        int status = 0;
-        const QJsonObject resp = postAccountSync(
-            "reserve",
-            QJsonObject{{"nodeName", accountName},
-                        {"pubkey", m_profileIdentity.publicKey()},
-                        {"ts", ts},
-                        {"sig", m_profileIdentity.signData(canonical)}},
-            &status);
-        if (!resp.value("ok").toBool()) {
-            const QString err = resp.value("error").toString();
-            QMessageBox::warning(this, "Join the network",
-                                 err == "node_name_taken"
-                                     ? "That node name is already taken — pick another."
-                                     : "Could not reserve that name" +
-                                           (err.isEmpty() ? QString() : ": " + err) + ".");
-            return false;
-        }
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        QMessageBox::warning(this, "Join the network", m_profileIdentity.errorString());
+        return false;
     }
 
-    // Step 2 — choose at least one repository to mirror.
-    if (!runRepoPickStep())
-        return false;
-
-    // Step 3 — donate to the generated address and wait for confirmation.
-    if (!runDonationStep(accountName))
-        return false;
-
-    // Step 4 — set email + password (universal login), signed to prove key
-    // ownership of the reserved name.
     QDialog dialog(this);
-    dialog.setWindowTitle("Finish creating " + accountName);
-    auto *form = new QFormLayout(&dialog);
-    auto *intro = new QLabel(
-        QStringLiteral("Donation received. Set the email and password that log you "
-                       "into <b>%1</b> from any device.").arg(accountName.toHtmlEscaped()));
-    intro->setWordWrap(true);
-    intro->setTextFormat(Qt::RichText);
-    auto *emailEdit = new QLineEdit;
-    emailEdit->setPlaceholderText("you@example.com");
-    auto *passEdit = new QLineEdit;
-    passEdit->setEchoMode(QLineEdit::Password);
-    passEdit->setPlaceholderText("At least 8 characters");
-    auto *confirmEdit = new QLineEdit;
-    confirmEdit->setEchoMode(QLineEdit::Password);
-    form->addRow(intro);
-    form->addRow("Email", emailEdit);
-    form->addRow("Password", passEdit);
-    form->addRow("Confirm", confirmEdit);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    buttons->button(QDialogButtonBox::Ok)->setText("Create account");
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.setObjectName("signupWizard");
+    dialog.setWindowTitle("Join ForkMesh");
+    dialog.setModal(true);
+    dialog.setMinimumWidth(440);
 
-    while (dialog.exec() == QDialog::Accepted) {
-        const QString email = emailEdit->text().trimmed();
-        const QString password = passEdit->text();
-        if (!email.contains('@')) {
-            QMessageBox::warning(this, "Create account", "Enter a valid email.");
-            continue;
+    auto *outer = new QVBoxLayout(&dialog);
+    outer->setContentsMargins(28, 24, 28, 24);
+    outer->setSpacing(8);
+
+    auto *stepLabel = new QLabel;
+    stepLabel->setObjectName("wizardStep");
+    auto *titleLabel = new QLabel;
+    titleLabel->setObjectName("wizardTitle");
+    titleLabel->setWordWrap(true);
+    outer->addWidget(stepLabel);
+    outer->addWidget(titleLabel);
+    outer->addSpacing(8);
+
+    auto *stack = new QStackedWidget;
+    outer->addWidget(stack);
+
+    QString reservedName = accountName;
+    bool finalized = false;
+
+    auto setStep = [&](int idx) {
+        static const char *titles[] = {
+            "Reserve your public node name",
+            "Donate to activate your node",
+            "Create your login",
+        };
+        stepLabel->setText(QStringLiteral("Step %1 of 3").arg(idx + 1));
+        titleLabel->setText(QString::fromUtf8(titles[idx]));
+        stack->setCurrentIndex(idx);
+    };
+    auto styleHint = [](QLabel *hint, const QString &text, const char *color) {
+        hint->setText(text);
+        hint->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
+                                        .arg(QString::fromUtf8(color))
+                                  : QStringLiteral("background:transparent;"));
+    };
+
+    // Forward transitions between pages. Assigned after all pages exist so each
+    // page can trigger the next; only ever invoked from user actions once the
+    // dialog is already running, so the late binding is safe.
+    std::function<void()> enterDonation;
+
+    // ================= Page 1 — reserve =================
+    auto *reservePage = new QWidget;
+    {
+        auto *l = new QVBoxLayout(reservePage);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(8);
+        auto *nameEdit = new QLineEdit;
+        nameEdit->setMaxLength(63);
+        nameEdit->setPlaceholderText("ada-lovelace");
+        nameEdit->setText(accountName);
+        auto *hint = new QLabel;
+        hint->setObjectName("modeHint");
+        hint->setWordWrap(true);
+        auto *cont = new QPushButton("Continue");
+        cont->setObjectName("primaryButton");
+        cont->setMinimumHeight(38);
+        l->addWidget(nameEdit);
+        l->addWidget(hint);
+        l->addStretch();
+        l->addWidget(cont);
+        styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a "
+                        "letter. This name is public.", nullptr);
+
+        auto *availTimer = new QTimer(reservePage);
+        availTimer->setSingleShot(true);
+        availTimer->setInterval(350);
+
+        connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
+            const QString v = nameEdit->text().trimmed().toLower();
+            cont->setEnabled(false);
+            if (v.isEmpty()) {
+                styleHint(hint, "This name is public.", nullptr);
+                return;
+            }
+            if (!isValidNodeName(v)) {
+                styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
+                                "with a letter.", "#f85149");
+                return;
+            }
+            styleHint(hint, "Checking availability…", nullptr);
+            availTimer->start();
+        });
+        connect(availTimer, &QTimer::timeout, this, [=]() {
+            const QString v = nameEdit->text().trimmed().toLower();
+            if (!isValidNodeName(v))
+                return;
+            int status = 0;
+            const QJsonObject look = getAccountSync(v, &status);
+            if (status == 0) { // relay unreachable: allow continuing
+                styleHint(hint, "Couldn't check availability — you can still continue.",
+                          nullptr);
+                cont->setEnabled(true);
+                return;
+            }
+            if (look.value("exists").toBool() && !look.value("available").toBool()) {
+                styleHint(hint, "That name is already taken — try another.", "#f85149");
+                cont->setEnabled(false);
+            } else {
+                styleHint(hint, QStringLiteral("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
+                                    .arg(v), "#3fb950");
+                cont->setEnabled(true);
+            }
+        });
+
+        auto doReserve = [=, &reservedName, &enterDonation]() {
+            const QString v = nameEdit->text().trimmed().toLower();
+            if (!isValidNodeName(v))
+                return;
+            cont->setEnabled(false);
+            cont->setText("Reserving…");
+            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+            const QByteArray canonical = ("forkmesh-reserve-v1\n" + v + "\n" + ts).toUtf8();
+            int status = 0;
+            const QJsonObject resp = postAccountSync(
+                "reserve",
+                QJsonObject{{"nodeName", v},
+                            {"pubkey", m_profileIdentity.publicKey()},
+                            {"ts", ts},
+                            {"sig", m_profileIdentity.signData(canonical)}},
+                &status);
+            cont->setText("Continue");
+            cont->setEnabled(true);
+            if (!resp.value("ok").toBool()) {
+                const QString err = resp.value("error").toString();
+                styleHint(hint, err == "node_name_taken"
+                                    ? "That name was just taken — try another."
+                                    : "Could not reserve that name. Please try again.",
+                          "#f85149");
+                return;
+            }
+            reservedName = v;
+            enterDonation();
+        };
+        connect(cont, &QPushButton::clicked, this, doReserve);
+        connect(nameEdit, &QLineEdit::returnPressed, this, [=]() {
+            if (cont->isEnabled())
+                doReserve();
+        });
+    }
+    stack->addWidget(reservePage);
+
+    // ================= Page 2 — donate =================
+    auto *donatePage = new QWidget;
+    auto *payInfo = new QLabel;
+    auto *qrLabel = new QLabel;
+    auto *addrLabel = new QLabel;
+    auto *copyBtn = new QPushButton("Copy address");
+    auto *payStatus = new QLabel;
+    // Shared Solana Pay URI: written when the address is fetched, read by the
+    // copy button. A shared pointer keeps it alive as long as either lambda and
+    // frees it automatically with the dialog.
+    auto payUriHolder = QSharedPointer<QString>::create();
+    {
+        auto *l = new QVBoxLayout(donatePage);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(8);
+        payInfo->setWordWrap(true);
+        payInfo->setTextFormat(Qt::RichText);
+        qrLabel->setAlignment(Qt::AlignCenter);
+        addrLabel->setWordWrap(true);
+        addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        addrLabel->setStyleSheet("font-family:monospace; background:transparent;");
+        copyBtn->setObjectName("ghostButton");
+        copyBtn->setCursor(Qt::PointingHandCursor);
+        payStatus->setObjectName("modeHint");
+        payStatus->setWordWrap(true);
+        l->addWidget(payInfo);
+        l->addWidget(qrLabel);
+        l->addWidget(addrLabel);
+        l->addWidget(copyBtn, 0, Qt::AlignLeft);
+        l->addStretch();
+        l->addWidget(payStatus);
+        connect(copyBtn, &QPushButton::clicked, this, [=]() {
+            if (payUriHolder->isEmpty())
+                return;
+            QApplication::clipboard()->setText(*payUriHolder);
+            copyBtn->setText("Copied");
+            QTimer::singleShot(1500, copyBtn, [copyBtn]() {
+                copyBtn->setText("Copy address");
+            });
+        });
+    }
+    stack->addWidget(donatePage);
+
+    auto *pollTimer = new QTimer(&dialog);
+    pollTimer->setInterval(4000);
+    connect(pollTimer, &QTimer::timeout, &dialog, [&, payStatus]() {
+        QUrl url = accountsApiUrl("donation-status");
+        url.setQuery("nodeName=" +
+                     QString::fromUtf8(QUrl::toPercentEncoding(reservedName)));
+        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        const QJsonObject st = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (st.value("paid").toBool()) {
+            pollTimer->stop();
+            payStatus->setText("Donation received!");
+            payStatus->setStyleSheet("color:#3fb950; background:transparent;");
+            QTimer::singleShot(500, &dialog, [&]() { setStep(2); });
+            return;
         }
-        if (password.size() < 8) {
-            QMessageBox::warning(this, "Create account",
-                                 "Password must be at least 8 characters.");
-            continue;
-        }
-        if (password != confirmEdit->text()) {
-            QMessageBox::warning(this, "Create account", "Passwords do not match.");
-            continue;
-        }
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-finalize-v1\n" + accountName + "\n" + email + "\n" + ts).toUtf8();
+        const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
+        payStatus->setText(
+            QStringLiteral("Waiting for your donation… (received %1 SOL)")
+                .arg(got / 1000000000.0, 0, 'f', 9));
+    });
+
+    enterDonation = [&, payInfo, qrLabel, addrLabel, payStatus, payUriHolder,
+                     pollTimer]() {
+        setStep(1);
+        payStatus->setText("Generating payment request…");
+        payStatus->setStyleSheet("background:transparent;");
         int status = 0;
-        const QJsonObject resp = postAccountSync(
-            "finalize",
-            QJsonObject{{"nodeName", accountName}, {"email", email},
-                        {"password", password},
-                        {"pubkey", m_profileIdentity.publicKey()},
-                        {"ts", ts}, {"sig", m_profileIdentity.signData(canonical)}},
-            &status);
-        if (status != 201 || !resp.value("ok").toBool()) {
-            const QString err = resp.value("error").toString();
-            QMessageBox::warning(this, "Create account",
-                                 err == "email_taken"
-                                     ? "That email is already registered."
-                                     : err == "donation_required"
-                                           ? "We haven't confirmed your donation yet."
-                                           : "Could not create the account" +
-                                                 (err.isEmpty() ? QString() : ": " + err) +
-                                                 ".");
-            continue;
+        const QJsonObject addr = postAccountSync(
+            "donation-address", QJsonObject{{"nodeName", reservedName}}, &status);
+        if (!addr.value("ok").toBool()) {
+            payStatus->setText(
+                addr.value("error").toString() == "solana_rpc_unavailable"
+                    ? "Solana verification is temporarily offline. Please try again later."
+                    : "Could not generate a payment request. Please try again.");
+            payStatus->setStyleSheet("color:#f85149; background:transparent;");
+            return;
         }
-        m_accountAuthenticated = true;
-        m_accountName = accountName;
-        m_accountTier = QStringLiteral("active");
-        m_accountSolanaVerified = true;
+        const QString address = addr.value("address").toString();
+        const QString uri = addr.value("uri").toString(address);
+        const QString amountSol = addr.value("amountSol").toString("0.005000000");
+        const double amountUsd = addr.value("amountUsd").toString("0").toDouble();
+        *payUriHolder = uri;
+        payInfo->setText(
+            QStringLiteral("Send <b>%1 SOL</b>%2 to the address below to activate your "
+                           "node. ForkMesh watches the payment reference and continues "
+                           "automatically once it confirms.")
+                .arg(amountSol,
+                     amountUsd > 0 ? QStringLiteral(" (\xE2\x89\x88 $%1)")
+                                         .arg(amountUsd, 0, 'f', 2)
+                                   : QString()));
+        const QImage qr = QrCode::encodeToImage(uri, 5, 3);
+        if (!qr.isNull())
+            qrLabel->setPixmap(QPixmap::fromImage(qr));
+        addrLabel->setText(address);
+        payStatus->setText("Waiting for your donation…");
+        payStatus->setStyleSheet("color:#d29922; background:transparent;");
+        pollTimer->start();
+    };
+
+    // ================= Page 3 — email / password =================
+    auto *accountPage = new QWidget;
+    {
+        auto *l = new QVBoxLayout(accountPage);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(8);
+        auto *intro = new QLabel("Set the email and password that log you in from "
+                                 "any device.");
+        intro->setObjectName("modeHint");
+        intro->setWordWrap(true);
+        auto *emailEdit = new QLineEdit;
+        emailEdit->setPlaceholderText("you@example.com");
+        auto *passEdit = new QLineEdit;
+        passEdit->setEchoMode(QLineEdit::Password);
+        passEdit->setPlaceholderText("Password (at least 8 characters)");
+        auto *confirmEdit = new QLineEdit;
+        confirmEdit->setEchoMode(QLineEdit::Password);
+        confirmEdit->setPlaceholderText("Confirm password");
+        auto *hint = new QLabel;
+        hint->setObjectName("modeHint");
+        hint->setWordWrap(true);
+        auto *createBtn = new QPushButton("Create account");
+        createBtn->setObjectName("primaryButton");
+        createBtn->setMinimumHeight(38);
+        l->addWidget(intro);
+        l->addWidget(emailEdit);
+        l->addWidget(passEdit);
+        l->addWidget(confirmEdit);
+        l->addWidget(hint);
+        l->addStretch();
+        l->addWidget(createBtn);
+
+        auto doFinalize = [=, &reservedName, &finalized, &dialog]() {
+            const QString email = emailEdit->text().trimmed();
+            const QString password = passEdit->text();
+            if (!email.contains('@') || !email.contains('.')) {
+                styleHint(hint, "Enter a valid email address.", "#f85149");
+                return;
+            }
+            if (password.size() < 8) {
+                styleHint(hint, "Password must be at least 8 characters.", "#f85149");
+                return;
+            }
+            if (password != confirmEdit->text()) {
+                styleHint(hint, "Passwords do not match.", "#f85149");
+                return;
+            }
+            createBtn->setEnabled(false);
+            createBtn->setText("Creating…");
+            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+            const QByteArray canonical =
+                ("forkmesh-finalize-v1\n" + reservedName + "\n" + email + "\n" + ts)
+                    .toUtf8();
+            int status = 0;
+            const QJsonObject resp = postAccountSync(
+                "finalize",
+                QJsonObject{{"nodeName", reservedName}, {"email", email},
+                            {"password", password},
+                            {"pubkey", m_profileIdentity.publicKey()},
+                            {"ts", ts},
+                            {"sig", m_profileIdentity.signData(canonical)}},
+                &status);
+            createBtn->setEnabled(true);
+            createBtn->setText("Create account");
+            if (status != 201 || !resp.value("ok").toBool()) {
+                const QString err = resp.value("error").toString();
+                styleHint(hint,
+                          err == "email_taken"
+                              ? "That email is already registered."
+                              : err == "donation_required"
+                                    ? "We haven't confirmed your donation yet — please wait."
+                                    : "Could not create the account. Please try again.",
+                          "#f85149");
+                return;
+            }
+            m_accountAuthenticated = true;
+            m_accountName = reservedName;
+            m_accountTier = QStringLiteral("active");
+            m_accountSolanaVerified = true;
+            QSettings().setValue(kAuthedAccountSetting, reservedName);
+            finalized = true;
+            dialog.accept();
+        };
+        connect(createBtn, &QPushButton::clicked, this, doFinalize);
+        connect(confirmEdit, &QLineEdit::returnPressed, this, doFinalize);
+    }
+    stack->addWidget(accountPage);
+
+    setStep(0);
+    dialog.exec();
+    pollTimer->stop();
+    if (finalized) {
         QMessageBox::information(this, "Welcome to ForkMesh",
                                  "You're in — your node is registered.");
         return true;
     }
     if (m_setupError) {
-        m_setupError->setText("Set an email and password to finish joining.");
+        m_setupError->setText("Joining was cancelled. You can keep using ForkMesh "
+                              "for free, or join again any time.");
         m_setupError->show();
     }
     return false;
-}
-
-// Step 2 of the join: show the catalog of repositories across connected servers
-// with a payout estimate, and require the user to pick at least one to mirror.
-bool MainWindow::runRepoPickStep()
-{
-    QDialog dialog(this);
-    dialog.setWindowTitle("Pick repositories to mirror");
-    dialog.resize(560, 460);
-    auto *outer = new QHBoxLayout(&dialog);
-
-    // Left: catalog list with checkboxes.
-    auto *leftCol = new QVBoxLayout;
-    leftCol->addWidget(new QLabel("Choose at least one repository to mirror:"));
-    auto *list = new QListWidget;
-    leftCol->addWidget(list, 1);
-
-    const QJsonArray repos = fetchCatalogRepos();
-    for (const QJsonValue &v : repos) {
-        const QJsonObject r = v.toObject();
-        const QString owner = r.value("owner").toString();
-        const QString name = r.value("name").toString();
-        if (owner.isEmpty() || name.isEmpty())
-            continue;
-        QString cloneUrl = r.value("cloneUrl").toString().trimmed();
-        if (cloneUrl.isEmpty())
-            cloneUrl = hostedCloneUrl(owner, name);
-        auto *item = new QListWidgetItem(owner + "/" + name, list);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        // Pre-check ForkMesh itself so a new node mirrors the project's own repo
-        // out of the box (and the "pick at least one" gate is already satisfied).
-        // The user can still uncheck it before continuing.
-        const bool isForkmesh =
-            name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0;
-        item->setCheckState(isForkmesh ? Qt::Checked : Qt::Unchecked);
-        item->setData(Qt::UserRole, cloneUrl);
-        item->setData(Qt::UserRole + 1, owner);
-        item->setData(Qt::UserRole + 2, name);
-        item->setData(Qt::UserRole + 3, r.value("isPrivate").toBool());
-    }
-    if (list->count() == 0)
-        leftCol->addWidget(new QLabel(
-            "<i>No repositories are published yet — you can add one later from "
-            "the Repos tab.</i>"));
-    outer->addLayout(leftCol, 2);
-
-    // Right: payout estimate (illustrative only — the reward engine is WIP).
-    auto *rightCol = new QVBoxLayout;
-    auto *calc = new QLabel;
-    calc->setWordWrap(true);
-    calc->setTextFormat(Qt::RichText);
-    const int nodes = qMax(1, fetchNodesOnline());
-    const double payoutPerJoin = 0.0001;
-    calc->setText(QStringLiteral(
-        "<b style='color:#3fb950'>Live earnings estimate</b><br><br>"
-        "Nodes online: <b>%1</b><br>Payout per join: <b>%2 SOL</b><br><br>"
-        "Est. earnings: <b>%3 SOL</b><br>"
-        "<span style='color:#8b949e'>Illustrative only — the reward system is in "
-        "progress. Roughly half of each join funds ForkMesh; the rest is shared "
-        "across nodes by data mirrored and uptime.</span>")
-        .arg(nodes)
-        .arg(payoutPerJoin, 0, 'f', 4)
-        .arg(nodes * payoutPerJoin, 0, 'f', 8));
-    rightCol->addWidget(calc);
-    rightCol->addStretch();
-    outer->addLayout(rightCol, 1);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    buttons->button(QDialogButtonBox::Ok)->setText("Continue");
-    auto *bottom = new QVBoxLayout;
-    bottom->addWidget(buttons);
-    rightCol->addLayout(bottom);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    while (dialog.exec() == QDialog::Accepted) {
-        QList<QListWidgetItem *> chosen;
-        for (int i = 0; i < list->count(); ++i)
-            if (list->item(i)->checkState() == Qt::Checked)
-                chosen.append(list->item(i));
-        if (chosen.isEmpty() && list->count() > 0) {
-            QMessageBox::warning(this, "Pick repositories",
-                                 "Select at least one repository to mirror.");
-            continue;
-        }
-        for (QListWidgetItem *item : chosen)
-            mirrorCatalogRepo(item->data(Qt::UserRole + 1).toString(),
-                              item->data(Qt::UserRole + 2).toString(),
-                              item->data(Qt::UserRole).toString(),
-                              item->data(Qt::UserRole + 3).toBool());
-        return true;
-    }
-    return false;
-}
-
-// Step 3 of the join: fetch a Solana payment request for this signup, show it
-// with a QR code, and poll until the donation confirms.
-bool MainWindow::runDonationStep(const QString &accountName)
-{
-    int status = 0;
-    const QJsonObject addr = postAccountSync(
-        "donation-address", QJsonObject{{"nodeName", accountName}}, &status);
-    if (!addr.value("ok").toBool()) {
-        QMessageBox::warning(this, "Join the network",
-                             "Could not generate a donation address. Try again.");
-        return false;
-    }
-    const QString address = addr.value("address").toString();
-    const QString uri = addr.value("uri").toString(address);
-    const QString amountSol = addr.value("amountSol").toString("0.005000000");
-
-    QDialog dialog(this);
-    dialog.setWindowTitle("Join ForkMesh — donate to activate");
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *info = new QLabel(
-        QStringLiteral("Send at least <b>%1 SOL</b> to the Solana payment request "
-                       "below to join the network. ForkMesh monitors the payment "
-                       "reference for confirmation.").arg(amountSol));
-    info->setWordWrap(true);
-    info->setTextFormat(Qt::RichText);
-    layout->addWidget(info);
-
-    auto *qrLabel = new QLabel;
-    qrLabel->setAlignment(Qt::AlignCenter);
-    const QImage qr = QrCode::encodeToImage(uri, 5, 3);
-    if (!qr.isNull())
-        qrLabel->setPixmap(QPixmap::fromImage(qr));
-    layout->addWidget(qrLabel);
-
-    auto *addrLabel = new QLabel(address);
-    addrLabel->setWordWrap(true);
-    addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    addrLabel->setStyleSheet("font-family:monospace;");
-    layout->addWidget(addrLabel);
-
-    auto *statusLabel = new QLabel("Waiting for your donation…");
-    statusLabel->setStyleSheet("color:#d29922;");
-    layout->addWidget(statusLabel);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    bool paid = false;
-    QTimer poll;
-    poll.setInterval(4000);
-    connect(&poll, &QTimer::timeout, &dialog, [&]() {
-        QUrl url = accountsApiUrl("donation-status");
-        url.setQuery("nodeName=" + QString::fromUtf8(QUrl::toPercentEncoding(accountName)));
-        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-        QEventLoop loop;
-        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        loop.exec();
-        const QJsonObject st =
-            QJsonDocument::fromJson(reply->readAll()).object();
-        reply->deleteLater();
-        if (st.value("paid").toBool()) {
-            paid = true;
-            statusLabel->setText("Donation received!");
-            statusLabel->setStyleSheet("color:#3fb950;");
-            poll.stop();
-            dialog.accept();
-        } else {
-            const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
-            statusLabel->setText(
-                QStringLiteral("Waiting for your donation… (received %1 SOL)")
-                    .arg(got / 1000000000.0, 0, 'f', 9));
-        }
-    });
-    poll.start();
-    dialog.exec();
-    poll.stop();
-    return paid;
 }
 
 void MainWindow::verifyWallet()
@@ -4236,12 +4324,22 @@ void MainWindow::showUpdateLog()
         m_updateLog->setMaximumBlockCount(50000);
         applyLogFont(m_updateLog);
         new AgentLogHighlighter(m_updateLog->document());
+        auto *copyBtn = new QPushButton(QStringLiteral("Copy log"));
+        copyBtn->setObjectName("ghostButton");
+        copyBtn->setCursor(Qt::PointingHandCursor);
+        connect(copyBtn, &QPushButton::clicked, this, [this] {
+            if (!m_updateLog)
+                return;
+            QApplication::clipboard()->setText(m_updateLog->toPlainText());
+            flashMessage(QStringLiteral("Update log copied to clipboard."));
+        });
         auto *closeBtn = new QPushButton(QStringLiteral("Close"));
         closeBtn->setObjectName("ghostButton");
         closeBtn->setCursor(Qt::PointingHandCursor);
         connect(closeBtn, &QPushButton::clicked, m_updateLogDialog, &QDialog::hide);
         auto *row = new QHBoxLayout;
         row->addStretch();
+        row->addWidget(copyBtn);
         row->addWidget(closeBtn);
         auto *lay = new QVBoxLayout(m_updateLogDialog);
         lay->addWidget(intro);
@@ -10781,21 +10879,26 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                     }
                     const QString uri = obj.value("uri").toString(
                         QStringLiteral("solana:%1").arg(address));
+                    // The worker prices the USD bounty into SOL (via the live SOL
+                    // price) and bakes the amount into the Solana Pay URI; show
+                    // that exact SOL figure so the funder sends the right amount.
+                    const QString amountSol = obj.value("amountSol").toString();
                     // Record the escrow address on the issue (still unpaid).
                     IssueStore writeStore = issueStoreForCurrentRepo();
                     QString error;
                     writeStore.setBounty(number, amount, address,
                                          QStringLiteral("open"), &error);
                     logSystem(QStringLiteral("Bounty escrow for issue #%1 ready to "
-                                             "fund ($%2).")
+                                             "fund ($%2 \xE2\x89\x88 %3 SOL).")
                                   .arg(number)
-                                  .arg(QString::number(amount, 'f', 2)));
+                                  .arg(QString::number(amount, 'f', 2))
+                                  .arg(amountSol));
                     if (m_repoDetailIndex == issuesRepoIndex())
                         reloadIssues();
-                    showBountyQrDialog(uri, address, amount);
-                    // Watch the escrow: once funded, the worker splits it to the
-                    // author + treasury; record the paid state on the issue.
-                    pollBountyPayout(repo, number, amount);
+                    // The dialog shows the QR, polls for the deposit, and on
+                    // confirmation records the paid split; if the funder closes it
+                    // early, a background watcher (and the worker cron) still pay.
+                    showBountyQrDialog(repo, number, uri, address, amount, amountSol);
                 });
     }
 }
@@ -20427,17 +20530,20 @@ QUrl MainWindow::bountyApiUrl(const RepositoryRecord &repo) const
     return url;
 }
 
-void MainWindow::showBountyQrDialog(const QString &uri, const QString &address,
-                                    double amountUsd)
+void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
+                                    const QString &uri, const QString &address,
+                                    double amountUsd, const QString &amountSol)
 {
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
     auto *layout = new QVBoxLayout(&dialog);
     auto *intro = new QLabel(
-        QStringLiteral("The pull request is merged. Send <b>$%1</b> of SOL to this "
-                       "escrow address to fund the bounty; on payout 90%% goes to "
-                       "the pull request author and 10%% to the ForkMesh treasury.")
-            .arg(QString::number(amountUsd, 'f', 2)));
+        QStringLiteral("The pull request is merged. Send <b>%1 SOL</b> (\xE2\x89\x88 "
+                       "$%2) to this escrow address to fund the bounty. On "
+                       "confirmation, 90%% is paid to the pull request author and "
+                       "10%% to the ForkMesh treasury.")
+            .arg(amountSol.isEmpty() ? QStringLiteral("…") : amountSol,
+                 QString::number(amountUsd, 'f', 2)));
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
@@ -20454,6 +20560,13 @@ void MainWindow::showBountyQrDialog(const QString &uri, const QString &address,
     addr->setAlignment(Qt::AlignCenter);
     addr->setWordWrap(true);
     layout->addWidget(addr);
+
+    auto *status = new QLabel(QStringLiteral("Waiting for the deposit…"));
+    status->setObjectName("modeHint");
+    status->setWordWrap(true);
+    status->setAlignment(Qt::AlignCenter);
+    layout->addWidget(status);
+
     auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
     connect(copyBtn, &QPushButton::clicked, this, [address] {
         QGuiApplication::clipboard()->setText(address);
@@ -20465,7 +20578,59 @@ void MainWindow::showBountyQrDialog(const QString &uri, const QString &address,
     row->addStretch();
     row->addWidget(closeBtn);
     layout->addLayout(row);
+
+    // Poll the escrow like the signup donation flow: show the received balance,
+    // and when the worker confirms + splits it (status "paid"), record the paid
+    // state on the issue and report the payout tx.
+    bool paid = false;
+    auto *poll = new QTimer(&dialog);
+    poll->setInterval(4000);
+    connect(poll, &QTimer::timeout, &dialog, [&, this]() {
+        if (!m_networkAccess)
+            return;
+        const QJsonObject payload{{"action", "status"},
+                                  {"owner", repo.owner},
+                                  {"repo", repo.name},
+                                  {"number", number}};
+        QNetworkRequest request(bountyApiUrl(repo));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        QNetworkReply *reply = m_networkAccess->post(
+            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (obj.value("status").toString() == QLatin1String("paid")) {
+            paid = true;
+            poll->stop();
+            IssueStore writeStore = issueStoreForCurrentRepo();
+            QString err;
+            writeStore.setBounty(number, amountUsd, obj.value("payee").toString(),
+                                 QStringLiteral("paid"), &err);
+            if (m_repoDetailIndex == issuesRepoIndex())
+                reloadIssues();
+            status->setText(
+                QStringLiteral("Paid out to the author + treasury (tx %1).")
+                    .arg(obj.value("payoutSig").toString().left(12)));
+            status->setStyleSheet("color:#3fb950; background:transparent;");
+            closeBtn->setText(QStringLiteral("Close"));
+            return;
+        }
+        const qint64 got =
+            obj.value("receivedLamports").toVariant().toLongLong();
+        if (got > 0)
+            status->setText(QStringLiteral("Received %1 SOL — confirming…")
+                                .arg(got / 1000000000.0, 0, 'f', 9));
+    });
+    poll->start();
     dialog.exec();
+    poll->stop();
+    // Closed before the deposit confirmed: keep watching in the background so the
+    // issue is still marked paid once the funds land (the worker cron is the
+    // final backstop regardless).
+    if (!paid)
+        pollBountyPayout(repo, number, amountUsd);
 }
 
 void MainWindow::editIssueBounty()
@@ -25994,35 +26159,44 @@ void MainWindow::updateActionStrip()
                 w->deleteLater();
             delete item;
         }
-        // A muted header that sums the wall-clock time across every running bar.
-        // positionActionStrip() fills in its text each tick.
-        auto *total = new QLabel;
-        total->setObjectName("actionStripTotal");
-        total->setAttribute(Qt::WA_TransparentForMouseEvents);
-        total->setFixedHeight(18);
-        total->setStyleSheet(
-            "#actionStripTotal{color:#8b949e;background:rgba(110,118,129,0.16);"
-            "border-radius:8px;padding:0 10px;font-size:10px;font-weight:600;}");
-        m_actionStripCol->addWidget(total);
         for (const ActionRun *r : std::as_const(live)) {
-            auto *box = new QLabel;
+            // Each run is one row: a bordered name box that grows to the right,
+            // with its elapsed time sitting just outside the box on the right.
+            auto *row = new QWidget;
+            row->setAttribute(Qt::WA_TransparentForMouseEvents);
+            auto *h = new QHBoxLayout(row);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(8);
+
+            auto *box = new QLabel(r->workflowName.trimmed().isEmpty()
+                                       ? QStringLiteral("workflow")
+                                       : r->workflowName.trimmed());
             box->setObjectName("actionStripBox");
-            box->setProperty("wfName", r->workflowName.trimmed().isEmpty()
-                                           ? QStringLiteral("workflow")
-                                           : r->workflowName.trimmed());
-            // When the bar should have started growing from. startedAtMs is set
+            // When the box should have started growing from. startedAtMs is set
             // once the runner picks the run up; fall back to createdAtMs.
             box->setProperty("startedAtMs",
                              static_cast<qlonglong>(r->startedAtMs > 0
                                                         ? r->startedAtMs
                                                         : r->createdAtMs));
             box->setAttribute(Qt::WA_TransparentForMouseEvents);
-            box->setFixedHeight(26);
+            box->setFixedHeight(22);
+            box->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             box->setStyleSheet(
-                "#actionStripBox{color:#e6edf3;background:rgba(56,139,253,0.28);"
-                "border:1px solid #1f6feb;border-radius:8px;padding:0 11px;"
-                "font-size:12px;}");
-            m_actionStripCol->addWidget(box);
+                "#actionStripBox{color:#000;background:transparent;"
+                "border:1px solid #000;border-radius:4px;padding:0 9px;"
+                "font-size:12px;font-weight:600;}");
+
+            auto *time = new QLabel;
+            time->setObjectName("actionStripTime");
+            time->setAttribute(Qt::WA_TransparentForMouseEvents);
+            time->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            time->setStyleSheet("#actionStripTime{color:#000;background:transparent;"
+                                "font-size:11px;}");
+
+            h->addWidget(box);
+            h->addWidget(time);
+            h->addStretch();
+            m_actionStripCol->addWidget(row);
         }
     }
 
@@ -26060,51 +26234,35 @@ void MainWindow::positionActionStrip()
         return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
     };
 
-    // Each bar's width tracks how long its run has been going: a couple of pixels
-    // per elapsed second on top of a base that always fits its label.
+    // Each box's width tracks how long its run has been going: a couple of pixels
+    // per elapsed second on top of a base that always fits the workflow name. The
+    // elapsed time rides just outside the box on the right.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const int rows = m_actionStripCol->count();
-    int widest = 0, bars = 0, h = 0;
-    qint64 earliest = 0;
-    QLabel *totalLabel = nullptr;
+    int widest = 0, h = 0;
     for (int i = 0; i < rows; ++i) {
-        auto *box = qobject_cast<QLabel *>(m_actionStripCol->itemAt(i)->widget());
-        if (!box)
+        auto *row = m_actionStripCol->itemAt(i)->widget();
+        if (!row)
             continue;
-        h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
-        if (box->objectName() == QLatin1String("actionStripTotal")) {
-            totalLabel = box; // filled in below, once the earliest start is known
+        auto *box = row->findChild<QLabel *>(QStringLiteral("actionStripBox"));
+        auto *time = row->findChild<QLabel *>(QStringLiteral("actionStripTime"));
+        if (!box || !time)
             continue;
-        }
         const qint64 started = box->property("startedAtMs").toLongLong();
-        if (started > 0 && (earliest == 0 || started < earliest))
-            earliest = started;
         const qint64 elapsedS =
             started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
-        const QString name = box->property("wfName").toString();
-        const QString elapsed = fmtElapsed(elapsedS);
-        box->setText(QStringLiteral("<b>%1</b>&nbsp;&nbsp;&nbsp;%2")
-                         .arg(name.toHtmlEscaped(), elapsed));
-        // Measure the plain text (bold name + gap + time) so the box always fits
-        // it, then let elapsed seconds push the right edge out further.
-        const int base = box->fontMetrics().horizontalAdvance(
-                             name + QStringLiteral("    ") + elapsed) + 28;
-        const int w = qBound(base, base + static_cast<int>(elapsedS) * 2, 380);
-        box->setFixedWidth(w);
-        widest = qMax(widest, w);
-        ++bars;
+        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 22;
+        const int boxW = qBound(base, base + static_cast<int>(elapsedS) * 2, 380);
+        box->setFixedWidth(boxW);
+        time->setText(fmtElapsed(elapsedS));
+        row->setFixedHeight(box->height());
+        const int rowW = boxW + m_actionStripCol->spacing() +
+                         time->sizeHint().width() + 8;
+        widest = qMax(widest, rowW);
+        h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
     }
     if (widest <= 0)
         return;
-
-    if (totalLabel) {
-        const qint64 totalS =
-            earliest > 0 ? qMax<qint64>(0, (now - earliest) / 1000) : 0;
-        totalLabel->setText(QStringLiteral("%1 running \xC2\xB7 total %2")
-                                .arg(bars)
-                                .arg(fmtElapsed(totalS)));
-        totalLabel->setFixedWidth(widest);
-    }
 
     m_actionStrip->resize(widest, h);
 

@@ -69,6 +69,9 @@ QCheckBox::indicator:checked { border-color: #1f6feb; background: #1f6feb; }
 /* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
 #relayHostEdit { color: #8b949e; }
 #relayHostEdit:focus { color: #e6edf3; }
+/* Join wizard header */
+#wizardStep { color: #3fb950; font-size: 11px; font-weight: 700; letter-spacing: 1px; background: transparent; }
+#wizardTitle { font-size: 20px; font-weight: 800; background: transparent; }
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #0d1117;
@@ -901,6 +904,9 @@ QCheckBox::indicator:checked { border-color: #0969da; background: #0969da; }
 /* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
 #relayHostEdit { color: #8c959f; }
 #relayHostEdit:focus { color: #1f2328; }
+/* Join wizard header */
+#wizardStep { color: #1a7f37; font-size: 11px; font-weight: 700; letter-spacing: 1px; background: transparent; }
+#wizardTitle { font-size: 20px; font-weight: 800; background: transparent; }
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #ffffff;

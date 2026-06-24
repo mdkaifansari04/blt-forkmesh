@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.6.0 (2026-06-23)"
+INSTALLER_VERSION="0.7.0 (2026-06-23)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -19,6 +19,7 @@ FORKMESH_HOST="${FORKMESH_HOST:-https://forkmesh.com}"
 FORKMESH_NODE="${FORKMESH_NODE:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
+FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
 SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
@@ -27,6 +28,48 @@ BIN="$BIN_DIR/forkmesh"
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
+
+# --- anonymous diagnostics --------------------------------------------------
+# Report each install step to the mainnode so operators can see, in aggregate,
+# where installs succeed or fail (find-a-mirror, prerequisites, clone, build,
+# install, first launch). This is ANONYMOUS: RUN_ID is a fresh random id minted
+# for this run only — it is never tied to your account, email, or IP address,
+# and the server does not record the requesting IP. Only coarse platform facts
+# (OS, CPU arch, package manager, distro id, installer version) are sent. Opt
+# out entirely with FORKMESH_NO_DIAG=1.
+RUN_ID="$( (head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n') || true )"
+[ -n "$RUN_ID" ] || RUN_ID="$$-$(date +%s 2>/dev/null || echo 0)"
+DIAG_OS="$(uname -s 2>/dev/null || echo unknown)"
+DIAG_ARCH="$(uname -m 2>/dev/null || echo unknown)"
+DIAG_DISTRO=""
+if [ -r /etc/os-release ]; then
+  DIAG_DISTRO="$( ( . /etc/os-release 2>/dev/null; printf '%s' "${ID:-}" ) || true )"
+fi
+# Logical prerequisites we had to install (empty = the machine already had them).
+DIAG_MISSING=""
+# The install phase currently in progress; the EXIT trap reports it as failed if
+# the script dies, so the funnel shows exactly where an install dropped off.
+CURRENT_STEP="start"
+
+diag() {
+  [ "${FORKMESH_NO_DIAG:-0}" = "1" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local step="$1" ok="$2" detail="${3:-}"
+  # Fire-and-forget in the background with a short timeout: diagnostics must
+  # never slow down or fail the install, so every error is swallowed.
+  curl -fsS -m 5 -X POST "$FORKMESH_DIAG_URL" \
+    -H 'Content-Type: application/json' \
+    --data "{\"run\":\"$RUN_ID\",\"step\":\"$step\",\"ok\":$ok,\"os\":\"$DIAG_OS\",\"arch\":\"$DIAG_ARCH\",\"pm\":\"${PM:-}\",\"distro\":\"$DIAG_DISTRO\",\"version\":\"$INSTALLER_VERSION\",\"detail\":\"$detail\"}" \
+    >/dev/null 2>&1 </dev/null &
+  return 0
+}
+
+on_diag_exit() {
+  local code=$?
+  [ "$code" -ne 0 ] && diag "$CURRENT_STEP" 0 "exit$code"
+  return 0
+}
+trap on_diag_exit EXIT
 
 resolve_install_node() {
   [ -n "$FORKMESH_NODE" ] && return 0
@@ -61,12 +104,15 @@ if [ "$(id -u)" -eq 0 ]; then
 else
   say "Privileges: non-root; will use sudo/doas for package installs"
 fi
+diag start 1
 
 if [ -z "$REPO" ]; then
+  CURRENT_STEP="mirror"
   say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
   REPO="${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}"
   say "Using mirror node: $FORKMESH_NODE"
+  diag mirror 1
 fi
 
 # --- privilege escalation ---------------------------------------------------
@@ -209,6 +255,7 @@ ensure() {
   [ -n "$pkgs" ] || die "'$what' is required but no package candidate is known for '$PM'."
 
   say "Installing missing prerequisite: $what ($pkgs)"
+  DIAG_MISSING="${DIAG_MISSING:+$DIAG_MISSING }$what"
   # shellcheck disable=SC2086
   pm_install $pkgs || die "Failed to install $pkgs via $PM."
 
@@ -227,6 +274,7 @@ else
   warn "No supported package manager found; missing tools cannot be auto-installed."
 fi
 
+CURRENT_STEP="deps"
 say "Checking build prerequisites (git, cmake, compiler, Qt 6, OpenSSL)…"
 ensure git    command -v git
 ensure cmake  command -v cmake
@@ -239,6 +287,7 @@ if ! have_compiler; then
       die "A C++ compiler is required. Install the Xcode Command Line Tools: xcode-select --install"
     fi
     say "Installing Xcode Command Line Tools (a system dialog may appear)"
+    DIAG_MISSING="${DIAG_MISSING:+$DIAG_MISSING }compiler"
     xcode-select --install 2>/dev/null || true
     until have_compiler; do
       say "Waiting for the Command Line Tools install to finish..."
@@ -273,8 +322,12 @@ else
   say "  Fedora:        sudo dnf install qt6-qtbase-devel qt6-qtsvg-devel openssl-devel cmake gcc-c++"
   say "  macOS:         brew install qt openssl@3 cmake"
 fi
+# detail records which prerequisites had to be installed ("none" = all present),
+# so the funnel shows how often a machine already met the requirements.
+diag deps 1 "${DIAG_MISSING:-none}"
 
 # --- fetch / update ---------------------------------------------------------
+CURRENT_STEP="fetch"
 mkdir -p "$(dirname "$SRC")"
 if [ -d "$SRC/.git" ]; then
   say "Updating existing checkout in $SRC"
@@ -293,8 +346,10 @@ else
   say "Cloning $REPO"
   git clone --depth 1 "$REPO" "$SRC"
 fi
+diag fetch 1
 
 # --- build ------------------------------------------------------------------
+CURRENT_STEP="build"
 JOBS="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
 BUILD="$SRC/qt_client/build"
 say "Configuring"
@@ -308,8 +363,10 @@ fi
 cmake "${CMAKE_ARGS[@]}"
 say "Building (this can take a few minutes)"
 cmake --build "$BUILD" -j"$JOBS"
+diag build 1
 
 # --- install ----------------------------------------------------------------
+CURRENT_STEP="install"
 if [ -x "$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh" ]; then
   BUILT="$BUILD/ForkMesh.app/Contents/MacOS/ForkMesh"
 else
@@ -320,11 +377,38 @@ fi
 mkdir -p "$BIN_DIR"
 install -m 0755 "$BUILT" "$BIN" 2>/dev/null || { cp "$BUILT" "$BIN"; chmod 0755 "$BIN"; }
 say "Installed to $BIN"
+diag install 1
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "Add $BIN_DIR to your PATH, e.g.  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
+
+# --- desktop integration (Linux) --------------------------------------------
+# Register a .desktop launcher + hicolor icons so ForkMesh appears in the
+# GNOME/KDE app menu and dock — not just on the PATH. This reuses the dedicated
+# qt_client/install.sh that ships in the cloned source, so the launcher entry
+# stays in one place and points at the build output (picking up in-app updates).
+# Best-effort and Linux-only: macOS gets its menu entry from the .app bundle,
+# and a missing icon-cache tool must never fail the whole install.
+register_desktop_entry() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+  local script="$SRC/qt_client/install.sh"
+  if [ ! -f "$script" ]; then
+    warn "Desktop integration script not found at $script; skipping menu registration."
+    return 0
+  fi
+  say "Registering ForkMesh in the application menu"
+  # Keep the helper's verbose stdout out of the installer log, but let any
+  # errors through. It won't rebuild (the binary already exists) and a non-zero
+  # exit here is non-fatal — the app still runs from $BIN / the build output.
+  if bash "$script" >/dev/null; then
+    say "Added to the application menu — search \"ForkMesh\" in Activities/the app grid."
+  else
+    warn "Could not register the desktop menu entry; ForkMesh still runs via:  forkmesh"
+  fi
+}
+register_desktop_entry
 
 # --- launch -----------------------------------------------------------------
 # One-shot install: start ForkMesh automatically so the user lands in the app.
@@ -353,10 +437,18 @@ launch_forkmesh() {
   return 1
 }
 
+CURRENT_STEP="launch"
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
+  diag launch 1 "skipped"
 elif launch_forkmesh; then
   say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
+  diag launch 1 "launched"
 else
   say "Done. Launch it with:  forkmesh"
+  diag launch 1 "manual"
 fi
+
+# Whole install finished successfully; the EXIT trap only fires on failure.
+CURRENT_STEP="done"
+diag done 1

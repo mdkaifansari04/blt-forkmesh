@@ -69,7 +69,8 @@ function drainExistingRequests(): void {
 export function activate(context: vscode.ExtensionContext): void {
   ensureDirs();
 
-  const provider = new IssuesProvider();
+  const version = String(context.extension.packageJSON.version ?? "?");
+  const provider = new IssuesProvider(version);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("forkmeshIssues", provider)
   );
@@ -99,7 +100,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("forkmesh.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", "forkmesh")
-    )
+    ),
+    vscode.commands.registerCommand("forkmesh.reload", async () => {
+      const choice = await vscode.window.showInformationMessage(
+        `Reload the window to load the latest ForkMesh extension? (current v${version})`,
+        { modal: true },
+        "Reload"
+      );
+      if (choice === "Reload") {
+        await vscode.commands.executeCommand("workbench.action.reloadWindow");
+      }
+    })
   );
 
   // Refresh the tree whenever issue files change on disk.
