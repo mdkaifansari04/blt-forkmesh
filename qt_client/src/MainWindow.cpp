@@ -25531,51 +25531,148 @@ void MainWindow::updateActionsTabIndicator()
     if (!tab)
         return;
 
-    // Is any run for the currently-open repo still in flight?
-    bool active = false;
+    // The tab label just carries the workflow count; the live activity readout is
+    // now the floating strip of growing bars above the tab (updateActionStrip()).
+    const int workflows =
+        m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
+    tab->setText(QStringLiteral("Actions (%1)").arg(workflows));
+    updateActionStrip();
+}
+
+void MainWindow::ensureActionStrip()
+{
+    if (m_actionStrip || !m_repoActionsTab)
+        return;
+    QWidget *tabBar = m_repoActionsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    // Parented to the repo-detail page so the bars can float over the meta band
+    // just above the Actions tab without being clipped to the tab button.
+    m_actionStrip = new QWidget(page);
+    m_actionStrip->setObjectName("actionStrip");
+    m_actionStrip->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto *col = new QVBoxLayout(m_actionStrip);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(3);
+    m_actionStripCol = col;
+    m_actionStrip->hide();
+}
+
+void MainWindow::updateActionStrip()
+{
+    ensureActionStrip();
+    if (!m_actionStrip || !m_actionStripCol)
+        return;
+
+    // This repo's runs that are actually executing (queued ones haven't started
+    // the clock yet, so they don't get a growing bar).
+    QList<const ActionRun *> live;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const QString owner = m_repositories.at(m_repoDetailIndex).owner;
         const QString name = m_repositories.at(m_repoDetailIndex).name;
         for (const ActionRun &run : m_actionRuns)
             if (run.owner == owner && run.name == name &&
-                (run.status == ActionStatus::Running ||
-                 run.status == ActionStatus::Queued)) {
-                active = true;
-                break;
-            }
+                run.status == ActionStatus::Running)
+                live.append(&run);
     }
 
+    const bool active = !live.isEmpty() && m_repoActionsTab->isVisible();
     if (!active) {
-        if (m_actionsSpinTimer)
-            m_actionsSpinTimer->stop();
-        const int workflows = m_actionWorkflowList
-                                  ? qMax(0, m_actionWorkflowList->count() - 1)
-                                  : 0;
-        tab->setText(QStringLiteral("Actions (%1)").arg(workflows));
+        if (m_actionStripTimer)
+            m_actionStripTimer->stop();
+        m_actionStripIds.clear();
+        m_actionStrip->hide();
         return;
     }
 
-    if (!m_actionsSpinTimer) {
-        m_actionsSpinTimer = new QTimer(this);
-        connect(m_actionsSpinTimer, &QTimer::timeout, this, [this] {
-            QAbstractButton *t = m_repoDetailTabs ? m_repoDetailTabs->button(5) : nullptr;
-            if (!t)
-                return;
-            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
-                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
-                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
-                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
-                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
-            m_actionsSpinFrame = (m_actionsSpinFrame + 1) % 10;
-            const int wfCount = m_actionWorkflowList
-                                    ? qMax(0, m_actionWorkflowList->count() - 1)
-                                    : 0;
-            t->setText(QStringLiteral("Actions (%1) ").arg(wfCount) +
-                       QString::fromUtf8(frames[m_actionsSpinFrame]));
-        });
+    // Rebuild the bars only when the set of running runs changes, so an existing
+    // bar keeps growing smoothly instead of snapping back to its base each tick.
+    QList<int> ids;
+    for (const ActionRun *r : std::as_const(live))
+        ids.append(r->id);
+    if (ids != m_actionStripIds) {
+        m_actionStripIds = ids;
+        while (QLayoutItem *item = m_actionStripCol->takeAt(0)) {
+            if (QWidget *w = item->widget())
+                w->deleteLater();
+            delete item;
+        }
+        for (const ActionRun *r : std::as_const(live)) {
+            auto *box = new QLabel(r->workflowName.trimmed().isEmpty()
+                                       ? QStringLiteral("workflow")
+                                       : r->workflowName.trimmed());
+            box->setObjectName("actionStripBox");
+            // When the bar should have started growing from. startedAtMs is set
+            // once the runner picks the run up; fall back to createdAtMs.
+            box->setProperty("startedAtMs",
+                             static_cast<qlonglong>(r->startedAtMs > 0
+                                                        ? r->startedAtMs
+                                                        : r->createdAtMs));
+            box->setAttribute(Qt::WA_TransparentForMouseEvents);
+            box->setFixedHeight(15);
+            box->setStyleSheet(
+                "#actionStripBox{color:#cdd9e5;background:rgba(56,139,253,0.22);"
+                "border:1px solid #1f6feb;border-radius:7px;padding:0 7px;"
+                "font-size:10px;}");
+            m_actionStripCol->addWidget(box);
+        }
     }
-    if (!m_actionsSpinTimer->isActive())
-        m_actionsSpinTimer->start(110);
+
+    positionActionStrip();
+    m_actionStrip->show();
+    m_actionStrip->raise();
+
+    // A modest tick both grows the bars and keeps the strip pinned above the tab
+    // as the window moves or the tab bar reflows.
+    if (!m_actionStripTimer) {
+        m_actionStripTimer = new QTimer(this);
+        connect(m_actionStripTimer, &QTimer::timeout, this,
+                &MainWindow::positionActionStrip);
+    }
+    if (!m_actionStripTimer->isActive())
+        m_actionStripTimer->start(250);
+}
+
+void MainWindow::positionActionStrip()
+{
+    if (!m_actionStrip || !m_actionStripCol || !m_repoActionsTab)
+        return;
+    QWidget *page = m_actionStrip->parentWidget();
+    if (!page)
+        return;
+
+    // Each bar's width tracks how long its run has been going: a couple of pixels
+    // per elapsed second on top of a base that always fits the workflow name.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    int widest = 0;
+    const int rows = m_actionStripCol->count();
+    for (int i = 0; i < rows; ++i) {
+        auto *box = qobject_cast<QLabel *>(m_actionStripCol->itemAt(i)->widget());
+        if (!box)
+            continue;
+        const qint64 started = box->property("startedAtMs").toLongLong();
+        const qint64 elapsedS = started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
+        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 20;
+        const int w = qBound(base, base + static_cast<int>(elapsedS) * 2, 360);
+        box->setFixedWidth(w);
+        widest = qMax(widest, w);
+    }
+    if (widest <= 0)
+        return;
+
+    const int h = rows * 15 + (rows - 1) * 3;
+    m_actionStrip->resize(widest, h);
+
+    const QPoint tl = m_repoActionsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1;
+    if (y < 0)
+        y = 0;
+    if (x + widest > page->width())
+        x = qMax(0, page->width() - widest);
+    m_actionStrip->move(x, y);
+    m_actionStrip->raise();
 }
 
 void MainWindow::ensureAgentSpinnerOverlay()

@@ -108,6 +108,14 @@ run_pm() {
 
 # Install one or more packages by name.
 pm_install() {
+  # Resolve privilege escalation before touching the package manager. Every
+  # install path funnels through here, so this guarantees $SUDO is set even when
+  # the caller didn't go through ensure() (e.g. the Qt/OpenSSL block below, which
+  # runs unconditionally). Without this, apt-get runs unprivileged and fails with
+  # "Could not open lock file ... Permission denied" on a fresh machine.
+  if [ "$PM" != "brew" ] && ! need_sudo; then
+    die "Installing packages via $PM needs root, but neither sudo nor doas is available. Re-run as root, or install the build dependencies manually and re-run with FORKMESH_NO_INSTALL_DEPS=1."
+  fi
   pm_refresh
   run_pm "${PM_INSTALL[@]}" "$@"
 }

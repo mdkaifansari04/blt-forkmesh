@@ -560,6 +560,10 @@ private:
     QString commitStatusGlyph(const QString &sha) const;
     // Spin the Actions tab label while a run for the open repo is active.
     void updateActionsTabIndicator();
+    // Lazily build the floating strip and place it just above the Actions tab.
+    void ensureActionStrip();
+    void positionActionStrip();  // grow each bar by its run's elapsed time
+    void updateActionStrip();    // build/show/hide the bars for in-flight runs
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
     // Lazily build the spinner overlay and place it just above the Agents tab.
@@ -1021,6 +1025,12 @@ private:
     // an agent runs. A separate label so the tab text keeps its normal colour.
     QLabel *m_agentSnake = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
+    // Floating strip of thin bars above the Actions tab — one per in-flight run,
+    // each labelled with the workflow name and growing to the right the longer
+    // its run has been going. Hidden when nothing is running.
+    QWidget *m_actionStrip = nullptr;
+    QVBoxLayout *m_actionStripCol = nullptr;
+    QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
@@ -1191,8 +1201,7 @@ private:
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
-    QTimer *m_actionsSpinTimer = nullptr;        // animates the Actions tab while running
-    int m_actionsSpinFrame = 0;
+    QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
