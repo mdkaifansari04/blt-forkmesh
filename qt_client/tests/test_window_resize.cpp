@@ -219,40 +219,37 @@ int main(int argc, char *argv[])
 
     window.testEnableSessionStartBypass(true);
 
-    // Website parity: there is no anonymous start. A declined or cancelled
-    // signup/login keeps the user on the welcome screen instead of entering the
-    // app unauthenticated.
+    // No wallet, no signup: starting a node needs only a valid name. The core
+    // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
+    // straight into the app shell without an account or a verified wallet.
     window.testSetSetupInputs(QStringLiteral("Alice-Node"),
                               QStringLiteral("SavedSolana111"));
-    window.testSetAccountFlowResult(false);
+    window.testSetAccountFlowResult(true); // would activate IF the flow ran
     window.testStartSession();
-    check(window.testAccountFlowCalls() == 1,
-          QStringLiteral("start requires the account flow"));
-    check(window.testStackIndex() != 1,
-          QStringLiteral("declined signup stays on the welcome screen"));
-    check(!window.testAccountAuthenticated(),
-          QStringLiteral("declined signup keeps the account unauthenticated"));
-
-    // Completing the paid signup / login (the account flow returns true) lets the
-    // start proceed into the app.
-    window.testSetSetupInputs(QStringLiteral("Alice-Node"),
-                              QStringLiteral("SavedSolana111"));
-    window.testSetAccountFlowResult(true);
-    window.testStartSession();
-    check(window.testAccountFlowCalls() == 1,
-          QStringLiteral("authenticated start runs the account flow exactly once"));
+    check(window.testAccountFlowCalls() == 0,
+          QStringLiteral("starting a node never runs the account flow"));
     check(window.testStackIndex() == 1,
-          QStringLiteral("authenticated start opens the app shell"));
+          QStringLiteral("start enters the app with just a node name"));
     check(window.testUserName() == QStringLiteral("alice-node"),
-          QStringLiteral("authenticated start uses the sanitized node name"));
+          QStringLiteral("start uses the sanitized node name"));
     check(window.testAccountName() == QStringLiteral("alice-node"),
-          QStringLiteral("authenticated start records the account owner name"));
+          QStringLiteral("start records the node owner name"));
     check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
-          QStringLiteral("authenticated start preserves the saved Solana address"));
+          QStringLiteral("start preserves the saved Solana address"));
+    check(!window.testAccountAuthenticated(),
+          QStringLiteral("start does not require or fake an account"));
+
+    // Crypto is strictly opt-in: the account/activate flow runs only when the user
+    // explicitly opts in via "Get paid to mirror" (here the mocked account flow).
+    // The payout address is already set, so no address prompt is triggered.
+    window.testSetAccountFlowResult(true);
+    window.testEnablePaidMirroring();
+    check(window.testAccountFlowCalls() == 1,
+          QStringLiteral("opting in runs the account flow exactly once"));
     check(window.testAccountAuthenticated(),
-          QStringLiteral("authenticated start marks the account authenticated"));
+          QStringLiteral("opting in marks the account authenticated"));
     check(window.testAccountTier() == QStringLiteral("active"),
-          QStringLiteral("authenticated start sets the account tier active"));
+          QStringLiteral("opting in sets the account tier active"));
 
     QCheckBox *nodeConnectAlertCheck =
         findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));

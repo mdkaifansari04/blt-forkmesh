@@ -3386,16 +3386,22 @@ void MainWindow::runDeferredStartup()
     }
     m_pendingRestoreRepoIndex = -1;
 
-    // Then auto-connect when this node key can authenticate silently.
+    // Then auto-enter the app whenever this machine already picked a node name.
+    // No account is required: a returning node drops straight into the app shell.
+    // Silent auth is best-effort — it restores an existing active account's
+    // hosting/payout state when this key owns one, but its absence no longer keeps
+    // the node on the welcome screen. First run (no saved name) shows setup.
     if (m_pendingSilentAuth) {
         m_pendingSilentAuth = false;
-        const QString name = accountNameFromInput(m_nameEdit->text(), QString());
-        if (!name.isEmpty() && authenticateSilently(name)) {
+        const QString name = m_nameEdit ? m_nameEdit->text().trimmed().toLower()
+                                        : QString();
+        if (!name.isEmpty() && isValidNodeName(name)) {
+            authenticateSilently(name);
             if (m_stack)
-                m_stack->setCurrentIndex(1); // app shell, never the login form
+                m_stack->setCurrentIndex(1); // app shell
             startSession();
         } else if (m_stack) {
-            m_stack->setCurrentIndex(0); // not authenticated: show setup
+            m_stack->setCurrentIndex(0); // first run / no saved name: show setup
         }
     }
 }
@@ -3866,18 +3872,20 @@ void MainWindow::startSession()
         return;
     }
 
-    // Website parity: there is no anonymous start. Require an account before
-    // entering the app — either this node already owns an active account / has
-    // logged in, or the user completes the paid signup (reserve → donate → set
-    // email + password) or logs in with an existing email + password. If they
-    // back out, stay on the welcome screen rather than starting unauthenticated.
-    if (!ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed()
-                                              : QString())) {
-        // ensureNodeAccount surfaces the reason (cancelled / failed) itself.
-        if (m_nameEdit)
-            m_nameEdit->setFocus();
-        return;
-    }
+    // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
+    // needs only a node name. Crypto is strictly opt-in and lives behind the
+    // "Get paid to mirror" button on the node profile — we never gate entry on
+    // an account or a Solana address here. We still attempt a silent, dialog-free
+    // auth so a returning node that already owns an active account keeps its
+    // hosting/payout privileges; a brand-new node simply starts unauthenticated.
+#ifdef FORKMESH_WINDOW_TESTS
+    // Tests pin the auth state directly and bypass the server start, so skip the
+    // real silent-auth network round-trip here.
+    if (!m_testBypassServerStart)
+        authenticateSilently(name);
+#else
+    authenticateSilently(name);
+#endif
 
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
@@ -6128,7 +6136,16 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setObjectName("topMessage");
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
-    m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Selectable like before, plus clickable links so the integrity-pin warning can
+    // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
+    m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                          Qt::LinksAccessibleByMouse);
+    connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href == QLatin1String("fm:resetpin"))
+            resetRepoPin();
+        else if (href == QLatin1String("fm:whypin"))
+            showPinExplanation();
+    });
     m_topMessage->hide();
 
     // Copy button shown beside the toast for errors only. The toast stays up
@@ -7228,12 +7245,13 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // stateHash no longer matches the refs this node serves, every clone is rejected
 // with "repository failed integrity check". Only the owning, publishing node can
 // fix it (the relay verifies the maintainer key on the re-attestation), so the
-// banner — and its "Reset integrity pin" button — only appears there.
+// warning — and its "Reset integrity pin" action — only surfaces there. It is
+// shown in the top-bar notification toast (see showPinWarning), not an in-page banner.
 void MainWindow::refreshRepoPinBanner()
 {
-    if (!m_repoPinBanner)
+    if (!m_topMessage)
         return;
-    m_repoPinBanner->hide();
+    dismissPinWarning();
     m_repoPinCheckIndex = -1;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -7266,7 +7284,7 @@ void MainWindow::refreshRepoPinBanner()
             [this, reply, index, owner, name, localHash] {
                 reply->deleteLater();
                 // The user may have switched repos while this was in flight.
-                if (!m_repoPinBanner || m_repoPinCheckIndex != index ||
+                if (!m_topMessage || m_repoPinCheckIndex != index ||
                     m_repoDetailIndex != index)
                     return;
                 const QJsonArray repos =
@@ -7289,8 +7307,48 @@ void MainWindow::refreshRepoPinBanner()
                 // clones. An absent pin fails open on the relay (nothing to fix),
                 // and a matching pin is healthy.
                 if (found && !pinned.isEmpty() && pinned != localHash)
-                    m_repoPinBanner->show();
+                    showPinWarning();
             });
+}
+
+// Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error
+// branch of flashMessage (red, stays up with Copy / dismiss affordances) but the
+// label carries the "Reset integrity pin" and "Why?" actions as inline links,
+// routed by the linkActivated handler wired in the constructor.
+void MainWindow::showPinWarning()
+{
+    if (!m_topMessage)
+        return;
+    m_loadStatusShowing = false;
+    m_pinWarningActive = true;
+    m_topMessageRaw = QStringLiteral(
+        "Clones of this repo are being rejected - the relay's integrity pin no longer "
+        "matches the refs this node serves. Reset the integrity pin to fix it.");
+    logSystem(m_topMessageRaw);
+    // Byte-escaped glyphs (✕, ·) must go through fromUtf8, not QStringLiteral, or they
+    // render as mojibake (each byte becomes its own char16_t).
+    m_topMessage->setText(QString::fromUtf8(
+        "<span style='color:#f85149'>\xE2\x9C\x95" " <b>Clones of this repo are being "
+        "rejected.</b> The integrity pin no longer matches the refs this node "
+        "serves. </span>"
+        "<a href='fm:resetpin' style='color:#58a6ff;text-decoration:none'>Reset "
+        "integrity pin</a>"
+        "<span style='color:#f85149'> \xC2\xB7" " </span>"
+        "<a href='fm:whypin' style='color:#58a6ff;text-decoration:none'>Why?</a>"));
+    m_topMessage->show();
+    // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    if (m_topMessageCopy)
+        m_topMessageCopy->show();
+    if (m_topMessageClose)
+        m_topMessageClose->show();
+}
+
+void MainWindow::dismissPinWarning()
+{
+    if (m_pinWarningActive)
+        dismissTopMessage();
 }
 
 // Re-publish the open repo's catalog record, which re-signs the CURRENT mirror
@@ -7301,19 +7359,13 @@ void MainWindow::resetRepoPin()
         return;
     const int index = m_repoDetailIndex;
     const RepositoryRecord &repo = m_repositories.at(index);
-    if (m_repoPinResetButton) {
-        m_repoPinResetButton->setEnabled(false);
-        m_repoPinResetButton->setText(QStringLiteral("Resetting…"));
-    }
     logSystem("Integrity pin: re-attesting current refs for " + repo.owner + "/" +
               repo.name + ".");
+    flashMessage(QStringLiteral("Re-attesting the integrity pin…"));
     publishRepository(index, true);
-    // Give the signed write a moment to land, then re-check and restore the button.
+    // Give the signed write a moment to land, then re-check: refreshRepoPinBanner
+    // clears the warning toast if the pin now matches, or re-shows it if not.
     QTimer::singleShot(1500, this, [this, index] {
-        if (m_repoPinResetButton) {
-            m_repoPinResetButton->setEnabled(true);
-            m_repoPinResetButton->setText(QStringLiteral("Reset integrity pin"));
-        }
         if (m_repoDetailIndex == index)
             refreshRepoPinBanner();
     });
@@ -7600,8 +7652,10 @@ void MainWindow::updateSolanaNotice()
 {
     if (!m_solanaBanner)
         return;
-    const bool hasAddress = !savedSolanaAddress().isEmpty();
-    m_solanaBanner->setVisible(!hasAddress);
+    // Crypto is strictly opt-in, so we no longer nag every account-less node to
+    // add a payout address. The only prompt to set one is the explicit "Get paid
+    // to mirror" button on the node profile; the banner stays hidden here.
+    m_solanaBanner->setVisible(false);
     updateWalletVerifyNotice();
     updateNavSolanaBalance();
 }
@@ -7688,6 +7742,46 @@ void MainWindow::promptSetSolanaAddress()
     // and donation notice pick it up immediately.
     updateSolanaNotice();
     updateHomeStats();
+}
+
+void MainWindow::enablePaidMirroring()
+{
+    // Crypto is strictly opt-in: the core flow (clone, mirror, issues, PRs, chat)
+    // never routes here. This is the one place a user chooses to host their
+    // mirrors on the network and earn donations, which needs two things the core
+    // flow does not: (1) a Solana payout address and (2) an active account the
+    // relay can verify before it accepts hosting/publishing.
+    QString address = savedSolanaAddress().trimmed();
+    if (address.isEmpty()) {
+        promptSetSolanaAddress();
+        address = savedSolanaAddress().trimmed();
+        if (address.isEmpty())
+            return; // user cancelled the address prompt — stay opted out
+    }
+
+    if (!hasActiveAccountSession()) {
+        // Reuse the established join/activate path (reserve -> donate -> set
+        // login, or log in to an existing account). On cancel/failure it surfaces
+        // the reason itself; we simply stay opted out.
+        if (!ensureNodeAccount(accountOwner(), address))
+            return;
+    }
+
+    // Active now: bring the live hosts up and (re)publish existing mirrors so the
+    // network can clone from this node and route donations to its wallet.
+    startRepoHosts();
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        if (m_repositories.at(i).publishToNetwork)
+            publishRepository(i, /*showDialogOnError=*/false);
+    }
+
+    updateSolanaNotice();
+    updateHomeStats();
+    // Refresh the open profile so the button flips to its "earning" state and the
+    // Solana address/QR/balance section appears next to the username.
+    if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
+        showNodeProfile(m_profileNodeId, m_profileNodeName);
+    flashMessage(QStringLiteral("You're set up to get paid to mirror."));
 }
 
 void MainWindow::showSection(int index)
@@ -8065,6 +8159,21 @@ QWidget *MainWindow::buildNodeProfilePanel()
             openDirectChat(m_profileNodeId, m_profileNodeName);
     });
 
+    // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
+    // directly under the username on your own profile. The core flow never shows
+    // it; clicking sets a Solana payout address (if unset) and activates this node
+    // so it can host its mirrors and earn donations (see enablePaidMirroring).
+    m_profileGetPaidButton = new QPushButton(QString::fromUtf8("Get paid to mirror"));
+    m_profileGetPaidButton->setObjectName("primaryButton");
+    m_profileGetPaidButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileGetPaidButton, "credit-card", 16);
+    m_profileGetPaidButton->setToolTip(
+        "Opt in to hosting your mirrors on the network and earning donations. "
+        "Sets a Solana payout address and activates this node. Entirely optional "
+        "\xE2\x80\x94 cloning, mirroring, issues and PRs work without it.");
+    connect(m_profileGetPaidButton, &QPushButton::clicked, this,
+            &MainWindow::enablePaidMirroring);
+
     // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
     // (rebuild, update, settings, logout) that used to be a stacked text menu.
     m_profileSelfActions = new QWidget;
@@ -8230,6 +8339,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
     layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
     layout->addWidget(m_profileName);
+    layout->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
     layout->addWidget(m_profileStatus);
     layout->addWidget(m_profileNote);
     layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
@@ -8450,6 +8560,17 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);
+
+    // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
+    // (active account + a payout address set) it flips to an "earning" label so
+    // the button doubles as a status line; it stays clickable to re-arm hosting.
+    if (m_profileGetPaidButton) {
+        const bool earning = hasActiveAccountSession() && !solana.isEmpty();
+        m_profileGetPaidButton->setVisible(info.self);
+        m_profileGetPaidButton->setText(
+            earning ? QString::fromUtf8("\xE2\x9C\x93 Getting paid to mirror")
+                    : QString::fromUtf8("Get paid to mirror"));
+    }
 
     // Wallet verification + eligibility badge are shown only on your own profile.
     if (m_profileVerifyButton)
@@ -9795,40 +9916,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
 
-    // Integrity-pin warning. Only the owner's node ever shows this (see
-    // refreshRepoPinBanner): it means the relay's pinned stateHash no longer
-    // matches the refs this node serves, so clones are being rejected. The "Why?"
-    // link explains the gate; "Reset integrity pin" re-attests the current refs.
-    m_repoPinLabel = new QLabel;
-    m_repoPinLabel->setWordWrap(true);
-    m_repoPinLabel->setTextFormat(Qt::RichText);
-    m_repoPinLabel->setOpenExternalLinks(false);
-    m_repoPinLabel->setText(QStringLiteral(
-        "<b>Clones of this repo are being rejected.</b> The integrity pin the "
-        "relay has on record no longer matches the refs this node serves, so it "
-        "refuses to hand out the mirror (\"repository failed integrity check\"). "
-        "<a href=\"why\" style=\"color:#58a6ff;text-decoration:none\">Why?</a>"));
-    connect(m_repoPinLabel, &QLabel::linkActivated, this,
-            [this](const QString &) { showPinExplanation(); });
-
-    m_repoPinResetButton = new QPushButton(QStringLiteral("Reset integrity pin"));
-    m_repoPinResetButton->setCursor(Qt::PointingHandCursor);
-    connect(m_repoPinResetButton, &QPushButton::clicked, this,
-            &MainWindow::resetRepoPin);
-
-    auto *pinRow = new QHBoxLayout;
-    pinRow->setContentsMargins(12, 6, 12, 6);
-    pinRow->setSpacing(10);
-    pinRow->addWidget(m_repoPinLabel, 1);
-    pinRow->addWidget(m_repoPinResetButton, 0, Qt::AlignTop);
-    m_repoPinBanner = new QWidget;
-    m_repoPinBanner->setObjectName("repoPinBanner");
-    m_repoPinBanner->setStyleSheet(
-        "#repoPinBanner{background:#3d1d1d;border:1px solid #f85149;"
-        "border-radius:6px;}"
-        "#repoPinBanner QLabel{color:#ffdcd7;background:transparent;}");
-    m_repoPinBanner->setLayout(pinRow);
-    m_repoPinBanner->hide();
+    // The integrity-pin warning ("clones are being rejected — reset the pin") no
+    // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
+    // the top-bar notification toast (see showPinWarning), where its "Reset
+    // integrity pin" and "Why?" actions are clickable links.
 
     m_repoPushButton = new QPushButton;
     m_repoPushButton->setObjectName("primaryButton");
@@ -9934,7 +10025,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addLayout(headerRow);
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
-    layout->addWidget(m_repoPinBanner);
     layout->addWidget(m_repoPublishBar);
     layout->addWidget(tabBar);
     layout->addWidget(m_repoDetailStack, 1);
@@ -19887,7 +19977,26 @@ QWidget *MainWindow::buildBranchesTab()
                 if (it)
                     setRepoBranch(it->text());
             });
-    layout->addWidget(m_branchesTable, 1);
+    // Selecting a branch (single click or arrow keys) previews its changes
+    // against the default branch in the panel below — no checkout required.
+    connect(m_branchesTable, &QTableWidget::currentCellChanged, this,
+            [this](int row, int, int, int) {
+                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                showBranchDiff(it ? it->text() : QString());
+            });
+
+    m_branchDiffView = new QTextBrowser;
+    m_branchDiffView->setObjectName("diffView");
+    m_branchDiffView->setOpenExternalLinks(false);
+    m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(m_branchesTable);
+    split->addWidget(m_branchDiffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({720, 980});
+    layout->addWidget(split, 1);
     return page;
 }
 
@@ -19946,6 +20055,27 @@ void MainWindow::loadBranchesPanel()
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         m_branchesTable->setItem(row, 2, updated);
 
+        // Row actions: open a pull request from this branch, and delete it.
+        auto *actions = new QWidget;
+        auto *actionRow = new QHBoxLayout(actions);
+        actionRow->setContentsMargins(0, 0, 0, 0);
+        actionRow->setSpacing(4);
+
+        auto *prButton = new QPushButton("Create PR");
+        prButton->setObjectName("ghostButton");
+        prButton->setProperty("buttonSize", "sm");
+        prButton->setCursor(Qt::PointingHandCursor);
+        setOcticon(prButton, "git-pull-request", 14);
+        const bool canPr = writable && branch != base;
+        prButton->setEnabled(canPr);
+        prButton->setToolTip(
+            canPr ? QStringLiteral("Open a pull request from %1 into %2").arg(branch, base)
+                  : (writable ? "The default branch can't open a pull request into itself"
+                              : "Read-only mirror — no working tree to open a pull request from"));
+        connect(prButton, &QPushButton::clicked, this,
+                [this, branch] { createPullFromBranch(branch); });
+        actionRow->addWidget(prButton);
+
         // Delete button (disabled for the default/checked-out branch).
         auto *del = new QPushButton;
         del->setObjectName("issueIconButton");
@@ -19962,7 +20092,9 @@ void MainWindow::loadBranchesPanel()
                                 : "Read-only mirror — no working tree to delete from");
         connect(del, &QPushButton::clicked, this,
                 [this, branch] { deleteBranch(branch); });
-        m_branchesTable->setCellWidget(row, 3, del);
+        actionRow->addWidget(del);
+
+        m_branchesTable->setCellWidget(row, 3, actions);
     }
     if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
@@ -20021,6 +20153,104 @@ void MainWindow::deleteBranch(const QString &branch)
     logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
     setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
     loadBranchesAndTags();
+}
+
+void MainWindow::showBranchDiff(const QString &branch)
+{
+    if (!m_branchDiffView)
+        return;
+    m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+    const QString dir = repoGitDir();
+    if (branch.isEmpty() || dir.isEmpty()) {
+        m_branchDiffView->clear();
+        return;
+    }
+    const QString base = repoDefaultBranch(repoBranches());
+    if (branch == base) {
+        m_branchDiffView->setHtml(
+            QStringLiteral("<p style='color:#8b949e'>%1 is the default branch.</p>")
+                .arg(branch.toHtmlEscaped()));
+        return;
+    }
+    QByteArray out;
+    QString err;
+    if (!runGitCapture(dir, {"diff", base + ".." + branch}, &out, &err)) {
+        m_branchDiffView->setHtml(
+            QStringLiteral("<p style='color:#f85149'>Could not diff %1: %2</p>")
+                .arg(branch.toHtmlEscaped(), err.toHtmlEscaped()));
+        return;
+    }
+    QList<DiffFileEntry> files;
+    const QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, base,
+                                        branch, QString(), QHash<QString, QString>());
+    m_branchDiffView->setHtml(
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>No changes between %1 and %2.</p>")
+                  .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
+            : html);
+}
+
+void MainWindow::createPullFromBranch(const QString &branch)
+{
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
+    if (branch.isEmpty() || branch == base)
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "This is a read-only mirror; pull requests can't be opened here.", true);
+        return;
+    }
+    QByteArray diff;
+    QString err;
+    if (!runGitCapture(dir, {"diff", "--binary", base + ".." + branch}, &diff, &err) ||
+        QString::fromUtf8(diff).trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("%1 has no changes to open as a pull request.").arg(branch),
+            true);
+        return;
+    }
+    // Default the PR title to the branch's first commit subject.
+    QByteArray subjectOut;
+    runGitCapture(dir, {"log", "--format=%s", "--reverse", base + ".." + branch},
+                  &subjectOut, nullptr);
+    const QStringList subjects =
+        QString::fromUtf8(subjectOut).split('\n', Qt::SkipEmptyParts);
+    bool ok = false;
+    const QString title =
+        QInputDialog::getText(
+            this, "Create pull request",
+            QStringLiteral("Title for the pull request from %1 into %2:")
+                .arg(branch, base),
+            QLineEdit::Normal, subjects.isEmpty() ? branch : subjects.first(), &ok)
+            .trimmed();
+    if (!ok || title.isEmpty())
+        return;
+    QString description;
+    for (const QString &s : subjects)
+        description += "- " + s + "\n";
+
+    // Capture the authored commit series too, so a merge replays it with `git am`.
+    QByteArray mbox;
+    runGitCapture(dir, {"format-patch", "--stdout", base + ".." + branch}, &mbox,
+                  nullptr);
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    const int number = store.createPull(title, description, base, branch,
+                                        QString::fromUtf8(diff),
+                                        QString::fromUtf8(mbox), &error);
+    if (number < 0) {
+        setRepoDetailNotice(
+            error.isEmpty() ? "Could not create the pull request." : error, true);
+        return;
+    }
+    logSystem(QStringLiteral("Opened pull #%1 from %2 into %3.")
+                  .arg(number)
+                  .arg(branch, base));
+    setRepoDetailNotice(
+        QStringLiteral("Opened pull request #%1 from %2.").arg(number).arg(branch));
+    m_currentPullNumber = number;
+    switchToPullTab(number);
 }
 
 // ---- Releases panel --------------------------------------------------------
@@ -26523,6 +26753,9 @@ void MainWindow::flashMessage(const QString &text, bool error)
     const QString fg = error ? "#f85149" : "#3fb950";
     const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                 : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
+    // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
+    m_pinWarningActive = false;
     m_topMessageRaw = trimmed;
     m_topMessage->setText(
         QStringLiteral("<span style='color:%1'>%2 %3</span>")
@@ -26558,6 +26791,7 @@ void MainWindow::flashMessage(const QString &text, bool error)
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
+    m_pinWarningActive = false;
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageCopy)
@@ -29205,8 +29439,14 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
         return;
     RepositoryRecord &repo = m_repositories[index];
     if (!hasActiveAccountSession()) {
-        const QString message =
-            QStringLiteral("Join the network before publishing repositories.");
+        // Publishing/hosting is the opt-in, paid side of the app. Point the user
+        // at the "Get paid to mirror" button on their node profile rather than
+        // failing silently; the core flow (clone, mirror, issues, PRs) is
+        // unaffected by staying opted out.
+        const QString message = QStringLiteral(
+            "Mirroring this repo locally needs nothing extra. To host it on the "
+            "network and get paid, open your node profile and choose \"Get paid "
+            "to mirror\".");
         logSystem(message);
         if (showDialogOnError)
             flashMessage(message, /*error=*/true);

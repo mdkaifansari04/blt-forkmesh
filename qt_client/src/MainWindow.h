@@ -130,6 +130,7 @@ public:
     }
     void testEnableSessionStartBypass(bool value) { m_testBypassServerStart = value; }
     void testStartSession() { startSession(); }
+    void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
     QString testUserName() const { return m_userName; }
@@ -246,6 +247,11 @@ private:
     QWidget *buildSolanaNotice();
     void updateSolanaNotice();
     void promptSetSolanaAddress();
+    // The one opt-in entry into the crypto side: set a Solana payout address,
+    // activate the node's network account, and start hosting its mirrors so it
+    // earns donations. Nothing in the core flow (clone, mirror, issues, PRs)
+    // routes here — it is reached only from the "Get paid to mirror" button.
+    void enablePaidMirroring();
 
     // Top breadcrumb: active server > current section.
     QWidget *buildBreadcrumb();
@@ -276,9 +282,17 @@ private:
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
-    // Show/hide the "clones are being rejected" banner on the owner's node when the
-    // relay's pinned stateHash no longer matches the refs this node serves.
+    // Show/hide the "clones are being rejected" warning on the owner's node when the
+    // relay's pinned stateHash no longer matches the refs this node serves. The
+    // warning surfaces as the top-bar notification toast (with Reset / Why links),
+    // not an in-page banner.
     void refreshRepoPinBanner();
+    // Show the integrity-pin warning in the top-bar toast, persistent (like an error
+    // toast) with clickable "Reset integrity pin" and "Why?" links.
+    void showPinWarning();
+    // Clear the top-bar toast only if it is currently the integrity-pin warning, so
+    // an unrelated toast isn't clobbered when the pin becomes healthy again.
+    void dismissPinWarning();
     // Re-attest the open repo's current refs, overwriting a stale relay pin.
     void resetRepoPin();
     // Dialog explaining what the integrity pin is and why a reset is needed.
@@ -584,6 +598,8 @@ private:
     QString repoDefaultBranch(const QStringList &branches) const;
     QWidget *buildBranchesTab();
     void loadBranchesPanel();
+    void showBranchDiff(const QString &branch);
+    void createPullFromBranch(const QString &branch);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
     void deleteSelectedBranches();
@@ -1070,6 +1086,7 @@ private:
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QString m_topMessageRaw;              // plain text of the current toast, for copy
+    bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -1120,9 +1137,6 @@ private:
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
-    QWidget *m_repoPinBanner = nullptr;      // "clones rejected — reset integrity pin" warning
-    QLabel *m_repoPinLabel = nullptr;        // explanatory text inside m_repoPinBanner
-    QPushButton *m_repoPinResetButton = nullptr; // re-attests the served refs
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
@@ -1238,6 +1252,7 @@ private:
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
+    QTextBrowser *m_branchDiffView = nullptr;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
@@ -1680,6 +1695,9 @@ private:
     QPushButton *m_profileVerifyButton = nullptr;
     QLabel *m_profileEligibility = nullptr;
     QPushButton *m_profileMessageButton = nullptr;
+    // "Get paid to mirror": opt-in CTA shown under the username on your own
+    // profile. Flips to an "earning" label once the node is activated.
+    QPushButton *m_profileGetPaidButton = nullptr;
     // Self-only actions pinned to the top of the node profile panel.
     QWidget *m_profileSelfActions = nullptr;
     QPushButton *m_profileRebuildButton = nullptr;
