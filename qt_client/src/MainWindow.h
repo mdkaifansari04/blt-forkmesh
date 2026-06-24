@@ -602,6 +602,8 @@ private:
     void loadBranchesPanel();
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
+    // Merge the default branch into `branch` so it catches up with main.
+    void updateBranchFromBase(const QString &branch);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
     void deleteSelectedBranches();
@@ -635,6 +637,11 @@ private:
     void scmUnstageAll();
     void scmDiscardAll();
     void scmCommit();
+    // Commit the staged changes, then publish/push them (see pushCurrentRepoUpstream).
+    void scmCommitAndPush();
+    // Shared commit body for both buttons above. Returns true once a commit lands
+    // so "Commit & push" only pushes after a successful commit.
+    bool performScmCommit();
     void showScmDiff(const QString &path, bool staged, bool untracked);
     // Walk the working-tree changes with the up/down buttons: step through the
     // open file's hunks first and only move to the next (+1) / previous (-1)
@@ -1336,6 +1343,7 @@ private:
     QLabel *m_scmGenStatus = nullptr;         // inline cost / progress note
     bool m_scmGenerating = false;             // a generation request is in flight
     QPushButton *m_scmCommitButton = nullptr;
+    QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageAllButton = nullptr;
     QPushButton *m_scmUnstageAllButton = nullptr;
     QPushButton *m_scmDiscardAllButton = nullptr;
