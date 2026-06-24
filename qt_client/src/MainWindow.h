@@ -659,6 +659,12 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    // Infinite scroll: when the list is scrolled to the bottom and more history
+    // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
+    void loadMoreCommits();
+    // Compose a release-notes message and a (<=280 char) X/Twitter post from the
+    // commits the user has multi-selected, shown in a copyable dialog.
+    void generatePostFromSelectedCommits();
     // --- Source Control panel (working-tree changes) at the top of the Commits
     // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
     // commit message (or an X post) with Claude/OpenAI.
@@ -677,6 +683,9 @@ private:
     // so "Commit & push" only pushes after a successful commit.
     bool performScmCommit();
     void showScmDiff(const QString &path, bool staged, bool untracked);
+    // "Open Changes" for a whole group: a combined diff of every staged (or every
+    // unstaged + untracked) file, rendered in the same diff pane as a single file.
+    void showScmDiffAll(bool staged);
     // Walk the working-tree changes with the up/down buttons: step through the
     // open file's hunks first and only move to the next (+1) / previous (-1)
     // changed file once past the last/first hunk.
@@ -1631,7 +1640,13 @@ private:
     int m_refreshAngle = 0;
     // Commits-page Refresh button + its spin animation state.
     QPushButton *m_commitsRefreshButton = nullptr;
+    QPushButton *m_commitsGenerateButton = nullptr; // "Generate post" (multi-select)
     QTimer *m_commitsRefreshSpinTimer = nullptr;
+    // Infinite-scroll paging for the commit list: how many commits are currently
+    // loaded, whether older history remains, and a re-entrancy guard.
+    int m_commitsLimit = 300;
+    bool m_commitsHasMore = false;
+    bool m_commitsLoadingMore = false;
     int m_commitsRefreshAngle = 0;
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;

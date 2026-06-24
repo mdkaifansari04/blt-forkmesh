@@ -10225,7 +10225,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
         {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Extended selection so several commits can be picked (Ctrl/Shift-click) and
+    // turned into a summary message / X post; a plain click still opens the diff.
+    m_commitsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_commitsTable->setShowGrid(false);
     m_commitsTable->setWordWrap(false);
@@ -10347,10 +10349,34 @@ QWidget *MainWindow::buildRepoCommitsTab()
         });
     });
 
+    // Turn the multi-selected commits into a shareable summary / X post.
+    m_commitsGenerateButton = new QPushButton("Generate post");
+    m_commitsGenerateButton->setObjectName("ghostButton");
+    m_commitsGenerateButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsGenerateButton, "broadcast", 16);
+    m_commitsGenerateButton->setToolTip(
+        "Select one or more commits (Ctrl/Shift-click), then draft a release note "
+        "and an X/Twitter post from them");
+    connect(m_commitsGenerateButton, &QPushButton::clicked, this,
+            &MainWindow::generatePostFromSelectedCommits);
+
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitSearch, 1);
+    searchRow->addWidget(m_commitsGenerateButton);
     searchRow->addWidget(m_commitsRefreshButton);
+
+    // Infinite scroll: when the list reaches the bottom and older history remains,
+    // deepen the window and rebuild (loadMoreCommits preserves the scroll spot).
+    connect(m_commitsTable->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int value) {
+                if (!m_commitsTable)
+                    return;
+                QScrollBar *sb = m_commitsTable->verticalScrollBar();
+                if (m_commitsHasMore && !m_commitsLoadingMore && sb->maximum() > 0 &&
+                    value >= sb->maximum() - 2)
+                    QTimer::singleShot(0, this, [this] { loadMoreCommits(); });
+            });
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
@@ -10892,15 +10918,61 @@ void MainWindow::refreshSourceControl()
             changes.append({path, QChar(y), false, false});
     }
 
-    auto addGroup = [this](const QString &name, const QList<Row> &rows) {
+    auto addGroup = [this](const QString &name, const QList<Row> &rows,
+                           bool stagedGroup) {
         if (rows.isEmpty())
             return;
         auto *group = new QTreeWidgetItem(m_scmTree);
-        group->setText(0, QStringLiteral("%1 (%2)").arg(name).arg(rows.size()));
         group->setFirstColumnSpanned(true);
-        QFont gf = group->font(0);
+
+        // VS Code-style group header: a bold "Name (N)" label with hover actions
+        // floated to the right — Open Changes (a combined diff of the whole group)
+        // plus Stage/Unstage all, and Discard all for unstaged changes. The label
+        // lives in the row widget (not setText) so the buttons can sit at the far
+        // right of the full-width header row, the way the per-file actions do.
+        auto *gw = new QWidget;
+        auto *gh = new QHBoxLayout(gw);
+        gh->setContentsMargins(0, 0, 6, 0);
+        gh->setSpacing(0);
+        auto *gl =
+            new QLabel(QStringLiteral("%1 (%2)").arg(name).arg(rows.size()), gw);
+        QFont gf = gl->font();
         gf.setBold(true);
-        group->setFont(0, gf);
+        gl->setFont(gf);
+        gh->addWidget(gl);
+        gh->addStretch();
+        auto groupBtn = [&](const QString &glyph, const QString &tip) {
+            auto *b = new QToolButton(gw);
+            b->setText(glyph);
+            b->setToolTip(tip);
+            b->setAutoRaise(true);
+            b->setCursor(Qt::PointingHandCursor);
+            return b;
+        };
+        auto *openAll = new QToolButton(gw);
+        openAll->setIcon(themedOcticon("diff", QColor("#8b949e"), 14));
+        openAll->setToolTip("Open all changes");
+        openAll->setAutoRaise(true);
+        openAll->setCursor(Qt::PointingHandCursor);
+        connect(openAll, &QToolButton::clicked, this,
+                [this, stagedGroup] { showScmDiffAll(stagedGroup); });
+        gh->addWidget(openAll);
+        if (stagedGroup) {
+            auto *u =
+                groupBtn(QString::fromUtf8("\xE2\x88\x92"), "Unstage all changes");
+            connect(u, &QToolButton::clicked, this, &MainWindow::scmUnstageAll);
+            gh->addWidget(u);
+        } else {
+            auto *d =
+                groupBtn(QString::fromUtf8("\xE2\x86\xBA"), "Discard all changes");
+            connect(d, &QToolButton::clicked, this, &MainWindow::scmDiscardAll);
+            auto *s = groupBtn(QStringLiteral("+"), "Stage all changes");
+            connect(s, &QToolButton::clicked, this, &MainWindow::scmStageAll);
+            gh->addWidget(d);
+            gh->addWidget(s);
+        }
+        m_scmTree->setItemWidget(group, 0, gw);
+
         for (const Row &r : rows) {
             auto *item = new QTreeWidgetItem(group);
             item->setIcon(0, iconForFile(r.path.section('/', -1)));
@@ -10952,8 +11024,8 @@ void MainWindow::refreshSourceControl()
         }
         group->setExpanded(true);
     };
-    addGroup("Staged Changes", staged);
-    addGroup("Changes", changes);
+    addGroup("Staged Changes", staged, /*stagedGroup=*/true);
+    addGroup("Changes", changes, /*stagedGroup=*/false);
 
     const int total = staged.size() + changes.size();
     if (m_scmCountLabel)
@@ -11020,6 +11092,41 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     if (html.isEmpty())
         html = QStringLiteral("<p style='color:#8b949e'>(no diff)</p>");
     m_scmDiffCache.insert(key, html);
+    m_scmDiff->setHtml(html);
+}
+
+void MainWindow::showScmDiffAll(bool staged)
+{
+    if (!m_scmDiff)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+
+    QByteArray out;
+    if (staged) {
+        out = gitCaptureStdout(dir, {"diff", "--cached"});
+    } else {
+        out = gitCaptureStdout(dir, {"diff"});
+        // `git diff` omits untracked files; append each as a /dev/null diff so
+        // "Open Changes" shows new files too, matching the per-file view.
+        QByteArray others;
+        runGitCapture(dir, {"ls-files", "--others", "--exclude-standard", "-z"},
+                      &others, nullptr);
+        for (const QByteArray &p : others.split('\0')) {
+            if (p.isEmpty())
+                continue;
+            out += gitCaptureStdout(
+                dir, {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)});
+        }
+    }
+
+    QList<DiffFileEntry> files;
+    QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, QString(),
+                                  QString(), QString(), QHash<QString, QString>());
+    if (html.isEmpty())
+        html = QStringLiteral("<p style='color:#8b949e'>(no changes)</p>");
     m_scmDiff->setHtml(html);
 }
 
@@ -18567,10 +18674,16 @@ void MainWindow::loadCommits()
         return;
     }
     QByteArray out;
+    // Reset to the base depth whenever the branch being viewed changes; an
+    // in-place reload (Refresh, or scroll-to-load-more) keeps the deepened window.
+    if (currentRef() != m_commitsLoadedRef)
+        m_commitsLimit = 300;
+    m_commitsHasMore = false;
+    // Fetch one extra record so a full page tells us older history remains.
     if (!runGitCapture(dir,
                        {"log", "--numstat",
                         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P",
-                        "-n", "300", currentRef()},
+                        "-n", QString::number(m_commitsLimit + 1), currentRef()},
                        &out, nullptr)) {
         m_commitsTable->setSortingEnabled(true);
         return;
@@ -18598,6 +18711,12 @@ void MainWindow::loadCommits()
     for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
+        // Stop at the current window; the extra fetched record means more remain,
+        // which the scroll handler uses to load the next page.
+        if (m_commitsTable->rowCount() >= m_commitsLimit) {
+            m_commitsHasMore = true;
+            break;
+        }
         const QStringList lines =
             QString::fromUtf8(record).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         if (lines.isEmpty())
@@ -18809,6 +18928,146 @@ void MainWindow::loadCommits()
     // own `git log` and a full issue-store scan, so defer it until after the
     // table has painted — it's a side effect, not part of rendering the list.
     QTimer::singleShot(0, this, [this] { applyCommitIssueClosures(); });
+}
+
+void MainWindow::loadMoreCommits()
+{
+    if (m_commitsLoadingMore || !m_commitsHasMore || !m_commitsTable)
+        return;
+    m_commitsLoadingMore = true;
+    // Keep the viewport where it is: the rows above are identical after the
+    // deeper reload, so restoring the same scrollbar value lands in place.
+    const int scrollVal = m_commitsTable->verticalScrollBar()->value();
+    m_commitsLimit += 300;
+    loadCommits(); // same ref → keeps the deepened window (no reset)
+    m_commitsTable->verticalScrollBar()->setValue(scrollVal);
+    m_commitsLoadingMore = false;
+}
+
+void MainWindow::generatePostFromSelectedCommits()
+{
+    if (!m_commitsTable)
+        return;
+    // Collect the selected rows (de-duped across selection ranges), in the table's
+    // display order (newest first).
+    QSet<int> rowSet;
+    const auto ranges = m_commitsTable->selectedRanges();
+    for (const QTableWidgetSelectionRange &r : ranges)
+        for (int row = r.topRow(); row <= r.bottomRow(); ++row)
+            rowSet.insert(row);
+    QList<int> rows(rowSet.cbegin(), rowSet.cend());
+    std::sort(rows.begin(), rows.end());
+    if (rows.isEmpty()) {
+        flashMessage(
+            QStringLiteral("Select one or more commits first (Ctrl/Shift-click)."),
+            true);
+        return;
+    }
+
+    QStringList subjects;
+    QStringList bullets;
+    for (int row : std::as_const(rows)) {
+        const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+        const QTableWidgetItem *hashIt = m_commitsTable->item(row, kCommitHashCol);
+        if (!sum)
+            continue;
+        const QString subject = sum->text().trimmed();
+        if (subject.isEmpty())
+            continue;
+        // Strip the leading "▲ " unsynced marker from the hash cell, if present.
+        const QString shortHash =
+            hashIt ? hashIt->text().remove(QChar(0x25B2)).trimmed() : QString();
+        subjects << subject;
+        bullets << (shortHash.isEmpty()
+                        ? QStringLiteral("- %1").arg(subject)
+                        : QStringLiteral("- %1 (%2)").arg(subject, shortHash));
+    }
+    if (subjects.isEmpty()) {
+        flashMessage(QStringLiteral("Couldn't read the selected commits."), true);
+        return;
+    }
+
+    const QString repoName =
+        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            ? m_repositories.at(m_repoDetailIndex).name
+            : QString();
+    const int n = subjects.size();
+
+    // Release-notes style message.
+    const QString message =
+        QString::fromUtf8("What\xE2\x80\x99s new%1\n\n%2")
+            .arg(repoName.isEmpty() ? QStringLiteral(":")
+                                    : QStringLiteral(" in %1:").arg(repoName),
+                 bullets.join(QLatin1Char('\n')));
+
+    // X/Twitter post: a header plus as many subjects as fit under 280 characters.
+    QString post = QString::fromUtf8("\xF0\x9F\x9A\x80 ");
+    post += repoName.isEmpty()
+                ? QStringLiteral("%1 update%2").arg(n).arg(n == 1 ? QString() : "s")
+                : QStringLiteral("%1: %2 update%3")
+                      .arg(repoName)
+                      .arg(n)
+                      .arg(n == 1 ? QString() : "s");
+    const QString tail = QStringLiteral(" #buildinpublic");
+    QStringList fragments;
+    int budget = 280 - post.size() - tail.size() - 2; // " — " + joins
+    for (const QString &s : std::as_const(subjects)) {
+        const QString frag = s.length() > 70 ? s.left(67) + QStringLiteral("…") : s;
+        const int cost = frag.size() + 2; // "; "
+        if (cost > budget)
+            break;
+        fragments << frag;
+        budget -= cost;
+    }
+    if (!fragments.isEmpty())
+        post += QString::fromUtf8(" \xE2\x80\x94 ") + fragments.join(QStringLiteral("; "));
+    post += tail;
+    if (post.size() > 280)
+        post = post.left(279) + QString::fromUtf8("\xE2\x80\xA6");
+
+    // Show both in a copyable dialog.
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Generate post — %1 commit%2")
+                              .arg(n)
+                              .arg(n == 1 ? QString() : "s"));
+    dialog.resize(560, 460);
+    auto *outer = new QVBoxLayout(&dialog);
+
+    auto addBlock = [&](const QString &title, const QString &body, bool small) {
+        auto *label = new QLabel(title);
+        label->setObjectName("sectionLabel");
+        outer->addWidget(label);
+        auto *edit = new QPlainTextEdit;
+        edit->setPlainText(body);
+        edit->setReadOnly(true);
+        if (small)
+            edit->setMaximumHeight(90);
+        outer->addWidget(edit, small ? 0 : 1);
+        auto *copyBtn = new QPushButton(QStringLiteral("Copy"));
+        copyBtn->setProperty("buttonSize", "sm");
+        copyBtn->setCursor(Qt::PointingHandCursor);
+        connect(copyBtn, &QPushButton::clicked, this, [this, body, title] {
+            QApplication::clipboard()->setText(body);
+            flashMessage(title + QStringLiteral(" copied to the clipboard."));
+        });
+        auto *copyRow = new QHBoxLayout;
+        copyRow->addStretch();
+        copyRow->addWidget(copyBtn);
+        outer->addLayout(copyRow);
+    };
+    addBlock(QString::fromUtf8("X / Twitter post (%1 chars)").arg(post.size()), post,
+             true);
+    addBlock(QStringLiteral("Release notes"), message, false);
+
+    auto *closeBtn = new QPushButton(QStringLiteral("Close"));
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    auto *closeRow = new QHBoxLayout;
+    closeRow->addStretch();
+    closeRow->addWidget(closeBtn);
+    outer->addLayout(closeRow);
+
+    dialog.exec();
 }
 
 void MainWindow::showCommitList()
