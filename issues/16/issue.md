@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 16
 title: Set a real ACCOUNTS_KEY secret in prod
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 1
