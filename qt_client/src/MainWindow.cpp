@@ -21636,7 +21636,7 @@ QWidget *MainWindow::buildBranchesTab()
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
-    split->setSizes({560, 220, 920});
+    split->setSizes({620, 200, 880});
     layout->addWidget(split, 1);
     return page;
 }
