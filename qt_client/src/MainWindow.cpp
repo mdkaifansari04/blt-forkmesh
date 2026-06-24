@@ -6622,6 +6622,17 @@ void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
         return;
+    // Mid node-switch: the repo list belongs to the node being loaded, so keep
+    // the button visible with a "Loading…" label (the spinner icon is driven by
+    // startRepoSwitchSpin) instead of revealing a count or repo name until the
+    // switch completes.
+    if (m_nodeSwitching) {
+        m_repoMenuButton->setVisible(true);
+        if (m_repoLabel)
+            m_repoLabel->setVisible(true);
+        m_repoMenuButton->setText(QString::fromUtf8("Loading\xE2\x80\xA6"));
+        return;
+    }
     // Nothing in the repo area when the selected node has no repos.
     const bool hasRepos = !m_repoMenuEntries.isEmpty();
     m_repoMenuButton->setVisible(hasRepos);
@@ -6842,8 +6853,15 @@ void MainWindow::refreshRepoPinBanner()
     if (!repo.publishToNetwork || repo.previewOnly ||
         repo.mirrorPath.trimmed().isEmpty())
         return;
-    // …and only the owner key holder can overwrite the pin.
+    // …only the owner key holder can overwrite the pin…
     if (!m_profileIdentity.isValid() || catalogOwner(repo) != accountOwner())
+        return;
+    // …and the integrity pin is the source of truth's concern alone: only the
+    // node that holds the working copy can (and should) re-attest it. A node that
+    // merely mirrors this repo — even one on the owner's own account — must never
+    // surface the banner; a stale pin on a mirror is the source of truth's problem
+    // to see (see loadMirrorNodesPanel), not the mirror's.
+    if (!repoHasWorkingTree())
         return;
     const QString localHash = mirrorStateHash(repo.mirrorPath);
     if (localHash.isEmpty())
@@ -8185,6 +8203,14 @@ void MainWindow::selectNode(const QString &node)
     // Mark the switch in flight before rebuilding the lists so refreshRepositoryList
     // leaves the first-repo open/clear to this function's deferred load below.
     m_nodeSwitching = true;
+    // Clear the repo dropdown instantly and spin it: its open repos belong to the
+    // previous node, so blank them and show a spinner rather than flashing stale
+    // entries while the new node's first repo loads (see updateRepoSwitcher, which
+    // renders a "Loading…" state while m_nodeSwitching). The deferred load below
+    // calls stopRepoSwitchSpin once the first repo is open.
+    m_repoMenuEntries.clear();
+    startRepoSwitchSpin();
+    updateRepoSwitcher();
     refreshRepositoryList();
     // Opening the first repo runs a cascade of *synchronous* git commands
     // (branches, commits, the file-search index, object size, README, …), each
@@ -8229,6 +8255,10 @@ void MainWindow::selectNode(const QString &node)
         else
             clearRepoDetail();
         m_nodeSwitching = false;
+        // Stop the repo spinner first so updateRepoSwitcher (called from
+        // stopRepoSwitchSpin, now that m_nodeSwitching is false) reveals the
+        // freshly-opened first repo and its count.
+        stopRepoSwitchSpin();
         stopNodeSwitchSpin();
         QApplication::restoreOverrideCursor();
         logSystem(firstRepo >= 0
@@ -18844,6 +18874,8 @@ void MainWindow::loadMirrorNodesPanel()
     int count = 0;
     qint64 totalBytes = 0;     // data mirrored across every node in this group
     qint64 maxRepoBytes = 0;   // best (largest, == most complete) copy seen
+    bool weAreSource = false;  // this node holds the source-of-truth copy
+    int outOfSyncPeers = 0;    // other nodes whose served state != the source
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -18923,6 +18955,13 @@ void MainWindow::loadMirrorNodesPanel()
         }
         m_mirrorNodesTable->setItem(row, 2, syncedItem);
 
+        // Tally for the owner-only alert below: are we the source of truth, and
+        // how many other nodes are serving a state that doesn't match it.
+        if (node.self && isSource)
+            weAreSource = true;
+        if (!node.self && behind)
+            ++outOfSyncPeers;
+
         // Size: how much data this node holds for this repo (its bare mirror's
         // on-disk object size). Sorts numerically; an em-dash for older peers
         // that don't advertise a size yet.
@@ -18967,6 +19006,17 @@ void MainWindow::loadMirrorNodesPanel()
             text += QString::fromUtf8(" \xC2\xB7 %1 each \xC2\xB7 %2 total")
                         .arg(formatByteSize(maxRepoBytes),
                              formatByteSize(totalBytes));
+        // Only the source of truth is told when a mirror node's served state has
+        // drifted from canonical — the mirror itself stays unaware (its pin is
+        // not its concern). A behind-but-online mirror is flagged here so the
+        // owner can see something is off even before opening the table.
+        if (weAreSource && outOfSyncPeers > 0)
+            text += QString::fromUtf8(
+                        " \xC2\xB7 <span style='color:#f85149'>\xE2\x9A\xA0 %1 "
+                        "mirror node%2 out of sync</span>")
+                        .arg(outOfSyncPeers)
+                        .arg(outOfSyncPeers == 1 ? "" : "s");
+        m_mirrorNodesSummary->setTextFormat(Qt::RichText);
         m_mirrorNodesSummary->setText(text);
     }
     if (m_repoMirrorsTab)
@@ -19397,12 +19447,43 @@ void MainWindow::startNodeSwitchSpin()
         });
     }
     m_nodeSwitchSpinTimer->start(60);
+
+    // Indeterminate loading bar pinned just below the node button for the length
+    // of the (potentially multi-second) switch. Parented to the node button's
+    // container so it floats over the bar without disturbing the layout.
+    if (!m_nodeSwitchProgress) {
+        m_nodeSwitchProgress =
+            new QProgressBar(m_nodeMenuButton->parentWidget());
+        m_nodeSwitchProgress->setObjectName("nodeSwitchProgress");
+        m_nodeSwitchProgress->setRange(0, 0); // busy / indeterminate
+        m_nodeSwitchProgress->setTextVisible(false);
+        m_nodeSwitchProgress->setFixedHeight(3);
+        m_nodeSwitchProgress->hide();
+    }
+    positionNodeSwitchProgress();
+    m_nodeSwitchProgress->show();
+    m_nodeSwitchProgress->raise();
+}
+
+void MainWindow::positionNodeSwitchProgress()
+{
+    if (!m_nodeSwitchProgress || !m_nodeMenuButton)
+        return;
+    QWidget *parent = m_nodeSwitchProgress->parentWidget();
+    if (!parent)
+        return;
+    const QPoint topLeft = m_nodeMenuButton->mapTo(
+        parent, QPoint(0, m_nodeMenuButton->height() + 1));
+    m_nodeSwitchProgress->setGeometry(topLeft.x(), topLeft.y(),
+                                      m_nodeMenuButton->width(), 3);
 }
 
 void MainWindow::stopNodeSwitchSpin()
 {
     if (m_nodeSwitchSpinTimer)
         m_nodeSwitchSpinTimer->stop();
+    if (m_nodeSwitchProgress)
+        m_nodeSwitchProgress->hide();
     // Restore the node button's normal label + OS/online badge icon.
     updateNodeSwitcher();
 }
