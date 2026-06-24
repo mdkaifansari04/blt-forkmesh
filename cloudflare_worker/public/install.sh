@@ -346,6 +346,16 @@ else
   say "Cloning $REPO"
   git clone --depth 1 "$REPO" "$SRC"
 fi
+# A pull can report "Already up to date" yet leave a checkout that is missing the
+# Qt sources (stale/partial mirror, or a mirror whose default branch lacks
+# qt_client). The success of git pull is not proof the tree CMake needs is
+# present, so verify it explicitly and re-clone from scratch if it is not.
+if [ ! -d "$SRC/qt_client" ]; then
+  warn "Checkout in $SRC is missing qt_client; fetching a fresh copy."
+  rm -rf "$SRC"
+  git clone --depth 1 "$REPO" "$SRC"
+  [ -d "$SRC/qt_client" ] || die "Fresh clone of $REPO does not contain qt_client."
+fi
 diag fetch 1
 
 # --- build ------------------------------------------------------------------
