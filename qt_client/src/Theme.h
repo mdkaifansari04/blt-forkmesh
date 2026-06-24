@@ -284,6 +284,8 @@ QPushButton#relayMenuButton:hover, QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #161b22; color: #e6edf3;
 }
+#nodeSwitchProgress { background: transparent; border: none; }
+#nodeSwitchProgress::chunk { background-color: #58a6ff; border-radius: 1px; }
 #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
 #navNodeName { background: transparent; color: #8b949e; font-size: 11px; font-weight: 600; }
 #navSolanaBalance {
@@ -1120,6 +1122,8 @@ QPushButton#relayMenuButton:hover, QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #eaeef2; color: #1f2328;
 }
+#nodeSwitchProgress { background: transparent; border: none; }
+#nodeSwitchProgress::chunk { background-color: #0969da; border-radius: 1px; }
 #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
 #navNodeName { background: transparent; color: #656d76; font-size: 11px; font-weight: 600; }
 #navSolanaBalance {

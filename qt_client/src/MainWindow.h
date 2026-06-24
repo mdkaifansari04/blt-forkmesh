@@ -44,6 +44,7 @@ class QListWidget;
 class QMenu;
 class QNetworkAccessManager;
 class QPlainTextEdit;
+class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
 class QScrollArea;
@@ -1439,6 +1440,10 @@ private:
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
+    // Indeterminate loading bar floated just under the node button while a node
+    // switch's heavy repo load runs. Created lazily by startNodeSwitchSpin.
+    QProgressBar *m_nodeSwitchProgress = nullptr;
+    void positionNodeSwitchProgress();
     // Repo-switch busy indicator (spinner on the top-nav repo button).
     QTimer *m_repoSwitchSpinTimer = nullptr;
     int m_repoSwitchAngle = 0;
