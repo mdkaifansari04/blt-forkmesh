@@ -11,6 +11,7 @@
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
 #include "RepoHost.h"
+#include "RepoSecurity.h"
 #include "ServerNode.h"
 #include "Theme.h"
 
@@ -9953,7 +9954,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
-    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
+    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 6 Security and quality
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
     m_branchesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
@@ -10004,6 +10005,8 @@ QWidget *MainWindow::buildRepoDetailSection()
         }
         else if (id == 5)
             refreshRepoActions();
+        else if (id == 6)
+            refreshRepoSecurity();
         else if (id == 7)
             loadRepoInsights();
         else if (id == m_branchesTabIndex)
@@ -11237,6 +11240,236 @@ void MainWindow::generateScmMessage()
                 if (m_scmGenStatus)
                     m_scmGenStatus->setText(line);
             });
+}
+
+QWidget *MainWindow::buildRepoSecurityTab()
+{
+    auto *page = new QWidget;
+    page->setObjectName("mainContent");
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("mainContent");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+
+    auto *content = new QWidget;
+    content->setObjectName("insightsPage");
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(14);
+
+    auto *heading = new QLabel("Security and quality");
+    heading->setObjectName("securityQualityTitle");
+    heading->setProperty("class", "channelTitle");
+    heading->setStyleSheet(QStringLiteral("font-size:16px;font-weight:700;"));
+    auto *subtitle = new QLabel(
+        "Local security and quality evidence from this node. External advisory "
+        "matching is not part of the MVP.");
+    subtitle->setObjectName("statusLine");
+    subtitle->setWordWrap(true);
+
+    m_securityRefreshButton = new QPushButton("Refresh");
+    m_securityRefreshButton->setObjectName("ghostButton");
+    m_securityRefreshButton->setProperty("buttonSize", "sm");
+    m_securityRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_securityRefreshButton, "sync", 16);
+    connect(m_securityRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshRepoSecurity);
+
+    auto *headingCol = new QVBoxLayout;
+    headingCol->setContentsMargins(0, 0, 0, 0);
+    headingCol->setSpacing(3);
+    headingCol->addWidget(heading);
+    headingCol->addWidget(subtitle);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addLayout(headingCol, 1);
+    headerRow->addWidget(m_securityRefreshButton, 0, Qt::AlignTop);
+    layout->addLayout(headerRow);
+
+    m_securitySummary = new QLabel;
+    m_securitySummary->setObjectName("insightsCard");
+    m_securitySummary->setTextFormat(Qt::RichText);
+    m_securitySummary->setWordWrap(true);
+    m_securitySummary->setMinimumHeight(92);
+    layout->addWidget(m_securitySummary);
+
+    auto *signalsLabel = new QLabel("SIGNALS");
+    signalsLabel->setObjectName("sectionLabel");
+    layout->addWidget(signalsLabel);
+
+    m_securitySignalsPanel = new QWidget;
+    m_securitySignalsGrid = new QGridLayout(m_securitySignalsPanel);
+    m_securitySignalsGrid->setContentsMargins(0, 0, 0, 0);
+    m_securitySignalsGrid->setSpacing(10);
+    layout->addWidget(m_securitySignalsPanel);
+
+    auto *findingsLabel = new QLabel("FINDINGS");
+    findingsLabel->setObjectName("sectionLabel");
+    layout->addWidget(findingsLabel);
+
+    m_securityFindingsTable = new QTableWidget(0, 4);
+    m_securityFindingsTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_securityFindingsTable);
+    m_securityFindingsTable->setHorizontalHeaderLabels(
+        {"Severity", "Category", "Finding", "Action"});
+    m_securityFindingsTable->verticalHeader()->setVisible(false);
+    m_securityFindingsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_securityFindingsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_securityFindingsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_securityFindingsTable->setShowGrid(false);
+    m_securityFindingsTable->setWordWrap(false);
+    QHeaderView *header = m_securityFindingsTable->horizontalHeader();
+    header->setHighlightSections(false);
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(2, QHeaderView::Stretch);
+    header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_securityFindingsTable->setMinimumHeight(220);
+    layout->addWidget(m_securityFindingsTable);
+    layout->addStretch();
+
+    scroll->setWidget(content);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->addWidget(scroll);
+    refreshRepoSecurity();
+    return page;
+}
+
+void MainWindow::refreshRepoSecurity()
+{
+    if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
+        return;
+
+    while (QLayoutItem *item = m_securitySignalsGrid->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    m_securityFindingsTable->setSortingEnabled(false);
+    m_securityFindingsTable->setRowCount(0);
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_securitySummary->setText(
+            "<b>Security and quality</b><br><span style='color:#8b949e'>"
+            "Select a repository to scan local evidence.</span>");
+        m_securityFindingsTable->setSortingEnabled(true);
+        return;
+    }
+
+    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord &writable = writableRecordFor(selected);
+
+    RepoSecurityInput input;
+    input.owner = selected.owner;
+    input.name = selected.name;
+    input.localPath = writable.localPath;
+    input.mirrorPath = writable.mirrorPath.isEmpty() ? selected.mirrorPath
+                                                     : writable.mirrorPath;
+    input.publishToNetwork = selected.publishToNetwork;
+    input.isPrivate = selected.isPrivate;
+    input.previewOnly = selected.previewOnly;
+    input.actionsEnabled = selected.actionsEnabled;
+    input.integrityWarning = m_repoPinBanner && m_repoPinBanner->isVisible();
+    input.issues =
+        IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
+            .loadAll();
+    input.workflows = availableWorkflowsForRepo(writable);
+    for (const ActionRun &run : std::as_const(m_actionRuns))
+        if (run.owner == selected.owner && run.name == selected.name)
+            input.actionRuns.append(run);
+
+    const RepoSecuritySnapshot snapshot = RepoSecurity::scan(input);
+    const RepoSecuritySeverity highest = RepoSecurity::highestSeverity(snapshot);
+    int warnings = 0;
+    int severe = 0;
+    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+        if (signal.severity == RepoSecuritySeverity::Warning)
+            ++warnings;
+        else if (signal.severity == RepoSecuritySeverity::High ||
+                 signal.severity == RepoSecuritySeverity::Critical)
+            ++severe;
+    }
+    for (const RepoSecurityFinding &finding : snapshot.findings) {
+        if (finding.severity == RepoSecuritySeverity::Warning)
+            ++warnings;
+        else if (finding.severity == RepoSecuritySeverity::High ||
+                 finding.severity == RepoSecuritySeverity::Critical)
+            ++severe;
+    }
+
+    m_securitySummary->setText(
+        QStringLiteral(
+            "<div style='font-size:21px; font-weight:800; color:%1'>%2</div>"
+            "<div style='color:#8b949e; font-size:12px; font-weight:600'>"
+            "%3 at %4. %5 finding%6, %7 warning%8, %9 severe.</div>")
+            .arg(repoSecuritySeverityColor(highest),
+                 RepoSecurity::severityText(highest).toHtmlEscaped(),
+                 snapshot.repoKey.toHtmlEscaped(), snapshot.ref.toHtmlEscaped())
+            .arg(snapshot.findings.size())
+            .arg(snapshot.findings.size() == 1 ? QString() : QStringLiteral("s"))
+            .arg(warnings)
+            .arg(warnings == 1 ? QString() : QStringLiteral("s"))
+            .arg(severe));
+
+    int index = 0;
+    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+        auto *card = new QLabel(repoSecuritySignalHtml(signal));
+        card->setObjectName("insightsCard");
+        card->setTextFormat(Qt::RichText);
+        card->setWordWrap(true);
+        card->setMinimumHeight(92);
+        const int row = index / 3;
+        const int col = index % 3;
+        m_securitySignalsGrid->addWidget(card, row, col);
+        ++index;
+    }
+
+    if (snapshot.findings.isEmpty()) {
+        const int row = m_securityFindingsTable->rowCount();
+        m_securityFindingsTable->insertRow(row);
+        auto *severity = new QTableWidgetItem("Pass");
+        severity->setForeground(QColor(repoSecuritySeverityColor(
+            RepoSecuritySeverity::Pass)));
+        m_securityFindingsTable->setItem(row, 0, severity);
+        m_securityFindingsTable->setItem(row, 1, new QTableWidgetItem("Local scan"));
+        m_securityFindingsTable->setItem(
+            row, 2, new QTableWidgetItem("No local findings at this ref."));
+        m_securityFindingsTable->setItem(row, 3, new QTableWidgetItem("-"));
+    } else {
+        for (const RepoSecurityFinding &finding : snapshot.findings) {
+            const int row = m_securityFindingsTable->rowCount();
+            m_securityFindingsTable->insertRow(row);
+            auto *severity =
+                new QTableWidgetItem(RepoSecurity::severityText(finding.severity));
+            severity->setForeground(QColor(repoSecuritySeverityColor(finding.severity)));
+            auto *category = new QTableWidgetItem(finding.category);
+            const QString location =
+                finding.path.isEmpty()
+                    ? QString()
+                    : QStringLiteral(" (%1%2)")
+                          .arg(finding.path,
+                               finding.line > 0
+                                   ? QStringLiteral(":%1").arg(finding.line)
+                                   : QString());
+            auto *detail =
+                new QTableWidgetItem(finding.title + QStringLiteral(": ") +
+                                     finding.detail + location);
+            auto *action = new QTableWidgetItem(finding.recommendedAction);
+            for (QTableWidgetItem *item : {severity, category, detail, action})
+                item->setToolTip(item->text());
+            m_securityFindingsTable->setItem(row, 0, severity);
+            m_securityFindingsTable->setItem(row, 1, category);
+            m_securityFindingsTable->setItem(row, 2, detail);
+            m_securityFindingsTable->setItem(row, 3, action);
+        }
+    }
+
+    m_securityFindingsTable->setSortingEnabled(true);
 }
 
 QWidget *MainWindow::buildInsightsTab()
