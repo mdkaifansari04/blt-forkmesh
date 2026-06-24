@@ -238,6 +238,15 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
     const QString mime = m_message.fileMime;
     const QByteArray &data = m_message.fileData;
 
+    // Mark an inline image label as clickable so it can be opened full-size in
+    // the image detail viewer.
+    auto makeClickable = [this](QLabel *label) {
+        m_imageLabel = label;
+        label->setCursor(Qt::PointingHandCursor);
+        label->setToolTip(QStringLiteral("Click to view full size"));
+        label->installEventFilter(this);
+    };
+
     if (mime == "image/gif") {
         auto *label = new QLabel;
         auto *buffer = new QBuffer(label);
@@ -254,6 +263,7 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
             movie->setScaledSize(size);
             label->setMovie(movie);
             movie->start();
+            makeClickable(label);
             layout->addWidget(label);
             return;
         }
@@ -265,6 +275,7 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
                                               Qt::SmoothTransformation);
             auto *label = new QLabel;
             label->setPixmap(pixmap);
+            makeClickable(label);
             layout->addWidget(label);
             return;
         }
@@ -300,6 +311,14 @@ bool MessageRow::eventFilter(QObject *watched, QEvent *event)
         auto *me = static_cast<QMouseEvent *>(event);
         if (me->button() == Qt::LeftButton) {
             emit senderClicked(m_message.senderId, m_message.senderName);
+            return true;
+        }
+    }
+    if (watched == m_imageLabel &&
+        event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            emit imageActivated(m_message.fileName, m_message.fileData);
             return true;
         }
     }

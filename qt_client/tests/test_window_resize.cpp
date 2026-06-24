@@ -218,56 +218,41 @@ int main(int argc, char *argv[])
     }
 
     window.testEnableSessionStartBypass(true);
+
+    // Website parity: there is no anonymous start. A declined or cancelled
+    // signup/login keeps the user on the welcome screen instead of entering the
+    // app unauthenticated.
     window.testSetSetupInputs(QStringLiteral("Alice-Node"),
                               QStringLiteral("SavedSolana111"));
     window.testSetAccountFlowResult(false);
     window.testStartSession();
-    check(window.testAccountFlowCalls() == 0,
-          QStringLiteral("free start does not run account authentication"));
-    check(window.testStackIndex() == 1,
-          QStringLiteral("free start opens the app shell"));
-    check(window.testUserName() == QStringLiteral("alice-node"),
-          QStringLiteral("free start uses sanitized node name"));
-    check(window.testAccountName() == QStringLiteral("alice-node"),
-          QStringLiteral("free start records the account owner name locally"));
-    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
-          QStringLiteral("free start preserves the saved Solana address"));
-    check(!window.testAccountAuthenticated(),
-          QStringLiteral("free start keeps the account unauthenticated"));
-    check(window.testAccountTier() == QStringLiteral("free"),
-          QStringLiteral("free start keeps the account tier free"));
-    QTemporaryDir freeHostMirror;
-    if (freeHostMirror.isValid()) {
-        const int freeRepoIndex =
-            window.testAddPublishedRepository(QStringLiteral("alice-node"),
-                                              QStringLiteral("free-repo"),
-                                              freeHostMirror.path());
-        window.testPublishRepository(freeRepoIndex);
-        check(window.testNetworkLog().join(QLatin1Char('\n')).contains(
-                  QStringLiteral("Join the network before publishing repositories")),
-              QStringLiteral("free start blocks repository publishing"));
-        window.testStartRepoHosts();
-        check(window.testRepoHostCount() == 0,
-              QStringLiteral("free start does not host published repositories"));
-        window.testStopRepoHosts();
-    }
-
-    window.testSetSetupInputs(QStringLiteral("Join-Node"),
-                              QStringLiteral("JoinSolana222"));
-    window.testSetAccountFlowResult(true);
-    QPushButton *joinButton =
-        findButtonStartingWith(window, QStringLiteral("Join the network"));
-    check(joinButton != nullptr, QStringLiteral("join button exists"));
-    if (joinButton) {
-        joinButton->click();
-        QApplication::processEvents();
-    }
     check(window.testAccountFlowCalls() == 1,
-          QStringLiteral("join runs the account flow exactly once"));
+          QStringLiteral("start requires the account flow"));
+    check(window.testStackIndex() != 1,
+          QStringLiteral("declined signup stays on the welcome screen"));
+    check(!window.testAccountAuthenticated(),
+          QStringLiteral("declined signup keeps the account unauthenticated"));
+
+    // Completing the paid signup / login (the account flow returns true) lets the
+    // start proceed into the app.
+    window.testSetSetupInputs(QStringLiteral("Alice-Node"),
+                              QStringLiteral("SavedSolana111"));
+    window.testSetAccountFlowResult(true);
+    window.testStartSession();
+    check(window.testAccountFlowCalls() == 1,
+          QStringLiteral("authenticated start runs the account flow exactly once"));
     check(window.testStackIndex() == 1,
-          QStringLiteral("join opens the app shell after authentication"));
-    check(window.testAccountName() == QStringLiteral("join-node"),
-          QStringLiteral("join stores the authenticated node name"));
+          QStringLiteral("authenticated start opens the app shell"));
+    check(window.testUserName() == QStringLiteral("alice-node"),
+          QStringLiteral("authenticated start uses the sanitized node name"));
+    check(window.testAccountName() == QStringLiteral("alice-node"),
+          QStringLiteral("authenticated start records the account owner name"));
+    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
+          QStringLiteral("authenticated start preserves the saved Solana address"));
+    check(window.testAccountAuthenticated(),
+          QStringLiteral("authenticated start marks the account authenticated"));
+    check(window.testAccountTier() == QStringLiteral("active"),
+          QStringLiteral("authenticated start sets the account tier active"));
 
     QCheckBox *nodeConnectAlertCheck =
         findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));

@@ -2267,3 +2267,78 @@ html.dark .diff-hunk {
   font-variant-numeric: tabular-nums;
   color: var(--warning, #d29922);
 }
+
+/* ---- Site footer ------------------------------------------------------- */
+.site-footer {
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  margin-top: 64px;
+}
+.footer-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 36px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
+}
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.footer-brand img {
+  width: 24px;
+  height: 24px;
+}
+.footer-tagline {
+  margin: 10px 0 0;
+  color: var(--muted);
+  max-width: 32ch;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+}
+.footer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.footer-col h3 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.footer-col a {
+  color: var(--foreground);
+  text-decoration: none;
+  font-size: 14px;
+}
+.footer-col a:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.footer-bottom {
+  border-top: 1px solid var(--border-subtle, var(--border));
+  padding: 16px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.footer-bottom a {
+  color: var(--muted);
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .footer-inner { flex-direction: column; gap: 24px; }
+}

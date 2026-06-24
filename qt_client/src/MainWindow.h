@@ -36,12 +36,14 @@ class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
+class QGraphicsOpacityEffect;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QMenu;
 class QNetworkAccessManager;
 class QPlainTextEdit;
+class QPropertyAnimation;
 class QPushButton;
 class QScrollArea;
 class QStackedWidget;
@@ -310,6 +312,11 @@ private:
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
+    // Overlay banner flagging unsynced commits: pin it over the table's top,
+    // reveal it, or fade it out — none of which touch the page layout.
+    void positionCommitsBanner();
+    void showCommitsBanner(const QString &html);
+    void hideCommitsBanner();
     // Open the issue or pull request referenced by "#<number>" in a commit
     // message (a PR if one matches, otherwise an issue).
     void openCommitReference(int number);
@@ -506,6 +513,7 @@ private:
     void reloadVariablesTable();
     void addOrEditVariable();
     void deleteSelectedVariable();
+    void toggleVariablesRevealed();
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
@@ -804,6 +812,10 @@ private:
     void sendTypingState(bool active);
     void refreshTypingLabel();
     void attachFile();
+    // Open a chat image attachment full-size in a lightbox dialog.
+    void showChatImageDetail(const QString &fileName, const QByteArray &data);
+    // Share a clipboard image in the current conversation; true if one was sent.
+    bool trySendClipboardImage();
     void saveIncomingFile(const QString &fileName, const QByteArray &data);
     // Local chat history persistence (per active server/room).
     QString chatHistoryKey() const;
@@ -1127,6 +1139,11 @@ private:
     QTableWidget *m_commitsTable = nullptr;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
+    // The banner floats over the top of the commit table on its own layer so
+    // toggling it on a refresh never reflows the page; it fades out when cleared.
+    QWidget *m_commitsListPage = nullptr;      // parent the banner overlays
+    QGraphicsOpacityEffect *m_commitsBannerOpacity = nullptr;
+    QPropertyAnimation *m_commitsBannerFade = nullptr;
     QLabel *m_insightsSummary = nullptr;
     QLabel *m_insightsTraffic = nullptr;
     QLabel *m_insightsLanguageBar = nullptr;
@@ -1277,6 +1294,10 @@ private:
     QPushButton *m_actionCopyLogButton = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
+    // When true, the variables table shows secret values in clear text instead
+    // of the masked bullets. Toggled by the Reveal/Hide button.
+    bool m_varsRevealed = false;
+    QPushButton *m_varsRevealButton = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the
     // user opts in either on the Actions tab or the repo Settings tab — both
     // checkboxes drive the same state via setRepoActionsEnabled().
@@ -1411,9 +1432,10 @@ private:
     QString m_currentIssueTitle;
     bool m_issueDeleteConfirmPending = false;
     // Set just before a reload that closes the viewed issue: if closing drops it
-    // out of the filtered list, refreshIssueList advances selection to the issue
-    // that takes its place and keeps the detail panel open (issue #188).
-    bool m_advanceToNextOnReload = false;
+    // out of the filtered list, refreshIssueList keeps the detail panel open on
+    // that same (now-closed) issue instead of collapsing to the full-width list
+    // or jumping elsewhere (issue #188).
+    bool m_keepCurrentOnReload = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.

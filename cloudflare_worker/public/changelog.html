@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ForkMesh Changelog</title>
+    <meta
+      name="description"
+      content="How ForkMesh grew — from a single mirror on one laptop to an agent-powered, self-funding developer mesh."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="static-page.js" defer></script>
+    <style>
+      .log-wrap { max-width: 860px; margin: 0 auto; padding: 42px 20px 80px; }
+      .log-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .log-intro { color: var(--muted); max-width: 60ch; font-size: 17px; }
+      .release {
+        position: relative;
+        border-left: 2px solid var(--border);
+        margin: 38px 0 0;
+        padding: 0 0 8px 26px;
+      }
+      .release::before {
+        content: "";
+        position: absolute;
+        left: -7px; top: 6px;
+        width: 12px; height: 12px;
+        border-radius: 50%;
+        background: var(--accent, #7c5cff);
+        box-shadow: 0 0 0 4px var(--background);
+      }
+      .release-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+      .release h2 { font-size: 24px; margin: 0; }
+      .release .tag {
+        font-size: 12px; font-weight: 600; letter-spacing: .04em;
+        text-transform: uppercase; color: var(--muted);
+        border: 1px solid var(--border); border-radius: 999px;
+        padding: 2px 10px;
+      }
+      .release .when { color: var(--muted); font-size: 13px; }
+      .release .pitch { color: var(--muted); margin: 10px 0 14px; }
+      .release ul { padding-left: 20px; margin: 0; }
+      .release li { color: var(--muted); margin: 7px 0; line-height: 1.5; }
+      .release li strong { color: var(--foreground); }
+      .log-foot { margin-top: 44px; color: var(--muted); }
+      .log-foot a { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span>ForkMesh</span>
+        </a>
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/blog/">Blog</a>
+          <a href="/about.html">About</a>
+          <a href="/signup.html">Join</a>
+        </nav>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="log-wrap">
+      <p class="eyebrow">Changelog</p>
+      <h1>Every release, in plain English</h1>
+      <p class="log-intro">
+        How ForkMesh grew — from a single mirror on one laptop to an
+        agent-powered, self-funding developer mesh.
+      </p>
+
+      <section class="release">
+        <div class="release-head">
+          <h2>The Agent Mesh</h2>
+          <span class="tag">v0.5.0</span>
+          <span class="when">June 2026</span>
+        </div>
+        <p class="pitch">
+          The release where ForkMesh starts to feel alive. Open an issue, hand it
+          to an AI agent, and watch a real pull request show up — all without
+          leaving the mesh.
+        </p>
+        <ul>
+          <li><strong>Built-in coding agents.</strong> Assign any issue to Claude Code or Codex from the issue detail or quick-add box. The agent works on your connected fork and opens a pull request when it's done.</li>
+          <li><strong>A real terminal, in the app.</strong> A native VT100 terminal renders every agent and workflow run with full color output and emoji.</li>
+          <li><strong>Bounties that pay out.</strong> Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and releases the reward when the PR is merged.</li>
+          <li><strong>IDE extension.</strong> Kick off ForkMesh agents straight from your editor.</li>
+          <li><strong>Profile pages.</strong> Click any node to see its full public profile — repos, identity, and version.</li>
+          <li><strong>Hardened by default.</strong> Tighter signup and relay security, with auto-publish off until you say so.</li>
+        </ul>
+      </section>
+
+      <section class="release">
+        <div class="release-head">
+          <h2>Autonomous Agents</h2>
+          <span class="tag">v0.4.0</span>
+          <span class="when">June 2026</span>
+        </div>
+        <p class="pitch">Collaboration stopped being a one-person job.</p>
+        <ul>
+          <li><strong>Parallel agents, no queue.</strong> Run multiple agents at once across your issues.</li>
+          <li><strong>Continue the conversation.</strong> Pick a session back up where it left off, with auto-PR creation on quick tasks.</li>
+          <li><strong>Live activity indicators.</strong> See which agents are working right now.</li>
+          <li><strong>Issues and PRs that talk to each other.</strong> Merge a PR and its linked issue closes itself; sync straight to main with one checkbox.</li>
+          <li><strong>One-click delegation.</strong> Send any issue to your agent of choice — pre-filled and ready to go.</li>
+        </ul>
+      </section>
+
+      <section class="release">
+        <div class="release-head">
+          <h2>Identity &amp; Rewards</h2>
+          <span class="tag">v0.3.0</span>
+          <span class="when">June 2026</span>
+        </div>
+        <p class="pitch">ForkMesh learned to pay the people who keep the network alive.</p>
+        <ul>
+          <li><strong>Anonymous accounts.</strong> Sign up with nothing but a key and a password — no email, no phone. Optional 2FA included.</li>
+          <li><strong>Solana payouts and donations.</strong> Publish a Solana address and let anyone "make it rain" across a node or the whole federation. SOL and USDT, priced live.</li>
+          <li><strong>Rewards for mirroring.</strong> The nodes that preserve code get recognized for it.</li>
+          <li><strong>Network presence, done right.</strong> Mirror-sync notices moved into a proper network log, with live connection alerts.</li>
+        </ul>
+      </section>
+
+      <section class="release">
+        <div class="release-head">
+          <h2>Collaborate Anywhere</h2>
+          <span class="tag">v0.2.0</span>
+          <span class="when">June 2026</span>
+        </div>
+        <p class="pitch">The web caught up to the desktop, and ForkMesh went mobile.</p>
+        <ul>
+          <li><strong>Pull requests.</strong> Signed patch submissions, browsable on the web and mergeable from the client.</li>
+          <li><strong>Actions.</strong> Run real workflows on push, with the latest live log one click away.</li>
+          <li><strong>Releases and tags.</strong> See your tags, mark the current one, and cut new releases in seconds.</li>
+          <li><strong>Browse before you mirror.</strong> Explore files, commits, and rich diffs (images side by side) — no clone required.</li>
+          <li><strong>Mirror on your phone.</strong> Carry the mesh in your pocket.</li>
+          <li><strong>Fork with intent.</strong> Choose exactly where a fork lands in your working tree.</li>
+        </ul>
+      </section>
+
+      <section class="release">
+        <div class="release-head">
+          <h2>Genesis</h2>
+          <span class="tag">v0.1.0</span>
+          <span class="when">June 2026</span>
+        </div>
+        <p class="pitch">
+          The first commit. A bet that source code shouldn't be locked to a
+          single forge.
+        </p>
+        <ul>
+          <li><strong>A distributed mirror network.</strong> Local Git mirrors, signed identities, and a Cloudflare relay that coordinates without ever holding your objects.</li>
+          <li><strong>A public catalog.</strong> Every repository a node publishes, browsable on the web and streamed live from its host.</li>
+          <li><strong>Issues that grow with you.</strong> Open/closed states, priorities, custom fields, a Kanban board, and milestones with progress bars.</li>
+          <li><strong>Commit history and diffs</strong>, viewable right in the browser.</li>
+          <li><strong>Encrypted room chat</strong>, end-to-end encrypted before it ever touches the relay.</li>
+          <li><strong>One-click hand-off to your AI tools</strong>, baked in from day one.</li>
+        </ul>
+      </section>
+
+      <p class="log-foot">
+        Have feedback or want to say hi? Email the founders at
+        <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
+      </p>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div>
+          <div class="footer-brand">
+            <img src="/assets/logo.png" alt="" aria-hidden="true" />
+            <span>ForkMesh</span>
+          </div>
+          <p class="footer-tagline">
+            Code hosting that lives on the network — distributed, signed, and
+            impossible to quietly take away.
+          </p>
+        </div>
+        <nav class="footer-links" aria-label="Footer">
+          <div class="footer-col">
+            <h3>Product</h3>
+            <a href="/#catalog">Repositories</a>
+            <a href="/network/">Network</a>
+            <a href="/docs/">Docs</a>
+            <a href="/changelog.html">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <h3>Company</h3>
+            <a href="/about.html">About</a>
+            <a href="/blog/">Blog</a>
+            <a href="/signup.html">Join</a>
+          </div>
+          <div class="footer-col">
+            <h3>Get in touch</h3>
+            <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>
+            <a href="/privacy.html">Privacy</a>
+            <a href="/terms.html">Terms</a>
+          </div>
+        </nav>
+      </div>
+      <div class="footer-bottom">
+        Questions or feedback? Email the founders at
+        <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
+      </div>
+    </footer>
+  </body>
+</html>

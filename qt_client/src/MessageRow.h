@@ -35,6 +35,8 @@ signals:
     // Admin moderation delete of someone else's message.
     void moderateDeleteRequested(const QString &messageId);
     void saveFileRequested(const QString &fileName, const QByteArray &data);
+    // An inline image attachment was clicked (to open it full-size).
+    void imageActivated(const QString &fileName, const QByteArray &data);
     // The avatar or sender name was clicked (to open that node's profile).
     void senderClicked(const QString &id, const QString &name);
 
@@ -49,5 +51,6 @@ private:
     QString m_nameColor;
     QLabel *m_avatarLabel;
     QLabel *m_senderLabel = nullptr;
+    QLabel *m_imageLabel = nullptr; // clickable inline image (opens full-size)
     QHBoxLayout *m_reactionsBar;
 };

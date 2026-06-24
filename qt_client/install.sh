@@ -10,8 +10,9 @@
 #
 # Re-run it any time; it overwrites its own files and refreshes the icon cache.
 #
-# Usage:  ./install.sh           # build if needed, then install
-#         ./install.sh --uninstall
+# Usage:  ./install.sh                    # build if needed, then install
+#         ./install.sh --uninstall        # remove desktop integration only
+#         ./install.sh --uninstall --purge # also erase ALL user data
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,8 +31,27 @@ uninstall() {
     rm -f "$DESKTOP_FILE"
     find "$ICON_BASE" -name "$DESKTOP_ID.png" -delete 2>/dev/null || true
     rm -f "$DATA_HOME/icons/$DESKTOP_ID.png"
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/$DESKTOP_ID.desktop"
     refresh_caches
-    echo "Done. (The build directory was left untouched.)"
+
+    # With --purge, also erase every byte of user data so a reinstall starts
+    # clean (no leftover node name, identity key, mirrored repos, or chat). The
+    # QSettings org+app are both "ForkMesh", so config/data/cache live under a
+    # capitalised "ForkMesh" directory.
+    if [[ "$PURGE" == "1" ]]; then
+        echo "Erasing all ForkMesh user data (--purge)…"
+        local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+        local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+        local d
+        for d in "$config_home/ForkMesh" "$DATA_HOME/ForkMesh" \
+                 "$cache_home/ForkMesh" "$HOME/.forkmesh"; do
+            if [[ -e "$d" ]]; then rm -rf -- "$d" && echo "  removed $d"; fi
+        done
+        echo "All user data removed."
+    else
+        echo "Done. (The build directory and your data were left untouched.)"
+        echo "Re-run with --purge to also erase settings, repos, and chat history."
+    fi
 }
 
 refresh_caches() {
@@ -43,7 +63,16 @@ refresh_caches() {
         && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
 }
 
-if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
+# Parse args: --uninstall [--purge] (order-independent).
+PURGE=0
+DO_UNINSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --uninstall|-u) DO_UNINSTALL=1 ;;
+        --purge)        PURGE=1 ;;
+    esac
+done
+if [[ "$DO_UNINSTALL" == "1" ]]; then
     uninstall
     exit 0
 fi
