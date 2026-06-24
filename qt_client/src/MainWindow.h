@@ -1332,6 +1332,8 @@ private:
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
+    QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
+    QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
     QLabel *m_branchDiffSticky = nullptr;
