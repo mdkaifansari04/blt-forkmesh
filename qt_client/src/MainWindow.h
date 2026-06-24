@@ -142,6 +142,9 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Defers heavy, git-backed startup until the window's first frame is on
+    // screen, so launch shows the themed UI instead of an unpainted black frame.
+    void showEvent(QShowEvent *event) override;
     // Image drag-and-drop onto the inline issue comment composer.
     bool eventFilter(QObject *obj, QEvent *event) override;
 
@@ -149,6 +152,15 @@ private:
     // Setup page
     QWidget *buildSetupPage();
     void startSession();
+    // Heavy, git-backed work deferred from the constructor until the window has
+    // painted its first frame: silent auth + restoring the last open repository.
+    // Idempotent — runs at most once, whichever trigger (expose or fallback)
+    // fires first. See showEvent().
+    void runDeferredStartup();
+    bool m_deferredStartupStarted = false; // showEvent armed the triggers
+    bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
+    bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
     // Account = node identity. Registration (name + Solana + password + TOTP) gates
     // joining the network; the account name is the canonical repo owner.
     bool ensureNodeAccount(const QString &accountName, const QString &solana);
@@ -164,7 +176,7 @@ private:
     int fetchNodesOnline();
     bool hasActiveAccountSession() const;
     void mirrorCatalogRepo(const QString &owner, const QString &name,
-                           const QString &cloneUrl);
+                           const QString &cloneUrl, bool isPrivate = false);
     // Hosted git URL (https://<mainnode>/<owner>/<name>) for a catalog repo,
     // used when the catalog record omits an explicit cloneUrl.
     QString hostedCloneUrl(const QString &owner, const QString &name) const;
@@ -584,6 +596,7 @@ private:
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
     void refreshIssueList();    // apply filters into the list widget
+    void resetIssueFilters();   // clear status/label/milestone/search filters
     // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels) and toggle
     // the filter controls, which only apply to the Issues table.
     void selectIssueListTab(int id);
@@ -619,6 +632,9 @@ private:
     void queueIssueAttachment(const QString &path); // dedupe + reference + count
     void toggleIssueStatus();
     void deleteCurrentIssue();
+    // Runs the destructive history-rewriting delete on a worker thread so the UI
+    // stays responsive while git filter-branch/gc churn.
+    void deleteCurrentIssueWithHistory(int number);
     void editIssueLabels();
     void editIssueMilestone();
     void editIssuePriority();
@@ -626,6 +642,7 @@ private:
     // raises priority (toward 1, highest); direction > 0 lowers it (toward 99,
     // lowest). Each step moves by a quarter of the 1..99 priority span.
     void nudgeIssuePriority(int direction);
+    void nudgeIssueProgress(int deltaPercent);
     void editIssueProgress();
     void editIssueBounty();
     // Bulk-pledge the same bounty (USD) on every open issue in the current repo.
@@ -666,6 +683,11 @@ private:
     // arrives. Repo is taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive);
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive);
+    // Notify the local user when they're @mentioned in one of this repo's issues
+    // or pull requests. Each node scans its own synced copy, so the mentioned
+    // user's node is what alerts them. Deduped and seeded via QSettings so we
+    // never repeat an alert or backfill a freshly-cloned repo's history.
+    void scanRepoMentionsFor(const RepositoryRecord &repo);
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
@@ -677,6 +699,9 @@ private:
     void updateAvatarButton();
     void refreshIssueComposerAvatar();
     void logout();
+    // Erase every trace of ForkMesh from this computer (data, settings, desktop
+    // integration and the program files) after confirmation, then quit.
+    void uninstallForkMesh();
     void rebuildAndRelaunch();
     void showSection(int index);
     void updateHomeStats();
@@ -743,6 +768,11 @@ private:
     void loadRepositories();
     void saveRepositories() const;
     void refreshRepositoryList();
+    // Node handles offered by the @-mention autocomplete in comment editors:
+    // every node the relay knows about (connected, discovered, mirroring) plus
+    // the authors of the currently loaded issues/PRs (contributors who may be
+    // offline). Sorted, de-duplicated, and cheap to build from in-memory state.
+    QStringList mentionCandidateNames() const;
     void promptAddRepository();
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
@@ -1016,7 +1046,6 @@ private:
     QPushButton *m_mirrorButton = nullptr;
     QPushButton *m_sourceButton = nullptr;
     QPushButton *m_repoOpenButton = nullptr; // open this repo on the web
-    QMenu *m_forkMenu = nullptr;
     QMenu *m_mirrorMenu = nullptr;
     QMenu *m_sourceMenu = nullptr;
     QPushButton *m_branchButton = nullptr;
@@ -1293,6 +1322,7 @@ private:
     QPushButton *m_issuePriorityRaiseButton = nullptr;
     QPushButton *m_issuePriorityLowerButton = nullptr;
     QPushButton *m_issueProgressButton = nullptr;
+    QPushButton *m_issueProgressBoostButton = nullptr;
     QPushButton *m_issueBountyButton = nullptr;
     QPushButton *m_issueAssigneesButton = nullptr;
     QPushButton *m_issueDeleteButton = nullptr;

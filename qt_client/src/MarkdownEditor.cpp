@@ -4,11 +4,15 @@
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QListWidget>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QToolButton>
@@ -93,12 +97,18 @@ MarkdownEditor::MarkdownEditor(QWidget *parent) : QWidget(parent)
 
     connect(m_source, &QPlainTextEdit::textChanged, this,
             &MarkdownEditor::updatePreview);
+    connect(m_source, &QPlainTextEdit::textChanged, this,
+            &MarkdownEditor::updateMentionPopup);
+    connect(m_source, &QPlainTextEdit::cursorPositionChanged, this,
+            &MarkdownEditor::updateMentionPopup);
     connect(m_writeTab, &QPushButton::clicked, this, &MarkdownEditor::showWrite);
     connect(m_previewTab, &QPushButton::clicked, this, &MarkdownEditor::showPreview);
 
     // Accept image drops on the whole editor and on the text area's viewport.
     setAcceptDrops(true);
     m_source->viewport()->installEventFilter(this);
+    // Filter the text area itself for mention-popup navigation keys and focus.
+    m_source->installEventFilter(this);
 }
 
 void MarkdownEditor::setMarkdown(const QString &text)
@@ -151,10 +161,154 @@ void MarkdownEditor::showWrite()
 
 void MarkdownEditor::showPreview()
 {
+    hideMentionPopup();
     updatePreview();
     m_stack->setCurrentWidget(m_preview);
     m_writeTab->setChecked(false);
     m_previewTab->setChecked(true);
+}
+
+void MarkdownEditor::setMentionCandidates(const QStringList &names)
+{
+    m_mentionCandidates = names;
+    if (names.isEmpty())
+        hideMentionPopup();
+}
+
+// Re-detect an "@token" immediately before the cursor and (re)show a filtered
+// list of matching node names. Hides the popup whenever the cursor isn't sitting
+// in a mention token. Cheap: only the current line is scanned, and the candidate
+// list is supplied ready-made by the caller.
+void MarkdownEditor::updateMentionPopup()
+{
+    if (m_mentionCandidates.isEmpty() || m_stack->currentWidget() != m_source) {
+        hideMentionPopup();
+        return;
+    }
+    QTextCursor cursor = m_source->textCursor();
+    if (cursor.hasSelection()) {
+        hideMentionPopup();
+        return;
+    }
+
+    const QString block = cursor.block().text();
+    const int col = cursor.positionInBlock();
+    int at = -1;
+    for (int i = col - 1; i >= 0; --i) {
+        const QChar c = block.at(i);
+        if (c == QChar('@')) {
+            at = i;
+            break;
+        }
+        // A mention is letters/digits/hyphens; anything else ends the search.
+        if (!(c.isLetterOrNumber() || c == QChar('-')))
+            break;
+    }
+    if (at < 0) {
+        hideMentionPopup();
+        return;
+    }
+    // The '@' must begin a word (line start or preceded by whitespace/punct), so
+    // we don't pop on an email address or mid-word "@".
+    if (at > 0) {
+        const QChar prev = block.at(at - 1);
+        if (prev.isLetterOrNumber() || prev == QChar('-') || prev == QChar('_')) {
+            hideMentionPopup();
+            return;
+        }
+    }
+
+    const QString prefix = block.mid(at + 1, col - at - 1);
+    QStringList matches;
+    for (const QString &name : std::as_const(m_mentionCandidates)) {
+        if (prefix.isEmpty() || name.startsWith(prefix, Qt::CaseInsensitive)) {
+            matches.append(name);
+            if (matches.size() >= 50)
+                break;
+        }
+    }
+    if (matches.isEmpty()) {
+        hideMentionPopup();
+        return;
+    }
+
+    m_mentionAnchor = cursor.block().position() + at;
+
+    if (!m_mentionPopup) {
+        m_mentionPopup = new QListWidget(this);
+        m_mentionPopup->setObjectName("mentionPopup");
+        m_mentionPopup->setWindowFlags(Qt::ToolTip);
+        m_mentionPopup->setFocusPolicy(Qt::NoFocus);
+        m_mentionPopup->setUniformItemSizes(true);
+        connect(m_mentionPopup, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem *item) { acceptMention(item->text()); });
+    }
+    m_mentionPopup->clear();
+    m_mentionPopup->addItems(matches);
+    m_mentionPopup->setCurrentRow(0);
+
+    // Size to the contents: a handful of rows tall, wide enough for the names.
+    const int rowH = m_mentionPopup->sizeHintForRow(0);
+    const int rows = qMin(matches.size(), 6);
+    m_mentionPopup->setFixedHeight(rows * rowH + 4);
+    const QFontMetrics fm(m_mentionPopup->font());
+    int textW = 0;
+    for (const QString &name : std::as_const(matches))
+        textW = qMax(textW, fm.horizontalAdvance(name));
+    m_mentionPopup->setFixedWidth(qBound(160, textW + 28, 360));
+
+    const QRect cr = m_source->cursorRect();
+    m_mentionPopup->move(m_source->viewport()->mapToGlobal(cr.bottomLeft()));
+    m_mentionPopup->show();
+}
+
+void MarkdownEditor::hideMentionPopup()
+{
+    if (m_mentionPopup)
+        m_mentionPopup->hide();
+    m_mentionAnchor = -1;
+}
+
+void MarkdownEditor::acceptMention(const QString &name)
+{
+    if (m_mentionAnchor < 0) {
+        hideMentionPopup();
+        return;
+    }
+    // Replace from the '@' through the current caret with "@name ".
+    QTextCursor cursor = m_source->textCursor();
+    cursor.setPosition(m_mentionAnchor);
+    cursor.setPosition(m_source->textCursor().position(), QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("@%1 ").arg(name));
+    m_source->setTextCursor(cursor);
+    hideMentionPopup();
+    m_source->setFocus();
+}
+
+bool MarkdownEditor::handleMentionKey(QKeyEvent *event)
+{
+    if (!m_mentionPopup || !m_mentionPopup->isVisible())
+        return false;
+    switch (event->key()) {
+    case Qt::Key_Down:
+        m_mentionPopup->setCurrentRow(
+            qMin(m_mentionPopup->currentRow() + 1, m_mentionPopup->count() - 1));
+        return true;
+    case Qt::Key_Up:
+        m_mentionPopup->setCurrentRow(qMax(m_mentionPopup->currentRow() - 1, 0));
+        return true;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+    case Qt::Key_Tab:
+        if (QListWidgetItem *item = m_mentionPopup->currentItem())
+            acceptMention(item->text());
+        return true;
+    case Qt::Key_Escape:
+        hideMentionPopup();
+        return true;
+    default:
+        return false;
+    }
 }
 
 void MarkdownEditor::updatePreview()
@@ -181,6 +335,13 @@ void MarkdownEditor::chooseImage()
 
 bool MarkdownEditor::eventFilter(QObject *obj, QEvent *event)
 {
+    if (obj == m_source) {
+        if (event->type() == QEvent::KeyPress &&
+            handleMentionKey(static_cast<QKeyEvent *>(event)))
+            return true;
+        if (event->type() == QEvent::FocusOut)
+            hideMentionPopup();
+    }
     if (obj == m_source->viewport()) {
         if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
             auto *de = static_cast<QDragEnterEvent *>(event);

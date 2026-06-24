@@ -1171,6 +1171,25 @@ bool IssueStore::deleteEvent(int number, const QString &eventId, QString *error)
     return commit(QStringLiteral("issue #%1: delete comment").arg(number), error);
 }
 
+bool IssueStore::tombstoneIssue(int number, QString *error)
+{
+    if (!canWrite())
+        return false;
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    if (issue.isDeleted())
+        return true; // already tombstoned; nothing to do
+    IssueEvent ev;
+    ev.type = "delete";
+    ev.target = "self";
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: delete").arg(number), error);
+}
+
 bool IssueStore::deleteIssue(int number, QString *error)
 {
     if (!canWrite())

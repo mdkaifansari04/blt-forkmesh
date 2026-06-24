@@ -1,6 +1,7 @@
-// Build a task prompt from an issue and launch Claude Code or Codex in an
-// integrated terminal rooted at the repository. The actual CLI invocation is a
-// configurable template so users can match their own install / flags.
+// Build a task prompt from an issue and launch Claude Code or Codex. Claude
+// opens in the embedded Claude Code chat (a webview tab) when the official
+// extension is installed; Codex (and Claude as a fallback) run the CLI in an
+// integrated terminal rooted at the repository via a configurable template.
 import * as vscode from "vscode";
 import * as os from "os";
 import * as path from "path";
@@ -57,10 +58,51 @@ function commandTemplate(provider: Provider): string {
   return (cfg.get<string>(key) || fallback).trim();
 }
 
+// The official Claude Code VSCode extension. `editor.open` opens an embedded
+// chat as a webview tab and accepts (sessionId, initialPrompt); passing an
+// undefined sessionId starts a fresh conversation pre-filled with our prompt.
+const CLAUDE_EXTENSION_ID = "anthropic.claude-code";
+const CLAUDE_OPEN_COMMAND = "claude-vscode.editor.open";
+
+// True when the embedded Claude Code chat is available to host the prompt.
+async function claudeChatAvailable(): Promise<boolean> {
+  if (!vscode.extensions.getExtension(CLAUDE_EXTENSION_ID)) {
+    return false;
+  }
+  const commands = await vscode.commands.getCommands(true);
+  return commands.includes(CLAUDE_OPEN_COMMAND);
+}
+
+// Open the issue prompt in the embedded Claude Code chat. Returns false if the
+// extension isn't installed so the caller can fall back to the terminal.
+async function startClaudeChat(issue: ForkMeshIssue): Promise<boolean> {
+  if (!(await claudeChatAvailable())) {
+    return false;
+  }
+  await vscode.commands.executeCommand(
+    CLAUDE_OPEN_COMMAND,
+    undefined, // no existing session -> new conversation
+    buildPrompt(issue)
+  );
+  vscode.window.setStatusBarMessage(
+    `ForkMesh: opened ${LABELS.claude} chat for issue #${issue.number}`,
+    4000
+  );
+  return true;
+}
+
 // Reuse a terminal per (issue, provider) so re-running doesn't pile up tabs.
 const terminals = new Map<string, vscode.Terminal>();
 
-export function startAgent(provider: Provider, issue: ForkMeshIssue): void {
+export async function startAgent(
+  provider: Provider,
+  issue: ForkMeshIssue
+): Promise<void> {
+  // Prefer the embedded Claude Code chat over a terminal CLI for Claude.
+  if (provider === "claude" && (await startClaudeChat(issue))) {
+    return;
+  }
+
   const promptFile = writePromptFile(issue, provider);
   const command = commandTemplate(provider)
     .replace(/\{promptFile\}/g, promptFile)

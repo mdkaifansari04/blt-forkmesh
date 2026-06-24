@@ -3,6 +3,8 @@
 #include <QStringList>
 #include <QWidget>
 
+class QKeyEvent;
+class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QStackedWidget;
@@ -34,6 +36,11 @@ public:
     void addImageFile(const QString &path);
     void clearPendingAttachments();
 
+    // Names offered by the @-mention autocomplete. Typing "@" in the write area
+    // pops a filterable list of these handles; picking one inserts "@handle ".
+    // The caller supplies the node names (relay roster + repo contributors).
+    void setMentionCandidates(const QStringList &names);
+
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 
@@ -44,6 +51,14 @@ private:
     void chooseImage();
     void updatePreview();
 
+    // @-mention autocomplete. updateMentionPopup re-detects the @token under the
+    // cursor and refilters; handleMentionKey lets the popup intercept navigation
+    // keys while focus stays in the editor; acceptMention inserts the choice.
+    void updateMentionPopup();
+    void hideMentionPopup();
+    void acceptMention(const QString &name);
+    bool handleMentionKey(QKeyEvent *event);
+
     QPlainTextEdit *m_source = nullptr;
     QTextBrowser *m_preview = nullptr;
     QStackedWidget *m_stack = nullptr;
@@ -51,4 +66,8 @@ private:
     QPushButton *m_previewTab = nullptr;
     QStringList m_attachments;
     QString m_basePath;
+
+    QStringList m_mentionCandidates;
+    QListWidget *m_mentionPopup = nullptr;
+    int m_mentionAnchor = -1; // document position of the '@' that opened the popup
 };

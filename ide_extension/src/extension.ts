@@ -29,7 +29,7 @@ function currentRegistration(): Registration {
 }
 
 // Handle a task handed over by the Qt desktop app.
-function handleRequest(req: TaskRequest): void {
+async function handleRequest(req: TaskRequest): Promise<void> {
   const issue = loadIssueByNumber(req.repoPath, req.issueNumber);
   if (!issue) {
     writeResponse(req.id, {
@@ -41,7 +41,7 @@ function handleRequest(req: TaskRequest): void {
     );
     return;
   }
-  startAgent(req.provider, issue);
+  await startAgent(req.provider, issue);
   writeResponse(req.id, {
     ok: true,
     message: `Started ${providerLabel(req.provider)} on issue #${issue.number}`,
@@ -61,7 +61,7 @@ function drainExistingRequests(): void {
     }
     const req = takeRequest(path.join(REQUESTS_DIR, f));
     if (req) {
-      handleRequest(req);
+      void handleRequest(req);
     }
   }
 }
@@ -79,7 +79,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage("ForkMesh: select an issue first.");
       return;
     }
-    startAgent(p, item.issue);
+    startAgent(p, item.issue).catch((err) =>
+      vscode.window.showErrorMessage(`ForkMesh: failed to start ${p}: ${err}`)
+    );
   };
 
   context.subscriptions.push(
@@ -142,7 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const req = takeRequest(full);
         if (req) {
-          handleRequest(req);
+          void handleRequest(req);
         }
       }, 80);
     });

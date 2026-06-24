@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart'
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
@@ -17,7 +19,7 @@ enum RelayConnectionState { offline, connecting, connected }
 /// client's ServerNode. Speaks the same encrypted JSON envelope protocol, so it
 /// shares rooms with existing nodes. Exposes roster, channels, and per-channel
 /// message history as a ChangeNotifier for the UI.
-class RelayService extends ChangeNotifier {
+class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   RelayService(this._settings, this._identity);
 
   final SettingsService _settings;
@@ -35,6 +37,7 @@ class RelayService extends ChangeNotifier {
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
   bool _userStopped = false;
+  bool _observing = false;
 
   RelayConnectionState _state = RelayConnectionState.offline;
   RelayConnectionState get state => _state;
@@ -103,7 +106,33 @@ class RelayService extends ChangeNotifier {
   Future<void> connect() async {
     _userStopped = false;
     _reconnectTimer?.cancel();
+    // Watch the app lifecycle so the relay stays reachable across
+    // foreground/background transitions: mobile OSes freeze our timers and tear
+    // down the WebSocket while backgrounded, so on resume we reconnect at once
+    // (instead of waiting out the exponential backoff) and re-announce presence
+    // so this node reappears online to peers without the usual 60s delay.
+    if (!_observing) {
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+    }
     await _open();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || _userStopped) return;
+    // Coming back to the foreground. Reset the backoff so the next attempt is
+    // immediate rather than delayed.
+    _reconnectTimer?.cancel();
+    _reconnectAttempt = 0;
+    if (_state == RelayConnectionState.connected) {
+      // The socket may have been silently killed by the OS while paused; a
+      // presence send both refreshes our online status and surfaces a dead
+      // transport (its failure routes through _onClosed -> reconnect).
+      _sendPresence();
+    } else {
+      _open();
+    }
   }
 
   Future<void> _open() async {
@@ -387,6 +416,10 @@ class RelayService extends ChangeNotifier {
   @override
   void dispose() {
     _userStopped = true;
+    if (_observing) {
+      WidgetsBinding.instance.removeObserver(this);
+      _observing = false;
+    }
     _presenceTimer?.cancel();
     _reconnectTimer?.cancel();
     _sub?.cancel();

@@ -30,6 +30,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QDragEnterEvent>
@@ -107,6 +108,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QUuid>
+#include <QWindow>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -276,23 +278,30 @@ public:
         QRect cell = option.rect.adjusted(8, 0, -8, 0);
         const QString label = QStringLiteral("%1%").arg(pct);
         const int textW = option.fontMetrics.horizontalAdvance(QStringLiteral("100%")) + 4;
-        QRect barRect(cell.left(), cell.center().y() - 3,
-                      qMax(0, cell.width() - textW), 6);
+        QRect barRect(cell.left(), cell.center().y() - 4,
+                      qMax(0, cell.width() - textW), 8);
         QRect textRect(barRect.right() + 4, cell.top(), textW, cell.height());
+
+        // Theme-aware so the track reads as a soft groove rather than a black
+        // box on a light row. Matches the milestone progress bars.
+        const bool dark = currentThemeIsDark();
+        const QColor track(dark ? "#30363d" : "#d0d7de");
+        const QColor fillColor(pct >= 100 ? "#3fb950" : "#388bfd"); // green / blue
+        const QColor textColor(dark ? "#8b949e" : "#57606a");
 
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#30363d")); // track
-        painter->drawRoundedRect(barRect, 3, 3);
+        painter->setBrush(track);
+        painter->drawRoundedRect(barRect, 4, 4);
         if (pct > 0) {
             QRect fill(barRect.left(), barRect.top(),
-                       barRect.width() * pct / 100, barRect.height());
-            // Green once complete, blue while in progress.
-            painter->setBrush(QColor(pct >= 100 ? "#3fb950" : "#388bfd"));
-            painter->drawRoundedRect(fill, 3, 3);
+                       qMax(barRect.height(), barRect.width() * pct / 100),
+                       barRect.height());
+            painter->setBrush(fillColor);
+            painter->drawRoundedRect(fill, 4, 4);
         }
-        painter->setPen(QColor("#8b949e"));
+        painter->setPen(textColor);
         painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
         painter->restore();
     }
@@ -2583,18 +2592,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 repoIndexFor(lastRepository.left(slash),
                              lastRepository.mid(slash + 1));
             if (index >= 0) {
-                // Defer the (heavy, git-backed) repo-detail load until after the
-                // window is shown so it doesn't block startup. The window appears
-                // immediately and the last repo populates a tick later.
-                QTimer::singleShot(0, this, [this, index] {
-                    if (index < 0 || index >= m_repositories.size())
-                        return;
-                    logStartup(QStringLiteral("restoring last repository (deferred)"));
-                    m_selectedNode = m_repositories.at(index).owner;
-                    refreshRepositoryList();
-                    openRepoDetail(index);
-                    logStartup(QStringLiteral("last repository detail loaded"));
-                });
+                // Defer the (heavy, git-backed) repo-detail load until the window
+                // has painted its first frame (see runDeferredStartup), so the
+                // themed UI appears immediately instead of a black, unpainted
+                // frame while git work blocks the GUI thread.
+                m_pendingRestoreRepoIndex = index;
             }
         }
     }
@@ -2649,20 +2651,70 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         // node key already owns a registered active account). Otherwise stay on
         // the setup screen so the user logs in / joins without a surprise dialog
         // on startup (and so headless launches never block on a prompt).
-        QTimer::singleShot(0, this, [this] {
-            const QString name = accountNameFromInput(m_nameEdit->text(), QString());
-            if (!name.isEmpty() && authenticateSilently(name)) {
-                if (m_stack)
-                    m_stack->setCurrentIndex(1); // app shell, never the login form
-                startSession();
-            } else if (m_stack) {
-                m_stack->setCurrentIndex(0); // not authenticated: show setup
-            }
-        });
+        // Auto-connect, but only after the first frame is painted (see
+        // runDeferredStartup) — authenticateSilently()/startSession() block the
+        // GUI thread, so running them before the window is exposed shows a black
+        // frame on launch.
+        m_pendingSilentAuth = true;
     }
     logStartup(QStringLiteral("identity loaded"));
     updateHomeStats();
     logStartup(QStringLiteral("home stats updated (ctor end)"));
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    if (m_deferredStartupStarted)
+        return;
+    m_deferredStartupStarted = true;
+    // Run the heavy, git-backed startup (silent auth + last-repo restore) only
+    // once the window's first frame is actually on screen. A singleShot(0) would
+    // fire before the compositor exposes/paints the window, blocking the GUI
+    // thread on git work and leaving an unpainted black frame for ~a second.
+    if (QWindow *handle = windowHandle()) {
+        if (handle->isExposed())
+            QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
+        else
+            handle->installEventFilter(this); // wait for the first expose
+    }
+    // Safety net so startup still runs if no expose ever arrives (e.g. headless
+    // / offscreen platforms). runDeferredStartup is idempotent.
+    QTimer::singleShot(250, this, &MainWindow::runDeferredStartup);
+}
+
+void MainWindow::runDeferredStartup()
+{
+    if (m_deferredStartupRun)
+        return;
+    m_deferredStartupRun = true;
+    if (QWindow *handle = windowHandle())
+        handle->removeEventFilter(this);
+
+    // Restore the last open repository first (matches the old scheduling order).
+    if (m_pendingRestoreRepoIndex >= 0 &&
+        m_pendingRestoreRepoIndex < m_repositories.size()) {
+        const int index = m_pendingRestoreRepoIndex;
+        logStartup(QStringLiteral("restoring last repository (deferred)"));
+        m_selectedNode = m_repositories.at(index).owner;
+        refreshRepositoryList();
+        openRepoDetail(index);
+        logStartup(QStringLiteral("last repository detail loaded"));
+    }
+    m_pendingRestoreRepoIndex = -1;
+
+    // Then auto-connect when this node key can authenticate silently.
+    if (m_pendingSilentAuth) {
+        m_pendingSilentAuth = false;
+        const QString name = accountNameFromInput(m_nameEdit->text(), QString());
+        if (!name.isEmpty() && authenticateSilently(name)) {
+            if (m_stack)
+                m_stack->setCurrentIndex(1); // app shell, never the login form
+            startSession();
+        } else if (m_stack) {
+            m_stack->setCurrentIndex(0); // not authenticated: show setup
+        }
+    }
 }
 
 void MainWindow::applyTheme()
@@ -3479,6 +3531,21 @@ QJsonArray MainWindow::fetchCatalogRepos()
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repositories"));
     url.setQuery(QString());
+    // When this node has a registered account identity, sign a short-lived listing
+    // token so the relay also returns our own private repos (hidden from the public
+    // catalog). Anonymous callers still receive the public-only list.
+    const QString viewer = accountOwner();
+    if (m_profileIdentity.isValid() && !viewer.isEmpty()) {
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-catalog-view-v1\n" + viewer + "\n" + ts).toUtf8();
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("viewer"), viewer);
+        query.addQueryItem(QStringLiteral("ts"), ts);
+        query.addQueryItem(QStringLiteral("sig"),
+                           m_profileIdentity.signData(canonical));
+        url.setQuery(query);
+    }
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     QEventLoop loop;
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -3503,7 +3570,7 @@ int MainWindow::fetchNodesOnline()
 }
 
 void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
-                                   const QString &cloneUrl)
+                                   const QString &cloneUrl, bool isPrivate)
 {
     if (owner.isEmpty() || name.isEmpty() || cloneUrl.isEmpty())
         return;
@@ -3522,6 +3589,9 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     repo.name = name;
     repo.cloneUrl = cloneUrl;
     repo.publishToNetwork = true;
+    // A private repo discovered via the authenticated catalog (always one we own)
+    // must keep its private flag so clone/fetch attaches the view token.
+    repo.isPrivate = isPrivate;
     // Mirrored repos (cloned from another node) start with actions off; the user
     // can opt in per repo on the Settings/Actions tab.
     repo.actionsEnabled = false;
@@ -3911,10 +3981,16 @@ bool MainWindow::runRepoPickStep()
             cloneUrl = hostedCloneUrl(owner, name);
         auto *item = new QListWidgetItem(owner + "/" + name, list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Unchecked);
+        // Pre-check ForkMesh itself so a new node mirrors the project's own repo
+        // out of the box (and the "pick at least one" gate is already satisfied).
+        // The user can still uncheck it before continuing.
+        const bool isForkmesh =
+            name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0;
+        item->setCheckState(isForkmesh ? Qt::Checked : Qt::Unchecked);
         item->setData(Qt::UserRole, cloneUrl);
         item->setData(Qt::UserRole + 1, owner);
         item->setData(Qt::UserRole + 2, name);
+        item->setData(Qt::UserRole + 3, r.value("isPrivate").toBool());
     }
     if (list->count() == 0)
         leftCol->addWidget(new QLabel(
@@ -3964,7 +4040,8 @@ bool MainWindow::runRepoPickStep()
         for (QListWidgetItem *item : chosen)
             mirrorCatalogRepo(item->data(Qt::UserRole + 1).toString(),
                               item->data(Qt::UserRole + 2).toString(),
-                              item->data(Qt::UserRole).toString());
+                              item->data(Qt::UserRole).toString(),
+                              item->data(Qt::UserRole + 3).toBool());
         return true;
     }
     return false;
@@ -7513,6 +7590,15 @@ QWidget *MainWindow::buildIssuesSection()
             [this] { nudgeIssuePriority(-1); });
     connect(m_issuePriorityLowerButton, &QPushButton::clicked, this,
             [this] { nudgeIssuePriority(1); });
+    // Quick "in progress" nudge: bump completion by 10% beside the Progress gear.
+    m_issueProgressBoostButton = new QPushButton;
+    m_issueProgressBoostButton->setObjectName("issueIconButton");
+    m_issueProgressBoostButton->setFixedSize(28, 28);
+    m_issueProgressBoostButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueProgressBoostButton, "plus", 15);
+    m_issueProgressBoostButton->setToolTip("Mark in progress (+10%)");
+    connect(m_issueProgressBoostButton, &QPushButton::clicked, this,
+            [this] { nudgeIssueProgress(10); });
     auto makeValue = [](const QString &text) {
         auto *label = new QLabel(text);
         label->setObjectName("statusLine");
@@ -7753,7 +7839,8 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Type", makeValue("No type"), makeGear());
     addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton,
                    {m_issuePriorityRaiseButton, m_issuePriorityLowerButton});
-    addMetaSection("Progress", m_issueProgressValue, m_issueProgressButton);
+    addMetaSection("Progress", m_issueProgressValue, m_issueProgressButton,
+                   {m_issueProgressBoostButton});
     addMetaSection("Est. OpenAI cost", m_issueEstimateValue);
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
@@ -7978,17 +8065,17 @@ QWidget *MainWindow::buildRepoDetailSection()
     connect(m_repoOpenButton, &QPushButton::clicked, this,
             &MainWindow::openRepositoryWebsite);
     m_mirrorButton->setToolTip("Mirror status and actions");
-    m_forkButton->setToolTip("Fork destination and working directory");
+    m_forkButton->setToolTip("Fork this repository into a local folder");
     m_sourceButton->setToolTip("Download or use this repository's local remote");
     m_mirrorMenu = new QMenu(m_mirrorButton);
-    m_forkMenu = new QMenu(m_forkButton);
     m_sourceMenu = new QMenu(m_sourceButton);
     m_mirrorButton->setMenu(m_mirrorMenu);
-    m_forkButton->setMenu(m_forkMenu);
     m_sourceButton->setMenu(m_sourceMenu);
+    // Fork is a direct action, not a menu: clicking it asks where (which local
+    // folder) to fork the repo into, then creates the fork there.
+    connect(m_forkButton, &QPushButton::clicked, this,
+            &MainWindow::forkCurrentRepo);
     connect(m_mirrorMenu, &QMenu::aboutToShow, this,
-            &MainWindow::updateRepoActionMenus);
-    connect(m_forkMenu, &QMenu::aboutToShow, this,
             &MainWindow::updateRepoActionMenus);
     connect(m_sourceMenu, &QMenu::aboutToShow, this,
             &MainWindow::updateRepoActionMenus);
@@ -8119,11 +8206,15 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_chatStackIndex = -1;
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
-        if (id == 2 && m_repoDetailIndex >= 0 &&
-            m_repoDetailIndex < m_repositories.size())
-            // Opening Issues: drain this repo's inbox now (owner-only) so incoming
-            // issues from other nodes show immediately instead of next poll tick.
-            drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        if (id == 2) {
+            // Opening Issues: clear any filter the user left set on a prior visit
+            // (status/label/milestone/search) so the full list shows again.
+            resetIssueFilters();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                // Drain this repo's inbox now (owner-only) so incoming issues from
+                // other nodes show immediately instead of next poll tick.
+                drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        }
         if (id == 1)
             loadCommits();
         else if (id == 3) {
@@ -9146,8 +9237,10 @@ void MainWindow::showPull(int number)
 
     if (m_pullDetail)
         m_pullDetail->show();
-    if (m_pullComposer)
+    if (m_pullComposer) {
         m_pullComposer->setEnabled(true);
+        m_pullComposer->setMentionCandidates(mentionCandidateNames());
+    }
     for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
                            m_pullRequestChangesButton})
         if (b)
@@ -10984,8 +11077,11 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             reloadPulls();
         // Incoming PRs just landed in the working copy: push them to the mirror
         // and notify peers now so every node's count converges promptly.
-        if (merged > 0)
+        if (merged > 0) {
             propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
+            // An inbound PR or review may @mention the owner running this node.
+            scanRepoMentionsFor(writable);
+        }
         if (interactive) {
             QMessageBox::information(
                 this, "Sync inbox",
@@ -12314,11 +12410,13 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     if (provider == QLatin1String("claude-code")) {
-        // Claude Code: the real `claude` CLI, run headlessly in the worktree. Uses
-        // ANTHROPIC_API_KEY when set, else falls back to the CLI's own login.
+        // Claude Code: the real `claude` CLI, run headlessly in the worktree.
+        // Authenticate via the CLI's own claude.ai login, never an API key:
+        // setting ANTHROPIC_API_KEY alongside a logged-in session makes the CLI
+        // warn that auth "may not work as expected". Naming the key (without a
+        // value) still lets AgentRunner strip any inherited ANTHROPIC_API_KEY.
         config.command = claudeCodeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
-        config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
     } else if (provider.startsWith(QLatin1String("claude"))) {
         // Claude API: bundled Python script talking to api.anthropic.com. Legacy
         // "claude" sessions resolve here too.
@@ -12693,6 +12791,12 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
         env << (QStringLiteral("ANTHROPIC_API_KEY=") + key);
         // Skip Claude Code's "use this API key?" startup prompt for this key.
         approveClaudeApiKey(key);
+    } else {
+        // No key configured: the user is signed in via claude.ai. Drop any
+        // ANTHROPIC_API_KEY inherited from the shell so Claude Code doesn't warn
+        // that both claude.ai and an API key are set (and silently prefer the
+        // key). An entry without '=' tells the terminal to unset the variable.
+        env << QStringLiteral("ANTHROPIC_API_KEY");
     }
 
     session.status = AgentStatus::Running;
@@ -15548,6 +15652,8 @@ void MainWindow::showCommit(const QString &hash)
         QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
     const QString base = parents.isEmpty() ? emptyTree : parents.first();
     m_currentCommitHash = full.isEmpty() ? hash : full;
+    if (m_commitComposer)
+        m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
         m_commitDownloadButton->setEnabled(true);
     QByteArray patchRaw;
@@ -17382,6 +17488,39 @@ bool agentSessionActive(const AgentSession *s)
 }
 } // namespace
 
+void MainWindow::resetIssueFilters()
+{
+    if (!m_issueStatusFilter)
+        return;
+    // Block signals so the four resets collapse into a single refreshIssueList()
+    // instead of firing one rebuild per control.
+    bool changed = false;
+    {
+        QSignalBlocker statusBlock(m_issueStatusFilter);
+        QSignalBlocker labelBlock(m_issueLabelFilter);
+        QSignalBlocker msBlock(m_issueMilestoneFilter);
+        if (m_issueStatusFilter->currentIndex() != 0) {
+            m_issueStatusFilter->setCurrentIndex(0); // "Open"
+            changed = true;
+        }
+        if (m_issueLabelFilter->currentIndex() != 0) {
+            m_issueLabelFilter->setCurrentIndex(0); // "All labels"
+            changed = true;
+        }
+        if (m_issueMilestoneFilter->currentIndex() != 0) {
+            m_issueMilestoneFilter->setCurrentIndex(0); // "All milestones"
+            changed = true;
+        }
+    }
+    if (m_issueSearch && !m_issueSearch->text().isEmpty()) {
+        QSignalBlocker searchBlock(m_issueSearch);
+        m_issueSearch->clear();
+        changed = true;
+    }
+    if (changed)
+        refreshIssueList();
+}
+
 void MainWindow::refreshIssueList()
 {
     if (!m_issueTable)
@@ -17697,6 +17836,32 @@ void MainWindow::refreshIssueMilestones()
         progress->setValue(pct);
         progress->setTextVisible(true);
         progress->setFormat(QStringLiteral("%p%"));
+        // Style to match the mini-bar delegate: a muted, clearly-visible track
+        // with a rounded green (complete) or blue (in progress) fill, instead of
+        // the default groove that reads as a solid black "already done" bar.
+        const bool dark = currentThemeIsDark();
+        const QString track = dark ? QStringLiteral("#30363d")
+                                   : QStringLiteral("#d0d7de");
+        const QString chunk = pct >= 100 ? QStringLiteral("#3fb950")
+                                         : QStringLiteral("#388bfd");
+        const QString txt = dark ? QStringLiteral("#e6edf3")
+                                 : QStringLiteral("#1f2328");
+        progress->setStyleSheet(
+            QStringLiteral("QProgressBar {"
+                           "  border: none;"
+                           "  border-radius: 6px;"
+                           "  background-color: %1;"
+                           "  color: %2;"
+                           "  text-align: center;"
+                           "  font-size: 11px;"
+                           "  min-height: 14px;"
+                           "  max-height: 16px;"
+                           "}"
+                           "QProgressBar::chunk {"
+                           "  border-radius: 6px;"
+                           "  background-color: %3;"
+                           "}")
+                .arg(track, txt, chunk));
         m_issueMilestonesTable->setCellWidget(row, 3, progress);
 
         m_issueMilestonesTable->setItem(
@@ -18142,6 +18307,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
             bodyContainer->setMinimumHeight(0);
             auto *editor = new MarkdownEditor(bodyContainer);
             editor->setMarkdown(eventBody);
+            editor->setMentionCandidates(mentionCandidateNames());
             editor->setMinimumHeight(250);
             editor->setPlaceholderText(isOpen ? "Type your description here..."
                                               : "Type your comment here...");
@@ -18629,8 +18795,10 @@ void MainWindow::updateIssueActionState()
         m_issueCopyButton->setEnabled(haveIssue);
     if (m_issueCopyAllButton)
         m_issueCopyAllButton->setEnabled(haveIssue);
-    if (m_issueComposer)
+    if (m_issueComposer) {
         m_issueComposer->setEnabled(haveIssue);
+        m_issueComposer->setMentionCandidates(mentionCandidateNames());
+    }
     updateVoteUi();
 
     // Reflect current status on the close/reopen button.
@@ -18671,6 +18839,7 @@ void MainWindow::promptNewIssue()
     auto *titleEdit = new QLineEdit(page);
     titleEdit->setPlaceholderText("Title");
     auto *bodyEdit = new MarkdownEditor(page);
+    bodyEdit->setMentionCandidates(mentionCandidateNames());
     // A modest minimum keeps the window shrinkable on small screens; the editor
     // still expands to fill the available space (it has stretch in the layout),
     // and the compose page scrolls when the window is shorter than this.
@@ -19296,11 +19465,26 @@ void MainWindow::addIssueComment()
         submitIssueCommentToInbox(body);
         return;
     }
-    QString error;
-    if (!store.addComment(m_currentIssueNumber, body, attachments, &error)) {
-        setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
-                             true);
-        return;
+
+    const int number = m_currentIssueNumber;
+
+    // Optimistic UI: drop the comment into the open thread right away so it
+    // appears instantly, instead of waiting on the git write+commit and the full
+    // issue reload below. The deferred persist (next event-loop tick) reconciles
+    // it with the canonical on-disk events. Attachments are copied during the
+    // real write, so comments carrying files fall back to the post-write render.
+    if (attachments.isEmpty()) {
+        for (Issue &issue : m_currentIssues) {
+            if (issue.number != number)
+                continue;
+            IssueEvent ev;
+            ev.type = "comment";
+            ev.body = body;
+            ev = store.makeSignedEvent(number, ev);
+            issue.events.append(ev);
+            renderIssueThread(issue);
+            break;
+        }
     }
     if (m_issueComposer) {
         m_issueComposer->setMarkdown(QString());
@@ -19309,9 +19493,22 @@ void MainWindow::addIssueComment()
     m_pendingIssueAttachments.clear();
     if (m_issueAttachButton)
         m_issueAttachButton->setText("Paste, drop, or click to add files");
-    reloadIssues();
-    propagateRepoUpdate(issuesRepoIndex());
-    setIssueInlineNotice("Comment added.");
+
+    // Persist on the next tick so the optimistic card paints before the
+    // (comparatively slow) git commit and reload block the UI thread.
+    QTimer::singleShot(0, this, [this, number, body, attachments]() {
+        IssueStore store = issueStoreForCurrentRepo();
+        QString error;
+        if (!store.addComment(number, body, attachments, &error)) {
+            setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
+                                 true);
+            reloadIssues(); // discard the optimistic card on failure
+            return;
+        }
+        reloadIssues();
+        propagateRepoUpdate(issuesRepoIndex());
+        setIssueInlineNotice("Comment added.");
+    });
 }
 
 void MainWindow::attachIssueImage()
@@ -19339,6 +19536,13 @@ void MainWindow::queueIssueAttachment(const QString &path)
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // First expose of the top-level window: its first frame is now on screen, so
+    // it's safe to run the deferred git-backed startup without a black frame.
+    if (event->type() == QEvent::Expose && obj == windowHandle()) {
+        if (QWindow *handle = windowHandle(); handle && handle->isExposed())
+            QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
+        return QMainWindow::eventFilter(obj, event); // never consume expose
+    }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
         cycleNavSolanaCurrency();
@@ -19375,16 +19579,39 @@ void MainWindow::deleteCurrentIssue()
 {
     if (m_currentIssueNumber < 0)
         return;
-    // One click, then a single confirm dialog (no more double-click-to-confirm).
     const int number = m_currentIssueNumber;
-    if (QMessageBox::question(
-            this, QStringLiteral("Delete issue"),
-            QStringLiteral("Delete issue #%1? This can't be undone.").arg(number),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    // One click, then a single confirm dialog offering two flavours of delete.
+    // "Delete" tombstones the issue: it vanishes from every list and the deletion
+    // syncs to peers, but it's a cheap commit that never freezes the app. "Delete
+    // with history" additionally purges the issue from all of git history — the
+    // old slow path, now run off the UI thread.
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Delete issue"));
+    box.setText(QStringLiteral("Delete issue #%1?").arg(number));
+    box.setInformativeText(QStringLiteral(
+        "Delete hides it everywhere and syncs the deletion to peers; the issue "
+        "stays in git history.\n\n"
+        "Delete with history also purges it from all of git history — thorough but "
+        "slower and unrecoverable."));
+    QPushButton *regularBtn =
+        box.addButton(QStringLiteral("Delete"), QMessageBox::AcceptRole);
+    QPushButton *historyBtn = box.addButton(QStringLiteral("Delete with history"),
+                                            QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(regularBtn);
+    box.exec();
+    QAbstractButton *clicked = box.clickedButton();
+    if (clicked == historyBtn) {
+        deleteCurrentIssueWithHistory(number);
         return;
+    }
+    if (clicked != regularBtn)
+        return;
+
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.deleteIssue(number, &error)) {
+    if (!store.tombstoneIssue(number, &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not delete the issue." : error,
                              true);
         return;
@@ -19392,6 +19619,47 @@ void MainWindow::deleteCurrentIssue()
     m_currentIssueNumber = -1;
     reloadIssues();
     setIssueInlineNotice("Issue deleted.");
+}
+
+void MainWindow::deleteCurrentIssueWithHistory(int number)
+{
+    setIssueInlineNotice(
+        QStringLiteral("Deleting issue #%1 and rewriting history… this can take a "
+                       "while.")
+            .arg(number));
+    if (m_issueDeleteButton)
+        m_issueDeleteButton->setEnabled(false);
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+
+    // deleteIssue only shells out to git (no event signing), so it's safe to run
+    // on a worker thread with a copy of the store. Results travel back via shared
+    // state read in the finished handler on the main thread.
+    IssueStore store = issueStoreForCurrentRepo();
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    QThread *worker = QThread::create([store, number, ok, error]() mutable {
+        QString err;
+        *ok = store.deleteIssue(number, &err);
+        *error = err;
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, ok, error]() {
+                QApplication::restoreOverrideCursor();
+                if (m_issueDeleteButton)
+                    m_issueDeleteButton->setEnabled(true);
+                if (*ok) {
+                    m_currentIssueNumber = -1;
+                    reloadIssues();
+                    setIssueInlineNotice("Issue deleted with history.");
+                } else {
+                    setIssueInlineNotice(error->isEmpty()
+                                             ? QStringLiteral("Could not delete the issue.")
+                                             : *error,
+                                         true);
+                }
+                worker->deleteLater();
+            });
+    worker->start();
 }
 
 void MainWindow::editIssueLabels()
@@ -19514,6 +19782,33 @@ void MainWindow::nudgeIssuePriority(int direction)
         return;
     }
     setIssueInlineNotice(QStringLiteral("Priority set to %1.").arg(next));
+    reloadIssues();
+}
+
+void MainWindow::nudgeIssueProgress(int deltaPercent)
+{
+    if (m_currentIssueNumber < 0 || deltaPercent == 0)
+        return;
+    int current = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.number == m_currentIssueNumber) {
+            current = qBound(0, issue.progress, 100);
+            break;
+        }
+    const int next = qBound(0, current + deltaPercent, 100);
+    if (next == current) {
+        setIssueInlineNotice(deltaPercent > 0 ? "Already at 100% complete."
+                                              : "Already at 0%.");
+        return;
+    }
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setProgress(m_currentIssueNumber, next, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update progress." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice(QStringLiteral("Progress set to %1%.").arg(next));
     reloadIssues();
 }
 
@@ -20199,8 +20494,11 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             reloadIssues();
         // Incoming issues just landed in the working copy: push them to the
         // mirror and notify peers now so every node's count converges promptly.
-        if (merged > 0)
+        if (merged > 0) {
             propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
+            // An inbound issue/comment may @mention the owner running this node.
+            scanRepoMentionsFor(writable);
+        }
         if (interactive)
             setIssueInlineNotice(
                 QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
@@ -20967,12 +21265,26 @@ QWidget *MainWindow::buildSettingsSection()
     m_rebuildStatus->setWordWrap(true);
     m_rebuildStatus->hide();
 
+    // Uninstall: erase every trace of ForkMesh from this computer and quit.
+    // Kept at the far right of the footer, past the stretch, so it sits apart
+    // from the everyday actions and is hard to hit by accident.
+    auto *uninstallButton = new QPushButton("Uninstall ForkMesh");
+    uninstallButton->setObjectName("dangerButton");
+    uninstallButton->setCursor(Qt::PointingHandCursor);
+    uninstallButton->setToolTip(
+        "Permanently delete all ForkMesh data, settings, the desktop launcher "
+        "and the program files from this computer, then quit.");
+    setOcticon(uninstallButton, "trash", 16);
+    connect(uninstallButton, &QPushButton::clicked, this,
+            [this] { uninstallForkMesh(); });
+
     auto *footerRow = new QHBoxLayout;
     footerRow->setContentsMargins(0, 0, 0, 0);
     footerRow->addWidget(leaveButton);
     footerRow->addWidget(m_rebuildButton);
     footerRow->addWidget(logoutButton);
     footerRow->addStretch();
+    footerRow->addWidget(uninstallButton);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(24, 22, 24, 22);
@@ -22304,6 +22616,43 @@ void MainWindow::saveRepositories() const
     settings.endArray();
 }
 
+QStringList MainWindow::mentionCandidateNames() const
+{
+    QSet<QString> seen;
+    QStringList names;
+    auto add = [&seen, &names](const QString &raw) {
+        const QString n = raw.trimmed();
+        if (n.isEmpty() || seen.contains(n.toLower()))
+            return;
+        seen.insert(n.toLower());
+        names.append(n);
+    };
+
+    // Every node the relay knows about: connected, discovered, and any that
+    // advertise mirroring/sharing a repo. This is the bulk of the list and is
+    // already in memory, so building it is cheap.
+    for (const MemberInfo &m : m_homeRoster)
+        add(m.name);
+
+    // Contributors to the issues/PRs currently loaded for this repo, so authors
+    // who opened/commented but aren't online right now are still suggestible.
+    for (const Issue &iss : m_currentIssues) {
+        add(iss.authorName);
+        for (const IssueEvent &ev : iss.events)
+            add(ev.authorName);
+    }
+    for (const PullRequest &pr : m_currentPulls) {
+        add(pr.authorName);
+        for (const PullEvent &ev : pr.events)
+            add(ev.authorName);
+    }
+
+    std::sort(names.begin(), names.end(), [](const QString &a, const QString &b) {
+        return a.localeAwareCompare(b) < 0;
+    });
+    return names;
+}
+
 void MainWindow::refreshRepositoryList()
 {
     m_repoMenuEntries.clear();
@@ -22905,14 +23254,13 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
 
 void MainWindow::updateRepoActionMenus()
 {
-    if (!m_mirrorMenu || !m_forkMenu || !m_sourceMenu)
+    if (!m_mirrorMenu || !m_sourceMenu)
         return;
     m_mirrorMenu->clear();
-    m_forkMenu->clear();
     m_sourceMenu->clear();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        for (QMenu *menu : {m_mirrorMenu, m_forkMenu, m_sourceMenu}) {
+        for (QMenu *menu : {m_mirrorMenu, m_sourceMenu}) {
             QAction *empty = menu->addAction("No repository selected");
             empty->setEnabled(false);
         }
@@ -22974,25 +23322,7 @@ void MainWindow::updateRepoActionMenus()
         connect(remove, &QAction::triggered, this, &MainWindow::deleteCurrentMirror);
     }
 
-    // Fork shows the destination identity and its editable checkout. A bare
-    // fork may intentionally have no working directory attached yet.
-    m_forkMenu->addSection("FORKED TO");
-    QAction *forkTarget = m_forkMenu->addAction(repo.owner + "/" + repo.name);
-    forkTarget->setEnabled(false);
-    m_forkMenu->addSection("WORKING DIRECTORY");
     const bool hasWorktree = !repo.localPath.isEmpty() && QDir(repo.localPath).exists();
-    QAction *worktree = m_forkMenu->addAction(
-        hasWorktree ? repo.localPath : "No working directory attached");
-    worktree->setEnabled(false);
-    if (hasWorktree) {
-        QAction *open = m_forkMenu->addAction("Open working directory");
-        connect(open, &QAction::triggered, this, [path = repo.localPath] {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-        });
-    }
-    m_forkMenu->addSeparator();
-    QAction *fork = m_forkMenu->addAction("Create another fork...");
-    connect(fork, &QAction::triggered, this, &MainWindow::forkCurrentRepo);
 
     // Source holds distribution and Git-remote details.
     m_sourceMenu->addSection("LOCAL REMOTE");
@@ -23780,6 +24110,96 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
                                 QSystemTrayIcon::Information, 6000);
 }
 
+void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
+{
+    // Only meaningful once we have a handle to match "@name" against.
+    if (!isValidNodeName(accountNameFromInput(m_userName, QString())))
+        return;
+    if (repo.owner.isEmpty() || repo.name.isEmpty())
+        return;
+
+    const QString repoKey = repo.owner + "/" + repo.name;
+    QSettings settings;
+    const QStringList seenList =
+        settings.value(QStringLiteral("mentions/seen")).toStringList();
+    QSet<QString> seen(seenList.cbegin(), seenList.cend());
+    QStringList seededRepos =
+        settings.value(QStringLiteral("mentions/seededRepos")).toStringList();
+    // The first time we scan a repo, silently record its existing mentions so a
+    // fresh clone's back-history doesn't fire a flood of stale alerts; only
+    // mentions that appear afterwards notify.
+    const bool seeding = !seededRepos.contains(repoKey);
+    const QString myKey = m_profileIdentity.publicKey();
+
+    bool dirty = false;
+    auto consider = [&](const QString &kind, int number, const QString &eventId,
+                        const QString &authorKey, const QString &authorName,
+                        const QString &text, const QString &context) {
+        if (text.isEmpty() || !textMentionsNodeName(text, m_userName))
+            return;
+        if (!authorKey.isEmpty() && authorKey == myKey)
+            return; // your own writing doesn't mention "you"
+        const QString key = QStringLiteral("%1#%2%3:%4")
+                                .arg(repoKey, kind)
+                                .arg(number)
+                                .arg(eventId);
+        if (seen.contains(key))
+            return;
+        seen.insert(key);
+        dirty = true;
+        if (seeding)
+            return; // recorded, but no alert for pre-existing history
+        const QString who = authorName.trimmed().isEmpty()
+                                ? QStringLiteral("Someone")
+                                : authorName.trimmed();
+        QString snippet = text.simplified();
+        if (snippet.size() > 160)
+            snippet = snippet.left(157) + QStringLiteral("\xE2\x80\xA6");
+        const QString body =
+            QStringLiteral("%1 mentioned you in %2 %3#%4: \xE2\x80\x9C%5\xE2\x80\x9D")
+                .arg(who, repoKey, context)
+                .arg(number)
+                .arg(snippet);
+        QApplication::alert(this, 0);
+        postNotification(who + QStringLiteral(" mentioned you"), body);
+        addNotification(QStringLiteral("Mention"), body);
+    };
+
+    IssueStore issues(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                      m_userName);
+    for (const Issue &issue : issues.loadAll()) {
+        for (const IssueEvent &ev : issue.events) {
+            if (ev.type != QLatin1String("open") &&
+                ev.type != QLatin1String("comment") &&
+                ev.type != QLatin1String("edit"))
+                continue;
+            const QString text = (ev.title + QStringLiteral("\n") + ev.body).trimmed();
+            consider(QStringLiteral("issue"), issue.number, ev.id, ev.author,
+                     ev.authorName, text, QStringLiteral("issue "));
+        }
+    }
+
+    PullStore pulls(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+    for (const PullRequest &pr : pulls.loadAll()) {
+        const QString openText =
+            (pr.title + QStringLiteral("\n") + pr.description).trimmed();
+        consider(QStringLiteral("pull"), pr.number, QStringLiteral("open"), pr.author,
+                 pr.authorName, openText, QStringLiteral("PR "));
+        for (const PullEvent &ev : pr.events)
+            consider(QStringLiteral("pull"), pr.number, ev.id, ev.author,
+                     ev.authorName, ev.body, QStringLiteral("PR "));
+    }
+
+    if (dirty) {
+        const QStringList keys(seen.cbegin(), seen.cend());
+        settings.setValue(QStringLiteral("mentions/seen"), keys);
+    }
+    if (seeding) {
+        seededRepos.append(repoKey);
+        settings.setValue(QStringLiteral("mentions/seededRepos"), seededRepos);
+    }
+}
+
 void MainWindow::syncRepository(int index, bool quiet)
 {
     if (index < 0 || index >= m_repositories.size() ||
@@ -23907,6 +24327,9 @@ void MainWindow::syncRepository(int index, bool quiet)
                     // If this repo's detail is open, reflect the new commits.
                     if (changed && index == m_repoDetailIndex)
                         refreshOpenRepoDetail();
+                    // Newly-synced issues/PRs may @mention the local user.
+                    if (changed && !stillPreview)
+                        scanRepoMentionsFor(repo);
                     // Tell connected peers that also mirror this repo that it
                     // advanced from its source of truth. Only for real mirrors
                     // that already existed (an actual update, not a first clone).
@@ -24048,6 +24471,124 @@ void MainWindow::logout()
     m_accountName.clear();
     QSettings().remove(kAccountNameSetting);
     leaveSession();
+}
+
+void MainWindow::uninstallForkMesh()
+{
+    const QString sourceDir = QStringLiteral(FORKMESH_SOURCE_DIR);
+    const QString dataHome =
+        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+
+    // Every directory ForkMesh owns: per-app data, local data, cache, the
+    // QSettings config dir, and — for a from-checkout build — the source/build
+    // tree the running binary lives in.
+    QStringList dirs;
+    auto addDir = [&dirs](const QString &d) {
+        if (!d.isEmpty() && QDir(d).exists() && !dirs.contains(d))
+            dirs << QDir(d).absolutePath();
+    };
+    addDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    addDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+    addDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    addDir(QFileInfo(QSettings().fileName()).absolutePath());
+    addDir(sourceDir);
+
+    // Loose files: the login-autostart entry, the installed desktop launcher,
+    // and every hicolor icon bucket install.sh wrote.
+    QStringList files;
+    auto addFile = [&files](const QString &f) {
+        if (!f.isEmpty() && QFileInfo::exists(f) && !files.contains(f))
+            files << f;
+    };
+    addFile(autostartDesktopPath());
+    addFile(dataHome + QStringLiteral("/applications/forkmesh.desktop"));
+    addFile(dataHome + QStringLiteral("/icons/forkmesh.png"));
+    QDirIterator iconIt(dataHome + QStringLiteral("/icons/hicolor"),
+                        {QStringLiteral("forkmesh.png")}, QDir::Files,
+                        QDirIterator::Subdirectories);
+    while (iconIt.hasNext())
+        addFile(iconIt.next());
+
+    // ---- confirmation: a detailed warning, then a typed phrase -------------
+    QString detail = QStringLiteral(
+        "This permanently and irreversibly erases ForkMesh from this computer, "
+        "including:\n\n"
+        "  •  every mirrored repository\n"
+        "  •  this node's identity key (your account cannot be recovered)\n"
+        "  •  all chat history, settings and caches\n"
+        "  •  the desktop launcher and icons\n"
+        "  •  the ForkMesh program files\n\nFolders removed:\n");
+    for (const QString &d : std::as_const(dirs))
+        detail += "    " + d + "/\n";
+    detail += QStringLiteral("\nForkMesh will quit when it is done.");
+
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("Uninstall ForkMesh"),
+                    detail, QMessageBox::Cancel, this);
+    QPushButton *go =
+        box.addButton(QStringLiteral("Uninstall…"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != go)
+        return;
+
+    bool ok = false;
+    const QString typed = QInputDialog::getText(
+        this, QStringLiteral("Confirm uninstall"),
+        QStringLiteral("Type DELETE to permanently erase ForkMesh:"),
+        QLineEdit::Normal, QString(), &ok);
+    if (!ok || typed.trimmed().compare(QStringLiteral("DELETE"),
+                                       Qt::CaseInsensitive) != 0)
+        return;
+
+    // ---- stop live services so nothing rewrites files during the wipe -----
+    if (m_heartbeatTimer)
+        m_heartbeatTimer->stop();
+    if (m_adminPollTimer)
+        m_adminPollTimer->stop();
+    stopRepoHosts();
+    if (m_backend) {
+        m_backend->disconnect(this);
+        m_backend->shutdown();
+        m_backend->deleteLater();
+        m_backend = nullptr;
+    }
+
+    const QStringList all = dirs + files;
+#if defined(Q_OS_UNIX)
+    // The source/build tree holds the binary we're running from, and the
+    // settings file may still be open, so hand the whole removal to a detached
+    // shell that waits for us to exit first. POSIX keeps a deleted-but-open
+    // file alive until close, but a detached `rm` after we quit is the robust,
+    // cross-shell way to be sure every byte is gone.
+    auto shQuote = [](const QString &s) {
+        return QLatin1Char('\'') + QString(s).replace(QStringLiteral("'"),
+                                                      QStringLiteral("'\\''")) +
+               QLatin1Char('\'');
+    };
+    QStringList quoted;
+    for (const QString &p : all)
+        quoted << shQuote(p);
+    // Leave the directory tree we're about to delete before quitting.
+    QDir::setCurrent(QDir::homePath());
+    const bool spawned = QProcess::startDetached(
+        QStringLiteral("/bin/sh"),
+        {QStringLiteral("-c"),
+         QStringLiteral("sleep 1; rm -rf ") + quoted.join(QLatin1Char(' '))});
+    if (!spawned) {
+        // No shell to hand off to: delete in-process as a best effort.
+        for (const QString &f : std::as_const(files))
+            QFile::remove(f);
+        for (const QString &d : std::as_const(dirs))
+            QDir(d).removeRecursively();
+    }
+#else
+    for (const QString &f : std::as_const(files))
+        QFile::remove(f);
+    for (const QString &d : std::as_const(dirs))
+        QDir(d).removeRecursively();
+#endif
+
+    QCoreApplication::exit(0);
 }
 
 // ---- Actions (CI on push to the mirror) -----------------------------------
@@ -24680,6 +25221,24 @@ QWidget *MainWindow::buildNotificationsSection()
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshNotificationsTable);
 
+    // Fires a real desktop toast (notify-send / tray) and logs it to the page,
+    // so the user can confirm notifications are wired up and visible on their
+    // desktop without waiting for a real event.
+    auto *testButton = new QPushButton(QStringLiteral("Test"));
+    testButton->setObjectName("repoAction");
+    testButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(testButton, "bell", 16);
+    testButton->setToolTip(
+        QStringLiteral("Send a test desktop notification"));
+    connect(testButton, &QPushButton::clicked, this, [this] {
+        const QString body = QStringLiteral(
+            "This is a test notification from ForkMesh — "
+            "desktop alerts are working.");
+        addNotification(QStringLiteral("Test notification"), body, false);
+        postNotification(QStringLiteral("Test notification"), body, false,
+                         QStringLiteral("emblem-default"));
+    });
+
     auto *clearButton = new QPushButton(QStringLiteral("Clear"));
     clearButton->setObjectName("repoAction");
     clearButton->setCursor(Qt::PointingHandCursor);
@@ -24695,6 +25254,7 @@ QWidget *MainWindow::buildNotificationsSection()
     header->setContentsMargins(16, 12, 16, 4);
     header->addWidget(title);
     header->addStretch();
+    header->addWidget(testButton);
     header->addWidget(refreshButton);
     header->addWidget(clearButton);
 

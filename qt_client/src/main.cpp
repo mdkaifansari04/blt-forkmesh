@@ -16,16 +16,12 @@
 
 int main(int argc, char *argv[])
 {
-    // Prefer the X11/xcb backend when a display is available: the agent detail
-    // screen embeds a real xterm (Claude Code runs in a terminal), which needs
-    // a native X11 window id. Under XWayland this still works fine. Respect an
-    // explicit QT_QPA_PLATFORM if the user set one.
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
-        !qEnvironmentVariableIsEmpty("DISPLAY")) {
-        qputenv("QT_QPA_PLATFORM", "xcb");
-    }
-#endif
+    // The embedded terminal (TerminalWidget) renders itself from a forkpty PTY —
+    // no xterm, no X11 reparenting — so it works the same on X11 and Wayland and
+    // we no longer force the xcb backend. Forcing xcb pushed Wayland sessions onto
+    // XWayland, which maps a black frame before the first paint (a jarring black
+    // screen on launch). Letting Qt pick the native platform shows the themed
+    // window immediately.
     QApplication app(argc, argv);
     app.setApplicationName("ForkMesh");
     app.setOrganizationName("ForkMesh");
