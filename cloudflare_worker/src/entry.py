@@ -1314,7 +1314,10 @@ PYTH_SOL_USD_ACCOUNT_DEFAULT = "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"
 _SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
 _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
-DONATION_ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000
+# After the address expires (hidden, no longer usable) keep it parked for one
+# more hour before deleting it outright, so a late payment can still be matched
+# during the grace window.
+DONATION_ADDRESS_DELETE_GRACE_MS = 60 * 60 * 1000
 # Foundational reward split: half of each confirmed donation goes to the
 # treasury, the other half is accounted to online nodes that have a payout
 # Solana address on file. On-chain payout batching is intentionally separate
@@ -3834,7 +3837,14 @@ async def federation_handler(env, request):
         return await _federation_donation_status(env, request)
     if url.path == "/api/federation/nodes":
         return await _federation_nodes(env, request)
+    if url.path == "/api/federation/treasury-address":
+        return await _federation_treasury_address(env, request)
     return json_response({"error": "not_found"}, status=404)
+
+
+async def _federation_treasury_address(env, request):
+    """Main relay: hand a federated relay the treasury address to display."""
+    return json_response({"address": _treasury_address(env)})
 
 
 # --- Federated-relay proxy (the "flow through main relay") -------------------
@@ -4024,6 +4034,23 @@ async def _admin_relay_approve(env, request):
     return json_response({"ok": True, "status": status})
 
 
+async def _account_treasury_address(env, request):
+    """Public: the ForkMesh treasury Solana address for in-app donations.
+
+    Lets clients render a "donate to the treasury" QR without embedding the
+    address. On a federated (non-main) relay the treasury lives on the main
+    relay, so proxy the lookup there.
+    """
+    addr = _treasury_address(env)
+    if not addr and not _is_main_relay(env):
+        reply = await _call_main_relay(env, "/api/federation/treasury-address", {})
+        if reply:
+            addr = (reply.get("address") or "")
+    if not addr:
+        return json_response({"address": ""}, status=503)
+    return json_response({"address": addr})
+
+
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
@@ -4034,6 +4061,8 @@ async def accounts_handler(env, request):
         return await _account_donation_address(env, request)
     if url.path == "/api/accounts/donation-status" and method == "GET":
         return await _account_donation_status(env, request)
+    if url.path == "/api/accounts/treasury-address" and method == "GET":
+        return await _account_treasury_address(env, request)
     if url.path == "/api/accounts/finalize" and method == "POST":
         return await _account_finalize(env, request)
     if url.path == "/api/accounts/heartbeat" and method == "POST":

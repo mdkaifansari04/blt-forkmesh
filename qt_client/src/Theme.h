@@ -108,6 +108,24 @@ QPushButton#ghostButton {
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
 
+/* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
+#quickAddCard {
+    background-color: #0d1117;
+    border: 1px solid #6e7681;
+    border-radius: 10px;
+}
+QPushButton#donateButton {
+    background-color: #9945ff; border: 1px solid #b07bff; color: #ffffff;
+    font-weight: 700;
+}
+QPushButton#donateButton:hover { background-color: #a85cff; }
+QPushButton#donateButton:pressed { background-color: #7d34d6; }
+QPushButton#socialButton {
+    background: transparent; border: 1px solid #30363d; color: #8b949e;
+    font-weight: 600; padding: 8px 12px;
+}
+QPushButton#socialButton:hover { color: #e6edf3; border-color: #6e7681; }
+
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
 #navRail QLabel { background: transparent; }

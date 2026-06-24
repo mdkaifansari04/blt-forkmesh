@@ -331,6 +331,9 @@ private:
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
+    // Remove a commit from the browsed branch's history (source-of-truth only),
+    // replaying its descendants onto its parent. Rewrites local history.
+    void deleteCommit(const QString &hash);
     // Overlay banner flagging unsynced commits: pin it over the table's top,
     // reveal it, or fade it out — none of which touch the page layout.
     void positionCommitsBanner();
@@ -685,6 +688,8 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
+    // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
+    void showTreasuryDonateDialog();
     void copyIssueToClipboard();
     void copyIssueThreadToClipboard();
     void askAiForCurrentIssue();
