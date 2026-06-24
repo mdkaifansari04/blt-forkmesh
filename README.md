@@ -6,7 +6,7 @@ ForkMesh is an open-source desktop node and relay prototype for hosting,
 mirroring, discovering, and discussing software projects without depending on
 one central code-hosting company.
 
-## What Exists Now
+## What Exists Now asdf
 
 - Qt 6 desktop node in `qt_client/`
 - Python Cloudflare Worker relay in `cloudflare_worker/`
