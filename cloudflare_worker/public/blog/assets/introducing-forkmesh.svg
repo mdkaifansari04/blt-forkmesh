@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="t">Introducing ForkMesh</title>
+  <desc id="d">A distributed mesh of Git repository nodes connected through encrypted relays, with no single point of control.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="0.55" stop-color="#10151d"/>
+      <stop offset="1" stop-color="#161b22"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.62">
+      <stop offset="0" stop-color="#2da44e" stop-opacity="0.32"/>
+      <stop offset="0.45" stop-color="#2da44e" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#2da44e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowBlue" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#54aeff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#54aeff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <style>
+      .node { stroke: #0d1117; stroke-width: 3; }
+      .core { fill: #f6f8fa; }
+      .edge { fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <circle cx="930" cy="470" r="280" fill="url(#glowBlue)"/>
+
+  <!-- faint grid -->
+  <g stroke="#ffffff" stroke-opacity="0.03" stroke-width="1">
+    <path d="M0 90H1200M0 210H1200M0 330H1200M0 450H1200M0 570H1200"/>
+    <path d="M150 0V630M350 0V630M550 0V630M750 0V630M950 0V630M1150 0V630"/>
+  </g>
+
+  <!-- mesh edges -->
+  <g class="edge" stroke-opacity="0.55">
+    <path d="M250 180 C 420 150, 520 210, 690 200" stroke="#2da44e" stroke-width="2.5"/>
+    <path d="M250 180 C 300 320, 380 380, 470 470" stroke="#54aeff" stroke-width="2.5"/>
+    <path d="M690 200 C 800 260, 860 360, 900 470" stroke="#54aeff" stroke-width="2.5"/>
+    <path d="M470 470 C 600 540, 760 540, 900 470" stroke="#bf8700" stroke-width="2.5"/>
+    <path d="M690 200 C 560 300, 560 360, 470 470" stroke="#6e40c9" stroke-width="2.5" stroke-opacity="0.5"/>
+    <path d="M250 180 C 520 320, 620 380, 900 470" stroke="#2da44e" stroke-width="2" stroke-opacity="0.35"/>
+    <path d="M690 200 L 1040 150" stroke="#54aeff" stroke-width="2" stroke-opacity="0.4"/>
+    <path d="M900 470 L 1080 540" stroke="#2da44e" stroke-width="2" stroke-opacity="0.4"/>
+    <path d="M470 470 L 180 520" stroke="#bf8700" stroke-width="2" stroke-opacity="0.4"/>
+  </g>
+
+  <!-- nodes -->
+  <g class="node">
+    <circle cx="250" cy="180" r="22" fill="#2da44e"/><circle cx="250" cy="180" r="9" class="core"/>
+    <circle cx="690" cy="200" r="26" fill="#54aeff"/><circle cx="690" cy="200" r="10" class="core"/>
+    <circle cx="470" cy="470" r="22" fill="#6e40c9"/><circle cx="470" cy="470" r="9" class="core"/>
+    <circle cx="900" cy="470" r="24" fill="#bf8700"/><circle cx="900" cy="470" r="9" class="core"/>
+    <circle cx="1040" cy="150" r="13" fill="#54aeff"/><circle cx="1040" cy="150" r="5" class="core"/>
+    <circle cx="1080" cy="540" r="13" fill="#2da44e"/><circle cx="1080" cy="540" r="5" class="core"/>
+    <circle cx="180" cy="520" r="13" fill="#bf8700"/><circle cx="180" cy="520" r="5" class="core"/>
+    <circle cx="330" cy="330" r="9" fill="#2da44e"/>
+    <circle cx="780" cy="350" r="9" fill="#54aeff"/>
+    <circle cx="600" cy="120" r="9" fill="#6e40c9"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <g transform="translate(96,250)">
+    <rect x="0" y="-4" width="64" height="64" rx="14" fill="#24292f" stroke="#30363d" stroke-width="1.5"/>
+    <circle cx="20" cy="20" r="6" fill="#2da44e"/>
+    <circle cx="46" cy="20" r="6" fill="#54aeff"/>
+    <circle cx="32" cy="44" r="6" fill="#bf8700"/>
+    <path d="M25 21h16M22 25l9 17M44 25 35 42" fill="none" stroke="#f6f8fa" stroke-width="4.5" stroke-linecap="round"/>
+    <text x="84" y="38" fill="#e6edf3" font-size="46" font-weight="800" letter-spacing="-1">ForkMesh</text>
+  </g>
+
+  <text x="98" y="350" fill="#7ee787" font-size="20" font-weight="700" letter-spacing="3">DISTRIBUTED · SIGNED · UNSTOPPABLE</text>
+  <text x="96" y="408" fill="#f0f6fc" font-size="52" font-weight="800" letter-spacing="-1">Your code. Your keys.</text>
+  <text x="96" y="470" fill="#f0f6fc" font-size="52" font-weight="800" letter-spacing="-1">No central forge.</text>
+  <text x="98" y="520" fill="#9da7b3" font-size="22" font-weight="500">A peer-to-peer Git network that pays you to keep code alive.</text>
+</svg>
