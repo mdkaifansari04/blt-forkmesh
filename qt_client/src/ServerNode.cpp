@@ -592,6 +592,27 @@ void ServerNode::notifyMirrorUpdated(const QString &ownerName)
     sendEncrypted(message, false);
 }
 
+void ServerNode::notifyCoveOpened(const QString &creatorKey, const QString &coveId,
+                                  const QString &coveName, const QString &openerKey,
+                                  const QString &openerName, qint64 ts,
+                                  const QString &signature)
+{
+    if (creatorKey.trimmed().isEmpty() || !m_wsReady)
+        return;
+    QJsonObject message = makeMessage("cove-open");
+    message.insert("creator", creatorKey.left(120));
+    message.insert("coveId", coveId.left(80));
+    message.insert("coveName", coveName.left(160));
+    message.insert("openerKey", openerKey.left(120));
+    message.insert("openerName", openerName.left(80));
+    message.insert("coveTs", double(ts));
+    message.insert("sig", signature.left(200));
+    // Pre-mark our own id so the relay's echo back to us isn't re-processed. This
+    // is an ephemeral frame (not in kDurableTypes), so the relay won't retain it.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
 void ServerNode::sendChat(const QString &channel, const QString &text)
 {
     if (text.trimmed().isEmpty())
@@ -860,6 +881,15 @@ void ServerNode::handlePlain(const QJsonObject &message)
         const QString repo = message.value("repo").toString().left(160);
         if (!repo.isEmpty())
             emit mirrorUpdated(repo, sender);
+    } else if (type == "cove-open") {
+        const QString creator = message.value("creator").toString().left(120);
+        if (!creator.isEmpty())
+            emit coveOpened(creator, message.value("coveId").toString().left(80),
+                            message.value("coveName").toString().left(160),
+                            message.value("openerKey").toString().left(120),
+                            message.value("openerName").toString().left(80),
+                            qint64(message.value("coveTs").toDouble()),
+                            message.value("sig").toString().left(200));
     } else if (type == "reaction") {
         const QString target = message.value("target").toString();
         const QString emoji = message.value("emoji").toString();

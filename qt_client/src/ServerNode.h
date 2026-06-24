@@ -44,6 +44,10 @@ public:
     void addChannel(const QString &channel) override;
     void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
     void notifyMirrorUpdated(const QString &ownerName) override;
+    void notifyCoveOpened(const QString &creatorKey, const QString &coveId,
+                          const QString &coveName, const QString &openerKey,
+                          const QString &openerName, qint64 ts,
+                          const QString &signature) override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
 
