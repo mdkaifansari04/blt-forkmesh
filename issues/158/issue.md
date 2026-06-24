@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 158
 title: fixing an issue with claude code gets stuck here - please fix it so we see what is going on ==> Using the Claude Code login (ignoring any API key).
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 22
