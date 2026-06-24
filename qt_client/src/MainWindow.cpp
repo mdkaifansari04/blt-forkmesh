@@ -34985,6 +34985,8 @@ QWidget *MainWindow::buildRepoActionsTab()
     wfHint->setWordWrap(true);
     m_actionWorkflowList = new QListWidget;
     m_actionWorkflowList->setObjectName("actionWorkflowList");
+    m_actionWorkflowList->setFrameShape(QFrame::NoFrame);
+    m_actionWorkflowList->setAlternatingRowColors(true);
     connect(m_actionWorkflowList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 m_selectedWorkflowFilter =
@@ -35022,9 +35024,14 @@ QWidget *MainWindow::buildRepoActionsTab()
     subtitle->setWordWrap(true);
 
     m_actionsTable = new QTableWidget(0, 3);
+    m_actionsTable->setObjectName("issueTable");
     m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
+    m_actionsTable->horizontalHeader()->setHighlightSections(false);
     m_actionsTable->verticalHeader()->setVisible(false);
+    m_actionsTable->setShowGrid(false);
+    m_actionsTable->setWordWrap(false);
+    m_actionsTable->setAlternatingRowColors(true);
     m_actionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_actionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_actionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
