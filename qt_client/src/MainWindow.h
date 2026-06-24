@@ -38,6 +38,7 @@ class QComboBox;
 class QCompleter;
 class QGraphicsOpacityEffect;
 class QLabel;
+class QMouseEvent;
 class QLineEdit;
 class QListWidget;
 class QMenu;
@@ -720,6 +721,14 @@ private:
     void nudgeIssuePriority(int direction);
     void nudgeIssueProgress(int deltaPercent);
     void editIssueProgress();
+    // Drag-to-set on the Progress column of the issue list. Filtering the table
+    // viewport's mouse events lets a press/drag over a progress cell paint a new
+    // value live, committing it to the store (and reloading) on release.
+    bool handleIssueProgressDrag(QMouseEvent *ev);
+    void applyIssueProgressDragAt(const QPoint &pos);
+    void commitIssueProgressDrag();
+    // Row of the issue list currently being progress-dragged, or -1 when idle.
+    int m_issueProgressDragRow = -1;
     void editIssueBounty();
     // Bulk-pledge the same bounty (USD) on every open issue in the current repo.
     void bountyAllOpenIssues(double amountUsd);
@@ -827,6 +836,7 @@ private:
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     void flashMessage(const QString &text, bool error = false);
+    void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -984,6 +994,7 @@ private:
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
+    QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QString m_topMessageRaw;              // plain text of the current toast, for copy
 
     // Setup widgets
@@ -1196,6 +1207,8 @@ private:
     QLabel *m_insightsActivity = nullptr;
     QTableWidget *m_insightsContributors = nullptr;
     QTableWidget *m_insightsRecentCommits = nullptr;
+    // Container holding one per-contributor "commits over time" bar chart row.
+    QWidget *m_insightsCommitCharts = nullptr;
     QPushButton *m_insightsRefreshButton = nullptr;
     // Commits tab: a stack flipping between the list and a per-commit diff view.
     QStackedWidget *m_commitsStack = nullptr;
@@ -1232,6 +1245,7 @@ private:
         QString path;
         bool isDir = false;
         qint64 size = 0;     // blob bytes (recursive sum for directories)
+        qint64 loc = 0;      // lines of code (recursive sum for directories)
         qint64 commitTs = 0; // last commit unix time that touched this entry
         QString subject;     // last commit subject
         QString whenText;    // relative "x ago"
@@ -1434,6 +1448,9 @@ private:
     QLabel *m_issueMilestoneValue = nullptr;
     QLabel *m_issuePriorityValue = nullptr;
     QLabel *m_issueProgressValue = nullptr;
+    // Draggable progress bar on the detail panel (a ProgressSlider, kept as a
+    // QWidget* since that type is private to MainWindow.cpp).
+    QWidget *m_issueProgressSlider = nullptr;
     QLabel *m_issueEstimateValue = nullptr; // derived OpenAI coding cost estimate
     QLabel *m_issueBountyValue = nullptr;
     QStackedWidget *m_issueAssigneesStack = nullptr;
