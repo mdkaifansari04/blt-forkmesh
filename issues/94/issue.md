@@ -4,7 +4,7 @@ number: 94
 title: when deciding payment split only calculate the repos that are mirrored from other nodes don't count single repos with no mirrors
 status: open
 labels: [bug]
-milestone: MVP launch
+milestone: Phase 2
 priority: 8
 progress: 0
 assignees: []
