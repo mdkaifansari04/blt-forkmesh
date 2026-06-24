@@ -215,3 +215,6 @@ identity or repository history, but they can provide useful network services:
 - Profile and repository metadata can be signed by the local Ed25519 identity.
 - The relay only sees ciphertext envelopes; room contents require the client
   passphrase.
+
+## Roadmap
+- consider having the ability for nodes to mirror private repositories - they would have a public (handle) and just the size people can choose to mirror them they would be encrypted with quantum proof encryption
