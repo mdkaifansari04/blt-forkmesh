@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 45
 title: show attached images in the image detail and allow for paste from clipboard
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 23
