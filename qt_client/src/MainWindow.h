@@ -401,10 +401,13 @@ private:
     void reloadPulls();
     void refreshPullList();
     void showPull(int number);
+    void renderPullReviewSummary(const PullRequest &pr);
     void renderPullDiff(const QString &filePath);
     // Handle a click on a diff line-number anchor ("cmt:<side>:<line>"): prompt
     // for a comment and attach it to that line of the current PR file.
     void onPullDiffAnchorClicked(const QUrl &url);
+    void submitPullThreadReply(const QString &threadId);
+    void setPullThreadState(const QString &threadId, const QString &state);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
     void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
     void renderPullChecks(const PullRequest &pr);   // action runs for the PR's commits
@@ -1577,6 +1580,7 @@ private:
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
     QLabel *m_pullMergeStatus = nullptr; // conflict / ready-to-merge banner
+    QLabel *m_pullReviewSummary = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
