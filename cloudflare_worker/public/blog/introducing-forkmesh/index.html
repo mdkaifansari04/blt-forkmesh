@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Introducing ForkMesh: code that can't be taken down · ForkMesh</title>
+    <meta name="description" content="ForkMesh is a distributed Git network where your code lives on your own machine, every action is signed with your own key, and mirroring repositories pays you in Solana. Meet the forge with no single point of control.">
+    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/static-page.js" defer></script>
+
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="Introducing ForkMesh: code that can't be taken down">
+    <meta property="og:description" content="A peer-to-peer Git network where your code stays on your machine, every action is signed, and mirroring pays you in Solana.">
+    <meta property="og:image" content="/blog/assets/introducing-forkmesh.svg">
+    <meta name="twitter:card" content="summary_large_image">
+
+    <style>
+      .blog-shell { max-width: 820px; margin: 0 auto; padding: 32px 20px 96px; }
+      .blog-back { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); text-decoration: none; margin-bottom: 20px; }
+      .blog-back:hover { color: var(--accent-bright); }
+      .blog-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--muted); font-size: 14px; margin: 14px 0 22px; }
+      .blog-meta .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--border); }
+      .blog-tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--accent-bright); }
+      .blog-title { font-size: clamp(30px, 5vw, 46px); line-height: 1.1; letter-spacing: -1px; margin: 8px 0 0; }
+      .blog-hero-img { width: 100%; height: auto; border-radius: 16px; border: 1px solid var(--border); margin: 26px 0 8px; display: block; }
+      .blog-lede { font-size: 20px; line-height: 1.55; color: var(--muted); margin: 28px 0; }
+      .blog-body { font-size: 17px; line-height: 1.75; }
+      .blog-body h2 { font-size: 26px; letter-spacing: -0.5px; margin: 48px 0 6px; }
+      .blog-body h2 .num { color: var(--accent-bright); font-variant-numeric: tabular-nums; margin-right: 10px; }
+      .blog-body h3 { font-size: 18px; margin: 28px 0 4px; }
+      .blog-body p { margin: 14px 0; color: var(--foreground); }
+      .blog-body a { color: var(--primary); }
+      .blog-body code { background: var(--card-soft); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1px 6px; font-size: 0.9em; }
+      .blog-body pre { background: var(--card-soft); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; overflow-x: auto; margin: 18px 0; }
+      .blog-body pre code { background: none; border: none; padding: 0; }
+      .blog-body blockquote { border-left: 3px solid var(--accent-bright); margin: 22px 0; padding: 4px 0 4px 18px; color: var(--muted); font-style: italic; }
+      .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 26px 0; }
+      .feature-card { border: 1px solid var(--border); border-radius: 14px; padding: 18px; background: var(--card); }
+      .feature-card .ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; font-size: 18px; margin-bottom: 12px; }
+      .feature-card h4 { margin: 0 0 4px; font-size: 16px; }
+      .feature-card p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted); }
+      .blog-cta { margin: 56px 0 0; padding: 28px; border-radius: 18px; border: 1px solid var(--border); background: linear-gradient(135deg, color-mix(in srgb, var(--accent-bright) 12%, var(--card)), var(--card)); text-align: center; }
+      .blog-cta h2 { margin: 0 0 8px; font-size: 24px; }
+      .blog-cta p { margin: 0 0 18px; color: var(--muted); }
+      .blog-cta .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+      .blog-divider { border: none; border-top: 1px solid var(--border-subtle); margin: 40px 0; }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true">
+          <span>ForkMesh</span>
+        </a>
+        <nav class="global-nav" aria-label="Global">
+          <a href="/#catalog">Repositories</a>
+          <a href="/network/">Network</a>
+          <a href="/docs/">Docs</a>
+          <a href="/blog/" aria-current="page">Blog</a>
+          <a href="/#roomchat">Chat</a>
+        </nav>
+        <div class="header-actions">
+          <div class="clients-pill" aria-live="polite">
+            <span class="clients-dot" id="clients-dot"></span>
+            <span id="clients-count">Checking…</span>
+          </div>
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
+          </button>
+          <a class="install-link" href="/#install-banner">Install</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-shell">
+      <a class="blog-back" href="/blog/">&larr; All posts</a>
+
+      <span class="blog-tag">Announcing</span>
+      <h1 class="blog-title">Introducing ForkMesh: code that can't be taken down</h1>
+      <div class="blog-meta">
+        <span>The ForkMesh team</span>
+        <span class="dot"></span>
+        <time datetime="2026-06-23">June 23, 2026</time>
+        <span class="dot"></span>
+        <span>6 min read</span>
+      </div>
+
+      <img class="blog-hero-img" src="/blog/assets/introducing-forkmesh.svg"
+           alt="A distributed mesh of Git repository nodes connected through encrypted relays, with the ForkMesh wordmark.">
+
+      <p class="blog-lede">
+        Every line of code you've ever pushed lives on someone else's server, behind
+        someone else's terms of service, one policy change away from disappearing.
+        ForkMesh exists to end that. It's a distributed Git network where your code
+        stays on <em>your</em> machine, every action is signed with <em>your</em> key,
+        and the people who keep repositories alive actually get paid for it.
+      </p>
+
+      <div class="blog-body">
+        <p>
+          Today we're opening up ForkMesh — an open-source desktop node and relay for
+          hosting, mirroring, discovering, and discussing software projects without
+          depending on a single code-hosting company. It is not a GitHub skin and it
+          is not a blockchain repo. It's a different shape entirely: a mesh of peers
+          where the network coordinates, but no one in the middle holds your code
+          hostage.
+        </p>
+
+        <hr class="blog-divider">
+
+        <h2>Why we built it</h2>
+        <p>
+          Centralized forges have been extraordinary for collaboration and catastrophic
+          for resilience. Accounts get suspended. Projects get DMCA'd into the void.
+          Whole communities vanish when a company pivots, gets acquired, or simply
+          decides your repository is no longer welcome. The code didn't break any laws
+          of physics — it was just stored in exactly one place that someone else
+          controlled.
+        </p>
+        <p>
+          ForkMesh starts from a stubborn premise: <strong>the canonical copy of your
+          code is the bare Git mirror on your own disk.</strong> The network's job is to
+          help people find it, clone it, talk about it, and mirror it — never to be the
+          single warehouse that can be raided or switched off.
+        </p>
+
+        <h2>The revolutionary part</h2>
+        <p>
+          Six ideas make ForkMesh feel fundamentally different the moment you use it.
+        </p>
+
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--accent-bright) 18%,transparent)">🗄️</div>
+            <h4>Your machine is the server</h4>
+            <p>The relay is a control plane, not storage. Git objects stream from a connected host node — there is no central repo warehouse to seize.</p>
+          </div>
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--primary) 18%,transparent)">🔑</div>
+            <h4>Keys, not passwords</h4>
+            <p>Your identity is a local Ed25519 keypair. Profiles, issues, and pull requests are cryptographically signed — portable across any relay.</p>
+          </div>
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--purple) 22%,transparent)">🔒</div>
+            <h4>Chat the relay can't read</h4>
+            <p>Per-repository rooms are encrypted client-side with AES-256-GCM. The relay only ever sees ciphertext envelopes it forwards.</p>
+          </div>
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--warning) 22%,transparent)">◎</div>
+            <h4>Get paid to mirror</h4>
+            <p>Profiles and repos carry Solana addresses. Host a mirror, earn payouts; merged bounty PRs split the reward to the contributor automatically.</p>
+          </div>
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--accent-bright) 18%,transparent)">🌐</div>
+            <h4>Federated by design</h4>
+            <p>Anyone can run a relay node, Matrix- and Mastodon-style. No company sits at the center of the network — or owns its leaderboards.</p>
+          </div>
+          <div class="feature-card">
+            <div class="ico" style="background:color-mix(in srgb,var(--primary) 18%,transparent)">⑂</div>
+            <h4>Signed history in Git</h4>
+            <p>Issues and PRs are append-only signed events that can live as files inside the repository itself — your project's history travels with the code.</p>
+          </div>
+        </div>
+
+        <h2><span class="num">01</span>Your machine is the server</h2>
+        <p>
+          When you publish a repository, ForkMesh doesn't upload your packfiles anywhere.
+          Your desktop node opens an outbound encrypted tunnel to the relay, and clone
+          and file-browse requests are routed back through that tunnel to your local
+          mirror on demand. Clone the canonical project exactly the way you'd expect:
+        </p>
+        <pre><code>git clone https://forkmesh.com/mainnode/forkmesh</code></pre>
+        <p>
+          The relay never becomes the source of truth. If it vanished tomorrow, every
+          repository would still exist — fully intact — on the machines that host them.
+          That's the whole point.
+        </p>
+
+        <h2><span class="num">02</span>Identity you own</h2>
+        <p>
+          There's no email-and-password gate to start. The desktop node generates a local
+          Ed25519 identity for you, and that key signs your profile, your repository
+          metadata, your issues, and your pull requests. Because identity is a key rather
+          than a row in a company's database, it's yours to carry to any relay in the
+          network.
+        </p>
+
+        <h2><span class="num">03</span>Conversations the relay can't read</h2>
+        <p>
+          Every repository gets its own encrypted room. Messages are sealed in your
+          client with AES-256-GCM before they ever touch the wire; the relay's Durable
+          Object forwards opaque ciphertext to connected peers and persists nothing.
+          Coordination, maintainer chatter, release talk — all of it stays between the
+          people holding the room key.
+        </p>
+
+        <h2><span class="num">04</span>A network that pays its hosts</h2>
+        <p>
+          Mirroring is the act that keeps open source alive, and ForkMesh treats it as
+          first-class work. Profiles and repositories publish Solana addresses, hosts
+          accrue payouts for the uptime they contribute, and repository bounties settle
+          on a merged pull request — splitting the reward to the contributor who did the
+          work. Keeping code alive stops being a favor and starts being something the
+          network rewards.
+        </p>
+
+        <h2><span class="num">05</span>Signed issues and pull requests</h2>
+        <p>
+          Collaboration history shouldn't live in a proprietary silo either. ForkMesh
+          issues and PRs are signed, append-only events that can be represented as files
+          inside the repository:
+        </p>
+        <pre><code>forkmesh-pull-event-v1
+&lt;author pubkey&gt;
+&lt;ts&gt;
+sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+        <p>
+          When a maintainer merges, the accepted record becomes part of normal Git
+          history — so the conversation around your code travels with the code, forever.
+        </p>
+
+        <h2><span class="num">06</span>No center to capture</h2>
+        <p>
+          Relays are federated. The hosted <code>mainnode</code> offers conveniences —
+          repository catalogs, encrypted rooms, mirror-health indexing, Solana metadata,
+          leaderboards — but it owns none of them by right. Anyone can run their own. The
+          network is a mesh, not a hub, and that's exactly what makes it hard to take
+          down.
+        </p>
+
+        <blockquote>
+          ForkMesh is a Git app first. Chat, payments, and discovery exist to support
+          repositories, mirrors, and the maintainers who keep them alive.
+        </blockquote>
+
+        <h2>This is an MVP — and that's exciting</h2>
+        <p>
+          We'll be honest about where we are: ForkMesh is an early prototype. Live file
+          browsing and clone need at least one host online. <code>git push</code> over the
+          relay isn't production-ready yet, and pull requests today are signed patch
+          records rather than full branch refs. The relay is still a trusted jump layer
+          for connection metadata.
+        </p>
+        <p>
+          But the foundation that matters is already standing: real Ed25519 identity, real
+          Git mirroring, real encrypted rooms, real Solana payouts, and a real federated
+          relay. Everything from here is building outward from a base that, by design,
+          can't be quietly switched off.
+        </p>
+
+        <div class="blog-cta">
+          <h2>Run a node. Mirror a repo. Get paid.</h2>
+          <p>The desktop node starts with no setup and connects to the network out of the box.</p>
+          <div class="row">
+            <a class="primary-button" href="/#install-banner">Install ForkMesh</a>
+            <a class="secondary-button" href="/docs/">Read the docs</a>
+          </div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
