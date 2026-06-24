@@ -21,7 +21,20 @@ FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
-SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
+# The build checkout lives in a dedicated, installer-only location. When the
+# user has not overridden it, $SRC is owned by the installer by definition: the
+# only thing that ever lives there is a throwaway clone used to build, so it is
+# always safe to wipe and re-clone. SRC_IS_DEFAULT records this so the
+# unmanaged-checkout guards below relax for the default path (covering stale
+# pre-marker checkouts from older installers) while still protecting a checkout
+# the user deliberately pointed FORKMESH_DIR at.
+if [ -n "${FORKMESH_DIR:-}" ]; then
+  SRC="$FORKMESH_DIR"
+  SRC_IS_DEFAULT=0
+else
+  SRC="$HOME/.local/share/forkmesh/src"
+  SRC_IS_DEFAULT=1
+fi
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
 
@@ -422,10 +435,16 @@ owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
 # checkout sitting on the default path is never silently destroyed.
 FORKMESH_FORCE="${FORKMESH_FORCE:-0}"
 
-# Refuse to remove $SRC unless we created it (or it does not exist yet), unless
-# the user explicitly forced a takeover.
+# True when the installer is allowed to wipe a non-managed $SRC: either it is the
+# dedicated default location (installer-owned by definition), or the user forced
+# a takeover of a path they chose. A hand-made checkout on an explicit
+# FORKMESH_DIR without --force stays protected.
+src_disposable() { [ "$SRC_IS_DEFAULT" = "1" ] || [ "$FORKMESH_FORCE" = "1" ]; }
+
+# Refuse to remove $SRC unless we created it (or it does not exist yet), it is
+# the dedicated default location, or the user explicitly forced a takeover.
 guard_src_removable() {
-  if [ -e "$SRC" ] && ! owns_src && [ "$FORKMESH_FORCE" != "1" ]; then
+  if [ -e "$SRC" ] && ! owns_src && ! src_disposable; then
     die "$SRC already exists and was not created by this installer; refusing to delete it. Set FORKMESH_DIR to a fresh path, remove it yourself, or re-run with FORKMESH_FORCE=1 to let the installer overwrite it."
   fi
 }
@@ -452,8 +471,8 @@ fetch_source() {
   mkdir -p "$(dirname "$SRC")" || return 1
   if [ -d "$SRC/.git" ]; then
     if ! owns_src; then
-      if [ "$FORKMESH_FORCE" = "1" ]; then
-        warn "$SRC is an existing checkout not created by this installer; FORKMESH_FORCE=1 set, replacing it with a fresh clone."
+      if src_disposable; then
+        warn "$SRC is an existing checkout not created by this installer; it is the dedicated install location, replacing it with a fresh clone."
         clean_clone || return 1
         return 0
       fi
