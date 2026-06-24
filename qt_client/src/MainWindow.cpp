@@ -180,6 +180,71 @@ constexpr int kCommitHashCol = 2;
 // Trailing column carrying the per-row "delete from history" button. Only the
 // node holding the working copy (the source of truth) can act on it.
 constexpr int kCommitActionCol = 7;
+// Leftmost gutter that paints the commit graph (lanes + node dot). It is the
+// last logical column but is moved to visual position 0 so the existing column
+// indices above stay unchanged.
+constexpr int kCommitGraphCol = 8;
+// Per-row graph data read by CommitGraphDelegate. Kept above kTableSortRole's
+// neighbours (UserRole+10) to avoid clashing with the sort key.
+constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
+constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
+
+// Lane geometry, shared between the column-width calc and the delegate so the
+// dots line up with the section width.
+constexpr int kGraphLaneWidth = 14;
+constexpr int kGraphMargin = 9;
+constexpr int kGraphDotRadius = 4;
+
+// Stable per-lane colour so a branch keeps its hue down the whole graph.
+inline QColor commitGraphLaneColor(int lane)
+{
+    static const QColor palette[] = {
+        QColor("#3fb950"), QColor("#58a6ff"), QColor("#d29922"),
+        QColor("#bc8cff"), QColor("#f85149"), QColor("#39c5cf"),
+    };
+    constexpr int n = int(sizeof(palette) / sizeof(palette[0]));
+    return palette[((lane % n) + n) % n];
+}
+
+// Paints the git-graph gutter: a vertical line for every lane passing through
+// the row plus a filled dot in this commit's lane. Topology is meaningful only
+// while the list is in git-log order (the default Date-descending sort), which
+// is why that ordering is pinned when the list loads.
+class CommitGraphDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Draw the selection/background but no text (the item has none).
+        QStyledItemDelegate::paint(painter, option, index);
+        const QVariantList lanes = index.data(kGraphLanesRole).toList();
+        const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
+        if (lanes.isEmpty() && nodeLane < 0)
+            return;
+        const QRect r = option.rect;
+        auto laneX = [&](int lane) {
+            return r.left() + kGraphMargin + lane * kGraphLaneWidth;
+        };
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        for (const QVariant &v : lanes) {
+            const int lane = v.toInt();
+            painter->setPen(QPen(commitGraphLaneColor(lane), 2));
+            painter->drawLine(laneX(lane), r.top(), laneX(lane), r.bottom());
+        }
+        if (nodeLane >= 0) {
+            const QColor c = commitGraphLaneColor(nodeLane);
+            painter->setPen(QPen(c, 2));
+            painter->setBrush(c);
+            painter->drawEllipse(QPoint(laneX(nodeLane), r.center().y()),
+                                 kGraphDotRadius, kGraphDotRadius);
+        }
+        painter->restore();
+    }
+};
 
 class SortTableWidgetItem : public QTableWidgetItem
 {
@@ -10118,10 +10183,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
-    m_commitsTable = new QTableWidget(0, 8);
+    m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
     m_commitsTable->setHorizontalHeaderLabels(
-        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", ""});
+        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -10148,6 +10213,17 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // Trailing action column: a fixed, narrow slot for the per-row delete button.
     commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
     commitHeader->resizeSection(kCommitActionCol, 38);
+    // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
+    // moved to the far left so it reads like a git log graph. Its width is
+    // recomputed per load once the lane count is known (see loadCommits).
+    commitHeader->setSectionResizeMode(kCommitGraphCol, QHeaderView::Fixed);
+    commitHeader->resizeSection(kCommitGraphCol, 24);
+    commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
+    m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
+                                             new CommitGraphDelegate(m_commitsTable));
+    // Most recent first: sort by the Date column (which sorts on the raw commit
+    // timestamp), matching git-log order so the graph lanes line up.
+    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
@@ -11370,6 +11446,47 @@ QWidget *MainWindow::buildRepoSecurityTab()
     return page;
 }
 
+// Severity -> badge/text colour for the Security and quality tab. Mirrors the
+// palette used elsewhere (green pass, blue info, amber warning, orange/red severe).
+static QString repoSecuritySeverityColor(RepoSecuritySeverity severity)
+{
+    switch (severity) {
+    case RepoSecuritySeverity::Pass:
+        return QStringLiteral("#3fb950");
+    case RepoSecuritySeverity::Info:
+        return QStringLiteral("#58a6ff");
+    case RepoSecuritySeverity::Warning:
+        return QStringLiteral("#d29922");
+    case RepoSecuritySeverity::High:
+        return QStringLiteral("#f0883e");
+    case RepoSecuritySeverity::Critical:
+        return QStringLiteral("#f85149");
+    }
+    return QStringLiteral("#8b949e");
+}
+
+// Render one security signal as an "insightsCard" HTML body: severity-tinted
+// title, the summary, and (when present) the longer detail.
+static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
+{
+    const QString color = repoSecuritySeverityColor(signal.severity);
+    QString html = QStringLiteral(
+                       "<div style='font-weight:700; font-size:13px; color:%1'>%2</div>"
+                       "<div style='color:#8b949e; font-size:11px; font-weight:600; "
+                       "text-transform:uppercase; margin-top:2px'>%3</div>")
+                       .arg(color, signal.title.toHtmlEscaped(),
+                            RepoSecurity::severityText(signal.severity).toHtmlEscaped());
+    if (!signal.summary.isEmpty())
+        html += QStringLiteral(
+                    "<div style='color:#c9d1d9; font-size:12px; margin-top:6px'>%1</div>")
+                    .arg(signal.summary.toHtmlEscaped());
+    if (!signal.detail.isEmpty())
+        html += QStringLiteral(
+                    "<div style='color:#8b949e; font-size:11px; margin-top:4px'>%1</div>")
+                    .arg(signal.detail.toHtmlEscaped());
+    return html;
+}
+
 void MainWindow::refreshRepoSecurity()
 {
     if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
@@ -11405,7 +11522,7 @@ void MainWindow::refreshRepoSecurity()
     input.isPrivate = selected.isPrivate;
     input.previewOnly = selected.previewOnly;
     input.actionsEnabled = selected.actionsEnabled;
-    input.integrityWarning = m_repoPinBanner && m_repoPinBanner->isVisible();
+    input.integrityWarning = m_pinWarningActive;
     input.issues =
         IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
             .loadAll();
@@ -12378,8 +12495,10 @@ void MainWindow::renderPullDiff(const QString &filePath)
     // dir/base/head so the renderer skips them and just lays out the text diff.
     // filePath is the comment anchor file (enables clickable line numbers).
     QList<DiffFileEntry> files;
+    const QSet<QString> viewed =
+        loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
-                                        QString(), filePath, notes);
+                                        QString(), filePath, notes, viewed);
     m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet());
     m_pullDiff->setHtml(html.isEmpty()
                             ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
@@ -12388,6 +12507,16 @@ void MainWindow::renderPullDiff(const QString &filePath)
 
 void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
 {
+    // "viewed:<path>" toggles a file's reviewed state and re-renders it.
+    if (url.scheme() == QLatin1String("viewed")) {
+        const QString path = url.path();
+        const QString context =
+            QStringLiteral("pull/") + QString::number(m_currentPullNumber);
+        const QSet<QString> cur = loadDiffViewed(context);
+        setDiffViewed(context, path, !cur.contains(path));
+        renderPullDiff(path);
+        return;
+    }
     // Anchor format: "cmt:<side>:<line>" where side is old|new.
     const QStringList parts = url.toString().split(QLatin1Char(':'));
     if (parts.size() != 3 || parts.at(0) != QLatin1String("cmt"))
@@ -18341,7 +18470,7 @@ void MainWindow::loadCommits()
     QByteArray out;
     if (!runGitCapture(dir,
                        {"log", "--numstat",
-                        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s",
+                        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P",
                         "-n", "300", currentRef()},
                        &out, nullptr)) {
         m_commitsTable->setSortingEnabled(true);
@@ -18358,6 +18487,11 @@ void MainWindow::loadCommits()
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
     QString loadedTip;
+    // Commit-graph lane state, walked newest-first alongside the rows. Each entry
+    // is the hash the lane is currently waiting to reach; an empty entry is a free
+    // slot a new branch can reuse. maxGraphLane sizes the gutter column afterwards.
+    QList<QString> activeLanes;
+    int maxGraphLane = 0;
     // Suspend painting while up to 300 rows (each with a cell-widget button) are
     // built: otherwise the table repaints on every insertRow/setItem, which is
     // what made a refresh feel sluggish. One repaint happens when re-enabled.
@@ -18375,6 +18509,54 @@ void MainWindow::loadCommits()
         if (loadedTip.isEmpty())
             loadedTip = f.at(0);
         const bool isUnpushed = unpushed.contains(f.at(0));
+
+        // --- Commit-graph lanes for this row (newest-first walk). The lane the
+        // commit sits in inherits its first parent; extra parents (a merge) open
+        // new lanes, and lanes waiting for the same hash collapse back together.
+        const QString hash = f.at(0);
+        const QStringList parents =
+            f.value(6).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        int nodeLane = activeLanes.indexOf(hash);
+        if (nodeLane < 0) {
+            nodeLane = activeLanes.indexOf(QString()); // reuse a freed slot
+            if (nodeLane < 0) {
+                nodeLane = activeLanes.size();
+                activeLanes.append(hash);
+            } else {
+                activeLanes[nodeLane] = hash;
+            }
+        }
+        // Snapshot the lanes drawn through this row before advancing them.
+        QVariantList laneCols;
+        for (int i = 0; i < activeLanes.size(); ++i) {
+            if (!activeLanes.at(i).isEmpty()) {
+                laneCols.append(i);
+                maxGraphLane = std::max(maxGraphLane, i);
+            }
+        }
+        // Close any other lane also waiting for this commit (it merges in here).
+        for (int i = 0; i < activeLanes.size(); ++i)
+            if (i != nodeLane && activeLanes.at(i) == hash)
+                activeLanes[i].clear();
+        if (parents.isEmpty()) {
+            activeLanes[nodeLane].clear(); // root commit: the lane ends
+        } else {
+            activeLanes[nodeLane] = parents.at(0);
+            for (int k = 1; k < parents.size(); ++k) {
+                if (activeLanes.indexOf(parents.at(k)) >= 0)
+                    continue; // that parent already has a lane
+                int slot = activeLanes.indexOf(QString());
+                if (slot < 0) {
+                    slot = activeLanes.size();
+                    activeLanes.append(parents.at(k));
+                } else {
+                    activeLanes[slot] = parents.at(k);
+                }
+            }
+        }
+        while (!activeLanes.isEmpty() && activeLanes.last().isEmpty())
+            activeLanes.removeLast(); // keep the gutter as narrow as the history
+
         int files = 0;
         int adds = 0;
         int dels = 0;
@@ -18394,6 +18576,12 @@ void MainWindow::loadCommits()
 
         const int row = m_commitsTable->rowCount();
         m_commitsTable->insertRow(row);
+        // Graph gutter cell: carries this row's lane layout for CommitGraphDelegate.
+        auto *graphItem = new QTableWidgetItem;
+        graphItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        graphItem->setData(kGraphLanesRole, laneCols);
+        graphItem->setData(kGraphNodeLaneRole, nodeLane);
+        m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
         summary->setData(kTableSortRole, f.at(5).toLower());
@@ -18479,8 +18667,17 @@ void MainWindow::loadCommits()
                 [this, fullHash] { deleteCommit(fullHash); });
         m_commitsTable->setCellWidget(row, kCommitActionCol, del);
     }
+    // Size the graph gutter to the widest the lanes ever got, then re-assert the
+    // Date-descending sort so rows stay in git-log order (the order the lanes were
+    // computed in) after sorting is re-enabled.
+    {
+        const int laneSpan = 2 * kGraphMargin + maxGraphLane * kGraphLaneWidth;
+        m_commitsTable->horizontalHeader()->resizeSection(
+            kCommitGraphCol, std::clamp(laneSpan, 22, 140));
+    }
     m_commitsTable->setUpdatesEnabled(true);
     m_commitsTable->setSortingEnabled(true);
+    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
 
     if (m_commitsUnsyncedBanner) {
         if (unpushedShown > 0) {
@@ -20294,7 +20491,19 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDiffView = new QTextBrowser;
     m_branchDiffView->setObjectName("diffView");
     m_branchDiffView->setOpenExternalLinks(false);
+    m_branchDiffView->setOpenLinks(false); // we handle "viewed:" anchors ourselves
     m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
+            &MainWindow::onBranchDiffAnchorClicked);
+    // Sticky header naming the file currently scrolled into view.
+    m_branchDiffSticky = new QLabel(m_branchDiffView->viewport());
+    m_branchDiffSticky->setObjectName("diffStickyHeader");
+    m_branchDiffSticky->setStyleSheet(
+        "background:#161b22; color:#e6edf3; border-bottom:1px solid #30363d;"
+        "padding:6px 12px; font-family:monospace; font-weight:600;");
+    m_branchDiffSticky->hide();
+    connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &MainWindow::updateBranchDiffSticky);
 
     auto *split = new QSplitter(Qt::Horizontal);
     split->addWidget(m_branchesTable);
@@ -20494,6 +20703,8 @@ void MainWindow::showBranchDiff(const QString &branch)
 {
     if (!m_branchDiffView)
         return;
+    m_branchDiffBranch = branch;
+    m_branchDiffFileSpans.clear();
     m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
@@ -20516,13 +20727,27 @@ void MainWindow::showBranchDiff(const QString &branch)
         return;
     }
     QList<DiffFileEntry> files;
+    const QSet<QString> viewed = loadDiffViewed(QStringLiteral("branch/") + branch);
     const QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, base,
-                                        branch, QString(), QHash<QString, QString>());
+                                        branch, QString(), QHash<QString, QString>(),
+                                        viewed);
     m_branchDiffView->setHtml(
         html.isEmpty()
             ? QStringLiteral("<p style='color:#8b949e'>No changes between %1 and %2.</p>")
                   .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
             : html);
+    // Record each file header's position so the sticky bar can name the file
+    // currently scrolled into view.
+    QTextDocument *spanDoc = m_branchDiffView->document();
+    int spanFrom = 0;
+    for (const DiffFileEntry &f : files) {
+        const QTextCursor c = spanDoc->find(f.path, spanFrom);
+        if (!c.isNull()) {
+            m_branchDiffFileSpans.append(qMakePair(c.selectionStart(), f.path));
+            spanFrom = c.position();
+        }
+    }
+    updateBranchDiffSticky();
 }
 
 void MainWindow::createPullFromBranch(const QString &branch)
@@ -20697,6 +20922,80 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     loadBranchesAndTags();
     if (!browsed.isEmpty() && repoBranches().contains(browsed))
         setRepoBranch(browsed);
+}
+
+void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
+{
+    if (url.scheme() != QLatin1String("viewed"))
+        return;
+    const QString path = url.path();
+    const QString context = QStringLiteral("branch/") + m_branchDiffBranch;
+    const QSet<QString> cur = loadDiffViewed(context);
+    setDiffViewed(context, path, !cur.contains(path));
+    const int scroll =
+        m_branchDiffView ? m_branchDiffView->verticalScrollBar()->value() : 0;
+    showBranchDiff(m_branchDiffBranch);
+    if (m_branchDiffView)
+        m_branchDiffView->verticalScrollBar()->setValue(scroll);
+}
+
+void MainWindow::updateBranchDiffSticky()
+{
+    if (!m_branchDiffView || !m_branchDiffSticky)
+        return;
+    const int sv = m_branchDiffView->verticalScrollBar()->value();
+    QString cur;
+    if (!m_branchDiffFileSpans.isEmpty()) {
+        const QTextCursor top = m_branchDiffView->cursorForPosition(QPoint(2, 2));
+        const int pos = top.position();
+        for (const auto &span : m_branchDiffFileSpans) {
+            if (span.first <= pos)
+                cur = span.second;
+            else
+                break;
+        }
+    }
+    if (cur.isEmpty() || sv <= 0) {
+        m_branchDiffSticky->hide();
+        return;
+    }
+    m_branchDiffSticky->setText(cur);
+    m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
+                                    m_branchDiffSticky->sizeHint().height());
+    m_branchDiffSticky->show();
+    m_branchDiffSticky->raise();
+}
+
+QString MainWindow::diffViewedScope(const QString &context) const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return QString();
+    const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
+    return r.owner + QStringLiteral("/") + r.name + QStringLiteral("/") + context;
+}
+
+QSet<QString> MainWindow::loadDiffViewed(const QString &context) const
+{
+    const QString scope = diffViewedScope(context);
+    if (scope.isEmpty())
+        return {};
+    const QStringList list =
+        QSettings().value(QStringLiteral("diffViewed/") + scope).toStringList();
+    return QSet<QString>(list.begin(), list.end());
+}
+
+void MainWindow::setDiffViewed(const QString &context, const QString &path, bool viewed)
+{
+    const QString scope = diffViewedScope(context);
+    if (scope.isEmpty())
+        return;
+    QSet<QString> set = loadDiffViewed(context);
+    if (viewed)
+        set.insert(path);
+    else
+        set.remove(path);
+    QSettings().setValue(QStringLiteral("diffViewed/") + scope,
+                         QStringList(set.begin(), set.end()));
 }
 
 // ---- Releases panel --------------------------------------------------------

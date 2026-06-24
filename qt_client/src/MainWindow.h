@@ -602,6 +602,11 @@ private:
     void loadBranchesPanel();
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
+    void onBranchDiffAnchorClicked(const QUrl &url);
+    void updateBranchDiffSticky();
+    QString diffViewedScope(const QString &context) const;
+    QSet<QString> loadDiffViewed(const QString &context) const;
+    void setDiffViewed(const QString &context, const QString &path, bool viewed);
     // Merge the default branch into `branch` so it catches up with main.
     void updateBranchFromBase(const QString &branch);
     void promptNewBranch();
@@ -1264,6 +1269,9 @@ private:
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
+    QString m_branchDiffBranch;
+    QLabel *m_branchDiffSticky = nullptr;
+    QList<QPair<int, QString>> m_branchDiffFileSpans;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
