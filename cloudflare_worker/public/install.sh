@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.9.0 (2026-06-23)"
+INSTALLER_VERSION="0.9.1 (2026-06-24)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -21,20 +21,10 @@ FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
-# The build checkout lives in a dedicated, installer-only location. When the
-# user has not overridden it, $SRC is owned by the installer by definition: the
-# only thing that ever lives there is a throwaway clone used to build, so it is
-# always safe to wipe and re-clone. SRC_IS_DEFAULT records this so the
-# unmanaged-checkout guards below relax for the default path (covering stale
-# pre-marker checkouts from older installers) while still protecting a checkout
-# the user deliberately pointed FORKMESH_DIR at.
-if [ -n "${FORKMESH_DIR:-}" ]; then
-  SRC="$FORKMESH_DIR"
-  SRC_IS_DEFAULT=0
-else
-  SRC="$HOME/.local/share/forkmesh/src"
-  SRC_IS_DEFAULT=1
-fi
+# The build checkout lives in a dedicated, installer-only location. The only
+# thing that ever lives there is a throwaway clone used to build, so it is
+# always safe to wipe and re-clone — the installer fully owns this path.
+SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
 
@@ -421,40 +411,18 @@ diag deps 1 "${DIAG_MISSING:-none}"
 # of aborting, so on ANY failure we can wipe the source tree and run the whole
 # pipeline once more from a clean clone.
 
-# Sentinel written into a checkout this installer created and therefore owns.
-# Every destructive operation below refuses to delete a directory that does not
-# carry this marker, so $SRC (default or via FORKMESH_DIR) coinciding with a
-# hand-made developer checkout can never be wiped — a failed `git pull` must
-# never escalate to `rm -rf` of unsaved work.
+# Marker written into a checkout this installer created. It is only used to tell
+# an installer-made checkout (which we can fast-forward) apart from anything else
+# sitting on $SRC (which we just re-clone). $SRC is a dedicated, installer-owned
+# build path, so it is always safe to wipe — there is nothing precious to guard.
 MANAGED_MARKER=".forkmesh-managed"
 owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
-
-# Opt-out for the unmanaged-checkout guards below: when the user knows $SRC is
-# disposable (e.g. a stale pre-marker installer checkout) they can authorize the
-# installer to take it over and wipe it. Off by default so a hand-made developer
-# checkout sitting on the default path is never silently destroyed.
-FORKMESH_FORCE="${FORKMESH_FORCE:-0}"
-
-# True when the installer is allowed to wipe a non-managed $SRC: either it is the
-# dedicated default location (installer-owned by definition), or the user forced
-# a takeover of a path they chose. A hand-made checkout on an explicit
-# FORKMESH_DIR without --force stays protected.
-src_disposable() { [ "$SRC_IS_DEFAULT" = "1" ] || [ "$FORKMESH_FORCE" = "1" ]; }
-
-# Refuse to remove $SRC unless we created it (or it does not exist yet), it is
-# the dedicated default location, or the user explicitly forced a takeover.
-guard_src_removable() {
-  if [ -e "$SRC" ] && ! owns_src && ! src_disposable; then
-    die "$SRC already exists and was not created by this installer; refusing to delete it. Set FORKMESH_DIR to a fresh path, remove it yourself, or re-run with FORKMESH_FORCE=1 to let the installer overwrite it."
-  fi
-}
 
 # Replace $SRC with a fresh shallow clone. Clone into a temporary sibling first
 # and swap it into place only after the clone fully succeeds, so a failed clone
 # (e.g. no mirror currently serving the repo) can never leave the user with a
 # half-deleted or missing $SRC.
 clean_clone() {
-  guard_src_removable
   local tmp="$SRC.new.$$"
   rm -rf "$tmp"
   say "Cloning $REPO"
@@ -471,12 +439,9 @@ fetch_source() {
   mkdir -p "$(dirname "$SRC")" || return 1
   if [ -d "$SRC/.git" ]; then
     if ! owns_src; then
-      if src_disposable; then
-        warn "$SRC is an existing checkout not created by this installer; it is the dedicated install location, replacing it with a fresh clone."
-        clean_clone || return 1
-        return 0
-      fi
-      die "$SRC is an existing git checkout not created by this installer; refusing to modify it. Set FORKMESH_DIR to a different path to install alongside it, or re-run with FORKMESH_FORCE=1 to overwrite it."
+      warn "$SRC is an existing checkout not created by this installer; replacing it with a fresh clone."
+      clean_clone || return 1
+      return 0
     fi
     say "Updating existing checkout in $SRC"
     # The stored remote was baked with the node id live at the original install.
