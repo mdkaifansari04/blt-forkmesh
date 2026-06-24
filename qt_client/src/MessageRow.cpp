@@ -1,6 +1,8 @@
 #include "MessageRow.h"
 
+#include <QApplication>
 #include <QBuffer>
+#include <QClipboard>
 #include <QDateTime>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -141,6 +143,19 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     headerRow->setSpacing(6);
     headerRow->addWidget(header);
     headerRow->addStretch();
+    // A quick Copy action on any message that carries text, regardless of who
+    // sent it, so the body can be lifted to the clipboard in one click.
+    if (!message.deleted && !message.text.isEmpty()) {
+        auto *copy = new QPushButton("Copy");
+        copy->setObjectName("messageAction");
+        copy->setCursor(Qt::PointingHandCursor);
+        copy->setToolTip("Copy message text");
+        connect(copy, &QPushButton::clicked, this, [this, copy] {
+            QApplication::clipboard()->setText(m_message.text);
+            copy->setText("Copied");
+        });
+        headerRow->addWidget(copy);
+    }
     if (message.self && !message.deleted) {
         if (!message.text.isEmpty()) {
             auto *edit = new QPushButton("Edit");
