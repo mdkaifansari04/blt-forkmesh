@@ -4189,6 +4189,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     // ================= Page 2 — donate =================
     auto *donatePage = new QWidget;
     auto *payInfo = new QLabel;
+    auto *splitInfo = new QLabel;
     auto *qrLabel = new QLabel;
     auto *addrLabel = new QLabel;
     auto *copyBtn = new QPushButton("Copy address");
@@ -4203,6 +4204,12 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         l->setSpacing(8);
         payInfo->setWordWrap(true);
         payInfo->setTextFormat(Qt::RichText);
+        // Live breakdown of where the donation goes: half to ForkMesh's servers,
+        // half split evenly across the mirror nodes online right now. Filled in by
+        // enterDonation once the amount and node count are known.
+        splitInfo->setObjectName("modeHint");
+        splitInfo->setWordWrap(true);
+        splitInfo->setTextFormat(Qt::RichText);
         qrLabel->setAlignment(Qt::AlignCenter);
         addrLabel->setWordWrap(true);
         addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -4211,10 +4218,76 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         copyBtn->setCursor(Qt::PointingHandCursor);
         payStatus->setObjectName("modeHint");
         payStatus->setWordWrap(true);
+        // "New to crypto?" disclosure: most newcomers reach this page without any
+        // SOL to send, so offer a self-contained primer (wallets, exchanges, and a
+        // few region-specific picks) instead of leaving them stuck at the QR code.
+        // Collapsed by default to keep the donate page tidy for users who already
+        // hold SOL. Triangle glyphs go through fromUtf8 to dodge the QStringLiteral
+        // UTF-8 mojibake (see [[qstringliteral-utf8-mojibake]]).
+        auto *cryptoHelpToggle = new QToolButton;
+        cryptoHelpToggle->setObjectName("ghostButton");
+        cryptoHelpToggle->setCheckable(true);
+        cryptoHelpToggle->setCursor(Qt::PointingHandCursor);
+        cryptoHelpToggle->setText(
+            QString::fromUtf8("\xE2\x96\xB8 New to crypto? How to get SOL"));
+        auto *cryptoHelp = new QLabel;
+        cryptoHelp->setObjectName("modeHint");
+        cryptoHelp->setWordWrap(true);
+        cryptoHelp->setTextFormat(Qt::RichText);
+        cryptoHelp->setOpenExternalLinks(true);
+        cryptoHelp->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        cryptoHelp->setVisible(false);
+        cryptoHelp->setText(QStringLiteral(
+            "<p>SOL is the coin of the Solana network. Get a little of it, then "
+            "send it to the address above (always over the <b>Solana</b> network).</p>"
+            "<p><b>1.</b> Open a wallet or exchange account and verify it. "
+            "<b>2.</b> Buy a few dollars of SOL. "
+            "<b>3.</b> Withdraw / send it to the address above. "
+            "<b>4.</b> Wait for the confirmation here.</p>"
+            "<p><b>Wallets</b> (hold your own keys, buy SOL in-app):<br>"
+            "&bull; Phantom &mdash; Solana-native, desktop &amp; mobile: "
+            "<a href=\"https://phantom.com\">phantom.com</a><br>"
+            "&bull; Exodus &mdash; multi-chain with a built-in exchange: "
+            "<a href=\"https://www.exodus.com\">exodus.com</a></p>"
+            "<p><b>Common exchanges</b> (buy SOL, then withdraw to your address):<br>"
+            "&bull; Coinbase &mdash; <a href=\"https://www.coinbase.com\">coinbase.com</a><br>"
+            "&bull; Kraken &mdash; <a href=\"https://www.kraken.com\">kraken.com</a><br>"
+            "&bull; Binance &mdash; <a href=\"https://www.binance.com\">binance.com</a><br>"
+            "&bull; Crypto.com &mdash; <a href=\"https://crypto.com\">crypto.com</a><br>"
+            "&bull; Bybit &mdash; <a href=\"https://www.bybit.com\">bybit.com</a><br>"
+            "&bull; KuCoin &mdash; <a href=\"https://www.kucoin.com\">kucoin.com</a></p>"
+            "<p><b>Picks by region</b>:<br>"
+            "&bull; United States &mdash; Coinbase, Kraken, "
+            "<a href=\"https://www.binance.us\">Binance.US</a><br>"
+            "&bull; UK &amp; Europe &mdash; Kraken, Coinbase, "
+            "<a href=\"https://www.bitstamp.net\">Bitstamp</a><br>"
+            "&bull; Canada &mdash; Coinbase, Kraken, "
+            "<a href=\"https://www.newton.co\">Newton</a><br>"
+            "&bull; Australia &mdash; "
+            "<a href=\"https://www.coinspot.com.au\">CoinSpot</a>, Coinbase, Kraken<br>"
+            "&bull; India &mdash; <a href=\"https://coindcx.com\">CoinDCX</a>, "
+            "<a href=\"https://wazirx.com\">WazirX</a><br>"
+            "&bull; Brazil &amp; LatAm &mdash; Binance, "
+            "<a href=\"https://www.mercadobitcoin.com.br\">Mercado Bitcoin</a><br>"
+            "&bull; Africa &mdash; Binance, "
+            "<a href=\"https://www.luno.com\">Luno</a><br>"
+            "&bull; Southeast Asia &mdash; Binance, Coinbase</p>"
+            "<p style=\"color:#8b949e;\">Tip: Phantom and Exodus let you both buy "
+            "SOL and send it from the same app, which is usually the quickest path.</p>"));
+        connect(cryptoHelpToggle, &QToolButton::toggled, cryptoHelp,
+                [cryptoHelpToggle, cryptoHelp](bool on) {
+                    cryptoHelp->setVisible(on);
+                    cryptoHelpToggle->setText(QString::fromUtf8(
+                        on ? "\xE2\x96\xBE New to crypto? How to get SOL"
+                           : "\xE2\x96\xB8 New to crypto? How to get SOL"));
+                });
         l->addWidget(payInfo);
+        l->addWidget(splitInfo);
         l->addWidget(qrLabel);
         l->addWidget(addrLabel);
         l->addWidget(copyBtn, 0, Qt::AlignLeft);
+        l->addWidget(cryptoHelpToggle, 0, Qt::AlignLeft);
+        l->addWidget(cryptoHelp);
         l->addStretch();
         l->addWidget(payStatus);
         connect(copyBtn, &QPushButton::clicked, this, [=]() {
@@ -4254,8 +4327,8 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                 .arg(got / 1000000000.0, 0, 'f', 9));
     });
 
-    enterDonation = [&, payInfo, qrLabel, addrLabel, payStatus, payUriHolder,
-                     pollTimer]() {
+    enterDonation = [&, payInfo, splitInfo, qrLabel, addrLabel, payStatus,
+                     payUriHolder, pollTimer]() {
         setStep(1);
         payStatus->setText("Generating payment request…");
         payStatus->setStyleSheet("background:transparent;");
@@ -4283,6 +4356,37 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                      amountUsd > 0 ? QString::fromUtf8(" (\xE2\x89\x88 $%1)")
                                          .arg(amountUsd, 0, 'f', 2)
                                    : QString()));
+        // Show exactly how this donation is divided: half keeps ForkMesh's
+        // servers running, half is split evenly across the mirror nodes online
+        // right now (mirrors TREASURY_SPLIT_* in cloudflare_worker/src/entry.py).
+        const int nodesOnline = std::max(fetchNodesOnline(), 0);
+        const QString approx = QString::fromUtf8("\xE2\x89\x88");
+        if (amountUsd > 0) {
+            const double serversUsd = amountUsd * 0.5;
+            const double nodesUsd = amountUsd * 0.5;
+            const QString perNode = nodesOnline > 0
+                ? QStringLiteral("%1 $%2 each")
+                      .arg(approx).arg(nodesUsd / nodesOnline, 0, 'f', 2)
+                : QStringLiteral("held until nodes come online");
+            splitInfo->setText(
+                QStringLiteral("Your $%1 splits in two: <b>$%2</b> (50%) keeps "
+                               "ForkMesh's servers running, and <b>$%3</b> (50%) is "
+                               "shared across the <b>%4</b> mirror node%5 online now "
+                               "(%6).")
+                    .arg(amountUsd, 0, 'f', 2)
+                    .arg(serversUsd, 0, 'f', 2)
+                    .arg(nodesUsd, 0, 'f', 2)
+                    .arg(nodesOnline)
+                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s"))
+                    .arg(perNode));
+        } else {
+            splitInfo->setText(
+                QStringLiteral("Your donation splits in two: <b>50%</b> keeps "
+                               "ForkMesh's servers running, and <b>50%</b> is shared "
+                               "across the <b>%1</b> mirror node%2 online now.")
+                    .arg(nodesOnline)
+                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s")));
+        }
         const QImage qr = QrCode::encodeToImage(uri, 5, 3);
         if (!qr.isNull())
             qrLabel->setPixmap(QPixmap::fromImage(qr));
@@ -6639,6 +6743,9 @@ void MainWindow::showRepoMenu()
     }
 
     menu.addSeparator();
+    QAction *newAct = menu.addAction(QStringLiteral("New repository") +
+                                     QString::fromUtf8("\xE2\x80\xA6"));
+    connect(newAct, &QAction::triggered, this, &MainWindow::createNewRepository);
     QAction *addAct = menu.addAction(QStringLiteral("Add local repo") +
                                      QString::fromUtf8("\xE2\x80\xA6"));
     connect(addAct, &QAction::triggered, this, &MainWindow::promptAddRepository);
@@ -23064,6 +23171,41 @@ QWidget *MainWindow::buildSettingsSection()
     previewCacheRow->addWidget(m_previewCacheRootEdit, 1);
     previewCacheRow->addWidget(previewCacheChangeButton);
 
+    // Start a repository under this node: either spin up a brand-new empty repo
+    // (git init) or adopt an existing local Git folder. Both then mirror + publish
+    // under the account, exactly like the import flow below.
+    auto *repositoriesLabel = new QLabel("REPOSITORIES");
+    repositoriesLabel->setObjectName("sectionLabel");
+    auto *repositoriesHint = new QLabel(
+        "Create a new empty repository or add one that already lives on this "
+        "computer. Either way it's mirrored locally and published under your "
+        "node so others can discover and mirror it.");
+    repositoriesHint->setObjectName("statusLine");
+    repositoriesHint->setWordWrap(true);
+
+    auto *newRepoButton = new QPushButton("New repository\xE2\x80\xA6");
+    newRepoButton->setObjectName("primaryButton");
+    newRepoButton->setCursor(Qt::PointingHandCursor);
+    newRepoButton->setToolTip("Create a brand-new empty Git repository");
+    setOcticon(newRepoButton, "repo", 16);
+    connect(newRepoButton, &QPushButton::clicked, this,
+            &MainWindow::createNewRepository);
+
+    auto *addLocalRepoButton = new QPushButton("Add local repository\xE2\x80\xA6");
+    addLocalRepoButton->setObjectName("ghostButton");
+    addLocalRepoButton->setCursor(Qt::PointingHandCursor);
+    addLocalRepoButton->setToolTip(
+        "Pick an existing Git folder on this computer to mirror and publish");
+    setOcticon(addLocalRepoButton, "file-directory", 16);
+    connect(addLocalRepoButton, &QPushButton::clicked, this,
+            &MainWindow::promptAddRepository);
+
+    auto *repoButtonRow = new QHBoxLayout;
+    repoButtonRow->setContentsMargins(0, 0, 0, 0);
+    repoButtonRow->addWidget(newRepoButton);
+    repoButtonRow->addWidget(addLocalRepoButton);
+    repoButtonRow->addStretch();
+
     // Import a repo from GitHub/GitLab: clone it into a local working copy, then
     // mirror + publish it under this node like any local repo. An optional access
     // token per host authenticates the clone to dodge unauthenticated rate limits.
@@ -23262,6 +23404,10 @@ QWidget *MainWindow::buildSettingsSection()
     leftCol->addSpacing(6);
     leftCol->addWidget(previewCacheLabel);
     leftCol->addLayout(previewCacheRow);
+    leftCol->addSpacing(6);
+    leftCol->addWidget(repositoriesLabel);
+    leftCol->addWidget(repositoriesHint);
+    leftCol->addLayout(repoButtonRow);
     leftCol->addSpacing(6);
     leftCol->addWidget(importLabel);
     leftCol->addWidget(importHint);
@@ -25313,6 +25459,91 @@ void MainWindow::promptAddRepository()
     syncRepository(m_repositories.size() - 1);
 }
 
+void MainWindow::createNewRepository()
+{
+    // Ask for a name, then a parent folder, and `git init` a fresh empty repo
+    // there. From there it's mirrored + published exactly like promptAddRepository.
+    bool ok = false;
+    const QString rawName =
+        QInputDialog::getText(this, "New repository", "Repository name:",
+                              QLineEdit::Normal, QString(), &ok)
+            .trimmed();
+    if (!ok || rawName.isEmpty())
+        return;
+
+    // Keep the on-disk folder name in step with the published name: both go
+    // through repoSegment so a slash or odd character can't escape the path.
+    const QString name = repoSegment(rawName, QStringLiteral("repository"));
+    if (repoIndexFor(accountOwner(), name) >= 0) {
+        QMessageBox::warning(
+            this, "New repository",
+            QStringLiteral("You already have a repository named \"%1\".").arg(name));
+        return;
+    }
+
+    const QString parent = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("Choose where to create \"%1\"").arg(name),
+        QDir::homePath());
+    if (parent.isEmpty())
+        return; // cancelled
+
+    const QString dest = QDir(parent).filePath(name);
+    if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
+        QMessageBox::warning(
+            this, "New repository",
+            QStringLiteral("%1 already exists and is not empty. Choose another "
+                           "name or location.")
+                .arg(dest));
+        return;
+    }
+    if (!QDir().mkpath(dest)) {
+        QMessageBox::warning(this, "New repository",
+                             QStringLiteral("Could not create %1.").arg(dest));
+        return;
+    }
+
+    // `git init -b main` gives the new repo a conventional default branch so the
+    // first push lands on refs/heads/main like everywhere else.
+    QProcess git;
+    git.setWorkingDirectory(dest);
+    git.start(QStringLiteral("git"),
+              {QStringLiteral("init"), QStringLiteral("-b"), QStringLiteral("main")});
+    git.waitForFinished(30000);
+    if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
+        const QString err =
+            QString::fromUtf8(git.readAllStandardError()).trimmed();
+        QMessageBox::warning(
+            this, "New repository",
+            QStringLiteral("git init failed: %1").arg(err.right(200)));
+        logSystem("New repository: git init failed in " + dest + ": " +
+                  err.right(300));
+        return;
+    }
+
+    RepositoryRecord repo;
+    repo.localPath = dest;
+    repo.name = name;
+    repo.owner = accountOwner();
+    repo.solanaAddress = savedSolanaAddress();
+    repo.publishToNetwork = true;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                      repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
+                      repoSegment(repo.name, QStringLiteral("repository")) + ".git";
+
+    m_repositories.append(repo);
+    saveRepositories();
+    refreshRepositoryList();
+    if (m_backend)
+        m_backend->addChannel(repositoryChannel(repo));
+    const int index = m_repositories.size() - 1;
+    publishRepository(index, false);
+    syncRepository(index);
+    logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
+              dest + ".");
+    flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+}
+
 QStringList MainWindow::importAuthGitArgs(const QString &url) const
 {
     const QString host = QUrl(url).host().toLower();
@@ -26322,6 +26553,10 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                     if (showDialogOnError)
                         flashMessage("Published " + repo.owner + "/" + repo.name +
                                      " to forkmesh.com.");
+                    // The pin now reflects our served refs again; clear any stale
+                    // "clones are being rejected" banner for the open repo.
+                    if (index == m_repoDetailIndex)
+                        refreshRepoPinBanner();
                     return;
                 }
 
@@ -27152,6 +27387,9 @@ void MainWindow::scanActionSpool()
     QDir dir(m_actionStore->spoolDir());
     const QStringList files =
         dir.entryList({QStringLiteral("*.push")}, QDir::Files, QDir::Name);
+    // Re-attest the integrity pin at most once per repo per sweep, even if several
+    // pushes spooled.
+    QSet<int> reattested;
     for (const QString &file : files) {
         const QString full = dir.filePath(file);
         QFile f(full);
@@ -27176,6 +27414,25 @@ void MainWindow::scanActionSpool()
                     commit = p.at(1);
                     ref = p.at(2);
                 }
+            }
+        }
+        // A push landed directly on our served bare mirror (terminal/IDE
+        // `git push origin`, or an agent), advancing the refs the relay hands out.
+        // The relay pins an owner-signed hash of those refs and rejects any clone
+        // that doesn't match it, so re-attest now to keep the pin in step with what
+        // we serve. The fetch-based autoSync path re-publishes on its own, but a
+        // direct push leaves the mirror already current — so autoSync sees no change
+        // and never refreshes the pin; this closes that gap. Runs for any ref change
+        // (branch, tag, or deletion), so it can't reuse the refs/heads-only `commit`
+        // captured above for action triggering.
+        if (!owner.isEmpty() && !name.isEmpty()) {
+            const int idx = repoIndexFor(owner, name);
+            if (idx >= 0 && !reattested.contains(idx)) {
+                reattested.insert(idx);
+                const RepositoryRecord &r = m_repositories.at(idx);
+                if (!r.previewOnly && r.publishToNetwork &&
+                    !r.mirrorPath.trimmed().isEmpty())
+                    publishRepository(idx, false);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).

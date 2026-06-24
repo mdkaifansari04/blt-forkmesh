@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.9.1 (2026-06-24)"
+INSTALLER_VERSION="0.9.2 (2026-06-24)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -27,6 +27,17 @@ REPO="${FORKMESH_REPO:-}"
 SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
+# Set to 1 if a clone is rejected by the relay's integrity gate, so the final
+# error can explain that specific (owner-fixable) case instead of a generic one.
+PIN_FAILURE=0
+
+# Anchor to a directory that exists. The installer may be launched from a path
+# that was just deleted — e.g. running this right after the uninstaller removed
+# ~/.local/share/forkmesh from a shell still sitting inside it. With a missing
+# working directory git aborts every clone up front with "fatal: Unable to read
+# current working directory", before it ever contacts the relay. cd somewhere
+# stable so this script and every child process inherit a valid CWD.
+cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
 
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$1" >&2; }
@@ -426,8 +437,16 @@ clean_clone() {
   local tmp="$SRC.new.$$"
   rm -rf "$tmp"
   say "Cloning $REPO"
-  if ! git clone --depth 1 "$REPO" "$tmp"; then
+  # Capture output so we can recognise the relay's integrity-gate rejection and
+  # explain it precisely; the output is still echoed so normal progress shows.
+  local out rc
+  out="$(git clone --depth 1 "$REPO" "$tmp" 2>&1)"; rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -ne 0 ]; then
     rm -rf "$tmp"
+    case "$out" in
+      *"failed integrity check"*|*"repository failed integrity"*) PIN_FAILURE=1 ;;
+    esac
     return 1
   fi
   : > "$tmp/$MANAGED_MARKER"
@@ -507,11 +526,34 @@ attempt_install() {
   CURRENT_STEP="install"; install_client || return 1; diag install 1
 }
 
+# A stale integrity pin is rejected identically on a clean re-clone (the relay,
+# not the local checkout, refuses it), so don't bother retrying that case — go
+# straight to a clear, owner-actionable explanation.
+pin_failure_help() {
+  printf '\033[31mError:\033[0m The mirror serving %s failed its integrity check.\n' "$REPO" >&2
+  printf '\n' >&2
+  printf 'This is NOT a problem with your machine. The relay pins an owner-signed\n' >&2
+  printf 'fingerprint of the repository'"'"'s refs and refuses to serve any mirror that\n' >&2
+  printf 'does not match it. The currently published pin is stale or mismatched, so\n' >&2
+  printf 'every clone is being rejected before any data is sent.\n' >&2
+  printf '\n' >&2
+  printf 'The repository owner needs to refresh it from the ForkMesh desktop app:\n' >&2
+  printf '  open the repo, then click "Reset integrity pin" (it re-signs the refs\n' >&2
+  printf '  the node currently serves). A fresh publish from the host node also fixes it.\n' >&2
+  printf '\n' >&2
+  printf 'Once the pin is reset, re-run:\n' >&2
+  printf '  curl -fsSL %s/install.sh | bash\n' "$FORKMESH_HOST" >&2
+  exit 1
+}
+
 if ! attempt_install; then
+  [ "$PIN_FAILURE" = "1" ] && pin_failure_help
   warn "Install failed; retrying once from a clean clone."
   rm -rf "$SRC"
-  attempt_install \
-    || die "Install failed again after a clean re-clone; see the messages above for the cause."
+  if ! attempt_install; then
+    [ "$PIN_FAILURE" = "1" ] && pin_failure_help
+    die "Install failed again after a clean re-clone; see the messages above for the cause."
+  fi
 fi
 
 case ":$PATH:" in

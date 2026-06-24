@@ -235,6 +235,40 @@
           </p>
         </div>
 
+        <div class="calc" id="split-card">
+          <h3>Where your donation goes</h3>
+          <div class="calc-row">
+            <div class="calc-cell">
+              <div class="cap">ForkMesh servers</div>
+              <div class="big" id="split-servers-pct">50%</div>
+              <div class="small" id="split-servers-usd">infrastructure &amp; relay</div>
+            </div>
+            <div class="op">+</div>
+            <div class="calc-cell">
+              <div class="cap">Mirror nodes (<span id="split-node-count">—</span> online)</div>
+              <div class="big" id="split-nodes-pct">50%</div>
+              <div class="small" id="split-nodes-usd">shared by uptime &amp; data</div>
+            </div>
+            <div class="op">=</div>
+            <div class="calc-cell">
+              <div class="cap">Per online node</div>
+              <div class="big" id="split-per-node">—</div>
+              <div class="small">≈ each, evenly</div>
+            </div>
+          </div>
+          <p class="calc-note">
+            Half of every join donation keeps ForkMesh's servers running; the other
+            half is split evenly across the <span id="split-node-count-2">—</span> nodes
+            online right now, weighted over time by data mirrored and uptime.
+          </p>
+        </div>
+
+        <p class="row-links">
+          Need a Solana wallet? We suggest
+          <a href="https://www.exodus.com/" target="_blank" rel="noopener noreferrer">Exodus</a>
+          — it holds SOL on desktop and mobile.
+        </p>
+
         <div class="flow">
           <div><strong>You mirror code</strong>Your node stores and serves Git repositories, keeping the network decentralized.</div>
           <div><strong>You get paid</strong>Earn SOL as the network grows and people use the data you host.</div>
