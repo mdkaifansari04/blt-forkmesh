@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QList>
+#include <QPair>
 #include <QString>
 
 class ForkMeshIdentity;
@@ -34,6 +35,11 @@ public:
     bool canWrite() const; // has a working tree (can author)
 
     QList<CommitComment> loadFor(const QString &sha) const;
+
+    // Every commit that carries comments, paired with its thread. Reads the
+    // working tree's commits/ folder when we can author, else the bare mirror.
+    // Used to scan all commit conversations for @mentions.
+    QList<QPair<QString, QList<CommitComment>>> loadAll() const;
 
     // Append a signed comment for a commit, then commit the commits/ folder.
     bool addComment(const QString &sha, const QString &body, QString *error = nullptr);

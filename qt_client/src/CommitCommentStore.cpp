@@ -298,6 +298,40 @@ QList<CommitComment> CommitCommentStore::loadFor(const QString &sha) const
     return out;
 }
 
+QList<QPair<QString, QList<CommitComment>>> CommitCommentStore::loadAll() const
+{
+    QList<QPair<QString, QList<CommitComment>>> out;
+    QStringList shas;
+    if (canWrite()) {
+        for (const QString &name :
+             QDir(commitsDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            if (isValidSha(name))
+                shas << name;
+    } else if (!m_mirror.isEmpty()) {
+        // List the commits/ subtree directly so each entry name is a bare SHA.
+        const QString ref = mirrorRef();
+        QByteArray listing;
+        if (!ref.isEmpty() &&
+            runGit(m_mirror, {"ls-tree", ref + ":commits"}, &listing)) {
+            for (const QString &line :
+                 QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+                const int tab = line.indexOf('\t');
+                if (tab < 0 || !line.contains(" tree "))
+                    continue;
+                const QString name = line.mid(tab + 1).section('/', 0, 0);
+                if (isValidSha(name))
+                    shas << name;
+            }
+        }
+    }
+    for (const QString &sha : shas) {
+        const QList<CommitComment> thread = loadFor(sha);
+        if (!thread.isEmpty())
+            out.append({sha, thread});
+    }
+    return out;
+}
+
 // ---- Read-only access from a bare mirror -----------------------------------
 
 QString CommitCommentStore::mirrorRef() const

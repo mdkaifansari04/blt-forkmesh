@@ -648,6 +648,10 @@ private:
     void startRepoSwitchSpin();
     void stopRepoSwitchSpin();
     void nodeSwitchStep(const QString &what);
+    // Live, visible progress for a repo/node load: a blue pill in the top bar
+    // (where the breadcrumb is) naming the current step, e.g. "Loading commit
+    // history…". Persistent until the next showLoadStatus / flashMessage clears it.
+    void showLoadStatus(const QString &what);
 
     // If this node owns a writable working-tree copy of the same logical repo as
     // `repo` (same owner/name), returns that record; else returns `repo`. Lets the
@@ -904,6 +908,9 @@ private:
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
     void autoSyncMirrors();
+    // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
+    // pull it immediately instead of waiting for the next auto-sync tick.
+    void syncMirrorsBehindRoster();
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
     // for the 5-minute auto-sync, so counts and content converge right away.
@@ -1454,6 +1461,12 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
+    // True while a user-driven repo load (a node switch or opening a repo) runs,
+    // so nodeSwitchStep narrates progress for both, not just node switches.
+    bool m_repoLoadActive = false;
+    // True while the blue progress pill (showLoadStatus) owns the top-bar toast,
+    // so the load can clear it on finish without stomping a real success/error.
+    bool m_loadStatusShowing = false;
     QLabel *m_issueTitle = nullptr;
     QLineEdit *m_issueTitleEditor = nullptr;
     QPushButton *m_issueTitleEditButton = nullptr;
