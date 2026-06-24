@@ -310,6 +310,11 @@ private:
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
+    // Open the issue or pull request referenced by "#<number>" in a commit
+    // message (a PR if one matches, otherwise an issue).
+    void openCommitReference(int number);
+    // Filter the commit list by the search box (matches hash or summary).
+    void filterCommits(const QString &query);
     void downloadCommitPatch();           // save the open commit as a .patch file
     void renderCommitThread(const QString &sha); // per-commit conversation
     void submitCommitComment();                  // post a comment on the open commit
@@ -752,6 +757,12 @@ private:
     void onTypingChanged(const QString &conversation, const QString &peerId,
                          const QString &peerName, bool active);
     void logSystem(const QString &text);
+    // Render one stored "yyyy-MM-dd HH:mm:ss  message" log line into the network
+    // log view as colored HTML (dim timestamp, category badge, message), emitting
+    // a date-divider row first whenever the day changes. Shared by the live
+    // logSystem append and the full rebuild in buildLogSection().
+    void appendNetworkLogLine(const QString &storedLine);
+    QString m_lastLogRenderDate; // date of the last line rendered (for dividers)
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     void flashMessage(const QString &text, bool error = false);
@@ -951,7 +962,8 @@ private:
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
-    QPushButton *m_repoPushButton = nullptr; // top-bar push for commits ahead of upstream
+    QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
+    QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
         QString label;
@@ -1095,6 +1107,7 @@ private:
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
+    QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
     QLabel *m_insightsSummary = nullptr;
     QLabel *m_insightsTraffic = nullptr;
