@@ -29647,6 +29647,12 @@ void MainWindow::deleteCurrentIssue()
 
 void MainWindow::deleteCurrentIssueWithHistory(int number)
 {
+    if (m_issueHistoryDeleteInProgress) {
+        setIssueInlineNotice(
+            QStringLiteral("Issue history deletion is already running."));
+        return;
+    }
+    m_issueHistoryDeleteInProgress = true;
     setIssueInlineNotice(
         QStringLiteral("Deleting issue #%1 and rewriting history… this can take a "
                        "while.")
@@ -29659,15 +29665,30 @@ void MainWindow::deleteCurrentIssueWithHistory(int number)
     // on a worker thread with a copy of the store. Results travel back via shared
     // state read in the finished handler on the main thread.
     IssueStore store = issueStoreForCurrentRepo();
+#ifdef FORKMESH_WINDOW_TESTS
+    auto testRunner = m_testIssueHistoryDeleteRunner;
+#endif
     auto ok = std::make_shared<bool>(false);
     auto error = std::make_shared<QString>();
-    QThread *worker = QThread::create([store, number, ok, error]() mutable {
+    QThread *worker = QThread::create([store, number, ok, error
+#ifdef FORKMESH_WINDOW_TESTS
+                                       , testRunner
+#endif
+    ]() mutable {
         QString err;
-        *ok = store.deleteIssue(number, &err);
+#ifdef FORKMESH_WINDOW_TESTS
+        if (testRunner) {
+            *ok = testRunner(number, &err);
+        } else
+#endif
+        {
+            *ok = store.deleteIssue(number, &err);
+        }
         *error = err;
     });
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error]() {
+                m_issueHistoryDeleteInProgress = false;
                 QApplication::restoreOverrideCursor();
                 if (m_issueDeleteButton)
                     m_issueDeleteButton->setEnabled(true);

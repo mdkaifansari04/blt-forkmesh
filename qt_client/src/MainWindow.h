@@ -126,6 +126,8 @@ public:
     void refreshThemedIcons();
 
 #ifdef FORKMESH_WINDOW_TESTS
+    using TestIssueHistoryDeleteRunner =
+        std::function<bool(int number, QString *error)>;
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
@@ -158,6 +160,15 @@ public:
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
+    void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
+    {
+        m_testIssueHistoryDeleteRunner = std::move(runner);
+    }
+    void testDeleteIssueWithHistory(int number) { deleteCurrentIssueWithHistory(number); }
+    bool testIssueHistoryDeleteInProgress() const
+    {
+        return m_issueHistoryDeleteInProgress;
+    }
 #endif
 
 protected:
@@ -1938,6 +1949,7 @@ private:
     int m_currentIssueNumber = -1;
     QString m_currentIssueTitle;
     bool m_issueDeleteConfirmPending = false;
+    bool m_issueHistoryDeleteInProgress = false;
     // Set just before a reload that closes the viewed issue: if closing drops it
     // out of the filtered list, refreshIssueList keeps the detail panel open on
     // that same (now-closed) issue instead of collapsing to the full-width list
@@ -2056,5 +2068,6 @@ private:
     bool m_testAccountFlowResult = true;
     int m_testEnsureNodeAccountCalls = 0;
     bool m_testBypassServerStart = false;
+    TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;
 #endif
 };
