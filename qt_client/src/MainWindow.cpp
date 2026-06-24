@@ -30055,7 +30055,9 @@ void MainWindow::renderIssueThread(const Issue &issue)
                         QString error;
                         if (!store.editEvent(num, eid, editor->markdown(),
                                              eventAttachments,
-                                             editor->pendingAttachments(), &error)) {
+                                             editor->pendingAttachments(),
+                                             editor->pendingAttachmentPlaceholders(),
+                                             &error)) {
                             setIssueInlineNotice(
                                 error.isEmpty() ? "Could not update the issue body."
                                                 : error,
@@ -30746,6 +30748,7 @@ void MainWindow::promptNewIssue()
         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
                                              milestone, priority, assignees,
                                              bodyEdit->pendingAttachments(),
+                                             bodyEdit->pendingAttachmentPlaceholders(),
                                              &error);
         if (number < 0) {
             setPageNotice(error.isEmpty() ? "Could not create the issue." : error,
@@ -31172,6 +31175,8 @@ void MainWindow::addIssueComment()
     const QString body = m_issueComposer ? m_issueComposer->markdown() : QString();
     const QStringList attachments =
         m_issueComposer ? m_issueComposer->pendingAttachments() : m_pendingIssueAttachments;
+    const QStringList placeholders =
+        m_issueComposer ? m_issueComposer->pendingAttachmentPlaceholders() : QStringList();
     if (body.trimmed().isEmpty() && attachments.isEmpty())
         return;
     IssueStore store = issueStoreForCurrentRepo();
@@ -31211,10 +31216,10 @@ void MainWindow::addIssueComment()
 
     // Persist on the next tick so the optimistic card paints before the
     // (comparatively slow) git commit and reload block the UI thread.
-    QTimer::singleShot(0, this, [this, number, body, attachments]() {
+    QTimer::singleShot(0, this, [this, number, body, attachments, placeholders]() {
         IssueStore store = issueStoreForCurrentRepo();
         QString error;
-        if (!store.addComment(number, body, attachments, &error)) {
+        if (!store.addComment(number, body, attachments, placeholders, &error)) {
             setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
                                  true);
             reloadIssues(); // discard the optimistic card on failure
@@ -31235,6 +31240,8 @@ void MainWindow::closeIssueWithComment()
     const QStringList attachments =
         m_issueComposer ? m_issueComposer->pendingAttachments()
                         : m_pendingIssueAttachments;
+    const QStringList placeholders =
+        m_issueComposer ? m_issueComposer->pendingAttachmentPlaceholders() : QStringList();
     // The whole point of this button is closing *with* a comment; an empty box
     // should use plain "Close issue" instead.
     if (body.trimmed().isEmpty() && attachments.isEmpty()) {
@@ -31255,7 +31262,7 @@ void MainWindow::closeIssueWithComment()
     // Persist the comment, then flip the status — both as one synchronous action
     // so the comment is guaranteed to land before the close event.
     QString error;
-    if (!store.addComment(number, body, attachments, &error)) {
+    if (!store.addComment(number, body, attachments, placeholders, &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
                              true);
         return;
