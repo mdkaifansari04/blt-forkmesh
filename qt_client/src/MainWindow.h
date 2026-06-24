@@ -598,6 +598,11 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    // True when the commit table already shows the current branch's current tip,
+    // so a tab click can skip the expensive rebuild. Does one cheap `git
+    // rev-parse` to catch tips moved out from under us (e.g. by a background
+    // agent committing into the same working tree).
+    bool commitsListIsCurrent();
     // Full hashes of commits in the local working copy that the network mirror
     // doesn't have yet (i.e. ahead of the mirror, not yet synced). Empty for a
     // browse-only mirror, which only ever pulls.
@@ -1193,6 +1198,11 @@ private:
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
+    // What the commit table currently shows, so a repeat tab click (or the
+    // redundant load when a repo first opens) can skip the full rebuild — 4 git
+    // subprocesses plus 300 row widgets — when the branch and tip are unchanged.
+    QString m_commitsLoadedRef;
+    QString m_commitsLoadedTip;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
     // The banner floats over the top of the commit table on its own layer so
@@ -1233,6 +1243,9 @@ private:
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
     QString m_overviewPath;                 // current directory in the overview
+    // Signature (repo|path|branch|HEAD) of the overview currently rendered, so
+    // re-entering the repo screen unchanged skips the expensive git re-read.
+    QString m_overviewLoadedKey;
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
     QPushButton *m_historyButton = nullptr;
@@ -1252,8 +1265,8 @@ private:
     };
     QList<OverviewRow> m_overviewRows;
     qint64 m_overviewRepoBytes = 0; // whole-repo blob total (size-bar denominator)
-    QComboBox *m_overviewSortCombo = nullptr;
-    QPushButton *m_overviewSortDirButton = nullptr;
+    // Sorting is driven by clicking the overview table's column headers.
+    QString m_overviewSortKey = QStringLiteral("name");
     bool m_overviewSortDesc = false;
     void populateOverviewTree(); // (re)fill m_overviewList from m_overviewRows
     QTextBrowser *m_readmeView = nullptr;
@@ -1447,7 +1460,6 @@ private:
     QLabel *m_issueLabelsValue = nullptr;
     QLabel *m_issueMilestoneValue = nullptr;
     QLabel *m_issuePriorityValue = nullptr;
-    QLabel *m_issueProgressValue = nullptr;
     // Draggable progress bar on the detail panel (a ProgressSlider, kept as a
     // QWidget* since that type is private to MainWindow.cpp).
     QWidget *m_issueProgressSlider = nullptr;
