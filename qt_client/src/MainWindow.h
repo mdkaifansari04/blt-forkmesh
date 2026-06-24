@@ -303,6 +303,10 @@ private:
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
     QWidget *buildNotificationsSection();
+    // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
+    QWidget *buildLeaderboardsSection();
+    void refreshLeaderboards();
+    void populateLeaderboards(const QJsonObject &data);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     QWidget *buildRepoDetailSection();
@@ -564,6 +568,9 @@ private:
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
     void refreshRepoSettings(); // sync the Settings controls to the open repo
+    // Apply an edited source/fork URL to the open repo: persist it and repoint
+    // the bare mirror's origin remote so the next sync fetches from it.
+    void updateRepoSource();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
     void loadMirrorNodesPanel();
@@ -716,6 +723,14 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
+    // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
+    // other accounts and list current collaborators.
+    QUrl sharesApiUrl(const RepositoryRecord &repo) const;
+    void shareRepoRequest(const RepositoryRecord &repo, const QString &grantee,
+                          const QString &action);
+    void addRepoCollaborator(const QString &nameRaw);
+    void removeRepoCollaborator(const QString &nameRaw);
+    void refreshRepoCollaborators();
     // Pop up a modal with a Solana QR + address so a funder can pay a bounty,
     // showing the exact SOL to send and polling for the deposit like the signup
     // flow. On confirmation the worker splits the escrow 90% author / 10%
@@ -991,6 +1006,9 @@ private:
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
+    QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
+    QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
+    QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
@@ -1306,6 +1324,18 @@ private:
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
     QCheckBox *m_repoPrivateCheck = nullptr;
+    // Collaborators panel for a private repo (issue #9): shown only when this
+    // node owns a published private repo. m_collabSection wraps the whole block
+    // so it can be hidden in one call.
+    QWidget *m_collabSection = nullptr;
+    QListWidget *m_collabList = nullptr;
+    QLineEdit *m_collabEdit = nullptr;
+    QLabel *m_collabEmptyHint = nullptr;
+    // Per-repo source/fork location: the upstream clone URL this mirror was
+    // forked from. Editable so a user can repoint the mirror at a live node
+    // when the original baked-in URL goes stale (offline node id, moved relay).
+    QLineEdit *m_repoSourceEdit = nullptr;
+    QLabel *m_repoSourceHint = nullptr;
     // Agent sessions assigned from issues.
     AgentStore *m_agentStore = nullptr;
     // Pool of agent runners so sessions execute in parallel (one process each)

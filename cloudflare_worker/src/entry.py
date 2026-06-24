@@ -73,6 +73,9 @@ REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
 # and split it 90/10 to the PR author + treasury when the issue's PR merges.
 REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
+# Private-repo collaborator ACL (issue #9): owner-signed grant/revoke/list of the
+# accounts a private repo is shared with.
+REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
@@ -482,12 +485,23 @@ async def touch_host_presence(env, repo_bi):
     # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
     # connects and, throttled, while it serves traffic.
     await ensure_schema(env)
+    now = int(Date.now())
     await d1_run(
         env,
         "INSERT INTO host_presence (repo_bi, ts) VALUES (?, ?) "
         "ON CONFLICT(repo_bi) DO UPDATE SET ts=excluded.ts",
-        repo_bi, int(Date.now()),
+        repo_bi, now,
     )
+    # Stamp the first time this repo was ever hosted (for the "longest hosted"
+    # leaderboard). INSERT OR IGNORE keeps the earliest timestamp forever.
+    try:
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO repo_first_hosted (repo_bi, ts) VALUES (?, ?)",
+            repo_bi, now,
+        )
+    except Exception:
+        pass
 
 
 async def _flagship_client_count(env):
@@ -789,13 +803,75 @@ async def online_history(env):
 
 
 # --- Leaderboards (/network/) ----------------------------------------------
-# Public ranking boards. Only metrics with persisted backing data are computed
-# here: node uptime (from the hourly online samples) and public-repo count per
-# owner (from the catalog). Other boards from issue #11 — most-mirrored /
-# longest-hosted repos, contributor activity, and funds received — need new
-# data collection first and are intentionally left out until that exists.
+# Public ranking boards backing issue #11. Each board has a persisted data
+# source: node uptime (online_hourly_nodes), public repos per owner + most-
+# mirrored project + longest-hosted repo (repositories / repo_first_hosted),
+# contributor activity (contributor_activity, tallied as issues/PRs/commits are
+# submitted), and funds received (funds_received, accumulated as donations are
+# swept and bounties paid out).
 
 LEADERBOARD_LIMIT = 10  # rows returned per board
+
+
+async def _record_contributor(env, author, kind):
+    # Bump a contributor's running activity tally. kind is one of
+    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
+    # accepted into the inbox; best-effort so a tally failure never blocks the
+    # submission. author is the public contributor name.
+    name = clean_string(author or "", MAX_NODE_NAME)
+    if not name or kind not in ("issues", "pulls", "commits"):
+        return
+    try:
+        author_bi = await blind_index(env, name.lower())
+        await d1_run(
+            env,
+            f"""INSERT INTO contributor_activity
+                  (author_bi, name, {kind}, total, last_ts)
+                VALUES (?, ?, 1, 1, ?)
+                ON CONFLICT(author_bi) DO UPDATE SET
+                  {kind} = {kind} + 1, total = total + 1,
+                  name = excluded.name, last_ts = excluded.last_ts""",
+            author_bi, name, int(Date.now()),
+        )
+    except Exception:
+        pass
+
+
+async def _record_funds_received(env, scope, key, name, lamports):
+    # Accumulate disbursed lamports per recipient for the funds-received boards.
+    # Best-effort: never let a bookkeeping failure abort a money transfer.
+    if not key or int(lamports or 0) <= 0:
+        return
+    try:
+        await d1_run(
+            env,
+            """INSERT INTO funds_received (scope, key, name, lamports, last_ts)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(scope, key) DO UPDATE SET
+                 lamports = lamports + excluded.lamports,
+                 name = COALESCE(excluded.name, funds_received.name),
+                 last_ts = excluded.last_ts""",
+            scope, key, name or None, int(lamports), int(Date.now()),
+        )
+    except Exception:
+        pass
+
+
+async def _record_bounty_payout(env, rec, transfers):
+    # After a bounty escrow is split, credit the payee (contributor) and the
+    # owner/repo the bounty belonged to (project) with the payee's share. The
+    # treasury cut is intentionally not recorded.
+    treasury = _treasury_address(env)
+    payee = rec.get("payee", "")
+    owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
+    repo = clean_string(rec.get("repo", ""), 120)
+    for addr, lamports in transfers:
+        if addr == treasury or addr != payee:
+            continue
+        await _record_funds_received(env, "contributor", addr, "", lamports)
+        if owner and repo:
+            await _record_funds_received(
+                env, "project", owner + "/" + repo, owner + "/" + repo, lamports)
 
 
 async def network_leaderboards(env):
@@ -831,11 +907,19 @@ async def network_leaderboards(env):
     ]
     uptime_board.sort(key=lambda n: (-n["minutes"], n["name"]))
 
-    # --- Repos: public repositories per owner (same filtering as the catalog:
-    # public only, blocked identities excluded).
+    # --- Repos / mirrors / longest-hosted: one pass over the public catalog
+    # (public only, blocked identities excluded). counts -> repos-per-owner;
+    # mirror_owners -> distinct owners hosting a repo of a given name (a repo
+    # mirrored by many nodes shows up under many owners); first-hosted timestamps
+    # come from repo_first_hosted joined on key_bi.
+    first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
+    first_hosted = {str(r.get("repo_bi")): int(r.get("ts") or 0)
+                    for r in first_rows if r.get("repo_bi")}
     repo_rows = await d1_all(
-        env, "SELECT data FROM repositories WHERE is_private = 0")
+        env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
     counts = {}
+    mirror_owners = {}
+    hosted_board = []
     for row in repo_rows:
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
@@ -843,21 +927,130 @@ async def network_leaderboards(env):
         if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
             continue
         owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
+        name = clean_string(rec.get("name", ""), 120)
         if not owner:
             continue
         counts[owner] = counts.get(owner, 0) + 1
+        if name:
+            mirror_owners.setdefault(name, set()).add(owner.lower())
+            ts = first_hosted.get(str(row.get("key_bi")))
+            if ts:
+                hosted_board.append(
+                    {"name": owner + "/" + name, "since": ts,
+                     "ageMs": max(0, now - ts)})
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
     repo_board.sort(key=lambda n: (-n["repos"], n["name"]))
+
+    # --- Most mirrored: repo names hosted under more than one owner.
+    mirror_board = [{"name": nm, "mirrors": len(owners)}
+                    for nm, owners in mirror_owners.items() if len(owners) > 1]
+    mirror_board.sort(key=lambda n: (-n["mirrors"], n["name"]))
+
+    # --- Longest hosted: oldest first-hosted timestamp wins.
+    hosted_board.sort(key=lambda n: (-n["ageMs"], n["name"]))
+
+    # --- Contributor activity: cumulative issues + PRs + commits per author.
+    contrib_rows = await d1_all(
+        env,
+        "SELECT name, issues, pulls, commits, total FROM contributor_activity "
+        "WHERE total > 0 ORDER BY total DESC LIMIT ?",
+        LEADERBOARD_LIMIT,
+    )
+    contrib_board = [
+        {"name": clean_string(r.get("name", ""), MAX_NODE_NAME) or "contributor",
+         "total": int(r.get("total") or 0),
+         "issues": int(r.get("issues") or 0),
+         "pulls": int(r.get("pulls") or 0),
+         "commits": int(r.get("commits") or 0)}
+        for r in contrib_rows if int(r.get("total") or 0) > 0
+    ]
+
+    # --- Funds received: separate boards for mainnodes, contributors, projects.
+    # Recipients of node/contributor payouts are stored by wallet; resolve a
+    # friendly node name where we can, else show a shortened address.
+    funds = await _funds_received_boards(env)
 
     resp = json_response(
         {"ok": True,
          "windowHours": ONLINE_HISTORY_RETAIN_MS // 3600000,
          "uptime": uptime_board[:LEADERBOARD_LIMIT],
-         "repos": repo_board[:LEADERBOARD_LIMIT]},
+         "repos": repo_board[:LEADERBOARD_LIMIT],
+         "mirrors": mirror_board[:LEADERBOARD_LIMIT],
+         "hosted": hosted_board[:LEADERBOARD_LIMIT],
+         "contributors": contrib_board,
+         "fundsMainnodes": funds["mainnode"][:LEADERBOARD_LIMIT],
+         "fundsContributors": funds["contributor"][:LEADERBOARD_LIMIT],
+         "fundsProjects": funds["project"][:LEADERBOARD_LIMIT]},
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(NETWORK_LEADERBOARDS_CACHE_KEY, resp)
     return resp
+
+
+def _short_wallet(addr):
+    addr = (addr or "").strip()
+    if len(addr) <= 10:
+        return addr or "node"
+    return addr[:4] + "…" + addr[-4:]
+
+
+async def _wallet_name_map(env):
+    # Build wallet -> friendly node name from local accounts and federated
+    # presence, so funds-received boards can label payout wallets. Best-effort.
+    mapping = {}
+    try:
+        rows = await d1_all(env, "SELECT name, data FROM accounts")
+        for row in rows:
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec:
+                continue
+            wallet = (rec.get("solana") or "").strip()
+            if not wallet:
+                continue
+            name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+            if name:
+                mapping.setdefault(wallet, name)
+    except Exception:
+        pass
+    try:
+        fed = await d1_all(env, "SELECT wallet, name FROM federated_presence")
+        for row in fed:
+            wallet = (row.get("wallet") or "").strip()
+            name = clean_string(row.get("name", ""), MAX_NODE_NAME)
+            if wallet and name:
+                mapping.setdefault(wallet, name)
+    except Exception:
+        pass
+    return mapping
+
+
+async def _funds_received_boards(env):
+    out = {"mainnode": [], "contributor": [], "project": []}
+    try:
+        rows = await d1_all(
+            env, "SELECT scope, key, name, lamports FROM funds_received "
+                 "WHERE lamports > 0")
+    except Exception:
+        return out
+    wallet_names = None
+    for row in rows:
+        scope = row.get("scope")
+        if scope not in out:
+            continue
+        lamports = int(row.get("lamports") or 0)
+        if lamports <= 0:
+            continue
+        key = row.get("key") or ""
+        name = clean_string(row.get("name") or "", 120)
+        if scope in ("mainnode", "contributor") and not name:
+            if wallet_names is None:
+                wallet_names = await _wallet_name_map(env)
+            name = wallet_names.get(key) or _short_wallet(key)
+        out[scope].append({"name": name or _short_wallet(key),
+                           "lamports": lamports, "sol": _amount_sol(lamports)})
+    for scope in out:
+        out[scope].sort(key=lambda n: (-n["lamports"], n["name"]))
+    return out
 
 
 async def install_source(env):
@@ -1121,6 +1314,17 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # Per-repo collaborator ACL (issue #9): which grantee accounts an owner has
+    # shared a private repo with. repo_bi = blind_index("<owner>/<repo>") (the
+    # same key as repositories.key_bi); grantee_bi = blind_index(grantee account
+    # name). `data` is the encrypted {grantee, owner, repo, ts} so the owner's UI
+    # can list grantee names back. A grantee with a row here additionally sees the
+    # repo in their authenticated catalog and may clone it with THEIR OWN key.
+    """CREATE TABLE IF NOT EXISTS repo_shares (
+        repo_bi TEXT NOT NULL, grantee_bi TEXT NOT NULL,
+        data TEXT NOT NULL, ts INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, grantee_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_shares_grantee ON repo_shares(grantee_bi)",
     # Catalog write throttle: last write time per owner (blind index). Plaintext
     # timestamp only — no user content.
     "CREATE TABLE IF NOT EXISTS catalog_rate (owner_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
@@ -1221,6 +1425,31 @@ SCHEMA_STATEMENTS = [
     # encrypted row holding the auto-generated Ed25519 keypair used to sign
     # relay->main calls. id is always 1.
     "CREATE TABLE IF NOT EXISTS relay_self (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
+    # --- Leaderboard backing data (issue #11) -------------------------------
+    # First time each repo's tunnel was ever seen live, so the "longest hosted"
+    # board can rank by age. repo_bi is the same blind index host_presence uses
+    # (== repositories.key_bi for published repos); written once and never
+    # updated, so it survives the host going offline and coming back.
+    "CREATE TABLE IF NOT EXISTS repo_first_hosted (repo_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
+    # Cumulative contributor activity for the "contributor activity" board. Keyed
+    # by a blind index of the (public) author name; the plaintext display name is
+    # kept alongside since issue/PR authorship is already public. The inbox tables
+    # get drained on merge, so the running tally lives here instead.
+    """CREATE TABLE IF NOT EXISTS contributor_activity (
+        author_bi TEXT PRIMARY KEY, name TEXT NOT NULL,
+        issues INTEGER NOT NULL DEFAULT 0, pulls INTEGER NOT NULL DEFAULT 0,
+        commits INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+        last_ts INTEGER)""",
+    "CREATE INDEX IF NOT EXISTS idx_contributor_activity_total ON contributor_activity(total)",
+    # Cumulative funds (lamports) actually disbursed to each recipient, for the
+    # "funds received" boards. scope is 'mainnode' (donation-sweep node split),
+    # 'contributor' (bounty payee), or 'project' (the owner/repo a paid bounty
+    # belonged to). key is the recipient's Solana address (mainnode/contributor)
+    # or "owner/repo" (project). Treasury transfers are never recorded here.
+    """CREATE TABLE IF NOT EXISTS funds_received (
+        scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
+        PRIMARY KEY (scope, key))""",
 ]
 
 
@@ -1476,16 +1705,18 @@ async def catalog_handler(env, request):
             await purge_blocked_catalog(env)
         except Exception:
             pass
-        # Public repos are listed for everyone; an authenticated owner additionally
-        # gets the private repos they own (matched by blind index, so no other
-        # owner's private repos are ever returned).
+        # Public repos are listed for everyone; an authenticated viewer additionally
+        # gets the private repos they own (matched by blind index) AND any private
+        # repo another owner has shared with them (issue #9, via the repo_shares
+        # ACL). No other owner's un-shared private repos are ever returned.
         if authed_viewer:
             viewer_bi = await blind_index(env, authed_viewer)
             rows = await d1_all(
                 env,
                 "SELECT key_bi, data FROM repositories "
-                "WHERE is_private = 0 OR owner_bi = ?",
-                viewer_bi)
+                "WHERE is_private = 0 OR owner_bi = ? OR key_bi IN "
+                "(SELECT repo_bi FROM repo_shares WHERE grantee_bi = ?)",
+                viewer_bi, viewer_bi)
         else:
             rows = await d1_all(
                 env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
@@ -1510,6 +1741,13 @@ async def catalog_handler(env, request):
                 # Plaintext flag so clients can badge private repos without
                 # re-deriving it from the visibility string.
                 rec["isPrivate"] = rec.get("visibility") == "private"
+                # A private repo surfaced to a viewer who is NOT its owner can only
+                # be here because it was shared with them (issue #9). The client
+                # badges it and clones it with the grantee view token, not the
+                # owner one.
+                rec["sharedWithMe"] = bool(
+                    authed_viewer and rec["isPrivate"]
+                    and rec.get("owner") != authed_viewer)
                 repos.append(rec)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
@@ -1720,6 +1958,46 @@ async def verify_catalog_view_token(env, viewer, ts, sig):
     return ""
 
 
+async def _repo_shared_with(env, owner, repo, grantee):
+    # True when the owner has shared `owner/repo` with the `grantee` account
+    # (issue #9). repo_bi is keyed the same way as repositories.key_bi so it joins
+    # a private repo to its collaborator rows. Best-effort: any error => not shared
+    # (fail closed; a transient DB hiccup must never grant access it shouldn't).
+    if not owner or not repo or not grantee:
+        return False
+    try:
+        await ensure_schema(env)
+        repo_bi = await blind_index(env, owner + "/" + repo)
+        grantee_bi = await blind_index(env, grantee)
+        row = await d1_first(
+            env,
+            "SELECT 1 AS one FROM repo_shares WHERE repo_bi=? AND grantee_bi=?",
+            repo_bi, grantee_bi)
+        return bool(row)
+    except Exception:
+        return False
+
+
+async def verify_share_view_token(env, viewer, owner, repo, ts, sig):
+    # Read gate for a private repo shared with a DIFFERENT account (issue #9). The
+    # grantee signs with their OWN key — the owner never hands out its key — and
+    # access is granted only while the owner keeps an active repo_shares row for
+    # them. Distinct canonical prefix so an owner forkmesh-view-v1 token, a host
+    # token, or a catalog-listing token can never be replayed here, and vice versa.
+    if not viewer or not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    if viewer == owner:
+        return False  # the owner authenticates via verify_view_token, not here
+    pubkey = await _owner_pubkey(env, viewer)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-share-view-v1\n" + viewer + "\n" + owner + "\n" +
+                 repo + "\n" + str(ts)).encode()
+    if not await ed25519_verify(pubkey, sig, canonical):
+        return False
+    return await _repo_shared_with(env, owner, repo, viewer)
+
+
 async def _repo_is_private(env, owner, repo):
     # Plaintext is_private flag for owner/repo. A missing catalog row means the
     # repo was never published (e.g. an ad-hoc host) and stays public, preserving
@@ -1736,8 +2014,11 @@ async def _repo_is_private(env, owner, repo):
 
 
 async def _basic_auth_view_ok(env, owner, repo, request):
-    # Git smart-HTTP carries the view token in HTTP Basic auth (username=owner,
-    # password="<ts>.<sig>"), which git supplies from the clone URL or a helper.
+    # Git smart-HTTP carries the view token in HTTP Basic auth (password=
+    # "<ts>.<sig>"), which git supplies from the clone URL or a credential helper.
+    # The username selects whose key signed the token: the owner itself
+    # (forkmesh-view-v1) or a collaborator the repo was shared with, who signs
+    # with their OWN key (forkmesh-share-view-v1, issue #9).
     header = request.headers.get("authorization") or ""
     if not header.lower().startswith("basic "):
         return False
@@ -1745,10 +2026,12 @@ async def _basic_auth_view_ok(env, owner, repo, request):
         decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
     except Exception:
         return False
-    _, _, password = decoded.partition(":")
+    username, _, password = decoded.partition(":")
     ts, _, sig = password.partition(".")
     if not ts or not sig:
         return False
+    if username and username != owner:
+        return await verify_share_view_token(env, username, owner, repo, ts, sig)
     return await verify_view_token(env, owner, repo, ts, sig)
 
 
@@ -2734,6 +3017,11 @@ async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
     rec["donation_sweep_transfers"] = [
         {"address": addr, "lamports": lamports} for addr, lamports in transfers
     ]
+    # Credit each online node its share for the "funds received · mainnodes"
+    # board (the treasury cut is not a leaderboard recipient).
+    for addr, lamports in transfers:
+        if addr != treasury:
+            await _record_funds_received(env, "mainnode", addr, "", lamports)
     rec.pop("donation_sweep_error", None)
     rec.pop("donation_sweep_checked_at", None)
     return True
@@ -2839,6 +3127,7 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
     rec["payout_transfers"] = [
         {"address": a, "lamports": l} for a, l in transfers]
     await _save_bounty(env, bounty_bi, rec)
+    await _record_bounty_payout(env, rec, transfers)
     return rec
 
 
@@ -3028,9 +3317,106 @@ async def bounties_handler(env, request, owner, repo):
         rec["payout_transfers"] = [
             {"address": a, "lamports": l} for a, l in transfers]
         await _save_bounty(env, bounty_bi, rec)
+        await _record_bounty_payout(env, rec, transfers)
         return json_response(_bounty_public(rec))
 
     return json_response({"error": "bad_action"}, status=400)
+
+
+# Cap on collaborators per repo, so one owner can't fill the table with shares.
+MAX_REPO_GRANTEES = 100
+
+
+async def shares_handler(env, request, owner, repo):
+    # Private-repo collaborator ACL (issue #9). Every operation is authorized by
+    # the OWNER account's key — only the owner may grant/revoke/list who a private
+    # repo is shared with. A grantee then sees the repo in their authenticated
+    # catalog and clones it with their own key (verify_share_view_token); none of
+    # that is gated here, only the membership list is.
+    await ensure_schema(env)
+    method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    owner_pub = await _owner_pubkey(env, owner)
+    if not owner_pub:
+        return json_response({"error": "account_required"}, status=403)
+
+    if method == "GET":
+        # List current grantees for the owner's Collaborators UI. Owner-signed so
+        # the membership of a private repo isn't world-readable.
+        params = parse_qs(urlparse(request.url).query)
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        canonical = ("forkmesh-shares-list-v1\n" + owner + "\n" + repo + "\n" +
+                     str(ts)).encode()
+        if not (_ts_ok(ts) and await ed25519_verify(owner_pub, sig, canonical)):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env, "SELECT data FROM repo_shares WHERE repo_bi=? ORDER BY ts ASC",
+            repo_bi)
+        grantees = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec and rec.get("grantee"):
+                grantees.append(rec["grantee"])
+        return json_response({"ok": True, "grantees": grantees})
+
+    if method in ("POST", "DELETE"):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        # DELETE is accepted as an alias for action=remove so the verb can carry
+        # intent even when a client can't easily attach a body to a DELETE.
+        action = "remove" if method == "DELETE" else \
+            (clean_string(data.get("action", "add"), 12) or "add")
+        if action not in ("add", "remove"):
+            return json_response({"error": "bad_action"}, status=400)
+        grantee = clean_string(data.get("grantee", ""), MAX_NODE_NAME).lower()
+        ts = clean_string(str(data.get("ts", "")), 20)
+        sig = clean_string(data.get("sig", ""), 200)
+        if not grantee:
+            return json_response({"error": "grantee_required"}, status=400)
+        if grantee == owner:
+            return json_response({"error": "cannot_share_with_self"}, status=400)
+        # The action is bound into the signature so an "add" token can never be
+        # replayed as a "remove" (or vice versa).
+        canonical = ("forkmesh-share-v1\n" + owner + "\n" + repo + "\n" +
+                     grantee + "\n" + action + "\n" + str(ts)).encode()
+        if not (_ts_ok(ts) and await ed25519_verify(owner_pub, sig, canonical)):
+            return json_response({"error": "unauthorized"}, status=401)
+        grantee_bi = await blind_index(env, grantee)
+
+        if action == "remove":
+            await d1_run(
+                env, "DELETE FROM repo_shares WHERE repo_bi=? AND grantee_bi=?",
+                repo_bi, grantee_bi)
+            return json_response({"ok": True, "grantee": grantee, "shared": False})
+
+        # add: the grantee must be a real account (so a token signed by their key
+        # can ever verify), and the per-repo cap must not be exceeded.
+        if not await _owner_pubkey(env, grantee):
+            return json_response({"error": "unknown_account"}, status=404)
+        existing = await d1_first(
+            env, "SELECT 1 AS one FROM repo_shares WHERE repo_bi=? AND grantee_bi=?",
+            repo_bi, grantee_bi)
+        if not existing:
+            count_row = await d1_first(
+                env, "SELECT COUNT(*) AS n FROM repo_shares WHERE repo_bi=?",
+                repo_bi)
+            if count_row and int(count_row.get("n") or 0) >= MAX_REPO_GRANTEES:
+                return json_response({"error": "too_many_grantees"}, status=429)
+        now = int(Date.now())
+        enc = await encrypt_row(
+            env, {"grantee": grantee, "owner": owner, "repo": repo, "ts": now})
+        await d1_run(
+            env,
+            "INSERT INTO repo_shares (repo_bi, grantee_bi, data, ts) "
+            "VALUES (?,?,?,?) ON CONFLICT(repo_bi, grantee_bi) DO UPDATE SET "
+            "data=excluded.data, ts=excluded.ts",
+            repo_bi, grantee_bi, enc, now)
+        return json_response({"ok": True, "grantee": grantee, "shared": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
 
 
 # --- Admins + manual email verification -------------------------------------
@@ -3753,6 +4139,7 @@ async def issues_handler(env, request, owner, repo):
             "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
+        await _record_contributor(env, event.get("author", ""), "issues")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -3817,6 +4204,7 @@ async def pulls_handler(env, request, owner, repo):
                 "VALUES (?,?,?)",
                 repo_bi, await encrypt_row(env, item), submitter_bi,
             )
+            await _record_contributor(env, event.get("author", ""), "pulls")
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -3845,6 +4233,7 @@ async def pulls_handler(env, request, owner, repo):
             "INSERT INTO pull_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
+        await _record_contributor(env, pull.get("author", ""), "pulls")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -3903,6 +4292,7 @@ async def commits_handler(env, request, owner, repo):
             "INSERT INTO commit_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
+        await _record_contributor(env, comment.get("author", ""), "commits")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -4973,6 +5363,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await bounties_handler(self.env, request, owner, repo)
 
+        shares_match = REPO_SHARES_RE.match(url.path)
+        if shares_match:
+            owner = safe_segment(shares_match.group(1))
+            repo = safe_segment(shares_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await shares_handler(self.env, request, owner, repo)
+
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
             owner = safe_segment(host_match.group(1))
@@ -4990,14 +5388,23 @@ class Default(WorkerEntrypoint):
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
             elif host_match.group(3) in ("tree", "blob", "commits", "commit"):
-                # Browsing a private repo's files/commits needs the same owner view
-                # token used for clone, here as ?ts=&sig= (the host-token query
-                # shape). Public repos remain open to browse.
+                # Browsing a private repo's files/commits needs a view token as
+                # ?ts=&sig= (the host-token query shape): the owner's own
+                # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
+                # repo was shared with — that grantee's (forkmesh-share-view-v1,
+                # issue #9). Public repos remain open to browse.
                 if await _repo_is_private(self.env, owner, repo):
                     params = parse_qs(url.query)
                     ts = params.get("ts", [""])[0]
                     sig = params.get("sig", [""])[0]
-                    if not await verify_view_token(self.env, owner, repo, ts, sig):
+                    viewer = safe_segment(params.get("viewer", [""])[0])
+                    if viewer and viewer != owner:
+                        ok = await verify_share_view_token(
+                            self.env, viewer, owner, repo, ts, sig)
+                    else:
+                        ok = await verify_view_token(
+                            self.env, owner, repo, ts, sig)
+                    if not ok:
                         return json_response({"error": "unauthorized"}, status=401)
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
