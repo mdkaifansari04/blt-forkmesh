@@ -569,6 +569,15 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover { background: #484f58; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+QScrollBar:horizontal {
+    background: transparent; height: 10px; margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #30363d; border-radius: 5px; min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover { background: #484f58; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
 
 /* Draggable splitter handles — a clear, grabbable grip ridge that lights up
    on hover/drag. Edges are transparent so it blends with any panel color. */
@@ -858,6 +867,27 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     background-color: #161b22;
     border: none;
     border-bottom: 1px solid #30363d;
+}
+#actionWorkflowList {
+    background-color: #0d1117;
+    alternate-background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+}
+#actionWorkflowList::item {
+    border-radius: 6px;
+    color: #c9d1d9;
+    padding: 7px 10px;
+}
+#actionWorkflowList::item:hover {
+    background-color: #161b22;
+    color: #e6edf3;
+}
+#actionWorkflowList::item:selected {
+    background-color: #238636;
+    color: #ffffff;
 }
 #codeEditor {
     background-color: #0d1117;
@@ -1453,6 +1483,15 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover { background: #afb8c1; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+QScrollBar:horizontal {
+    background: transparent; height: 10px; margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #d0d7de; border-radius: 5px; min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover { background: #afb8c1; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
 
 /* Draggable splitter handles — a clear, grabbable grip ridge that lights up
    on hover/drag. Edges are transparent so it blends with any panel color. */
@@ -1743,6 +1782,27 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     background-color: #ffffff;
     border: none;
     border-bottom: 1px solid #d0d7de;
+}
+#actionWorkflowList {
+    background-color: #ffffff;
+    alternate-background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+}
+#actionWorkflowList::item {
+    border-radius: 6px;
+    color: #1f2328;
+    padding: 7px 10px;
+}
+#actionWorkflowList::item:hover {
+    background-color: #f6f8fa;
+    color: #1f2328;
+}
+#actionWorkflowList::item:selected {
+    background-color: #1f883d;
+    color: #ffffff;
 }
 #codeEditor {
     background-color: #ffffff;
