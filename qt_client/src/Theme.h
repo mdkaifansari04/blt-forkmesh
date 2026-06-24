@@ -570,6 +570,25 @@ QScrollBar::handle:vertical:hover { background: #484f58; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 
+/* Draggable splitter handles — a clear, grabbable grip ridge that lights up
+   on hover/drag. Edges are transparent so it blends with any panel color. */
+QSplitter::handle:horizontal {
+    width: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.30 transparent,
+        stop:0.34 #30363d, stop:0.5 #6e7681, stop:0.66 #30363d,
+        stop:0.70 transparent, stop:1 transparent);
+}
+QSplitter::handle:vertical {
+    height: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 transparent, stop:0.30 transparent,
+        stop:0.34 #30363d, stop:0.5 #6e7681, stop:0.66 #30363d,
+        stop:0.70 transparent, stop:1 transparent);
+}
+QSplitter::handle:horizontal:hover, QSplitter::handle:vertical:hover { background: #1f6feb; }
+QSplitter::handle:pressed { background: #58a6ff; }
+
 QMessageBox, QInputDialog, QDialog { background-color: #161b22; }
 
 /* --- ForkMesh updated non-Home polish overrides --- */
@@ -1434,6 +1453,25 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover { background: #afb8c1; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+
+/* Draggable splitter handles — a clear, grabbable grip ridge that lights up
+   on hover/drag. Edges are transparent so it blends with any panel color. */
+QSplitter::handle:horizontal {
+    width: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.30 transparent,
+        stop:0.34 #d0d7de, stop:0.5 #8c959f, stop:0.66 #d0d7de,
+        stop:0.70 transparent, stop:1 transparent);
+}
+QSplitter::handle:vertical {
+    height: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 transparent, stop:0.30 transparent,
+        stop:0.34 #d0d7de, stop:0.5 #8c959f, stop:0.66 #d0d7de,
+        stop:0.70 transparent, stop:1 transparent);
+}
+QSplitter::handle:horizontal:hover, QSplitter::handle:vertical:hover { background: #0969da; }
+QSplitter::handle:pressed { background: #0969da; }
 
 QMessageBox, QInputDialog, QDialog { background-color: #ffffff; }
 
