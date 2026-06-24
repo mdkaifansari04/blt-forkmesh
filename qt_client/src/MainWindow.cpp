@@ -10128,10 +10128,12 @@ QWidget *MainWindow::buildPullsTab()
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
+    m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullCloseButton, m_pullDeleteButton, m_pullLinkIssueButton,
+                           m_pullCloseButton, m_pullDeleteButton,
+                           m_pullDeleteBranchButton, m_pullLinkIssueButton,
                            m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
@@ -10162,6 +10164,9 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
+    setOcticon(m_pullDeleteBranchButton, "trash", 16);
+    m_pullDeleteBranchButton->setToolTip(
+        "Permanently delete this pull request and its head branch");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullResolveButton->setToolTip(
         "Open a merge editor to resolve this pull request's conflicts and commit");
@@ -10178,6 +10183,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullDeleteBranchButton, 0, Qt::AlignTop);
     m_pullMeta = new QLabel;
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
@@ -10473,6 +10479,8 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
+    connect(m_pullDeleteBranchButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentPullAndBranch);
     return page;
 }
 
@@ -11294,6 +11302,8 @@ void MainWindow::updatePullActionState()
         m_pullCloseButton->setEnabled(writable && have && open);
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
+    if (m_pullDeleteBranchButton)
+        m_pullDeleteBranchButton->setEnabled(writable && have);
 }
 
 void MainWindow::promptNewPull()
@@ -11589,6 +11599,14 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     } else {
         RepositoryRecord targetRepo = currentRepo;
         targetRepo.owner = targetOwner;
+        // Cross-node submission: label the head with this node's name so the
+        // owner can tell which mirror node the PR came from (two nodes may both
+        // submit from "main"). The owner merges from the carried patch/commits,
+        // never by resolving head, so "<node>:<branch>" is purely informational
+        // on their side. Prefix before signing so the signature covers the label.
+        const QString nodeName = accountNameFromInput(m_userName, QString());
+        if (!nodeName.isEmpty() && !pr.head.contains(QLatin1Char(':')))
+            pr.head = nodeName + QLatin1Char(':') + pr.head;
         submitPullToInbox(store.makeSignedPull(pr), targetRepo);
     }
 }
@@ -12420,6 +12438,75 @@ void MainWindow::deleteCurrentPull()
         return;
     }
     m_currentPullNumber = -1;
+    reloadPulls();
+}
+
+// Delete the pull request and the local head branch it was opened from, in one
+// confirmed step. The branch only exists on the node that authored the PR, so
+// removing it is best-effort: a PR imported from another node (no local branch)
+// still deletes cleanly.
+void MainWindow::deleteCurrentPullAndBranch()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    // Resolve the PR's head branch before anything is removed.
+    QString head, base;
+    for (const PullRequest &p : std::as_const(m_currentPulls)) {
+        if (p.number == m_currentPullNumber) {
+            head = p.head;
+            base = p.base;
+            break;
+        }
+    }
+    // Never touch the base branch (or the branch currently checked out): only a
+    // distinct feature branch is a safe target.
+    const bool haveBranch =
+        !head.isEmpty() && head != base && head != currentRef();
+
+    const QString prompt =
+        haveBranch
+            ? QStringLiteral("Permanently delete pull request #%1 and its branch "
+                             "\"%2\"? This cannot be undone.")
+                  .arg(m_currentPullNumber)
+                  .arg(head)
+            : QStringLiteral("Permanently delete pull request #%1? This cannot be "
+                             "undone.")
+                  .arg(m_currentPullNumber);
+    if (QMessageBox::warning(this, "Delete pull request", prompt,
+                             QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
+        return;
+
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.deletePull(m_currentPullNumber, &error)) {
+        QMessageBox::warning(this, "Delete pull request",
+                             error.isEmpty() ? "Could not delete the pull request."
+                                             : error);
+        return;
+    }
+    const int deleted = m_currentPullNumber;
+    m_currentPullNumber = -1;
+
+    // Best-effort branch removal; -D force-deletes since the user confirmed and
+    // the PR carrying the work is gone. A missing branch is not an error here.
+    if (haveBranch && repoHasWorkingTree()) {
+        const QString dir = repoGitDir();
+        QString branchErr;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"branch", "-D", head}, nullptr, &branchErr)) {
+            logSystem(QStringLiteral("Git: deleted branch %1 for PR #%2.")
+                          .arg(head)
+                          .arg(deleted));
+            loadBranchesAndTags();
+        } else if (!branchErr.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Deleted PR #%1, but its branch could not be "
+                               "removed: %2")
+                    .arg(deleted)
+                    .arg(branchErr.trimmed()),
+                true);
+        }
+    }
     reloadPulls();
 }
 
