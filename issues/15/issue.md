@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 15
 title: Federation & routing
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 5
