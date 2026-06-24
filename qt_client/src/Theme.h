@@ -413,6 +413,13 @@ QPushButton#memberDeleteButton:hover {
 }
 #globalSearchPopup::item { color: #c9d1d9; padding: 6px 8px; border-radius: 6px; }
 #globalSearchPopup::item:selected { background-color: #1f6feb; color: #ffffff; }
+#searchResultsTitle { font-size: 18px; color: #e6edf3; }
+#searchResultsTree {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 4px; outline: none;
+}
+#searchResultsTree::item { padding: 4px 6px; color: #c9d1d9; }
+#searchResultsTree::item:selected { background-color: #1f6feb; color: #ffffff; }
 #issueTable {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
     gridline-color: #21262d;
@@ -1127,6 +1134,13 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 }
 #globalSearchPopup::item { color: #1f2328; padding: 6px 8px; border-radius: 6px; }
 #globalSearchPopup::item:selected { background-color: #0969da; color: #ffffff; }
+#searchResultsTitle { font-size: 18px; color: #1f2328; }
+#searchResultsTree {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
+    padding: 4px; outline: none;
+}
+#searchResultsTree::item { padding: 4px 6px; color: #1f2328; }
+#searchResultsTree::item:selected { background-color: #0969da; color: #ffffff; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */

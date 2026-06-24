@@ -60,6 +60,8 @@ class QTextBrowser;
 class QTextEdit;
 class QTimer;
 class QTreeWidget;
+class QTreeWidgetItem;
+class QProcess;
 class QVBoxLayout;
 class QHBoxLayout;
 
@@ -356,6 +358,7 @@ private:
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     void showCommitList();                // back to the commits list
+    void openMostRecentCommit();          // select newest commit + expand its diff
     // Remove a commit from the browsed branch's history (source-of-truth only),
     // replaying its descendants onto its parent. Rewrites local history.
     void deleteCommit(const QString &hash);
@@ -421,6 +424,17 @@ private:
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
+    // Shared modal merge-conflict editor (used by the PR and branch merge flows).
+    // Returns true if the user committed the resolution, false if they cancelled.
+    bool runMergeConflictEditor(const QString &title, const QString &introHtml,
+                                const QString &workTree,
+                                const QStringList &conflictedFiles,
+                                const QString &commitButtonText,
+                                const std::function<bool(QString *)> &commitFn);
+    // Auto-resolve this PR's conflicts with a low-cost model (Claude/OpenAI) and
+    // commit the fix to the PR's own branch (no new PR). The work is surfaced as a
+    // live agent session so the user can watch it. provider is "claude" | "openai".
+    void fixCurrentPullConflictsWithAi(const QString &provider);
     void editCurrentPullFile();         // edit the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
     // After a merge, mint the escrow deposit address and show the funding QR for
@@ -670,6 +684,14 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // Full-page deep search opened by pressing Enter in the search box.
+    QWidget *buildSearchResultsSection();
+    void openSearchResultsPage(const QString &query);
+    void startSearchProcess(const QString &dir, const QStringList &gitArgs,
+                            QTreeWidgetItem *bucket, int cat);
+    void onSearchResultActivated(QTreeWidgetItem *item, int column);
+    void stopSearch();
+    void updateSearchStatus();
     void loadCommits();
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
@@ -1394,6 +1416,15 @@ private:
     QLineEdit *m_globalSearch = nullptr;
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
+    // Full-page deep search (Enter in the box): streams working-tree text
+    // matches, commit-message matches and history-diff (pickaxe) hits live.
+    QTreeWidget *m_searchResultsTree = nullptr;
+    QLabel *m_searchResultsTitle = nullptr;
+    QLabel *m_searchResultsStatus = nullptr;
+    QPushButton *m_searchResultsStop = nullptr;
+    QList<QProcess *> m_searchProcs; // running git searches (killed by Stop)
+    int m_searchPending = 0;         // how many of those are still running
+    QString m_searchPageQuery;
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
     // The unsynced banner sits in the list page's layout above the table; it
     // fades out (collapsing its row) when every commit has synced.
@@ -1521,6 +1552,8 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
+    QPushButton *m_pullFixClaudeButton = nullptr; // AI-resolve conflicts via Claude
+    QPushButton *m_pullFixOpenAiButton = nullptr; // AI-resolve conflicts via OpenAI
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
@@ -1631,6 +1664,32 @@ private:
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
     int m_selectedAgentSessionId = -1;
+
+    // In-flight AI conflict resolution (see fixCurrentPullConflictsWithAi). The
+    // PullStore carries the git-am session state across the async API calls, so it
+    // must outlive each network reply; the struct is null when nothing is running.
+    struct AiConflictFix {
+        PullStore *store = nullptr;
+        int number = 0;       // PR number
+        int repoIndex = -1;
+        int sessionId = 0;    // backing agent session
+        QString provider;     // "claude" | "openai"
+        QString model;
+        QString apiKey;
+        QString workTree;
+        QStringList files;    // conflicted paths, repo-relative
+        int index = 0;        // next file to resolve
+        double costUsd = 0.0;
+        qint64 inTokens = 0;
+        qint64 outTokens = 0;
+    };
+    AiConflictFix *m_aiFix = nullptr;
+    void aiFixResolveNextFile();           // send the next conflicted file to the model
+    void aiFixApplyResolved(const QString &resolved); // write back + advance
+    void aiFixFinish();                    // commit to branch, mark session success
+    void aiFixFail(const QString &message); // abort the merge, mark session failed
+    void aiFixLog(const QString &text);    // stream a line into the agent session log
+    void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     QLabel *m_agentTitle = nullptr;

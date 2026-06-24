@@ -5856,6 +5856,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: log section built"));
     m_sectionStack->addWidget(buildLeaderboardsSection()); // 5 Leaderboards
     logStartup(QStringLiteral("  buildChatPage: leaderboards section built"));
+    m_sectionStack->addWidget(buildSearchResultsSection()); // 6 Search results
+    logStartup(QStringLiteral("  buildChatPage: search section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -10139,7 +10141,6 @@ QWidget *MainWindow::buildRepoDetailSection()
             // click usually rebuilds an identical 300-row table (4 git
             // subprocesses + per-row widgets). Skip that when nothing changed.
             if (commitsListIsCurrent()) {
-                showCommitList();
                 // The commit list may be current, but the working tree can still
                 // have moved (an agent staged/edited files) — always rescan the
                 // changes panel so it's fresh the moment the tab is opened.
@@ -10147,6 +10148,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             } else {
                 loadCommits();
             }
+            // Land on the newest commit's change view rather than an empty list.
+            openMostRecentCommit();
         }
         else if (id == 3) {
             // Load pulls first so the agents list can show each session's PR
@@ -12070,6 +12073,8 @@ QWidget *MainWindow::buildPullsTab()
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
+    m_pullFixClaudeButton = new QPushButton("Fix with Claude");
+    m_pullFixOpenAiButton = new QPushButton("Fix with OpenAI");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
@@ -12077,6 +12082,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
+                           m_pullFixClaudeButton, m_pullFixOpenAiButton,
                            m_pullEditFileButton, m_pullCloseButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullLinkIssueButton,
                            m_pullSplitButton}) {
@@ -12119,6 +12125,22 @@ QWidget *MainWindow::buildPullsTab()
     m_pullResolveButton->hide(); // only shown when the PR has conflicts
     connect(m_pullResolveButton, &QPushButton::clicked, this,
             &MainWindow::resolveCurrentPullConflicts);
+    // One-click AI conflict resolution: a low-cost model rewrites the conflicting
+    // files and the fix is committed straight to the PR's branch (no new PR).
+    setOcticon(m_pullFixClaudeButton, "rocket", 16);
+    setOcticon(m_pullFixOpenAiButton, "rocket", 16);
+    m_pullFixClaudeButton->setToolTip(
+        "Let Claude (low-cost model) resolve these conflicts and commit the fix to "
+        "this pull request's branch \xE2\x80\x94 watch it run on the Agents tab");
+    m_pullFixOpenAiButton->setToolTip(
+        "Let OpenAI (low-cost model) resolve these conflicts and commit the fix to "
+        "this pull request's branch \xE2\x80\x94 watch it run on the Agents tab");
+    m_pullFixClaudeButton->hide(); // only shown when the PR has conflicts
+    m_pullFixOpenAiButton->hide();
+    connect(m_pullFixClaudeButton, &QPushButton::clicked, this,
+            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
+    connect(m_pullFixOpenAiButton, &QPushButton::clicked, this,
+            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("openai")); });
     setOcticon(m_pullEditFileButton, "pencil", 16);
     m_pullEditFileButton->setToolTip(
         "Edit the selected file and commit the change to this pull request's "
@@ -12131,6 +12153,8 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullFixClaudeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullFixOpenAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
@@ -13295,10 +13319,33 @@ void MainWindow::updatePullActionState()
                                  "branch, then merge.")
                 : QStringLiteral("Apply and merge this pull request"));
     }
+    const bool conflicted = mergeable && !mergeClean;
+    // A running AI fix holds the working tree in a git-am session for this PR, so
+    // every conflict action stays disabled until it lands or aborts.
+    const bool aiFixBusy = m_aiFix && m_aiFix->number == m_currentPullNumber;
     if (m_pullResolveButton) {
-        const bool conflicted = mergeable && !mergeClean;
         m_pullResolveButton->setVisible(conflicted);
-        m_pullResolveButton->setEnabled(conflicted);
+        m_pullResolveButton->setEnabled(conflicted && !aiFixBusy);
+    }
+    if (m_pullFixClaudeButton || m_pullFixOpenAiButton) {
+        const bool haveClaudeKey =
+            !QSettings().value(kClaudeApiKeySetting).toString().trimmed().isEmpty();
+        const bool haveOpenAiKey =
+            !QSettings().value(kCodexApiKeySetting).toString().trimmed().isEmpty();
+        if (m_pullFixClaudeButton) {
+            m_pullFixClaudeButton->setVisible(conflicted);
+            m_pullFixClaudeButton->setEnabled(conflicted && !aiFixBusy && haveClaudeKey);
+            if (conflicted && !haveClaudeKey)
+                m_pullFixClaudeButton->setToolTip(
+                    "Add a Claude API key in Settings to auto-resolve conflicts.");
+        }
+        if (m_pullFixOpenAiButton) {
+            m_pullFixOpenAiButton->setVisible(conflicted);
+            m_pullFixOpenAiButton->setEnabled(conflicted && !aiFixBusy && haveOpenAiKey);
+            if (conflicted && !haveOpenAiKey)
+                m_pullFixOpenAiButton->setToolTip(
+                    "Add an OpenAI API key in Settings to auto-resolve conflicts.");
+        }
     }
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
@@ -13670,67 +13717,22 @@ void MainWindow::mergeCurrentPull()
     propagateRepoUpdate(m_repoDetailIndex);
 }
 
-void MainWindow::resolveCurrentPullConflicts()
+// Modal merge-conflict editor shared by the pull-request and branch merge flows.
+// Lists the conflicted files, lets the reviewer accept ours/theirs/both per
+// region or edit freely, and enables Commit only once every marker is gone.
+// Files are read from / written to workTree. Returns true if the user committed
+// (commitFn succeeded); false if they cancelled — the caller owns starting the
+// merge and, on a false return, aborting it.
+bool MainWindow::runMergeConflictEditor(
+    const QString &title, const QString &introHtml, const QString &workTree,
+    const QStringList &conflictedFiles, const QString &commitButtonText,
+    const std::function<bool(QString *)> &commitFn)
 {
-    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
-        m_repoDetailIndex >= m_repositories.size())
-        return;
-    PullRequest current;
-    bool found = false;
-    for (const PullRequest &pr : std::as_const(m_currentPulls))
-        if (pr.number == m_currentPullNumber) {
-            current = pr;
-            found = true;
-            break;
-        }
-    if (!found)
-        return;
-    const int number = m_currentPullNumber;
-    const QString workTree =
-        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
-    if (workTree.isEmpty()) {
-        QMessageBox::warning(this, "Resolve conflicts",
-                             "This repository is read-only on this node.");
-        return;
-    }
-
-    // Shared tail run after the fix lands on the PR's branch. The PR stays open
-    // and becomes cleanly mergeable; issue-closing and bounty payout happen only
-    // on the later, explicit Merge (see mergeCurrentPull). The refreshed PR is
-    // propagated so peers/the contributor see the conflict-resolved version.
-    const auto finalizeResolved = [this, current] {
-        logSystem(QStringLiteral("Resolved conflicts on pull request #%1's branch; "
-                                 "it is updated and ready to merge.")
-                      .arg(current.number));
-        reloadPulls();
-        propagateRepoUpdate(m_repoDetailIndex);
-    };
-
-    PullStore store = pullStoreForCurrentRepo();
-    QStringList conflicted;
-    bool resolvedClean = false;
-    QString error;
-    if (!store.startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
-        QMessageBox::warning(this, "Resolve conflicts", error);
-        return;
-    }
-    if (resolvedClean) {
-        // Applied with no markers to edit — the fix is already committed on the
-        // PR's branch; just finalize.
-        finalizeResolved();
-        return;
-    }
-
-    // ---- Merge editor dialog ------------------------------------------------
     QDialog dlg(this);
-    dlg.setWindowTitle(QString::fromUtf8("Resolve conflicts \xE2\x80\x94 pull #%1").arg(number));
+    dlg.setWindowTitle(title);
     dlg.resize(960, 640);
 
-    auto *intro = new QLabel(QStringLiteral(
-        "Resolve each conflict, then commit the fix to the pull request's branch. "
-        "<b>Ours</b> is your base branch; <b>theirs</b> is the pull request. You "
-        "can also edit the text directly. The pull request stays open and becomes "
-        "ready to merge \xE2\x80\x94 your base branch is left untouched."));
+    auto *intro = new QLabel(introHtml);
     intro->setObjectName("statusLine");
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
@@ -13755,8 +13757,8 @@ void MainWindow::resolveCurrentPullConflicts()
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
-    oursBtn->setToolTip("Keep your base branch's version of this conflict");
-    theirsBtn->setToolTip("Take the pull request's version of this conflict");
+    oursBtn->setToolTip("Keep our version of this conflict");
+    theirsBtn->setToolTip("Take their version of this conflict");
     bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
@@ -13767,7 +13769,7 @@ void MainWindow::resolveCurrentPullConflicts()
     toolbar->addWidget(prevBtn);
     toolbar->addWidget(nextBtn);
 
-    auto *commitBtn = new QPushButton(QStringLiteral("Commit to branch"));
+    auto *commitBtn = new QPushButton(commitButtonText);
     commitBtn->setObjectName("primaryButton");
     commitBtn->setCursor(Qt::PointingHandCursor);
     auto *cancelBtn = new QPushButton(QStringLiteral("Cancel"));
@@ -13835,7 +13837,7 @@ void MainWindow::resolveCurrentPullConflicts()
                                   : QStringLiteral("Resolve every conflict first"));
     };
 
-    for (const QString &rel : std::as_const(conflicted)) {
+    for (const QString &rel : conflictedFiles) {
         auto *it = new QListWidgetItem(rel);
         it->setData(Qt::UserRole, rel);
         fileList->addItem(it);
@@ -13927,14 +13929,16 @@ void MainWindow::resolveCurrentPullConflicts()
     connect(nextBtn, &QPushButton::clicked, &dlg, [=] { jump(1); });
     connect(prevBtn, &QPushButton::clicked, &dlg, [=] { jump(-1); });
 
-    // Cancel / close → abort the in-progress merge and restore the tree.
     connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
     bool committed = false;
     connect(commitBtn, &QPushButton::clicked, &dlg, [&] {
         saveCurrent();
         QString err;
-        if (!store.finishConflictMerge(number, &err)) {
-            QMessageBox::warning(&dlg, "Resolve conflicts", err);
+        if (!commitFn(&err)) {
+            QMessageBox::warning(&dlg, title,
+                                 err.isEmpty()
+                                     ? QStringLiteral("Could not commit the merge.")
+                                     : err);
             refreshStatus();
             return;
         }
@@ -13945,8 +13949,71 @@ void MainWindow::resolveCurrentPullConflicts()
     if (fileList->count() > 0)
         fileList->setCurrentRow(0);
     refreshStatus();
-
     dlg.exec();
+    return committed;
+}
+
+void MainWindow::resolveCurrentPullConflicts()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    PullRequest current;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber) {
+            current = pr;
+            found = true;
+            break;
+        }
+    if (!found)
+        return;
+    const int number = m_currentPullNumber;
+    const QString workTree =
+        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    if (workTree.isEmpty()) {
+        QMessageBox::warning(this, "Resolve conflicts",
+                             "This repository is read-only on this node.");
+        return;
+    }
+
+    // Shared tail run after the fix lands on the PR's branch. The PR stays open
+    // and becomes cleanly mergeable; issue-closing and bounty payout happen only
+    // on the later, explicit Merge (see mergeCurrentPull). The refreshed PR is
+    // propagated so peers/the contributor see the conflict-resolved version.
+    const auto finalizeResolved = [this, current] {
+        logSystem(QStringLiteral("Resolved conflicts on pull request #%1's branch; "
+                                 "it is updated and ready to merge.")
+                      .arg(current.number));
+        reloadPulls();
+        propagateRepoUpdate(m_repoDetailIndex);
+    };
+
+    PullStore store = pullStoreForCurrentRepo();
+    QStringList conflicted;
+    bool resolvedClean = false;
+    QString error;
+    if (!store.startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
+        QMessageBox::warning(this, "Resolve conflicts", error);
+        return;
+    }
+    if (resolvedClean) {
+        // Applied with no markers to edit — the fix is already committed on the
+        // PR's branch; just finalize.
+        finalizeResolved();
+        return;
+    }
+
+    // Hand off to the shared merge editor; commit = finish the PR-branch merge.
+    const QString intro = QStringLiteral(
+        "Resolve each conflict, then commit the fix to the pull request's branch. "
+        "<b>Ours</b> is your base branch; <b>theirs</b> is the pull request. You "
+        "can also edit the text directly. The pull request stays open and becomes "
+        "ready to merge \xE2\x80\x94 your base branch is left untouched.");
+    const bool committed = runMergeConflictEditor(
+        QString::fromUtf8("Resolve conflicts \xE2\x80\x94 pull #%1").arg(number),
+        intro, workTree, conflicted, QStringLiteral("Commit to branch"),
+        [&store, number](QString *err) { return store.finishConflictMerge(number, err); });
     if (committed) {
         finalizeResolved();
     } else {
@@ -19157,6 +19224,7 @@ enum GlobalSearchKind {
     GsBranch,     // branch name (str1) in the open repo
     GsFile,       // path (str1) in the open repo
     GsCommit,     // full hash (str1) in the open repo
+    GsDeepSearch, // open the streaming full-search page for the typed query
 };
 } // namespace
 
@@ -19223,6 +19291,8 @@ void MainWindow::rebuildGlobalSearchResults()
         return;
     }
     m_globalSearchPopup->clear();
+    // Original-case text drives the deep-search row and the results page.
+    const QString query = m_globalSearch->text().trimmed();
 
     int total = 0;
     constexpr int kMaxTotal = 80;
@@ -19253,6 +19323,13 @@ void MainWindow::rebuildGlobalSearchResults()
         ++total;
         return true;
     };
+
+    // Always-first row: run the full, streaming search over files, commit
+    // messages and the diff history (this is what Enter triggers).
+    addResult("search", QColor("#58a6ff"),
+              QString::fromUtf8("Search files, commits & history for \xE2\x80\x9C%1\xE2\x80\x9D")
+                  .arg(query),
+              GsDeepSearch, query, QString(), 0);
 
     // --- Sections / "go to" -------------------------------------------------
     struct Sec { const char *label; const char *icon; int index; };
@@ -19500,6 +19577,9 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
     };
 
     switch (kind) {
+    case GsDeepSearch:
+        openSearchResultsPage(s1); // s1 holds the (pre-clear) query text
+        break;
     case GsSection:
         showSection(num);
         break;
@@ -19539,10 +19619,374 @@ void MainWindow::hideGlobalSearchPopup()
         m_globalSearchPopup->hide();
 }
 
+namespace {
+// Result-tree payload roles for the deep-search page.
+constexpr int kSrKindRole = Qt::UserRole;     // SrBucket | SrFile | SrCommit
+constexpr int kSrPathRole = Qt::UserRole + 1; // file path or commit hash
+constexpr int kSrBaseRole = Qt::UserRole + 2; // a bucket's base title (for its count)
+constexpr int kSrLineRole = Qt::UserRole + 3; // file match's line number
+enum { SrBucket = 0, SrFile = 1, SrCommit = 2 };
+enum SearchCat { ScFile = 0, ScMessage, ScHistory };
+} // namespace
+
+// Amber-highlight every (case-insensitive) occurrence of `term` in a text
+// document, returning selections either editor type can apply. Used to mark the
+// spot a search result matched once its file or diff is opened.
+static QList<QTextEdit::ExtraSelection> termSelections(QTextDocument *doc,
+                                                       const QString &term)
+{
+    QList<QTextEdit::ExtraSelection> sels;
+    if (!doc || term.isEmpty())
+        return sels;
+    QTextCharFormat fmt;
+    fmt.setBackground(QColor("#e3b341"));
+    fmt.setForeground(QColor("#0d1117"));
+    QTextCursor c = doc->find(term, 0);
+    while (!c.isNull()) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = c;
+        sel.format = fmt;
+        sels.append(sel);
+        if (sels.size() >= 5000)
+            break; // safety cap on pathological match counts
+        c = doc->find(term, c);
+    }
+    return sels;
+}
+
+QWidget *MainWindow::buildSearchResultsSection()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 12, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setSpacing(8);
+    auto *back = new QPushButton(QStringLiteral("Back"));
+    back->setObjectName("ghostButton");
+    back->setCursor(Qt::PointingHandCursor);
+    setOcticon(back, "arrow-left", 16);
+    connect(back, &QPushButton::clicked, this, [this] { showSection(0); });
+    m_searchResultsTitle = new QLabel;
+    m_searchResultsTitle->setObjectName("searchResultsTitle");
+    m_searchResultsTitle->setTextFormat(Qt::RichText);
+    m_searchResultsStop = new QPushButton(QStringLiteral("Stop"));
+    m_searchResultsStop->setObjectName("ghostButton");
+    m_searchResultsStop->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_searchResultsStop, "x", 14);
+    m_searchResultsStop->hide();
+    connect(m_searchResultsStop, &QPushButton::clicked, this, [this] { stopSearch(); });
+    headerRow->addWidget(back);
+    headerRow->addWidget(m_searchResultsTitle, 1);
+    headerRow->addWidget(m_searchResultsStop);
+    layout->addLayout(headerRow);
+
+    m_searchResultsStatus = new QLabel;
+    m_searchResultsStatus->setObjectName("navCaption");
+    layout->addWidget(m_searchResultsStatus);
+
+    m_searchResultsTree = new QTreeWidget;
+    m_searchResultsTree->setObjectName("searchResultsTree");
+    m_searchResultsTree->setHeaderHidden(true);
+    m_searchResultsTree->setColumnCount(1);
+    m_searchResultsTree->setUniformRowHeights(true);
+    m_searchResultsTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_searchResultsTree->setExpandsOnDoubleClick(false);
+    m_searchResultsTree->setCursor(Qt::PointingHandCursor);
+    connect(m_searchResultsTree, &QTreeWidget::itemClicked, this,
+            &MainWindow::onSearchResultActivated);
+    layout->addWidget(m_searchResultsTree, 1);
+    return page;
+}
+
+void MainWindow::openSearchResultsPage(const QString &query)
+{
+    const QString q = query.trimmed();
+    if (q.isEmpty())
+        return;
+    m_searchPageQuery = q;
+    showSection(6);
+    if (m_searchResultsTitle)
+        m_searchResultsTitle->setText(
+            QString::fromUtf8("<b>Results for \xE2\x80\x9C%1\xE2\x80\x9D</b>")
+                .arg(q.toHtmlEscaped()));
+
+    stopSearch(); // cancel any run still in flight
+    if (m_searchResultsTree)
+        m_searchResultsTree->clear();
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        if (m_searchResultsStatus)
+            m_searchResultsStatus->setText(
+                QStringLiteral("Open a repository to search its files and history."));
+        return;
+    }
+    const QString ref = currentRef();
+
+    auto makeBucket = [this](const QString &base, const QString &icon) {
+        auto *b = new QTreeWidgetItem(m_searchResultsTree);
+        b->setData(0, kSrKindRole, SrBucket);
+        b->setData(0, kSrBaseRole, base);
+        b->setIcon(0, themedOcticon(icon, QColor("#8b949e"), 15));
+        QFont f = b->font(0);
+        f.setBold(true);
+        b->setFont(0, f);
+        b->setText(0, base + QString::fromUtf8(" \xE2\x80\x94 0"));
+        b->setExpanded(true);
+        return b;
+    };
+    QTreeWidgetItem *fileBucket =
+        makeBucket(QStringLiteral("Files (current tree)"), "file");
+    QTreeWidgetItem *msgBucket =
+        makeBucket(QStringLiteral("Commit messages"), "git-branch");
+    QTreeWidgetItem *histBucket = makeBucket(
+        QString::fromUtf8("History \xE2\x80\x94 diffs that touched it"),
+        "git-pull-request");
+
+    m_searchPending = 0;
+    // 1) File text in the current tree (literal, case-insensitive).
+    startSearchProcess(dir, {"grep", "-n", "-I", "-i", "-F", "-e", q, ref},
+                       fileBucket, ScFile);
+    // 2) Commit messages.
+    startSearchProcess(dir,
+                       {"log", "-i", "--fixed-strings", "--grep=" + q,
+                        "--format=%H%x1f%h%x1f%ar%x1f%s", ref},
+                       msgBucket, ScMessage);
+    // 3) Anywhere in history a diff added or removed a line containing it (git's
+    //    "pickaxe"). The literal is escaped into a regex for -G.
+    startSearchProcess(dir,
+                       {"log", "-i", "-G" + QRegularExpression::escape(q),
+                        "--format=%H%x1f%h%x1f%ar%x1f%s", ref},
+                       histBucket, ScHistory);
+    updateSearchStatus();
+}
+
+void MainWindow::startSearchProcess(const QString &dir, const QStringList &gitArgs,
+                                    QTreeWidgetItem *bucket, int cat)
+{
+    if (!bucket)
+        return;
+    auto *process = new QProcess(this);
+    process->setWorkingDirectory(dir);
+    process->setProcessChannelMode(QProcess::SeparateChannels);
+    auto buffer = std::make_shared<QByteArray>();
+    const QString ref = currentRef();
+
+    // Turn one finished output line into a child row under the bucket.
+    auto addLine = [this, bucket, cat, ref, process](const QByteArray &raw) {
+        if (bucket->childCount() >= 500) { // cap the live list; stop this search
+            process->kill();
+            return;
+        }
+        const QString line = QString::fromUtf8(raw);
+        if (line.trimmed().isEmpty())
+            return;
+        if (cat == ScFile) {
+            // git grep against a tree: "<ref>:<path>:<lineno>:<text>".
+            QString rest = line;
+            const QString prefix = ref + QLatin1Char(':');
+            if (rest.startsWith(prefix))
+                rest = rest.mid(prefix.size());
+            const int c1 = rest.indexOf(QLatin1Char(':'));
+            const int c2 = c1 < 0 ? -1 : rest.indexOf(QLatin1Char(':'), c1 + 1);
+            if (c1 < 0 || c2 < 0)
+                return;
+            const QString path = rest.left(c1);
+            const QString lineNo = rest.mid(c1 + 1, c2 - c1 - 1);
+            const QString text = rest.mid(c2 + 1).trimmed();
+            auto *child = new QTreeWidgetItem(bucket);
+            child->setData(0, kSrKindRole, SrFile);
+            child->setData(0, kSrPathRole, path);
+            child->setData(0, kSrLineRole, lineNo.toInt());
+            const QString shown = text.length() > 160
+                                      ? text.left(157) + QString::fromUtf8("\xE2\x80\xA6")
+                                      : text;
+            child->setText(0, QStringLiteral("%1:%2  %3").arg(path, lineNo, shown));
+            child->setToolTip(0, QStringLiteral("%1:%2").arg(path, lineNo));
+        } else {
+            // git log --format: "<H>\x1f<h>\x1f<ar>\x1f<s>".
+            const QStringList f = line.split(QChar(0x1f));
+            if (f.size() < 4)
+                return;
+            auto *child = new QTreeWidgetItem(bucket);
+            child->setData(0, kSrKindRole, SrCommit);
+            child->setData(0, kSrPathRole, f.at(0));
+            child->setText(0, QString::fromUtf8("%1  %2  \xC2\xB7  %3")
+                                  .arg(f.at(1), f.at(3), f.at(2)));
+            child->setToolTip(0, f.at(3));
+        }
+        // Live count in the bucket header.
+        bucket->setText(0, bucket->data(0, kSrBaseRole).toString() +
+                               QString::fromUtf8(" \xE2\x80\x94 %1")
+                                   .arg(bucket->childCount()));
+    };
+
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process, buffer, addLine] {
+                buffer->append(process->readAllStandardOutput());
+                int nl;
+                while ((nl = buffer->indexOf('\n')) >= 0) {
+                    addLine(buffer->left(nl));
+                    buffer->remove(0, nl + 1);
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, buffer, addLine](int, QProcess::ExitStatus) {
+                if (!buffer->isEmpty())
+                    addLine(*buffer); // trailing line with no newline
+                m_searchProcs.removeOne(process);
+                process->deleteLater();
+                if (m_searchPending > 0)
+                    --m_searchPending;
+                updateSearchStatus();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process](QProcess::ProcessError err) {
+                if (err != QProcess::FailedToStart)
+                    return; // a crash still emits finished(); let that path clean up
+                m_searchProcs.removeOne(process);
+                process->deleteLater();
+                if (m_searchPending > 0)
+                    --m_searchPending;
+                updateSearchStatus();
+            });
+
+    m_searchProcs.append(process);
+    ++m_searchPending;
+    process->start(QStringLiteral("git"), gitArgs);
+}
+
+void MainWindow::onSearchResultActivated(QTreeWidgetItem *item, int)
+{
+    if (!item)
+        return;
+    const int kind = item->data(0, kSrKindRole).toInt();
+    if (kind == SrBucket) {
+        item->setExpanded(!item->isExpanded()); // click a header to fold / unfold
+        return;
+    }
+    const QString payload = item->data(0, kSrPathRole).toString();
+    const bool repoOpen =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    if (!repoOpen || payload.isEmpty())
+        return;
+    showSection(0);
+    const QString term = m_searchPageQuery;
+    if (kind == SrFile) {
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        openRepoFile(payload);
+        const int line = item->data(0, kSrLineRole).toInt();
+        // Defer so the editor tab is laid out before we scroll to the line.
+        QTimer::singleShot(0, this, [this, payload, line, term] {
+            auto *edit = qobject_cast<QPlainTextEdit *>(m_openFileTabs.value(payload));
+            if (!edit)
+                return;
+            QList<QTextEdit::ExtraSelection> sels =
+                termSelections(edit->document(), term);
+            // Emphasise the whole matched line beneath the term highlights.
+            QTextCursor lc(edit->document());
+            lc.movePosition(QTextCursor::Start);
+            if (line > 1)
+                lc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, line - 1);
+            QTextEdit::ExtraSelection lineSel;
+            lineSel.cursor = lc;
+            lineSel.format.setBackground(QColor(31, 111, 235, 60));
+            lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
+            sels.prepend(lineSel);
+            edit->setExtraSelections(sels);
+            edit->setTextCursor(lc);
+            edit->centerCursor();
+            edit->setFocus();
+        });
+    } else if (kind == SrCommit) {
+        if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+            m_repoDetailTabs->button(1)->click();
+        showCommit(payload);
+        // Highlight every occurrence of the term in the rendered diff and scroll
+        // to the first, so the matched line/area is obvious.
+        QTimer::singleShot(0, this, [this, term] {
+            if (!m_commitDiffView)
+                return;
+            QList<QTextEdit::ExtraSelection> sels =
+                termSelections(m_commitDiffView->document(), term);
+            m_commitDiffView->setExtraSelections(sels);
+            if (!sels.isEmpty()) {
+                m_commitDiffView->setTextCursor(sels.first().cursor);
+                m_commitDiffView->ensureCursorVisible();
+            }
+        });
+    }
+}
+
+void MainWindow::stopSearch()
+{
+    for (QProcess *p : std::as_const(m_searchProcs)) {
+        if (!p)
+            continue;
+        disconnect(p, nullptr, this, nullptr); // silence callbacks before killing
+        p->kill();
+        p->deleteLater();
+    }
+    m_searchProcs.clear();
+    m_searchPending = 0;
+    updateSearchStatus();
+}
+
+void MainWindow::updateSearchStatus()
+{
+    if (m_searchResultsStop)
+        m_searchResultsStop->setVisible(m_searchPending > 0);
+    if (!m_searchResultsStatus)
+        return;
+    int hits = 0;
+    if (m_searchResultsTree)
+        for (int i = 0; i < m_searchResultsTree->topLevelItemCount(); ++i)
+            hits += m_searchResultsTree->topLevelItem(i)->childCount();
+    if (m_searchPending > 0)
+        m_searchResultsStatus->setText(
+            QString::fromUtf8(
+                "Searching\xE2\x80\xA6  %1 match%2 so far  \xC2\xB7  %3 still running")
+                .arg(hits)
+                .arg(hits == 1 ? QString() : QStringLiteral("es"))
+                .arg(m_searchPending));
+    else
+        m_searchResultsStatus->setText(
+            QString::fromUtf8("Done \xE2\x80\x94 %1 match%2")
+                .arg(hits)
+                .arg(hits == 1 ? QString() : QStringLiteral("es")));
+}
+
+
 void MainWindow::showCommitList()
 {
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(0);
+}
+
+// Select the newest commit (row 0 — the table sorts Date-descending) and open
+// its diff, so entering the Commits tab lands straight on the latest change set
+// instead of an unselected list. Falls back to the list view when empty.
+void MainWindow::openMostRecentCommit()
+{
+    if (!m_commitsTable || m_commitsTable->rowCount() == 0) {
+        showCommitList();
+        return;
+    }
+    QTableWidgetItem *item = m_commitsTable->item(0, kCommitSummaryCol);
+    if (!item) {
+        showCommitList();
+        return;
+    }
+    // Highlight row 0 without re-triggering showCommit via currentCellChanged;
+    // we call it explicitly below so the selection and the open stay in sync.
+    {
+        QSignalBlocker block(m_commitsTable);
+        m_commitsTable->setCurrentCell(0, kCommitSummaryCol);
+    }
+    showCommit(item->data(Qt::UserRole).toString());
 }
 
 // Drop a single commit from the browsed branch's history, replaying every later
@@ -22092,16 +22536,57 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     }
 
     if (!runGitCapture(dir, {"merge", "--no-edit", base}, nullptr, &err)) {
-        // Conflicts (or any failure) — abort so the tree is left clean, then
-        // restore the branch the user was actually on.
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        // The merge left conflict markers in the tree. Collect the unmerged
+        // files and open the merge editor so the user can resolve and commit
+        // them onto this branch (the same editor the PR flow uses).
+        QByteArray unmerged;
+        runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+                      nullptr);
+        const QStringList conflicted =
+            QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
+        if (conflicted.isEmpty()) {
+            // Failed for some other reason — abort and restore as before.
+            runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+            if (!isCurrent && !currentBranch.isEmpty())
+                runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+            setRepoDetailNotice(
+                QStringLiteral("Could not merge %1 into %2: %3")
+                    .arg(base, branch, err.left(200)),
+                true);
+            return;
+        }
+        const QString intro =
+            QString::fromUtf8(
+                "Resolve each conflict, then commit the merge into <b>%1</b>. "
+                "<b>Ours</b> is %1; <b>theirs</b> is %2. You can also edit the "
+                "text directly.")
+                .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
+        const bool committed = runMergeConflictEditor(
+            QString::fromUtf8("Resolve conflicts \xE2\x80\x94 %1").arg(branch),
+            intro, dir, conflicted, QStringLiteral("Commit merge"),
+            [this, dir](QString *e) {
+                return runGitCapture(dir, {"add", "-A"}, nullptr, e) &&
+                       runGitCapture(dir, {"commit", "--no-edit"}, nullptr, e);
+            });
+        if (!committed) {
+            runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+            if (!isCurrent && !currentBranch.isEmpty())
+                runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+            setRepoDetailNotice(
+                QStringLiteral("Cancelled the merge of %1 into %2; %2 was left "
+                               "unchanged.")
+                    .arg(base, branch));
+            return;
+        }
         if (!isCurrent && !currentBranch.isEmpty())
             runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
-        setRepoDetailNotice(
-            QStringLiteral("Merging %1 into %2 hit conflicts; %2 was left unchanged. "
-                           "Check out %2 and merge manually to resolve them.")
-                .arg(base, branch),
-            true);
+        logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
+                      .arg(base, branch));
+        setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+        const QString browsed = m_repoBranch;
+        loadBranchesAndTags();
+        if (!browsed.isEmpty() && repoBranches().contains(browsed))
+            setRepoBranch(browsed);
         return;
     }
 
