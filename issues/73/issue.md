@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 73
 title: have the ability to continue the session with the agent, currently it seems it gets stuck - also add the create a pr checkbox next to the quick add
-status: open
+status: closed
 labels: [bug]
 milestone: MVP launch
 priority: 11
