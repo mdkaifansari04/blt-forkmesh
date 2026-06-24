@@ -71,6 +71,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
+#include <QRadioButton>
+#include <QShortcut>
+#include <QTreeWidgetItem>
 #include <QtMath>
 #include <QPlainTextEdit>
 #include <QPropertyAnimation>
@@ -145,6 +148,12 @@ QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
 // Defined further down; forward-declared so earlier callers can summarise an
 // HTTP/API failure for a user-facing message.
 QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
+// OpenAI helpers, defined further down; forward-declared for the Source Control
+// panel's AI generation (commit message / X post).
+QNetworkRequest openAiRequest(const QUrl &url, const QString &apiKey);
+QString openAiResponseText(const QJsonObject &obj);
+double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens,
+                        qint64 *outTokens);
 // Action-run status helpers, defined near the Actions code but used earlier by
 // the pull request Checks tab.
 QString actionStatusText(const QString &status);
@@ -2840,6 +2849,19 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
     return true;
 }
 
+// Capture git's stdout regardless of exit code. Some diff commands exit non-zero
+// when differences exist (`diff --no-index` returns 1), which runGitCapture
+// treats as failure and discards the output we actually want.
+QByteArray gitCaptureStdout(const QString &dir, const QStringList &args)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    QString err;
+    if (!waitForGit(process, &err))
+        return QByteArray();
+    return process.readAllStandardOutput();
+}
+
 bool runGitCaptureWithEnv(const QString &dir, const QStringList &args,
                           const QProcessEnvironment &env, QByteArray *out,
                           QString *err)
@@ -3400,6 +3422,21 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     saveChatHistory();
     QMainWindow::closeEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    // Coming back to the window (e.g. after a background agent edited the working
+    // tree in a terminal): re-scan the changes panel and refresh the commit
+    // markers so they're current the moment the app regains focus. Only when the
+    // Commits tab is actually on screen — isVisible() is false for a stacked page
+    // that isn't current, so this is a no-op everywhere else.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow() &&
+        m_scmTree && m_scmTree->isVisible()) {
+        refreshSourceControl();
+        refreshCommitMarkersIfStale();
+    }
 }
 
 // ----------------------------------------------------------- chat persistence
@@ -8155,6 +8192,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "balance. This sends the address to the endpoint it connects to.");
     connect(m_profileBalanceButton, &QPushButton::clicked, this,
             &MainWindow::checkNodeBalance);
+    addRefreshSpin(m_profileBalanceButton);
     auto *balanceRow = new QHBoxLayout;
     balanceRow->setContentsMargins(0, 0, 0, 0);
     balanceRow->addWidget(m_profileBalance, 1);
@@ -9852,10 +9890,15 @@ QWidget *MainWindow::buildRepoDetailSection()
             // The repo's commits were already loaded when it opened, so a tab
             // click usually rebuilds an identical 300-row table (4 git
             // subprocesses + per-row widgets). Skip that when nothing changed.
-            if (commitsListIsCurrent())
+            if (commitsListIsCurrent()) {
                 showCommitList();
-            else
+                // The commit list may be current, but the working tree can still
+                // have moved (an agent staged/edited files) — always rescan the
+                // changes panel so it's fresh the moment the tab is opened.
+                refreshSourceControl();
+            } else {
                 loadCommits();
+            }
         }
         else if (id == 3) {
             // Load pulls first so the agents list can show each session's PR
@@ -9949,6 +9992,28 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QHash<QString, QString> &lineNotes = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
+} // namespace
+
+namespace {
+// Models offered for inline commit-message / X-post generation, with per-million
+// token pricing so the realised cost can be shown after each call.
+struct ScmAiModel {
+    const char *provider; // "claude" | "openai"
+    const char *id;
+    const char *label;
+    double inPerM;
+    double outPerM;
+    bool estimated; // pricing is approximate (OpenAI)
+};
+const ScmAiModel kScmAiModels[] = {
+    {"claude", "claude-opus-4-8", "Claude Opus 4.8", 5.0, 25.0, false},
+    {"claude", "claude-sonnet-4-6", "Claude Sonnet 4.6", 3.0, 15.0, false},
+    {"claude", "claude-haiku-4-5", "Claude Haiku 4.5", 1.0, 5.0, false},
+    {"openai", "gpt-4.1", "OpenAI GPT-4.1", 2.0, 8.0, true},
+    {"openai", "gpt-4.1-mini", "OpenAI GPT-4.1 mini", 0.40, 1.60, true},
+    {"openai", "gpt-4.1-nano", "OpenAI GPT-4.1 nano", 0.10, 0.40, true},
+};
+const int kScmAiModelCount = int(sizeof(kScmAiModels) / sizeof(kScmAiModels[0]));
 } // namespace
 
 QWidget *MainWindow::buildRepoCommitsTab()
@@ -10293,11 +10358,795 @@ QWidget *MainWindow::buildRepoCommitsTab()
     outerSplit->setStretchFactor(1, 1);
     outerSplit->setSizes({1000, 1000});
 
+    // New top panel: a VSCode-style Source Control view for the working tree
+    // (compose strip + changes tree + diff), sitting above the committed-history
+    // UI (list | diff) in a vertical split.
+    auto *scmPanel = buildSourceControlPanel();
+    auto *commitsVSplit = new QSplitter(Qt::Vertical);
+    commitsVSplit->setChildrenCollapsible(false);
+    commitsVSplit->addWidget(scmPanel);
+    commitsVSplit->addWidget(outerSplit);
+    commitsVSplit->setStretchFactor(0, 2);
+    commitsVSplit->setStretchFactor(1, 3);
+    commitsVSplit->setSizes({320, 520});
+
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(outerSplit);
+    layout->addWidget(commitsVSplit);
     return page;
+}
+
+// ---- Source Control panel (working-tree changes) ---------------------------
+
+// Human-readable name for a `git status --porcelain` status letter.
+static QString scmStatusTip(QChar status)
+{
+    switch (status.toLatin1()) {
+    case 'M': return QStringLiteral("Modified");
+    case 'A': return QStringLiteral("Added");
+    case 'D': return QStringLiteral("Deleted");
+    case 'R': return QStringLiteral("Renamed");
+    case 'C': return QStringLiteral("Copied");
+    case 'U': return QStringLiteral("Unmerged (conflict)");
+    case 'T': return QStringLiteral("Type changed");
+    case '?': return QStringLiteral("Untracked");
+    default: return QStringLiteral("Changed");
+    }
+}
+
+QWidget *MainWindow::buildSourceControlPanel()
+{
+    auto *panel = new QWidget;
+    auto *root = new QVBoxLayout(panel);
+    root->setContentsMargins(16, 10, 16, 6);
+    root->setSpacing(6);
+
+    // Single-line compose strip on top of the changes: the message field, inline
+    // AI generation (no popup), a live character count, and the stage/commit
+    // controls — all on one row.
+    m_scmMessage = new QLineEdit;
+    m_scmMessage->setObjectName("messageInput");
+    m_scmMessage->setClearButtonEnabled(true);
+    m_scmMessage->setPlaceholderText("Message (Ctrl+Enter to commit)");
+    auto *commitShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_scmMessage);
+    commitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(commitShortcut, &QShortcut::activated, this, &MainWindow::scmCommit);
+
+    m_scmGenerateButton = new QPushButton(QString::fromUtf8("\xE2\x9C\xA8 Generate"));
+    m_scmGenerateButton->setCursor(Qt::PointingHandCursor);
+    m_scmGenerateButton->setToolTip(
+        "Draft the message from the changes using Claude or OpenAI");
+    // A filled accent so the AI action clearly stands out from the ghost buttons.
+    m_scmGenerateButton->setStyleSheet(
+        "QPushButton{background:#8957e5;color:#ffffff;border:1px solid #8957e5;"
+        "border-radius:6px;padding:4px 12px;font-weight:600;}"
+        "QPushButton:hover{background:#9a6ff0;border-color:#9a6ff0;}"
+        "QPushButton:disabled{background:#6e6a86;border-color:#6e6a86;"
+        "color:#d9d9e3;}");
+    connect(m_scmGenerateButton, &QPushButton::clicked, this,
+            &MainWindow::generateScmMessage);
+
+    m_scmGenModel = new QComboBox;
+    for (int i = 0; i < kScmAiModelCount; ++i)
+        m_scmGenModel->addItem(QString::fromLatin1(kScmAiModels[i].label), i);
+    m_scmGenModel->setCurrentIndex(2); // Claude Haiku 4.5: cheap + fast for short text
+    m_scmGenModel->setToolTip("Model used to draft the message");
+
+    m_scmGenKind = new QComboBox;
+    m_scmGenKind->addItem("Commit message");
+    m_scmGenKind->addItem("X post");
+    m_scmGenKind->setToolTip("What to generate from the changes");
+
+    m_scmCopyButton = new QPushButton("Copy");
+    m_scmCopyButton->setToolTip("Copy the message to the clipboard");
+    setOcticon(m_scmCopyButton, "copy", 14);
+    connect(m_scmCopyButton, &QPushButton::clicked, this, [this] {
+        const QString text =
+            m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+        if (text.isEmpty()) {
+            if (m_scmGenStatus)
+                m_scmGenStatus->setText("Nothing to copy.");
+            return;
+        }
+        QApplication::clipboard()->setText(text);
+        if (m_scmGenStatus)
+            m_scmGenStatus->setText("Copied.");
+    });
+
+    // Live character count (and last generation cost). For an X post it shows the
+    // 280-char budget; otherwise a plain count.
+    m_scmGenStatus = new QLabel;
+    m_scmGenStatus->setObjectName("statusLine");
+    m_scmGenStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto updateCharCount = [this] {
+        if (!m_scmGenStatus || !m_scmMessage)
+            return;
+        const int n = m_scmMessage->text().size();
+        const bool tweet = m_scmGenKind && m_scmGenKind->currentIndex() == 1;
+        m_scmGenStatus->setText(tweet ? QStringLiteral("%1/280").arg(n)
+                                      : QStringLiteral("%1 chars").arg(n));
+    };
+    connect(m_scmMessage, &QLineEdit::textChanged, this, updateCharCount);
+    connect(m_scmGenKind, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [updateCharCount](int) { updateCharCount(); });
+    updateCharCount();
+
+    m_scmStageAllButton = new QPushButton("Stage all");
+    connect(m_scmStageAllButton, &QPushButton::clicked, this, &MainWindow::scmStageAll);
+    m_scmUnstageAllButton = new QPushButton("Unstage all");
+    connect(m_scmUnstageAllButton, &QPushButton::clicked, this, &MainWindow::scmUnstageAll);
+    m_scmDiscardAllButton = new QPushButton("Discard all");
+    connect(m_scmDiscardAllButton, &QPushButton::clicked, this, &MainWindow::scmDiscardAll);
+    m_scmCommitButton = new QPushButton("Commit");
+    m_scmCommitButton->setObjectName("primaryButton");
+    connect(m_scmCommitButton, &QPushButton::clicked, this, &MainWindow::scmCommit);
+    for (QPushButton *b : {m_scmCopyButton, m_scmStageAllButton,
+                           m_scmUnstageAllButton, m_scmDiscardAllButton,
+                           m_scmCommitButton}) {
+        if (b != m_scmCommitButton)
+            b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+
+    auto *composeRow = new QHBoxLayout;
+    composeRow->setContentsMargins(0, 0, 0, 0);
+    composeRow->setSpacing(6);
+    composeRow->addWidget(m_scmMessage, 1);
+    composeRow->addWidget(m_scmGenerateButton);
+    composeRow->addWidget(m_scmGenModel);
+    composeRow->addWidget(m_scmGenKind);
+    composeRow->addWidget(m_scmCopyButton);
+    composeRow->addWidget(m_scmGenStatus);
+    composeRow->addWidget(m_scmStageAllButton);
+    composeRow->addWidget(m_scmUnstageAllButton);
+    composeRow->addWidget(m_scmDiscardAllButton);
+    composeRow->addWidget(m_scmCommitButton);
+    root->addLayout(composeRow);
+
+    auto *header = new QHBoxLayout;
+    auto *title = new QLabel("CHANGES");
+    title->setObjectName("sectionLabel");
+    m_scmCountLabel = new QLabel;
+    m_scmCountLabel->setObjectName("statusLine");
+
+    // Up/down step through the changed files without touching the tree directly,
+    // so you can review each diff in turn from the keyboard or mouse.
+    m_scmPrevButton = new QPushButton;
+    m_scmPrevButton->setToolTip("Previous change");
+    setOcticon(m_scmPrevButton, "chevron-up", 14);
+    connect(m_scmPrevButton, &QPushButton::clicked, this,
+            [this] { scmSelectAdjacentChange(-1); });
+    m_scmNextButton = new QPushButton;
+    m_scmNextButton->setToolTip("Next change");
+    setOcticon(m_scmNextButton, "chevron-down", 14);
+    connect(m_scmNextButton, &QPushButton::clicked, this,
+            [this] { scmSelectAdjacentChange(1); });
+
+    m_scmRefreshButton = new QPushButton;
+    setOcticon(m_scmRefreshButton, "sync", 14);
+    m_scmRefreshButton->setToolTip("Rescan the working tree for changes");
+    connect(m_scmRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshSourceControl);
+    addRefreshSpin(m_scmRefreshButton);
+
+    for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+
+    header->addWidget(title);
+    header->addWidget(m_scmCountLabel);
+    header->addStretch();
+    header->addWidget(m_scmPrevButton);
+    header->addWidget(m_scmNextButton);
+    header->addWidget(m_scmRefreshButton);
+    root->addLayout(header);
+
+    m_scmTree = new QTreeWidget;
+    m_scmTree->setObjectName("fileTree");
+    m_scmTree->setColumnCount(2);
+    m_scmTree->setHeaderHidden(true);
+    m_scmTree->setMinimumWidth(220);
+    m_scmTree->setRootIsDecorated(true);
+    m_scmTree->header()->setStretchLastSection(false);
+    m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_scmTree->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    m_scmTree->setColumnWidth(1, 84);
+    connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
+                if (!item)
+                    return;
+                const QString path = item->data(0, Qt::UserRole).toString();
+                if (path.isEmpty())
+                    return; // group header
+                showScmDiff(path, item->data(0, Qt::UserRole + 1).toBool(),
+                            item->data(0, Qt::UserRole + 2).toBool());
+            });
+
+    m_scmDiff = new QTextBrowser;
+    m_scmDiff->setObjectName("diffView");
+    m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+
+    auto *bodySplit = new QSplitter(Qt::Horizontal);
+    bodySplit->setChildrenCollapsible(false);
+    bodySplit->addWidget(m_scmTree);
+    bodySplit->addWidget(m_scmDiff);
+    bodySplit->setStretchFactor(0, 0);
+    bodySplit->setStretchFactor(1, 1);
+    bodySplit->setSizes({260, 520});
+    root->addWidget(bodySplit, 1);
+
+    m_scmEmptyNote =
+        new QLabel("No working tree on this node \xE2\x80\x94 changes are read-only here.");
+    m_scmEmptyNote->setObjectName("statusLine");
+    m_scmEmptyNote->setAlignment(Qt::AlignCenter);
+    m_scmEmptyNote->hide();
+    root->addWidget(m_scmEmptyNote);
+
+    return panel;
+}
+
+void MainWindow::refreshSourceControl()
+{
+    if (!m_scmTree)
+        return;
+    const QString dir = repoGitDir();
+    const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
+    if (m_scmEmptyNote)
+        m_scmEmptyNote->setVisible(!canWrite);
+    for (QWidget *w : {static_cast<QWidget *>(m_scmMessage),
+                       static_cast<QWidget *>(m_scmTree),
+                       static_cast<QWidget *>(m_scmStageAllButton),
+                       static_cast<QWidget *>(m_scmUnstageAllButton),
+                       static_cast<QWidget *>(m_scmDiscardAllButton)})
+        if (w)
+            w->setEnabled(canWrite);
+
+    if (!canWrite) {
+        m_scmStatusCache.clear();
+        m_scmDiffCache.clear();
+        m_scmTree->clear();
+        if (m_scmDiff)
+            m_scmDiff->clear();
+        if (m_scmCountLabel)
+            m_scmCountLabel->clear();
+        if (m_scmCommitButton)
+            m_scmCommitButton->setEnabled(false);
+        if (m_scmGenerateButton)
+            m_scmGenerateButton->setEnabled(false);
+        return;
+    }
+
+    QByteArray out;
+    runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &out, nullptr);
+
+    // Skip the full rebuild when the working tree is unchanged since the last
+    // scan. This matters now that we rescan on tab focus / window activation:
+    // without it, every rescan would clear the tree (losing the open diff and the
+    // selection) and flicker even when nothing moved.
+    if (out == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
+        return;
+    m_scmStatusCache = out;
+    m_scmDiffCache.clear(); // the tree changed, so any cached diffs are stale
+
+    // Remember which file's diff is showing so the rebuild can restore it instead
+    // of dropping the user back to a blank diff view.
+    QString prevPath;
+    bool prevStaged = false;
+    if (QTreeWidgetItem *cur = m_scmTree->currentItem()) {
+        prevPath = cur->data(0, Qt::UserRole).toString();
+        prevStaged = cur->data(0, Qt::UserRole + 1).toBool();
+    }
+
+    m_scmTree->clear();
+    if (m_scmDiff)
+        m_scmDiff->clear();
+
+    struct Row {
+        QString path;
+        QChar status;
+        bool staged;
+        bool untracked;
+    };
+    QList<Row> staged, changes;
+    const QList<QByteArray> fields = out.split('\0');
+    for (int i = 0; i < fields.size(); ++i) {
+        const QByteArray f = fields.at(i);
+        if (f.size() < 3)
+            continue; // "XY <path>"
+        const char x = f.at(0), y = f.at(1);
+        const QString path = QString::fromUtf8(f.mid(3));
+        // Renames/copies carry the original path in the following NUL field.
+        if (x == 'R' || x == 'C')
+            ++i;
+        if (x == '?' && y == '?') {
+            changes.append({path, QChar('?'), false, true});
+            continue;
+        }
+        if (x != ' ')
+            staged.append({path, QChar(x), true, false});
+        if (y != ' ')
+            changes.append({path, QChar(y), false, false});
+    }
+
+    auto addGroup = [this](const QString &name, const QList<Row> &rows) {
+        if (rows.isEmpty())
+            return;
+        auto *group = new QTreeWidgetItem(m_scmTree);
+        group->setText(0, QStringLiteral("%1 (%2)").arg(name).arg(rows.size()));
+        group->setFirstColumnSpanned(true);
+        QFont gf = group->font(0);
+        gf.setBold(true);
+        group->setFont(0, gf);
+        for (const Row &r : rows) {
+            auto *item = new QTreeWidgetItem(group);
+            item->setIcon(0, iconForFile(r.path.section('/', -1)));
+            item->setText(0, r.path);
+            item->setToolTip(0, r.path);
+            item->setData(0, Qt::UserRole, r.path);
+            item->setData(0, Qt::UserRole + 1, r.staged);
+            item->setData(0, Qt::UserRole + 2, r.untracked);
+
+            auto *w = new QWidget;
+            auto *h = new QHBoxLayout(w);
+            h->setContentsMargins(0, 0, 6, 0);
+            h->setSpacing(0);
+            auto *statusLabel = new QLabel(QString(r.status), w);
+            statusLabel->setToolTip(scmStatusTip(r.status));
+            QFont sf = statusLabel->font();
+            sf.setBold(true);
+            statusLabel->setFont(sf);
+            h->addWidget(statusLabel);
+            h->addStretch();
+            auto makeBtn = [&](const QString &glyph, const QString &tip) {
+                auto *b = new QToolButton(w);
+                b->setText(glyph);
+                b->setToolTip(tip);
+                b->setAutoRaise(true);
+                b->setCursor(Qt::PointingHandCursor);
+                return b;
+            };
+            const QString path = r.path;
+            const bool untracked = r.untracked;
+            if (r.staged) {
+                auto *u = makeBtn(QString::fromUtf8("\xE2\x88\x92"), "Unstage");
+                connect(u, &QToolButton::clicked, this,
+                        [this, path] { scmUnstagePath(path); });
+                h->addWidget(u);
+            } else {
+                auto *d = makeBtn(QString::fromUtf8("\xE2\x86\xBA"), "Discard changes");
+                connect(d, &QToolButton::clicked, this,
+                        [this, path, untracked] { scmDiscardPath(path, untracked); });
+                auto *s = makeBtn(QStringLiteral("+"), "Stage");
+                connect(s, &QToolButton::clicked, this,
+                        [this, path] { scmStagePath(path); });
+                h->addWidget(d);
+                h->addWidget(s);
+            }
+            // The per-row buttons sit in column 1 (the file label + status stay in
+            // column 0), so both the name and the actions are always visible.
+            m_scmTree->setItemWidget(item, 1, w);
+        }
+        group->setExpanded(true);
+    };
+    addGroup("Staged Changes", staged);
+    addGroup("Changes", changes);
+
+    const int total = staged.size() + changes.size();
+    if (m_scmCountLabel)
+        m_scmCountLabel->setText(total ? QString::number(total) : QString());
+    const bool anything = total > 0;
+    if (m_scmCommitButton)
+        m_scmCommitButton->setEnabled(anything);
+    if (m_scmGenerateButton)
+        m_scmGenerateButton->setEnabled(anything);
+    if (m_scmUnstageAllButton)
+        m_scmUnstageAllButton->setEnabled(!staged.isEmpty());
+    if (m_scmDiscardAllButton)
+        m_scmDiscardAllButton->setEnabled(!changes.isEmpty());
+
+    // Re-select the file that was open before the rebuild (re-showing its diff) if
+    // it still has changes; otherwise leave the diff cleared.
+    if (!prevPath.isEmpty()) {
+        for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+            QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
+            for (int c = 0; c < grp->childCount(); ++c) {
+                QTreeWidgetItem *item = grp->child(c);
+                if (item->data(0, Qt::UserRole).toString() == prevPath &&
+                    item->data(0, Qt::UserRole + 1).toBool() == prevStaged) {
+                    m_scmTree->setCurrentItem(item);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
+{
+    if (!m_scmDiff)
+        return;
+    // Cache the rendered HTML per file so re-clicking a file (or walking the list
+    // with the up/down buttons) is instant — the lag is the synchronous `git
+    // diff` + render, which we only want to pay once per file per rescan. The
+    // stylesheet carries the theme colors and is re-applied on every show, so a
+    // cached body still tracks the current theme. refreshSourceControl() clears
+    // this cache whenever the working tree changes.
+    const QString key =
+        QStringLiteral("%1|%2|%3").arg(int(staged)).arg(int(untracked)).arg(path);
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    auto cached = m_scmDiffCache.constFind(key);
+    if (cached != m_scmDiffCache.constEnd()) {
+        m_scmDiff->setHtml(*cached);
+        return;
+    }
+    const QString dir = repoGitDir();
+    QByteArray out;
+    if (untracked)
+        out = gitCaptureStdout(dir, {"diff", "--no-index", "--", "/dev/null", path});
+    else if (staged)
+        out = gitCaptureStdout(dir, {"diff", "--cached", "--", path});
+    else
+        out = gitCaptureStdout(dir, {"diff", "--", path});
+    QList<DiffFileEntry> files;
+    QString html = renderDiffHtml(QString::fromUtf8(out), files, dir,
+                                  QString(), QString(), path,
+                                  QHash<QString, QString>());
+    if (html.isEmpty())
+        html = QStringLiteral("<p style='color:#8b949e'>(no diff)</p>");
+    m_scmDiffCache.insert(key, html);
+    m_scmDiff->setHtml(html);
+}
+
+void MainWindow::scmSelectAdjacentChange(int delta)
+{
+    if (!m_scmTree)
+        return;
+
+    // Step through the open file's hunks first; only move to the next/previous
+    // file once we're already past its last/first hunk.
+    QTreeWidgetItem *current = m_scmTree->currentItem();
+    const bool fileOpen =
+        m_scmDiff && current &&
+        !current->data(0, Qt::UserRole).toString().isEmpty();
+    if (fileOpen && scmScrollToAdjacentHunk(delta))
+        return;
+
+    // Flatten the changed files (skipping the group headers) into visual order so
+    // the up/down buttons can step through every change regardless of grouping.
+    QList<QTreeWidgetItem *> files;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
+        for (int c = 0; c < grp->childCount(); ++c)
+            files.append(grp->child(c));
+    }
+    if (files.isEmpty())
+        return;
+    const int cur = files.indexOf(current);
+    int next = cur < 0 ? (delta > 0 ? 0 : files.size() - 1) : cur + delta;
+    if (next < 0 || next >= files.size())
+        return; // clamp at the ends rather than wrapping
+    QTreeWidgetItem *target = files.at(next);
+    m_scmTree->setCurrentItem(target); // fires currentItemChanged -> showScmDiff
+    m_scmTree->scrollToItem(target);
+    // Entering the previous file from below: land on its last hunk so prev keeps
+    // walking changes upward. The next file opens scrolled to the top already, so
+    // its first hunk is in view.
+    if (delta < 0)
+        scmScrollToAdjacentHunk(-1, /*fromEnd=*/true);
+}
+
+bool MainWindow::scmScrollToAdjacentHunk(int delta, bool fromEnd)
+{
+    if (!m_scmDiff)
+        return false;
+    if (fromEnd)
+        m_scmDiff->moveCursor(QTextCursor::End);
+    // Each hunk header renders as "@@ -old +new @@ ..."; the "@@ -" prefix occurs
+    // exactly once per hunk, so searching for it walks the diff hunk-by-hunk.
+    const QTextDocument::FindFlags flags =
+        delta < 0 ? QTextDocument::FindBackward : QTextDocument::FindFlags();
+    if (!m_scmDiff->find(QStringLiteral("@@ -"), flags))
+        return false;
+    // Keep the find's selection as the cursor (so a further step advances past
+    // it), but scroll the matched hunk header up near the top of the view.
+    const QTextCursor found = m_scmDiff->textCursor();
+    QTextCursor lineCur(found);
+    lineCur.setPosition(found.selectionStart());
+    lineCur.movePosition(QTextCursor::StartOfLine);
+    const QRect r = m_scmDiff->cursorRect(lineCur);
+    if (QScrollBar *vbar = m_scmDiff->verticalScrollBar())
+        vbar->setValue(vbar->value() + r.top() - 4);
+    return true;
+}
+
+void MainWindow::scmStagePath(const QString &path)
+{
+    const QString dir = repoGitDir();
+    QString err;
+    if (!runGitCapture(dir, {"add", "-A", "--", path}, nullptr, &err))
+        QMessageBox::warning(this, "Stage", err.isEmpty() ? "git add failed." : err);
+    refreshSourceControl();
+}
+
+void MainWindow::scmUnstagePath(const QString &path)
+{
+    const QString dir = repoGitDir();
+    QString err;
+    if (!runGitCapture(dir, {"restore", "--staged", "--", path}, nullptr, &err) &&
+        !runGitCapture(dir, {"reset", "-q", "--", path}, nullptr, nullptr))
+        QMessageBox::warning(this, "Unstage", err.isEmpty() ? "git restore failed." : err);
+    refreshSourceControl();
+}
+
+void MainWindow::scmDiscardPath(const QString &path, bool untracked)
+{
+    if (QMessageBox::warning(
+            this, "Discard changes",
+            QStringLiteral("Discard changes to \"%1\"? This cannot be undone.").arg(path),
+            QMessageBox::Discard | QMessageBox::Cancel) != QMessageBox::Discard)
+        return;
+    const QString dir = repoGitDir();
+    if (untracked) {
+        QFile::remove(QDir(dir).filePath(path));
+    } else {
+        QString err;
+        if (!runGitCapture(dir, {"restore", "--", path}, nullptr, &err) &&
+            !runGitCapture(dir, {"checkout", "--", path}, nullptr, nullptr))
+            QMessageBox::warning(this, "Discard changes",
+                                 err.isEmpty() ? "git restore failed." : err);
+    }
+    refreshSourceControl();
+}
+
+void MainWindow::scmStageAll()
+{
+    const QString dir = repoGitDir();
+    QString err;
+    if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err))
+        QMessageBox::warning(this, "Stage all", err.isEmpty() ? "git add failed." : err);
+    refreshSourceControl();
+}
+
+void MainWindow::scmUnstageAll()
+{
+    const QString dir = repoGitDir();
+    runGitCapture(dir, {"reset", "-q"}, nullptr, nullptr);
+    refreshSourceControl();
+}
+
+void MainWindow::scmDiscardAll()
+{
+    if (QMessageBox::warning(
+            this, "Discard all changes",
+            "Discard ALL uncommitted changes, including untracked files? "
+            "This cannot be undone.",
+            QMessageBox::Discard | QMessageBox::Cancel) != QMessageBox::Discard)
+        return;
+    const QString dir = repoGitDir();
+    runGitCapture(dir, {"restore", "--", "."}, nullptr, nullptr);
+    runGitCapture(dir, {"clean", "-fd"}, nullptr, nullptr);
+    refreshSourceControl();
+}
+
+void MainWindow::scmCommit()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || !repoHasWorkingTree())
+        return;
+    const QString msg = m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+    if (msg.isEmpty()) {
+        QMessageBox::information(this, "Commit", "Enter a commit message first.");
+        return;
+    }
+    QByteArray staged;
+    runGitCapture(dir, {"diff", "--cached", "--name-only"}, &staged, nullptr);
+    if (staged.trimmed().isEmpty()) {
+        if (QMessageBox::question(
+                this, "Commit",
+                "Nothing is staged. Stage all changes and commit?") != QMessageBox::Yes)
+            return;
+        QString err;
+        if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err)) {
+            QMessageBox::warning(this, "Commit", err.isEmpty() ? "git add failed." : err);
+            return;
+        }
+    }
+    QString err;
+    if (!runGitCapture(dir, {"commit", "-m", msg}, nullptr, &err)) {
+        QMessageBox::warning(this, "Commit",
+                             err.isEmpty() ? "git commit failed." : err.left(300));
+        return;
+    }
+    if (m_scmMessage)
+        m_scmMessage->clear();
+    logSystem(QStringLiteral("Committed: %1").arg(msg.section('\n', 0, 0)));
+    loadCommits(); // refresh history + the working-changes panel
+    if (m_repoDetailIndex >= 0)
+        propagateRepoUpdate(m_repoDetailIndex);
+}
+
+QString MainWindow::scmContextDiff() const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    QByteArray staged = gitCaptureStdout(dir, {"diff", "--cached"});
+    QByteArray diff = staged.trimmed().isEmpty() ? gitCaptureStdout(dir, {"diff"}) : staged;
+    QString text = QString::fromUtf8(diff);
+    // Note any untracked files, whose contents don't appear in `git diff`.
+    QByteArray untracked;
+    runGitCapture(dir, {"ls-files", "--others", "--exclude-standard"}, &untracked,
+                  nullptr);
+    const QString others = QString::fromUtf8(untracked).trimmed();
+    if (!others.isEmpty())
+        text += QStringLiteral("\n\n# New (untracked) files:\n") + others;
+    // Cap for token cost; the model only needs a representative slice.
+    constexpr int kCap = 12000;
+    if (text.size() > kCap)
+        text = text.left(kCap) + QStringLiteral("\n... [diff truncated]");
+    return text;
+}
+
+void MainWindow::generateScmMessage()
+{
+    if (m_scmGenerating)
+        return;
+    const QString diff = scmContextDiff();
+    if (diff.trimmed().isEmpty()) {
+        if (m_scmGenStatus)
+            m_scmGenStatus->setText("No changes to describe.");
+        return;
+    }
+    const int mi = m_scmGenModel ? m_scmGenModel->currentData().toInt() : 0;
+    if (mi < 0 || mi >= kScmAiModelCount)
+        return;
+    const ScmAiModel model = kScmAiModels[mi];
+    const bool isCommit = !(m_scmGenKind && m_scmGenKind->currentIndex() == 1);
+    const int outTok = isCommit ? 120 : 280;
+
+    const QString system =
+        isCommit ? QStringLiteral("You write concise, conventional git commit "
+                                  "messages.")
+                 : QStringLiteral("You write short, engaging X (Twitter) posts "
+                                  "for developers.");
+    const QString task =
+        isCommit
+            ? QStringLiteral(
+                  "Write a single-line git commit message for the following "
+                  "changes: a short imperative subject (max ~70 chars), no body. "
+                  "Output ONLY that one line, with no backticks or commentary."
+                  "\n\nDiff:\n%1")
+                  .arg(diff)
+            : QStringLiteral(
+                  "Write a single engaging X (Twitter) post, at most 280 "
+                  "characters, announcing these code changes to developer "
+                  "followers. At most two relevant hashtags. Output ONLY the post "
+                  "text.\n\nChanges:\n%1")
+                  .arg(diff);
+
+    const bool claude =
+        QString::fromLatin1(model.provider) == QLatin1String("claude");
+    const QString apiKey =
+        claude ? QSettings().value(kClaudeApiKeySetting).toString().trimmed()
+               : QSettings().value(kCodexApiKeySetting).toString().trimmed();
+    if (apiKey.isEmpty()) {
+        if (m_scmGenStatus)
+            m_scmGenStatus->setText(claude ? "Add a Claude API key in Settings."
+                                           : "Add an OpenAI API key in Settings.");
+        return;
+    }
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", QString::fromLatin1(model.id));
+        payload.insert("max_tokens", outTok);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", system + "\n\n" + task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(QUrl("https://api.anthropic.com/v1/messages"));
+        req.setRawHeader("x-api-key", apiKey.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", QString::fromLatin1(model.id));
+        payload.insert("instructions", system);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", outTok);
+        QNetworkRequest req =
+            openAiRequest(QUrl("https://api.openai.com/v1/responses"), apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    m_scmGenerating = true;
+    if (m_scmGenerateButton) {
+        m_scmGenerateButton->setEnabled(false);
+        m_scmGenerateButton->setText(QString::fromUtf8("Generating\xE2\x80\xA6"));
+    }
+    if (m_scmGenStatus)
+        m_scmGenStatus->setText(QString::fromUtf8("Asking %1\xE2\x80\xA6")
+                                    .arg(QString::fromLatin1(model.label)));
+
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, claude, model, isCommit] {
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                m_scmGenerating = false;
+                if (m_scmGenerateButton) {
+                    m_scmGenerateButton->setEnabled(true);
+                    m_scmGenerateButton->setText(
+                        QString::fromUtf8("\xE2\x9C\xA8 Generate"));
+                }
+                if (reply->error() != QNetworkReply::NoError) {
+                    if (m_scmGenStatus)
+                        m_scmGenStatus->setText("Failed: " +
+                                                apiErrorSummary(reply, body));
+                    return;
+                }
+                const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                QString text;
+                double cost = 0.0;
+                qint64 inTok = 0, outTokActual = 0;
+                if (claude) {
+                    for (const QJsonValue &v : obj.value("content").toArray()) {
+                        const QJsonObject o = v.toObject();
+                        if (o.value("type").toString() == QLatin1String("text"))
+                            text += o.value("text").toString();
+                    }
+                    const QJsonObject usage = obj.value("usage").toObject();
+                    inTok = usage.value("input_tokens").toInt();
+                    outTokActual = usage.value("output_tokens").toInt();
+                    cost = inTok / 1e6 * model.inPerM +
+                           outTokActual / 1e6 * model.outPerM;
+                } else {
+                    text = openAiResponseText(obj);
+                    cost = openAiAskCostUsd(obj, &inTok, &outTokActual);
+                }
+                text = text.trimmed();
+                if (text.isEmpty()) {
+                    if (m_scmGenStatus)
+                        m_scmGenStatus->setText("Empty response.");
+                    return;
+                }
+                // The message field is single-line, so collapse any stray
+                // newlines before showing it (the clipboard keeps the original).
+                if (m_scmMessage) {
+                    QString oneLine = text;
+                    oneLine.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                    m_scmMessage->setText(oneLine.simplified());
+                }
+                // Char count first (what the user asked to see), then the cost.
+                const int n = m_scmMessage ? m_scmMessage->text().size()
+                                           : text.size();
+                QString line = isCommit ? QStringLiteral("%1 chars").arg(n)
+                                        : QStringLiteral("%1/280").arg(n);
+                line += QStringLiteral(" \xC2\xB7 $%1 \xC2\xB7 %2 in / %3 out")
+                            .arg(QString::number(cost, 'f', 4))
+                            .arg(inTok)
+                            .arg(outTokActual);
+                // An X post also goes to the clipboard so it's one paste from being
+                // posted; keep the original (possibly multi-line) text there.
+                if (!isCommit) {
+                    QApplication::clipboard()->setText(text);
+                    line += QStringLiteral(", copied");
+                }
+                if (m_scmGenStatus)
+                    m_scmGenStatus->setText(line);
+            });
 }
 
 QWidget *MainWindow::buildInsightsTab()
@@ -10330,6 +11179,7 @@ QWidget *MainWindow::buildInsightsTab()
     setOcticon(m_insightsRefreshButton, "sync", 16);
     connect(m_insightsRefreshButton, &QPushButton::clicked, this,
             &MainWindow::loadRepoInsights);
+    addRefreshSpin(m_insightsRefreshButton);
 
     auto *headingCol = new QVBoxLayout;
     headingCol->setContentsMargins(0, 0, 0, 0);
@@ -13601,10 +14451,12 @@ QWidget *MainWindow::buildAgentsTab()
         makeStatsRefreshButton("Refresh OpenAI usage and spend");
     connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
             &MainWindow::testOpenAiAgentKey);
+    addRefreshSpin(m_agentTestApiKeyButton);
     auto *claudeRefreshButton =
         makeStatsRefreshButton("Refresh Claude usage and spend");
     connect(claudeRefreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshClaudeSpend);
+    addRefreshSpin(claudeRefreshButton);
     auto *openAiStatsRow = new QHBoxLayout;
     openAiStatsRow->setContentsMargins(0, 0, 0, 0);
     openAiStatsRow->setSpacing(8);
@@ -17119,6 +17971,7 @@ void MainWindow::refreshCommitMarkersIfStale()
 
 void MainWindow::loadCommits()
 {
+    refreshSourceControl(); // keep the working-changes panel in sync with the tab
     if (!m_commitsTable)
         return;
     QSignalBlocker block(m_commitsTable);
@@ -19003,6 +19856,7 @@ QWidget *MainWindow::buildBranchesTab()
     refreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadBranchesPanel);
+    addRefreshSpin(refreshButton);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
@@ -19194,6 +20048,7 @@ QWidget *MainWindow::buildReleasesTab()
     refreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadReleasesPanel);
+    addRefreshSpin(refreshButton);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_releasesSummary);
     headerRow->addStretch();
@@ -19307,6 +20162,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::loadMirrorNodesPanel);
+    addRefreshSpin(refreshButton);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_mirrorNodesSummary);
     headerRow->addStretch();
@@ -20017,6 +20873,39 @@ void MainWindow::loadAboutSidebar()
                                        ? "<span style='color:#8b949e'>None yet.</span>"
                                        : html);
     }
+}
+
+void MainWindow::spinRefreshButton(QPushButton *button)
+{
+    if (!button || button->property("fmSpinning").toBool())
+        return;
+    button->setProperty("fmSpinning", true);
+    const int size = button->iconSize().width() > 0 ? button->iconSize().width() : 16;
+    const QIcon original = button->icon();
+    auto *timer = new QTimer(button);
+    auto angle = std::make_shared<int>(0);
+    connect(timer, &QTimer::timeout, button, [button, angle, size] {
+        *angle = (*angle + 30) % 360;
+        button->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+    });
+    timer->start(60);
+    // These refreshes are synchronous (or fire-and-forget), so a brief spin is
+    // enough to acknowledge the click; then restore the button's own icon.
+    QTimer::singleShot(650, button, [button, timer, original] {
+        timer->stop();
+        timer->deleteLater();
+        button->setIcon(original);
+        button->setProperty("fmSpinning", false);
+    });
+}
+
+void MainWindow::addRefreshSpin(QPushButton *button)
+{
+    if (!button)
+        return;
+    connect(button, &QPushButton::clicked, this,
+            [this, button] { spinRefreshButton(button); });
 }
 
 void MainWindow::startRefreshSpin()
@@ -29821,6 +30710,7 @@ QWidget *MainWindow::buildNotificationsSection()
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshNotificationsTable);
+    addRefreshSpin(refreshButton);
 
     // Fires a real desktop toast (notify-send / tray) and logs it to the page,
     // so the user can confirm notifications are wired up and visible on their

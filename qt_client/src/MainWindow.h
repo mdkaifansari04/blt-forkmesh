@@ -147,6 +147,9 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Rescan the changes panel when the window regains focus (e.g. after a
+    // background agent edited the working tree) so it always shows fresh state.
+    void changeEvent(QEvent *event) override;
     // Defers heavy, git-backed startup until the window's first frame is on
     // screen, so launch shows the themed UI instead of an unpainted black frame.
     void showEvent(QShowEvent *event) override;
@@ -602,6 +605,34 @@ private:
     void loadFileSearchIndex();
     void loadAboutSidebar();
     void loadCommits();
+    // --- Source Control panel (working-tree changes) at the top of the Commits
+    // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
+    // commit message (or an X post) with Claude/OpenAI.
+    QWidget *buildSourceControlPanel();
+    void refreshSourceControl();             // re-scan `git status` into the tree
+    void scmStagePath(const QString &path);
+    void scmUnstagePath(const QString &path);
+    void scmDiscardPath(const QString &path, bool untracked);
+    void scmStageAll();
+    void scmUnstageAll();
+    void scmDiscardAll();
+    void scmCommit();
+    void showScmDiff(const QString &path, bool staged, bool untracked);
+    // Walk the working-tree changes with the up/down buttons: step through the
+    // open file's hunks first and only move to the next (+1) / previous (-1)
+    // changed file once past the last/first hunk.
+    void scmSelectAdjacentChange(int delta);
+    // Scroll the changes diff to the next (+1) / previous (-1) hunk. With fromEnd
+    // the search starts at the bottom (used when entering a file from below).
+    // Returns false when there's no further hunk in that direction.
+    bool scmScrollToAdjacentHunk(int delta, bool fromEnd = false);
+    // The unified working-tree diff used as context for AI generation (staged if
+    // anything is staged, else all unstaged+untracked changes), capped for cost.
+    QString scmContextDiff() const;
+    // Draft the commit message (or an X post) inline from the changes using the
+    // model picked in the compose bar — no dialog, the result lands in the
+    // message box and the cost shows beside it.
+    void generateScmMessage();
     // True when the commit table already shows the current branch's current tip,
     // so a tab click can skip the expensive rebuild. Does one cheap `git
     // rev-parse` to catch tips moved out from under us (e.g. by a background
@@ -654,6 +685,10 @@ private:
     // reload runs (kept visible briefly after, since the reload is near-instant).
     void startCommitsRefreshSpin();
     void stopCommitsRefreshSpin();
+    // Generic click feedback for any Refresh button: briefly spins its icon, then
+    // restores it. addRefreshSpin wires it onto a button's clicked signal.
+    void spinRefreshButton(QPushButton *button);
+    void addRefreshSpin(QPushButton *button);
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
@@ -1264,6 +1299,33 @@ private:
     // Container holding one per-contributor "commits over time" bar chart row.
     QWidget *m_insightsCommitCharts = nullptr;
     QPushButton *m_insightsRefreshButton = nullptr;
+    // Source Control panel (top of the Commits tab).
+    QWidget *m_scmPanel = nullptr;
+    QTreeWidget *m_scmTree = nullptr;
+    QLineEdit *m_scmMessage = nullptr;
+    QTextBrowser *m_scmDiff = nullptr;
+    QLabel *m_scmCountLabel = nullptr;
+    QPushButton *m_scmGenerateButton = nullptr;
+    QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
+    QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
+    QPushButton *m_scmCopyButton = nullptr;   // copy the message to the clipboard
+    QLabel *m_scmGenStatus = nullptr;         // inline cost / progress note
+    bool m_scmGenerating = false;             // a generation request is in flight
+    QPushButton *m_scmCommitButton = nullptr;
+    QPushButton *m_scmStageAllButton = nullptr;
+    QPushButton *m_scmUnstageAllButton = nullptr;
+    QPushButton *m_scmDiscardAllButton = nullptr;
+    QPushButton *m_scmRefreshButton = nullptr;
+    QPushButton *m_scmPrevButton = nullptr;   // jump to previous changed file
+    QPushButton *m_scmNextButton = nullptr;   // jump to next changed file
+    QLabel *m_scmEmptyNote = nullptr;
+    // Last `git status` output, so a focus/tab-click rescan can skip the (flickery)
+    // full tree rebuild when nothing in the working tree actually changed.
+    QByteArray m_scmStatusCache;
+    // Rendered per-file diff HTML, keyed by "staged|untracked|path", so clicking
+    // between files (or walking them with the up/down buttons) is instant after the
+    // first view. Cleared whenever the working tree is rescanned.
+    QHash<QString, QString> m_scmDiffCache;
     // Commits tab: a stack flipping between the list and a per-commit diff view.
     QStackedWidget *m_commitsStack = nullptr;
     QLabel *m_commitTitle = nullptr;
