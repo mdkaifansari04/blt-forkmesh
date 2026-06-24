@@ -3,13 +3,16 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QProcess>
+#include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QWidget>
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
 
@@ -280,6 +283,39 @@ int main(int argc, char *argv[])
     check(networkLog.contains(QStringLiteral("Node connected")) &&
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
+
+    std::atomic<int> historyDeleteCalls{0};
+    QSemaphore historyDeleteStarted;
+    QSemaphore finishHistoryDelete;
+    QSemaphore historyDeleteFinished;
+    window.testSetIssueHistoryDeleteRunner(
+        [&](int, QString *) {
+            historyDeleteCalls.fetch_add(1);
+            historyDeleteStarted.release();
+            finishHistoryDelete.acquire();
+            historyDeleteFinished.release();
+            return true;
+        });
+    window.testDeleteIssueWithHistory(141);
+    check(historyDeleteStarted.tryAcquire(1, 1000),
+          QStringLiteral("history delete starts on a worker thread"));
+    window.testDeleteIssueWithHistory(141);
+    const bool secondDeleteStarted = historyDeleteStarted.tryAcquire(1, 1000);
+    check(!secondDeleteStarted && historyDeleteCalls.load() == 1,
+          QStringLiteral("second history delete request is ignored while one is running"));
+    finishHistoryDelete.release(secondDeleteStarted ? 2 : 1);
+    const int expectedFinishes = secondDeleteStarted ? 2 : 1;
+    for (int i = 0; i < expectedFinishes; ++i) {
+        check(historyDeleteFinished.tryAcquire(1, 1000),
+              QStringLiteral("history delete worker finishes"));
+    }
+    QElapsedTimer finishTimer;
+    finishTimer.start();
+    while (window.testIssueHistoryDeleteInProgress() && finishTimer.elapsed() < 1000)
+        QApplication::processEvents();
+    check(!window.testIssueHistoryDeleteInProgress(),
+          QStringLiteral("history delete state clears after the worker finishes"));
+    window.testSetIssueHistoryDeleteRunner({});
 
     constexpr int targetHeight = 520;
     window.resize(1060, targetHeight);
