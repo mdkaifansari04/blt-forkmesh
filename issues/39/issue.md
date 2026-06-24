@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 39
 title: when I click the fork button on a repo it should ask me where to fork it too
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 14
