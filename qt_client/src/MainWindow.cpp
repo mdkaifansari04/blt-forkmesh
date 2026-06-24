@@ -70,6 +70,8 @@
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRadialGradient>
+#include <QtMath>
 #include <QPlainTextEdit>
 #include <QPropertyAnimation>
 #include <QRandomGenerator>
@@ -1406,14 +1408,47 @@ QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
     return pm;
 }
 
-// A modern, deterministic "mesh constellation" identicon (gravatar-style, but
-// on-brand): nodes connected by edges over a green→cyan gradient tile, evoking
-// ForkMesh's decentralized, networked ethos. Same seed → same avatar.
+// A deterministic procedural *face* avatar. Each seed maps, via SHA-256 + a
+// splitmix64 PRNG, to a unique cartoon face — backdrop, skin tone, hairstyle &
+// colour, brows, eyes, nose, mouth and the odd extra (glasses, beard, blush,
+// freckles). The same seed always yields the same face, so a node's identity
+// reads consistently everywhere it appears, while the huge feature space keeps
+// every node clearly distinguishable at a glance.
 QByteArray forkMeshAvatarPng(const QString &seed)
 {
     const QByteArray h =
         QCryptographicHash::hash(seed.toUtf8(), QCryptographicHash::Sha256);
-    auto b = [&](int i) { return static_cast<quint8>(h.at(i % h.size())); };
+    // Fold the whole digest into a 64-bit seed (FNV-1a), then stream unlimited
+    // entropy out of it with splitmix64 so every feature draws independently.
+    quint64 state = 0xCBF29CE484222325ULL;
+    for (char c : h)
+        state = (state ^ static_cast<quint8>(c)) * 0x100000001B3ULL;
+    auto nextU64 = [&state]() {
+        state += 0x9E3779B97F4A7C15ULL;
+        quint64 z = state;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    };
+    auto rnd = [&](int n) { return n > 0 ? int(nextU64() % quint64(n)) : 0; };
+    auto chance = [&](int pct) { return int(nextU64() % 100) < pct; };
+
+    // Curated palettes — vivid backdrops, natural skin tones, natural + a few
+    // playful dyed hair colours.
+    static const char *kBackdrops[][2] = {
+        {"#1f6feb", "#0d419d"}, {"#2ea043", "#176f2c"}, {"#bc8cff", "#8957e5"},
+        {"#db61a2", "#bf3989"}, {"#f0883e", "#bd561d"}, {"#39c5cf", "#1b7c83"},
+        {"#e3b341", "#b08800"}, {"#fb7185", "#be123c"}, {"#6e7bf2", "#414bb2"},
+        {"#34d399", "#059669"}, {"#22d3ee", "#0e7490"}, {"#f471b5", "#a3367f"}};
+    static const char *kSkins[] = {"#ffe0bd", "#ffcd94", "#f1c27d", "#e0ac69",
+                                   "#c68642", "#a8703e", "#8d5524", "#613a1f"};
+    static const char *kHairs[] = {
+        "#2c1b18", "#3b2417", "#5a3825", "#7a4a2b", "#a55728", "#c89f6d",
+        "#e6cea0", "#d7d7d7", "#f2f2f2", "#e25563", "#5b6ee1", "#34a853",
+        "#9b59b6", "#ff8fab"};
+    const int nBack = int(sizeof(kBackdrops) / sizeof(kBackdrops[0]));
+    const int nSkin = int(sizeof(kSkins) / sizeof(kSkins[0]));
+    const int nHair = int(sizeof(kHairs) / sizeof(kHairs[0]));
 
     const int S = 128;
     QImage img(S, S, QImage::Format_ARGB32_Premultiplied);
@@ -1421,45 +1456,314 @@ QByteArray forkMeshAvatarPng(const QString &seed)
     QPainter p(&img);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // On-brand hue family: green → teal → blue.
-    const int hue = 120 + (b(0) % 80); // 120..199
+    // --- Backdrop: diagonal gradient + a soft spotlight behind the head. ---
+    const int bg = rnd(nBack);
     QLinearGradient grad(0, 0, S, S);
-    grad.setColorAt(0.0, QColor::fromHsv(hue, 130, 72));
-    grad.setColorAt(1.0, QColor::fromHsv((hue + 25) % 360, 165, 40));
-    QPainterPath tile;
-    tile.addRoundedRect(0, 0, S, S, 30, 30);
-    p.fillPath(tile, grad);
-    p.setClipPath(tile);
+    grad.setColorAt(0.0, QColor(kBackdrops[bg][0]));
+    grad.setColorAt(1.0, QColor(kBackdrops[bg][1]));
+    p.fillRect(QRectF(0, 0, S, S), QBrush(grad));
+    QColor glowC = QColor(kBackdrops[bg][0]).lighter(140);
+    glowC.setAlpha(115);
+    QRadialGradient halo(QPointF(S / 2.0, S * 0.44), S * 0.62);
+    halo.setColorAt(0.0, glowC);
+    glowC.setAlpha(0);
+    halo.setColorAt(1.0, glowC);
+    p.fillRect(QRectF(0, 0, S, S), QBrush(halo));
 
-    // Node positions seeded from the hash, padded inside the tile.
-    const int n = 5 + (b(1) % 3); // 5..7 nodes
-    const qreal pad = 26.0;
-    QList<QPointF> pts;
-    for (int i = 0; i < n; ++i)
-        pts.append(QPointF(pad + (b(2 + i * 2) / 255.0) * (S - 2 * pad),
-                           pad + (b(3 + i * 2) / 255.0) * (S - 2 * pad)));
+    // --- Geometry & colours. ---
+    const qreal cx = S / 2.0;
+    const qreal faceCy = 73, faceHW = 35, faceHH = 40;
+    const QRectF faceRect(cx - faceHW, faceCy - faceHH, faceHW * 2, faceHH * 2);
+    const qreal headTop = faceRect.top();
+    const qreal eyeY = 72, eyeDX = 14, browY = 60, mouthY = 94;
+    const qreal lx = cx - eyeDX, rxe = cx + eyeDX;
 
-    // Edges: a connected loop through the nodes.
-    QColor edge = QColor::fromHsv(hue, 60, 235);
-    edge.setAlpha(140);
-    QPen edgePen(edge, 2.2);
-    edgePen.setCapStyle(Qt::RoundCap);
-    p.setPen(edgePen);
-    for (int i = 0; i < pts.size(); ++i)
-        p.drawLine(pts.at(i), pts.at((i + 1) % pts.size()));
+    const QColor skin(kSkins[rnd(nSkin)]);
+    const QColor skinShadow = skin.darker(120);
+    const QColor hair(kHairs[rnd(nHair)]);
+    QColor brow = hair.darker(135);
+    if (brow.lightnessF() > 0.65)
+        brow = QColor("#6b4f3a");
+    const int hairStyle = rnd(9); // 0 bald · 1 buzz · 2 short · 3 side-part ·
+                                  // 4 flat-top · 5 afro · 6 long · 7 bun · 8 mohawk
 
-    // Nodes: a soft glow plus a bright dot; the first node is the larger hub.
-    const QColor node = QColor::fromHsv(hue, 35, 255);
-    for (int i = 0; i < pts.size(); ++i) {
-        const qreal r = (i == 0 ? 11.0 : 6.0 + (b(10 + i) % 4));
-        QColor glow = QColor::fromHsv(hue, 80, 255);
-        glow.setAlpha(70);
+    // Lay down hair that sits *behind* the head (long hair frames the face).
+    if (hairStyle == 6) {
         p.setPen(Qt::NoPen);
-        p.setBrush(glow);
-        p.drawEllipse(pts.at(i), r + 5, r + 5);
-        p.setBrush(node);
-        p.drawEllipse(pts.at(i), r, r);
+        p.setBrush(hair);
+        QPainterPath bk;
+        bk.addRoundedRect(QRectF(cx - faceHW - 7, headTop - 2,
+                                 (faceHW + 7) * 2, faceHH * 2 + 20),
+                          28, 28);
+        p.drawPath(bk);
     }
+
+    // Ears, then the face on top.
+    p.setPen(Qt::NoPen);
+    p.setBrush(skin);
+    p.drawEllipse(QPointF(faceRect.left() + 3, faceCy + 3), 7, 9);
+    p.drawEllipse(QPointF(faceRect.right() - 3, faceCy + 3), 7, 9);
+    p.drawEllipse(faceRect);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(skin.darker(123), 1.6));
+    p.drawEllipse(faceRect);
+    p.setPen(Qt::NoPen);
+
+    // Fill the scalp above a hairline, following the round crown.
+    auto fillScalp = [&](qreal hairlineY, qreal grow) {
+        p.save();
+        QPainterPath clip;
+        clip.addEllipse(faceRect.adjusted(-grow, -grow, grow, 0));
+        p.setClipPath(clip);
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        p.drawRect(QRectF(0, 0, S, hairlineY));
+        p.restore();
+    };
+
+    // --- Hair on top of the head. ---
+    if (hairStyle == 0) { // bald — just a faint scalp highlight
+        QColor shine = skin.lighter(115);
+        shine.setAlpha(120);
+        p.setPen(Qt::NoPen);
+        p.setBrush(shine);
+        p.drawEllipse(QPointF(cx - 9, headTop + 16), 10, 6);
+    } else if (hairStyle == 1) { // buzz cut
+        fillScalp(56, 1.5);
+    } else if (hairStyle == 2) { // short
+        fillScalp(53, 5);
+    } else if (hairStyle == 3) { // side part + swooped bang
+        fillScalp(51, 6);
+        p.setPen(QPen(skin, 2.6, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(cx - 4, headTop + 3), QPointF(cx - 13, 50));
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        QPainterPath sw;
+        sw.moveTo(cx - 8, 48);
+        sw.cubicTo(cx + 16, 42, cx + 22, 54, cx + 16, 60);
+        sw.cubicTo(cx + 8, 54, cx - 2, 54, cx - 8, 53);
+        p.drawPath(sw);
+    } else if (hairStyle == 4) { // flat top
+        fillScalp(52, 3);
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        QPainterPath cap;
+        cap.addRoundedRect(
+            QRectF(cx - faceHW * 0.9, headTop - 9, faceHW * 1.8, 22), 6, 6);
+        p.drawPath(cap);
+    } else if (hairStyle == 5) { // afro / curly
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        const qreal cyr = headTop + 4;
+        for (int i = 0; i < 9; ++i) {
+            const qreal ang = M_PI * (0.06 + 0.88 * i / 8.0);
+            const qreal px = cx - (faceHW + 5) * qCos(ang);
+            const qreal py = cyr - (faceHH * 0.66) * qSin(ang);
+            p.drawEllipse(QPointF(px, py), 12.5, 12.5);
+        }
+        fillScalp(55, 9);
+    } else if (hairStyle == 6) { // long (back panel already drawn)
+        fillScalp(51, 6);
+    } else if (hairStyle == 7) { // top knot / bun
+        fillScalp(51, 5);
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        p.drawEllipse(QPointF(cx, headTop - 5), 10, 10);
+        p.setPen(QPen(hair.darker(130), 3));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(cx - 9, headTop + 1, 18, 10), 200 * 16, 140 * 16);
+        p.setPen(Qt::NoPen);
+    } else { // mohawk
+        p.setPen(Qt::NoPen);
+        p.setBrush(hair);
+        QPainterPath mo;
+        mo.moveTo(cx - 8, 54);
+        mo.lineTo(cx - 9, headTop - 14);
+        mo.quadTo(cx, headTop - 22, cx + 9, headTop - 14);
+        mo.lineTo(cx + 8, 54);
+        mo.quadTo(cx, 50, cx - 8, 54);
+        p.drawPath(mo);
+    }
+
+    // --- Eyebrows. ---
+    const int browStyle = rnd(4); // 0 flat · 1 raised · 2 angry · 3 worried
+    if (chance(85)) {
+        auto drawBrow = [&](qreal ex, bool right) {
+            qreal inY = browY, outY = browY;
+            if (browStyle == 1) { inY -= 2; outY -= 4; }
+            else if (browStyle == 2) { inY += 2.5; outY -= 1.5; }
+            else if (browStyle == 3) { inY -= 2.5; outY += 1.5; }
+            const qreal innerX = right ? ex - 6.5 : ex + 6.5;
+            const qreal outerX = right ? ex + 6.5 : ex - 6.5;
+            p.setPen(QPen(brow, 3.0, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawLine(QPointF(innerX, inY), QPointF(outerX, outY));
+            p.setPen(Qt::NoPen);
+        };
+        drawBrow(lx, false);
+        drawBrow(rxe, true);
+    }
+
+    // --- Eyes (one may wink). ---
+    auto drawEye = [&](qreal ex, qreal ey, int style, bool right) {
+        const QColor dark("#20232a");
+        p.setPen(Qt::NoPen);
+        if (style == 0) { // bold dot with a catch-light
+            p.setBrush(dark);
+            p.drawEllipse(QPointF(ex, ey), 5.3, 6.0);
+            p.setBrush(QColor(255, 255, 255, 235));
+            p.drawEllipse(QPointF(ex - 1.6, ey - 2.0), 1.5, 1.5);
+        } else if (style == 1) { // white + steerable pupil
+            p.setBrush(Qt::white);
+            p.drawEllipse(QPointF(ex, ey), 6.6, 7.3);
+            const qreal gaze = right ? 1.4 : -1.4;
+            p.setBrush(dark);
+            p.drawEllipse(QPointF(ex + gaze, ey + 0.5), 3.4, 3.8);
+            p.setBrush(QColor(255, 255, 255, 235));
+            p.drawEllipse(QPointF(ex + gaze - 1.2, ey - 1.1), 1.2, 1.2);
+        } else if (style == 2) { // sleepy line
+            p.setPen(QPen(dark, 3.0, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawLine(QPointF(ex - 5, ey + 1), QPointF(ex + 5, ey + 1));
+            p.setPen(Qt::NoPen);
+        } else { // happy arch
+            p.setPen(QPen(dark, 3.0, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(ex - 6, ey - 4, 12, 11), 20 * 16, 140 * 16);
+            p.setPen(Qt::NoPen);
+        }
+    };
+    const int eyeStyle = rnd(4);
+    const bool wink = chance(12);
+    drawEye(lx, eyeY, eyeStyle, false);
+    drawEye(rxe, eyeY, wink ? 3 : eyeStyle, true);
+
+    // --- Glasses (a strong identifier). ---
+    if (chance(30)) {
+        const bool roundLens = chance(60);
+        QColor frame = chance(22)
+                           ? QColor(kBackdrops[(bg + 4) % nBack][0]).darker(115)
+                           : QColor("#23262e");
+        p.setPen(QPen(frame, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(QColor(255, 255, 255, 38));
+        const qreal r = 9.5;
+        if (roundLens) {
+            p.drawEllipse(QPointF(lx, eyeY), r, r);
+            p.drawEllipse(QPointF(rxe, eyeY), r, r);
+        } else {
+            p.drawRoundedRect(QRectF(lx - r, eyeY - r * 0.85, 2 * r, 1.7 * r), 3, 3);
+            p.drawRoundedRect(QRectF(rxe - r, eyeY - r * 0.85, 2 * r, 1.7 * r), 3, 3);
+        }
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(lx + r, eyeY - 1), QPointF(rxe - r, eyeY - 1));
+        p.drawLine(QPointF(lx - r, eyeY - 1), QPointF(faceRect.left() + 1, eyeY - 3));
+        p.drawLine(QPointF(rxe + r, eyeY - 1), QPointF(faceRect.right() - 1, eyeY - 3));
+        p.setPen(Qt::NoPen);
+    }
+
+    // --- Nose. ---
+    const int noseStyle = rnd(3);
+    p.setPen(Qt::NoPen);
+    p.setBrush(skinShadow);
+    if (noseStyle == 1) {
+        p.drawEllipse(QPointF(cx, 84), 2.6, 2.2);
+    } else if (noseStyle == 2) {
+        p.setPen(QPen(skinShadow, 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath nz;
+        nz.moveTo(cx, 78);
+        nz.lineTo(cx, 85);
+        nz.lineTo(cx + 3, 84);
+        p.drawPath(nz);
+        p.setPen(Qt::NoPen);
+    } else {
+        p.drawEllipse(QPointF(cx + 1, 84), 2.0, 1.6);
+    }
+
+    // --- Cheeks: optional blush and/or freckles. ---
+    if (chance(28)) {
+        QColor blush("#ff7a90");
+        blush.setAlpha(95);
+        p.setPen(Qt::NoPen);
+        p.setBrush(blush);
+        p.drawEllipse(QPointF(cx - 20, 86), 6, 4);
+        p.drawEllipse(QPointF(cx + 20, 86), 6, 4);
+    }
+    if (chance(16)) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(skinShadow);
+        for (int s = -1; s <= 1; s += 2)
+            for (int i = 0; i < 3; ++i)
+                p.drawEllipse(QPointF(cx + s * (13 + i * 4), 82 + (i % 2) * 3),
+                              1.3, 1.3);
+    }
+
+    // --- Facial hair (drawn under the mouth so the mouth still reads). ---
+    if (chance(26)) {
+        if (chance(60)) { // beard along the jaw
+            p.save();
+            QPainterPath clip;
+            clip.addEllipse(faceRect);
+            p.setClipPath(clip);
+            p.setPen(Qt::NoPen);
+            p.setBrush(hair);
+            QPainterPath beard;
+            beard.addRoundedRect(QRectF(faceRect.left(), 86, faceRect.width(),
+                                        faceRect.bottom() - 86 + 4),
+                                 14, 14);
+            p.drawPath(beard);
+            p.restore();
+        }
+        if (chance(70)) { // moustache
+            p.setPen(Qt::NoPen);
+            p.setBrush(hair);
+            QPainterPath m;
+            m.moveTo(cx, 89);
+            m.cubicTo(cx - 6, 86, cx - 13, 87, cx - 15, 92);
+            m.cubicTo(cx - 9, 90, cx - 4, 91, cx, 90);
+            m.cubicTo(cx + 4, 91, cx + 9, 90, cx + 15, 92);
+            m.cubicTo(cx + 13, 87, cx + 6, 86, cx, 89);
+            p.drawPath(m);
+        }
+    }
+
+    // --- Mouth. ---
+    const QColor lip("#8a3324");
+    const int mouthStyle = rnd(5);
+    p.setPen(Qt::NoPen);
+    if (mouthStyle == 0) { // smile
+        p.setPen(QPen(lip, 3.2, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(cx - 11, mouthY - 9, 22, 18), 200 * 16, 140 * 16);
+        p.setPen(Qt::NoPen);
+    } else if (mouthStyle == 1) { // open grin with a tooth strip
+        p.setBrush(QColor("#5e241c"));
+        QPainterPath m;
+        m.moveTo(cx - 12, mouthY - 1);
+        m.quadTo(cx, mouthY + 14, cx + 12, mouthY - 1);
+        m.closeSubpath();
+        p.drawPath(m);
+        p.save();
+        p.setClipPath(m);
+        p.setBrush(Qt::white);
+        p.drawRect(QRectF(cx - 13, mouthY - 3, 26, 4.5));
+        p.restore();
+    } else if (mouthStyle == 2) { // neutral
+        p.setPen(QPen(lip, 3.0, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(cx - 8, mouthY + 2), QPointF(cx + 8, mouthY + 2));
+        p.setPen(Qt::NoPen);
+    } else if (mouthStyle == 3) { // surprised
+        p.setBrush(QColor("#6e2b22"));
+        p.drawEllipse(QPointF(cx, mouthY + 2), 5.0, 6.2);
+    } else { // smirk
+        p.setPen(QPen(lip, 3.2, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(cx - 9, mouthY - 6, 20, 16), 210 * 16, 95 * 16);
+        p.setPen(Qt::NoPen);
+    }
+
     p.end();
 
     QByteArray png;
@@ -3608,8 +3912,8 @@ void MainWindow::startSession()
         // a restart doesn't fire an alert for every node that is already online.
         m_nodeAlertGraceUntilMs =
             QDateTime::currentMSecsSinceEpoch() + 12000;
-        // Broadcast the generated identicon when no custom avatar is set, so
-        // peers always see something on-brand for this node.
+        // Broadcast the generated face avatar when no custom avatar is set, so
+        // peers always see a unique, identifiable face for this node.
         m_backend->setAvatar(effectiveAvatar());
         // Fixed shared channels for the whole network — no per-repo rooms. Every
         // node joins the same #general and #random over the one encrypted room.
@@ -23917,7 +24221,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *generateButton = new QPushButton("Generate");
     generateButton->setObjectName("ghostButton");
     generateButton->setCursor(Qt::PointingHandCursor);
-    generateButton->setToolTip("Generate a fresh ForkMesh mesh-identicon avatar");
+    generateButton->setToolTip("Generate a fresh random face avatar");
     connect(generateButton, &QPushButton::clicked, this, [this] {
         const QByteArray png = forkMeshAvatarPng(
             QString::number(QRandomGenerator::global()->generate64()));
