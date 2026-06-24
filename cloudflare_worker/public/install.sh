@@ -6,6 +6,11 @@
 # package manager is detected. Set FORKMESH_NO_INSTALL_DEPS=1 to opt out.
 set -euo pipefail
 
+# Installer script version. Bump on every change to install.sh so a user can
+# confirm — from the banner printed at startup — that they are running the
+# freshly deployed script and not a cached/older copy from the CDN edge.
+INSTALLER_VERSION="0.5.0 (2026-06-23)"
+
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
 # Override FORKMESH_HOST when self-hosting. By default, the installer asks the
@@ -45,9 +50,23 @@ resolve_install_node() {
   FORKMESH_NODE="$node"
 }
 
+printf '\033[32m╭───────────────────────────────────────────────╮\033[0m\n'
+printf '\033[32m│\033[0m  ForkMesh installer  \033[2mv%-24s\033[0m\033[32m│\033[0m\n' "$INSTALLER_VERSION"
+printf '\033[32m╰───────────────────────────────────────────────╯\033[0m\n'
+say "Host:   $FORKMESH_HOST"
+say "Source: ${SRC}"
+say "Target: ${BIN}"
+if [ "$(id -u)" -eq 0 ]; then
+  say "Privileges: running as root (no sudo needed)"
+else
+  say "Privileges: non-root; will use sudo/doas for package installs"
+fi
+
 if [ -z "$REPO" ]; then
+  say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
   REPO="${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}"
+  say "Using mirror node: $FORKMESH_NODE"
 fi
 
 # --- privilege escalation ---------------------------------------------------
@@ -97,11 +116,14 @@ pm_refresh() {
 }
 
 # Run a package-manager command with escalation when required (brew must not
-# run as root).
+# run as root). Echoes the exact command (including any sudo/doas prefix) so the
+# install log shows precisely what is being executed and with what privileges.
 run_pm() {
   if [ "$PM" = "brew" ]; then
+    say "Running: $*"
     "$@"
   else
+    say "Running: ${SUDO:+$SUDO }$*"
     $SUDO "$@"
   fi
 }
@@ -169,6 +191,7 @@ pkg_for() {
 ensure() {
   local what="$1"; shift
   if "$@" >/dev/null 2>&1; then
+    say "  $what: already present"
     return 0
   fi
 
@@ -198,8 +221,13 @@ have_compiler() {
     || command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1
 }
 
-detect_pm || warn "No supported package manager found; missing tools cannot be auto-installed."
+if detect_pm; then
+  say "Detected package manager: $PM (${PM_INSTALL[*]})"
+else
+  warn "No supported package manager found; missing tools cannot be auto-installed."
+fi
 
+say "Checking build prerequisites (git, cmake, compiler, Qt 6, OpenSSL)…"
 ensure git    command -v git
 ensure cmake  command -v cmake
 
