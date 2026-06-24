@@ -156,8 +156,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         });
         headerRow->addWidget(copy);
     }
-    if (message.self && !message.deleted) {
-        if (!message.text.isEmpty()) {
+    if (!message.deleted) {
+        // Edit stays author-only (you can only rewrite your own words).
+        if (message.self && !message.text.isEmpty()) {
             auto *edit = new QPushButton("Edit");
             edit->setObjectName("messageAction");
             edit->setCursor(Qt::PointingHandCursor);
@@ -167,24 +168,30 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
             });
             headerRow->addWidget(edit);
         }
-        auto *del = new QPushButton("Delete");
-        del->setObjectName("messageAction");
-        del->setCursor(Qt::PointingHandCursor);
-        del->setToolTip("Delete message");
-        connect(del, &QPushButton::clicked, this, [this] {
-            emit deleteRequested(m_message.id);
-        });
-        headerRow->addWidget(del);
-    } else if (canModerate && !message.deleted) {
-        // Admins can delete other people's messages too.
-        auto *del = new QPushButton("Delete");
-        del->setObjectName("messageAction");
-        del->setCursor(Qt::PointingHandCursor);
-        del->setToolTip("Delete this message as an administrator");
-        connect(del, &QPushButton::clicked, this, [this] {
-            emit moderateDeleteRequested(m_message.id);
-        });
-        headerRow->addWidget(del);
+        // Delete is shown on EVERY message for an admin (a full moderation
+        // override that deletes any message, including the admin's own), and on
+        // your own messages otherwise. The admin path goes through
+        // moderateDeleteRequested, which deletes unconditionally; the self path
+        // is the ordinary author delete.
+        if (canModerate) {
+            auto *del = new QPushButton("Delete");
+            del->setObjectName("messageAction");
+            del->setCursor(Qt::PointingHandCursor);
+            del->setToolTip("Delete this message as an administrator");
+            connect(del, &QPushButton::clicked, this, [this] {
+                emit moderateDeleteRequested(m_message.id);
+            });
+            headerRow->addWidget(del);
+        } else if (message.self) {
+            auto *del = new QPushButton("Delete");
+            del->setObjectName("messageAction");
+            del->setCursor(Qt::PointingHandCursor);
+            del->setToolTip("Delete message");
+            connect(del, &QPushButton::clicked, this, [this] {
+                emit deleteRequested(m_message.id);
+            });
+            headerRow->addWidget(del);
+        }
     }
     column->addLayout(headerRow);
 

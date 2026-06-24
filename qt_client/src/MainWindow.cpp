@@ -79,6 +79,7 @@
 #include <QTimeZone>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QRegularExpressionValidator>
 #include <QScrollArea>
 #include <QSet>
 #include <QScrollBar>
@@ -2822,6 +2823,17 @@ void MainWindow::runDeferredStartup()
         refreshRepositoryList();
         openRepoDetail(index);
         logStartup(QStringLiteral("last repository detail loaded"));
+    } else if (m_repoDetailIndex < 0) {
+        // No saved repository to restore: land on the selected node's first repo
+        // (if any) so a fresh session opens on real content, not an empty panel.
+        int firstRepo = -1;
+        for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
+            if (entry.index >= 0) {
+                firstRepo = entry.index;
+                break;
+            }
+        if (firstRepo >= 0)
+            openRepoDetail(firstRepo);
     }
     m_pendingRestoreRepoIndex = -1;
 
@@ -3072,20 +3084,24 @@ QWidget *MainWindow::buildSetupPage()
     title->setObjectName("appTitle");
     title->setAlignment(Qt::AlignHCenter);
     auto *subtitle = new QLabel(
-        "Preserve code, mirror repositories, and chat through a mainnode");
+        "Pick a name and join the mesh \xE2\x80\x94 preserve code, mirror repos, and chat.");
     subtitle->setObjectName("appSubtitle");
     subtitle->setAlignment(Qt::AlignHCenter);
+    subtitle->setWordWrap(true);
     auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
     versionLabel->setObjectName("versionLabel");
     versionLabel->setAlignment(Qt::AlignHCenter);
 
     m_nameEdit = new QLineEdit;
-    m_nameEdit->setPlaceholderText("Node name (e.g. ada-lovelace)");
+    m_nameEdit->setPlaceholderText("Pick a name (e.g. ada-lovelace)");
     m_nameEdit->setMaxLength(63);
     m_nameEdit->setText(savedProfileName());
+    // Only allow characters a node name can contain, so spaces and symbols can't
+    // be typed or pasted in the first place (validated again on submit).
+    m_nameEdit->setValidator(new QRegularExpressionValidator(
+        QRegularExpression(QStringLiteral("[A-Za-z0-9-]*")), m_nameEdit));
     auto *nameHint = new QLabel(
-        "Your public node name: lowercase letters, numbers and hyphens. "
-        "Start with a letter; up to 63 characters.");
+        "Your name on the mesh \xE2\x80\x94 letters, numbers and hyphens, no spaces.");
     nameHint->setObjectName("modeHint");
     nameHint->setWordWrap(true);
     // Payout Solana address is no longer collected on first run — it is set later
@@ -3096,9 +3112,13 @@ QWidget *MainWindow::buildSetupPage()
     m_solanaEdit->setMaxLength(64);
     m_solanaEdit->setText(savedSolanaAddress());
     m_solanaEdit->hide();
+    // The node's public key is no longer surfaced on the welcome screen (it kept
+    // the first run feeling technical). The label is kept as a hidden data-holder
+    // so the code that fills it after identity load keeps working unchanged.
     m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
     m_pubkeyLabel->setObjectName("modeHint");
     m_pubkeyLabel->setWordWrap(true);
+    m_pubkeyLabel->hide();
 
     // Relay server: users only ever see the host (e.g. "forkmesh.com"). The full
     // wss:// API/room URL is assembled in code (canonicalServerUrl). The field is
@@ -3166,7 +3186,6 @@ QWidget *MainWindow::buildSetupPage()
     cardLayout->addSpacing(14);
     cardLayout->addWidget(m_nameEdit);
     cardLayout->addWidget(nameHint);
-    cardLayout->addWidget(m_pubkeyLabel);
     cardLayout->addSpacing(8);
     cardLayout->addWidget(serverLabel);
     cardLayout->addWidget(m_serverUrlEdit);
@@ -3197,8 +3216,19 @@ QWidget *MainWindow::buildSetupPage()
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
     connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
-    connect(m_nameEdit, &QLineEdit::textEdited, this, [](const QString &name) {
-        saveProfileName(name);
+    connect(m_nameEdit, &QLineEdit::textEdited, this, [this](const QString &name) {
+        // Live-lowercase so the name reads exactly as it will register, and clear
+        // any stale validation error as soon as the user starts fixing it.
+        const QString lower = name.toLower();
+        if (lower != name) {
+            const int pos = m_nameEdit->cursorPosition();
+            QSignalBlocker block(m_nameEdit);
+            m_nameEdit->setText(lower);
+            m_nameEdit->setCursorPosition(pos);
+        }
+        if (m_setupError)
+            m_setupError->hide();
+        saveProfileName(lower);
     });
     // The field holds a bare host; persist the canonical full relay URL so every
     // other consumer (which expects a complete wss:// URL) keeps working.
@@ -3244,18 +3274,26 @@ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &
 
 void MainWindow::startSession()
 {
-    // Picking a node name is the very first thing on first run — we don't quietly
+    // Picking a name is the very first thing on first run — we don't quietly
     // assign a generated one and drop the user into an anonymous "browse" mode.
-    // An empty/invalid name blocks here with a prompt so identity comes first.
-    QString name = accountNameFromInput(m_nameEdit->text(), QString());
-    if (name.isEmpty()) {
-        m_setupError->setText("Pick a node name to get started "
-                              "(lowercase letters, numbers and hyphens; "
-                              "start with a letter).");
+    // Validate the name explicitly (rather than silently rewriting it) so spaces
+    // or an odd first/last character are surfaced instead of mangled.
+    const QString raw = m_nameEdit->text().trimmed().toLower();
+    if (raw.isEmpty()) {
+        m_setupError->setText("Pick a name to get started.");
         m_setupError->show();
         m_nameEdit->setFocus();
         return;
     }
+    if (!isValidNodeName(raw)) {
+        m_setupError->setText(
+            "That name won't work — use lowercase letters, numbers and hyphens "
+            "(no spaces), starting with a letter.");
+        m_setupError->show();
+        m_nameEdit->setFocus();
+        return;
+    }
+    const QString name = raw; // validated; no rewriting needed
     m_nameEdit->setText(name);
     saveProfileName(name);
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
@@ -6389,8 +6427,8 @@ void MainWindow::showRepoMenu()
         const QString advertised = e.advertised;
         connect(act, &QAction::triggered, this, [this, index, advertised] {
             if (index >= 0 && index < m_repositories.size())
-                openRepoDetail(index); // files + issues for this repo
-            else if (index == -2)      // advertised mirror: temporary preview
+                openRepoDetailDeferred(index); // files + issues, with a spinner
+            else if (index == -2)              // advertised mirror: temporary preview
                 previewAdvertisedRepo(advertised);
             updateRepoSwitcher();
         });
@@ -7254,6 +7292,9 @@ void MainWindow::selectNode(const QString &node)
     if (m_selectedNode == node)
         return;
     m_selectedNode = node;
+    // Mark the switch in flight before rebuilding the lists so refreshRepositoryList
+    // leaves the first-repo open/clear to this function's deferred load below.
+    m_nodeSwitching = true;
     refreshRepositoryList();
     // Opening the first repo runs a cascade of *synchronous* git commands
     // (branches, commits, the file-search index, object size, README, …), each
@@ -7269,7 +7310,6 @@ void MainWindow::selectNode(const QString &node)
     const QString label = node.isEmpty() ? QStringLiteral("nodes") : node;
     logSystem(QStringLiteral("Switching to %1 — loading its repositories…")
                   .arg(label));
-    m_nodeSwitching = true;
     startNodeSwitchSpin();
     QApplication::setOverrideCursor(Qt::BusyCursor);
     QTimer::singleShot(0, this, [this, node, label] {
@@ -9830,8 +9870,8 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                              "text-decoration:none'>issue #%1</a>")
                              .arg(n);
             m_pullLinksValue->setText(
-                QStringLiteral("<b>Linked issues</b> \xC2\xB7 %1")
-                    .arg(links.join(QStringLiteral(" \xC2\xB7 "))));
+                QString::fromUtf8("<b>Linked issues</b> \xC2\xB7 %1")
+                    .arg(links.join(QString::fromUtf8(" \xC2\xB7 "))));
             m_pullLinksValue->show();
         }
     }
@@ -17146,7 +17186,7 @@ void MainWindow::loadReleasesPanel()
     if (!dir.isEmpty() &&
         runGitCapture(dir,
                       {"for-each-ref", "--sort=-creatordate", "refs/tags",
-                       "--format=%(refname:short)%x1f%(creatordate:short)%x1f"
+                       "--format=%(refname:short)%1f%(creatordate:short)%1f"
                        "%(contents:subject)"},
                       &out, nullptr)) {
         for (const QByteArray &line : out.split('\n')) {
@@ -17892,6 +17932,60 @@ void MainWindow::stopNodeSwitchSpin()
         m_nodeSwitchSpinTimer->stop();
     // Restore the node button's normal label + OS/online badge icon.
     updateNodeSwitcher();
+}
+
+void MainWindow::startRepoSwitchSpin()
+{
+    if (!m_repoMenuButton)
+        return;
+    if (!m_repoSwitchSpinTimer) {
+        m_repoSwitchSpinTimer = new QTimer(this);
+        connect(m_repoSwitchSpinTimer, &QTimer::timeout, this, [this] {
+            m_repoSwitchAngle = (m_repoSwitchAngle + 30) % 360;
+            m_repoMenuButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                                    m_repoSwitchAngle, 16)));
+        });
+    }
+    m_repoMenuButton->setIcon(
+        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+    m_repoSwitchSpinTimer->start(60);
+}
+
+void MainWindow::stopRepoSwitchSpin()
+{
+    if (m_repoSwitchSpinTimer)
+        m_repoSwitchSpinTimer->stop();
+    // Clear the spinner icon; the repo button shows just its label + count.
+    if (m_repoMenuButton)
+        m_repoMenuButton->setIcon(QIcon());
+    updateRepoSwitcher();
+}
+
+void MainWindow::openRepoDetailDeferred(int repoIndex)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
+    // Already open: just surface its view, no reload.
+    if (repoIndex == m_repoDetailIndex && !m_repoDetailLoading) {
+        showSection(0);
+        return;
+    }
+    // Coalesce duplicate requests for the same repo (refreshRepositoryList can
+    // fire repeatedly while repos sync in) so we don't stack deferred loads.
+    if (m_repoOpenPending == repoIndex)
+        return;
+    m_repoOpenPending = repoIndex;
+    // Paint busy feedback immediately, then run the heavy synchronous load on the
+    // next event-loop turn so the dropdown closes and the spinner shows first.
+    startRepoSwitchSpin();
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+    QTimer::singleShot(0, this, [this, repoIndex] {
+        m_repoOpenPending = -1;
+        openRepoDetail(repoIndex);
+        stopRepoSwitchSpin();
+        QApplication::restoreOverrideCursor();
+    });
 }
 
 void MainWindow::nodeSwitchStep(const QString &what)
@@ -22933,8 +23027,10 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     if (message.deleted)
         return nullptr;
 
-    // Admins get a Delete control on everyone's messages (moderation).
-    const bool canModerate = m_isAdmin && !message.self;
+    // Admins get a Delete control on EVERY message — anyone's and their own — as
+    // a full moderation override (MessageRow routes it through the unconditional
+    // admin-delete path).
+    const bool canModerate = m_isAdmin;
     auto *row = new MessageRow(message, senderColor(message.senderName), canModerate);
     if (m_avatars.contains(message.senderId))
         row->setAvatar(m_avatars.value(message.senderId));
@@ -24039,6 +24135,26 @@ void MainWindow::refreshRepositoryList()
     updateRepoActionMenus();
     updateHomeStats();
 
+    // Auto-select the selected node's first repository when nothing is open yet
+    // (e.g. on a fresh install where repos arrive asynchronously) so the user
+    // lands on real content instead of an empty panel. A node switch runs its own
+    // first-repo open, so skip while one is in flight. Held off until deferred
+    // startup so it never races the last-open-repository restore. When the node
+    // has no repos at all, clear the panel — updateRepoSwitcher hides the section.
+    int firstRepo = -1;
+    for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
+        if (entry.index >= 0) {
+            firstRepo = entry.index;
+            break;
+        }
+    if (m_deferredStartupRun && m_pendingRestoreRepoIndex < 0 &&
+        !m_nodeSwitching && !m_repoDetailLoading) {
+        if (m_repoDetailIndex < 0 && firstRepo >= 0)
+            openRepoDetailDeferred(firstRepo);
+        else if (firstRepo < 0 && m_repoDetailIndex >= 0)
+            clearRepoDetail();
+    }
+
     // Advertise our own mirrors so other nodes can see and mirror them too.
     // Advertise under the SAME owner/name the live host tunnel and catalog
     // register with (catalogOwner + canonical name), not the raw repo.owner.
@@ -25127,6 +25243,36 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                 rootCommit = roots.last().trimmed(); // earliest root commit
         }
     }
+    // Owner-signed fingerprint of the refs this node serves (sha256 over the
+    // canonical heads+tags advertisement). The relay pins this and refuses to
+    // serve any mirror whose live advertisement doesn't hash to it, so a tampered
+    // or rolled-back mirror can never be cloned. MUST match the worker's
+    // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
+    // refs/tags/* only, sorted, joined by '\n'.
+    QString stateHash;
+    {
+        QByteArray out;
+        if (!repo.mirrorPath.trimmed().isEmpty() &&
+            runGitCapture(repo.mirrorPath,
+                          {"for-each-ref", "--format=%(objectname) %(refname)",
+                           "refs/heads/", "refs/tags/"},
+                          &out, nullptr)) {
+            QStringList lines;
+            const QStringList rows =
+                QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+            for (const QString &raw : rows) {
+                const QString line = raw.trimmed();
+                if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
+                    continue;
+                lines.append(line);
+            }
+            lines.sort();
+            stateHash = QString::fromUtf8(
+                QCryptographicHash::hash(lines.join('\n').toUtf8(),
+                                         QCryptographicHash::Sha256)
+                    .toHex());
+        }
+    }
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"description", repo.description},
@@ -25150,6 +25296,16 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QByteArray catalogCanonical =
         ("forkmesh-catalog-v1\n" + owner + "\n" + name + "\n" + updatedAt).toUtf8();
     metadata.insert("catalogSig", m_profileIdentity.signData(catalogCanonical));
+    // Attest the served refs so the relay can detect a tampered/stale mirror.
+    // Signed with the same account key the relay verifies for the catalog write.
+    if (!stateHash.isEmpty()) {
+        metadata.insert("stateHash", stateHash);
+        const QByteArray stateCanonical =
+            ("forkmesh-repostate-v1\n" + owner + "\n" + name + "\n" + stateHash +
+             "\n" + updatedAt)
+                .toUtf8();
+        metadata.insert("stateSig", m_profileIdentity.signData(stateCanonical));
+    }
 
     QNetworkRequest request(catalogApiUrl());
     request.setHeader(QNetworkRequest::ContentTypeHeader,

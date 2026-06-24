@@ -111,6 +111,55 @@
         border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
         color: var(--accent);
       }
+      .leaderboards {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px 32px;
+        padding: 0 18px 18px;
+      }
+      .board h3 {
+        margin: 0 0 2px;
+        font-size: 14px;
+        color: var(--text);
+      }
+      .board-sub {
+        margin: 0 0 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .board-row {
+        display: grid;
+        grid-template-columns: 26px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 0;
+        border-top: 1px solid var(--border);
+      }
+      .board-row:first-of-type {
+        border-top: none;
+      }
+      .board-rank {
+        color: var(--muted-2);
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .board-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .board-value {
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+        text-align: right;
+      }
+      .board-empty {
+        color: var(--muted);
+        padding: 16px 0;
+      }
       @media (max-width: 720px) {
         .online-node-row,
         .online-axis {
@@ -126,6 +175,10 @@
         }
         .wallet-heading {
           display: none;
+        }
+        .leaderboards {
+          grid-template-columns: 1fr;
+          gap: 20px;
         }
       }
     </style>
@@ -228,6 +281,18 @@
         </div>
         <div id="online-graph" class="online-graph" aria-label="Node online activity over the last 24 hours">
           <div class="online-graph-empty">Loading activity…</div>
+        </div>
+      </section>
+
+      <section class="panel doc-panel" aria-labelledby="leaderboards-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="leaderboards-title">Leaderboards</h2>
+            <p>Top nodes by uptime and owners by published repositories. More boards (most-mirrored repos, contributor activity, funds received) arrive as the network records the data behind them.</p>
+          </div>
+        </div>
+        <div id="leaderboards" class="leaderboards" aria-live="polite">
+          <div class="board-empty">Loading leaderboards…</div>
         </div>
       </section>
 
@@ -383,6 +448,85 @@
             row.appendChild(total);
             root.appendChild(row);
           });
+        }
+        render();
+        setInterval(render, 60000);
+      })();
+    </script>
+    <script>
+      (() => {
+        const root = document.getElementById("leaderboards");
+        if (!root) return;
+        if (location.protocol === "file:") {
+          root.innerHTML = '<div class="board-empty">Preview only.</div>';
+          return;
+        }
+        const fmtMinutes = (m) => {
+          m = Number(m) || 0;
+          const h = Math.floor(m / 60);
+          const min = m % 60;
+          if (h && min) return `${h}h ${min}m`;
+          if (h) return `${h}h`;
+          return `${min}m`;
+        };
+        const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+        function board(title, sub, rows, render) {
+          const box = document.createElement("div");
+          box.className = "board";
+          const h = document.createElement("h3");
+          h.textContent = title;
+          box.appendChild(h);
+          const s = document.createElement("p");
+          s.className = "board-sub";
+          s.textContent = sub;
+          box.appendChild(s);
+          if (!rows.length) {
+            const empty = document.createElement("div");
+            empty.className = "board-empty";
+            empty.textContent = "No data yet.";
+            box.appendChild(empty);
+            return box;
+          }
+          rows.forEach((row, i) => {
+            const r = document.createElement("div");
+            r.className = "board-row";
+            const rank = document.createElement("span");
+            rank.className = "board-rank";
+            rank.textContent = `${i + 1}`;
+            const name = document.createElement("span");
+            name.className = "board-name";
+            name.textContent = row.name || "node";
+            const value = document.createElement("span");
+            value.className = "board-value";
+            value.textContent = render(row);
+            r.append(rank, name, value);
+            box.appendChild(r);
+          });
+          return box;
+        }
+        async function render() {
+          let data;
+          try {
+            const res = await fetch("/api/network/leaderboards", {
+              headers: { accept: "application/json" },
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            data = await res.json();
+          } catch (_) {
+            root.innerHTML =
+              '<div class="board-empty">Leaderboards unavailable right now.</div>';
+            return;
+          }
+          const uptime = Array.isArray(data.uptime) ? data.uptime : [];
+          const repos = Array.isArray(data.repos) ? data.repos : [];
+          const hours = Number(data.windowHours) || 48;
+          root.innerHTML = "";
+          root.appendChild(board(
+            "Mainnode uptime", `Most minutes online · last ${hours}h`,
+            uptime, (row) => fmtMinutes(row.minutes)));
+          root.appendChild(board(
+            "Top owners", "Most public repositories",
+            repos, (row) => plural(Number(row.repos) || 0, "repo")));
         }
         render();
         setInterval(render, 60000);

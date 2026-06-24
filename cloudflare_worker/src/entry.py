@@ -316,6 +316,49 @@ def pkt_line(payload):
     return ("%04x" % (len(payload) + 4)).encode() + payload
 
 
+def advertised_refs_canonical(data):
+    # Canonical, hashable fingerprint of the served branches + tags, derived from
+    # a `git upload-pack --advertise-refs` body (the bytes a host streams back for
+    # info/refs, WITHOUT the "# service=" header the worker prepends). Output is
+    # "<sha> <refname>" lines for refs/heads/* and refs/tags/* only, sorted, joined
+    # by "\n" — byte-for-byte identical to the desktop node's mirrorStateHash()
+    # input (git for-each-ref over the same namespaces). HEAD, peeled tags
+    # ("...^{}"), and per-line capabilities (after the first NUL) are dropped.
+    # Assumes the traditional (protocol v0) advertisement; the host never sets
+    # GIT_PROTOCOL=version=2, so refs are always listed inline.
+    data = bytes(data or b"")
+    refs = []
+    i = 0
+    n = len(data)
+    while i + 4 <= n:
+        try:
+            length = int(data[i:i + 4], 16)
+        except ValueError:
+            break
+        if length == 0:        # flush-pkt ("0000") — section/stream boundary
+            i += 4
+            continue
+        if length < 4 or i + length > n:
+            break              # malformed; stop rather than misread
+        line = data[i + 4:i + length].rstrip(b"\n")
+        i += length
+        nul = line.find(b"\x00")
+        if nul != -1:          # strip capabilities advertised on the first ref
+            line = line[:nul]
+        parts = line.split(b" ", 1)
+        if len(parts) != 2:
+            continue
+        sha = parts[0].decode("ascii", "ignore")
+        name = parts[1].decode("utf-8", "ignore")
+        if name == "HEAD" or name.endswith("^{}"):
+            continue
+        if not (name.startswith("refs/heads/") or name.startswith("refs/tags/")):
+            continue
+        refs.append(sha + " " + name)
+    refs.sort()
+    return "\n".join(refs)
+
+
 def decode_git_request_body(data, content_encoding, max_bytes=8 * 1024 * 1024):
     """Return the Git smart-HTTP body after decoding HTTP content encodings."""
     data = bytes(data or b"")
@@ -431,6 +474,7 @@ async def edge_cache_delete(cache_key):
 
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
+NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
 
 
@@ -599,22 +643,32 @@ async def _live_online_nodes(env, now):
     nodes = {}
     host_rows = await d1_all(
         env,
-        """SELECT hp.repo_bi, r.owner_bi, r.data
+        """SELECT hp.repo_bi, r.owner_bi, r.is_private, r.data
              FROM host_presence hp
              LEFT JOIN repositories r ON r.key_bi = hp.repo_bi
              WHERE hp.ts >= ?""",
         now - HOST_PRESENCE_STALE_MS,
     )
     for row in host_rows:
-        node_key = row.get("owner_bi") or row.get("repo_bi")
-        if not node_key:
+        # A host_presence row is written for ANY owner/repo URL that gets served
+        # (touch_host_presence keys on a blind index of the path), so it includes
+        # repos that were never published to the catalog — ad-hoc hosts. Those
+        # rows don't join to a repository, and the public /network/ graph used to
+        # surface them as anonymous "repo <hash>" phantom nodes. Only count hosts
+        # serving a published, public, non-blocked repo, keyed by owner — the same
+        # filtering the catalog and leaderboards apply.
+        owner_bi = row.get("owner_bi")
+        if not owner_bi or not row.get("data") or int(row.get("is_private") or 0):
             continue
-        label = ""
-        if row.get("data"):
-            rec = await decrypt_row(env, row["data"])
-            if rec:
-                label = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
-        nodes[node_key] = label or nodes.get(node_key) or _short_presence_label("repo", node_key)
+        rec = await decrypt_row(env, row["data"])
+        if not rec:
+            continue
+        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+            continue
+        label = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
+        if not label:
+            continue
+        nodes[owner_bi] = label
 
     acct_rows = await d1_all(
         env,
@@ -732,6 +786,78 @@ async def online_history(env):
         {"ok": True, "hours": series, "nodes": nodes[:ONLINE_HISTORY_MAX_NODES]},
         cache_seconds=30,
     )
+
+
+# --- Leaderboards (/network/) ----------------------------------------------
+# Public ranking boards. Only metrics with persisted backing data are computed
+# here: node uptime (from the hourly online samples) and public-repo count per
+# owner (from the catalog). Other boards from issue #11 — most-mirrored /
+# longest-hosted repos, contributor activity, and funds received — need new
+# data collection first and are intentionally left out until that exists.
+
+LEADERBOARD_LIMIT = 10  # rows returned per board
+
+
+async def network_leaderboards(env):
+    cached = await edge_cache_match(NETWORK_LEADERBOARDS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    now = int(Date.now())
+
+    # --- Uptime: rank nodes by total minutes online over the retained window.
+    # online_hourly_nodes is pruned to ONLINE_HISTORY_RETAIN_MS, so this is
+    # inherently a "last 48h" board. label is plaintext (the node's own name).
+    window_start = now - ONLINE_HISTORY_RETAIN_MS
+    uptime_rows = await d1_all(
+        env,
+        "SELECT node_key, label, node_minutes FROM online_hourly_nodes "
+        "WHERE hour_ts >= ?",
+        window_start,
+    )
+    uptime = {}
+    for row in uptime_rows:
+        key = str(row.get("node_key") or "")
+        if not key:
+            continue
+        item = uptime.setdefault(key, {"label": "", "minutes": 0})
+        item["minutes"] += int(row.get("node_minutes") or 0)
+        if row.get("label"):
+            item["label"] = clean_string(row.get("label", ""), MAX_NODE_NAME)
+    uptime_board = [
+        {"name": v["label"] or _short_presence_label("node", k),
+         "minutes": v["minutes"]}
+        for k, v in uptime.items() if v["minutes"] > 0
+    ]
+    uptime_board.sort(key=lambda n: (-n["minutes"], n["name"]))
+
+    # --- Repos: public repositories per owner (same filtering as the catalog:
+    # public only, blocked identities excluded).
+    repo_rows = await d1_all(
+        env, "SELECT data FROM repositories WHERE is_private = 0")
+    counts = {}
+    for row in repo_rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+            continue
+        owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
+        if not owner:
+            continue
+        counts[owner] = counts.get(owner, 0) + 1
+    repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
+    repo_board.sort(key=lambda n: (-n["repos"], n["name"]))
+
+    resp = json_response(
+        {"ok": True,
+         "windowHours": ONLINE_HISTORY_RETAIN_MS // 3600000,
+         "uptime": uptime_board[:LEADERBOARD_LIMIT],
+         "repos": repo_board[:LEADERBOARD_LIMIT]},
+        cache_seconds=NETWORK_STATS_TTL,
+    )
+    await edge_cache_put(NETWORK_LEADERBOARDS_CACHE_KEY, resp)
+    return resp
 
 
 async def install_source(env):
@@ -924,6 +1050,12 @@ def safe_catalog_record(data):
         "source": clean_string(data.get("source", "local-node"), 40),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
+        # Owner-signed fingerprint of the repo's served refs (sha256 over the
+        # canonical heads+tags advertisement; see advertised_refs_canonical). The
+        # relay pins this and refuses to serve any mirror whose live advertisement
+        # doesn't hash to it — so a tampered or rolled-back mirror can't be cloned.
+        "stateHash": clean_string(data.get("stateHash", ""), 64),
+        "stateSig": clean_string(data.get("stateSig", ""), 220),
     }
 
 
@@ -1418,6 +1550,21 @@ async def catalog_handler(env, request):
         if not await ed25519_verify(owner_pub, catalog_sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
 
+        # Repo-state attestation: the same owner key signs the fingerprint of the
+        # refs it serves, so the relay can later reject a tampered/stale mirror.
+        # Reject the whole write if a present attestation doesn't verify (a bad
+        # one must never be pinned); absent is allowed for backward compatibility.
+        state_hash = record.get("stateHash", "")
+        state_sig = record.get("stateSig", "")
+        if state_hash or state_sig:
+            state_canonical = (
+                "forkmesh-repostate-v1\n" + owner + "\n" + record["name"] +
+                "\n" + state_hash + "\n" + record["updatedAt"]
+            ).encode()
+            if not (state_hash and state_sig and await ed25519_verify(
+                    owner_pub, state_sig, state_canonical)):
+                return json_response({"error": "bad_state_signature"}, status=401)
+
         owner_bi = await blind_index(env, owner)
         # Anti-spam: throttle writes per owner and cap how many repos one owner may
         # publish, so a single key can't flood the catalog.
@@ -1427,8 +1574,18 @@ async def catalog_handler(env, request):
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
         # Per-owner record cap (an update to an existing repo is always allowed).
-        exists = await d1_first(
-            env, "SELECT 1 AS x FROM repositories WHERE key_bi=?", key_bi)
+        prior_row = await d1_first(
+            env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        exists = prior_row is not None
+        # Reject rollbacks: a replayed older record must not be able to repin an
+        # earlier (validly-signed) repo state and downgrade the served refs.
+        if exists:
+            prior = await decrypt_row(env, prior_row["data"]) or {}
+            try:
+                if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
+                    return json_response({"error": "stale_update"}, status=409)
+            except (TypeError, ValueError):
+                pass
         if not exists:
             cnt = await d1_first(
                 env, "SELECT COUNT(*) AS c FROM repositories WHERE owner_bi=?", owner_bi)
@@ -4758,6 +4915,10 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/network/online-history", "/api/network/online-history/"):
             return await online_history(self.env)
 
+        # Public ranking boards (node uptime + repos per owner) for /network/.
+        if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
+            return await network_leaderboards(self.env)
+
         # Installer clone source: pick the currently-online forkmesh host with
         # the most retained uptime instead of baking one node id into install.sh.
         if url.path in ("/api/install-source", "/api/install-source/"):
@@ -5307,6 +5468,27 @@ class ForkMeshHost(DurableObject):
         except Exception:
             pass
 
+    async def _state_pin(self, path):
+        # The owner-signed stateHash pinned for this repo (sha256 of its canonical
+        # heads+tags advertisement), or None if the owner has not attested one.
+        match = GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)
+        if not match:
+            return None
+        owner = safe_segment(match.group(1))
+        repo = safe_segment(match.group(2))
+        if not owner or not repo:
+            return None
+        try:
+            key_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+            if not row:
+                return None
+            rec = await decrypt_row(self.env, row["data"])
+        except Exception:
+            return None
+        return (rec or {}).get("stateHash") or None
+
     async def _git(self, request, op, body=None):
         # Forward a git smart-HTTP request to the hosting client, which runs
         # git upload-pack on its local mirror and streams the result back in
@@ -5363,6 +5545,21 @@ class ForkMeshHost(DurableObject):
 
         data = result.get("data", b"")
         if op == "git-info-refs":
+            # Tamper/rollback gate: if the owner has pinned a repo-state hash,
+            # the refs this mirror advertises must hash to it. A node serving a
+            # forged or stale mirror fails here, so no clone ever receives it.
+            # (Fails open when nothing is pinned, e.g. a not-yet-attested repo.)
+            pinned = await self._state_pin(urlparse(request.url).path)
+            if pinned and await sha256_hex(advertised_refs_canonical(data)) != pinned:
+                err = (b"ERR repository failed integrity check "
+                       b"(mirror may be tampered or out of date)\n")
+                body_out = (
+                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
+                    pkt_line(err)
+                )
+                return git_bytes_response(
+                    body_out, "application/x-git-upload-pack-advertisement"
+                )
             body_out = (
                 pkt_line(b"# service=git-upload-pack\n") + b"0000" + data
             )
