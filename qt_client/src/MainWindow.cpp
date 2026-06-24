@@ -21607,12 +21607,36 @@ QWidget *MainWindow::buildBranchesTab()
     connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &MainWindow::updateBranchDiffSticky);
 
+    // Changed-files list beside the diff (same pattern as the commit/PR viewers):
+    // click a file to scroll the diff straight to it.
+    m_branchFilesSummary = new QLabel;
+    m_branchFilesSummary->setObjectName("sectionLabel");
+    m_branchFilesSummary->setTextFormat(Qt::RichText);
+    m_branchFileList = new QListWidget;
+    m_branchFileList->setObjectName("overviewList");
+    m_branchFileList->setMinimumWidth(180);
+    connect(m_branchFileList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item && m_branchDiffView)
+                    m_branchDiffView->scrollToAnchor(
+                        item->data(Qt::UserRole).toString());
+            });
+    auto *filesPane = new QWidget;
+    auto *filesLayout = new QVBoxLayout(filesPane);
+    filesLayout->setContentsMargins(0, 0, 0, 0);
+    filesLayout->setSpacing(6);
+    filesLayout->addWidget(m_branchFilesSummary);
+    filesLayout->addWidget(m_branchFileList, 1);
+
     auto *split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
     split->addWidget(m_branchesTable);
+    split->addWidget(filesPane);
     split->addWidget(m_branchDiffView);
     split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 1);
-    split->setSizes({720, 980});
+    split->setStretchFactor(1, 0);
+    split->setStretchFactor(2, 1);
+    split->setSizes({560, 220, 920});
     layout->addWidget(split, 1);
     return page;
 }
@@ -21821,6 +21845,13 @@ void MainWindow::showBranchDiff(const QString &branch)
         return;
     m_branchDiffBranch = branch;
     m_branchDiffFileSpans.clear();
+    // Reset the changed-files list; the success path below repopulates it.
+    if (m_branchFileList) {
+        QSignalBlocker block(m_branchFileList);
+        m_branchFileList->clear();
+    }
+    if (m_branchFilesSummary)
+        m_branchFilesSummary->clear();
     m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
@@ -21852,6 +21883,39 @@ void MainWindow::showBranchDiff(const QString &branch)
             ? QStringLiteral("<p style='color:#8b949e'>No changes between %1 and %2.</p>")
                   .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
             : html);
+
+    // Changed-files list: a status-coloured row per file; click to scroll the
+    // diff to it (mirrors the commit/PR diff viewers).
+    if (m_branchFilesSummary)
+        m_branchFilesSummary->setText(QStringLiteral("%1 file%2 changed")
+                                          .arg(files.size())
+                                          .arg(files.size() == 1 ? "" : "s"));
+    if (m_branchFileList) {
+        QSignalBlocker block(m_branchFileList);
+        for (const DiffFileEntry &f : files) {
+            const QString name = f.path.section(QLatin1Char('/'), -1);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QString icon = "file-diff";
+            QColor tint("#d29922"); // modified
+            if (f.status == QLatin1String("added")) {
+                icon = "diff";
+                tint = QColor("#3fb950");
+            } else if (f.status == QLatin1String("deleted")) {
+                icon = "trash";
+                tint = QColor("#f85149");
+            } else if (f.status == QLatin1String("renamed")) {
+                icon = "file-diff";
+                tint = QColor("#58a6ff");
+            }
+            item->setIcon(themedOcticon(icon, tint, 14));
+            item->setData(Qt::UserRole, f.anchor);
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            m_branchFileList->addItem(item);
+        }
+    }
+
     // Record each file header's position so the sticky bar can name the file
     // currently scrolled into view.
     QTextDocument *spanDoc = m_branchDiffView->document();
