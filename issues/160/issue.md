@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 160
 title: remove the star button
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 23
