@@ -605,6 +605,14 @@ private:
     // rev-parse` to catch tips moved out from under us (e.g. by a background
     // agent committing into the same working tree).
     bool commitsListIsCurrent();
+    // The served mirror's tip for the branch currently browsed in the repo
+    // detail (or empty when there's no mirror). The "waiting to sync" markers
+    // hang off this, so the commit list must reload whenever it moves.
+    QString currentMirrorTip() const;
+    // If the commit list is on screen but stale (local tip or mirror tip moved),
+    // rebuild it so the "waiting to sync" markers stay correct without a manual
+    // tab switch. Cheap no-op when the list isn't visible or is already current.
+    void refreshCommitMarkersIfStale();
     // Full hashes of commits in the local working copy that the network mirror
     // doesn't have yet (i.e. ahead of the mirror, not yet synced). Empty for a
     // browse-only mirror, which only ever pulls.
@@ -1212,6 +1220,11 @@ private:
     // subprocesses plus 300 row widgets — when the branch and tip are unchanged.
     QString m_commitsLoadedRef;
     QString m_commitsLoadedTip;
+    // The served mirror's tip at the time the list was built. The "waiting to
+    // sync" markers compare the local history against this, so a publish/sync
+    // that advances the mirror (without moving the local tip) must invalidate the
+    // cached list — otherwise it keeps showing stale markers.
+    QString m_commitsLoadedMirrorTip;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
     // The banner floats over the top of the commit table on its own layer so
