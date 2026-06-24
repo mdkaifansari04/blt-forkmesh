@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 179
 title: add a close with comment button  to the issue
-status: open
+status: closed
 labels: []
 milestone: MVP launch
 priority: 22
