@@ -7066,6 +7066,10 @@ void MainWindow::updateRepoPushButton()
 {
     if (!m_repoPushButton)
         return;
+    // This runs whenever the push state may have changed (a new local commit, a
+    // completed publish/sync). If the commit list is on screen, keep its "waiting
+    // to sync" markers in step so they appear/clear without a manual refresh.
+    refreshCommitMarkersIfStale();
     m_repoPushButton->hide();
     m_repoPushButton->setEnabled(false);
     if (m_repoPublishBar)
@@ -10043,11 +10047,28 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
+    // Refresh: force a full rebuild that re-checks which commits are still
+    // waiting to sync. Switching away and back skips the rebuild when nothing
+    // changed, so this is the explicit way to re-scan after a commit/publish.
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    refreshButton->setToolTip(
+        "Reload the commit list and re-check which commits are waiting to sync");
+    connect(refreshButton, &QPushButton::clicked, this,
+            [this] { loadCommits(); });
+
+    auto *searchRow = new QHBoxLayout;
+    searchRow->setSpacing(8);
+    searchRow->addWidget(m_commitSearch, 1);
+    searchRow->addWidget(refreshButton);
+
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
     // The unsynced banner is intentionally NOT added here — it's an overlay on
     // its own layer (see above) so it never participates in this layout.
-    listLayout->addWidget(m_commitSearch);
+    listLayout->addLayout(searchRow);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -16877,6 +16898,18 @@ QString MainWindow::currentRef() const
     return m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch;
 }
 
+QString MainWindow::currentMirrorTip() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return QString();
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
+        return QString();
+    const QString branch =
+        m_repoBranch.isEmpty() ? mirrorHeadBranch(repo.mirrorPath) : m_repoBranch;
+    return mirrorBranchCommit(repo.mirrorPath, branch);
+}
+
 QSet<QString> MainWindow::unpushedCommitHashes() const
 {
     QSet<QString> result;
@@ -16888,9 +16921,7 @@ QSet<QString> MainWindow::unpushedCommitHashes() const
     if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists() ||
         repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists())
         return result;
-    const QString branch =
-        m_repoBranch.isEmpty() ? mirrorHeadBranch(repo.mirrorPath) : m_repoBranch;
-    const QString mirrorTip = mirrorBranchCommit(repo.mirrorPath, branch);
+    const QString mirrorTip = currentMirrorTip();
     if (mirrorTip.isEmpty())
         return result;
     // Commits reachable from the local branch tip but not from the mirror's tip
@@ -16926,7 +16957,25 @@ bool MainWindow::commitsListIsCurrent()
     QByteArray out;
     if (!runGitCapture(dir, {"rev-parse", currentRef()}, &out, nullptr))
         return false;
-    return QString::fromUtf8(out).trimmed() == m_commitsLoadedTip;
+    if (QString::fromUtf8(out).trimmed() != m_commitsLoadedTip)
+        return false;
+    // The rows can be identical yet their "waiting to sync" markers stale: a
+    // publish/sync advances the mirror without touching the local tip. Reload
+    // when the mirror moved so the markers reflect what's actually synced.
+    return currentMirrorTip() == m_commitsLoadedMirrorTip;
+}
+
+void MainWindow::refreshCommitMarkersIfStale()
+{
+    // Only while the commit list is actually on screen — isVisible() is false
+    // unless the Commits tab is selected *and* the repo-detail view is the active
+    // section, so this stays a cheap no-op everywhere else. When it isn't visible
+    // the next visit reloads it anyway (commitsListIsCurrent now tracks the
+    // mirror tip), so there's nothing to keep in sync in the background.
+    if (!m_commitsListPage || !m_commitsListPage->isVisible())
+        return;
+    if (!commitsListIsCurrent())
+        loadCommits();
 }
 
 void MainWindow::loadCommits()
@@ -17096,9 +17145,12 @@ void MainWindow::loadCommits()
         filterCommits(m_commitSearch->text());
 
     // Record what's now on screen so a repeat tab click can skip this whole
-    // rebuild while the branch and tip are unchanged.
+    // rebuild while the branch and tip are unchanged. The mirror tip is part of
+    // that signature: the markers go stale if it advances under an unchanged
+    // local tip (see commitsListIsCurrent).
     m_commitsLoadedRef = currentRef();
     m_commitsLoadedTip = loadedTip;
+    m_commitsLoadedMirrorTip = currentMirrorTip();
 
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent). This does its
