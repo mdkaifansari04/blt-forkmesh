@@ -1,0 +1,3385 @@
+diff --git a/.gitignore b/.gitignore
+index eaddffa4..eaff284d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,4 +7,3 @@ cloudflare_worker/python_modules/
+ !.env.*.example
+ build-forkmesh/
+ .git-rewrite/
+-tools/__pycache__/
+diff --git a/issues/191/issue.md b/issues/191/issue.md
+deleted file mode 100644
+index 6ff01d57..00000000
+--- a/issues/191/issue.md
++++ /dev/null
+@@ -1,69 +0,0 @@
+----
+-schema: forkmesh-issue-v1
+-number: 191
+-title: Native Claude Code IDE integration: have the app act as the IDE the claude CLI connects to (in-app diffs, selection, open-file context)
+-status: open
+-labels: []
+-milestone: 
+-priority: 0
+-progress: 0
+-assignees: []
+-createdAt: 1782335051280
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-bountyUsd: 0.00
+-bountyAddress: 
+-bountyStatus: 
+-type: open
+-id: open-191
+-ts: 1782335051280
+-attachments: []
+-sig: YeGjvTdg7OXZaLWl5fotGCMkJJpFsKtiLU2h7zJePVEWddStLRFpyXe7F0NsGqbFdqakqijZhfll_C9nutI0Aw
+----
+-
+-## Goal
+-
+-Bring the Claude Code VS Code extension's *editor-integration* features into the
+-Qt desktop app **without embedding VS Code**. A `.vsix` can't be loaded into a
+-native Qt app, and Anthropic's extension is really just a thin UI shell over the
+-local `claude` CLI: it discovers a running `claude` process and talks to it over
+-a WebSocket + JSON-RPC (MCP variant), coordinated by a lockfile at
+-`~/.claude/ide/<port>.lock`. So instead of hosting the extension, ForkMesh
+-should *be* the IDE that `claude` connects to.
+-
+-## Approach (implement the IDE-integration protocol natively)
+-
+-1. **WebSocket + JSON-RPC server** — new `ClaudeIdeBridge` class using
+-   `Qt6::WebSockets` (add to qt_client/CMakeLists.txt). Bind 127.0.0.1 on an
+-   ephemeral port; speak JSON-RPC 2.0 (the MCP variant); validate the auth token
+-   from the lockfile on handshake.
+-2. **Lockfile + env injection** — write `~/.claude/ide/<port>.lock` (port,
+-   workspace folders, IDE name, transport, random auth token) and inject the env
+-   vars the CLI looks for when launching `claude` in TerminalWidget. Then the CLI
+-   auto-connects (or the user runs `/ide`).
+-3. **IDE-side tool handlers**, wired to existing widgets:
+-   - `openDiff` (the high-value one: inline accept/reject of proposed changes)
+-   - `getCurrentSelection` / `getLatestSelection`
+-   - `getOpenEditors` / `getWorkspaceFolders`
+-   - `openFile`, `closeAllDiffTabs`, `getDiagnostics`
+-4. **Notifications** — push `selection_changed` (and `at_mentioned` for "send
+-   selection to Claude") from the editor up to the CLI.
+-
+-## Reference implementation
+-
+-coder/claudecode.nvim is a clean-room implementation of this exact protocol and
+-is authoritative for the lockfile JSON shape, env var names, the auth header, and
+-each tool's request/response schema. Port its `lockfile`, `server`, and `tools`
+-modules to C++. Docs: https://code.claude.com/docs/en/vs-code
+-
+-## Why this fits ForkMesh
+-
+-The app already runs `claude` in a forkpty terminal (TerminalWidget) and has an
+-AgentRunner; this adds the editor *surface* the CLI talks back to — no Electron,
+-no Node, no marketplace licensing. Rough effort: the WS + lockfile + env plumbing
+-is ~1-2 days; the real value is how rich `openDiff` and selection sync are made.
+-
+-## Out of scope
+-
+-Embedding a full VS Code surface (code-server / Theia / VSCodium) — rejected for
+-the same reasons the xterm `-into` embedding was dropped for a custom terminal.
+diff --git a/pulls/1/changes.patch b/pulls/1/changes.patch
+new file mode 100644
+index 00000000..53a692fb
+--- /dev/null
++++ b/pulls/1/changes.patch
+@@ -0,0 +1,13 @@
++diff --git a/CHANGELOG.md b/CHANGELOG.md
++index f51bf93..e74fff0 100644
++--- a/CHANGELOG.md
+++++ b/CHANGELOG.md
++@@ -2,7 +2,7 @@
++ 
++ > Code hosting that lives on the network. Here's how ForkMesh grew, release by
++ > release — from a single mirror on one laptop to an agent-powered, self-funding
++-> developer mesh.
+++> developer mesh. s
++ 
++ ---
++ 
+diff --git a/pulls/1/commits.mbox b/pulls/1/commits.mbox
+new file mode 100644
+index 00000000..75a0852d
+--- /dev/null
++++ b/pulls/1/commits.mbox
+@@ -0,0 +1,25 @@
++From d73e299f3c3e7f58d92b26d2bd1c22061276b7cb Mon Sep 17 00:00:00 2001
++From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
++Date: Wed, 24 Jun 2026 02:08:27 -0400
++Subject: [PATCH] Edit CHANGELOG.md
++
++---
++ CHANGELOG.md | 2 +-
++ 1 file changed, 1 insertion(+), 1 deletion(-)
++
++diff --git a/CHANGELOG.md b/CHANGELOG.md
++index f51bf93..e74fff0 100644
++--- a/CHANGELOG.md
+++++ b/CHANGELOG.md
++@@ -2,7 +2,7 @@
++ 
++ > Code hosting that lives on the network. Here's how ForkMesh grew, release by
++ > release — from a single mirror on one laptop to an agent-powered, self-funding
++-> developer mesh.
+++> developer mesh. s
++ 
++ ---
++ 
++-- 
++2.47.3
++
+diff --git a/pulls/1/pull.md b/pulls/1/pull.md
+new file mode 100644
+index 00000000..587960bf
+--- /dev/null
++++ b/pulls/1/pull.md
+@@ -0,0 +1,14 @@
++---
++schema: forkmesh-pull-v1
++number: 1
++title: Edit CHANGELOG.md
++base: main
++head: edit/changelog-md-1782281303
++status: open
++ts: 1782281307885
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++sig: wycjeyR9KXYlNjZtomzD_258HwLrE0fUEm-gwCHMdOON7b5HkbrroQ93ebHxfH07-v1fyUkLTPE2poze8f37Cw
++---
++
++
+diff --git a/pulls/2/changes.patch b/pulls/2/changes.patch
+new file mode 100644
+index 00000000..78b588a1
+--- /dev/null
++++ b/pulls/2/changes.patch
+@@ -0,0 +1,13 @@
++diff --git a/README.md b/README.md
++index 488673c..3f9bee2 100644
++--- a/README.md
+++++ b/README.md
++@@ -6,7 +6,7 @@ ForkMesh is an open-source desktop node and relay prototype for hosting,
++ mirroring, discovering, and discussing software projects without depending on
++ one central code-hosting company.
++ 
++-## What Exists Now
+++## What Exists Now asdf
++ 
++ - Qt 6 desktop node in `qt_client/`
++ - Python Cloudflare Worker relay in `cloudflare_worker/`
+diff --git a/pulls/2/commits.mbox b/pulls/2/commits.mbox
+new file mode 100644
+index 00000000..7a3f5d31
+--- /dev/null
++++ b/pulls/2/commits.mbox
+@@ -0,0 +1,26 @@
++From 58af6f16fae4f8f6d78d317be33f4c35f241dd00 Mon Sep 17 00:00:00 2001
++From: ForkMesh contributor
++ <i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c@forkmesh>
++Date: Wed, 24 Jun 2026 02:09:06 -0400
++Subject: [PATCH] Edit README.md
++
++---
++ README.md | 2 +-
++ 1 file changed, 1 insertion(+), 1 deletion(-)
++
++diff --git a/README.md b/README.md
++index 488673c..3f9bee2 100644
++--- a/README.md
+++++ b/README.md
++@@ -6,7 +6,7 @@ ForkMesh is an open-source desktop node and relay prototype for hosting,
++ mirroring, discovering, and discussing software projects without depending on
++ one central code-hosting company.
++ 
++-## What Exists Now
+++## What Exists Now asdf
++ 
++ - Qt 6 desktop node in `qt_client/`
++ - Python Cloudflare Worker relay in `cloudflare_worker/`
++-- 
++2.51.0
++
+diff --git a/pulls/2/pull.md b/pulls/2/pull.md
+new file mode 100644
+index 00000000..44a091fe
+--- /dev/null
++++ b/pulls/2/pull.md
+@@ -0,0 +1,14 @@
++---
++schema: forkmesh-pull-v1
++number: 2
++title: Edit README.md
++base: main
++head: edit/readme-md-1782281345
++status: merged
++ts: 1782281346662
++author: i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c
++authorName: 
++sig: 4n2cK6Fp-LFrbGwwk5blzR-sJBkKgzM5ZHMsdnVQx4yUJtA4ZgnnK7NrpX1jeqRfiRzlCpKwAigejlZFFAbqDw
++---
++
++
+diff --git a/pulls/3/0002-comment.md b/pulls/3/0002-comment.md
+new file mode 100644
+index 00000000..412ab41e
+--- /dev/null
++++ b/pulls/3/0002-comment.md
+@@ -0,0 +1,10 @@
++---
++type: comment
++id: 1e84bd4c-15b5-4e5e-b737-b587287d4ce9
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++ts: 1782282117693
++sig: EKRN57klPdPPRST8t8yqAlHzyxwfEkqLLC18IPNuXAN12DzcxyoQZExzD8vDOVlP2yCMCfEvql2EfbuDXqCWBQ
++---
++
++looks good
+diff --git a/pulls/3/0003-comment.md b/pulls/3/0003-comment.md
+new file mode 100644
+index 00000000..a1628557
+--- /dev/null
++++ b/pulls/3/0003-comment.md
+@@ -0,0 +1,10 @@
++---
++type: comment
++id: 606c378b-61b1-4db3-ace5-8d60964cb9dd
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++ts: 1782282318751
++sig: HurmRtYsjOYRACXHkRKBDpsR-4redEJKJ5ZNCZAv_BBmELKbkD0DefSKMUu07ghay0yKb__JASH9nMihzo51Cg
++---
++
++@newnode22 looks good here is a comment mentioning you
+diff --git a/pulls/3/0004-comment.md b/pulls/3/0004-comment.md
+new file mode 100644
+index 00000000..f0238ea4
+--- /dev/null
++++ b/pulls/3/0004-comment.md
+@@ -0,0 +1,10 @@
++---
++type: comment
++id: 3e39b929-4ae7-4598-b553-3c8a3cd6c87d
++author: i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c
++authorName: newnode22
++ts: 1782283345889
++sig: IHxbY98NVXl8FM-ttS2zBo10ybQj5DKneYt0jjJ1fAq2CbWFLhqa_86xbPzhJaBJEUn30oDtGdscsiD8Ovs6Aw
++---
++
++thanks for the comment
+diff --git a/pulls/3/0005-comment.md b/pulls/3/0005-comment.md
+new file mode 100644
+index 00000000..88c438c5
+--- /dev/null
++++ b/pulls/3/0005-comment.md
+@@ -0,0 +1,10 @@
++---
++type: comment
++id: ca92a508-521d-498c-801a-b0f0ae842d31
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++ts: 1782283388520
++sig: Er32THOgpDdRagfnpjFWYEboDYpykGJKo_y90VsPTQ4D0GzhD8twDJl_J-Ri8viqs8NgWVUybuVMhAQOsbx3CQ
++---
++
++@newnode22 here is a mention
+diff --git a/pulls/3/0006-comment.md b/pulls/3/0006-comment.md
+new file mode 100644
+index 00000000..81eb1c4e
+--- /dev/null
++++ b/pulls/3/0006-comment.md
+@@ -0,0 +1,10 @@
++---
++type: comment
++id: 337cbea6-0fa7-4bcb-8eb3-d69d1a81ea51
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: newnewnode
++ts: 1782283450041
++sig: Hktc8sW3dVWRkw4wUDDEeweGgZ8uoYNMSaDalR4uqsyu9MZYXl4C310Wky3Kzh3Z6LPAU7Ijc_VJ1WqzZsd4Ag
++---
++
++@newnode22 a mention without repo in focus
+diff --git a/pulls/3/changes.patch b/pulls/3/changes.patch
+new file mode 100644
+index 00000000..16a9f7e8
+--- /dev/null
++++ b/pulls/3/changes.patch
+@@ -0,0 +1,13 @@
++diff --git a/README.md b/README.md
++index 3f9bee2..488673c 100644
++--- a/README.md
+++++ b/README.md
++@@ -6,7 +6,7 @@ ForkMesh is an open-source desktop node and relay prototype for hosting,
++ mirroring, discovering, and discussing software projects without depending on
++ one central code-hosting company.
++ 
++-## What Exists Now asdf
+++## What Exists Now
++ 
++ - Qt 6 desktop node in `qt_client/`
++ - Python Cloudflare Worker relay in `cloudflare_worker/`
+diff --git a/pulls/3/commits.mbox b/pulls/3/commits.mbox
+new file mode 100644
+index 00000000..51b29c41
+--- /dev/null
++++ b/pulls/3/commits.mbox
+@@ -0,0 +1,25 @@
++From c59f6f10656cf14eb23deabce1d1a102147ef64e Mon Sep 17 00:00:00 2001
++From: newnode22 <i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c@forkmesh>
++Date: Wed, 24 Jun 2026 02:21:13 -0400
++Subject: [PATCH] Edit README.md
++
++---
++ README.md | 2 +-
++ 1 file changed, 1 insertion(+), 1 deletion(-)
++
++diff --git a/README.md b/README.md
++index 3f9bee2..488673c 100644
++--- a/README.md
+++++ b/README.md
++@@ -6,7 +6,7 @@ ForkMesh is an open-source desktop node and relay prototype for hosting,
++ mirroring, discovering, and discussing software projects without depending on
++ one central code-hosting company.
++ 
++-## What Exists Now asdf
+++## What Exists Now
++ 
++ - Qt 6 desktop node in `qt_client/`
++ - Python Cloudflare Worker relay in `cloudflare_worker/`
++-- 
++2.51.0
++
+diff --git a/pulls/3/pull.md b/pulls/3/pull.md
+new file mode 100644
+index 00000000..4e35a957
+--- /dev/null
++++ b/pulls/3/pull.md
+@@ -0,0 +1,14 @@
++---
++schema: forkmesh-pull-v1
++number: 3
++title: Edit README.md
++base: main
++head: edit/readme-md-1782282070
++status: merged
++ts: 1782282073418
++author: i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c
++authorName: newnode22
++sig: q3ucw2l3eBb7MyOwbF8W_yPwrsVdTGCH_I7LXQhcgyD2408LjtZFu8k28JcCvl3CSQy2pEt4FIC3u9cCtQhGAg
++---
++
++
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 951ccbd7..5d7611f2 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -28,8 +28,6 @@ set(FORKMESH_APP_SOURCES
+     src/ServerNode.cpp
+     src/RepoHost.h
+     src/RepoHost.cpp
+-    src/RepoSecurity.h
+-    src/RepoSecurity.cpp
+     src/IssueStore.h
+     src/IssueStore.cpp
+     src/IssueBurnup.h
+diff --git a/qt_client/src/CoveCrypto.cpp b/qt_client/src/CoveCrypto.cpp
+deleted file mode 100644
+index dcdd21b2..00000000
+--- a/qt_client/src/CoveCrypto.cpp
++++ /dev/null
+@@ -1,148 +0,0 @@
+-#include "CoveCrypto.h"
+-
+-#include <QRandomGenerator>
+-
+-#include <openssl/evp.h>
+-#include <openssl/rand.h>
+-
+-namespace {
+-
+-constexpr int kKeyBytes = 32;
+-constexpr int kNonceBytes = 12;
+-constexpr int kTagBytes = 16;
+-constexpr int kSaltBytes = 16;
+-// Hardened key-stretch for a human-chosen password. Higher than RoomCrypto's
+-// 210k because a cove password guards a long-lived vault, not an ephemeral room.
+-constexpr int kDefaultRounds = 600000;
+-// Mirror the worker's 4 MB text cap so a cove never grows past what the relay
+-// would carry alongside the repo.
+-constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
+-
+-QByteArray randomBytes(int count)
+-{
+-    QByteArray out(count, Qt::Uninitialized);
+-    if (RAND_bytes(reinterpret_cast<unsigned char *>(out.data()), count) != 1) {
+-        for (int i = 0; i < count; ++i)
+-            out[i] = char(QRandomGenerator::global()->bounded(256));
+-    }
+-    return out;
+-}
+-
+-} // namespace
+-
+-int CoveCrypto::defaultRounds()
+-{
+-    return kDefaultRounds;
+-}
+-
+-QByteArray CoveCrypto::randomSalt()
+-{
+-    return randomBytes(kSaltBytes);
+-}
+-
+-CoveCrypto::CoveCrypto(const QString &password, const QByteArray &salt, int rounds)
+-{
+-    if (password.isEmpty()) {
+-        m_error = "A password is required.";
+-        return;
+-    }
+-    if (salt.isEmpty() || rounds <= 0) {
+-        m_error = "The cove is missing its key-derivation parameters.";
+-        return;
+-    }
+-    const QByteArray pass = password.toUtf8();
+-    QByteArray key(kKeyBytes, Qt::Uninitialized);
+-    if (PKCS5_PBKDF2_HMAC(pass.constData(), pass.size(),
+-                          reinterpret_cast<const unsigned char *>(salt.constData()),
+-                          salt.size(), rounds, EVP_sha256(), kKeyBytes,
+-                          reinterpret_cast<unsigned char *>(key.data())) != 1) {
+-        m_error = "Could not derive the cove encryption key.";
+-        return;
+-    }
+-    m_key = key;
+-}
+-
+-QJsonObject CoveCrypto::encrypt(const QByteArray &plaintext) const
+-{
+-    if (m_key.isEmpty() || plaintext.size() > kMaxPlainBytes)
+-        return {};
+-
+-    const QByteArray nonce = randomBytes(kNonceBytes);
+-    QByteArray cipher(plaintext.size() + kTagBytes, Qt::Uninitialized);
+-    QByteArray tag(kTagBytes, Qt::Uninitialized);
+-
+-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+-    int len = 0;
+-    int outLen = 0;
+-    if (!ctx ||
+-        EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
+-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, nonce.size(), nullptr) != 1 ||
+-        EVP_EncryptInit_ex(ctx, nullptr, nullptr,
+-                           reinterpret_cast<const unsigned char *>(m_key.constData()),
+-                           reinterpret_cast<const unsigned char *>(nonce.constData())) != 1 ||
+-        EVP_EncryptUpdate(ctx, reinterpret_cast<unsigned char *>(cipher.data()), &len,
+-                          reinterpret_cast<const unsigned char *>(plaintext.constData()),
+-                          plaintext.size()) != 1) {
+-        if (ctx)
+-            EVP_CIPHER_CTX_free(ctx);
+-        return {};
+-    }
+-    outLen = len;
+-    if (EVP_EncryptFinal_ex(ctx,
+-                            reinterpret_cast<unsigned char *>(cipher.data()) + outLen,
+-                            &len) != 1 ||
+-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, tag.size(), tag.data()) != 1) {
+-        EVP_CIPHER_CTX_free(ctx);
+-        return {};
+-    }
+-    outLen += len;
+-    EVP_CIPHER_CTX_free(ctx);
+-    cipher.resize(outLen);
+-
+-    return {{"nonce", QString::fromLatin1(nonce.toBase64())},
+-            {"tag", QString::fromLatin1(tag.toBase64())},
+-            {"body", QString::fromLatin1(cipher.toBase64())}};
+-}
+-
+-QByteArray CoveCrypto::decrypt(const QJsonObject &cipherObj) const
+-{
+-    if (m_key.isEmpty())
+-        return {};
+-
+-    const QByteArray nonce = QByteArray::fromBase64(cipherObj.value("nonce").toString().toLatin1());
+-    const QByteArray tag = QByteArray::fromBase64(cipherObj.value("tag").toString().toLatin1());
+-    const QByteArray cipher = QByteArray::fromBase64(cipherObj.value("body").toString().toLatin1());
+-    if (nonce.size() != kNonceBytes || tag.size() != kTagBytes || cipher.isEmpty() ||
+-        cipher.size() > kMaxPlainBytes)
+-        return {};
+-
+-    QByteArray plain(cipher.size(), Qt::Uninitialized);
+-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+-    int len = 0;
+-    int outLen = 0;
+-    if (!ctx ||
+-        EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
+-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, nonce.size(), nullptr) != 1 ||
+-        EVP_DecryptInit_ex(ctx, nullptr, nullptr,
+-                           reinterpret_cast<const unsigned char *>(m_key.constData()),
+-                           reinterpret_cast<const unsigned char *>(nonce.constData())) != 1 ||
+-        EVP_DecryptUpdate(ctx, reinterpret_cast<unsigned char *>(plain.data()), &len,
+-                          reinterpret_cast<const unsigned char *>(cipher.constData()),
+-                          cipher.size()) != 1) {
+-        if (ctx)
+-            EVP_CIPHER_CTX_free(ctx);
+-        return {};
+-    }
+-    outLen = len;
+-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag.size(),
+-                        const_cast<char *>(tag.constData()));
+-    const int ok = EVP_DecryptFinal_ex(ctx,
+-                                       reinterpret_cast<unsigned char *>(plain.data()) + outLen,
+-                                       &len);
+-    EVP_CIPHER_CTX_free(ctx);
+-    if (ok != 1)
+-        return {}; // wrong password (GCM tag mismatch) or corrupt ciphertext
+-    outLen += len;
+-    plain.resize(outLen);
+-    return plain;
+-}
+diff --git a/qt_client/src/CoveCrypto.h b/qt_client/src/CoveCrypto.h
+deleted file mode 100644
+index e47ea865..00000000
+--- a/qt_client/src/CoveCrypto.h
++++ /dev/null
+@@ -1,41 +0,0 @@
+-#pragma once
+-
+-#include <QByteArray>
+-#include <QJsonObject>
+-#include <QString>
+-
+-// Password-derived symmetric encryption for "coves" — encrypted file vaults that
+-// a team shares by passing one password out-of-band. The relay and the public
+-// catalog only ever see AES-256-GCM ciphertext.
+-//
+-// Unlike RoomCrypto (whose key derives from a fixed room name), a cove carries a
+-// random per-cove salt in its envelope, so the same password yields a different
+-// key for every cove. A 256-bit AES key is quantum-resistant: Grover's algorithm
+-// only halves the brute-force exponent to ~128 bits, which stays out of reach.
+-class CoveCrypto
+-{
+-public:
+-    // PBKDF2-HMAC-SHA256 work factor baked into new coves. Stored in the envelope
+-    // so the count can be raised later without breaking older coves.
+-    static int defaultRounds();
+-    // A fresh random salt for a new cove (16 bytes).
+-    static QByteArray randomSalt();
+-
+-    // Derive the AES key from a password, the cove's salt, and its stored rounds.
+-    CoveCrypto(const QString &password, const QByteArray &salt, int rounds);
+-
+-    bool isValid() const { return !m_key.isEmpty(); }
+-    QString errorString() const { return m_error; }
+-
+-    // Encrypt opaque bytes to a {"nonce","tag","body"} base64 object (the value
+-    // stored under "cipher" in a .cove file). Returns {} on failure.
+-    QJsonObject encrypt(const QByteArray &plaintext) const;
+-    // Decrypt a {"nonce","tag","body"} object. Returns the plaintext bytes, or an
+-    // empty QByteArray when the password/key is wrong (GCM tag mismatch) or the
+-    // envelope is malformed.
+-    QByteArray decrypt(const QJsonObject &cipher) const;
+-
+-private:
+-    QByteArray m_key;
+-    QString m_error;
+-};
+diff --git a/qt_client/src/CoveStore.cpp b/qt_client/src/CoveStore.cpp
+deleted file mode 100644
+index c42d7479..00000000
+--- a/qt_client/src/CoveStore.cpp
++++ /dev/null
+@@ -1,403 +0,0 @@
+-#include "CoveStore.h"
+-
+-#include "CoveCrypto.h"
+-#include "ForkMeshIdentity.h"
+-
+-#include <QDateTime>
+-#include <QDir>
+-#include <QFile>
+-#include <QFileInfo>
+-#include <QJsonArray>
+-#include <QJsonDocument>
+-#include <QProcess>
+-#include <QRegularExpression>
+-#include <QUuid>
+-
+-namespace {
+-
+-constexpr int kGitTimeoutMs = 10000;
+-constexpr int kCoveVersion = 1;
+-
+-// Run git in `dir`, capturing stdout. Mirrors IssueStore's local helper.
+-bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
+-            QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
+-{
+-    QProcess process;
+-    process.start("git", QStringList{"-C", dir} + args);
+-    if (!process.waitForFinished(timeoutMs)) {
+-        if (errText)
+-            *errText = QStringLiteral("git timed out");
+-        return false;
+-    }
+-    if (output)
+-        *output = process.readAllStandardOutput();
+-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+-        if (errText)
+-            *errText =
+-                QString::fromUtf8(process.readAllStandardError()).trimmed().left(200);
+-        return false;
+-    }
+-    return true;
+-}
+-
+-QString newId()
+-{
+-    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+-}
+-
+-QString slugify(const QString &name)
+-{
+-    QString slug = name.toLower();
+-    slug.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
+-    while (slug.startsWith('-'))
+-        slug.remove(0, 1);
+-    while (slug.endsWith('-'))
+-        slug.chop(1);
+-    return slug.left(48);
+-}
+-
+-// Build the on-disk envelope JSON for a cove whose cipher is already computed.
+-QJsonObject toEnvelope(const Cove &cove)
+-{
+-    return {{"kind", "cove"},
+-            {"v", kCoveVersion},
+-            {"id", cove.id},
+-            {"name", cove.name},
+-            {"creator", cove.creator},
+-            {"createdAtMs", double(cove.createdAtMs)},
+-            {"notifyOnOpen", cove.notifyOnOpen},
+-            {"kdf", QJsonObject{{"algo", "pbkdf2-sha256"},
+-                                {"rounds", cove.rounds},
+-                                {"salt", QString::fromLatin1(cove.salt.toBase64())}}},
+-            {"cipher", cove.cipher}};
+-}
+-
+-// Parse envelope metadata (everything readable before unlock). Returns false if
+-// the bytes are not a recognizable cove envelope.
+-bool fromEnvelope(const QByteArray &bytes, Cove &out)
+-{
+-    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+-    if (!doc.isObject())
+-        return false;
+-    const QJsonObject obj = doc.object();
+-    if (obj.value("kind").toString() != "cove")
+-        return false;
+-    out.id = obj.value("id").toString();
+-    out.name = obj.value("name").toString();
+-    out.creator = obj.value("creator").toString();
+-    out.createdAtMs = qint64(obj.value("createdAtMs").toDouble());
+-    out.notifyOnOpen = obj.value("notifyOnOpen").toBool();
+-    const QJsonObject kdf = obj.value("kdf").toObject();
+-    out.salt = QByteArray::fromBase64(kdf.value("salt").toString().toLatin1());
+-    out.rounds = kdf.value("rounds").toInt();
+-    out.cipher = obj.value("cipher").toObject();
+-    return !out.id.isEmpty() && !out.salt.isEmpty() && out.rounds > 0;
+-}
+-
+-} // namespace
+-
+-// ---- CoveDocument / CoveAccessEntry JSON -----------------------------------
+-
+-QJsonObject CoveDocument::toJson() const
+-{
+-    return {{"id", id}, {"name", name}, {"mime", mime}, {"body", body},
+-            {"updatedAtMs", double(updatedAtMs)}};
+-}
+-
+-CoveDocument CoveDocument::fromJson(const QJsonObject &obj)
+-{
+-    CoveDocument d;
+-    d.id = obj.value("id").toString();
+-    d.name = obj.value("name").toString();
+-    d.mime = obj.value("mime").toString(QStringLiteral("text/markdown"));
+-    d.body = obj.value("body").toString();
+-    d.updatedAtMs = qint64(obj.value("updatedAtMs").toDouble());
+-    return d;
+-}
+-
+-QJsonObject CoveAccessEntry::toJson() const
+-{
+-    return {{"who", who}, {"name", name}, {"node", node},
+-            {"ts", double(ts)}, {"action", action}};
+-}
+-
+-CoveAccessEntry CoveAccessEntry::fromJson(const QJsonObject &obj)
+-{
+-    CoveAccessEntry e;
+-    e.who = obj.value("who").toString();
+-    e.name = obj.value("name").toString();
+-    e.node = obj.value("node").toString();
+-    e.ts = qint64(obj.value("ts").toDouble());
+-    e.action = obj.value("action").toString(QStringLiteral("open"));
+-    return e;
+-}
+-
+-bool Cove::createdByMe(const ForkMeshIdentity *identity) const
+-{
+-    return identity && identity->isValid() && !creator.isEmpty() &&
+-           creator == identity->publicKey();
+-}
+-
+-// ---- CoveStore -------------------------------------------------------------
+-
+-CoveStore::CoveStore(QString workTreePath, QString mirrorPath,
+-                     const ForkMeshIdentity *identity, QString authorName)
+-    : m_workTree(std::move(workTreePath)), m_mirror(std::move(mirrorPath)),
+-      m_identity(identity), m_authorName(std::move(authorName))
+-{
+-}
+-
+-bool CoveStore::canWrite() const
+-{
+-    if (m_workTree.isEmpty() || !m_identity || !m_identity->isValid())
+-        return false;
+-    return QFileInfo::exists(m_workTree + "/.git");
+-}
+-
+-QString CoveStore::covesDir() const { return m_workTree + "/" + covesDirRel(); }
+-
+-QString CoveStore::mirrorRef() const
+-{
+-    QByteArray output;
+-    if (runGit(m_mirror, {"rev-parse", "--verify", "-q", "HEAD"}, &output) &&
+-        !output.trimmed().isEmpty())
+-        return QStringLiteral("HEAD");
+-    if (runGit(m_mirror,
+-               {"for-each-ref", "--format=%(refname)", "--count=1", "refs/heads/"},
+-               &output)) {
+-        const QString ref = QString::fromUtf8(output).trimmed();
+-        if (!ref.isEmpty())
+-            return ref;
+-    }
+-    return QString();
+-}
+-
+-QByteArray CoveStore::readCoveBytes(const QString &relPath, bool *ok) const
+-{
+-    // Prefer the live working tree; fall back to the bare mirror via `git show`.
+-    if (!m_workTree.isEmpty()) {
+-        QFile file(m_workTree + "/" + relPath);
+-        if (file.open(QIODevice::ReadOnly)) {
+-            if (ok)
+-                *ok = true;
+-            return file.readAll();
+-        }
+-    }
+-    if (!m_mirror.isEmpty()) {
+-        const QString ref = mirrorRef();
+-        QByteArray output;
+-        if (!ref.isEmpty() &&
+-            runGit(m_mirror, {"show", ref + ":" + relPath}, &output)) {
+-            if (ok)
+-                *ok = true;
+-            return output;
+-        }
+-    }
+-    if (ok)
+-        *ok = false;
+-    return {};
+-}
+-
+-QList<Cove> CoveStore::listCoves(QString *error) const
+-{
+-    QList<Cove> coves;
+-    QStringList relPaths;
+-
+-    if (!m_workTree.isEmpty() && QFileInfo::exists(covesDir())) {
+-        const QStringList files = QDir(covesDir()).entryList(
+-            {QStringLiteral("*.cove")}, QDir::Files, QDir::Name);
+-        for (const QString &f : files)
+-            relPaths << covesDirRel() + "/" + f;
+-    } else if (!m_mirror.isEmpty()) {
+-        const QString ref = mirrorRef();
+-        QByteArray listing;
+-        if (!ref.isEmpty() &&
+-            runGit(m_mirror, {"ls-tree", ref, covesDirRel() + "/"}, &listing)) {
+-            for (const QString &line :
+-                 QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+-                const int tab = line.indexOf('\t');
+-                if (tab < 0)
+-                    continue;
+-                const QString path = line.mid(tab + 1);
+-                if (path.endsWith(QStringLiteral(".cove")))
+-                    relPaths << path;
+-            }
+-        }
+-    }
+-
+-    for (const QString &relPath : std::as_const(relPaths)) {
+-        Cove cove;
+-        if (loadEnvelope(relPath, cove))
+-            coves << cove;
+-    }
+-    if (coves.isEmpty() && error)
+-        error->clear();
+-    return coves;
+-}
+-
+-bool CoveStore::loadEnvelope(const QString &relPath, Cove &out, QString *error) const
+-{
+-    bool ok = false;
+-    const QByteArray bytes = readCoveBytes(relPath, &ok);
+-    if (!ok) {
+-        if (error)
+-            *error = QStringLiteral("Could not read %1").arg(relPath);
+-        return false;
+-    }
+-    if (!fromEnvelope(bytes, out)) {
+-        if (error)
+-            *error = QStringLiteral("%1 is not a valid cove file").arg(relPath);
+-        return false;
+-    }
+-    out.relPath = relPath;
+-    out.slug = QFileInfo(relPath).completeBaseName();
+-    return true;
+-}
+-
+-bool CoveStore::unlock(Cove &cove, const QString &password)
+-{
+-    CoveCrypto crypto(password, cove.salt, cove.rounds);
+-    if (!crypto.isValid())
+-        return false;
+-    const QByteArray plain = crypto.decrypt(cove.cipher);
+-    if (plain.isEmpty())
+-        return false; // wrong password (GCM tag mismatch) or corrupt payload
+-    const QJsonDocument doc = QJsonDocument::fromJson(plain);
+-    if (!doc.isObject())
+-        return false;
+-    const QJsonObject payload = doc.object();
+-    cove.documents.clear();
+-    for (const QJsonValue &v : payload.value("documents").toArray())
+-        cove.documents << CoveDocument::fromJson(v.toObject());
+-    cove.accessLog.clear();
+-    for (const QJsonValue &v : payload.value("accessLog").toArray())
+-        cove.accessLog << CoveAccessEntry::fromJson(v.toObject());
+-    cove.unlocked = true;
+-    return true;
+-}
+-
+-void CoveStore::appendAccess(Cove &cove, const CoveAccessEntry &entry)
+-{
+-    cove.accessLog.append(entry);
+-    // Keep the in-cove log bounded so it never bloats the ciphertext.
+-    constexpr int kMaxAccess = 500;
+-    while (cove.accessLog.size() > kMaxAccess)
+-        cove.accessLog.removeFirst();
+-}
+-
+-QString CoveStore::uniqueSlug(const QString &name) const
+-{
+-    QString base = slugify(name);
+-    if (base.isEmpty())
+-        base = QStringLiteral("cove");
+-    QString slug = base;
+-    int n = 2;
+-    while (QFileInfo::exists(covesDir() + "/" + slug + ".cove"))
+-        slug = base + "-" + QString::number(n++);
+-    return slug;
+-}
+-
+-bool CoveStore::createCove(const QString &name, const QString &password,
+-                           bool notifyOnOpen, const QList<CoveDocument> &documents,
+-                           Cove *out, QString *error)
+-{
+-    if (!canWrite()) {
+-        if (error)
+-            *error = QStringLiteral("This repository has no local working tree to "
+-                                    "store a cove in.");
+-        return false;
+-    }
+-    if (name.trimmed().isEmpty() || password.isEmpty()) {
+-        if (error)
+-            *error = QStringLiteral("A cove needs a name and a password.");
+-        return false;
+-    }
+-
+-    Cove cove;
+-    cove.id = newId();
+-    cove.name = name.trimmed();
+-    cove.slug = uniqueSlug(cove.name);
+-    cove.relPath = covesDirRel() + "/" + cove.slug + ".cove";
+-    cove.creator = m_identity ? m_identity->publicKey() : QString();
+-    cove.createdAtMs = QDateTime::currentMSecsSinceEpoch();
+-    cove.notifyOnOpen = notifyOnOpen;
+-    cove.salt = CoveCrypto::randomSalt();
+-    cove.rounds = CoveCrypto::defaultRounds();
+-    cove.documents = documents;
+-    cove.unlocked = true;
+-
+-    if (!save(cove, password, error))
+-        return false;
+-    if (out)
+-        *out = cove;
+-    return true;
+-}
+-
+-bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
+-{
+-    if (!canWrite()) {
+-        if (error)
+-            *error = QStringLiteral("No local working tree to save the cove to.");
+-        return false;
+-    }
+-    if (cove.relPath.isEmpty() || cove.salt.isEmpty() || cove.rounds <= 0) {
+-        if (error)
+-            *error = QStringLiteral("The cove is missing its encryption parameters.");
+-        return false;
+-    }
+-
+-    QJsonArray docs;
+-    for (const CoveDocument &d : cove.documents)
+-        docs.append(d.toJson());
+-    QJsonArray log;
+-    for (const CoveAccessEntry &e : cove.accessLog)
+-        log.append(e.toJson());
+-    const QByteArray payload =
+-        QJsonDocument(QJsonObject{{"documents", docs}, {"accessLog", log}})
+-            .toJson(QJsonDocument::Compact);
+-
+-    CoveCrypto crypto(password, cove.salt, cove.rounds);
+-    if (!crypto.isValid()) {
+-        if (error)
+-            *error = crypto.errorString();
+-        return false;
+-    }
+-    Cove sealed = cove;
+-    sealed.cipher = crypto.encrypt(payload);
+-    if (sealed.cipher.isEmpty()) {
+-        if (error)
+-            *error = QStringLiteral("Could not encrypt the cove.");
+-        return false;
+-    }
+-
+-    QDir().mkpath(covesDir());
+-    const QString absPath = m_workTree + "/" + sealed.relPath;
+-    QFile file(absPath);
+-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+-        if (error)
+-            *error = QStringLiteral("Could not write %1").arg(absPath);
+-        return false;
+-    }
+-    file.write(QJsonDocument(toEnvelope(sealed)).toJson(QJsonDocument::Indented));
+-    file.close();
+-
+-    return commit(QStringLiteral("cove: %1").arg(sealed.name), sealed.relPath, error);
+-}
+-
+-bool CoveStore::commit(const QString &message, const QString &relPath, QString *error) const
+-{
+-    QString err;
+-    if (!runGit(m_workTree, {"add", "--", relPath}, nullptr, &err)) {
+-        if (error)
+-            *error = "git add failed: " + err;
+-        return false;
+-    }
+-    if (!runGit(m_workTree, {"commit", "-m", message, "--", relPath}, nullptr, &err)) {
+-        if (err.contains("nothing to commit") || err.isEmpty())
+-            return true; // no change to persist — not an error
+-        if (error)
+-            *error = "git commit failed: " + err;
+-        return false;
+-    }
+-    return true;
+-}
+diff --git a/qt_client/src/CoveStore.h b/qt_client/src/CoveStore.h
+deleted file mode 100644
+index e1052353..00000000
+--- a/qt_client/src/CoveStore.h
++++ /dev/null
+@@ -1,105 +0,0 @@
+-#pragma once
+-
+-#include <QByteArray>
+-#include <QJsonObject>
+-#include <QList>
+-#include <QString>
+-
+-class ForkMeshIdentity;
+-
+-// One document inside a cove (a note, a password list, a plan). The body is only
+-// ever present in memory after the cove is unlocked; on disk it lives inside the
+-// AES-256-GCM ciphertext.
+-struct CoveDocument {
+-    QString id;
+-    QString name;
+-    QString mime = "text/markdown";
+-    QString body;
+-    qint64 updatedAtMs = 0;
+-
+-    QJsonObject toJson() const;
+-    static CoveDocument fromJson(const QJsonObject &obj);
+-};
+-
+-// One entry in a cove's access log: who opened (or edited) it, and when. Kept
+-// inside the encrypted payload so the creator sees the trail once it syncs.
+-struct CoveAccessEntry {
+-    QString who;    // opener pubkey (base64url)
+-    QString name;   // opener display name
+-    QString node;   // opener node id (short)
+-    qint64 ts = 0;
+-    QString action = "open"; // open | edit
+-
+-    QJsonObject toJson() const;
+-    static CoveAccessEntry fromJson(const QJsonObject &obj);
+-};
+-
+-// A cove: plaintext envelope metadata (readable while locked) plus the decrypted
+-// payload (documents + access log), present only after a successful unlock().
+-struct Cove {
+-    QString id;
+-    QString name;
+-    QString slug;        // file stem
+-    QString relPath;     // .forkmesh/coves/<slug>.cove (repo-relative)
+-    QString creator;     // creator pubkey (base64url) — routes open-notifications
+-    qint64 createdAtMs = 0;
+-    bool notifyOnOpen = false;
+-    QByteArray salt;     // KDF salt (raw bytes)
+-    int rounds = 0;      // KDF rounds
+-    QJsonObject cipher;  // {nonce,tag,body} base64
+-
+-    // Populated by unlock():
+-    bool unlocked = false;
+-    QList<CoveDocument> documents;
+-    QList<CoveAccessEntry> accessLog;
+-
+-    bool createdByMe(const ForkMeshIdentity *identity) const;
+-};
+-
+-// Repo-scoped vault of encrypted coves backed by .forkmesh/coves/*.cove. For
+-// repos with a local working tree the store reads/writes/commits files directly;
+-// for mirror-only repos it lists + reads envelopes read-only via `git show`.
+-class CoveStore
+-{
+-public:
+-    CoveStore(QString workTreePath, QString mirrorPath,
+-              const ForkMeshIdentity *identity, QString authorName = QString());
+-
+-    // True when this node can create/save coves (has a real working tree + key).
+-    bool canWrite() const;
+-
+-    // List cove envelopes (metadata only; nothing is decrypted).
+-    QList<Cove> listCoves(QString *error = nullptr) const;
+-    // Load a single cove envelope by repo-relative path (metadata only).
+-    bool loadEnvelope(const QString &relPath, Cove &out, QString *error = nullptr) const;
+-
+-    // Decrypt a cove with a password. On success fills documents/accessLog and
+-    // sets unlocked. Returns false (cove untouched) when the password is wrong.
+-    static bool unlock(Cove &cove, const QString &password);
+-
+-    // Create a new cove, encrypt it, write the .cove file and commit it.
+-    bool createCove(const QString &name, const QString &password, bool notifyOnOpen,
+-                    const QList<CoveDocument> &documents, Cove *out,
+-                    QString *error = nullptr);
+-    // Re-encrypt an unlocked cove's documents + access log under the password,
+-    // write the file and commit. The cove must already be unlocked.
+-    bool save(const Cove &cove, const QString &password, QString *error = nullptr);
+-
+-    // Append an access entry to an unlocked cove in memory (caller persists via
+-    // save() when it has write access; the local self-log is separate).
+-    static void appendAccess(Cove &cove, const CoveAccessEntry &entry);
+-
+-    static QString covesDirRel() { return QStringLiteral(".forkmesh/coves"); }
+-
+-private:
+-    QString covesDir() const; // <workTree>/.forkmesh/coves
+-    QByteArray readCoveBytes(const QString &relPath, bool *ok) const;
+-    bool commit(const QString &message, const QString &relPath, QString *error) const;
+-    QString mirrorRef() const;
+-    QString uniqueSlug(const QString &name) const;
+-
+-    QString m_workTree;
+-    QString m_mirror;
+-    const ForkMeshIdentity *m_identity;
+-    QString m_authorName;
+-};
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index cb899863..bb3c1fda 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -11,7 +11,6 @@
+ #include "MarkdownEditor.h"
+ #include "MessageRow.h"
+ #include "RepoHost.h"
+-#include "RepoSecurity.h"
+ #include "ServerNode.h"
+ #include "Theme.h"
+ 
+@@ -89,6 +88,7 @@
+ #include <QPushButton>
+ #include <QRegularExpression>
+ #include <QRegularExpressionValidator>
++#include <QSaveFile>
+ #include <QScreen>
+ #include <QScrollArea>
+ #include <QSet>
+@@ -2644,6 +2644,24 @@ QString canonicalServerUrl(const QString &input)
+         .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
+ }
+ 
++QString normalizedRepoWebsite(QString input, QString *error = nullptr)
++{
++    input = input.trimmed();
++    if (input.isEmpty())
++        return {};
++    if (!input.contains(QStringLiteral("://")))
++        input.prepend(QStringLiteral("https://"));
++    const QUrl url(input);
++    if (!url.isValid() || url.host().isEmpty() ||
++        (url.scheme() != QLatin1String("http") &&
++         url.scheme() != QLatin1String("https"))) {
++        if (error)
++            *error = QStringLiteral("Enter a valid http or https website URL.");
++        return {};
++    }
++    return url.toString(QUrl::RemovePassword);
++}
++
+ // Inverse of canonicalServerUrl for display: the host (with port when present)
+ // pulled back out of a stored full URL.
+ QString serverHostDisplay(const QString &fullUrl)
+@@ -3217,6 +3235,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+     logStartup(QStringLiteral("MainWindow ctor begin"));
+     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
+     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
++    if (qApp && qApp->styleSheet().isEmpty())
++        applyTheme();
+     resize(1060, 700);
+     // Restore the last window size/position so it reopens where it was left.
+     const QByteArray savedGeometry =
+@@ -3387,22 +3407,16 @@ void MainWindow::runDeferredStartup()
+     }
+     m_pendingRestoreRepoIndex = -1;
+ 
+-    // Then auto-enter the app whenever this machine already picked a node name.
+-    // No account is required: a returning node drops straight into the app shell.
+-    // Silent auth is best-effort — it restores an existing active account's
+-    // hosting/payout state when this key owns one, but its absence no longer keeps
+-    // the node on the welcome screen. First run (no saved name) shows setup.
++    // Then auto-connect when this node key can authenticate silently.
+     if (m_pendingSilentAuth) {
+         m_pendingSilentAuth = false;
+-        const QString name = m_nameEdit ? m_nameEdit->text().trimmed().toLower()
+-                                        : QString();
+-        if (!name.isEmpty() && isValidNodeName(name)) {
+-            authenticateSilently(name);
++        const QString name = accountNameFromInput(m_nameEdit->text(), QString());
++        if (!name.isEmpty() && authenticateSilently(name)) {
+             if (m_stack)
+-                m_stack->setCurrentIndex(1); // app shell
++                m_stack->setCurrentIndex(1); // app shell, never the login form
+             startSession();
+         } else if (m_stack) {
+-            m_stack->setCurrentIndex(0); // first run / no saved name: show setup
++            m_stack->setCurrentIndex(0); // not authenticated: show setup
+         }
+     }
+ }
+@@ -3873,20 +3887,18 @@ void MainWindow::startSession()
+         return;
+     }
+ 
+-    // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
+-    // needs only a node name. Crypto is strictly opt-in and lives behind the
+-    // "Get paid to mirror" button on the node profile — we never gate entry on
+-    // an account or a Solana address here. We still attempt a silent, dialog-free
+-    // auth so a returning node that already owns an active account keeps its
+-    // hosting/payout privileges; a brand-new node simply starts unauthenticated.
+-#ifdef FORKMESH_WINDOW_TESTS
+-    // Tests pin the auth state directly and bypass the server start, so skip the
+-    // real silent-auth network round-trip here.
+-    if (!m_testBypassServerStart)
+-        authenticateSilently(name);
+-#else
+-    authenticateSilently(name);
+-#endif
++    // Website parity: there is no anonymous start. Require an account before
++    // entering the app — either this node already owns an active account / has
++    // logged in, or the user completes the paid signup (reserve → donate → set
++    // email + password) or logs in with an existing email + password. If they
++    // back out, stay on the welcome screen rather than starting unauthenticated.
++    if (!ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed()
++                                              : QString())) {
++        // ensureNodeAccount surfaces the reason (cancelled / failed) itself.
++        if (m_nameEdit)
++            m_nameEdit->setFocus();
++        return;
++    }
+ 
+     if (m_serverUrlEdit->text().trimmed().isEmpty())
+         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
+@@ -6137,16 +6149,7 @@ QWidget *MainWindow::buildBreadcrumb()
+     m_topMessage->setObjectName("topMessage");
+     m_topMessage->setTextFormat(Qt::RichText);
+     m_topMessage->setAlignment(Qt::AlignCenter);
+-    // Selectable like before, plus clickable links so the integrity-pin warning can
+-    // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
+-    m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
+-                                          Qt::LinksAccessibleByMouse);
+-    connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
+-        if (href == QLatin1String("fm:resetpin"))
+-            resetRepoPin();
+-        else if (href == QLatin1String("fm:whypin"))
+-            showPinExplanation();
+-    });
++    m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+     m_topMessage->hide();
+ 
+     // Copy button shown beside the toast for errors only. The toast stays up
+@@ -7246,13 +7249,12 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
+ // stateHash no longer matches the refs this node serves, every clone is rejected
+ // with "repository failed integrity check". Only the owning, publishing node can
+ // fix it (the relay verifies the maintainer key on the re-attestation), so the
+-// warning — and its "Reset integrity pin" action — only surfaces there. It is
+-// shown in the top-bar notification toast (see showPinWarning), not an in-page banner.
++// banner — and its "Reset integrity pin" button — only appears there.
+ void MainWindow::refreshRepoPinBanner()
+ {
+-    if (!m_topMessage)
++    if (!m_repoPinBanner)
+         return;
+-    dismissPinWarning();
++    m_repoPinBanner->hide();
+     m_repoPinCheckIndex = -1;
+     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+         return;
+@@ -7285,7 +7287,7 @@ void MainWindow::refreshRepoPinBanner()
+             [this, reply, index, owner, name, localHash] {
+                 reply->deleteLater();
+                 // The user may have switched repos while this was in flight.
+-                if (!m_topMessage || m_repoPinCheckIndex != index ||
++                if (!m_repoPinBanner || m_repoPinCheckIndex != index ||
+                     m_repoDetailIndex != index)
+                     return;
+                 const QJsonArray repos =
+@@ -7308,50 +7310,10 @@ void MainWindow::refreshRepoPinBanner()
+                 // clones. An absent pin fails open on the relay (nothing to fix),
+                 // and a matching pin is healthy.
+                 if (found && !pinned.isEmpty() && pinned != localHash)
+-                    showPinWarning();
++                    m_repoPinBanner->show();
+             });
+ }
+ 
+-// Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error
+-// branch of flashMessage (red, stays up with Copy / dismiss affordances) but the
+-// label carries the "Reset integrity pin" and "Why?" actions as inline links,
+-// routed by the linkActivated handler wired in the constructor.
+-void MainWindow::showPinWarning()
+-{
+-    if (!m_topMessage)
+-        return;
+-    m_loadStatusShowing = false;
+-    m_pinWarningActive = true;
+-    m_topMessageRaw = QStringLiteral(
+-        "Clones of this repo are being rejected - the relay's integrity pin no longer "
+-        "matches the refs this node serves. Reset the integrity pin to fix it.");
+-    logSystem(m_topMessageRaw);
+-    // Byte-escaped glyphs (✕, ·) must go through fromUtf8, not QStringLiteral, or they
+-    // render as mojibake (each byte becomes its own char16_t).
+-    m_topMessage->setText(QString::fromUtf8(
+-        "<span style='color:#f85149'>\xE2\x9C\x95" " <b>Clones of this repo are being "
+-        "rejected.</b> The integrity pin no longer matches the refs this node "
+-        "serves. </span>"
+-        "<a href='fm:resetpin' style='color:#58a6ff;text-decoration:none'>Reset "
+-        "integrity pin</a>"
+-        "<span style='color:#f85149'> \xC2\xB7" " </span>"
+-        "<a href='fm:whypin' style='color:#58a6ff;text-decoration:none'>Why?</a>"));
+-    m_topMessage->show();
+-    // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
+-    if (m_topMessageTimer)
+-        m_topMessageTimer->stop();
+-    if (m_topMessageCopy)
+-        m_topMessageCopy->show();
+-    if (m_topMessageClose)
+-        m_topMessageClose->show();
+-}
+-
+-void MainWindow::dismissPinWarning()
+-{
+-    if (m_pinWarningActive)
+-        dismissTopMessage();
+-}
+-
+ // Re-publish the open repo's catalog record, which re-signs the CURRENT mirror
+ // stateHash and overwrites the stale pin so the relay serves clones again.
+ void MainWindow::resetRepoPin()
+@@ -7360,13 +7322,19 @@ void MainWindow::resetRepoPin()
+         return;
+     const int index = m_repoDetailIndex;
+     const RepositoryRecord &repo = m_repositories.at(index);
++    if (m_repoPinResetButton) {
++        m_repoPinResetButton->setEnabled(false);
++        m_repoPinResetButton->setText(QStringLiteral("Resetting…"));
++    }
+     logSystem("Integrity pin: re-attesting current refs for " + repo.owner + "/" +
+               repo.name + ".");
+-    flashMessage(QStringLiteral("Re-attesting the integrity pin…"));
+     publishRepository(index, true);
+-    // Give the signed write a moment to land, then re-check: refreshRepoPinBanner
+-    // clears the warning toast if the pin now matches, or re-shows it if not.
++    // Give the signed write a moment to land, then re-check and restore the button.
+     QTimer::singleShot(1500, this, [this, index] {
++        if (m_repoPinResetButton) {
++            m_repoPinResetButton->setEnabled(true);
++            m_repoPinResetButton->setText(QStringLiteral("Reset integrity pin"));
++        }
+         if (m_repoDetailIndex == index)
+             refreshRepoPinBanner();
+     });
+@@ -7653,10 +7621,8 @@ void MainWindow::updateSolanaNotice()
+ {
+     if (!m_solanaBanner)
+         return;
+-    // Crypto is strictly opt-in, so we no longer nag every account-less node to
+-    // add a payout address. The only prompt to set one is the explicit "Get paid
+-    // to mirror" button on the node profile; the banner stays hidden here.
+-    m_solanaBanner->setVisible(false);
++    const bool hasAddress = !savedSolanaAddress().isEmpty();
++    m_solanaBanner->setVisible(!hasAddress);
+     updateWalletVerifyNotice();
+     updateNavSolanaBalance();
+ }
+@@ -7745,46 +7711,6 @@ void MainWindow::promptSetSolanaAddress()
+     updateHomeStats();
+ }
+ 
+-void MainWindow::enablePaidMirroring()
+-{
+-    // Crypto is strictly opt-in: the core flow (clone, mirror, issues, PRs, chat)
+-    // never routes here. This is the one place a user chooses to host their
+-    // mirrors on the network and earn donations, which needs two things the core
+-    // flow does not: (1) a Solana payout address and (2) an active account the
+-    // relay can verify before it accepts hosting/publishing.
+-    QString address = savedSolanaAddress().trimmed();
+-    if (address.isEmpty()) {
+-        promptSetSolanaAddress();
+-        address = savedSolanaAddress().trimmed();
+-        if (address.isEmpty())
+-            return; // user cancelled the address prompt — stay opted out
+-    }
+-
+-    if (!hasActiveAccountSession()) {
+-        // Reuse the established join/activate path (reserve -> donate -> set
+-        // login, or log in to an existing account). On cancel/failure it surfaces
+-        // the reason itself; we simply stay opted out.
+-        if (!ensureNodeAccount(accountOwner(), address))
+-            return;
+-    }
+-
+-    // Active now: bring the live hosts up and (re)publish existing mirrors so the
+-    // network can clone from this node and route donations to its wallet.
+-    startRepoHosts();
+-    for (int i = 0; i < m_repositories.size(); ++i) {
+-        if (m_repositories.at(i).publishToNetwork)
+-            publishRepository(i, /*showDialogOnError=*/false);
+-    }
+-
+-    updateSolanaNotice();
+-    updateHomeStats();
+-    // Refresh the open profile so the button flips to its "earning" state and the
+-    // Solana address/QR/balance section appears next to the username.
+-    if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
+-        showNodeProfile(m_profileNodeId, m_profileNodeName);
+-    flashMessage(QStringLiteral("You're set up to get paid to mirror."));
+-}
+-
+ void MainWindow::showSection(int index)
+ {
+     if (m_navGroup && m_navGroup->button(index))
+@@ -8160,21 +8086,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
+             openDirectChat(m_profileNodeId, m_profileNodeName);
+     });
+ 
+-    // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
+-    // directly under the username on your own profile. The core flow never shows
+-    // it; clicking sets a Solana payout address (if unset) and activates this node
+-    // so it can host its mirrors and earn donations (see enablePaidMirroring).
+-    m_profileGetPaidButton = new QPushButton(QString::fromUtf8("Get paid to mirror"));
+-    m_profileGetPaidButton->setObjectName("primaryButton");
+-    m_profileGetPaidButton->setCursor(Qt::PointingHandCursor);
+-    setOcticon(m_profileGetPaidButton, "credit-card", 16);
+-    m_profileGetPaidButton->setToolTip(
+-        "Opt in to hosting your mirrors on the network and earning donations. "
+-        "Sets a Solana payout address and activates this node. Entirely optional "
+-        "\xE2\x80\x94 cloning, mirroring, issues and PRs work without it.");
+-    connect(m_profileGetPaidButton, &QPushButton::clicked, this,
+-            &MainWindow::enablePaidMirroring);
+-
+     // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
+     // (rebuild, update, settings, logout) that used to be a stacked text menu.
+     m_profileSelfActions = new QWidget;
+@@ -8340,7 +8251,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
+     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
+     layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
+     layout->addWidget(m_profileName);
+-    layout->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
+     layout->addWidget(m_profileStatus);
+     layout->addWidget(m_profileNote);
+     layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+@@ -8562,17 +8472,6 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+     if (m_profileSelfActions)
+         m_profileSelfActions->setVisible(info.self);
+ 
+-    // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
+-    // (active account + a payout address set) it flips to an "earning" label so
+-    // the button doubles as a status line; it stays clickable to re-arm hosting.
+-    if (m_profileGetPaidButton) {
+-        const bool earning = hasActiveAccountSession() && !solana.isEmpty();
+-        m_profileGetPaidButton->setVisible(info.self);
+-        m_profileGetPaidButton->setText(
+-            earning ? QString::fromUtf8("\xE2\x9C\x93 Getting paid to mirror")
+-                    : QString::fromUtf8("Get paid to mirror"));
+-    }
+-
+     // Wallet verification + eligibility badge are shown only on your own profile.
+     if (m_profileVerifyButton)
+         m_profileVerifyButton->setVisible(info.self);
+@@ -9907,8 +9806,6 @@ QWidget *MainWindow::buildRepoDetailSection()
+             m_repoPullsTab = b;
+         if (i == 5)
+             m_repoActionsTab = b; // handle for the Actions (N) badge
+-        if (i == 8)
+-            m_repoBranchesTab = b; // handle for the Branches (N) badge
+         if (i == 10)
+             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
+         m_repoDetailTabs->addButton(b, i);
+@@ -9919,10 +9816,40 @@ QWidget *MainWindow::buildRepoDetailSection()
+     tabBar->setObjectName("repoTabBar");
+     tabBar->setLayout(tabRow);
+ 
+-    // The integrity-pin warning ("clones are being rejected — reset the pin") no
+-    // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
+-    // the top-bar notification toast (see showPinWarning), where its "Reset
+-    // integrity pin" and "Why?" actions are clickable links.
++    // Integrity-pin warning. Only the owner's node ever shows this (see
++    // refreshRepoPinBanner): it means the relay's pinned stateHash no longer
++    // matches the refs this node serves, so clones are being rejected. The "Why?"
++    // link explains the gate; "Reset integrity pin" re-attests the current refs.
++    m_repoPinLabel = new QLabel;
++    m_repoPinLabel->setWordWrap(true);
++    m_repoPinLabel->setTextFormat(Qt::RichText);
++    m_repoPinLabel->setOpenExternalLinks(false);
++    m_repoPinLabel->setText(QStringLiteral(
++        "<b>Clones of this repo are being rejected.</b> The integrity pin the "
++        "relay has on record no longer matches the refs this node serves, so it "
++        "refuses to hand out the mirror (\"repository failed integrity check\"). "
++        "<a href=\"why\" style=\"color:#58a6ff;text-decoration:none\">Why?</a>"));
++    connect(m_repoPinLabel, &QLabel::linkActivated, this,
++            [this](const QString &) { showPinExplanation(); });
++
++    m_repoPinResetButton = new QPushButton(QStringLiteral("Reset integrity pin"));
++    m_repoPinResetButton->setCursor(Qt::PointingHandCursor);
++    connect(m_repoPinResetButton, &QPushButton::clicked, this,
++            &MainWindow::resetRepoPin);
++
++    auto *pinRow = new QHBoxLayout;
++    pinRow->setContentsMargins(12, 6, 12, 6);
++    pinRow->setSpacing(10);
++    pinRow->addWidget(m_repoPinLabel, 1);
++    pinRow->addWidget(m_repoPinResetButton, 0, Qt::AlignTop);
++    m_repoPinBanner = new QWidget;
++    m_repoPinBanner->setObjectName("repoPinBanner");
++    m_repoPinBanner->setStyleSheet(
++        "#repoPinBanner{background:#3d1d1d;border:1px solid #f85149;"
++        "border-radius:6px;}"
++        "#repoPinBanner QLabel{color:#ffdcd7;background:transparent;}");
++    m_repoPinBanner->setLayout(pinRow);
++    m_repoPinBanner->hide();
+ 
+     m_repoPushButton = new QPushButton;
+     m_repoPushButton->setObjectName("primaryButton");
+@@ -9956,7 +9883,7 @@ QWidget *MainWindow::buildRepoDetailSection()
+     m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
+     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
+     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
+-    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 6 Security and quality
++    m_repoDetailStack->addWidget(buildPlaceholderTab("Security and quality")); // 6
+     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
+     m_branchesTabIndex = m_repoDetailStack->count();
+     m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
+@@ -10007,8 +9934,6 @@ QWidget *MainWindow::buildRepoDetailSection()
+         }
+         else if (id == 5)
+             refreshRepoActions();
+-        else if (id == 6)
+-            refreshRepoSecurity();
+         else if (id == 7)
+             loadRepoInsights();
+         else if (id == m_branchesTabIndex)
+@@ -10030,6 +9955,7 @@ QWidget *MainWindow::buildRepoDetailSection()
+     layout->addLayout(headerRow);
+     layout->addWidget(m_repoDetailNotice);
+     layout->addWidget(metaBand);
++    layout->addWidget(m_repoPinBanner);
+     layout->addWidget(m_repoPublishBar);
+     layout->addWidget(tabBar);
+     layout->addWidget(m_repoDetailStack, 1);
+@@ -11244,236 +11170,6 @@ void MainWindow::generateScmMessage()
+             });
+ }
+ 
+-QWidget *MainWindow::buildRepoSecurityTab()
+-{
+-    auto *page = new QWidget;
+-    page->setObjectName("mainContent");
+-
+-    auto *scroll = new QScrollArea;
+-    scroll->setObjectName("mainContent");
+-    scroll->setWidgetResizable(true);
+-    scroll->setFrameShape(QFrame::NoFrame);
+-
+-    auto *content = new QWidget;
+-    content->setObjectName("insightsPage");
+-    auto *layout = new QVBoxLayout(content);
+-    layout->setContentsMargins(18, 18, 18, 18);
+-    layout->setSpacing(14);
+-
+-    auto *heading = new QLabel("Security and quality");
+-    heading->setObjectName("securityQualityTitle");
+-    heading->setProperty("class", "channelTitle");
+-    heading->setStyleSheet(QStringLiteral("font-size:16px;font-weight:700;"));
+-    auto *subtitle = new QLabel(
+-        "Local security and quality evidence from this node. External advisory "
+-        "matching is not part of the MVP.");
+-    subtitle->setObjectName("statusLine");
+-    subtitle->setWordWrap(true);
+-
+-    m_securityRefreshButton = new QPushButton("Refresh");
+-    m_securityRefreshButton->setObjectName("ghostButton");
+-    m_securityRefreshButton->setProperty("buttonSize", "sm");
+-    m_securityRefreshButton->setCursor(Qt::PointingHandCursor);
+-    setOcticon(m_securityRefreshButton, "sync", 16);
+-    connect(m_securityRefreshButton, &QPushButton::clicked, this,
+-            &MainWindow::refreshRepoSecurity);
+-
+-    auto *headingCol = new QVBoxLayout;
+-    headingCol->setContentsMargins(0, 0, 0, 0);
+-    headingCol->setSpacing(3);
+-    headingCol->addWidget(heading);
+-    headingCol->addWidget(subtitle);
+-
+-    auto *headerRow = new QHBoxLayout;
+-    headerRow->setContentsMargins(0, 0, 0, 0);
+-    headerRow->setSpacing(8);
+-    headerRow->addLayout(headingCol, 1);
+-    headerRow->addWidget(m_securityRefreshButton, 0, Qt::AlignTop);
+-    layout->addLayout(headerRow);
+-
+-    m_securitySummary = new QLabel;
+-    m_securitySummary->setObjectName("insightsCard");
+-    m_securitySummary->setTextFormat(Qt::RichText);
+-    m_securitySummary->setWordWrap(true);
+-    m_securitySummary->setMinimumHeight(92);
+-    layout->addWidget(m_securitySummary);
+-
+-    auto *signalsLabel = new QLabel("SIGNALS");
+-    signalsLabel->setObjectName("sectionLabel");
+-    layout->addWidget(signalsLabel);
+-
+-    m_securitySignalsPanel = new QWidget;
+-    m_securitySignalsGrid = new QGridLayout(m_securitySignalsPanel);
+-    m_securitySignalsGrid->setContentsMargins(0, 0, 0, 0);
+-    m_securitySignalsGrid->setSpacing(10);
+-    layout->addWidget(m_securitySignalsPanel);
+-
+-    auto *findingsLabel = new QLabel("FINDINGS");
+-    findingsLabel->setObjectName("sectionLabel");
+-    layout->addWidget(findingsLabel);
+-
+-    m_securityFindingsTable = new QTableWidget(0, 4);
+-    m_securityFindingsTable->setObjectName("issueTable");
+-    enableHoverRowHighlight(m_securityFindingsTable);
+-    m_securityFindingsTable->setHorizontalHeaderLabels(
+-        {"Severity", "Category", "Finding", "Action"});
+-    m_securityFindingsTable->verticalHeader()->setVisible(false);
+-    m_securityFindingsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+-    m_securityFindingsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+-    m_securityFindingsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+-    m_securityFindingsTable->setShowGrid(false);
+-    m_securityFindingsTable->setWordWrap(false);
+-    QHeaderView *header = m_securityFindingsTable->horizontalHeader();
+-    header->setHighlightSections(false);
+-    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+-    header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+-    header->setSectionResizeMode(2, QHeaderView::Stretch);
+-    header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+-    m_securityFindingsTable->setMinimumHeight(220);
+-    layout->addWidget(m_securityFindingsTable);
+-    layout->addStretch();
+-
+-    scroll->setWidget(content);
+-    auto *pageLayout = new QVBoxLayout(page);
+-    pageLayout->setContentsMargins(0, 0, 0, 0);
+-    pageLayout->addWidget(scroll);
+-    refreshRepoSecurity();
+-    return page;
+-}
+-
+-void MainWindow::refreshRepoSecurity()
+-{
+-    if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
+-        return;
+-
+-    while (QLayoutItem *item = m_securitySignalsGrid->takeAt(0)) {
+-        if (QWidget *widget = item->widget())
+-            widget->deleteLater();
+-        delete item;
+-    }
+-
+-    m_securityFindingsTable->setSortingEnabled(false);
+-    m_securityFindingsTable->setRowCount(0);
+-
+-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+-        m_securitySummary->setText(
+-            "<b>Security and quality</b><br><span style='color:#8b949e'>"
+-            "Select a repository to scan local evidence.</span>");
+-        m_securityFindingsTable->setSortingEnabled(true);
+-        return;
+-    }
+-
+-    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
+-    const RepositoryRecord &writable = writableRecordFor(selected);
+-
+-    RepoSecurityInput input;
+-    input.owner = selected.owner;
+-    input.name = selected.name;
+-    input.localPath = writable.localPath;
+-    input.mirrorPath = writable.mirrorPath.isEmpty() ? selected.mirrorPath
+-                                                     : writable.mirrorPath;
+-    input.publishToNetwork = selected.publishToNetwork;
+-    input.isPrivate = selected.isPrivate;
+-    input.previewOnly = selected.previewOnly;
+-    input.actionsEnabled = selected.actionsEnabled;
+-    input.integrityWarning = m_repoPinBanner && m_repoPinBanner->isVisible();
+-    input.issues =
+-        IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
+-            .loadAll();
+-    input.workflows = availableWorkflowsForRepo(writable);
+-    for (const ActionRun &run : std::as_const(m_actionRuns))
+-        if (run.owner == selected.owner && run.name == selected.name)
+-            input.actionRuns.append(run);
+-
+-    const RepoSecuritySnapshot snapshot = RepoSecurity::scan(input);
+-    const RepoSecuritySeverity highest = RepoSecurity::highestSeverity(snapshot);
+-    int warnings = 0;
+-    int severe = 0;
+-    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+-        if (signal.severity == RepoSecuritySeverity::Warning)
+-            ++warnings;
+-        else if (signal.severity == RepoSecuritySeverity::High ||
+-                 signal.severity == RepoSecuritySeverity::Critical)
+-            ++severe;
+-    }
+-    for (const RepoSecurityFinding &finding : snapshot.findings) {
+-        if (finding.severity == RepoSecuritySeverity::Warning)
+-            ++warnings;
+-        else if (finding.severity == RepoSecuritySeverity::High ||
+-                 finding.severity == RepoSecuritySeverity::Critical)
+-            ++severe;
+-    }
+-
+-    m_securitySummary->setText(
+-        QStringLiteral(
+-            "<div style='font-size:21px; font-weight:800; color:%1'>%2</div>"
+-            "<div style='color:#8b949e; font-size:12px; font-weight:600'>"
+-            "%3 at %4. %5 finding%6, %7 warning%8, %9 severe.</div>")
+-            .arg(repoSecuritySeverityColor(highest),
+-                 RepoSecurity::severityText(highest).toHtmlEscaped(),
+-                 snapshot.repoKey.toHtmlEscaped(), snapshot.ref.toHtmlEscaped())
+-            .arg(snapshot.findings.size())
+-            .arg(snapshot.findings.size() == 1 ? QString() : QStringLiteral("s"))
+-            .arg(warnings)
+-            .arg(warnings == 1 ? QString() : QStringLiteral("s"))
+-            .arg(severe));
+-
+-    int index = 0;
+-    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+-        auto *card = new QLabel(repoSecuritySignalHtml(signal));
+-        card->setObjectName("insightsCard");
+-        card->setTextFormat(Qt::RichText);
+-        card->setWordWrap(true);
+-        card->setMinimumHeight(92);
+-        const int row = index / 3;
+-        const int col = index % 3;
+-        m_securitySignalsGrid->addWidget(card, row, col);
+-        ++index;
+-    }
+-
+-    if (snapshot.findings.isEmpty()) {
+-        const int row = m_securityFindingsTable->rowCount();
+-        m_securityFindingsTable->insertRow(row);
+-        auto *severity = new QTableWidgetItem("Pass");
+-        severity->setForeground(QColor(repoSecuritySeverityColor(
+-            RepoSecuritySeverity::Pass)));
+-        m_securityFindingsTable->setItem(row, 0, severity);
+-        m_securityFindingsTable->setItem(row, 1, new QTableWidgetItem("Local scan"));
+-        m_securityFindingsTable->setItem(
+-            row, 2, new QTableWidgetItem("No local findings at this ref."));
+-        m_securityFindingsTable->setItem(row, 3, new QTableWidgetItem("-"));
+-    } else {
+-        for (const RepoSecurityFinding &finding : snapshot.findings) {
+-            const int row = m_securityFindingsTable->rowCount();
+-            m_securityFindingsTable->insertRow(row);
+-            auto *severity =
+-                new QTableWidgetItem(RepoSecurity::severityText(finding.severity));
+-            severity->setForeground(QColor(repoSecuritySeverityColor(finding.severity)));
+-            auto *category = new QTableWidgetItem(finding.category);
+-            const QString location =
+-                finding.path.isEmpty()
+-                    ? QString()
+-                    : QStringLiteral(" (%1%2)")
+-                          .arg(finding.path,
+-                               finding.line > 0
+-                                   ? QStringLiteral(":%1").arg(finding.line)
+-                                   : QString());
+-            auto *detail =
+-                new QTableWidgetItem(finding.title + QStringLiteral(": ") +
+-                                     finding.detail + location);
+-            auto *action = new QTableWidgetItem(finding.recommendedAction);
+-            for (QTableWidgetItem *item : {severity, category, detail, action})
+-                item->setToolTip(item->text());
+-            m_securityFindingsTable->setItem(row, 0, severity);
+-            m_securityFindingsTable->setItem(row, 1, category);
+-            m_securityFindingsTable->setItem(row, 2, detail);
+-            m_securityFindingsTable->setItem(row, 3, action);
+-        }
+-    }
+-
+-    m_securityFindingsTable->setSortingEnabled(true);
+-}
+-
+ QWidget *MainWindow::buildInsightsTab()
+ {
+     auto *page = new QWidget;
+@@ -16597,8 +16293,24 @@ QWidget *MainWindow::buildAboutSidebar()
+ 
+     auto *aboutLabel = new QLabel("About");
+     aboutLabel->setObjectName("aboutHeading");
++    m_aboutEditButton = new QPushButton;
++    m_aboutEditButton->setObjectName("aboutEditButton");
++    m_aboutEditButton->setCursor(Qt::PointingHandCursor);
++    m_aboutEditButton->setToolTip("Edit repository details");
++    m_aboutEditButton->setFixedSize(28, 28);
++    setOcticon(m_aboutEditButton, "gear", 15);
++    connect(m_aboutEditButton, &QPushButton::clicked, this,
++            &MainWindow::editRepoAbout);
++
++    auto *aboutHeader = new QHBoxLayout;
++    aboutHeader->setContentsMargins(0, 0, 0, 0);
++    aboutHeader->setSpacing(6);
++    aboutHeader->addWidget(aboutLabel);
++    aboutHeader->addStretch();
++    aboutHeader->addWidget(m_aboutEditButton);
++
+     m_aboutText = new QLabel;
+-    m_aboutText->setObjectName("statusLine");
++    m_aboutText->setObjectName("aboutText");
+     m_aboutText->setWordWrap(true);
+     m_aboutText->setTextFormat(Qt::RichText);
+     m_aboutText->setOpenExternalLinks(true);
+@@ -16666,7 +16378,7 @@ QWidget *MainWindow::buildAboutSidebar()
+     auto *layout = new QVBoxLayout(side);
+     layout->setContentsMargins(22, 6, 20, 20);
+     layout->setSpacing(8);
+-    layout->addWidget(aboutLabel);
++    layout->addLayout(aboutHeader);
+     layout->addWidget(m_aboutText);
+     layout->addWidget(m_aboutTopics);
+     layout->addWidget(m_aboutFiles);
+@@ -20028,6 +19740,141 @@ void MainWindow::loadRepoInfo()
+     }
+ }
+ 
++void MainWindow::editRepoAbout()
++{
++    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
++        return;
++    if (!repoHasWorkingTree()) {
++        QMessageBox::information(
++            this, "Edit repository details",
++            "Open a repository with a local working copy to edit its About details.");
++        return;
++    }
++
++    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
++    QDialog dialog(this);
++    dialog.setWindowTitle("Edit repository details");
++
++    auto *descriptionEdit = new QPlainTextEdit(&dialog);
++    descriptionEdit->setPlaceholderText("Short repository description");
++    descriptionEdit->setPlainText(m_repoInfo.about.isEmpty() ? repo.description
++                                                             : m_repoInfo.about);
++    descriptionEdit->setMaximumHeight(96);
++
++    auto *websiteEdit = new QLineEdit(&dialog);
++    websiteEdit->setPlaceholderText("https://example.com");
++    websiteEdit->setText(m_repoInfo.website);
++
++    auto *form = new QFormLayout;
++    form->addRow("Description", descriptionEdit);
++    form->addRow("Website", websiteEdit);
++
++    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save |
++                                         QDialogButtonBox::Cancel,
++                                         Qt::Horizontal, &dialog);
++    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
++    connect(buttons, &QDialogButtonBox::accepted, this, [this, &dialog,
++                                                         descriptionEdit,
++                                                         websiteEdit] {
++        QString error;
++        if (!saveRepoAboutMetadata(descriptionEdit->toPlainText(),
++                                   websiteEdit->text(), &error)) {
++            QMessageBox::warning(&dialog, "Edit repository details",
++                                 error.isEmpty()
++                                     ? QStringLiteral("Could not save details.")
++                                     : error);
++            return;
++        }
++        dialog.accept();
++    });
++
++    auto *layout = new QVBoxLayout(&dialog);
++    layout->setContentsMargins(18, 18, 18, 18);
++    layout->setSpacing(12);
++    layout->addLayout(form);
++    layout->addWidget(buttons);
++    dialog.resize(460, 220);
++    dialog.exec();
++}
++
++bool MainWindow::saveRepoAboutMetadata(const QString &about,
++                                       const QString &websiteInput,
++                                       QString *error)
++{
++    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
++        if (error)
++            *error = QStringLiteral("No repository is open.");
++        return false;
++    }
++    if (!repoHasWorkingTree()) {
++        if (error)
++            *error = QStringLiteral(
++                "Open a repository with a local working copy to edit its About details.");
++        return false;
++    }
++
++    const QString website = normalizedRepoWebsite(websiteInput, error);
++    if (!websiteInput.trimmed().isEmpty() && website.isEmpty())
++        return false;
++
++    const int index = m_repoDetailIndex;
++    RepositoryRecord &repo = m_repositories[index];
++    const QString infoPath = QDir(repo.localPath).filePath("info.json");
++    QJsonObject obj;
++    if (QFileInfo::exists(infoPath)) {
++        QFile file(infoPath);
++        if (!file.open(QIODevice::ReadOnly)) {
++            if (error)
++                *error = QStringLiteral("Could not read info.json.");
++            return false;
++        }
++        QJsonParseError parseError;
++        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
++        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
++            if (error)
++                *error = QStringLiteral("info.json is not valid JSON.");
++            return false;
++        }
++        obj = doc.object();
++    }
++
++    const QString aboutText = about.trimmed();
++    if (aboutText.isEmpty())
++        obj.remove(QStringLiteral("about"));
++    else
++        obj.insert(QStringLiteral("about"), aboutText);
++    if (website.isEmpty())
++        obj.remove(QStringLiteral("website"));
++    else
++        obj.insert(QStringLiteral("website"), website);
++
++    const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
++    QSaveFile file(infoPath);
++    if (!file.open(QIODevice::WriteOnly)) {
++        if (error)
++            *error = QStringLiteral("Could not write info.json.");
++        return false;
++    }
++    if (file.write(data) != data.size() || !file.commit()) {
++        if (error)
++            *error = QStringLiteral("Could not save info.json.");
++        return false;
++    }
++
++    repo.description = aboutText;
++    saveRepositories();
++    m_repoInfo.about = aboutText;
++    m_repoInfo.website = website;
++    loadAboutSidebar();
++    refreshRepositoryList();
++    if (repo.publishToNetwork)
++        publishRepository(index, false);
++    logSystem(QStringLiteral("Updated About details for %1/%2.")
++                  .arg(repo.owner, repo.name));
++    setRepoDetailNotice(QStringLiteral("Updated repository details."));
++    return true;
++}
++
+ void MainWindow::setRepoBranch(const QString &branch)
+ {
+     m_repoBranch = branch;
+@@ -20109,9 +19956,6 @@ void MainWindow::loadBranchesAndTags()
+                                           : QStringLiteral("branches")));
+         m_branchesButton->setEnabled(!branches.isEmpty());
+     }
+-    if (m_repoBranchesTab)
+-        m_repoBranchesTab->setText(
+-            QStringLiteral("Branches (%1)").arg(formatCount(branches.size())));
+ 
+     // Branch menu.
+     if (m_branchButton) {
+@@ -20215,26 +20059,7 @@ QWidget *MainWindow::buildBranchesTab()
+                 if (it)
+                     setRepoBranch(it->text());
+             });
+-    // Selecting a branch (single click or arrow keys) previews its changes
+-    // against the default branch in the panel below — no checkout required.
+-    connect(m_branchesTable, &QTableWidget::currentCellChanged, this,
+-            [this](int row, int, int, int) {
+-                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+-                showBranchDiff(it ? it->text() : QString());
+-            });
+-
+-    m_branchDiffView = new QTextBrowser;
+-    m_branchDiffView->setObjectName("diffView");
+-    m_branchDiffView->setOpenExternalLinks(false);
+-    m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
+-
+-    auto *split = new QSplitter(Qt::Horizontal);
+-    split->addWidget(m_branchesTable);
+-    split->addWidget(m_branchDiffView);
+-    split->setStretchFactor(0, 0);
+-    split->setStretchFactor(1, 1);
+-    split->setSizes({720, 980});
+-    layout->addWidget(split, 1);
++    layout->addWidget(m_branchesTable, 1);
+     return page;
+ }
+ 
+@@ -20293,27 +20118,6 @@ void MainWindow::loadBranchesPanel()
+         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
+         m_branchesTable->setItem(row, 2, updated);
+ 
+-        // Row actions: open a pull request from this branch, and delete it.
+-        auto *actions = new QWidget;
+-        auto *actionRow = new QHBoxLayout(actions);
+-        actionRow->setContentsMargins(0, 0, 0, 0);
+-        actionRow->setSpacing(4);
+-
+-        auto *prButton = new QPushButton("Create PR");
+-        prButton->setObjectName("ghostButton");
+-        prButton->setProperty("buttonSize", "sm");
+-        prButton->setCursor(Qt::PointingHandCursor);
+-        setOcticon(prButton, "git-pull-request", 14);
+-        const bool canPr = writable && branch != base;
+-        prButton->setEnabled(canPr);
+-        prButton->setToolTip(
+-            canPr ? QStringLiteral("Open a pull request from %1 into %2").arg(branch, base)
+-                  : (writable ? "The default branch can't open a pull request into itself"
+-                              : "Read-only mirror — no working tree to open a pull request from"));
+-        connect(prButton, &QPushButton::clicked, this,
+-                [this, branch] { createPullFromBranch(branch); });
+-        actionRow->addWidget(prButton);
+-
+         // Delete button (disabled for the default/checked-out branch).
+         auto *del = new QPushButton;
+         del->setObjectName("issueIconButton");
+@@ -20330,9 +20134,7 @@ void MainWindow::loadBranchesPanel()
+                                 : "Read-only mirror — no working tree to delete from");
+         connect(del, &QPushButton::clicked, this,
+                 [this, branch] { deleteBranch(branch); });
+-        actionRow->addWidget(del);
+-
+-        m_branchesTable->setCellWidget(row, 3, actions);
++        m_branchesTable->setCellWidget(row, 3, del);
+     }
+     if (branches.isEmpty()) {
+         m_branchesTable->insertRow(0);
+@@ -20393,104 +20195,6 @@ void MainWindow::deleteBranch(const QString &branch)
+     loadBranchesAndTags();
+ }
+ 
+-void MainWindow::showBranchDiff(const QString &branch)
+-{
+-    if (!m_branchDiffView)
+-        return;
+-    m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+-    const QString dir = repoGitDir();
+-    if (branch.isEmpty() || dir.isEmpty()) {
+-        m_branchDiffView->clear();
+-        return;
+-    }
+-    const QString base = repoDefaultBranch(repoBranches());
+-    if (branch == base) {
+-        m_branchDiffView->setHtml(
+-            QStringLiteral("<p style='color:#8b949e'>%1 is the default branch.</p>")
+-                .arg(branch.toHtmlEscaped()));
+-        return;
+-    }
+-    QByteArray out;
+-    QString err;
+-    if (!runGitCapture(dir, {"diff", base + ".." + branch}, &out, &err)) {
+-        m_branchDiffView->setHtml(
+-            QStringLiteral("<p style='color:#f85149'>Could not diff %1: %2</p>")
+-                .arg(branch.toHtmlEscaped(), err.toHtmlEscaped()));
+-        return;
+-    }
+-    QList<DiffFileEntry> files;
+-    const QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, base,
+-                                        branch, QString(), QHash<QString, QString>());
+-    m_branchDiffView->setHtml(
+-        html.isEmpty()
+-            ? QStringLiteral("<p style='color:#8b949e'>No changes between %1 and %2.</p>")
+-                  .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
+-            : html);
+-}
+-
+-void MainWindow::createPullFromBranch(const QString &branch)
+-{
+-    const QString dir = repoGitDir();
+-    const QString base = repoDefaultBranch(repoBranches());
+-    if (branch.isEmpty() || branch == base)
+-        return;
+-    if (!repoHasWorkingTree()) {
+-        setRepoDetailNotice(
+-            "This is a read-only mirror; pull requests can't be opened here.", true);
+-        return;
+-    }
+-    QByteArray diff;
+-    QString err;
+-    if (!runGitCapture(dir, {"diff", "--binary", base + ".." + branch}, &diff, &err) ||
+-        QString::fromUtf8(diff).trimmed().isEmpty()) {
+-        setRepoDetailNotice(
+-            QStringLiteral("%1 has no changes to open as a pull request.").arg(branch),
+-            true);
+-        return;
+-    }
+-    // Default the PR title to the branch's first commit subject.
+-    QByteArray subjectOut;
+-    runGitCapture(dir, {"log", "--format=%s", "--reverse", base + ".." + branch},
+-                  &subjectOut, nullptr);
+-    const QStringList subjects =
+-        QString::fromUtf8(subjectOut).split('\n', Qt::SkipEmptyParts);
+-    bool ok = false;
+-    const QString title =
+-        QInputDialog::getText(
+-            this, "Create pull request",
+-            QStringLiteral("Title for the pull request from %1 into %2:")
+-                .arg(branch, base),
+-            QLineEdit::Normal, subjects.isEmpty() ? branch : subjects.first(), &ok)
+-            .trimmed();
+-    if (!ok || title.isEmpty())
+-        return;
+-    QString description;
+-    for (const QString &s : subjects)
+-        description += "- " + s + "\n";
+-
+-    // Capture the authored commit series too, so a merge replays it with `git am`.
+-    QByteArray mbox;
+-    runGitCapture(dir, {"format-patch", "--stdout", base + ".." + branch}, &mbox,
+-                  nullptr);
+-    PullStore store = pullStoreForCurrentRepo();
+-    QString error;
+-    const int number = store.createPull(title, description, base, branch,
+-                                        QString::fromUtf8(diff),
+-                                        QString::fromUtf8(mbox), &error);
+-    if (number < 0) {
+-        setRepoDetailNotice(
+-            error.isEmpty() ? "Could not create the pull request." : error, true);
+-        return;
+-    }
+-    logSystem(QStringLiteral("Opened pull #%1 from %2 into %3.")
+-                  .arg(number)
+-                  .arg(branch, base));
+-    setRepoDetailNotice(
+-        QStringLiteral("Opened pull request #%1 from %2.").arg(number).arg(branch));
+-    m_currentPullNumber = number;
+-    switchToPullTab(number);
+-}
+-
+ // ---- Releases panel --------------------------------------------------------
+ 
+ QWidget *MainWindow::buildReleasesTab()
+@@ -21075,6 +20779,15 @@ void MainWindow::loadAboutSidebar()
+             ? &m_repositories.at(m_repoDetailIndex)
+             : nullptr;
+ 
++    if (m_aboutEditButton) {
++        const bool editable = repoHasWorkingTree();
++        m_aboutEditButton->setEnabled(editable);
++        m_aboutEditButton->setToolTip(
++            editable
++                ? QStringLiteral("Edit repository details")
++                : QStringLiteral("Open a local working copy to edit repository details"));
++    }
++
+     // About text + website.
+     if (m_aboutText) {
+         QString text = m_repoInfo.about.isEmpty()
+@@ -26991,9 +26704,6 @@ void MainWindow::flashMessage(const QString &text, bool error)
+     const QString fg = error ? "#f85149" : "#3fb950";
+     const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
+                                 : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+-    // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
+-    // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
+-    m_pinWarningActive = false;
+     m_topMessageRaw = trimmed;
+     m_topMessage->setText(
+         QStringLiteral("<span style='color:%1'>%2 %3</span>")
+@@ -27029,7 +26739,6 @@ void MainWindow::flashMessage(const QString &text, bool error)
+ void MainWindow::dismissTopMessage()
+ {
+     m_loadStatusShowing = false;
+-    m_pinWarningActive = false;
+     if (m_topMessage)
+         m_topMessage->hide();
+     if (m_topMessageCopy)
+@@ -29677,14 +29386,8 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+         return;
+     RepositoryRecord &repo = m_repositories[index];
+     if (!hasActiveAccountSession()) {
+-        // Publishing/hosting is the opt-in, paid side of the app. Point the user
+-        // at the "Get paid to mirror" button on their node profile rather than
+-        // failing silently; the core flow (clone, mirror, issues, PRs) is
+-        // unaffected by staying opted out.
+-        const QString message = QStringLiteral(
+-            "Mirroring this repo locally needs nothing extra. To host it on the "
+-            "network and get paid, open your node profile and choose \"Get paid "
+-            "to mirror\".");
++        const QString message =
++            QStringLiteral("Join the network before publishing repositories.");
+         logSystem(message);
+         if (showDialogOnError)
+             flashMessage(message, /*error=*/true);
+@@ -29729,9 +29432,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+     // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
+     // refs/tags/* only, sorted, joined by '\n'.
+     const QString stateHash = mirrorStateHash(repo.mirrorPath);
++    QString publishedWebsite;
++    if (!repo.localPath.trimmed().isEmpty()) {
++        QFile file(QDir(repo.localPath).filePath("info.json"));
++        if (file.open(QIODevice::ReadOnly)) {
++            const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
++            publishedWebsite = info.value(QStringLiteral("website")).toString();
++        }
++    }
++    if (publishedWebsite.isEmpty() && index == m_repoDetailIndex)
++        publishedWebsite = m_repoInfo.website;
+     QJsonObject metadata{{"owner", owner},
+                          {"name", name},
+                          {"description", repo.description},
++                         {"website", publishedWebsite},
+                          {"cloneUrl", repo.cloneUrl},
+                          {"solana", repo.solanaAddress},
+                          {"channel", repositoryChannel(repo)},
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 34a75881..1f32b4db 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -30,7 +30,6 @@ class TerminalWidget;
+ class RepoHost;
+ class ActionRunner;
+ class QButtonGroup;
+-class QGridLayout;
+ class QFileSystemWatcher;
+ class QSplitter;
+ class QTextEdit;
+@@ -131,7 +130,6 @@ public:
+     }
+     void testEnableSessionStartBypass(bool value) { m_testBypassServerStart = value; }
+     void testStartSession() { startSession(); }
+-    void testEnablePaidMirroring() { enablePaidMirroring(); }
+     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
+     int testStackIndex() const;
+     QString testUserName() const { return m_userName; }
+@@ -139,6 +137,11 @@ public:
+     QString testSavedSolanaAddress() const;
+     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
+     QString testAccountTier() const { return m_accountTier; }
++    Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
++                                           const QString &localPath);
++    Q_INVOKABLE bool testOpenRepository(int index);
++    Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
++                                               const QString &website);
+     int testAddPublishedRepository(const QString &owner, const QString &name,
+                                    const QString &mirrorPath);
+     void testPublishRepository(int index) { publishRepository(index, false); }
+@@ -248,11 +251,6 @@ private:
+     QWidget *buildSolanaNotice();
+     void updateSolanaNotice();
+     void promptSetSolanaAddress();
+-    // The one opt-in entry into the crypto side: set a Solana payout address,
+-    // activate the node's network account, and start hosting its mirrors so it
+-    // earns donations. Nothing in the core flow (clone, mirror, issues, PRs)
+-    // routes here — it is reached only from the "Get paid to mirror" button.
+-    void enablePaidMirroring();
+ 
+     // Top breadcrumb: active server > current section.
+     QWidget *buildBreadcrumb();
+@@ -283,17 +281,9 @@ private:
+     // Signed catalog-list URL (adds our viewer token so the relay also returns our
+     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
+     QUrl catalogListUrl();
+-    // Show/hide the "clones are being rejected" warning on the owner's node when the
+-    // relay's pinned stateHash no longer matches the refs this node serves. The
+-    // warning surfaces as the top-bar notification toast (with Reset / Why links),
+-    // not an in-page banner.
++    // Show/hide the "clones are being rejected" banner on the owner's node when the
++    // relay's pinned stateHash no longer matches the refs this node serves.
+     void refreshRepoPinBanner();
+-    // Show the integrity-pin warning in the top-bar toast, persistent (like an error
+-    // toast) with clickable "Reset integrity pin" and "Why?" links.
+-    void showPinWarning();
+-    // Clear the top-bar toast only if it is currently the integrity-pin warning, so
+-    // an unrelated toast isn't clobbered when the pin becomes healthy again.
+-    void dismissPinWarning();
+     // Re-attest the open repo's current refs, overwriting a stale relay pin.
+     void resetRepoPin();
+     // Dialog explaining what the integrity pin is and why a reset is needed.
+@@ -377,7 +367,6 @@ private:
+                              const QString &headerHtml, const QString &body,
+                              const QString &accent = QString());
+     QWidget *buildAboutSidebar();
+-    QWidget *buildRepoSecurityTab();
+     QWidget *buildInsightsTab();
+     QWidget *buildPlaceholderTab(const QString &name);
+ 
+@@ -600,8 +589,6 @@ private:
+     QString repoDefaultBranch(const QStringList &branches) const;
+     QWidget *buildBranchesTab();
+     void loadBranchesPanel();
+-    void showBranchDiff(const QString &branch);
+-    void createPullFromBranch(const QString &branch);
+     void promptNewBranch();
+     void deleteBranch(const QString &branch);
+     void deleteSelectedBranches();
+@@ -622,6 +609,9 @@ private:
+     bool repoHasWorkingTree() const;
+     void loadFileSearchIndex();
+     void loadAboutSidebar();
++    void editRepoAbout();
++    bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
++                               QString *error = nullptr);
+     void loadCommits();
+     // --- Source Control panel (working-tree changes) at the top of the Commits
+     // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
+@@ -690,7 +680,6 @@ private:
+     void positionAgentSnake();
+     // Re-render commit check glyphs in whichever repo-detail tab is visible.
+     void refreshCommitStatusGlyphs();
+-    void refreshRepoSecurity();
+     void loadRepoInsights();
+     void setRepoBranch(const QString &branch);
+     QString currentRef() const;
+@@ -1089,7 +1078,6 @@ private:
+     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
+     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
+     QString m_topMessageRaw;              // plain text of the current toast, for copy
+-    bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
+ 
+     // Setup widgets
+     QLineEdit *m_nameEdit;
+@@ -1140,6 +1128,9 @@ private:
+     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
+     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
+     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
++    QWidget *m_repoPinBanner = nullptr;      // "clones rejected — reset integrity pin" warning
++    QLabel *m_repoPinLabel = nullptr;        // explanatory text inside m_repoPinBanner
++    QPushButton *m_repoPinResetButton = nullptr; // re-attests the served refs
+     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
+     // One row per repo of the selected node, shown in the repo dropdown.
+     struct RepoMenuEntry {
+@@ -1246,7 +1237,6 @@ private:
+     QVBoxLayout *m_actionStripCol = nullptr;
+     QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
+     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
+-    QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
+     QStackedWidget *m_repoDetailStack = nullptr;
+     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
+     int m_branchesTabIndex = -1; // index of the Branches page
+@@ -1256,7 +1246,6 @@ private:
+     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
+     QTableWidget *m_branchesTable = nullptr;
+     QLabel *m_branchesSummary = nullptr;
+-    QTextBrowser *m_branchDiffView = nullptr;
+     QPushButton *m_branchesDeleteSelBtn = nullptr;
+     QTableWidget *m_releasesTable = nullptr;
+     QLabel *m_releasesSummary = nullptr;
+@@ -1281,11 +1270,7 @@ private:
+     QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
+     QLineEdit *m_fileSearch = nullptr;
+     QCompleter *m_fileCompleter = nullptr;
+-    QLabel *m_securitySummary = nullptr;
+-    QWidget *m_securitySignalsPanel = nullptr;
+-    QGridLayout *m_securitySignalsGrid = nullptr;
+-    QTableWidget *m_securityFindingsTable = nullptr;
+-    QPushButton *m_securityRefreshButton = nullptr;
++    QPushButton *m_aboutEditButton = nullptr;
+     QLabel *m_aboutText = nullptr;
+     QLabel *m_aboutTopics = nullptr;
+     QLabel *m_aboutFiles = nullptr;
+@@ -1704,9 +1689,6 @@ private:
+     QPushButton *m_profileVerifyButton = nullptr;
+     QLabel *m_profileEligibility = nullptr;
+     QPushButton *m_profileMessageButton = nullptr;
+-    // "Get paid to mirror": opt-in CTA shown under the username on your own
+-    // profile. Flips to an "earning" label once the node is activated.
+-    QPushButton *m_profileGetPaidButton = nullptr;
+     // Self-only actions pinned to the top of the node profile panel.
+     QWidget *m_profileSelfActions = nullptr;
+     QPushButton *m_profileRebuildButton = nullptr;
+diff --git a/qt_client/src/RepoSecurity.cpp b/qt_client/src/RepoSecurity.cpp
+deleted file mode 100644
+index 87bd8b55..00000000
+--- a/qt_client/src/RepoSecurity.cpp
++++ /dev/null
+@@ -1,479 +0,0 @@
+-#include "RepoSecurity.h"
+-
+-#include <QDateTime>
+-#include <QDir>
+-#include <QFile>
+-#include <QFileInfo>
+-#include <QProcess>
+-#include <QRegularExpression>
+-#include <QSet>
+-
+-#include <algorithm>
+-
+-namespace {
+-
+-constexpr qsizetype kMaxScannedFileBytes = 1024 * 1024;
+-
+-struct RepoFile {
+-    QString path;
+-    QByteArray content;
+-};
+-
+-QString repoKey(const RepoSecurityInput &input)
+-{
+-    return input.owner + QStringLiteral("/") + input.name;
+-}
+-
+-QString runGit(const QString &dir, const QStringList &args)
+-{
+-    if (dir.trimmed().isEmpty())
+-        return QString();
+-    QProcess git;
+-    git.start(QStringLiteral("git"), QStringList{QStringLiteral("-C"), dir} + args);
+-    if (!git.waitForFinished(8000) || git.exitCode() != 0)
+-        return QString();
+-    return QString::fromUtf8(git.readAllStandardOutput()).trimmed();
+-}
+-
+-QString currentRefFor(const RepoSecurityInput &input)
+-{
+-    if (!input.ref.trimmed().isEmpty())
+-        return input.ref.trimmed();
+-    QString ref = runGit(input.localPath, {QStringLiteral("rev-parse"),
+-                                           QStringLiteral("--short"), QStringLiteral("HEAD")});
+-    if (!ref.isEmpty())
+-        return ref;
+-    ref = runGit(input.mirrorPath, {QStringLiteral("rev-parse"),
+-                                    QStringLiteral("--short"), QStringLiteral("HEAD")});
+-    return ref.isEmpty() ? QStringLiteral("HEAD") : ref;
+-}
+-
+-QStringList trackedPathsFromLocal(const QString &localPath)
+-{
+-    const QString out = runGit(localPath, {QStringLiteral("ls-files")});
+-    return out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+-}
+-
+-QStringList trackedPathsFromMirror(const QString &mirrorPath)
+-{
+-    const QString out = runGit(mirrorPath, {QStringLiteral("ls-tree"),
+-                                            QStringLiteral("-r"),
+-                                            QStringLiteral("--name-only"),
+-                                            QStringLiteral("HEAD")});
+-    return out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+-}
+-
+-QByteArray readLocalFile(const QString &localPath, const QString &relPath)
+-{
+-    QFile file(QDir(localPath).filePath(relPath));
+-    if (!file.open(QIODevice::ReadOnly))
+-        return {};
+-    if (file.size() > kMaxScannedFileBytes)
+-        return {};
+-    return file.readAll();
+-}
+-
+-QByteArray readMirrorFile(const QString &mirrorPath, const QString &relPath)
+-{
+-    QProcess git;
+-    git.start(QStringLiteral("git"),
+-              {QStringLiteral("-C"), mirrorPath, QStringLiteral("show"),
+-               QStringLiteral("HEAD:") + relPath});
+-    if (!git.waitForFinished(8000) || git.exitCode() != 0)
+-        return {};
+-    const QByteArray content = git.readAllStandardOutput();
+-    if (content.size() > kMaxScannedFileBytes)
+-        return {};
+-    return content;
+-}
+-
+-bool isLikelyText(const QByteArray &content)
+-{
+-    if (content.isEmpty())
+-        return true;
+-    return !content.contains('\0');
+-}
+-
+-QList<RepoFile> trackedTextFiles(const RepoSecurityInput &input)
+-{
+-    QList<RepoFile> files;
+-    const bool useLocal = !input.localPath.trimmed().isEmpty() &&
+-                          QDir(input.localPath).exists();
+-    const bool useMirror = !useLocal && !input.mirrorPath.trimmed().isEmpty() &&
+-                           QDir(input.mirrorPath).exists();
+-    const QStringList paths = useLocal ? trackedPathsFromLocal(input.localPath)
+-                                       : trackedPathsFromMirror(input.mirrorPath);
+-    for (const QString &path : paths) {
+-        QByteArray content = useLocal ? readLocalFile(input.localPath, path)
+-                                      : useMirror ? readMirrorFile(input.mirrorPath, path)
+-                                                  : QByteArray();
+-        if (content.size() > kMaxScannedFileBytes || !isLikelyText(content))
+-            continue;
+-        files.append({path, content});
+-    }
+-    return files;
+-}
+-
+-bool pathEqualsAny(const QString &path, const QSet<QString> &needles)
+-{
+-    const QString normalized = path.trimmed().toLower();
+-    return needles.contains(normalized);
+-}
+-
+-QStringList dependencyManifests(const QList<RepoFile> &files)
+-{
+-    const QSet<QString> names{
+-        QStringLiteral("package.json"),
+-        QStringLiteral("package-lock.json"),
+-        QStringLiteral("pnpm-lock.yaml"),
+-        QStringLiteral("yarn.lock"),
+-        QStringLiteral("requirements.txt"),
+-        QStringLiteral("pyproject.toml"),
+-        QStringLiteral("pipfile"),
+-        QStringLiteral("pipfile.lock"),
+-        QStringLiteral("pubspec.yaml"),
+-        QStringLiteral("pubspec.lock"),
+-        QStringLiteral("cargo.toml"),
+-        QStringLiteral("cargo.lock"),
+-        QStringLiteral("go.mod"),
+-        QStringLiteral("go.sum"),
+-        QStringLiteral("pom.xml"),
+-        QStringLiteral("build.gradle"),
+-        QStringLiteral("build.gradle.kts"),
+-        QStringLiteral("gemfile"),
+-        QStringLiteral("gemfile.lock"),
+-        QStringLiteral("composer.json"),
+-        QStringLiteral("composer.lock"),
+-        QStringLiteral("mix.exs"),
+-        QStringLiteral("deno.json"),
+-    };
+-
+-    QStringList found;
+-    for (const RepoFile &file : files) {
+-        const QString base = QFileInfo(file.path).fileName().toLower();
+-        if (names.contains(base))
+-            found << file.path;
+-    }
+-    found.removeDuplicates();
+-    std::sort(found.begin(), found.end());
+-    return found;
+-}
+-
+-int lineNumberForOffset(const QByteArray &content, qsizetype offset)
+-{
+-    int line = 1;
+-    const qsizetype capped = qMin(offset, content.size());
+-    for (qsizetype i = 0; i < capped; ++i)
+-        if (content.at(i) == '\n')
+-            ++line;
+-    return line;
+-}
+-
+-QString redacted(QString match)
+-{
+-    match = match.trimmed();
+-    if (match.size() <= 10)
+-        return QStringLiteral("[redacted]");
+-    return match.left(4) + QStringLiteral("...") + match.right(4);
+-}
+-
+-QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
+-{
+-    struct Pattern {
+-        QString name;
+-        QRegularExpression re;
+-    };
+-    const QList<Pattern> patterns{
+-        {QStringLiteral("GitHub token"),
+-         QRegularExpression(QStringLiteral("\\bgh[pousr]_[A-Za-z0-9_]{36}\\b"))},
+-        {QStringLiteral("AWS access key"),
+-         QRegularExpression(QStringLiteral("\\bAKIA[0-9A-Z]{16}\\b"))},
+-        {QStringLiteral("Slack token"),
+-         QRegularExpression(QStringLiteral("\\bxox[baprs]-[A-Za-z0-9-]{20,}\\b"))},
+-        {QStringLiteral("Private key"),
+-         QRegularExpression(QStringLiteral("-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"))},
+-    };
+-
+-    QList<RepoSecurityFinding> findings;
+-    for (const RepoFile &file : files) {
+-        const QString text = QString::fromUtf8(file.content);
+-        for (const Pattern &pattern : patterns) {
+-            auto matches = pattern.re.globalMatch(text);
+-            while (matches.hasNext()) {
+-                const QRegularExpressionMatch match = matches.next();
+-                RepoSecurityFinding finding;
+-                finding.id = QStringLiteral("secret:%1:%2")
+-                                 .arg(file.path)
+-                                 .arg(match.capturedStart());
+-                finding.category = QStringLiteral("Secret");
+-                finding.severity = RepoSecuritySeverity::Critical;
+-                finding.title = pattern.name;
+-                finding.detail = QStringLiteral("Possible %1 in tracked file: %2")
+-                                     .arg(pattern.name.toLower(),
+-                                          redacted(match.captured(0)));
+-                finding.path = file.path;
+-                finding.line = lineNumberForOffset(file.content, match.capturedStart());
+-                finding.recommendedAction =
+-                    QStringLiteral("Rotate the credential and remove it from git.");
+-                findings.append(finding);
+-            }
+-        }
+-    }
+-    return findings;
+-}
+-
+-bool hasSecurityPolicy(const QList<RepoFile> &files)
+-{
+-    const QSet<QString> policyPaths{
+-        QStringLiteral("security.md"),
+-        QStringLiteral(".github/security.md"),
+-        QStringLiteral("docs/security.md"),
+-    };
+-    for (const RepoFile &file : files)
+-        if (pathEqualsAny(file.path, policyPaths))
+-            return true;
+-    return false;
+-}
+-
+-int openSecurityIssueCount(const QList<Issue> &issues)
+-{
+-    int count = 0;
+-    for (const Issue &issue : issues) {
+-        if (issue.status != QLatin1String("open"))
+-            continue;
+-        for (const QString &label : issue.labels)
+-            if (label.compare(QStringLiteral("security"), Qt::CaseInsensitive) == 0) {
+-                ++count;
+-                break;
+-            }
+-    }
+-    return count;
+-}
+-
+-RepoSecuritySeverity qualitySeverity(const QList<ActionRun> &runs)
+-{
+-    bool hasRun = false;
+-    bool hasRunning = false;
+-    for (const ActionRun &run : runs) {
+-        hasRun = true;
+-        if (run.status == ActionStatus::Failed || run.status == ActionStatus::Rejected)
+-            return RepoSecuritySeverity::High;
+-        if (run.status == ActionStatus::Running || run.status == ActionStatus::Queued ||
+-            run.status == ActionStatus::AwaitingApproval)
+-            hasRunning = true;
+-    }
+-    if (!hasRun)
+-        return RepoSecuritySeverity::Warning;
+-    return hasRunning ? RepoSecuritySeverity::Info : RepoSecuritySeverity::Pass;
+-}
+-
+-QString plural(int n, const QString &singular, const QString &plural)
+-{
+-    return QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural);
+-}
+-
+-RepoSecuritySignal signal(QString key, QString title, RepoSecuritySeverity severity,
+-                          QString summary, QString detail = QString(),
+-                          QString actionLabel = QString(),
+-                          QString actionTarget = QString())
+-{
+-    RepoSecuritySignal out;
+-    out.key = std::move(key);
+-    out.title = std::move(title);
+-    out.severity = severity;
+-    out.summary = std::move(summary);
+-    out.detail = std::move(detail);
+-    out.actionLabel = std::move(actionLabel);
+-    out.actionTarget = std::move(actionTarget);
+-    return out;
+-}
+-
+-} // namespace
+-
+-RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
+-{
+-    RepoSecuritySnapshot snapshot;
+-    snapshot.repoKey = repoKey(input);
+-    snapshot.ref = currentRefFor(input);
+-    snapshot.generatedAtMs = QDateTime::currentMSecsSinceEpoch();
+-
+-    const QList<RepoFile> files = trackedTextFiles(input);
+-    const bool policyPresent = hasSecurityPolicy(files);
+-    snapshot.signalList.append(
+-        policyPresent
+-            ? signal(QStringLiteral("policy"), QStringLiteral("Security policy"),
+-                     RepoSecuritySeverity::Pass,
+-                     QStringLiteral("SECURITY.md is present."),
+-                     QStringLiteral("ForkMesh found security reporting guidance."))
+-            : signal(QStringLiteral("policy"), QStringLiteral("Security policy"),
+-                     RepoSecuritySeverity::Warning,
+-                     QStringLiteral("No SECURITY.md found."),
+-                     QStringLiteral("Add reporting instructions before public launch."),
+-                     QStringLiteral("Create SECURITY.md"),
+-                     QStringLiteral("create:security-policy")));
+-
+-    const QList<RepoSecurityFinding> secrets = secretFindings(files);
+-    snapshot.findings.append(secrets);
+-    snapshot.signalList.append(
+-        secrets.isEmpty()
+-            ? signal(QStringLiteral("secrets"), QStringLiteral("Secret scan"),
+-                     RepoSecuritySeverity::Pass,
+-                     QStringLiteral("No high-confidence secrets found."),
+-                     QStringLiteral("This checks tracked text files at the selected ref."))
+-            : signal(QStringLiteral("secrets"), QStringLiteral("Secret scan"),
+-                     RepoSecuritySeverity::Critical,
+-                     plural(secrets.size(), QStringLiteral("probable secret"),
+-                            QStringLiteral("probable secrets")) +
+-                         QStringLiteral(" found."),
+-                     QStringLiteral("Matched values are redacted. Rotate any exposed keys.")));
+-
+-    const QStringList manifests = dependencyManifests(files);
+-    snapshot.signalList.append(
+-        manifests.isEmpty()
+-            ? signal(QStringLiteral("dependencies"),
+-                     QStringLiteral("Dependency inventory"),
+-                     RepoSecuritySeverity::Info,
+-                     QStringLiteral("No dependency manifests detected."),
+-                     QStringLiteral("MVP does not perform external advisory matching."))
+-            : signal(QStringLiteral("dependencies"),
+-                     QStringLiteral("Dependency inventory"),
+-                     RepoSecuritySeverity::Info,
+-                     plural(manifests.size(), QStringLiteral("manifest"),
+-                            QStringLiteral("manifests")) +
+-                         QStringLiteral(" detected."),
+-                     manifests.join(QStringLiteral(", "))));
+-
+-    RepoSecuritySeverity actionsSeverity = RepoSecuritySeverity::Pass;
+-    QString actionsSummary;
+-    QString actionsDetail;
+-    if (!input.actionsEnabled) {
+-        actionsSeverity = RepoSecuritySeverity::Warning;
+-        actionsSummary = QStringLiteral("Actions are disabled.");
+-        actionsDetail = QStringLiteral("Workflows will not run on push.");
+-    } else if (input.workflows.isEmpty()) {
+-        actionsSeverity = RepoSecuritySeverity::Warning;
+-        actionsSummary = QStringLiteral("No .forkmesh workflows found.");
+-        actionsDetail = QStringLiteral("Add a workflow to make checks visible.");
+-    } else {
+-        int invalid = 0;
+-        for (const ActionWorkflow &workflow : input.workflows)
+-            if (!workflow.valid)
+-                ++invalid;
+-        if (invalid > 0) {
+-            actionsSeverity = RepoSecuritySeverity::High;
+-            actionsSummary = plural(invalid, QStringLiteral("invalid workflow"),
+-                                    QStringLiteral("invalid workflows"));
+-            actionsDetail = QStringLiteral("Fix workflow parsing errors.");
+-        } else {
+-            actionsSummary = plural(input.workflows.size(), QStringLiteral("workflow"),
+-                                    QStringLiteral("workflows")) +
+-                             QStringLiteral(" configured.");
+-            actionsDetail =
+-                QStringLiteral("Changed workflow content still uses existing approval.");
+-        }
+-    }
+-    snapshot.signalList.append(signal(QStringLiteral("actions"),
+-                                   QStringLiteral("Actions trust"),
+-                                   actionsSeverity, actionsSummary, actionsDetail,
+-                                   QStringLiteral("Open Actions"),
+-                                   QStringLiteral("tab:actions")));
+-
+-    const RepoSecuritySeverity qSeverity = qualitySeverity(input.actionRuns);
+-    QString qualitySummary;
+-    if (qSeverity == RepoSecuritySeverity::High)
+-        qualitySummary = QStringLiteral("Latest quality checks need attention.");
+-    else if (qSeverity == RepoSecuritySeverity::Warning)
+-        qualitySummary = QStringLiteral("No quality check run recorded.");
+-    else if (qSeverity == RepoSecuritySeverity::Info)
+-        qualitySummary = QStringLiteral("Quality checks are queued or running.");
+-    else
+-        qualitySummary = QStringLiteral("Quality checks passed.");
+-    snapshot.signalList.append(signal(QStringLiteral("quality"),
+-                                   QStringLiteral("Quality checks"), qSeverity,
+-                                   qualitySummary,
+-                                   QStringLiteral("Derived from local ForkMesh action runs."),
+-                                   QStringLiteral("Open Actions"),
+-                                   QStringLiteral("tab:actions")));
+-
+-    const int securityIssues = openSecurityIssueCount(input.issues);
+-    snapshot.signalList.append(
+-        securityIssues > 0
+-            ? signal(QStringLiteral("issues"), QStringLiteral("Security backlog"),
+-                     RepoSecuritySeverity::Warning,
+-                     plural(securityIssues, QStringLiteral("open security issue"),
+-                            QStringLiteral("open security issues")),
+-                     QStringLiteral("Issues tagged security should stay visible here."),
+-                     QStringLiteral("Open Issues"),
+-                     QStringLiteral("tab:issues:security"))
+-            : signal(QStringLiteral("issues"), QStringLiteral("Security backlog"),
+-                     RepoSecuritySeverity::Pass,
+-                     QStringLiteral("No open security-labelled issues."),
+-                     QStringLiteral("This checks signed issue metadata.")));
+-
+-    RepoSecuritySeverity trustSeverity = RepoSecuritySeverity::Info;
+-    QString trustSummary;
+-    if (input.integrityWarning) {
+-        trustSeverity = RepoSecuritySeverity::Critical;
+-        trustSummary = QStringLiteral("Repository integrity pin needs attention.");
+-    } else if (input.previewOnly) {
+-        trustSeverity = RepoSecuritySeverity::Warning;
+-        trustSummary = QStringLiteral("Preview-only repository.");
+-    } else if (input.isPrivate) {
+-        trustSummary = QStringLiteral("Private repository.");
+-    } else if (input.publishToNetwork) {
+-        trustSummary = QStringLiteral("Published public repository.");
+-    } else {
+-        trustSummary = QStringLiteral("Local-only repository.");
+-    }
+-    snapshot.signalList.append(signal(QStringLiteral("trust"),
+-                                   QStringLiteral("ForkMesh trust"), trustSeverity,
+-                                   trustSummary,
+-                                   QStringLiteral("Derived from local repository metadata.")));
+-
+-    return snapshot;
+-}
+-
+-QString RepoSecurity::severityText(RepoSecuritySeverity severity)
+-{
+-    switch (severity) {
+-    case RepoSecuritySeverity::Pass:
+-        return QStringLiteral("Pass");
+-    case RepoSecuritySeverity::Info:
+-        return QStringLiteral("Info");
+-    case RepoSecuritySeverity::Warning:
+-        return QStringLiteral("Warning");
+-    case RepoSecuritySeverity::High:
+-        return QStringLiteral("High");
+-    case RepoSecuritySeverity::Critical:
+-        return QStringLiteral("Critical");
+-    }
+-    return QStringLiteral("Info");
+-}
+-
+-RepoSecuritySeverity RepoSecurity::highestSeverity(
+-    const RepoSecuritySnapshot &snapshot)
+-{
+-    RepoSecuritySeverity highest = RepoSecuritySeverity::Pass;
+-    auto rank = [](RepoSecuritySeverity severity) {
+-        switch (severity) {
+-        case RepoSecuritySeverity::Pass:
+-            return 0;
+-        case RepoSecuritySeverity::Info:
+-            return 1;
+-        case RepoSecuritySeverity::Warning:
+-            return 2;
+-        case RepoSecuritySeverity::High:
+-            return 3;
+-        case RepoSecuritySeverity::Critical:
+-            return 4;
+-        }
+-        return 1;
+-    };
+-    for (const RepoSecuritySignal &signal : snapshot.signalList)
+-        if (rank(signal.severity) > rank(highest))
+-            highest = signal.severity;
+-    for (const RepoSecurityFinding &finding : snapshot.findings)
+-        if (rank(finding.severity) > rank(highest))
+-            highest = finding.severity;
+-    return highest;
+-}
+diff --git a/qt_client/src/RepoSecurity.h b/qt_client/src/RepoSecurity.h
+deleted file mode 100644
+index 322bcf7f..00000000
+--- a/qt_client/src/RepoSecurity.h
++++ /dev/null
+@@ -1,70 +0,0 @@
+-#pragma once
+-
+-#include "ActionFile.h"
+-#include "ActionStore.h"
+-#include "IssueStore.h"
+-
+-#include <QList>
+-#include <QString>
+-#include <QStringList>
+-
+-enum class RepoSecuritySeverity {
+-    Pass = 0,
+-    Info,
+-    Warning,
+-    High,
+-    Critical,
+-};
+-
+-struct RepoSecuritySignal {
+-    QString key;
+-    QString title;
+-    RepoSecuritySeverity severity = RepoSecuritySeverity::Info;
+-    QString summary;
+-    QString detail;
+-    QString actionLabel;
+-    QString actionTarget;
+-};
+-
+-struct RepoSecurityFinding {
+-    QString id;
+-    QString category;
+-    RepoSecuritySeverity severity = RepoSecuritySeverity::Info;
+-    QString title;
+-    QString detail;
+-    QString path;
+-    int line = 0;
+-    QString recommendedAction;
+-};
+-
+-struct RepoSecurityInput {
+-    QString owner;
+-    QString name;
+-    QString localPath;
+-    QString mirrorPath;
+-    QString ref;
+-    bool publishToNetwork = false;
+-    bool isPrivate = false;
+-    bool previewOnly = false;
+-    bool actionsEnabled = true;
+-    bool integrityWarning = false;
+-    QList<Issue> issues;
+-    QList<ActionWorkflow> workflows;
+-    QList<ActionRun> actionRuns;
+-};
+-
+-struct RepoSecuritySnapshot {
+-    QString repoKey;
+-    QString ref;
+-    qint64 generatedAtMs = 0;
+-    QList<RepoSecuritySignal> signalList;
+-    QList<RepoSecurityFinding> findings;
+-};
+-
+-class RepoSecurity
+-{
+-public:
+-    static RepoSecuritySnapshot scan(const RepoSecurityInput &input);
+-    static QString severityText(RepoSecuritySeverity severity);
+-    static RepoSecuritySeverity highestSeverity(const RepoSecuritySnapshot &snapshot);
+-};
+diff --git a/qt_client/src/Theme.h b/qt_client/src/Theme.h
+index 3fd8ab51..9c67c96e 100644
+--- a/qt_client/src/Theme.h
++++ b/qt_client/src/Theme.h
+@@ -208,6 +208,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
+ #aboutSidebar { background: transparent; }
+ #aboutSidebar QLabel { background: transparent; }
+ #aboutHeading { font-size: 15px; font-weight: 700; }
++#aboutText { color: #8b949e; font-size: 11px; }
++QPushButton#aboutEditButton {
++    background-color: transparent; border: 1px solid transparent;
++    border-radius: 6px; padding: 4px;
++}
++QPushButton#aboutEditButton:hover {
++    background-color: #21262d; border-color: #30363d;
++}
++QPushButton#aboutEditButton:disabled { background-color: transparent; }
+ #langBar { background-color: #161b22; border-radius: 5px; }
+ #aboutRule { background-color: #21262d; border: none; }
+ #commitsList {
+@@ -1046,6 +1055,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
+ #aboutSidebar { background: transparent; }
+ #aboutSidebar QLabel { background: transparent; }
+ #aboutHeading { font-size: 15px; font-weight: 700; }
++#aboutText { color: #656d76; font-size: 11px; }
++QPushButton#aboutEditButton {
++    background-color: transparent; border: 1px solid transparent;
++    border-radius: 6px; padding: 4px;
++}
++QPushButton#aboutEditButton:hover {
++    background-color: #f6f8fa; border-color: #d0d7de;
++}
++QPushButton#aboutEditButton:disabled { background-color: transparent; }
+ #langBar { background-color: #eaeef2; border-radius: 5px; }
+ #aboutRule { background-color: #d0d7de; border: none; }
+ #commitsList {
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index fe433089..526b4a96 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -219,37 +219,40 @@ int main(int argc, char *argv[])
+ 
+     window.testEnableSessionStartBypass(true);
+ 
+-    // No wallet, no signup: starting a node needs only a valid name. The core
+-    // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
+-    // straight into the app shell without an account or a verified wallet.
++    // Website parity: there is no anonymous start. A declined or cancelled
++    // signup/login keeps the user on the welcome screen instead of entering the
++    // app unauthenticated.
+     window.testSetSetupInputs(QStringLiteral("Alice-Node"),
+                               QStringLiteral("SavedSolana111"));
+-    window.testSetAccountFlowResult(true); // would activate IF the flow ran
++    window.testSetAccountFlowResult(false);
+     window.testStartSession();
+-    check(window.testAccountFlowCalls() == 0,
+-          QStringLiteral("starting a node never runs the account flow"));
+-    check(window.testStackIndex() == 1,
+-          QStringLiteral("start enters the app with just a node name"));
+-    check(window.testUserName() == QStringLiteral("alice-node"),
+-          QStringLiteral("start uses the sanitized node name"));
+-    check(window.testAccountName() == QStringLiteral("alice-node"),
+-          QStringLiteral("start records the node owner name"));
+-    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
+-          QStringLiteral("start preserves the saved Solana address"));
++    check(window.testAccountFlowCalls() == 1,
++          QStringLiteral("start requires the account flow"));
++    check(window.testStackIndex() != 1,
++          QStringLiteral("declined signup stays on the welcome screen"));
+     check(!window.testAccountAuthenticated(),
+-          QStringLiteral("start does not require or fake an account"));
++          QStringLiteral("declined signup keeps the account unauthenticated"));
+ 
+-    // Crypto is strictly opt-in: the account/activate flow runs only when the user
+-    // explicitly opts in via "Get paid to mirror" (here the mocked account flow).
+-    // The payout address is already set, so no address prompt is triggered.
++    // Completing the paid signup / login (the account flow returns true) lets the
++    // start proceed into the app.
++    window.testSetSetupInputs(QStringLiteral("Alice-Node"),
++                              QStringLiteral("SavedSolana111"));
+     window.testSetAccountFlowResult(true);
+-    window.testEnablePaidMirroring();
++    window.testStartSession();
+     check(window.testAccountFlowCalls() == 1,
+-          QStringLiteral("opting in runs the account flow exactly once"));
++          QStringLiteral("authenticated start runs the account flow exactly once"));
++    check(window.testStackIndex() == 1,
++          QStringLiteral("authenticated start opens the app shell"));
++    check(window.testUserName() == QStringLiteral("alice-node"),
++          QStringLiteral("authenticated start uses the sanitized node name"));
++    check(window.testAccountName() == QStringLiteral("alice-node"),
++          QStringLiteral("authenticated start records the account owner name"));
++    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
++          QStringLiteral("authenticated start preserves the saved Solana address"));
+     check(window.testAccountAuthenticated(),
+-          QStringLiteral("opting in marks the account authenticated"));
++          QStringLiteral("authenticated start marks the account authenticated"));
+     check(window.testAccountTier() == QStringLiteral("active"),
+-          QStringLiteral("opting in sets the account tier active"));
++          QStringLiteral("authenticated start sets the account tier active"));
+ 
+     QCheckBox *nodeConnectAlertCheck =
+         findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+diff --git a/tools/branch_pr_review.py b/tools/branch_pr_review.py
+deleted file mode 100644
+index 35420d07..00000000
+--- a/tools/branch_pr_review.py
++++ /dev/null
+@@ -1,360 +0,0 @@
+-#!/usr/bin/env python3
+-"""Local diff viewer for the port/* branches with one-click ForkMesh PR creation.
+-
+-Run from the repo root:
+-
+-    python3 tools/branch_pr_review.py        # serves http://127.0.0.1:8799
+-
+-For every local `port/*` branch it shows the diff vs `main` and a "Create PR"
+-button. Clicking it writes a real, signed ForkMesh native pull under `pulls/N/`
+-(pull.md + changes.patch + commits.mbox), exactly the way the Qt client's
+-PullStore::createPull does, and commits just that pull to the repo.
+-
+-Signing matches qt_client/src/PullStore.cpp::canonicalString:
+-    content      = title \0 base \0 head \0 patch \0 commits      (utf-8 bytes)
+-    contentHash  = sha256(content).hexdigest()
+-    canonical    = "forkmesh-pull-event-v1\n{author}\n{ts}\n{contentHash}"
+-    sig          = base64url(ed25519_sign(canonical)).rstrip("=")
+-using the node identity key at
+-    $XDG_DATA_HOME/ForkMesh/ForkMesh/identity/ed25519.pem
+-"""
+-
+-import base64
+-import hashlib
+-import html
+-import json
+-import os
+-import re
+-import subprocess
+-import sys
+-import time
+-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+-from pathlib import Path
+-
+-from cryptography.hazmat.primitives import serialization
+-
+-REPO = Path(__file__).resolve().parent.parent
+-BASE = "main"
+-HOST, PORT = "127.0.0.1", 8799
+-
+-DATA_HOME = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+-KEY_PATH = Path(DATA_HOME) / "ForkMesh/ForkMesh/identity/ed25519.pem"
+-
+-
+-# ----------------------------------------------------------------------------- git helpers
+-def git(*args, text=True):
+-    return subprocess.run(
+-        ["git", *args], cwd=REPO, capture_output=True,
+-        text=text, errors="replace" if text else None,
+-    )
+-
+-
+-def git_out(*args):
+-    r = git(*args)
+-    return r.stdout if r.returncode == 0 else ""
+-
+-
+-def git_bytes(*args):
+-    return git(*args, text=False).stdout
+-
+-
+-def port_branches():
+-    out = git_out("for-each-ref", "--format=%(refname:short)", "refs/heads/port/")
+-    return sorted(b for b in out.splitlines() if b.strip())
+-
+-
+-def branch_info(branch):
+-    shortstat = git_out("diff", "--shortstat", f"{BASE}..{branch}").strip()
+-    commits = [
+-        line for line in git_out(
+-            "log", "--reverse", "--format=%h\x1f%s", f"{BASE}..{branch}"
+-        ).splitlines() if line
+-    ]
+-    default_title = commits[0].split("\x1f", 1)[1] if commits else branch
+-    return {
+-        "branch": branch,
+-        "shortstat": shortstat or "no changes",
+-        "commits": [c.split("\x1f", 1) for c in commits],
+-        "default_title": default_title,
+-        "existing_pr": existing_pr_for_head(branch),
+-    }
+-
+-
+-# ----------------------------------------------------------------------------- pulls
+-def pulls_dir():
+-    return REPO / "pulls"
+-
+-
+-def next_pull_number():
+-    mx = 0
+-    if pulls_dir().exists():
+-        for d in pulls_dir().iterdir():
+-            if d.is_dir() and d.name.isdigit():
+-                mx = max(mx, int(d.name))
+-    return mx + 1
+-
+-
+-def existing_pr_for_head(head):
+-    """Return an existing open PR number for this head branch, else None."""
+-    if not pulls_dir().exists():
+-        return None
+-    for d in sorted(pulls_dir().iterdir()):
+-        md = d / "pull.md"
+-        if not (d.is_dir() and d.name.isdigit() and md.exists()):
+-            continue
+-        fm = md.read_text(errors="replace")
+-        h = re.search(r"^head:\s*(.*)$", fm, re.M)
+-        s = re.search(r"^status:\s*(.*)$", fm, re.M)
+-        if h and h.group(1).strip() == head and (not s or s.group(1).strip() == "open"):
+-            return int(d.name)
+-    return None
+-
+-
+-# ----------------------------------------------------------------------------- signing
+-_key = None
+-_pub = None
+-
+-
+-def load_identity():
+-    global _key, _pub
+-    if _key is None:
+-        _key = serialization.load_pem_private_key(KEY_PATH.read_bytes(), password=None)
+-        raw = _key.public_key().public_bytes(
+-            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+-        )
+-        _pub = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+-    return _key, _pub
+-
+-
+-def sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author):
+-    content = (
+-        title.encode() + b"\x00" + base.encode() + b"\x00" + head.encode()
+-        + b"\x00" + patch_bytes + b"\x00" + commits_bytes
+-    )
+-    content_hash = hashlib.sha256(content).hexdigest().encode()
+-    canonical = (
+-        b"forkmesh-pull-event-v1\n" + author.encode() + b"\n"
+-        + str(ts).encode() + b"\n" + content_hash
+-    )
+-    sig = load_identity()[0].sign(canonical)
+-    return base64.urlsafe_b64encode(sig).decode().rstrip("=")
+-
+-
+-def create_pull(branch, title, description):
+-    existing = existing_pr_for_head(branch)
+-    if existing:
+-        return {"ok": True, "number": existing, "existing": True}
+-
+-    base, head = BASE, branch
+-    patch_bytes = git_bytes("diff", f"{base}..{head}")
+-    commits_bytes = git_bytes("format-patch", "--stdout", f"{base}..{head}")
+-    if not patch_bytes.strip():
+-        return {"ok": False, "error": "Branch has no diff against main."}
+-
+-    ts = int(time.time() * 1000)
+-    _, author = load_identity()
+-    author_name = git_out("config", "user.name").strip()
+-    sig = sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author)
+-    number = next_pull_number()
+-
+-    pdir = pulls_dir() / str(number)
+-    pdir.mkdir(parents=True, exist_ok=True)
+-    front = "\n".join([
+-        "---",
+-        "schema: forkmesh-pull-v1",
+-        f"number: {number}",
+-        f"title: {title}",
+-        f"base: {base}",
+-        f"head: {head}",
+-        "status: open",
+-        f"ts: {ts}",
+-        f"author: {author}",
+-        f"authorName: {author_name}",
+-        f"sig: {sig}",
+-        "---",
+-        "",
+-    ])
+-    (pdir / "pull.md").write_text(front + "\n" + description + "\n")
+-    (pdir / "changes.patch").write_bytes(patch_bytes)
+-    (pdir / "commits.mbox").write_bytes(commits_bytes)
+-
+-    add = git("add", f"pulls/{number}")
+-    if add.returncode != 0:
+-        return {"ok": False, "error": f"git add failed: {add.stderr}"}
+-    commit = git("commit", "-m", f"pull #{number}: open", "--", f"pulls/{number}")
+-    if commit.returncode != 0:
+-        return {"ok": False, "error": f"git commit failed: {commit.stderr or commit.stdout}"}
+-    return {"ok": True, "number": number, "existing": False}
+-
+-
+-# ----------------------------------------------------------------------------- diff -> html
+-def diff_html(branch):
+-    raw = git_out("diff", f"{BASE}..{branch}")
+-    rows = []
+-    for line in raw.split("\n"):
+-        cls = "ctx"
+-        if line.startswith("diff --git") or line.startswith("index ") \
+-                or line.startswith("--- ") or line.startswith("+++ ") \
+-                or line.startswith("new file") or line.startswith("deleted file") \
+-                or line.startswith("rename "):
+-            cls = "meta"
+-        elif line.startswith("@@"):
+-            cls = "hunk"
+-        elif line.startswith("+"):
+-            cls = "add"
+-        elif line.startswith("-"):
+-            cls = "del"
+-        rows.append(f'<div class="ln {cls}">{html.escape(line) or "&nbsp;"}</div>')
+-    return "\n".join(rows)
+-
+-
+-PAGE = """<!doctype html><html><head><meta charset="utf-8">
+-<title>ForkMesh — port/* branch review</title>
+-<style>
+-:root{{color-scheme:dark}}
+-body{{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#c9d1d9}}
+-header{{padding:18px 24px;border-bottom:1px solid #21262d;position:sticky;top:0;background:#0d1117;z-index:5}}
+-header h1{{margin:0;font-size:18px}} header p{{margin:4px 0 0;color:#8b949e;font-size:13px}}
+-.wrap{{max-width:1100px;margin:0 auto;padding:18px 24px}}
+-.card{{border:1px solid #21262d;border-radius:10px;margin:14px 0;overflow:hidden;background:#0d1117}}
+-.summary{{cursor:pointer;padding:14px 16px;display:flex;align-items:center;gap:12px;background:#161b22;user-select:none}}
+-.summary:hover{{background:#1b222b}}
+-.caret{{display:inline-block;transition:transform .12s;color:#8b949e}}
+-.card.open .caret{{transform:rotate(90deg)}}
+-.body{{display:none}}
+-.card.open .body{{display:block}}
+-.bname{{font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+-.stat{{color:#8b949e;font-size:12px}}
+-.spacer{{flex:1}}
+-.commits{{padding:6px 16px;border-top:1px solid #21262d;color:#8b949e;font-size:12px}}
+-.commits code{{color:#58a6ff}}
+-.diff{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow:auto;max-height:75vh;border-top:1px solid #21262d}}
+-.empty{{padding:14px 16px;color:#8b949e}}
+-.ln{{white-space:pre;padding:0 14px}}
+-.ln.add{{background:#0f2a17;color:#aff5b4}} .ln.del{{background:#3a1115;color:#ffc1c1}}
+-.ln.hunk{{background:#161b22;color:#a371f7}} .ln.meta{{color:#8b949e}} .ln.ctx{{color:#c9d1d9}}
+-.act{{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid #21262d;background:#161b22}}
+-.act input{{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:7px 10px;font-size:13px}}
+-button{{background:#238636;border:1px solid #2ea043;color:#fff;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer}}
+-button:hover{{background:#2ea043}} button:disabled{{opacity:.5;cursor:default}}
+-.pill{{font-size:12px;padding:3px 9px;border-radius:20px;border:1px solid #30363d;color:#8b949e}}
+-.pill.done{{color:#3fb950;border-color:#238636}}
+-.msg{{font-size:12px;margin-left:4px}} .msg.ok{{color:#3fb950}} .msg.err{{color:#f85149}}
+-</style></head><body>
+-<header><h1>ForkMesh · port/* branch review</h1>
+-<p>Identity <code>{pub}</code> · base <code>{base}</code> · {n} branch(es). Create PR writes a signed pull under <code>pulls/</code>.
+-<a href="#" onclick="setAll(true);return false" style="color:#58a6ff;margin-left:8px">expand all</a> ·
+-<a href="#" onclick="setAll(false);return false" style="color:#58a6ff">collapse all</a></p></header>
+-<div class="wrap">{cards}</div>
+-<script>
+-function toggleCard(el){{ el.closest('.card').classList.toggle('open'); }}
+-function setAll(open){{ document.querySelectorAll('.card').forEach(c=>c.classList.toggle('open',open)); }}
+-async function createPR(branch, btn){{
+-  const card=btn.closest('.card');
+-  const title=card.querySelector('.title').value.trim();
+-  const msg=card.querySelector('.msg');
+-  btn.disabled=true; msg.className='msg'; msg.textContent='Creating…';
+-  try{{
+-    const r=await fetch('/api/create-pr',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+-      body:JSON.stringify({{branch,title}})}});
+-    const d=await r.json();
+-    if(d.ok){{msg.className='msg ok';msg.textContent=(d.existing?'Already open as PR #':'Created PR #')+d.number;
+-      btn.textContent='PR #'+d.number;}}
+-    else{{msg.className='msg err';msg.textContent=d.error||'failed';btn.disabled=false;}}
+-  }}catch(e){{msg.className='msg err';msg.textContent=String(e);btn.disabled=false;}}
+-}}
+-</script></body></html>"""
+-
+-
+-def card_html(info):
+-    b = info["branch"]
+-    commits = "".join(
+-        f'<div><code>{html.escape(h)}</code> {html.escape(s)}</div>'
+-        for h, s in info["commits"]
+-    )
+-    if info["existing_pr"]:
+-        action = (
+-            f'<span class="pill done">PR #{info["existing_pr"]} open</span>'
+-            f'<span class="spacer"></span>'
+-            f'<input class="title" value="{html.escape(info["default_title"])}" disabled>'
+-            f'<button disabled>PR #{info["existing_pr"]}</button>'
+-        )
+-    else:
+-        action = (
+-            f'<input class="title" value="{html.escape(info["default_title"])}">'
+-            f'<button onclick="createPR(\'{html.escape(b)}\',this)">Create PR</button>'
+-            f'<span class="msg"></span>'
+-        )
+-    diff = diff_html(b)
+-    diff_block = f'<div class="diff">{diff}</div>' if diff.strip() \
+-        else '<div class="empty">No textual diff against main.</div>'
+-    return f"""<div class="card">
+-<div class="summary" onclick="toggleCard(this)"><span class="caret">&#9654;</span>
+-<span class="bname">{html.escape(b)}</span>
+-<span class="stat">{html.escape(info['shortstat'])}</span><span class="spacer"></span>
+-<span class="stat">{len(info['commits'])} commit(s) · click to view diff</span></div>
+-<div class="body">
+-<div class="commits">{commits}</div>
+-{diff_block}
+-<div class="act">{action}</div>
+-</div></div>"""
+-
+-
+-# ----------------------------------------------------------------------------- server
+-class Handler(BaseHTTPRequestHandler):
+-    def log_message(self, *a):
+-        pass
+-
+-    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+-        data = body.encode() if isinstance(body, str) else body
+-        self.send_response(code)
+-        self.send_header("Content-Type", ctype)
+-        self.send_header("Content-Length", str(len(data)))
+-        self.end_headers()
+-        self.wfile.write(data)
+-
+-    def do_GET(self):
+-        if self.path not in ("/", "/index.html"):
+-            return self._send(404, "not found", "text/plain")
+-        branches = port_branches()
+-        cards = "".join(card_html(branch_info(b)) for b in branches) \
+-            or "<p>No <code>port/*</code> branches found.</p>"
+-        _, pub = load_identity()
+-        self._send(200, PAGE.format(pub=pub, base=BASE, n=len(branches), cards=cards))
+-
+-    def do_POST(self):
+-        if self.path != "/api/create-pr":
+-            return self._send(404, "{}", "application/json")
+-        length = int(self.headers.get("Content-Length", 0))
+-        try:
+-            payload = json.loads(self.rfile.read(length) or b"{}")
+-            branch = payload["branch"]
+-            if branch not in port_branches():
+-                raise ValueError("unknown branch")
+-            title = (payload.get("title") or branch).strip()
+-            desc_lines = git_out("log", "--reverse", "--format=- %s",
+-                                 f"{BASE}..{branch}").strip()
+-            description = (
+-                f"Ported from newnewnode-forkmesh.\n\n{desc_lines}\n"
+-            )
+-            result = create_pull(branch, title, description)
+-        except Exception as e:  # noqa: BLE001
+-            result = {"ok": False, "error": str(e)}
+-        self._send(200, json.dumps(result), "application/json")
+-
+-
+-def main():
+-    if not KEY_PATH.exists():
+-        sys.exit(f"Identity key not found at {KEY_PATH}")
+-    load_identity()
+-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+-    print(f"Diff viewer + PR creator → http://{HOST}:{PORT}  (Ctrl-C to stop)")
+-    print(f"Identity: {_pub}")
+-    try:
+-        srv.serve_forever()
+-    except KeyboardInterrupt:
+-        print("\nstopped")
+-
+-
+-if __name__ == "__main__":
+-    main()
