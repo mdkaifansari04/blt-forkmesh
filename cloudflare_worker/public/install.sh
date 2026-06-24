@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.5.0 (2026-06-23)"
+INSTALLER_VERSION="0.6.0 (2026-06-23)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -325,4 +325,38 @@ case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "Add $BIN_DIR to your PATH, e.g.  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
-say "Done. Launch it with:  forkmesh"
+
+# --- launch -----------------------------------------------------------------
+# One-shot install: start ForkMesh automatically so the user lands in the app.
+# Detached from this script (which may itself be running under `curl | bash`) so
+# it keeps running after the installer exits. Set FORKMESH_NO_LAUNCH=1 to skip
+# (e.g. headless build servers). On Linux we only auto-launch when a display is
+# present; a headless box gets the manual hint instead.
+launch_forkmesh() {
+  case "$(uname -s)" in
+    Darwin)
+      if [ -d "$BUILD/ForkMesh.app" ]; then
+        open "$BUILD/ForkMesh.app" && return 0
+      fi
+      open "$BIN" 2>/dev/null && return 0
+      ;;
+    *)
+      [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || return 1
+      if command -v setsid >/dev/null 2>&1; then
+        setsid "$BIN" >/dev/null 2>&1 < /dev/null &
+      else
+        nohup "$BIN" >/dev/null 2>&1 < /dev/null &
+      fi
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
+  say "Done. Launch it with:  forkmesh"
+elif launch_forkmesh; then
+  say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
+else
+  say "Done. Launch it with:  forkmesh"
+fi

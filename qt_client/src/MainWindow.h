@@ -601,11 +601,26 @@ private:
     void reloadIssues();        // load issues + label/milestone filters from the store
     void refreshIssueList();    // apply filters into the list widget
     void resetIssueFilters();   // clear status/label/milestone/search filters
-    // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels) and toggle
-    // the filter controls, which only apply to the Issues table.
+    // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels, 3 Board)
+    // and toggle the filter controls, which only apply to the Issues table/board.
     void selectIssueListTab(int id);
     void refreshIssueMilestones();
     void refreshIssueLabels();
+    // Kanban board view of the issues (list stack index 3). Each column is a
+    // status; a card's column is encoded by a reserved "status:<name>" label and
+    // the final "Done" column maps to the issue's closed status. Columns are
+    // customizable per repo (stored in QSettings) — see boardColumns().
+    QWidget *buildIssueBoard();
+    void refreshIssueBoard();    // rebuild the columns/cards from m_currentIssues
+    QStringList boardColumns() const;             // configured column names
+    void setBoardColumns(const QStringList &cols); // persist + rebuild
+    void editBoardColumns();                      // prompt to edit the column list
+    // The column an issue currently belongs to (closed -> the Done column; else
+    // the column named by its "status:<name>" label, defaulting to the first).
+    QString issueBoardColumn(const Issue &issue) const;
+    // Move an issue to a board column: rewrites its status label (and, for the
+    // Done column, closes/reopens the issue), then syncs and reloads.
+    void moveIssueToColumn(int number, const QString &column);
     void editIssueLabelDefinition(int row);
     QWidget *makeIssueRow(const Issue &issue,
                           const QHash<QString, QString> &labelColors) const;
@@ -997,6 +1012,8 @@ private:
     QStackedWidget *m_issueListStack = nullptr;
     QTableWidget *m_issueMilestonesTable = nullptr;
     QTableWidget *m_issueLabelsTable = nullptr;
+    QWidget *m_issueBoard = nullptr;            // Kanban board (list stack index 3)
+    QHBoxLayout *m_issueBoardColumns = nullptr; // holds one widget per board column
     QWidget *m_issueDetail = nullptr;          // collapsible detail panel
     QStackedWidget *m_issueDetailStack = nullptr;
     QWidget *m_issueComposePage = nullptr;
