@@ -750,6 +750,7 @@ const QString kIssueAlertSetting = QStringLiteral("notifications/issues");
 const QString kPullAlertSetting = QStringLiteral("notifications/pullRequests");
 const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
+const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
 
 // True when a notification category is enabled. Default false: notifications are
@@ -766,6 +767,8 @@ const QString kSolanaDisplayCurrencySetting =
 const QString kSolanaLastBalanceSettingPrefix =
     QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
+// Opt-in: show a small rebuild+restart button in the top nav (off by default).
+const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
@@ -3301,6 +3304,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     loadServers();
     loadCachedFavicons();
     logStartup(QStringLiteral("servers + favicons loaded"));
+
+    // Load the persisted profile state (custom avatar + node name) *before* the
+    // UI is built, so the top-right avatar renders correctly on the very first
+    // frame. Otherwise buildChatPage()'s initial updateAvatarButton() runs with
+    // these still empty and paints a generic placeholder, which then visibly
+    // swaps to the real avatar a few seconds later when silent-auth/startSession
+    // finally loads the same values.
+    m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
+    if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
+        m_userName = saved;
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildSetupPage());
@@ -6325,6 +6338,19 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_leaderboardNavButton, &QPushButton::clicked, this,
             [this] { showSection(5); });
 
+    // Small, icon-only rebuild+restart button, right-aligned under the avatar on
+    // the section-nav row. Hidden unless opted in via Settings (off by default);
+    // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
+    m_navRebuildButton = new QPushButton;
+    m_navRebuildButton->setObjectName("topNavButton");
+    m_navRebuildButton->setCursor(Qt::PointingHandCursor);
+    m_navRebuildButton->setToolTip(
+        QString::fromUtf8("Rebuild & restart \xE2\x80\x94 fast local rebuild, "
+                          "then relaunch"));
+    setOcticon(m_navRebuildButton, "sync", 14);
+    connect(m_navRebuildButton, &QPushButton::clicked, this,
+            [this] { quickRebuildRestart(); });
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -6384,6 +6410,8 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_logNavButton);
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addStretch();
+    // Right-aligned so it sits under the top-right avatar.
+    navRow->addWidget(m_navRebuildButton);
     layout->addLayout(navRow);
     // Home/Code is the initial section, so show its nav button selected up front.
     m_repoViewButton->setChecked(true);
@@ -6394,7 +6422,15 @@ QWidget *MainWindow::buildBreadcrumb()
     updateChatButton();
     updateNavSolanaBalance();
     updateRepoPushButton();
+    updateNavRebuildButton();
     return bar;
+}
+
+void MainWindow::updateNavRebuildButton()
+{
+    if (m_navRebuildButton)
+        m_navRebuildButton->setVisible(
+            QSettings().value(kShowRebuildButtonSetting, false).toBool());
 }
 
 void MainWindow::updateConnectionStatus()
@@ -12517,6 +12553,40 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
         renderPullDiff(path);
         return;
     }
+    // "filecomment:<path>" posts a file-level comment on the pull request.
+    if (url.scheme() == QLatin1String("filecomment")) {
+        if (m_currentPullNumber < 0)
+            return;
+        const QString path = url.path();
+        bool ok = false;
+        const QString body = QInputDialog::getMultiLineText(
+            this, QStringLiteral("Comment on %1").arg(path),
+            QStringLiteral("Comment"), QString(), &ok);
+        if (!ok || body.trimmed().isEmpty())
+            return;
+        PullStore store = pullStoreForCurrentRepo();
+        if (store.canWrite()) {
+            QString error;
+            if (!store.addLineComment(m_currentPullNumber, path,
+                                      QStringLiteral("new"), 0, body.trimmed(),
+                                      &error)) {
+                QMessageBox::warning(this, "Comment", error);
+                return;
+            }
+        } else {
+            PullEvent ev;
+            ev.type = QStringLiteral("line-comment");
+            ev.path = path;
+            ev.side = QStringLiteral("new");
+            ev.line = 0;
+            ev.body = body.trimmed();
+            ev = store.makeSignedEvent(m_currentPullNumber, ev);
+            submitPullEventToInbox(m_currentPullNumber, ev);
+        }
+        reloadPulls();
+        showPull(m_currentPullNumber);
+        return;
+    }
     // Anchor format: "cmt:<side>:<line>" where side is old|new.
     const QStringList parts = url.toString().split(QLatin1Char(':'));
     if (parts.size() != 3 || parts.at(0) != QLatin1String("cmt"))
@@ -17488,6 +17558,28 @@ void MainWindow::loadRepoFileTree()
                 item->setData(0, Qt::UserRole, acc);
                 item->setData(0, Qt::UserRole + 1, false);
                 setSize(item, fileSize.value(acc));
+                // A cove is greyed/locked until its password is known; with
+                // "auto-show" on it un-greys once unlocked. Double-click opens the
+                // cove viewer (intercepted in openRepoFile), not the code editor.
+                if (acc.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+                    acc.startsWith(CoveStore::covesDirRel() + "/")) {
+                    Cove cove;
+                    bool unlocked = false;
+                    if (coveStoreForRepo(m_repoDetailIndex).loadEnvelope(acc, cove)) {
+                        QString pw;
+                        unlocked = tryUnlockCove(cove, m_repoDetailIndex, &pw);
+                    }
+                    item->setText(0, parts.at(i) +
+                                         QString::fromUtf8(unlocked ? "  \xF0\x9F\x94\x93"
+                                                                    : "  \xF0\x9F\x94\x92"));
+                    if (!(unlocked && coveAutoOpenEnabled(m_repoDetailIndex)))
+                        item->setForeground(0, QBrush(QColor("#8b949e")));
+                    item->setToolTip(
+                        0, unlocked
+                               ? QStringLiteral("Encrypted cove — double-click to open")
+                               : QStringLiteral("Encrypted cove — locked; enter the "
+                                                "password in Settings"));
+                }
             } else {
                 QTreeWidgetItem *node = dirs.value(acc);
                 if (!node) {
@@ -17532,6 +17624,13 @@ void MainWindow::openRepoFile(const QString &path)
 {
     if (path.isEmpty() || !m_repoFileTabs)
         return;
+    // A cove is encrypted; open it in the cove viewer (unlocking as needed) rather
+    // than dumping ciphertext into the code editor.
+    if (path.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+        path.startsWith(CoveStore::covesDirRel() + "/")) {
+        openCove(path);
+        return;
+    }
     // Opening a file reveals the explorer + editor view; build the tree lazily.
     if (m_treeLoadedForIndex != m_repoDetailIndex) {
         loadRepoFileTree();
@@ -19134,6 +19233,95 @@ QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &ol
     return out;
 }
 
+// Per-file header block shared by the unified and split renderers. The old text
+// badge ("ADDED"/"MODIFIED"/…) is replaced by a status octicon (the word lives
+// on as a tooltip); the path shows its directory dimmed and the basename bold;
+// a five-segment green/red proportion bar mirrors GitHub's diff-stat squares.
+// The right side carries the per-file comment icon (PR view only) and the
+// "Viewed" toggle. Returns the header div only — the caller appends the image
+// preview and opens the diff table itself (and skips both for viewed files).
+QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
+{
+    QString icon = QStringLiteral("file-diff");
+    QColor tint(QStringLiteral("#d29922"));
+    QString word = QStringLiteral("Modified");
+    if (f.status == QLatin1String("added")) {
+        icon = QStringLiteral("diff");
+        tint = QColor(QStringLiteral("#3fb950"));
+        word = QStringLiteral("Added");
+    } else if (f.status == QLatin1String("deleted")) {
+        icon = QStringLiteral("trash");
+        tint = QColor(QStringLiteral("#f85149"));
+        word = QStringLiteral("Removed");
+    } else if (f.status == QLatin1String("renamed")) {
+        icon = QStringLiteral("file-diff");
+        tint = QColor(QStringLiteral("#58a6ff"));
+        word = QStringLiteral("Renamed");
+    }
+    const QString badge =
+        QStringLiteral("<span class='stbadge' title='%1'>%2</span>")
+            .arg(word, octiconMarkup(icon, 14, tint));
+
+    const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(f.path));
+    // "Viewed" checkbox toggle (the diff is collapsed when checked).
+    const QString viewedLink =
+        QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>"
+                       "<span style='font-size:19px'>%3</span> Viewed</a>")
+            .arg(viewed ? QStringLiteral(" on") : QString(), encPath,
+                 viewed ? QString::fromUtf8("\xE2\x98\x91")
+                        : QString::fromUtf8("\xE2\x98\x90"));
+    // Per-file comment icon, only in the PR view (anchors enabled).
+    const QString commentIcon =
+        anchors ? QStringLiteral("<a class='filecomment' href='filecomment:%1' "
+                                 "title='Comment on this file'>%2</a>")
+                      .arg(encPath, QString::fromUtf8("\xF0\x9F\x92\xAC"))
+                : QString();
+
+    // Split the path so the directory reads as muted context and the file name
+    // stands out.
+    QString pathHtml;
+    const int slash = f.path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        pathHtml = QStringLiteral("<span class='fdir'>%1</span>"
+                                  "<span class='fname'>%2</span>")
+                       .arg(f.path.left(slash + 1).toHtmlEscaped(),
+                            f.path.mid(slash + 1).toHtmlEscaped());
+    else
+        pathHtml = QStringLiteral("<span class='fname'>%1</span>")
+                       .arg(f.path.toHtmlEscaped());
+
+    // Five filled-block glyphs split green/red by the additions' share, clamped
+    // so any change of a kind shows at least one block.
+    const int total = f.adds + f.dels;
+    QString bar;
+    if (total > 0) {
+        int green = qRound(5.0 * f.adds / total);
+        if (f.adds > 0 && green == 0)
+            green = 1;
+        if (f.dels > 0 && green == 5)
+            green = 4;
+        const int red = 5 - green;
+        if (green > 0)
+            bar += QStringLiteral("<span class='barblk add'>%1</span>")
+                       .arg(QString(green, QChar(0x2588)));
+        if (red > 0)
+            bar += QStringLiteral("<span class='barblk del'>%1</span>")
+                       .arg(QString(red, QChar(0x2588)));
+    }
+
+    return QString::fromUtf8(
+               "<a name=\"%1\"></a><div class='fileblock%8'>"
+               "<div class='fileheader'>"
+               "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+               "<td>%2<span class='fpath'>%3</span>"
+               "<span class='fstat'> <span class='sadd'>+%4</span> "
+               "<span class='sdel'>\xE2\x88\x92%5</span> %6</span></td>"
+               "<td align='right'>%7%9</td></tr></table></div>")
+        .arg(f.anchor, badge, pathHtml, QString::number(f.adds),
+             QString::number(f.dels), bar, commentIcon,
+             viewed ? QStringLiteral(" viewed") : QString(), viewedLink);
+}
+
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                               const QString &dir, const QString &base,
                               const QString &head,
@@ -19156,41 +19344,13 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     // header block before the table.
     auto emitFileHeader = [&](int idx) {
         const DiffFileEntry &f = files[idx];
-        QString badgeClass = QStringLiteral("st-mod");
-        QString badgeText = QStringLiteral("MODIFIED");
-        if (f.status == QLatin1String("added")) {
-            badgeClass = QStringLiteral("st-add");
-            badgeText = QStringLiteral("ADDED");
-        } else if (f.status == QLatin1String("deleted")) {
-            badgeClass = QStringLiteral("st-del");
-            badgeText = QStringLiteral("DELETED");
-        } else if (f.status == QLatin1String("renamed")) {
-            badgeClass = QStringLiteral("st-ren");
-            badgeText = QStringLiteral("RENAMED");
-        }
         const bool viewed = viewedFiles.contains(f.path);
-        const QString imagePreview =
-            viewed ? QString() : diffImagePreviewHtml(dir, base, head, f.path);
-        const QString viewedLink =
-            QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>%3 Viewed</a>")
-                .arg(viewed ? QStringLiteral(" on") : QString(),
-                     QString::fromLatin1(QUrl::toPercentEncoding(f.path)),
-                     viewed ? QString::fromUtf8("\xE2\x98\x91")
-                            : QString::fromUtf8("\xE2\x98\x90"));
-        html += QString::fromUtf8(
-                    "<a name=\"%1\"></a><div class='fileblock%8'>"
-                    "<div class='fileheader'>%9"
-                    "<span class='stbadge %2'>%3</span>"
-                    "<span class='fpath'>%4</span>"
-                    "<span class='fstat'><span class='sadd'>+%5</span> "
-                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>%7")
-                    .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
-                         QString::number(f.adds), QString::number(f.dels),
-                         imagePreview, viewed ? QStringLiteral(" viewed") : QString(),
-                         viewedLink);
-        if (!viewed)
+        html += diffFileHeaderHtml(f, viewed, anchors);
+        if (!viewed) {
+            html += diffImagePreviewHtml(dir, base, head, f.path);
             html += QStringLiteral(
                 "<table class='difftable' cellspacing='0' cellpadding='0'>");
+        }
     };
     auto closeFile = [&] {
         if (inFile) {
@@ -19349,7 +19509,40 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     const auto emitText = [](const QString &t) {
         return t.isEmpty() ? QStringLiteral("&nbsp;") : t.toHtmlEscaped();
     };
+    // A fully-added or fully-deleted file has content on one side only. When the
+    // current file is one-sided, fall back to a 2-column unified layout so the
+    // diff sits flush-left instead of behind a dead, always-blank column.
+    const auto oneSidedKind = [&]() -> int {
+        if (fileIdx < 0)
+            return 0;
+        if (files[fileIdx].status == QLatin1String("added"))
+            return 1; // add-only
+        if (files[fileIdx].status == QLatin1String("deleted"))
+            return -1; // del-only
+        return 0;
+    };
     const auto flushPairs = [&] {
+        if (const int kind = oneSidedKind()) {
+            const bool addOnly = kind > 0;
+            const QStringList &buf = addOnly ? pendingAdd : pendingDel;
+            const QString cls =
+                addOnly ? QStringLiteral("add") : QStringLiteral("del");
+            const QString side =
+                addOnly ? QStringLiteral("new") : QStringLiteral("old");
+            for (const QString &t : buf) {
+                const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
+                fileBody +=
+                    QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
+                        .arg(gut(cls, ln, side), cls, emitText(t));
+                if (anchors)
+                    fileBody += lineNoteRows(lineNotes,
+                                             addOnly ? QString() : ln,
+                                             addOnly ? ln : QString(), 2);
+            }
+            pendingDel.clear();
+            pendingAdd.clear();
+            return;
+        }
         const int n = qMax(pendingDel.size(), pendingAdd.size());
         for (int i = 0; i < n; ++i) {
             const bool hasDel = i < pendingDel.size();
@@ -19375,41 +19568,13 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
 
     auto emitFileHeader = [&](int idx) {
         const DiffFileEntry &f = files[idx];
-        QString badgeClass = QStringLiteral("st-mod");
-        QString badgeText = QStringLiteral("MODIFIED");
-        if (f.status == QLatin1String("added")) {
-            badgeClass = QStringLiteral("st-add");
-            badgeText = QStringLiteral("ADDED");
-        } else if (f.status == QLatin1String("deleted")) {
-            badgeClass = QStringLiteral("st-del");
-            badgeText = QStringLiteral("DELETED");
-        } else if (f.status == QLatin1String("renamed")) {
-            badgeClass = QStringLiteral("st-ren");
-            badgeText = QStringLiteral("RENAMED");
-        }
         const bool viewed = viewedFiles.contains(f.path);
-        const QString imagePreview =
-            viewed ? QString() : diffImagePreviewHtml(dir, base, head, f.path);
-        const QString viewedLink =
-            QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>%3 Viewed</a>")
-                .arg(viewed ? QStringLiteral(" on") : QString(),
-                     QString::fromLatin1(QUrl::toPercentEncoding(f.path)),
-                     viewed ? QString::fromUtf8("\xE2\x98\x91")
-                            : QString::fromUtf8("\xE2\x98\x90"));
-        html += QString::fromUtf8(
-                    "<a name=\"%1\"></a><div class='fileblock%8'>"
-                    "<div class='fileheader'>%9"
-                    "<span class='stbadge %2'>%3</span>"
-                    "<span class='fpath'>%4</span>"
-                    "<span class='fstat'><span class='sadd'>+%5</span> "
-                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>%7")
-                    .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
-                         QString::number(f.adds), QString::number(f.dels),
-                         imagePreview, viewed ? QStringLiteral(" viewed") : QString(),
-                         viewedLink);
-        if (!viewed)
+        html += diffFileHeaderHtml(f, viewed, anchors);
+        if (!viewed) {
+            html += diffImagePreviewHtml(dir, base, head, f.path);
             html += QStringLiteral(
                 "<table class='difftable' cellspacing='0' cellpadding='0'>");
+        }
     };
     auto closeFile = [&] {
         if (inFile) {
@@ -19470,12 +19635,17 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 oldNo = m.captured(1).toInt();
                 newNo = m.captured(2).toInt();
             }
-            fileBody += QStringLiteral(
-                            "<tr><td class='ln hunk'></td>"
-                            "<td class='code hunk'>%1</td>"
-                            "<td class='ln nln hunk'></td>"
-                            "<td class='code hunk'>&nbsp;</td></tr>")
-                            .arg(line.toHtmlEscaped());
+            // One-sided files use the 2-column layout (see flushPairs).
+            fileBody += oneSidedKind()
+                            ? QStringLiteral("<tr><td class='ln hunk'></td>"
+                                             "<td class='code hunk'>%1</td></tr>")
+                                  .arg(line.toHtmlEscaped())
+                            : QStringLiteral(
+                                  "<tr><td class='ln hunk'></td>"
+                                  "<td class='code hunk'>%1</td>"
+                                  "<td class='ln nln hunk'></td>"
+                                  "<td class='code hunk'>&nbsp;</td></tr>")
+                                  .arg(line.toHtmlEscaped());
             continue;
         }
 
@@ -19490,12 +19660,31 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             if (fileIdx >= 0)
                 ++files[fileIdx].dels;
         } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
-            // Render on both sides as context so neither column drifts.
             flushPairs();
-            fileBody += QStringLiteral(
-                            "<tr><td class='ln'></td><td class='code'>%1</td>"
-                            "<td class='ln nln'></td><td class='code'>%1</td></tr>")
-                            .arg(line.toHtmlEscaped());
+            // One-sided files keep the 2-column layout; otherwise render on both
+            // sides as context so neither column drifts.
+            fileBody += oneSidedKind()
+                            ? QStringLiteral("<tr><td class='ln'></td>"
+                                             "<td class='code'>%1</td></tr>")
+                                  .arg(line.toHtmlEscaped())
+                            : QStringLiteral(
+                                  "<tr><td class='ln'></td><td class='code'>%1</td>"
+                                  "<td class='ln nln'></td><td class='code'>%1</td></tr>")
+                                  .arg(line.toHtmlEscaped());
+        } else if (const int kind = oneSidedKind()) {
+            // Context line in a one-sided file (rare): single gutter + code.
+            flushPairs();
+            const bool addOnly = kind > 0;
+            const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
+            if (addOnly)
+                ++oldNo;
+            else
+                ++newNo;
+            fileBody += QStringLiteral("<tr>%1<td class='code'>%2</td></tr>")
+                            .arg(gut(QString(), ln,
+                                     addOnly ? QStringLiteral("new")
+                                             : QStringLiteral("old")),
+                                 emitText(text));
         } else {
             flushPairs();
             const QString ln1 = QString::number(oldNo++);
@@ -19555,20 +19744,27 @@ QString diffStyleSheet()
     const QString gutterBg = dark ? "#0d1117" : "#f6f8fa";
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
-               ".fileblock { margin-bottom:18px; }"
-               ".fileheader { background:%1; padding:8px 12px; font-family:"
-               "monospace; border:1px solid %7; }"
-               ".stbadge { font-weight:700; font-size:10px; margin-right:10px; }"
-               ".st-add { color:#3fb950; } .st-del { color:#f85149; }"
-               ".st-mod { color:#d29922; } .st-ren { color:#58a6ff; }"
-               ".fpath { font-weight:600; color:%8; }"
+               ".fileblock { margin:0; }"
+               ".fileheader { background:%1; padding:6px 10px; font-family:"
+               "monospace; font-size:12px; border:1px solid %7; }"
+               // Status octicon badge (image) sat next to the path.
+               ".stbadge { margin-right:8px; vertical-align:middle; }"
+               ".fpath { vertical-align:middle; }"
+               ".fdir { color:%2; }"
+               ".fname { font-weight:600; color:%8; }"
                ".fstat { color:%2; font-size:11px; }"
-               ".viewedtoggle { color:%2; text-decoration:none; font-size:11px; "
-               "margin-right:12px; }"
+               // GitHub-style green/red proportion bar (filled block glyphs).
+               ".barblk { font-family:monospace; letter-spacing:-1px; }"
+               ".barblk.add { color:#3fb950; } .barblk.del { color:#f85149; }"
+               ".viewedtoggle { color:%2; text-decoration:none; font-size:11px; }"
                ".viewedtoggle.on { color:#3fb950; }"
+               ".filecomment { color:%2; text-decoration:none; font-size:15px; "
+               "margin-right:14px; }"
                ".sadd { color:#3fb950; font-weight:700; }"
                ".sdel { color:#f85149; font-weight:700; }"
-               ".difftable { font-family:monospace; font-size:12px; width:100%; }"
+               ".difftable { font-family:monospace; font-size:12px; width:100%; "
+               "border-left:1px solid %7; border-right:1px solid %7; "
+               "border-bottom:1px solid %7; }"
                ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
                ".imgcell { width:50%; padding:10px; text-align:center; }"
                ".imgcell img { max-width:100%; max-height:360px; }"
@@ -20473,7 +20669,11 @@ QWidget *MainWindow::buildBranchesTab()
     bh->setSectionResizeMode(0, QHeaderView::Stretch);
     bh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     bh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    // The action column holds cell widgets (Pull / Create PR / delete
+    // buttons). ResizeToContents only measures item delegates and ignores
+    // cell widgets, so it would collapse this column and clip the buttons.
+    // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
+    bh->setSectionResizeMode(3, QHeaderView::Fixed);
     connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *it = m_branchesTable->item(row, 0);
@@ -20501,6 +20701,10 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDiffSticky->setStyleSheet(
         "background:#161b22; color:#e6edf3; border-bottom:1px solid #30363d;"
         "padding:6px 12px; font-family:monospace; font-weight:600;");
+    m_branchDiffSticky->setTextFormat(Qt::RichText);
+    m_branchDiffSticky->setOpenExternalLinks(false);
+    connect(m_branchDiffSticky, &QLabel::linkActivated, this,
+            [this](const QString &href) { onBranchDiffAnchorClicked(QUrl(href)); });
     m_branchDiffSticky->hide();
     connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &MainWindow::updateBranchDiffSticky);
@@ -20532,6 +20736,9 @@ void MainWindow::loadBranchesPanel()
                 .arg(branches.size())
                 .arg(base.isEmpty() ? "none" : base));
 
+    // The action column is Fixed-width because ResizeToContents can't see
+    // its cell widgets; size it to the widest action row we build below.
+    int actionWidth = 0;
     for (const QString &branch : branches) {
         const int row = m_branchesTable->rowCount();
         m_branchesTable->insertRow(row);
@@ -20576,7 +20783,7 @@ void MainWindow::loadBranchesPanel()
         // Row actions: open a pull request from this branch, and delete it.
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
-        actionRow->setContentsMargins(0, 0, 0, 0);
+        actionRow->setContentsMargins(0, 0, 8, 0);
         actionRow->setSpacing(4);
 
         // Bring this branch up to date by merging the default branch into it.
@@ -20639,7 +20846,10 @@ void MainWindow::loadBranchesPanel()
         actionRow->addWidget(del);
 
         m_branchesTable->setCellWidget(row, 3, actions);
+        actionWidth = qMax(actionWidth, actions->sizeHint().width());
     }
+    if (actionWidth > 0)
+        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth);
     if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
@@ -20959,7 +21169,26 @@ void MainWindow::updateBranchDiffSticky()
         m_branchDiffSticky->hide();
         return;
     }
-    m_branchDiffSticky->setText(cur);
+    const bool isViewed =
+        loadDiffViewed(QStringLiteral("branch/") + m_branchDiffBranch).contains(cur);
+    const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(cur));
+    const int slash = cur.lastIndexOf(QLatin1Char('/'));
+    const QString pathHtml =
+        slash >= 0 ? QStringLiteral("<span style='color:#8b949e'>%1</span>%2")
+                         .arg(cur.left(slash + 1).toHtmlEscaped(),
+                              cur.mid(slash + 1).toHtmlEscaped())
+                   : cur.toHtmlEscaped();
+    m_branchDiffSticky->setText(
+        QStringLiteral("<table width='100%' cellspacing='0' cellpadding='0'><tr><td>%1"
+                       "</td><td align='right'>"
+                       "<a style='color:%2; text-decoration:none' href='viewed:%3'>"
+                       "<span style='font-size:19px'>%4</span> Viewed</a>"
+                       "</td></tr></table>")
+            .arg(pathHtml,
+                 isViewed ? QStringLiteral("#3fb950") : QStringLiteral("#8b949e"),
+                 encPath,
+                 isViewed ? QString::fromUtf8("\xE2\x98\x91")
+                          : QString::fromUtf8("\xE2\x98\x90")));
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
     m_branchDiffSticky->show();
@@ -26585,6 +26814,10 @@ QWidget *MainWindow::buildSettingsSection()
         "Show a system alert when a mirror updates", kMirrorUpdateAlertSetting,
         "Pop up a desktop notification when a peer refreshes the mirror of a repo "
         "you also mirror.");
+    auto *coveOpenAlertCheck = alertCheck(
+        "Show a system alert when a cove is opened", kCoveOpenAlertSetting,
+        "Pop up a desktop notification when someone opens an encrypted cove you "
+        "created with notifications enabled.");
     auto *newUserAlertCheck = alertCheck(
         "Show a system alert when a new user joins", kNewUserAlertSetting,
         "Admin: pop up a desktop notification when a new user signs up and needs "
@@ -26670,6 +26903,17 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kSolanaDisplayCurrencySetting,
                              showCurrencyCombo->currentData().toString());
         updateNavSolanaBalance();
+    });
+    auto *rebuildButtonCheck =
+        new QCheckBox("Show a rebuild & restart button in the top bar");
+    rebuildButtonCheck->setChecked(
+        QSettings().value(kShowRebuildButtonSetting, false).toBool());
+    rebuildButtonCheck->setToolTip(
+        "Adds a small rebuild & restart button beside Leaderboards (under the "
+        "avatar) for a fast local rebuild and relaunch. Off by default.");
+    connect(rebuildButtonCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        QSettings().setValue(kShowRebuildButtonSetting, enabled);
+        updateNavRebuildButton();
     });
 
     auto *agentsLabel = new QLabel("AGENTS");
@@ -27025,77 +27269,115 @@ QWidget *MainWindow::buildSettingsSection()
     layout->setSpacing(10);
     layout->addWidget(title);
 
-    // Two columns: profile + storage + startup on the left, notifications +
-    // appearance + agents + secrets on the right. The page scrolls vertically,
-    // so the split mainly shortens the page and groups related settings.
-    auto *columns = new QHBoxLayout;
-    columns->setContentsMargins(0, 0, 0, 0);
-    columns->setSpacing(32);
+    // Group related settings under tabs rather than one long two-column scroll.
+    // Each tab scrolls on its own; the title above and the account-action footer
+    // below stay pinned so they're reachable from any tab.
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName("settingsTabs");
+    tabs->setDocumentMode(true);
+    // Wrap a tab's content widget in a frameless, vertically-scrolling page.
+    auto addTab = [tabs](QWidget *body, const QString &name) {
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName("settingsTabScroll");
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(body);
+        tabs->addTab(scroll, name);
+    };
 
-    auto *leftCol = new QVBoxLayout;
-    leftCol->setContentsMargins(0, 0, 0, 0);
-    leftCol->setSpacing(10);
-    leftCol->addWidget(profileLabel);
-    leftCol->addLayout(form);
-    leftCol->addSpacing(6);
-    leftCol->addWidget(storageLabel);
-    leftCol->addLayout(mirrorRow);
-    leftCol->addSpacing(6);
-    leftCol->addWidget(previewCacheLabel);
-    leftCol->addLayout(previewCacheRow);
-    leftCol->addSpacing(6);
-    leftCol->addWidget(repositoriesLabel);
-    leftCol->addWidget(repositoriesHint);
-    leftCol->addLayout(repoButtonRow);
-    leftCol->addSpacing(6);
-    leftCol->addWidget(importLabel);
-    leftCol->addWidget(importHint);
-    leftCol->addLayout(importRow);
-    leftCol->addWidget(m_importStatus);
-    leftCol->addLayout(importTokenForm);
-    leftCol->addSpacing(6);
-    leftCol->addWidget(startupLabel);
-    leftCol->addWidget(m_autostartCheck);
-    leftCol->addStretch();
+    // General: identity, appearance and launch behaviour.
+    auto *generalTab = new QWidget;
+    auto *generalCol = new QVBoxLayout(generalTab);
+    generalCol->setContentsMargins(2, 14, 2, 14);
+    generalCol->setSpacing(10);
+    generalCol->addWidget(profileLabel);
+    generalCol->addLayout(form);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(appearanceLabel);
+    generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
+    generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
+    generalCol->addWidget(rebuildButtonCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(startupLabel);
+    generalCol->addWidget(m_autostartCheck);
+    generalCol->addStretch();
+    addTab(generalTab, "General");
 
-    auto *rightCol = new QVBoxLayout;
-    rightCol->setContentsMargins(0, 0, 0, 0);
-    rightCol->setSpacing(10);
-    rightCol->addWidget(notifyLabel);
-    rightCol->addWidget(pushAlertCheck);
-    rightCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
-    rightCol->addWidget(nodeConnectAlertCheck);
-    rightCol->addWidget(disbursementAlertCheck);
-    rightCol->addWidget(chatMessageAlertCheck);
-    rightCol->addWidget(mentionAlertCheck);
-    rightCol->addWidget(issueAlertCheck);
-    rightCol->addWidget(pullAlertCheck);
-    rightCol->addWidget(commentAlertCheck);
-    rightCol->addWidget(mirrorUpdateAlertCheck);
-    rightCol->addWidget(newUserAlertCheck);
-    rightCol->addSpacing(6);
-    rightCol->addWidget(ideLabel);
-    rightCol->addWidget(ideIntegrationCheck);
-    rightCol->addWidget(ideStatus);
-    rightCol->addSpacing(6);
-    rightCol->addWidget(appearanceLabel);
-    rightCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
-    rightCol->addWidget(showCurrencyCombo);
-    rightCol->addSpacing(6);
-    rightCol->addWidget(agentsLabel);
-    rightCol->addWidget(agentsHint);
-    rightCol->addLayout(agentForm);
-    rightCol->addSpacing(6);
-    rightCol->addWidget(varsLabel);
-    rightCol->addWidget(varsHint);
-    rightCol->addWidget(m_varsTable);
-    rightCol->addLayout(varButtonRow);
-    rightCol->addStretch();
+    // Repositories: creating/importing repos and where mirrors live.
+    auto *reposTab = new QWidget;
+    auto *reposCol = new QVBoxLayout(reposTab);
+    reposCol->setContentsMargins(2, 14, 2, 14);
+    reposCol->setSpacing(10);
+    reposCol->addWidget(repositoriesLabel);
+    reposCol->addWidget(repositoriesHint);
+    reposCol->addLayout(repoButtonRow);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(importLabel);
+    reposCol->addWidget(importHint);
+    reposCol->addLayout(importRow);
+    reposCol->addWidget(m_importStatus);
+    reposCol->addLayout(importTokenForm);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(storageLabel);
+    reposCol->addLayout(mirrorRow);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(previewCacheLabel);
+    reposCol->addLayout(previewCacheRow);
+    reposCol->addStretch();
+    addTab(reposTab, "Repositories");
 
-    columns->addLayout(leftCol, 1);
-    columns->addLayout(rightCol, 1);
-    layout->addLayout(columns, 1);
+    // Notifications: every desktop-alert opt-in.
+    auto *notifyTab = new QWidget;
+    auto *notifyCol = new QVBoxLayout(notifyTab);
+    notifyCol->setContentsMargins(2, 14, 2, 14);
+    notifyCol->setSpacing(10);
+    notifyCol->addWidget(notifyLabel);
+    notifyCol->addWidget(pushAlertCheck);
+    notifyCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
+    notifyCol->addWidget(nodeConnectAlertCheck);
+    notifyCol->addWidget(disbursementAlertCheck);
+    notifyCol->addWidget(chatMessageAlertCheck);
+    notifyCol->addWidget(mentionAlertCheck);
+    notifyCol->addWidget(issueAlertCheck);
+    notifyCol->addWidget(pullAlertCheck);
+    notifyCol->addWidget(commentAlertCheck);
+    notifyCol->addWidget(mirrorUpdateAlertCheck);
+    notifyCol->addWidget(coveOpenAlertCheck);
+    notifyCol->addWidget(newUserAlertCheck);
+    notifyCol->addStretch();
+    addTab(notifyTab, "Notifications");
 
+    // Agents & IDE: model keys/commands and editor integration.
+    auto *agentsTab = new QWidget;
+    auto *agentsCol = new QVBoxLayout(agentsTab);
+    agentsCol->setContentsMargins(2, 14, 2, 14);
+    agentsCol->setSpacing(10);
+    agentsCol->addWidget(agentsLabel);
+    agentsCol->addWidget(agentsHint);
+    agentsCol->addLayout(agentForm);
+    agentsCol->addSpacing(6);
+    agentsCol->addWidget(ideLabel);
+    agentsCol->addWidget(ideIntegrationCheck);
+    agentsCol->addWidget(ideStatus);
+    agentsCol->addStretch();
+    addTab(agentsTab, "Agents & IDE");
+
+    // Secrets & Coves: shared action variables and encrypted coves.
+    auto *secretsTab = new QWidget;
+    auto *secretsCol = new QVBoxLayout(secretsTab);
+    secretsCol->setContentsMargins(2, 14, 2, 14);
+    secretsCol->setSpacing(10);
+    secretsCol->addWidget(varsLabel);
+    secretsCol->addWidget(varsHint);
+    secretsCol->addWidget(m_varsTable);
+    secretsCol->addLayout(varButtonRow);
+    secretsCol->addSpacing(6);
+    secretsCol->addWidget(buildCoveGlobalSection());
+    secretsCol->addStretch();
+    addTab(secretsTab, "Secrets & Coves");
+
+    layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
     reloadVariablesTable();
@@ -27259,6 +27541,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::channelsChanged, this, &MainWindow::setChannels);
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
+    connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
     connect(backend, &ChatBackend::statusChanged, this, [this](const QString &status) {
         const QString summary = status.section(" · ", 0, 0);
         m_statusLine->setText(summary);
@@ -29786,6 +30069,11 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     outer->addSpacing(10);
 
+    // --- Coves (encrypted vaults) -----------------------------------------
+    outer->addWidget(buildCoveSection());
+
+    outer->addSpacing(10);
+
     // --- Danger zone ------------------------------------------------------
     auto *dangerHeading = new QLabel("Danger zone");
     dangerHeading->setObjectName("sectionLabel");
@@ -29843,6 +30131,9 @@ void MainWindow::setRepoActionsEnabled(bool on)
 
 void MainWindow::refreshRepoSettings()
 {
+    // Reload the cove list up front so it stays in sync even when the visibility
+    // hints below take one of this function's early returns.
+    rebuildRepoCovesList();
     const bool haveRepo =
         m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
     if (m_repoPrivateCheck) {

@@ -4,6 +4,7 @@
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
 #include "PullStore.h"
+#include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
 #include "AgentStore.h"
@@ -539,6 +540,8 @@ private:
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
     void updateNotificationButton();
+    // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
+    void updateNavRebuildButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
@@ -619,6 +622,32 @@ private:
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
     void refreshRepoSettings(); // sync the Settings controls to the open repo
+
+    // --- Coves: encrypted, password-shared file vaults inside a repo ----------
+    // A cove is .forkmesh/coves/<slug>.cove (AES-256-GCM, see CoveStore). The team
+    // shares one password out-of-band; entered in repo or global Settings, it
+    // unlocks matching coves. Opening a cove logs it locally and (if the creator
+    // asked) sends a best-effort live alert back to the creator's node.
+    CoveStore coveStoreForRepo(int repoIndex) const;
+    QString coveRepoSettingsPrefix(int repoIndex) const; // QSettings key prefix
+    QString rememberedCovePassword(int repoIndex) const; // repo pw, else global
+    bool coveAutoOpenEnabled(int repoIndex) const;       // repo OR global toggle
+    // Try the session cache, then the remembered repo/global passwords. On success
+    // fills cove (documents/accessLog), caches the working password, and returns it.
+    bool tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) const;
+    void logCoveAccessLocal(const Cove &cove);           // "log yourself" — local
+    QStringList coveAccessLogLocal(const QString &coveId) const;
+    void announceCoveOpened(const Cove &cove);           // best-effort live alert
+    void openCove(const QString &relPath);               // unlock + show a viewer
+    void openCoveViewer(int repoIndex, Cove cove, const QString &password);
+    void promptCreateCove(int repoIndex);
+    void rebuildRepoCovesList();                         // repo Settings list
+    QWidget *buildCoveSection();                         // repo Settings "Coves"
+    QWidget *buildCoveGlobalSection();                   // global Settings "Coves"
+    void applyCovePasswordFromSettings(int repoIndex, bool global,
+                                       const QString &password, bool remember);
+    static QByteArray coveOpenCanonical(const QString &coveId, const QString &creatorKey,
+                                        const QString &openerKey, qint64 ts);
     // Apply an edited source/fork URL to the open repo: persist it and repoint
     // the bare mirror's origin remote so the next sync fetches from it.
     void updateRepoSource();
@@ -1009,6 +1038,11 @@ private:
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo.
     void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName);
+    // A peer opened an encrypted cove. If this node created it (creatorKey matches
+    // our identity) and the opener's signature checks out, raise a notification.
+    void onCoveOpened(const QString &creatorKey, const QString &coveId,
+                      const QString &coveName, const QString &openerKey,
+                      const QString &openerName, qint64 ts, const QString &signature);
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
@@ -1147,6 +1181,7 @@ private:
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
+    QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
@@ -1421,6 +1456,18 @@ private:
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+
+    // --- Cove (encrypted vault) UI + session state ----------------------------
+    QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
+    QListWidget *m_coveList = nullptr;       // coves in the open repo (lock state)
+    QLineEdit *m_covePasswordEdit = nullptr; // per-repo unlock password field
+    QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
+    QLabel *m_coveEmptyHint = nullptr;
+    QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
+    QCheckBox *m_coveGlobalAutoOpenCheck = nullptr;
+    // Cove id -> the password that unlocked it this session (memory only). Lets
+    // "auto-show" reveal a cove without re-prompting and re-encrypt on save.
+    QHash<QString, QString> m_coveSessionPasswords;
 
     // Pull requests tab
     QTableWidget *m_pullTable = nullptr;

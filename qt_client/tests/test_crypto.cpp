@@ -1,4 +1,6 @@
 #include "../src/CommitCommentStore.h"
+#include "../src/CoveCrypto.h"
+#include "../src/CoveStore.h"
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
@@ -134,6 +136,33 @@ int main(int argc, char *argv[])
           "a second node decrypts the shared room with the baked-in key");
     check(RoomCrypto("random").decryptObject(sharedEnv).isEmpty(),
           "a different room name does not decrypt the envelope");
+
+    // --- Cove vault crypto (password + per-cove salt) --------------------
+    // A 256-bit AES key derived from a shared password; the GCM tag is the
+    // password check. Two crypto objects built from the same password + salt
+    // must interoperate, a wrong password must fail to decrypt, and the same
+    // password with a different salt must derive a different key.
+    {
+        const QByteArray coveSalt = CoveCrypto::randomSalt();
+        check(coveSalt.size() == 16, "cove salt is 16 random bytes");
+        CoveCrypto coveA("team-shared-password", coveSalt, CoveCrypto::defaultRounds());
+        check(coveA.isValid(), "cove crypto key derives from password + salt");
+        const QByteArray secret = QByteArrayLiteral("prod db password: hunter2");
+        const QJsonObject sealed = coveA.encrypt(secret);
+        check(sealed.contains("nonce") && sealed.contains("tag") &&
+                  !sealed.value("body").toString().isEmpty(),
+              "cove crypto encrypts to a nonce/tag/body envelope");
+        CoveCrypto coveB("team-shared-password", coveSalt, CoveCrypto::defaultRounds());
+        check(coveB.decrypt(sealed) == secret,
+              "a teammate with the same password decrypts the cove payload");
+        CoveCrypto coveWrong("WRONG-password", coveSalt, CoveCrypto::defaultRounds());
+        check(coveWrong.decrypt(sealed).isEmpty(),
+              "the wrong password fails the GCM tag and decrypts to nothing");
+        CoveCrypto coveOtherSalt("team-shared-password", CoveCrypto::randomSalt(),
+                                 CoveCrypto::defaultRounds());
+        check(coveOtherSalt.decrypt(sealed).isEmpty(),
+              "the same password with a different salt cannot decrypt the cove");
+    }
 
     // --- Host-auth token canonical (must match the worker's verify_host_token).
     const QByteArray hostCanonical = "forkmesh-host-v1\nalice\nmyrepo\n1000";
@@ -451,6 +480,63 @@ int main(int argc, char *argv[])
             comments.loadFor(QString::fromUtf8(head));
         check(loadedComments.size() == 1 && loadedComments.first().body == "great commit",
               "commit comment round-trips from commits/<sha>/NNNN-comment.md");
+
+        // --- CoveStore round-trip ----------------------------------------
+        // Create an encrypted cove, confirm the committed file is opaque, then
+        // unlock it from a fresh envelope read and verify the documents.
+        CoveStore coves(tmp.path(), QString(), &identity, "tester");
+        check(coves.canWrite(), "cove store reports the temp work tree as writable");
+        CoveDocument cdoc;
+        cdoc.id = "doc-1";
+        cdoc.name = "Prod secrets";
+        cdoc.body = "DB_PASSWORD=hunter2";
+        Cove created;
+        check(coves.createCove("Launch plans", "team-shared-password", true,
+                               {cdoc}, &created, &err),
+              "createCove encrypts, writes and commits a .cove file");
+        check(created.creator == identity.publicKey(),
+              "the cove records its creator's public key");
+
+        const QByteArray onDisk =
+            gitOutput({"show", QStringLiteral("HEAD:") + created.relPath});
+        check(!onDisk.isEmpty() && onDisk.contains("\"kind\""),
+              "the committed cove is a JSON envelope");
+        check(!onDisk.contains("hunter2") && !onDisk.contains("DB_PASSWORD"),
+              "the committed cove never leaks the plaintext document body");
+
+        Cove reloaded;
+        check(coves.loadEnvelope(created.relPath, reloaded, &err),
+              "the cove envelope reloads (metadata only)");
+        check(!reloaded.unlocked && reloaded.documents.isEmpty(),
+              "a reloaded cove starts locked with no decrypted documents");
+        check(reloaded.notifyOnOpen, "the notify-on-open flag round-trips in the envelope");
+        check(!CoveStore::unlock(reloaded, "WRONG-password"),
+              "unlock rejects the wrong cove password");
+        check(CoveStore::unlock(reloaded, "team-shared-password"),
+              "unlock accepts the correct cove password");
+        check(reloaded.unlocked && reloaded.documents.size() == 1 &&
+                  reloaded.documents.first().body == "DB_PASSWORD=hunter2",
+              "the unlocked cove yields the original document");
+
+        // Appending an access entry and saving carries the trail in the payload.
+        CoveAccessEntry visit;
+        visit.who = identity.publicKey();
+        visit.name = "tester";
+        visit.ts = 1700000000000LL;
+        visit.action = "open";
+        CoveStore::appendAccess(reloaded, visit);
+        check(coves.save(reloaded, "team-shared-password", &err),
+              "saving a cove with an appended access entry succeeds");
+        Cove afterLog;
+        check(coves.loadEnvelope(created.relPath, afterLog, &err) &&
+                  CoveStore::unlock(afterLog, "team-shared-password") &&
+                  afterLog.accessLog.size() == 1 &&
+                  afterLog.accessLog.first().who == identity.publicKey(),
+              "the encrypted access log round-trips through save + unlock");
+
+        const QList<Cove> listed = coves.listCoves();
+        check(listed.size() == 1 && listed.first().name == "Launch plans",
+              "listCoves enumerates the repo's cove envelopes");
     }
 
     if (failures) {

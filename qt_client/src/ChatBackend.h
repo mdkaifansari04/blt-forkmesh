@@ -112,6 +112,23 @@ public:
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
     virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
+    // Announce that this node just opened an encrypted cove. The creator's node
+    // (creatorKey) recognizes itself and raises a notification; everyone else
+    // ignores it. The opener signs a canonical string so the creator can trust
+    // who opened it. Ephemeral — not retained or replayed by the relay.
+    virtual void notifyCoveOpened(const QString &creatorKey, const QString &coveId,
+                                  const QString &coveName, const QString &openerKey,
+                                  const QString &openerName, qint64 ts,
+                                  const QString &signature)
+    {
+        Q_UNUSED(creatorKey);
+        Q_UNUSED(coveId);
+        Q_UNUSED(coveName);
+        Q_UNUSED(openerKey);
+        Q_UNUSED(openerName);
+        Q_UNUSED(ts);
+        Q_UNUSED(signature);
+    }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 
@@ -148,6 +165,11 @@ signals:
     void rosterChanged(const QList<MemberInfo> &members);
     // A peer refreshed its mirror of "owner/name" from the source of truth.
     void mirrorUpdated(const QString &ownerName, const QString &peerName);
+    // A peer opened an encrypted cove. The UI verifies the opener's signature and,
+    // if this node created the cove (creatorKey), raises an "opened" notification.
+    void coveOpened(const QString &creatorKey, const QString &coveId,
+                    const QString &coveName, const QString &openerKey,
+                    const QString &openerName, qint64 ts, const QString &signature);
     // Short status line for the UI.
     void statusChanged(const QString &status);
     // Unrecoverable failure; the UI returns to the setup screen.

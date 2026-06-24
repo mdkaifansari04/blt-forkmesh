@@ -24,6 +24,10 @@ set(FORKMESH_APP_SOURCES
     src/ChatBackend.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
+    src/CoveCrypto.h
+    src/CoveCrypto.cpp
+    src/CoveStore.h
+    src/CoveStore.cpp
     src/ServerNode.h
     src/ServerNode.cpp
     src/RepoHost.h
@@ -57,6 +61,7 @@ set(FORKMESH_APP_SOURCES
     src/TerminalWidget.cpp
     src/MainWindow.h
     src/MainWindow.cpp
+    src/MainWindowCoves.cpp
 )
 
 qt_add_executable(forkmesh
@@ -91,6 +96,10 @@ if(FORKMESH_BUILD_TESTS)
         src/ForkMeshIdentity.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
+        src/CoveCrypto.h
+        src/CoveCrypto.cpp
+        src/CoveStore.h
+        src/CoveStore.cpp
         src/IssueStore.h
         src/IssueStore.cpp
         src/IssueBurnup.h
