@@ -4,7 +4,11 @@
 // only ever sees ciphertext.
 
 const ROOM_NAME = "general";
-const ROOM_PASSPHRASE = "forkmesh-public-room";
+// Baked-in app key for the passphrase-free shared rooms. MUST stay byte-for-byte
+// identical to the desktop client's kAppRoomKey (qt_client RoomCrypto.cpp) and the
+// Flutter app's _appRoomKey (room_crypto.dart); the PBKDF2 password is what binds
+// every client to the same AES key, so a mismatch silently drops all messages.
+const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
 const CHANNEL = "#general";
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 const MAX_TEXT = 16000;

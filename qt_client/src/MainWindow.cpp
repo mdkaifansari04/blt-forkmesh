@@ -12702,47 +12702,6 @@ void MainWindow::processAgentQueue()
     reloadAgents();
 }
 
-namespace {
-// Pre-approve a custom ANTHROPIC_API_KEY with the Claude Code CLI so it doesn't
-// stop on the interactive "Detected a custom API key… Do you want to use it?"
-// prompt at startup — which is invisible/unanswerable inside an automated run.
-// The CLI records approvals in ~/.claude.json under customApiKeyResponses.approved
-// keyed by the key's last 20 characters (cli: `tN(e){return e.slice(-20)}`); we
-// write exactly that entry, the same thing answering "Yes" once would persist.
-void approveClaudeApiKey(const QString &key)
-{
-    if (key.isEmpty())
-        return;
-    const QString id = key.right(20);
-    const QString path = QDir::homePath() + QStringLiteral("/.claude.json");
-
-    QJsonObject root;
-    if (QFile in(path); in.open(QIODevice::ReadOnly)) {
-        const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
-        if (doc.isObject())
-            root = doc.object();
-    }
-
-    QJsonObject responses = root.value(QStringLiteral("customApiKeyResponses"))
-                                .toObject();
-    QJsonArray approved = responses.value(QStringLiteral("approved")).toArray();
-    if (approved.contains(id))
-        return; // already approved; nothing to write
-    approved.append(id);
-    responses.insert(QStringLiteral("approved"), approved);
-    // Drop a stale rejection of the same key so the approval wins.
-    QJsonArray rejected = responses.value(QStringLiteral("rejected")).toArray();
-    for (int i = rejected.size() - 1; i >= 0; --i)
-        if (rejected.at(i).toString() == id)
-            rejected.removeAt(i);
-    responses.insert(QStringLiteral("rejected"), rejected);
-    root.insert(QStringLiteral("customApiKeyResponses"), responses);
-
-    if (QFile out(path); out.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-}
-} // namespace
-
 // Run Claude Code interactively in the built-in terminal on the agent detail
 // screen, working in the repo checkout. The session already exists (created by
 // assignIssueToAgent); here we just launch it and show the terminal.
@@ -12786,18 +12745,14 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
                 QString::number(session.issueNumber));
 
     QStringList env;
-    const QString key = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    if (!key.isEmpty()) {
-        env << (QStringLiteral("ANTHROPIC_API_KEY=") + key);
-        // Skip Claude Code's "use this API key?" startup prompt for this key.
-        approveClaudeApiKey(key);
-    } else {
-        // No key configured: the user is signed in via claude.ai. Drop any
-        // ANTHROPIC_API_KEY inherited from the shell so Claude Code doesn't warn
-        // that both claude.ai and an API key are set (and silently prefer the
-        // key). An entry without '=' tells the terminal to unset the variable.
-        env << QStringLiteral("ANTHROPIC_API_KEY");
-    }
+    // The built-in Claude Code terminal authenticates with the user's claude.ai
+    // login, so we deliberately do NOT inject the configured ANTHROPIC_API_KEY
+    // here (that key is for the script-based AgentRunner path, which needs raw
+    // API access). Injecting it makes Claude Code warn "Both claude.ai and
+    // ANTHROPIC_API_KEY set" and silently switch to API-usage billing. Drop any
+    // ANTHROPIC_API_KEY inherited from the shell too; an entry without '=' tells
+    // the terminal to unset the variable in the child.
+    env << QStringLiteral("ANTHROPIC_API_KEY");
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -13510,37 +13465,12 @@ void MainWindow::forkCurrentRepo()
         return;
     const RepositoryRecord src = m_repositories.at(m_repoDetailIndex);
 
-    // Default destination: your own account owns it, keeping the same name.
-    const QString defaultOwner = accountOwner();
-
-    // --- Ask where to fork to (destination owner + repository name).
-    QDialog dialog(this);
-    dialog.setWindowTitle("Fork repository");
-    auto *form = new QFormLayout(&dialog);
-    auto *info = new QLabel(
-        QStringLiteral("Fork <b>%1/%2</b> into your own node. A new independent "
-                       "mirror is created that you can push to.")
-            .arg(src.owner.toHtmlEscaped(), src.name.toHtmlEscaped()));
-    info->setWordWrap(true);
-    info->setTextFormat(Qt::RichText);
-    auto *ownerEdit = new QLineEdit(defaultOwner);
-    auto *nameEdit = new QLineEdit(src.name);
-    form->addRow(info);
-    form->addRow("Owner (your node)", ownerEdit);
-    form->addRow("Repository name", nameEdit);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
-                                         QDialogButtonBox::Cancel);
-    buttons->button(QDialogButtonBox::Ok)->setText("Fork");
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    const QString owner =
-        repoSegment(ownerEdit->text().trimmed(), QStringLiteral("owner"));
-    const QString name =
-        repoSegment(nameEdit->text().trimmed(), QStringLiteral("repository"));
+    // The fork keeps the same repository name and is owned by your own node, so
+    // there's nothing to ask about that — we just need to know where on disk to
+    // put it. Clone the fork from the existing local mirror when available (fast,
+    // offline); otherwise from the repo's configured source.
+    const QString owner = accountOwner();
+    const QString name = repoSegment(src.name, QStringLiteral("repository"));
     if (owner.isEmpty() || name.isEmpty())
         return;
     for (const RepositoryRecord &r : std::as_const(m_repositories))
@@ -13551,8 +13481,6 @@ void MainWindow::forkCurrentRepo()
             return;
         }
 
-    // Clone the fork from the existing local mirror when available (fast,
-    // offline); otherwise from the repo's configured source.
     const QString source =
         (!src.mirrorPath.isEmpty() && QDir(src.mirrorPath).exists())
             ? src.mirrorPath
@@ -13562,6 +13490,23 @@ void MainWindow::forkCurrentRepo()
             this, "Fork repository",
             "There is no local mirror or source to fork from yet. Sync the "
             "repository first, then fork.");
+        return;
+    }
+
+    // --- Ask where to fork it to: pick a parent folder; the working copy lands
+    // in a "<name>" subfolder inside it.
+    const QString parentDir = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("Choose a folder to fork %1 into").arg(name),
+        QDir::homePath());
+    if (parentDir.isEmpty())
+        return; // cancelled
+    const QString targetDir = QDir(parentDir).absoluteFilePath(name);
+    if (QDir(targetDir).exists() && !QDir(targetDir).isEmpty()) {
+        QMessageBox::warning(
+            this, "Fork repository",
+            QStringLiteral("%1 already exists and isn't empty. Choose another "
+                           "location for the fork.")
+                .arg(QDir::toNativeSeparators(targetDir)));
         return;
     }
 
@@ -13576,19 +13521,22 @@ void MainWindow::forkCurrentRepo()
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
                       repoSegment(name, QStringLiteral("repository")) + ".git";
-    // No cloneUrl/localPath: a fork is independent and must not auto-sync from
-    // upstream (that would prune the branches you push to it).
+    // The chosen folder is the fork's working directory; its origin points at our
+    // own mirror (set up below), so it never auto-syncs from upstream — pushes to
+    // it keep the branches you publish.
+    fork.localPath = targetDir;
 
     m_repositories.append(fork);
     saveRepositories();
     refreshRepositoryList();
-    logSystem(QStringLiteral("Forking %1/%2 to %3/%4 from %5")
-                  .arg(src.owner, src.name, owner, name, source));
+    logSystem(QStringLiteral("Forking %1/%2 to %3/%4 in %5 from %6")
+                  .arg(src.owner, src.name, owner, name,
+                       QDir::toNativeSeparators(targetDir), source));
 
     QDir().mkpath(QFileInfo(fork.mirrorPath).absolutePath());
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
-            [this, process, owner, name](int code, QProcess::ExitStatus) {
+            [this, process, owner, name, targetDir](int code, QProcess::ExitStatus) {
                 const QString err =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
@@ -13621,7 +13569,43 @@ void MainWindow::forkCurrentRepo()
                 startRepoHosts();
                 refreshRepositoryList();
                 logSystem(QStringLiteral("Forked into %1/%2.").arg(owner, name));
-                openRepoDetail(idx);
+
+                // Check the fork out into the folder the user picked. Its origin
+                // is the local mirror, so commits pushed here update the fork.
+                const QString mirrorPath = f.mirrorPath;
+                QDir().mkpath(QFileInfo(targetDir).absolutePath());
+                auto *checkout = new QProcess(this);
+                connect(
+                    checkout, &QProcess::finished, this,
+                    [this, checkout, owner, name, targetDir](int wcode,
+                                                             QProcess::ExitStatus) {
+                        const QString werr =
+                            QString::fromUtf8(checkout->readAllStandardError())
+                                .trimmed();
+                        checkout->deleteLater();
+                        const int i = repoIndexFor(owner, name);
+                        if (i < 0)
+                            return;
+                        if (wcode != 0) {
+                            logSystem("Fork checkout failed: " + werr.right(300));
+                            QMessageBox::warning(
+                                this, "Fork repository",
+                                "The fork was created, but checking it out into "
+                                "the chosen folder failed" +
+                                    (werr.isEmpty() ? QString()
+                                                    : ":\n" + werr.right(400)));
+                            m_repositories[i].localPath.clear();
+                            saveRepositories();
+                        } else {
+                            logSystem(QStringLiteral("Checked out %1/%2 into %3.")
+                                          .arg(owner, name,
+                                               QDir::toNativeSeparators(targetDir)));
+                        }
+                        refreshRepositoryList();
+                        openRepoDetail(i);
+                    });
+                checkout->start(QStringLiteral("git"),
+                                {QStringLiteral("clone"), mirrorPath, targetDir});
             });
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
@@ -21698,6 +21682,13 @@ QString MainWindow::senderColor(const QString &sender) const
 
 MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
 {
+    // A deleted message leaves no trace in the transcript: drop the whole row
+    // (avatar, sender header, and body) rather than rendering a tombstone. The
+    // message stays in m_history (marked deleted) for dedup/sync; it just isn't
+    // shown.
+    if (message.deleted)
+        return nullptr;
+
     // Admins get a Delete control on everyone's messages (moderation).
     const bool canModerate = m_isAdmin && !message.self;
     auto *row = new MessageRow(message, senderColor(message.senderName), canModerate);
