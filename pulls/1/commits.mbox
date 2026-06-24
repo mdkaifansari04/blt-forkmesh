@@ -1,4 +1,4 @@
-From a11f7ad230d2ab57a55721366cca0ff13d633f48 Mon Sep 17 00:00:00 2001
+From a9373feba42e719725ee676153250262beb967c4 Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Wed, 24 Jun 2026 16:35:48 +0530
 Subject: [PATCH] feat: add editable repository about details
@@ -10,10 +10,10 @@ Subject: [PATCH] feat: add editable repository about details
  3 files changed, 221 insertions(+), 2 deletions(-)
 
 diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
-index 778a8c8d..bb3c1fda 100644
+index 409aef8b..128fe64a 100644
 --- a/qt_client/src/MainWindow.cpp
 +++ b/qt_client/src/MainWindow.cpp
-@@ -88,6 +88,7 @@
+@@ -89,6 +89,7 @@
  #include <QPushButton>
  #include <QRegularExpression>
  #include <QRegularExpressionValidator>
@@ -21,7 +21,7 @@ index 778a8c8d..bb3c1fda 100644
  #include <QScreen>
  #include <QScrollArea>
  #include <QSet>
-@@ -2643,6 +2644,24 @@ QString canonicalServerUrl(const QString &input)
+@@ -2644,6 +2645,24 @@ QString canonicalServerUrl(const QString &input)
          .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
  }
  
@@ -46,7 +46,7 @@ index 778a8c8d..bb3c1fda 100644
  // Inverse of canonicalServerUrl for display: the host (with port when present)
  // pulled back out of a stored full URL.
  QString serverHostDisplay(const QString &fullUrl)
-@@ -3216,6 +3235,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+@@ -3217,6 +3236,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
      logStartup(QStringLiteral("MainWindow ctor begin"));
      setWindowTitle("ForkMesh v" FORKMESH_VERSION);
      setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
@@ -55,7 +55,7 @@ index 778a8c8d..bb3c1fda 100644
      resize(1060, 700);
      // Restore the last window size/position so it reopens where it was left.
      const QByteArray savedGeometry =
-@@ -16272,8 +16293,24 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -16625,8 +16646,24 @@ QWidget *MainWindow::buildAboutSidebar()
  
      auto *aboutLabel = new QLabel("About");
      aboutLabel->setObjectName("aboutHeading");
@@ -81,7 +81,7 @@ index 778a8c8d..bb3c1fda 100644
      m_aboutText->setWordWrap(true);
      m_aboutText->setTextFormat(Qt::RichText);
      m_aboutText->setOpenExternalLinks(true);
-@@ -16341,7 +16378,7 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -16694,7 +16731,7 @@ QWidget *MainWindow::buildAboutSidebar()
      auto *layout = new QVBoxLayout(side);
      layout->setContentsMargins(22, 6, 20, 20);
      layout->setSpacing(8);
@@ -90,7 +90,7 @@ index 778a8c8d..bb3c1fda 100644
      layout->addWidget(m_aboutText);
      layout->addWidget(m_aboutTopics);
      layout->addWidget(m_aboutFiles);
-@@ -19703,6 +19740,141 @@ void MainWindow::loadRepoInfo()
+@@ -20056,6 +20093,141 @@ void MainWindow::loadRepoInfo()
      }
  }
  
@@ -232,7 +232,7 @@ index 778a8c8d..bb3c1fda 100644
  void MainWindow::setRepoBranch(const QString &branch)
  {
      m_repoBranch = branch;
-@@ -20607,6 +20779,15 @@ void MainWindow::loadAboutSidebar()
+@@ -21243,6 +21415,15 @@ void MainWindow::loadAboutSidebar()
              ? &m_repositories.at(m_repoDetailIndex)
              : nullptr;
  
@@ -248,7 +248,7 @@ index 778a8c8d..bb3c1fda 100644
      // About text + website.
      if (m_aboutText) {
          QString text = m_repoInfo.about.isEmpty()
-@@ -29251,9 +29432,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+@@ -29897,9 +30078,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
      // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
      // refs/tags/* only, sorted, joined by '\n'.
      const QString stateHash = mirrorStateHash(repo.mirrorPath);
@@ -270,10 +270,10 @@ index 778a8c8d..bb3c1fda 100644
                           {"solana", repo.solanaAddress},
                           {"channel", repositoryChannel(repo)},
 diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
-index 3df812d5..1f32b4db 100644
+index 759d6022..6f3acc96 100644
 --- a/qt_client/src/MainWindow.h
 +++ b/qt_client/src/MainWindow.h
-@@ -137,6 +137,11 @@ public:
+@@ -139,6 +139,11 @@ public:
      QString testSavedSolanaAddress() const;
      bool testAccountAuthenticated() const { return m_accountAuthenticated; }
      QString testAccountTier() const { return m_accountTier; }
@@ -285,7 +285,7 @@ index 3df812d5..1f32b4db 100644
      int testAddPublishedRepository(const QString &owner, const QString &name,
                                     const QString &mirrorPath);
      void testPublishRepository(int index) { publishRepository(index, false); }
-@@ -604,6 +609,9 @@ private:
+@@ -624,6 +629,9 @@ private:
      bool repoHasWorkingTree() const;
      void loadFileSearchIndex();
      void loadAboutSidebar();
@@ -295,10 +295,10 @@ index 3df812d5..1f32b4db 100644
      void loadCommits();
      // --- Source Control panel (working-tree changes) at the top of the Commits
      // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
-@@ -1262,6 +1270,7 @@ private:
-     QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
-     QLineEdit *m_fileSearch = nullptr;
-     QCompleter *m_fileCompleter = nullptr;
+@@ -1293,6 +1301,7 @@ private:
+     QGridLayout *m_securitySignalsGrid = nullptr;
+     QTableWidget *m_securityFindingsTable = nullptr;
+     QPushButton *m_securityRefreshButton = nullptr;
 +    QPushButton *m_aboutEditButton = nullptr;
      QLabel *m_aboutText = nullptr;
      QLabel *m_aboutTopics = nullptr;
