@@ -1,5 +1,5 @@
 diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
-index 409aef8b..128fe64a 100644
+index 8552de07..01038f13 100644
 --- a/qt_client/src/MainWindow.cpp
 +++ b/qt_client/src/MainWindow.cpp
 @@ -89,6 +89,7 @@
@@ -44,7 +44,7 @@ index 409aef8b..128fe64a 100644
      resize(1060, 700);
      // Restore the last window size/position so it reopens where it was left.
      const QByteArray savedGeometry =
-@@ -16625,8 +16646,24 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -16626,8 +16647,24 @@ QWidget *MainWindow::buildAboutSidebar()
  
      auto *aboutLabel = new QLabel("About");
      aboutLabel->setObjectName("aboutHeading");
@@ -70,7 +70,7 @@ index 409aef8b..128fe64a 100644
      m_aboutText->setWordWrap(true);
      m_aboutText->setTextFormat(Qt::RichText);
      m_aboutText->setOpenExternalLinks(true);
-@@ -16694,7 +16731,7 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -16695,7 +16732,7 @@ QWidget *MainWindow::buildAboutSidebar()
      auto *layout = new QVBoxLayout(side);
      layout->setContentsMargins(22, 6, 20, 20);
      layout->setSpacing(8);
@@ -79,7 +79,7 @@ index 409aef8b..128fe64a 100644
      layout->addWidget(m_aboutText);
      layout->addWidget(m_aboutTopics);
      layout->addWidget(m_aboutFiles);
-@@ -20056,6 +20093,141 @@ void MainWindow::loadRepoInfo()
+@@ -20096,6 +20133,141 @@ void MainWindow::loadRepoInfo()
      }
  }
  
@@ -221,7 +221,7 @@ index 409aef8b..128fe64a 100644
  void MainWindow::setRepoBranch(const QString &branch)
  {
      m_repoBranch = branch;
-@@ -21243,6 +21415,15 @@ void MainWindow::loadAboutSidebar()
+@@ -21283,6 +21455,15 @@ void MainWindow::loadAboutSidebar()
              ? &m_repositories.at(m_repoDetailIndex)
              : nullptr;
  
@@ -237,7 +237,7 @@ index 409aef8b..128fe64a 100644
      // About text + website.
      if (m_aboutText) {
          QString text = m_repoInfo.about.isEmpty()
-@@ -29897,9 +30078,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+@@ -29937,9 +30118,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
      // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
      // refs/tags/* only, sorted, joined by '\n'.
      const QString stateHash = mirrorStateHash(repo.mirrorPath);
