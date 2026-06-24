@@ -100,6 +100,7 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("b", m.branch);
         head.insert("t", m.updatedMs);
         head.insert("s", m.source); // shared upstream identity for grouping
+        head.insert("z", double(m.sizeBytes)); // on-disk mirror size in bytes
         heads.insert(m.ownerName, head);
     }
     message.insert("mirrors", names);
@@ -123,6 +124,7 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
         advert.branch = head.value("b").toString().left(kMaxRepoNameChars);
         advert.updatedMs = qint64(head.value("t").toDouble());
         advert.source = head.value("s").toString().left(kMaxRepoNameChars);
+        advert.sizeBytes = qMax(qint64(0), qint64(head.value("z").toDouble()));
         mirrors.append(advert);
     }
     return mirrors;

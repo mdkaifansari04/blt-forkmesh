@@ -844,6 +844,28 @@ main {
 }
 
 /* ===== Chat ===== */
+.chat-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-clear {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-clear:hover {
+  color: var(--foreground);
+  border-color: var(--accent-hover);
+}
+
 .chat-log {
   max-height: 260px;
   min-height: 60px;

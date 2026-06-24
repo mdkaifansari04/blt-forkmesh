@@ -2390,6 +2390,29 @@ void pruneNonStableMirrorRefs(const QString &mirrorPath)
     process.waitForFinished(8000);
 }
 
+// On-disk size of a bare git mirror, in bytes: the loose-object total plus the
+// packed total reported by `git count-objects -v` (both given in KiB). This is
+// the storage a node spends mirroring the repo, and what it advertises to peers
+// so the mirror-nodes view can show how much data each node is holding.
+qint64 mirrorRepoSizeBytes(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return 0;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath, {"count-objects", "-v"}, &out, nullptr))
+        return 0;
+    qint64 sizeKiB = 0;
+    for (const QString &line : QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon < 0)
+            continue;
+        const QString key = line.left(colon).trimmed();
+        if (key == QLatin1String("size") || key == QLatin1String("size-pack"))
+            sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
+    }
+    return sizeKiB * 1024;
+}
+
 bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteArray *out,
                           QString *err)
 {
@@ -3690,7 +3713,7 @@ QJsonObject MainWindow::getAccountSync(const QString &leaf, int *status)
     return QJsonDocument::fromJson(data).object();
 }
 
-QJsonArray MainWindow::fetchCatalogRepos()
+QUrl MainWindow::catalogListUrl()
 {
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repositories"));
@@ -3710,7 +3733,12 @@ QJsonArray MainWindow::fetchCatalogRepos()
                            m_profileIdentity.signData(canonical));
         url.setQuery(query);
     }
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    return url;
+}
+
+QJsonArray MainWindow::fetchCatalogRepos()
+{
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(catalogListUrl()));
     QEventLoop loop;
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
@@ -6321,6 +6349,146 @@ void MainWindow::updateRepoPushButton()
     reveal();
 }
 
+// sha256 over the canonical heads+tags advertisement of a bare mirror:
+// "<objectname> <refname>" lines for refs/heads/* and refs/tags/* only, sorted,
+// joined by '\n'. This MUST stay byte-for-byte identical to the worker's
+// advertised_refs_canonical() so the relay's integrity pin matches what we sign
+// (the worker rejects every clone whose live refs don't hash to the pin).
+QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
+{
+    if (mirrorPath.trimmed().isEmpty())
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(mirrorPath,
+                       {"for-each-ref", "--format=%(objectname) %(refname)",
+                        "refs/heads/", "refs/tags/"},
+                       &out, nullptr))
+        return QString();
+    QStringList lines;
+    const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+    for (const QString &raw : rows) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
+            continue;
+        lines.append(line);
+    }
+    lines.sort();
+    return QString::fromUtf8(
+        QCryptographicHash::hash(lines.join('\n').toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+}
+
+// Surface the relay's tamper/rollback gate to the owner: when the pinned
+// stateHash no longer matches the refs this node serves, every clone is rejected
+// with "repository failed integrity check". Only the owning, publishing node can
+// fix it (the relay verifies the maintainer key on the re-attestation), so the
+// banner — and its "Reset integrity pin" button — only appears there.
+void MainWindow::refreshRepoPinBanner()
+{
+    if (!m_repoPinBanner)
+        return;
+    m_repoPinBanner->hide();
+    m_repoPinCheckIndex = -1;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    // Nothing to attest unless we publish a real served mirror of this repo…
+    if (!repo.publishToNetwork || repo.previewOnly ||
+        repo.mirrorPath.trimmed().isEmpty())
+        return;
+    // …and only the owner key holder can overwrite the pin.
+    if (!m_profileIdentity.isValid() || catalogOwner(repo) != accountOwner())
+        return;
+    const QString localHash = mirrorStateHash(repo.mirrorPath);
+    if (localHash.isEmpty())
+        return;
+
+    const int index = m_repoDetailIndex;
+    const QString owner = catalogOwner(repo);
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    m_repoPinCheckIndex = index;
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(catalogListUrl()));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, index, owner, name, localHash] {
+                reply->deleteLater();
+                // The user may have switched repos while this was in flight.
+                if (!m_repoPinBanner || m_repoPinCheckIndex != index ||
+                    m_repoDetailIndex != index)
+                    return;
+                const QJsonArray repos =
+                    QJsonDocument::fromJson(reply->readAll())
+                        .object()
+                        .value("repositories")
+                        .toArray();
+                QString pinned;
+                bool found = false;
+                for (const QJsonValue &v : repos) {
+                    const QJsonObject o = v.toObject();
+                    if (o.value("owner").toString() == owner &&
+                        o.value("name").toString() == name) {
+                        pinned = o.value("stateHash").toString();
+                        found = true;
+                        break;
+                    }
+                }
+                // Only a non-empty pin that disagrees with our live refs blocks
+                // clones. An absent pin fails open on the relay (nothing to fix),
+                // and a matching pin is healthy.
+                if (found && !pinned.isEmpty() && pinned != localHash)
+                    m_repoPinBanner->show();
+            });
+}
+
+// Re-publish the open repo's catalog record, which re-signs the CURRENT mirror
+// stateHash and overwrites the stale pin so the relay serves clones again.
+void MainWindow::resetRepoPin()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int index = m_repoDetailIndex;
+    const RepositoryRecord &repo = m_repositories.at(index);
+    if (m_repoPinResetButton) {
+        m_repoPinResetButton->setEnabled(false);
+        m_repoPinResetButton->setText(QStringLiteral("Resetting…"));
+    }
+    logSystem("Integrity pin: re-attesting current refs for " + repo.owner + "/" +
+              repo.name + ".");
+    publishRepository(index, true);
+    // Give the signed write a moment to land, then re-check and restore the button.
+    QTimer::singleShot(1500, this, [this, index] {
+        if (m_repoPinResetButton) {
+            m_repoPinResetButton->setEnabled(true);
+            m_repoPinResetButton->setText(QStringLiteral("Reset integrity pin"));
+        }
+        if (m_repoDetailIndex == index)
+            refreshRepoPinBanner();
+    });
+}
+
+void MainWindow::showPinExplanation()
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle(QStringLiteral("Repository integrity pin"));
+    box.setText(QStringLiteral(
+        "ForkMesh pins an owner-signed fingerprint of the branches and tags your "
+        "node serves."));
+    box.setInformativeText(QStringLiteral(
+        "When you publish, your node signs a hash of its current refs and the "
+        "relay pins it. The relay then refuses to serve any mirror whose live "
+        "refs don't hash to that pin — this is what stops a tampered or rolled-"
+        "back mirror from ever being cloned.\n\n"
+        "If the refs you serve have moved on (new commits, branches, or tags) but "
+        "the pinned hash wasn't refreshed, the relay rejects every clone with "
+        "\"repository failed integrity check\".\n\n"
+        "As the owner you are the source of truth: \"Reset integrity pin\" re-"
+        "signs the refs you currently serve and overwrites the stale pin, so "
+        "clones work again."));
+    box.exec();
+}
+
 void MainWindow::pushCurrentRepoUpstream()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
@@ -8729,6 +8897,41 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
 
+    // Integrity-pin warning. Only the owner's node ever shows this (see
+    // refreshRepoPinBanner): it means the relay's pinned stateHash no longer
+    // matches the refs this node serves, so clones are being rejected. The "Why?"
+    // link explains the gate; "Reset integrity pin" re-attests the current refs.
+    m_repoPinLabel = new QLabel;
+    m_repoPinLabel->setWordWrap(true);
+    m_repoPinLabel->setTextFormat(Qt::RichText);
+    m_repoPinLabel->setOpenExternalLinks(false);
+    m_repoPinLabel->setText(QStringLiteral(
+        "<b>Clones of this repo are being rejected.</b> The integrity pin the "
+        "relay has on record no longer matches the refs this node serves, so it "
+        "refuses to hand out the mirror (\"repository failed integrity check\"). "
+        "<a href=\"why\" style=\"color:#58a6ff;text-decoration:none\">Why?</a>"));
+    connect(m_repoPinLabel, &QLabel::linkActivated, this,
+            [this](const QString &) { showPinExplanation(); });
+
+    m_repoPinResetButton = new QPushButton(QStringLiteral("Reset integrity pin"));
+    m_repoPinResetButton->setCursor(Qt::PointingHandCursor);
+    connect(m_repoPinResetButton, &QPushButton::clicked, this,
+            &MainWindow::resetRepoPin);
+
+    auto *pinRow = new QHBoxLayout;
+    pinRow->setContentsMargins(12, 6, 12, 6);
+    pinRow->setSpacing(10);
+    pinRow->addWidget(m_repoPinLabel, 1);
+    pinRow->addWidget(m_repoPinResetButton, 0, Qt::AlignTop);
+    m_repoPinBanner = new QWidget;
+    m_repoPinBanner->setObjectName("repoPinBanner");
+    m_repoPinBanner->setStyleSheet(
+        "#repoPinBanner{background:#3d1d1d;border:1px solid #f85149;"
+        "border-radius:6px;}"
+        "#repoPinBanner QLabel{color:#ffdcd7;background:transparent;}");
+    m_repoPinBanner->setLayout(pinRow);
+    m_repoPinBanner->hide();
+
     m_repoPushButton = new QPushButton;
     m_repoPushButton->setObjectName("primaryButton");
     m_repoPushButton->setCursor(Qt::PointingHandCursor);
@@ -8821,6 +9024,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addLayout(headerRow);
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
+    layout->addWidget(m_repoPinBanner);
     layout->addWidget(m_repoPublishBar);
     layout->addWidget(tabBar);
     layout->addWidget(m_repoDetailStack, 1);
@@ -14694,6 +14898,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // the start, rather than reading 0 until the Actions tab is first opened.
     refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
+    refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
     m_repoDetailLoading = false;
 }
 
@@ -14714,20 +14919,7 @@ void MainWindow::updateRepoCodeSize()
         return;
     }
 
-    QByteArray out;
-    qint64 sizeKiB = 0;
-    if (runGitCapture(repo.mirrorPath, {"count-objects", "-v"}, &out, nullptr)) {
-        const QString text = QString::fromUtf8(out);
-        for (const QString &line : text.split(QLatin1Char('\n'))) {
-            const int colon = line.indexOf(QLatin1Char(':'));
-            if (colon < 0)
-                continue;
-            const QString key = line.left(colon).trimmed();
-            if (key == QLatin1String("size") || key == QLatin1String("size-pack"))
-                sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
-        }
-    }
-    showSize(formatByteSize(sizeKiB * 1024));
+    showSize(formatByteSize(mirrorRepoSizeBytes(repo.mirrorPath)));
 }
 
 void MainWindow::updateRepoCommitCount()
@@ -17610,11 +17802,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
-    m_mirrorNodesTable = new QTableWidget(0, 6);
+    m_mirrorNodesTable = new QTableWidget(0, 7);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Latest commit", "Synced", "Platform", "Version", "Node id"});
+        {"Node", "Latest commit", "Synced", "Size", "Platform", "Version",
+         "Node id"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -17628,9 +17821,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(0, QHeaderView::Stretch);          // Node
     mh->setSectionResizeMode(1, QHeaderView::ResizeToContents); // Latest commit
     mh->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Synced
-    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Platform
-    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Version
-    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Node id
+    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Size
+    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Platform
+    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Version
+    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Node id
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
     m_mirrorNodesTable->setItemDelegateForColumn(
@@ -17692,6 +17886,7 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.branch = mirrorHeadBranch(localMirror);
     selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
     selfAdvert.updatedMs = repo.lastSyncMs;
+    selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
 
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row
@@ -17735,6 +17930,8 @@ void MainWindow::loadMirrorNodesPanel()
         !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
 
     int count = 0;
+    qint64 totalBytes = 0;     // data mirrored across every node in this group
+    qint64 maxRepoBytes = 0;   // best (largest, == most complete) copy seen
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -17814,13 +18011,28 @@ void MainWindow::loadMirrorNodesPanel()
         }
         m_mirrorNodesTable->setItem(row, 2, syncedItem);
 
+        // Size: how much data this node holds for this repo (its bare mirror's
+        // on-disk object size). Sorts numerically; an em-dash for older peers
+        // that don't advertise a size yet.
+        const qint64 nodeBytes = advert ? advert->sizeBytes : 0;
+        auto *sizeItem = new SortTableWidgetItem(
+            nodeBytes > 0 ? formatByteSize(nodeBytes)
+                          : QString::fromUtf8("\xE2\x80\x94"));
+        sizeItem->setData(kTableSortRole, double(nodeBytes));
+        sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_mirrorNodesTable->setItem(row, 3, sizeItem);
+        if (nodeBytes > 0) {
+            totalBytes += nodeBytes;
+            maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
+        }
+
         m_mirrorNodesTable->setItem(
-            row, 3,
+            row, 4,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 4,
+            row, 5,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -17828,17 +18040,23 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 5, idItem);
+        m_mirrorNodesTable->setItem(row, 6, idItem);
         ++count;
     }
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    if (m_mirrorNodesSummary)
-        m_mirrorNodesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 node%2 mirroring %3")
-                .arg(count)
-                .arg(count == 1 ? "" : "s")
-                .arg(source));
+    if (m_mirrorNodesSummary) {
+        // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
+        QString text = QString::fromUtf8("\xC2\xB7 %1 node%2 mirroring %3")
+                           .arg(count)
+                           .arg(count == 1 ? "" : "s")
+                           .arg(source);
+        if (maxRepoBytes > 0)
+            text += QString::fromUtf8(" \xC2\xB7 %1 each \xC2\xB7 %2 total")
+                        .arg(formatByteSize(maxRepoBytes),
+                             formatByteSize(totalBytes));
+        m_mirrorNodesSummary->setText(text);
+    }
     if (m_repoMirrorsTab)
         m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
     if (count == 0) {
@@ -24817,6 +25035,8 @@ void MainWindow::refreshRepositoryList()
             advert.branch = mirrorHeadBranch(repo.mirrorPath);
             advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
             advert.updatedMs = repo.lastSyncMs;
+            // On-disk mirror size so peers can show how much data we're holding.
+            advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);
@@ -26032,30 +26252,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     // or rolled-back mirror can never be cloned. MUST match the worker's
     // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
     // refs/tags/* only, sorted, joined by '\n'.
-    QString stateHash;
-    {
-        QByteArray out;
-        if (!repo.mirrorPath.trimmed().isEmpty() &&
-            runGitCapture(repo.mirrorPath,
-                          {"for-each-ref", "--format=%(objectname) %(refname)",
-                           "refs/heads/", "refs/tags/"},
-                          &out, nullptr)) {
-            QStringList lines;
-            const QStringList rows =
-                QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-            for (const QString &raw : rows) {
-                const QString line = raw.trimmed();
-                if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
-                    continue;
-                lines.append(line);
-            }
-            lines.sort();
-            stateHash = QString::fromUtf8(
-                QCryptographicHash::hash(lines.join('\n').toUtf8(),
-                                         QCryptographicHash::Sha256)
-                    .toHex());
-        }
-    }
+    const QString stateHash = mirrorStateHash(repo.mirrorPath);
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"description", repo.description},
@@ -26066,6 +26263,10 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"lastSync", QString::number(repo.lastSyncMs)},
                          {"updatedAt", updatedAt},
                          {"rootCommit", rootCommit},
+                         // On-disk mirror size so the network page can show how
+                         // much data each owner/repo is hosting. Not signed.
+                         {"sizeBytes",
+                          QString::number(mirrorRepoSizeBytes(repo.mirrorPath))},
                          {"visibility", repo.isPrivate
                                             ? QStringLiteral("private")
                                             : QStringLiteral("public")},
@@ -27173,6 +27374,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoActionMenus();
     updateRepoCodeSize();
     updateRepoPushButton();
+    refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     loadRepoOverview(m_overviewPath);
     // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge

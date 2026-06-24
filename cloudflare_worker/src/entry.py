@@ -920,6 +920,8 @@ async def network_leaderboards(env):
     counts = {}
     mirror_owners = {}
     hosted_board = []
+    largest_board = []          # per owner/repo, by reported mirror size
+    bytes_by_owner = {}         # owner -> total bytes hosted across their repos
     for row in repo_rows:
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
@@ -931,8 +933,17 @@ async def network_leaderboards(env):
         if not owner:
             continue
         counts[owner] = counts.get(owner, 0) + 1
+        try:
+            size_bytes = max(0, int(rec.get("sizeBytes", 0) or 0))
+        except (TypeError, ValueError):
+            size_bytes = 0
+        if size_bytes > 0:
+            bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
         if name:
             mirror_owners.setdefault(name, set()).add(owner.lower())
+            if size_bytes > 0:
+                largest_board.append(
+                    {"name": owner + "/" + name, "bytes": size_bytes})
             ts = first_hosted.get(str(row.get("key_bi")))
             if ts:
                 hosted_board.append(
@@ -948,6 +959,12 @@ async def network_leaderboards(env):
 
     # --- Longest hosted: oldest first-hosted timestamp wins.
     hosted_board.sort(key=lambda n: (-n["ageMs"], n["name"]))
+
+    # --- Largest repos / most data hosted: from the size each node reports for
+    # its mirror. largest_board ranks individual repos; data_board sums per owner.
+    largest_board.sort(key=lambda n: (-n["bytes"], n["name"]))
+    data_board = [{"name": o, "bytes": b} for o, b in bytes_by_owner.items()]
+    data_board.sort(key=lambda n: (-n["bytes"], n["name"]))
 
     # --- Contributor activity: cumulative issues + PRs + commits per author.
     contrib_rows = await d1_all(
@@ -977,6 +994,8 @@ async def network_leaderboards(env):
          "repos": repo_board[:LEADERBOARD_LIMIT],
          "mirrors": mirror_board[:LEADERBOARD_LIMIT],
          "hosted": hosted_board[:LEADERBOARD_LIMIT],
+         "largest": largest_board[:LEADERBOARD_LIMIT],
+         "dataHosted": data_board[:LEADERBOARD_LIMIT],
          "contributors": contrib_board,
          "fundsMainnodes": funds["mainnode"][:LEADERBOARD_LIMIT],
          "fundsContributors": funds["contributor"][:LEADERBOARD_LIMIT],
@@ -1225,10 +1244,18 @@ def safe_catalog_record(data):
     # Visibility: anything other than the literal "private" is treated as public,
     # so an absent/garbled field can never accidentally hide a repo.
     visibility = "private" if data.get("visibility") == "private" else "public"
+    # On-disk mirror size (bytes) the publishing node reports. Clamped to a sane
+    # non-negative integer; 0 when absent or unparseable. Drives the size figures
+    # and "data hosted" leaderboards on the network page.
+    try:
+        size_bytes = max(0, min(int(data.get("sizeBytes", 0) or 0), 1 << 50))
+    except (TypeError, ValueError):
+        size_bytes = 0
     return {
         "owner": owner,
         "name": name,
         "visibility": visibility,
+        "sizeBytes": size_bytes,
         "description": clean_string(data.get("description", ""), 240),
         "cloneUrl": clean_string(data.get("cloneUrl", ""), 2048),
         "solana": clean_string(data.get("solana", ""), 64),
