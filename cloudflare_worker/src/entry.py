@@ -261,17 +261,39 @@ async def verify_pull_event(pr):
 def pull_comment_content(ev):
     # Mirrors PullStore::contentForSigning. Fields joined by NUL.
     t = ev.get("type", "")
+    def int_field(name):
+        try:
+            return str(int(ev.get(name, 0)))
+        except (TypeError, ValueError):
+            return "0"
     if t == "comment":
         return ev.get("body", "")
     if t == "review":
         return "\x00".join([ev.get("state", ""), ev.get("body", "")])
     if t == "line-comment":
-        try:
-            line = str(int(ev.get("line", 0)))
-        except (TypeError, ValueError):
-            line = "0"
         return "\x00".join([
-            ev.get("path", ""), ev.get("side", ""), line, ev.get("body", ""),
+            ev.get("path", ""), ev.get("side", ""), int_field("line"),
+            ev.get("body", ""),
+        ])
+    if t == "thread-comment":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("path", ""), ev.get("side", ""),
+            int_field("lineStart"), int_field("lineEnd"), ev.get("body", ""),
+            ev.get("suggestionPatch", ""),
+        ])
+    if t == "thread-reply":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("parentId", ""),
+            ev.get("body", ""),
+        ])
+    if t == "thread-state":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("state", ""), ev.get("body", ""),
+        ])
+    if t == "suggestion-state":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("state", ""),
+            ev.get("appliedCommit", ""), ev.get("body", ""),
         ])
     return ""
 
@@ -282,8 +304,11 @@ async def verify_pull_comment_event(number, ev):
     author = ev.get("author", "")
     signature = ev.get("sig", "")
     event_type = ev.get("type", "")
-    if not author or not signature or \
-            event_type not in ("comment", "review", "line-comment"):
+    allowed_types = (
+        "comment", "review", "line-comment", "thread-comment", "thread-reply",
+        "thread-state", "suggestion-state",
+    )
+    if not author or not signature or event_type not in allowed_types:
         return False
     try:
         ts = int(ev.get("ts", 0))

@@ -52,14 +52,36 @@ def _sha256_hex(s):
 def pull_comment_content(ev):
     # Mirrors entry.py:pull_comment_content / PullStore::contentForSigning.
     t = ev.get("type", "")
+    def int_field(name):
+        return str(int(ev.get(name, 0)))
     if t == "comment":
         return ev.get("body", "")
     if t == "review":
         return "\x00".join([ev.get("state", ""), ev.get("body", "")])
     if t == "line-comment":
         return "\x00".join([
-            ev.get("path", ""), ev.get("side", ""), str(int(ev.get("line", 0))),
+            ev.get("path", ""), ev.get("side", ""), int_field("line"),
             ev.get("body", ""),
+        ])
+    if t == "thread-comment":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("path", ""), ev.get("side", ""),
+            int_field("lineStart"), int_field("lineEnd"), ev.get("body", ""),
+            ev.get("suggestionPatch", ""),
+        ])
+    if t == "thread-reply":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("parentId", ""),
+            ev.get("body", ""),
+        ])
+    if t == "thread-state":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("state", ""), ev.get("body", ""),
+        ])
+    if t == "suggestion-state":
+        return "\x00".join([
+            ev.get("threadId", ""), ev.get("state", ""),
+            ev.get("appliedCommit", ""), ev.get("body", ""),
         ])
     return ""
 
@@ -179,6 +201,44 @@ def main():
                 "body": "needs a guard"}),
         "forkmesh-pull-comment-v1\nline-comment\n5\nTESTPUB\n2500\n"
         "a2574c2b392fd0db6b7e4b0d025d4094bb410691dca7686ddf095d63881f4985",
+    )
+    check(
+        "pull thread-comment canonical vector",
+        pull_comment_canonical(
+            5, {"type": "thread-comment", "author": "TESTPUB", "ts": 2600,
+                "threadId": "thread-1", "path": "src/x.cpp", "side": "new",
+                "lineStart": 42, "lineEnd": 44, "body": "Use guard",
+                "suggestionPatch": "@@ -1 +1 @@\n-old\n+new\n"}),
+        "forkmesh-pull-comment-v1\nthread-comment\n5\nTESTPUB\n2600\n"
+        "adbf1313d68a9d32f69734e23b1b7713d6c30dcd77b628513f8b04b5a459fe81",
+    )
+    check(
+        "pull thread-reply canonical vector",
+        pull_comment_canonical(
+            5, {"type": "thread-reply", "author": "TESTPUB", "ts": 2700,
+                "threadId": "thread-1", "parentId": "event-1",
+                "body": "I pushed a fix"}),
+        "forkmesh-pull-comment-v1\nthread-reply\n5\nTESTPUB\n2700\n"
+        "cd9fc0caa43648948f6a976d570191b9a4d85bee1d984a7aacc483a7487196dd",
+    )
+    check(
+        "pull thread-state canonical vector",
+        pull_comment_canonical(
+            5, {"type": "thread-state", "author": "TESTPUB", "ts": 2800,
+                "threadId": "thread-1", "state": "resolved",
+                "body": "resolved after update"}),
+        "forkmesh-pull-comment-v1\nthread-state\n5\nTESTPUB\n2800\n"
+        "b652054bd993fa340a565f6ec3e0c88dc728c8b69d7fdf723acc6bdccc1c07df",
+    )
+    check(
+        "pull suggestion-state canonical vector",
+        pull_comment_canonical(
+            5, {"type": "suggestion-state", "author": "TESTPUB", "ts": 2900,
+                "threadId": "thread-1", "state": "applied",
+                "appliedCommit": "abc123def456",
+                "body": "applied in follow-up"}),
+        "forkmesh-pull-comment-v1\nsuggestion-state\n5\nTESTPUB\n2900\n"
+        "07ce71665f21bcb839faeb956910a9ca369d79167e6f6e52f60c4d01344f3c52",
     )
     check(
         "commit-comment canonical vector",
