@@ -4,7 +4,7 @@ number: 3
 title: Edit README.md
 base: main
 head: edit/readme-md-1782282070
-status: open
+status: merged
 ts: 1782282073418
 author: i98ARWSXXZMNM7zFc1EWzabpU-IngI522IA-PG8dT5c
 authorName: newnode22
