@@ -89,6 +89,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
+#include <QSaveFile>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSet>
@@ -2732,6 +2733,24 @@ QString canonicalServerUrl(const QString &input)
         .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
 }
 
+QString normalizedRepoWebsite(QString input, QString *error = nullptr)
+{
+    input = input.trimmed();
+    if (input.isEmpty())
+        return {};
+    if (!input.contains(QStringLiteral("://")))
+        input.prepend(QStringLiteral("https://"));
+    const QUrl url(input);
+    if (!url.isValid() || url.host().isEmpty() ||
+        (url.scheme() != QLatin1String("http") &&
+         url.scheme() != QLatin1String("https"))) {
+        if (error)
+            *error = QStringLiteral("Enter a valid http or https website URL.");
+        return {};
+    }
+    return url.toString(QUrl::RemovePassword);
+}
+
 // Inverse of canonicalServerUrl for display: the host (with port when present)
 // pulled back out of a stored full URL.
 QString serverHostDisplay(const QString &fullUrl)
@@ -3305,6 +3324,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     logStartup(QStringLiteral("MainWindow ctor begin"));
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
+    if (qApp && qApp->styleSheet().isEmpty())
+        applyTheme();
     resize(1060, 700);
     // Restore the last window size/position so it reopens where it was left.
     const QByteArray savedGeometry =
@@ -17738,8 +17759,24 @@ QWidget *MainWindow::buildAboutSidebar()
 
     auto *aboutLabel = new QLabel("About");
     aboutLabel->setObjectName("aboutHeading");
+    m_aboutEditButton = new QPushButton;
+    m_aboutEditButton->setObjectName("aboutEditButton");
+    m_aboutEditButton->setCursor(Qt::PointingHandCursor);
+    m_aboutEditButton->setToolTip("Edit repository details");
+    m_aboutEditButton->setFixedSize(28, 28);
+    setOcticon(m_aboutEditButton, "gear", 15);
+    connect(m_aboutEditButton, &QPushButton::clicked, this,
+            &MainWindow::editRepoAbout);
+
+    auto *aboutHeader = new QHBoxLayout;
+    aboutHeader->setContentsMargins(0, 0, 0, 0);
+    aboutHeader->setSpacing(6);
+    aboutHeader->addWidget(aboutLabel);
+    aboutHeader->addStretch();
+    aboutHeader->addWidget(m_aboutEditButton);
+
     m_aboutText = new QLabel;
-    m_aboutText->setObjectName("statusLine");
+    m_aboutText->setObjectName("aboutText");
     m_aboutText->setWordWrap(true);
     m_aboutText->setTextFormat(Qt::RichText);
     m_aboutText->setOpenExternalLinks(true);
@@ -17807,7 +17844,7 @@ QWidget *MainWindow::buildAboutSidebar()
     auto *layout = new QVBoxLayout(side);
     layout->setContentsMargins(22, 6, 20, 20);
     layout->setSpacing(8);
-    layout->addWidget(aboutLabel);
+    layout->addLayout(aboutHeader);
     layout->addWidget(m_aboutText);
     layout->addWidget(m_aboutTopics);
     layout->addWidget(m_aboutFiles);
@@ -22761,6 +22798,141 @@ void MainWindow::loadRepoInfo()
     }
 }
 
+void MainWindow::editRepoAbout()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (!repoHasWorkingTree()) {
+        QMessageBox::information(
+            this, "Edit repository details",
+            "Open a repository with a local working copy to edit its About details.");
+        return;
+    }
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    QDialog dialog(this);
+    dialog.setWindowTitle("Edit repository details");
+
+    auto *descriptionEdit = new QPlainTextEdit(&dialog);
+    descriptionEdit->setPlaceholderText("Short repository description");
+    descriptionEdit->setPlainText(m_repoInfo.about.isEmpty() ? repo.description
+                                                             : m_repoInfo.about);
+    descriptionEdit->setMaximumHeight(96);
+
+    auto *websiteEdit = new QLineEdit(&dialog);
+    websiteEdit->setPlaceholderText("https://example.com");
+    websiteEdit->setText(m_repoInfo.website);
+
+    auto *form = new QFormLayout;
+    form->addRow("Description", descriptionEdit);
+    form->addRow("Website", websiteEdit);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save |
+                                         QDialogButtonBox::Cancel,
+                                         Qt::Horizontal, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this, &dialog,
+                                                         descriptionEdit,
+                                                         websiteEdit] {
+        QString error;
+        if (!saveRepoAboutMetadata(descriptionEdit->toPlainText(),
+                                   websiteEdit->text(), &error)) {
+            QMessageBox::warning(&dialog, "Edit repository details",
+                                 error.isEmpty()
+                                     ? QStringLiteral("Could not save details.")
+                                     : error);
+            return;
+        }
+        dialog.accept();
+    });
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(12);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+    dialog.resize(460, 220);
+    dialog.exec();
+}
+
+bool MainWindow::saveRepoAboutMetadata(const QString &about,
+                                       const QString &websiteInput,
+                                       QString *error)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        if (error)
+            *error = QStringLiteral("No repository is open.");
+        return false;
+    }
+    if (!repoHasWorkingTree()) {
+        if (error)
+            *error = QStringLiteral(
+                "Open a repository with a local working copy to edit its About details.");
+        return false;
+    }
+
+    const QString website = normalizedRepoWebsite(websiteInput, error);
+    if (!websiteInput.trimmed().isEmpty() && website.isEmpty())
+        return false;
+
+    const int index = m_repoDetailIndex;
+    RepositoryRecord &repo = m_repositories[index];
+    const QString infoPath = QDir(repo.localPath).filePath("info.json");
+    QJsonObject obj;
+    if (QFileInfo::exists(infoPath)) {
+        QFile file(infoPath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = QStringLiteral("Could not read info.json.");
+            return false;
+        }
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            if (error)
+                *error = QStringLiteral("info.json is not valid JSON.");
+            return false;
+        }
+        obj = doc.object();
+    }
+
+    const QString aboutText = about.trimmed();
+    if (aboutText.isEmpty())
+        obj.remove(QStringLiteral("about"));
+    else
+        obj.insert(QStringLiteral("about"), aboutText);
+    if (website.isEmpty())
+        obj.remove(QStringLiteral("website"));
+    else
+        obj.insert(QStringLiteral("website"), website);
+
+    const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    QSaveFile file(infoPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error)
+            *error = QStringLiteral("Could not write info.json.");
+        return false;
+    }
+    if (file.write(data) != data.size() || !file.commit()) {
+        if (error)
+            *error = QStringLiteral("Could not save info.json.");
+        return false;
+    }
+
+    repo.description = aboutText;
+    saveRepositories();
+    m_repoInfo.about = aboutText;
+    m_repoInfo.website = website;
+    loadAboutSidebar();
+    refreshRepositoryList();
+    if (repo.publishToNetwork)
+        publishRepository(index, false);
+    logSystem(QStringLiteral("Updated About details for %1/%2.")
+                  .arg(repo.owner, repo.name));
+    setRepoDetailNotice(QStringLiteral("Updated repository details."));
+    return true;
+}
+
 void MainWindow::setRepoBranch(const QString &branch)
 {
     m_repoBranch = branch;
@@ -24602,6 +24774,15 @@ void MainWindow::loadAboutSidebar()
         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
             ? &m_repositories.at(m_repoDetailIndex)
             : nullptr;
+
+    if (m_aboutEditButton) {
+        const bool editable = repoHasWorkingTree();
+        m_aboutEditButton->setEnabled(editable);
+        m_aboutEditButton->setToolTip(
+            editable
+                ? QStringLiteral("Edit repository details")
+                : QStringLiteral("Open a local working copy to edit repository details"));
+    }
 
     // About text + website.
     if (m_aboutText) {
@@ -33406,9 +33587,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
     // refs/tags/* only, sorted, joined by '\n'.
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
+    QString publishedWebsite;
+    if (!repo.localPath.trimmed().isEmpty()) {
+        QFile file(QDir(repo.localPath).filePath("info.json"));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
+            publishedWebsite = info.value(QStringLiteral("website")).toString();
+        }
+    }
+    if (publishedWebsite.isEmpty() && index == m_repoDetailIndex)
+        publishedWebsite = m_repoInfo.website;
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"description", repo.description},
+                         {"website", publishedWebsite},
                          {"cloneUrl", repo.cloneUrl},
                          {"solana", repo.solanaAddress},
                          {"channel", repositoryChannel(repo)},

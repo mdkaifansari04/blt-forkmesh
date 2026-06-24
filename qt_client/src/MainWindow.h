@@ -143,6 +143,11 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
+    Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
+                                           const QString &localPath);
+    Q_INVOKABLE bool testOpenRepository(int index);
+    Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
+                                               const QString &website);
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
     void testPublishRepository(int index) { publishRepository(index, false); }
@@ -703,6 +708,9 @@ private:
     void onSearchResultActivated(QTreeWidgetItem *item, int column);
     void stopSearch();
     void updateSearchStatus();
+    void editRepoAbout();
+    bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
+                               QString *error = nullptr);
     void loadCommits();
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
@@ -1404,6 +1412,7 @@ private:
     QGridLayout *m_securitySignalsGrid = nullptr;
     QTableWidget *m_securityFindingsTable = nullptr;
     QPushButton *m_securityRefreshButton = nullptr;
+    QPushButton *m_aboutEditButton = nullptr;
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;

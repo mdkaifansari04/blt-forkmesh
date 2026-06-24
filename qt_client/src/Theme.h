@@ -219,6 +219,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #aboutSidebar { background: transparent; }
 #aboutSidebar QLabel { background: transparent; }
 #aboutHeading { font-size: 15px; font-weight: 700; }
+#aboutText { color: #8b949e; font-size: 11px; }
+QPushButton#aboutEditButton {
+    background-color: transparent; border: 1px solid transparent;
+    border-radius: 6px; padding: 4px;
+}
+QPushButton#aboutEditButton:hover {
+    background-color: #21262d; border-color: #30363d;
+}
+QPushButton#aboutEditButton:disabled { background-color: transparent; }
 #langBar { background-color: #161b22; border-radius: 5px; }
 #aboutRule { background-color: #21262d; border: none; }
 #commitsList {
@@ -1134,6 +1143,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #aboutSidebar { background: transparent; }
 #aboutSidebar QLabel { background: transparent; }
 #aboutHeading { font-size: 15px; font-weight: 700; }
+#aboutText { color: #656d76; font-size: 11px; }
+QPushButton#aboutEditButton {
+    background-color: transparent; border: 1px solid transparent;
+    border-radius: 6px; padding: 4px;
+}
+QPushButton#aboutEditButton:hover {
+    background-color: #f6f8fa; border-color: #d0d7de;
+}
+QPushButton#aboutEditButton:disabled { background-color: transparent; }
 #langBar { background-color: #eaeef2; border-radius: 5px; }
 #aboutRule { background-color: #d0d7de; border: none; }
 #commitsList {
