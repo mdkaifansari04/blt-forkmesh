@@ -10084,7 +10084,8 @@ QString diffStyleSheet();
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,
                        const QString &anchorFile = QString(),
-                       const QHash<QString, QString> &lineNotes = {});
+                       const QHash<QString, QString> &lineNotes = {},
+                       const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
 } // namespace
@@ -18940,7 +18941,8 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                               const QString &dir, const QString &base,
                               const QString &head,
                               const QString &anchorFile = QString(),
-                              const QHash<QString, QString> &lineNotes = {})
+                              const QHash<QString, QString> &lineNotes = {},
+                              const QSet<QString> &viewedFiles = {})
 {
     static const QRegularExpression hunkRe(
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
@@ -18969,24 +18971,40 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             badgeClass = QStringLiteral("st-ren");
             badgeText = QStringLiteral("RENAMED");
         }
-        const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
+        const bool viewed = viewedFiles.contains(f.path);
+        const QString imagePreview =
+            viewed ? QString() : diffImagePreviewHtml(dir, base, head, f.path);
+        const QString viewedLink =
+            QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>%3 Viewed</a>")
+                .arg(viewed ? QStringLiteral(" on") : QString(),
+                     QString::fromLatin1(QUrl::toPercentEncoding(f.path)),
+                     viewed ? QString::fromUtf8("\xE2\x98\x91")
+                            : QString::fromUtf8("\xE2\x98\x90"));
         html += QString::fromUtf8(
-                    "<a name=\"%1\"></a><div class='fileblock'>"
-                    "<div class='fileheader'>"
+                    "<a name=\"%1\"></a><div class='fileblock%8'>"
+                    "<div class='fileheader'>%9"
                     "<span class='stbadge %2'>%3</span>"
                     "<span class='fpath'>%4</span>"
                     "<span class='fstat'><span class='sadd'>+%5</span> "
-                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>"
-                    "%7<table class='difftable' cellspacing='0' cellpadding='0'>")
+                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>%7")
                     .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
                          QString::number(f.adds), QString::number(f.dels),
-                         imagePreview);
+                         imagePreview, viewed ? QStringLiteral(" viewed") : QString(),
+                         viewedLink);
+        if (!viewed)
+            html += QStringLiteral(
+                "<table class='difftable' cellspacing='0' cellpadding='0'>");
     };
     auto closeFile = [&] {
         if (inFile) {
+            const bool viewed = viewedFiles.contains(files[fileIdx].path);
             emitFileHeader(fileIdx);
-            html += fileBody;
-            html += QStringLiteral("</table></div>");
+            if (viewed) {
+                html += QStringLiteral("</div>");
+            } else {
+                html += fileBody;
+                html += QStringLiteral("</table></div>");
+            }
             fileBody.clear();
             inFile = false;
         }
@@ -19103,7 +19121,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                             const QString &dir, const QString &base,
                             const QString &head,
                             const QString &anchorFile = QString(),
-                            const QHash<QString, QString> &lineNotes = {})
+                            const QHash<QString, QString> &lineNotes = {},
+                            const QSet<QString> &viewedFiles = {})
 {
     static const QRegularExpression hunkRe(
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
@@ -19171,25 +19190,41 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             badgeClass = QStringLiteral("st-ren");
             badgeText = QStringLiteral("RENAMED");
         }
-        const QString imagePreview = diffImagePreviewHtml(dir, base, head, f.path);
+        const bool viewed = viewedFiles.contains(f.path);
+        const QString imagePreview =
+            viewed ? QString() : diffImagePreviewHtml(dir, base, head, f.path);
+        const QString viewedLink =
+            QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>%3 Viewed</a>")
+                .arg(viewed ? QStringLiteral(" on") : QString(),
+                     QString::fromLatin1(QUrl::toPercentEncoding(f.path)),
+                     viewed ? QString::fromUtf8("\xE2\x98\x91")
+                            : QString::fromUtf8("\xE2\x98\x90"));
         html += QString::fromUtf8(
-                    "<a name=\"%1\"></a><div class='fileblock'>"
-                    "<div class='fileheader'>"
+                    "<a name=\"%1\"></a><div class='fileblock%8'>"
+                    "<div class='fileheader'>%9"
                     "<span class='stbadge %2'>%3</span>"
                     "<span class='fpath'>%4</span>"
                     "<span class='fstat'><span class='sadd'>+%5</span> "
-                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>"
-                    "%7<table class='difftable' cellspacing='0' cellpadding='0'>")
+                    "<span class='sdel'>\xE2\x88\x92%6</span></span></div>%7")
                     .arg(f.anchor, badgeClass, badgeText, f.path.toHtmlEscaped(),
                          QString::number(f.adds), QString::number(f.dels),
-                         imagePreview);
+                         imagePreview, viewed ? QStringLiteral(" viewed") : QString(),
+                         viewedLink);
+        if (!viewed)
+            html += QStringLiteral(
+                "<table class='difftable' cellspacing='0' cellpadding='0'>");
     };
     auto closeFile = [&] {
         if (inFile) {
+            const bool viewed = viewedFiles.contains(files[fileIdx].path);
             flushPairs();
             emitFileHeader(fileIdx);
-            html += fileBody;
-            html += QStringLiteral("</table></div>");
+            if (viewed) {
+                html += QStringLiteral("</div>");
+            } else {
+                html += fileBody;
+                html += QStringLiteral("</table></div>");
+            }
             fileBody.clear();
             inFile = false;
         }
@@ -19297,12 +19332,14 @@ void setDiffSplitPref(bool split)
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,
                        const QString &anchorFile,
-                       const QHash<QString, QString> &lineNotes)
+                       const QHash<QString, QString> &lineNotes,
+                       const QSet<QString> &viewedFiles)
 {
     return diffSplitPref()
-               ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile, lineNotes)
+               ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile,
+                                     lineNotes, viewedFiles)
                : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
-                                       lineNotes);
+                                       lineNotes, viewedFiles);
 }
 
 // Theme-aware stylesheet for the diff HTML produced by the renderers above,
@@ -19329,6 +19366,9 @@ QString diffStyleSheet()
                ".st-mod { color:#d29922; } .st-ren { color:#58a6ff; }"
                ".fpath { font-weight:600; color:%8; }"
                ".fstat { color:%2; font-size:11px; }"
+               ".viewedtoggle { color:%2; text-decoration:none; font-size:11px; "
+               "margin-right:12px; }"
+               ".viewedtoggle.on { color:#3fb950; }"
                ".sadd { color:#3fb950; font-weight:700; }"
                ".sdel { color:#f85149; font-weight:700; }"
                ".difftable { font-family:monospace; font-size:12px; width:100%; }"
