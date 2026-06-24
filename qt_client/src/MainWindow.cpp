@@ -25,7 +25,9 @@
 #include <QComboBox>
 #include <QCompleter>
 #include <QCoreApplication>
+#include <QDate>
 #include <QDateTime>
+#include <QLocale>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -425,6 +427,15 @@ QString formatByteSize(qint64 bytes)
                      : QStringLiteral("%1 %2").arg(size, 0, 'f', 1).arg(units[unit]);
 }
 
+// Format an integer with thousands separators, e.g. 1234567 -> "1,234,567". Uses
+// a fixed US-English locale so the separator is always a comma regardless of the
+// host's system locale; numbers below 1000 are returned unchanged.
+QString formatCount(qint64 n)
+{
+    static const QLocale locale(QLocale::English, QLocale::UnitedStates);
+    return locale.toString(n);
+}
+
 class ClickableIssueBody : public QWidget
 {
 public:
@@ -503,12 +514,31 @@ inline QString actionAlertMode()
     if (mode == QLatin1String("all") || mode == QLatin1String("failed") ||
         mode == QLatin1String("none"))
         return mode;
-    return settings.value(kActionAlertSetting, true).toBool()
+    // Default off: action alerts are opt-in like every other notification.
+    return settings.value(kActionAlertSetting, false).toBool()
                ? QStringLiteral("all")
                : QStringLiteral("none");
 }
 const QString kNodeConnectAlertSetting = QStringLiteral("notifications/nodeConnect");
 const QString kDisbursementAlertSetting = QStringLiteral("notifications/disbursement");
+// Every remaining desktop-notification category. All alerts are opt-in: off on a
+// fresh install (the defaults are all false) and individually re-enabled from
+// Settings → Notifications. The in-app Notifications page still logs events
+// regardless; only the OS popups are gated.
+const QString kChatMessageAlertSetting = QStringLiteral("notifications/chatMessages");
+const QString kMentionAlertSetting = QStringLiteral("notifications/mentions");
+const QString kIssueAlertSetting = QStringLiteral("notifications/issues");
+const QString kPullAlertSetting = QStringLiteral("notifications/pullRequests");
+const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
+const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
+const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+
+// True when a notification category is enabled. Default false: notifications are
+// off until the user turns them on, so a fresh install is silent.
+inline bool notifyEnabled(const QString &key)
+{
+    return QSettings().value(key, false).toBool();
+}
 const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
 // Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
 // older boolean above (migrated on first read).
@@ -3435,7 +3465,8 @@ void MainWindow::pollPendingUsers()
             QStringLiteral("%1 new user(s) joined and need email verification:\n\n%2")
                 .arg(fresh.size())
                 .arg(fresh.join(", "));
-        if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+        if (notifyEnabled(kNewUserAlertSetting) && m_trayIcon &&
+            QSystemTrayIcon::supportsMessages())
             m_trayIcon->showMessage("ForkMesh — new user", msg,
                                     QSystemTrayIcon::Information, 8000);
         if (QMessageBox::information(this, "New user joined",
@@ -5027,11 +5058,14 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
+    // Re-render the buffered history as colored HTML (with date dividers).
+    m_lastLogRenderDate.clear();
     for (const QString &line : std::as_const(m_networkLog))
-        m_settingsLog->appendPlainText(line);
+        appendNetworkLogLine(line);
 
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_networkLog.clear();
+        m_lastLogRenderDate.clear();
         if (m_settingsLog)
             m_settingsLog->clear();
     });
@@ -5142,13 +5176,10 @@ QWidget *MainWindow::buildBreadcrumb()
         }
     });
 
-    m_repoPushButton = new QPushButton;
-    m_repoPushButton->setObjectName("primaryButton");
-    m_repoPushButton->setCursor(Qt::PointingHandCursor);
-    m_repoPushButton->hide();
-    setOcticon(m_repoPushButton, "upload", 16);
-    connect(m_repoPushButton, &QPushButton::clicked, this,
-            &MainWindow::pushCurrentRepoUpstream);
+    // m_repoPushButton ("Publish N") is created in buildRepoDetailSection where
+    // its row lives, so it is parented before it can ever be shown. (Building it
+    // in a section constructed later left it parentless and it popped up as its
+    // own floating window.)
 
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
@@ -5296,7 +5327,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(10);
     mainRow->addWidget(m_repoLabel);
     mainRow->addWidget(m_repoMenuButton);
-    mainRow->addWidget(m_repoPushButton);
+    // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
+    // bar (see buildRepoDetail), not in the top navigation row.
     mainRow->addSpacing(6);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
@@ -5467,7 +5499,7 @@ void MainWindow::showRelayMenu()
 
     // Header showing the relay count.
     QAction *header =
-        menu.addAction(QStringLiteral("Relays (%1)").arg(m_servers.size()));
+        menu.addAction(QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size())));
     header->setEnabled(false);
 
     // Search box at the top; filters the relay list live.
@@ -5724,7 +5756,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         const qint64 previousLamports = previousValue.toLongLong();
         const QString balance = formatSolanaBalance(lamports);
         if (previousValue.isValid() && lamports > previousLamports &&
-            QSettings().value(kDisbursementAlertSetting, true).toBool()) {
+            QSettings().value(kDisbursementAlertSetting, false).toBool()) {
             const QString amount = formatSolanaBalance(lamports - previousLamports);
             QApplication::alert(this, 0);
             postNotification(QStringLiteral("New disbursement received"),
@@ -5798,7 +5830,7 @@ void MainWindow::showNodeMenu()
     QMenu menu(this);
 
     QAction *header =
-        menu.addAction(QStringLiteral("Nodes (%1)").arg(m_nodeMenuEntries.size()));
+        menu.addAction(QStringLiteral("Nodes (%1)").arg(formatCount(m_nodeMenuEntries.size())));
     header->setEnabled(false);
 
     auto *searchEdit = new QLineEdit(&menu);
@@ -6126,6 +6158,15 @@ void MainWindow::updateRepoPushButton()
         return;
     m_repoPushButton->hide();
     m_repoPushButton->setEnabled(false);
+    if (m_repoPublishBar)
+        m_repoPublishBar->hide();
+    // Reveal the button together with its row so the row leaves no empty gap
+    // above the tab bar when there is nothing to publish.
+    auto reveal = [this] {
+        m_repoPushButton->show();
+        if (m_repoPublishBar)
+            m_repoPublishBar->show();
+    };
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -6136,7 +6177,7 @@ void MainWindow::updateRepoPushButton()
     if (m_pushingRepos.contains(m_repoDetailIndex)) {
         m_repoPushButton->setText(QStringLiteral("Pushing..."));
         m_repoPushButton->setToolTip(QStringLiteral("Pushing local commits upstream"));
-        m_repoPushButton->show();
+        reveal();
         return;
     }
 
@@ -6149,15 +6190,15 @@ void MainWindow::updateRepoPushButton()
             m_repoPushButton->setText(QStringLiteral("Publishing..."));
             m_repoPushButton->setToolTip(
                 QStringLiteral("Publishing local commits to your served mirror"));
-            m_repoPushButton->show();
+            reveal();
             return;
         }
         if (unpublished <= 0)
             return;
+        // Compact label: just "Publish N" (the full "N local commits …" wording
+        // stays in the tooltip). It sits in a small button above the tab bar.
         m_repoPushButton->setText(
-            QStringLiteral("Publish %1 commit%2")
-                .arg(unpublished)
-                .arg(unpublished == 1 ? QString() : QStringLiteral("s")));
+            QStringLiteral("Publish %1").arg(unpublished));
         m_repoPushButton->setToolTip(
             QStringLiteral("Publish %1 local commit%2 from %3/%4 to your served "
                            "mirror so the network can fetch them")
@@ -6165,7 +6206,7 @@ void MainWindow::updateRepoPushButton()
                 .arg(unpublished == 1 ? QString() : QStringLiteral("s"),
                      repo.owner, repo.name));
         m_repoPushButton->setEnabled(true);
-        m_repoPushButton->show();
+        reveal();
         return;
     }
 
@@ -6199,7 +6240,7 @@ void MainWindow::updateRepoPushButton()
         QStringLiteral("Push local commits from %1/%2 to %3")
             .arg(repo.owner, repo.name, upstream));
     m_repoPushButton->setEnabled(true);
-    m_repoPushButton->show();
+    reveal();
 }
 
 void MainWindow::pushCurrentRepoUpstream()
@@ -6316,7 +6357,7 @@ void MainWindow::showRepoMenu()
     QMenu menu(this);
 
     QAction *header = menu.addAction(
-        QStringLiteral("Repositories (%1)").arg(m_repoMenuEntries.size()));
+        QStringLiteral("Repositories (%1)").arg(formatCount(m_repoMenuEntries.size())));
     header->setEnabled(false);
 
     auto *searchEdit = new QLineEdit(&menu);
@@ -7025,7 +7066,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileMirrors->setVisible(false);
     } else {
         m_profileMirrorsLabel->setText(
-            QStringLiteral("MIRRORS (%1)").arg(info.mirrors.size()));
+            QStringLiteral("MIRRORS (%1)").arg(formatCount(info.mirrors.size())));
         QHash<QString, MirrorAdvert> byKey;
         for (const MirrorAdvert &d : std::as_const(info.mirrorDetails)) {
             if (!d.source.isEmpty())
@@ -8351,6 +8392,30 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
 
+    m_repoPushButton = new QPushButton;
+    m_repoPushButton->setObjectName("primaryButton");
+    m_repoPushButton->setCursor(Qt::PointingHandCursor);
+    m_repoPushButton->hide();
+    // A bit smaller than a standard primary button: it sits just above the tab
+    // bar, so trim the padding/font while keeping the green primaryButton look.
+    m_repoPushButton->setStyleSheet(
+        QStringLiteral("QPushButton#primaryButton{padding:3px 10px;font-size:12px;}"));
+    setOcticon(m_repoPushButton, "upload", 14);
+    connect(m_repoPushButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+
+    // "Publish N" sits in its own row right above the tab bar, left-aligned over
+    // the Code/Commits tabs. The row hides itself when there is nothing to
+    // publish so it leaves no empty gap (see updateRepoPushButton).
+    auto *publishRow = new QHBoxLayout;
+    publishRow->setContentsMargins(12, 0, 12, 0);
+    publishRow->setSpacing(0);
+    publishRow->addWidget(m_repoPushButton);
+    publishRow->addStretch();
+    m_repoPublishBar = new QWidget;
+    m_repoPublishBar->setLayout(publishRow);
+    m_repoPublishBar->hide();
+
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
@@ -8419,6 +8484,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addLayout(headerRow);
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
+    layout->addWidget(m_repoPublishBar);
     layout->addWidget(tabBar);
     layout->addWidget(m_repoDetailStack, 1);
     return page;
@@ -8433,6 +8499,29 @@ namespace {
 QString agentCostText(double usd)
 {
     return QStringLiteral("$%1").arg(usd, 0, 'f', 4);
+}
+
+// Turn "#123" references in an already-HTML-escaped commit message into links
+// the detail view resolves to the matching issue / pull request. Operating on
+// escaped text keeps the digits/'#' intact while leaving the rest untouched.
+QString linkifyIssueRefs(const QString &escaped)
+{
+    static const QRegularExpression re(QStringLiteral("#(\\d+)"));
+    QString out;
+    int last = 0;
+    auto it = re.globalMatch(escaped);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += escaped.mid(last, m.capturedStart() - last);
+        const QString num = m.captured(1);
+        out += QStringLiteral(
+                   "<a href=\"ref:%1\" style=\"color:#58a6ff;text-decoration:none\">"
+                   "#%1</a>")
+                   .arg(num);
+        last = m.capturedEnd();
+    }
+    out += escaped.mid(last);
+    return out;
 }
 
 struct DiffFileEntry {
@@ -8479,7 +8568,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
     commitHeader->setSectionResizeMode(QHeaderView::Interactive);
-    const int commitColWidths[kCommitSummaryCol] = {150, 72, 80, 60, 66, 66};
+    // Commit column (index 2) is wider so the short hash — plus the leading
+    // "▲" unsynced marker — isn't clipped.
+    const int commitColWidths[kCommitSummaryCol] = {150, 72, 120, 60, 66, 66};
     for (int i = 0; i < kCommitSummaryCol; ++i) {
         commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
         commitHeader->resizeSection(i, commitColWidths[i]);
@@ -8509,9 +8600,19 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsUnsyncedBanner->setWordWrap(true);
     m_commitsUnsyncedBanner->hide();
 
+    // Search box: type a hash (full or abbreviated) or words from the message to
+    // filter the list; clearing it shows every commit again.
+    m_commitSearch = new QLineEdit;
+    m_commitSearch->setObjectName("issueSearch"); // reuse the search-field styling
+    m_commitSearch->setClearButtonEnabled(true);
+    m_commitSearch->setPlaceholderText("Search commits by hash or message\xE2\x80\xA6");
+    connect(m_commitSearch, &QLineEdit::textChanged, this,
+            &MainWindow::filterCommits);
+
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
     listLayout->addWidget(m_commitsUnsyncedBanner);
+    listLayout->addWidget(m_commitSearch);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -8603,7 +8704,15 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMessage->setObjectName("commitMessage");
     m_commitMessage->setWordWrap(true);
     m_commitMessage->setTextFormat(Qt::RichText);
-    m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                             Qt::LinksAccessibleByMouse);
+    // "#123" references in the message are rendered as ref: links; open the
+    // matching pull request or issue when one is clicked.
+    connect(m_commitMessage, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (href.startsWith(QStringLiteral("ref:")))
+                    openCommitReference(href.mid(4).toInt());
+            });
 
     m_commitMeta = new QLabel;
     m_commitMeta->setObjectName("statusLine");
@@ -9331,8 +9440,8 @@ void MainWindow::refreshPullList()
         m_pullTable->setItem(row, 4, files);
         m_pullTable->setItem(row, 5,
                              new QTableWidgetItem(QStringLiteral("+%1 -%2")
-                                                      .arg(pr.additions)
-                                                      .arg(pr.deletions)));
+                                                      .arg(formatCount(pr.additions))
+                                                      .arg(formatCount(pr.deletions))));
         // Author: the node that filed the PR (the submitter for inbox PRs).
         const QString author =
             pr.authorName.trimmed().isEmpty()
@@ -9420,9 +9529,9 @@ void MainWindow::showPull(int number)
                        "<span style='color:#f85149'>-%6</span> \xC2\xB7 by %7")
             .arg(found->base.toHtmlEscaped(), found->head.toHtmlEscaped(),
                  found->status)
-            .arg(found->filesChanged)
-            .arg(found->additions)
-            .arg(found->deletions)
+            .arg(formatCount(found->filesChanged))
+            .arg(formatCount(found->additions))
+            .arg(formatCount(found->deletions))
             .arg((found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
@@ -9725,9 +9834,9 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     if (!listed) {
         auto *item = new QListWidgetItem(
             QStringLiteral("%1 file(s) changed \xC2\xB7 +%2 -%3")
-                .arg(pr.filesChanged)
-                .arg(pr.additions)
-                .arg(pr.deletions));
+                .arg(formatCount(pr.filesChanged))
+                .arg(formatCount(pr.additions))
+                .arg(formatCount(pr.deletions)));
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         m_pullCommitsList->addItem(item);
     }
@@ -11268,9 +11377,11 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
                           .arg(merged)
                           .arg(repo.owner, repo.name);
             flashMessage(body);
-            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new pull request"),
-                             body);
-            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+            if (notifyEnabled(kPullAlertSetting))
+                notifyIfInactive(
+                    QStringLiteral("ForkMesh \xE2\x80\x94 new pull request"), body);
+            if (notifyEnabled(kPullAlertSetting) && m_trayIcon &&
+                QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new pull request", body,
                                         QSystemTrayIcon::Information, 6000);
         }
@@ -11848,14 +11959,14 @@ void MainWindow::testOpenAiAgentKey()
         if (state->usageOk) {
             lines << QStringLiteral(
                          "Last 24h OpenAI usage: %1 requests, %2 total tokens (%3 input, %4 cached input, %5 output).")
-                         .arg(state->requests)
-                         .arg(totalTokens)
-                         .arg(state->inputTokens)
-                         .arg(state->cachedTokens)
-                         .arg(state->outputTokens);
+                         .arg(formatCount(state->requests))
+                         .arg(formatCount(totalTokens))
+                         .arg(formatCount(state->inputTokens))
+                         .arg(formatCount(state->cachedTokens))
+                         .arg(formatCount(state->outputTokens));
         }
         lines << QStringLiteral("OpenAI key works. %1 models visible.")
-                     .arg(state->modelCount);
+                     .arg(formatCount(state->modelCount));
         if (!state->organization.isEmpty())
             lines << QStringLiteral("Organization: %1").arg(state->organization);
         if (!state->requestId.isEmpty())
@@ -13892,7 +14003,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadRepoInfo();
     loadBranchesAndTags();
     if (m_forkButton)
-        m_forkButton->setText(QStringLiteral("Fork %1").arg(m_repoInfo.forks));
+        m_forkButton->setText(QStringLiteral("Fork %1").arg(formatCount(m_repoInfo.forks)));
     if (m_mirrorButton) {
         if (repo.previewOnly) {
             m_mirrorButton->setText(QStringLiteral("Mirror it"));
@@ -14012,7 +14123,7 @@ void MainWindow::updateRepoCommitCount()
     if (!dir.isEmpty() &&
         runGitCapture(dir, {"rev-list", "--count", currentRef()}, &out, nullptr))
         count = QString::fromUtf8(out).trimmed().toInt();
-    m_repoCommitsTab->setText(QStringLiteral("Commits (%1)").arg(count));
+    m_repoCommitsTab->setText(QStringLiteral("Commits (%1)").arg(formatCount(count)));
 }
 
 void MainWindow::updateRepoIssueCount()
@@ -14024,7 +14135,7 @@ void MainWindow::updateRepoIssueCount()
                 ++openCount;
         }
         m_repoIssuesTab->setText(
-            QStringLiteral("Issues (%1)").arg(openCount));
+            QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
     }
 }
 
@@ -14032,7 +14143,7 @@ void MainWindow::updateRepoPullCount()
 {
     if (m_repoPullsTab)
         m_repoPullsTab->setText(
-            QStringLiteral("Pull requests (%1)").arg(m_currentPulls.size()));
+            QStringLiteral("Pull requests (%1)").arg(formatCount(m_currentPulls.size())));
 }
 
 void MainWindow::loadRepoFileTree()
@@ -14713,9 +14824,10 @@ void MainWindow::loadRepoOverview(const QString &path)
         if (!dir.isEmpty() &&
             runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
             count = QString::fromUtf8(countOut).trimmed();
-        m_historyButton->setText(count.isEmpty()
-                                     ? QStringLiteral("Commits")
-                                     : QStringLiteral("%1 Commits").arg(count));
+        m_historyButton->setText(
+            count.isEmpty()
+                ? QStringLiteral("Commits")
+                : QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong())));
     }
 
     // Breadcrumb for directory navigation.
@@ -15088,6 +15200,11 @@ void MainWindow::loadCommits()
         }
     }
 
+    // Re-apply any active search filter so a reload doesn't drop the user's
+    // current query (rows are all visible again after the rebuild above).
+    if (m_commitSearch && !m_commitSearch->text().trimmed().isEmpty())
+        filterCommits(m_commitSearch->text());
+
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent).
     applyCommitIssueClosures();
@@ -15097,6 +15214,56 @@ void MainWindow::showCommitList()
 {
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(0);
+}
+
+void MainWindow::filterCommits(const QString &query)
+{
+    if (!m_commitsTable)
+        return;
+    const QString needle = query.trimmed().toLower();
+    for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
+        bool match = needle.isEmpty();
+        if (!match) {
+            // The full hash lives on the summary item's UserRole; the visible
+            // Commit cell holds the short hash. Match either, plus the summary.
+            const QTableWidgetItem *summary =
+                m_commitsTable->item(row, kCommitSummaryCol);
+            const QTableWidgetItem *hash =
+                m_commitsTable->item(row, kCommitHashCol);
+            if (summary &&
+                (summary->text().toLower().contains(needle) ||
+                 summary->data(Qt::UserRole).toString().toLower().contains(needle)))
+                match = true;
+            else if (hash && hash->text().toLower().contains(needle))
+                match = true;
+        }
+        m_commitsTable->setRowHidden(row, !match);
+    }
+}
+
+void MainWindow::openCommitReference(int number)
+{
+    if (number <= 0)
+        return;
+    // Decide issue vs. pull request by number: prefer a PR when one matches,
+    // otherwise treat it as an issue. Reload both lists so a reference resolves
+    // even if the user hasn't opened those tabs yet this session.
+    reloadPulls();
+    bool isPull = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == number) {
+            isPull = true;
+            break;
+        }
+    const int tabId = isPull ? 4 : 2; // 4 = Pull requests, 2 = Issues
+    if (m_repoDetailTabs && m_repoDetailTabs->button(tabId))
+        m_repoDetailTabs->button(tabId)->click(); // switches tab + loads data
+    if (isPull)
+        showPull(number);
+    else {
+        reloadIssues();
+        showIssue(number);
+    }
 }
 
 void MainWindow::downloadCommitPatch()
@@ -15822,11 +15989,12 @@ void MainWindow::showCommit(const QString &hash)
         m_commitTitle->setText(
             QStringLiteral("Commit <code>%1</code>").arg(shortHash.toHtmlEscaped()));
     if (m_commitMessage) {
-        QString msg = QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+        QString msg =
+            QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
         if (!body.isEmpty())
             msg += QStringLiteral(
                        "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
-                       .arg(body.toHtmlEscaped());
+                       .arg(linkifyIssueRefs(body.toHtmlEscaped()));
         m_commitMessage->setText(msg);
     }
 
@@ -16383,7 +16551,7 @@ void MainWindow::loadBranchesAndTags()
     if (m_branchesButton) {
         m_branchesButton->setText(
             QStringLiteral("%1 %2")
-                .arg(branches.size())
+                .arg(formatCount(branches.size()))
                 .arg(branches.size() == 1 ? QStringLiteral("branch")
                                           : QStringLiteral("branches")));
         m_branchesButton->setEnabled(!branches.isEmpty());
@@ -16410,7 +16578,7 @@ void MainWindow::loadBranchesAndTags()
                 if (!line.trimmed().isEmpty())
                     ++count;
         }
-        m_tagsButton->setText(QStringLiteral("Tags %1").arg(count));
+        m_tagsButton->setText(QStringLiteral("Tags %1").arg(formatCount(count)));
     }
 
     // Only refresh the Branches / Releases panels if one is actually on screen.
@@ -17008,7 +17176,7 @@ void MainWindow::loadMirrorNodesPanel()
                 .arg(count == 1 ? "" : "s")
                 .arg(source));
     if (m_repoMirrorsTab)
-        m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(count));
+        m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -17328,7 +17496,7 @@ void MainWindow::loadAboutSidebar()
             }
         }
         m_contributorsHeader->setText(
-            QStringLiteral("CONTRIBUTORS %1").arg(contribs.size()));
+            QStringLiteral("CONTRIBUTORS %1").arg(formatCount(contribs.size())));
 
         // Round a source PNG into a rounded-rect avatar (rendered at 2x for
         // crisp hi-dpi edges) so contributors read as soft tiles rather than
@@ -20925,7 +21093,7 @@ void MainWindow::updateVoteUi()
     }
     const int credits = availableCredits();
     m_issueVoteButton->setText(
-        QStringLiteral("Vote (%1)").arg(votes));
+        QStringLiteral("Vote (%1)").arg(formatCount(votes)));
     // You can vote repeatedly as long as you have credits; each vote spends one.
     m_issueVoteButton->setEnabled(haveIssue && credits > 0);
     m_issueVoteButton->setToolTip(
@@ -21059,10 +21227,13 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                           .arg(newIssues)
                           .arg(repo.owner, repo.name);
             flashMessage(body);
-            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new issue"), body);
+            if (notifyEnabled(kIssueAlertSetting))
+                notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new issue"),
+                                 body);
             // Log it on the Notifications page so it persists past the toast.
             addNotification(QStringLiteral("New issue"), body);
-            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+            if (notifyEnabled(kIssueAlertSetting) && m_trayIcon &&
+                QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new issue", body,
                                         QSystemTrayIcon::Information, 6000);
         }
@@ -21083,11 +21254,13 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                            .arg(comments)
                            .arg(repo.owner, repo.name);
             }
-            notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new comment"),
-                             body);
+            if (notifyEnabled(kCommentAlertSetting))
+                notifyIfInactive(QStringLiteral("ForkMesh \xE2\x80\x94 new comment"),
+                                 body);
             // Log it on the Notifications page so it persists past the toast.
             addNotification(QStringLiteral("New comment"), body);
-            if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+            if (notifyEnabled(kCommentAlertSetting) && m_trayIcon &&
+                QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new comment", body,
                                         QSystemTrayIcon::Information, 6000);
         }
@@ -21416,7 +21589,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *pushAlertCheck =
         new QCheckBox("Show a system alert when a push reaches a mirror");
     pushAlertCheck->setChecked(
-        QSettings().value(kPushAlertSetting, true).toBool());
+        QSettings().value(kPushAlertSetting, false).toBool());
     pushAlertCheck->setToolTip(
         "Pop up a desktop notification with the repo, branch and commit "
         "whenever someone pushes to one of this node's mirrors.");
@@ -21454,13 +21627,53 @@ QWidget *MainWindow::buildSettingsSection()
     auto *disbursementAlertCheck =
         new QCheckBox("Show a system alert when this node receives a disbursement");
     disbursementAlertCheck->setChecked(
-        QSettings().value(kDisbursementAlertSetting, true).toBool());
+        QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
         "Pop up a desktop notification when this node's Solana wallet balance "
         "increases after a refresh.");
     connect(disbursementAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kDisbursementAlertSetting, enabled);
     });
+
+    // The remaining alert categories. Each is off by default (notifyEnabled())
+    // and re-enabled here, so a fresh install is silent until the user opts in.
+    auto alertCheck = [this](const QString &label, const QString &key,
+                             const QString &tip) {
+        auto *box = new QCheckBox(label);
+        box->setChecked(notifyEnabled(key));
+        box->setToolTip(tip);
+        connect(box, &QCheckBox::toggled, this,
+                [key](bool on) { QSettings().setValue(key, on); });
+        return box;
+    };
+    auto *chatMessageAlertCheck = alertCheck(
+        "Show a system alert for new chat messages", kChatMessageAlertSetting,
+        "Pop up a desktop notification when a chat message arrives while ForkMesh "
+        "isn't the active window.");
+    auto *mentionAlertCheck = alertCheck(
+        "Show a system alert when you're @mentioned", kMentionAlertSetting,
+        "Pop up a desktop notification when your node name is mentioned in chat or "
+        "in an issue/pull request.");
+    auto *issueAlertCheck = alertCheck(
+        "Show a system alert for new issues", kIssueAlertSetting,
+        "Pop up a desktop notification when another node files an issue on one of "
+        "your repositories.");
+    auto *pullAlertCheck = alertCheck(
+        "Show a system alert for new pull requests", kPullAlertSetting,
+        "Pop up a desktop notification when another node opens a pull request on "
+        "one of your repositories.");
+    auto *commentAlertCheck = alertCheck(
+        "Show a system alert for new issue comments", kCommentAlertSetting,
+        "Pop up a desktop notification when someone comments on one of your "
+        "issues.");
+    auto *mirrorUpdateAlertCheck = alertCheck(
+        "Show a system alert when a mirror updates", kMirrorUpdateAlertSetting,
+        "Pop up a desktop notification when a peer refreshes the mirror of a repo "
+        "you also mirror.");
+    auto *newUserAlertCheck = alertCheck(
+        "Show a system alert when a new user joins", kNewUserAlertSetting,
+        "Admin: pop up a desktop notification when a new user signs up and needs "
+        "email verification.");
 
     auto *ideLabel = new QLabel("IDE INTEGRATION");
     ideLabel->setObjectName("sectionLabel");
@@ -21873,6 +22086,13 @@ QWidget *MainWindow::buildSettingsSection()
     rightCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     rightCol->addWidget(nodeConnectAlertCheck);
     rightCol->addWidget(disbursementAlertCheck);
+    rightCol->addWidget(chatMessageAlertCheck);
+    rightCol->addWidget(mentionAlertCheck);
+    rightCol->addWidget(issueAlertCheck);
+    rightCol->addWidget(pullAlertCheck);
+    rightCol->addWidget(commentAlertCheck);
+    rightCol->addWidget(mirrorUpdateAlertCheck);
+    rightCol->addWidget(newUserAlertCheck);
     rightCol->addSpacing(6);
     rightCol->addWidget(ideLabel);
     rightCol->addWidget(ideIntegrationCheck);
@@ -22165,15 +22385,119 @@ void MainWindow::allowFirewall()
 
 // -------------------------------------------------------------- diagnostics
 
+namespace {
+// Classify a network-log message into a colored, single-word category badge so
+// the log reads at a glance. Failures always win (red); otherwise notable
+// keywords decide the accent. Returns the accent color (hex) and badge text.
+struct NetworkLogStyle {
+    QString accent;
+    QString badge;
+};
+
+NetworkLogStyle networkLogStyleFor(const QString &message)
+{
+    const QString lower = message.toLower();
+    // Errors / failures take precedence over any category.
+    if (lower.contains("fail") || lower.contains("error") ||
+        lower.contains("could not") || lower.contains("couldn't") ||
+        lower.contains("no live") || lower.contains("denied") ||
+        lower.contains("blocks ") || lower.contains("unable")) {
+        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
+    }
+    // Each entry: substring to look for (lower-case) -> {accent, badge}. First
+    // match wins, so order from most specific to most general.
+    struct Rule {
+        const char *needle;
+        const char *accent;
+        const char *badge;
+    };
+    static const Rule rules[] = {
+        {"pull request", "#3fb950", "PULL"},
+        {"pull #", "#3fb950", "PULL"},
+        {"merged", "#a371f7", "MERGE"},
+        {"bounty", "#d29922", "BOUNTY"},
+        {"escrow", "#d29922", "BOUNTY"},
+        {"solana", "#d29922", "WALLET"},
+        {"funded", "#d29922", "BOUNTY"},
+        {"mirror", "#39c5cf", "MIRROR"},
+        {"sync", "#39c5cf", "SYNC"},
+        {"fork", "#3fb950", "FORK"},
+        {"publish", "#58a6ff", "PUBLISH"},
+        {"push", "#58a6ff", "GIT"},
+        {"git:", "#58a6ff", "GIT"},
+        {"commit", "#58a6ff", "GIT"},
+        {"patch", "#58a6ff", "GIT"},
+        {"issue", "#bc8cff", "ISSUE"},
+        {"admin", "#db6d28", "ADMIN"},
+        {"identity", "#79c0ff", "IDENTITY"},
+        {"encryption", "#79c0ff", "CRYPTO"},
+        {"connected", "#3fb950", "NODE"},
+        {"peer", "#3fb950", "NODE"},
+        {"node", "#3fb950", "NODE"},
+        {"copied", "#8b949e", "CLIP"},
+        {"saved", "#3fb950", "SAVE"},
+    };
+    for (const Rule &r : rules) {
+        if (lower.contains(QLatin1String(r.needle)))
+            return {QString::fromLatin1(r.accent), QString::fromLatin1(r.badge)};
+    }
+    return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
+}
+} // namespace
+
+void MainWindow::appendNetworkLogLine(const QString &storedLine)
+{
+    if (!m_settingsLog)
+        return;
+
+    // Stored format: "yyyy-MM-dd HH:mm:ss  message". Parse leniently so any
+    // legacy/odd line still renders (as a plain message with no timestamp).
+    QString date, time, message = storedLine;
+    if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' ')) {
+        date = storedLine.left(10);
+        time = storedLine.mid(11, 8);
+        message = storedLine.mid(21);
+    }
+
+    // Day divider whenever the calendar date changes from the previous line.
+    if (!date.isEmpty() && date != m_lastLogRenderDate) {
+        m_lastLogRenderDate = date;
+        const QString pretty =
+            QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
+                .toString(QStringLiteral("dddd, d MMMM yyyy"));
+        m_settingsLog->appendHtml(
+            QStringLiteral(
+                "<span style='color:#484f58'>"
+                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
+                "<span style='color:#8b949e; font-weight:600'>%1</span>"
+                "<span style='color:#484f58'>&nbsp;"
+                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
+                .arg((pretty.isEmpty() ? date : pretty).toHtmlEscaped()));
+    }
+
+    const NetworkLogStyle style = networkLogStyleFor(message);
+    QString html;
+    if (!time.isEmpty())
+        html += QStringLiteral("<span style='color:#6e7681'>%1</span>&nbsp;&nbsp;")
+                    .arg(time);
+    html += QStringLiteral(
+                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
+                "<span style='color:#adbac7'>%3</span>")
+                .arg(style.accent,
+                     style.badge.leftJustified(7).toHtmlEscaped(),
+                     message.toHtmlEscaped());
+    m_settingsLog->appendHtml(html);
+}
+
 void MainWindow::logSystem(const QString &text)
 {
-    const QString time = QDateTime::currentDateTime().toString("hh:mm:ss");
+    const QString time =
+        QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
     const QString line = time + "  " + text;
     m_networkLog.append(line);
     while (m_networkLog.size() > kNetworkLogLimit)
         m_networkLog.removeFirst();
-    if (m_settingsLog)
-        m_settingsLog->appendPlainText(line);
+    appendNetworkLogLine(line);
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)
@@ -22369,12 +22693,15 @@ void MainWindow::onMessage(const ChatMessage &message)
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
         if (textMentionsNodeName(message.text, m_userName)) {
-            QApplication::alert(this, 0);
-            QString cleanPreview = preview.simplified();
-            if (cleanPreview.size() > 180)
-                cleanPreview = cleanPreview.left(177) + "...";
-            postNotification(message.senderName + " mentioned you", cleanPreview);
-        } else {
+            if (notifyEnabled(kMentionAlertSetting)) {
+                QApplication::alert(this, 0);
+                QString cleanPreview = preview.simplified();
+                if (cleanPreview.size() > 180)
+                    cleanPreview = cleanPreview.left(177) + "...";
+                postNotification(message.senderName + " mentioned you",
+                                 cleanPreview);
+            }
+        } else if (notifyEnabled(kChatMessageAlertSetting)) {
             notifyIfInactive(message.senderName + " " + where, preview);
         }
     }
@@ -24657,7 +24984,8 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     // along with the code. Quiet so it doesn't spam unless something changed.
     if (!m_syncingRepos.contains(matchIndex))
         syncRepository(matchIndex, /*quiet=*/true);
-    if (m_trayIcon && QSystemTrayIcon::supportsMessages())
+    if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
+        QSystemTrayIcon::supportsMessages())
         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
                                 QSystemTrayIcon::Information, 6000);
 }
@@ -24712,8 +25040,10 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                 .arg(who, repoKey, context)
                 .arg(number)
                 .arg(snippet);
-        QApplication::alert(this, 0);
-        postNotification(who + QStringLiteral(" mentioned you"), body);
+        if (notifyEnabled(kMentionAlertSetting)) {
+            QApplication::alert(this, 0);
+            postNotification(who + QStringLiteral(" mentioned you"), body);
+        }
         addNotification(QStringLiteral("Mention"), body);
     };
 
@@ -25383,8 +25713,9 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
                            ? QString()
                            : QString::fromUtf8(" \xE2\x80\x94 ") + subject));
 
-    // Optional desktop alert with the push details (on by default).
-    if (QSettings().value(kPushAlertSetting, true).toBool()) {
+    // Optional desktop alert with the push details (off by default; opt in from
+    // Settings → Notifications).
+    if (QSettings().value(kPushAlertSetting, false).toBool()) {
         const QString body =
             QString::fromUtf8("%1/%2 \xC2\xB7 %3 \xC2\xB7 %4%5")
                 .arg(owner, name, branch, commit.left(8),
@@ -26096,7 +26427,7 @@ void MainWindow::updateActionsTabIndicator()
     // now the floating strip of growing bars above the tab (updateActionStrip()).
     const int workflows =
         m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
-    tab->setText(QStringLiteral("Actions (%1)").arg(workflows));
+    tab->setText(QStringLiteral("Actions (%1)").arg(formatCount(workflows)));
     updateActionStrip();
 }
 
@@ -26357,7 +26688,7 @@ void MainWindow::updateAgentsTabIndicator()
         if (s.status == AgentStatus::Running)
             running.append(&s);
     }
-    m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(n));
+    m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(formatCount(n)));
 
     ensureAgentSpinnerOverlay();
     const bool active = !running.isEmpty() && m_repoAgentsTab->isVisible();
@@ -26535,7 +26866,7 @@ void MainWindow::refreshRepoActions()
     updateManualRunBar();
     if (m_repoActionsTab)
         m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
-                                      .arg(qMax(0, m_actionWorkflowList->count() - 1)));
+                                      .arg(formatCount(qMax(0, m_actionWorkflowList->count() - 1))));
 }
 
 void MainWindow::updateManualRunBar()
