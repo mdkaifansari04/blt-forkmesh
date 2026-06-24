@@ -8285,6 +8285,7 @@ void MainWindow::selectNode(const QString &node)
             QApplication::restoreOverrideCursor();
             return;
         }
+        m_repoLoadActive = true;
         QElapsedTimer timer;
         timer.start();
         // Show the selected node's first real repository, or blank the panel if
@@ -8302,21 +8303,23 @@ void MainWindow::selectNode(const QString &node)
         else
             clearRepoDetail();
         m_nodeSwitching = false;
+        m_repoLoadActive = false;
         // Stop the repo spinner first so updateRepoSwitcher (called from
         // stopRepoSwitchSpin, now that m_nodeSwitching is false) reveals the
         // freshly-opened first repo and its count.
         stopRepoSwitchSpin();
         stopNodeSwitchSpin();
         QApplication::restoreOverrideCursor();
-        logSystem(firstRepo >= 0
-                      ? QStringLiteral("Switched to %1 (%2 repos) in %3 ms.")
-                            .arg(label)
-                            .arg(repoCount)
-                            .arg(timer.elapsed())
-                      : QStringLiteral("Switched to %1 — no repositories to load "
-                                       "(%2 ms).")
-                            .arg(label)
-                            .arg(timer.elapsed()));
+        // Confirm the result in the top bar (green toast supersedes the blue
+        // progress pill) so the switch reads as done, not just silently finished.
+        flashMessage(firstRepo >= 0
+                         ? QStringLiteral("Switched to %1 (%2 repos) in %3 ms.")
+                               .arg(label)
+                               .arg(repoCount)
+                               .arg(timer.elapsed())
+                         : QStringLiteral("Switched to %1 — no repositories (%2 ms).")
+                               .arg(label)
+                               .arg(timer.elapsed()));
     });
 }
 
