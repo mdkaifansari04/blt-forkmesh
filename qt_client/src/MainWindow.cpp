@@ -191,6 +191,61 @@ public:
     }
 };
 
+// Deterministic, pleasant bar colour for a contributor name. Hashed over the
+// UTF-8 bytes (not qHash, which is per-process randomised for QString) so a
+// contributor keeps the same hue across runs.
+static QColor insightContributorColor(const QString &name)
+{
+    quint32 h = 2166136261u; // FNV-1a
+    for (const char c : name.toUtf8())
+        h = (h ^ static_cast<quint8>(c)) * 16777619u;
+    return QColor::fromHsv(int(h % 360u), 150, 205);
+}
+
+// A compact vertical-bar chart of one contributor's commits over time: one bar
+// per time bucket, scaled to a maximum shared across the Insights "Commit
+// activity" list so volume stays comparable between contributors.
+class CommitBarChart : public QWidget
+{
+public:
+    CommitBarChart(QVector<int> counts, int sharedMax, const QColor &color,
+                   QWidget *parent = nullptr)
+        : QWidget(parent), m_counts(std::move(counts)),
+          m_max(qMax(1, sharedMax)), m_color(color)
+    {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setMinimumHeight(30);
+    }
+
+protected:
+    QSize sizeHint() const override { return QSize(240, 30); }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        if (m_counts.isEmpty())
+            return;
+        QPainter p(this);
+        const int n = m_counts.size();
+        const qreal slot = qreal(width()) / n;
+        const int barW = qMax(1, int(slot) - 2);
+        const int h = height();
+        // Faint baseline so quiet stretches still read as a timeline.
+        p.fillRect(0, h - 1, width(), 1, QColor(255, 255, 255, 28));
+        for (int i = 0; i < n; ++i) {
+            const int c = m_counts.at(i);
+            if (c <= 0)
+                continue;
+            const int bh = qMax(2, qRound(qreal(c) / m_max * (h - 2)));
+            p.fillRect(QRectF(i * slot, h - bh, barW, bh), m_color);
+        }
+    }
+
+private:
+    QVector<int> m_counts;
+    int m_max;
+    QColor m_color;
+};
+
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
 // `::item:hover` stylesheet only covers the single hovered cell, so we track the
 // hovered row ourselves and fill every cell in it. The per-cell grey hover is
@@ -258,6 +313,55 @@ void enableHoverRowHighlight(QAbstractItemView *view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
 
+// Shared geometry + painting for the issue progress bars, so the list-column
+// delegate and the draggable detail-panel slider stay pixel-identical. The bar
+// fills the cell minus an "NN%" label drawn at the right edge.
+
+// Maps an x coordinate within `cellRect` to a 0..100 percentage along the track.
+inline int progressPctForX(const QRect &cellRect, int x, const QFontMetrics &fm)
+{
+    const QRect cell = cellRect.adjusted(8, 0, -8, 0);
+    const int textW = fm.horizontalAdvance(QStringLiteral("100%")) + 4;
+    const int barW = qMax(1, cell.width() - textW);
+    return qBound(0, qRound((x - cell.left()) * 100.0 / barW), 100);
+}
+
+// Draws the track, fill and right-aligned percent for `pct` into `cellRect`.
+inline void paintProgressBar(QPainter *painter, const QRect &cellRect, int pct,
+                             const QFontMetrics &fm)
+{
+    pct = qBound(0, pct, 100);
+    const QRect cell = cellRect.adjusted(8, 0, -8, 0);
+    const QString label = QStringLiteral("%1%").arg(pct);
+    const int textW = fm.horizontalAdvance(QStringLiteral("100%")) + 4;
+    QRect barRect(cell.left(), cell.center().y() - 4,
+                  qMax(0, cell.width() - textW), 8);
+    QRect textRect(barRect.right() + 4, cell.top(), textW, cell.height());
+
+    // Theme-aware so the track reads as a soft groove rather than a black box on
+    // a light row. Matches the milestone progress bars.
+    const bool dark = currentThemeIsDark();
+    const QColor track(dark ? "#30363d" : "#d0d7de");
+    const QColor fillColor(pct >= 100 ? "#3fb950" : "#388bfd"); // green / blue
+    const QColor textColor(dark ? "#8b949e" : "#57606a");
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(track);
+    painter->drawRoundedRect(barRect, 4, 4);
+    if (pct > 0) {
+        QRect fill(barRect.left(), barRect.top(),
+                   qMax(barRect.height(), barRect.width() * pct / 100),
+                   barRect.height());
+        painter->setBrush(fillColor);
+        painter->drawRoundedRect(fill, 4, 4);
+    }
+    painter->setPen(textColor);
+    painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
+    painter->restore();
+}
+
 // Paints a compact progress bar (track + fill + "NN%") in place of plain text.
 // Subclasses HoverRowDelegate so the column keeps the full-row hover highlight.
 // The percentage is read from kProgressBarRole; the cell's display text is left
@@ -283,38 +387,68 @@ public:
         const QVariant value = index.data(kProgressBarRole);
         if (!value.isValid())
             return;
-        const int pct = qBound(0, value.toInt(), 100);
-
-        QRect cell = option.rect.adjusted(8, 0, -8, 0);
-        const QString label = QStringLiteral("%1%").arg(pct);
-        const int textW = option.fontMetrics.horizontalAdvance(QStringLiteral("100%")) + 4;
-        QRect barRect(cell.left(), cell.center().y() - 4,
-                      qMax(0, cell.width() - textW), 8);
-        QRect textRect(barRect.right() + 4, cell.top(), textW, cell.height());
-
-        // Theme-aware so the track reads as a soft groove rather than a black
-        // box on a light row. Matches the milestone progress bars.
-        const bool dark = currentThemeIsDark();
-        const QColor track(dark ? "#30363d" : "#d0d7de");
-        const QColor fillColor(pct >= 100 ? "#3fb950" : "#388bfd"); // green / blue
-        const QColor textColor(dark ? "#8b949e" : "#57606a");
-
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(track);
-        painter->drawRoundedRect(barRect, 4, 4);
-        if (pct > 0) {
-            QRect fill(barRect.left(), barRect.top(),
-                       qMax(barRect.height(), barRect.width() * pct / 100),
-                       barRect.height());
-            painter->setBrush(fillColor);
-            painter->drawRoundedRect(fill, 4, 4);
-        }
-        painter->setPen(textColor);
-        painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
-        painter->restore();
+        paintProgressBar(painter, option.rect, value.toInt(), option.fontMetrics);
     }
+};
+
+// A draggable version of the progress bar for the issue detail panel: click or
+// drag anywhere along the track to set the percentage. Pure QWidget (no moc) —
+// the owner wires the result through the onCommitted callback, fired once the
+// drag/click finishes so the store is written only on release.
+class ProgressSlider : public QWidget
+{
+public:
+    explicit ProgressSlider(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMinimumHeight(18);
+        setToolTip(QStringLiteral("Drag to set progress"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    int value() const { return m_value; }
+    void setValue(int pct)
+    {
+        pct = qBound(0, pct, 100);
+        if (pct == m_value)
+            return;
+        m_value = pct;
+        update();
+    }
+
+    // Invoked with the final percentage when a click/drag finishes.
+    std::function<void(int)> onCommitted;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        paintProgressBar(&painter, rect(), m_value, fontMetrics());
+    }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() != Qt::LeftButton)
+            return;
+        m_dragging = true;
+        setValue(progressPctForX(rect(), int(e->position().x()), fontMetrics()));
+    }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (m_dragging)
+            setValue(progressPctForX(rect(), int(e->position().x()), fontMetrics()));
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        if (!m_dragging || e->button() != Qt::LeftButton)
+            return;
+        m_dragging = false;
+        if (onCommitted)
+            onCommitted(m_value);
+    }
+
+private:
+    int m_value = 0;
+    bool m_dragging = false;
 };
 
 // One column of the Kanban issue board: a QListWidget that accepts cards dragged
@@ -2090,6 +2224,19 @@ void CodeLineNumberArea::paintEvent(QPaintEvent *event)
 
 QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int size)
 {
+    // Rendering an SVG (parse the resource + raster + tint) is expensive, and the
+    // same handful of icons are requested over and over while building lists â a
+    // 300-row commit table alone asks for the "trash" glyph 900 times. Cache the
+    // finished pixmaps keyed on the inputs so each (name,color,size) renders once.
+    // UI-thread only, so a plain static map needs no locking.
+    static QHash<QString, QPixmap> cache;
+    const QString key = name + QLatin1Char('|') +
+                        QString::number(color.rgba(), 16) + QLatin1Char('|') +
+                        QString::number(size);
+    const auto cached = cache.constFind(key);
+    if (cached != cache.constEnd())
+        return cached.value();
+
     QPixmap pixmap(size, size);
     pixmap.fill(Qt::transparent);
 
@@ -2102,6 +2249,8 @@ QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int size)
     renderer.render(&painter, QRectF(0, 0, size, size));
     painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
     painter.fillRect(pixmap.rect(), color);
+    painter.end();
+    cache.insert(key, pixmap);
     return pixmap;
 }
 
@@ -4091,6 +4240,29 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                                   : QStringLiteral("background:transparent;"));
     };
 
+    // Reserve a node name on the relay, binding it to this device key. Returns
+    // true on success; shared by the name page button and the silent auto-reserve
+    // that runs when the name is already known.
+    auto reserveName = [&](const QString &name) -> bool {
+        if (!isValidNodeName(name))
+            return false;
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-reserve-v1\n" + name + "\n" + ts).toUtf8();
+        int status = 0;
+        const QJsonObject resp = postAccountSync(
+            "reserve",
+            QJsonObject{{"nodeName", name},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", ts},
+                        {"sig", m_profileIdentity.signData(canonical)}},
+            &status);
+        if (!resp.value("ok").toBool())
+            return false;
+        reservedName = name;
+        return true;
+    };
+
     // Forward transitions between pages. Assigned after all pages exist so each
     // page can trigger the next; only ever invoked from user actions once the
     // dialog is already running, so the late binding is safe.
@@ -4160,33 +4332,20 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
             }
         });
 
-        auto doReserve = [=, &reservedName, &enterDonation]() {
+        auto doReserve = [=, &enterDonation, &reserveName]() {
             const QString v = nameEdit->text().trimmed().toLower();
             if (!isValidNodeName(v))
                 return;
             cont->setEnabled(false);
             cont->setText("Reserving…");
-            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-            const QByteArray canonical = ("forkmesh-reserve-v1\n" + v + "\n" + ts).toUtf8();
-            int status = 0;
-            const QJsonObject resp = postAccountSync(
-                "reserve",
-                QJsonObject{{"nodeName", v},
-                            {"pubkey", m_profileIdentity.publicKey()},
-                            {"ts", ts},
-                            {"sig", m_profileIdentity.signData(canonical)}},
-                &status);
+            const bool ok = reserveName(v);
             cont->setText("Continue");
             cont->setEnabled(true);
-            if (!resp.value("ok").toBool()) {
-                const QString err = resp.value("error").toString();
-                styleHint(hint, err == "node_name_taken"
-                                    ? "That name was just taken — try another."
-                                    : "Could not reserve that name. Please try again.",
-                          "#f85149");
+            if (!ok) {
+                styleHint(hint, "Could not reserve that name — it may be taken. "
+                                "Try another.", "#f85149");
                 return;
             }
-            reservedName = v;
             enterDonation();
         };
         connect(cont, &QPushButton::clicked, this, doReserve);
@@ -4204,6 +4363,9 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     auto *qrLabel = new QLabel;
     auto *addrLabel = new QLabel;
     auto *copyBtn = new QPushButton("Copy address");
+    // Shown only after the address expires (hidden by the relay after one hour):
+    // lets the user mint a fresh request instead of paying a dead address.
+    auto *renewBtn = new QPushButton("Generate a new request");
     auto *payStatus = new QLabel;
     // Shared Solana Pay URI: written when the address is fetched, read by the
     // copy button. A shared pointer keeps it alive as long as either lambda and
@@ -4222,11 +4384,19 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         splitInfo->setWordWrap(true);
         splitInfo->setTextFormat(Qt::RichText);
         qrLabel->setAlignment(Qt::AlignCenter);
+        // Reserve the QR's footprint so it can never be squeezed (and clipped)
+        // when the dialog is short — the page scrolls instead.
+        qrLabel->setMinimumSize(220, 220);
         addrLabel->setWordWrap(true);
         addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
         addrLabel->setStyleSheet("font-family:monospace; background:transparent;");
+        addrLabel->setAlignment(Qt::AlignCenter);
         copyBtn->setObjectName("ghostButton");
         copyBtn->setCursor(Qt::PointingHandCursor);
+        renewBtn->setObjectName("primaryButton");
+        renewBtn->setCursor(Qt::PointingHandCursor);
+        renewBtn->setVisible(false);
+        connect(renewBtn, &QPushButton::clicked, &dialog, [&]() { enterDonation(); });
         payStatus->setObjectName("modeHint");
         payStatus->setWordWrap(true);
         // "New to crypto?" disclosure: most newcomers reach this page without any
@@ -4297,6 +4467,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         l->addWidget(qrLabel);
         l->addWidget(addrLabel);
         l->addWidget(copyBtn, 0, Qt::AlignLeft);
+        l->addWidget(renewBtn, 0, Qt::AlignLeft);
         l->addWidget(cryptoHelpToggle, 0, Qt::AlignLeft);
         l->addWidget(cryptoHelp);
         l->addStretch();
@@ -4311,7 +4482,15 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
             });
         });
     }
-    stack->addWidget(donatePage);
+    // The donate page is the tallest (QR + address + crypto primer); on short
+    // screens host it in a scroll area so the QR can't be clipped.
+    auto *donateScroll = new QScrollArea;
+    donateScroll->setWidgetResizable(true);
+    donateScroll->setFrameShape(QFrame::NoFrame);
+    donateScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    donateScroll->setWidget(donatePage);
+    donateScroll->setMinimumHeight(440);
+    stack->addWidget(donateScroll);
 
     auto *pollTimer = new QTimer(&dialog);
     pollTimer->setInterval(4000);
@@ -4332,6 +4511,20 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
             QTimer::singleShot(500, &dialog, [&]() { setStep(2); });
             return;
         }
+        // The relay hides the address one hour after it's minted (and deletes it
+        // an hour after that), so it can't be paid to a stale request. Pull the
+        // QR + address and offer a fresh one instead.
+        if (st.value("hidden").toBool() || st.value("expired").toBool()) {
+            pollTimer->stop();
+            qrLabel->setVisible(false);
+            addrLabel->setVisible(false);
+            copyBtn->setVisible(false);
+            renewBtn->setVisible(true);
+            payStatus->setText("This payment request expired for your security. "
+                               "Generate a new one to donate.");
+            payStatus->setStyleSheet("color:#d29922; background:transparent;");
+            return;
+        }
         const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
         payStatus->setText(
             QStringLiteral("Waiting for your donation… (received %1 SOL)")
@@ -4341,6 +4534,12 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     enterDonation = [&, payInfo, splitInfo, qrLabel, addrLabel, payStatus,
                      payUriHolder, pollTimer]() {
         setStep(1);
+        // Restore the live request widgets (a renewal re-runs this after the old
+        // address was hidden).
+        qrLabel->setVisible(true);
+        addrLabel->setVisible(true);
+        copyBtn->setVisible(true);
+        renewBtn->setVisible(false);
         payStatus->setText("Generating payment request…");
         payStatus->setStyleSheet("background:transparent;");
         int status = 0;
@@ -4495,7 +4694,21 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     }
     stack->addWidget(accountPage);
 
-    setStep(0);
+    // With the name already chosen on the previous screen, open directly on the
+    // donation step and reserve it silently on the next tick (so the dialog is
+    // already visible). Only fall back to the name page if the reservation fails
+    // — e.g. the name was just taken by someone else.
+    if (haveName) {
+        setStep(1);
+        QTimer::singleShot(0, &dialog, [&]() {
+            if (reserveName(accountName))
+                enterDonation();
+            else
+                setStep(0);
+        });
+    } else {
+        setStep(0);
+    }
     dialog.exec();
     pollTimer->stop();
     if (finalized) {
@@ -5538,10 +5751,16 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        if (m_topMessage)
-            m_topMessage->hide();
-        m_topMessageCopy->hide();
+        dismissTopMessage();
     });
+    // A plain "x" to dismiss an error toast without copying it.
+    m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
+    m_topMessageClose->setObjectName("ghostButton");
+    m_topMessageClose->setCursor(Qt::PointingHandCursor);
+    m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
+    m_topMessageClose->hide();
+    connect(m_topMessageClose, &QPushButton::clicked, this,
+            [this] { dismissTopMessage(); });
 
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
@@ -5657,6 +5876,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addStretch();
     mainRow->addWidget(m_topMessage);
     mainRow->addWidget(m_topMessageCopy);
+    mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
     // Stack the node name on top of the wallet balance.
     auto *balanceColumn = new QVBoxLayout;
@@ -8236,6 +8456,8 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
     m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
+    // Drag along a Progress cell to set the value (handled in eventFilter).
+    m_issueTable->viewport()->installEventFilter(this);
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
@@ -8444,12 +8666,28 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
     m_issuePriorityValue = new QLabel("No priority");
-    m_issueProgressValue = new QLabel("0%");
     m_issueEstimateValue = new QLabel("\xE2\x80\x94");
     m_issueBountyValue = new QLabel("No bounty");
+    // Draggable progress bar (drag along the track to set percent complete); the
+    // store write and reload happen once on release.
+    auto *progressSlider = new ProgressSlider;
+    m_issueProgressSlider = progressSlider;
+    progressSlider->onCommitted = [this](int pct) {
+        if (m_currentIssueNumber < 0)
+            return;
+        IssueStore store = issueStoreForCurrentRepo();
+        QString error;
+        if (!store.setProgress(m_currentIssueNumber, pct, &error)) {
+            setIssueInlineNotice(error.isEmpty() ? "Could not update progress." : error,
+                                 true);
+            return;
+        }
+        setIssueInlineNotice(QStringLiteral("Progress set to %1%.").arg(pct));
+        reloadIssues();
+    };
     for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue,
                       m_issueMilestoneValue, m_issuePriorityValue,
-                      m_issueProgressValue, m_issueEstimateValue,
+                      m_issueEstimateValue,
                       m_issueBountyValue}) {
         v->setObjectName("statusLine");
         v->setWordWrap(true);
@@ -8756,7 +8994,7 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Type", makeValue("No type"), makeGear());
     addMetaSection("Priority", m_issuePriorityStack, m_issuePriorityButton,
                    {m_issuePriorityRaiseButton, m_issuePriorityLowerButton});
-    addMetaSection("Progress", m_issueProgressValue, m_issueProgressButton,
+    addMetaSection("Progress", m_issueProgressSlider, m_issueProgressButton,
                    {m_issueProgressBoostButton});
     addMetaSection("Est. OpenAI cost", m_issueEstimateValue);
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
@@ -9742,6 +9980,19 @@ QWidget *MainWindow::buildInsightsTab()
 
     layout->addWidget(contributorsLabel);
     layout->addWidget(m_insightsContributors);
+
+    // Per-contributor "commits over time" bar charts, populated lazily in
+    // loadRepoInsights(). The container starts empty; one row is added per
+    // contributor (name + CommitBarChart) when a repo is loaded.
+    auto *commitActivityLabel = new QLabel("COMMIT ACTIVITY");
+    commitActivityLabel->setObjectName("sectionLabel");
+    m_insightsCommitCharts = new QWidget;
+    auto *chartsCol = new QVBoxLayout(m_insightsCommitCharts);
+    chartsCol->setContentsMargins(0, 0, 0, 0);
+    chartsCol->setSpacing(6);
+    layout->addWidget(commitActivityLabel);
+    layout->addWidget(m_insightsCommitCharts);
+
     layout->addWidget(recentLabel);
     layout->addWidget(m_insightsRecentCommits);
 
@@ -14409,8 +14660,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
 
     m_overviewList = new QTreeWidget;
     m_overviewList->setObjectName("overviewList");
-    m_overviewList->setColumnCount(4);
-    m_overviewList->setHeaderLabels({"Name", "Size", "Last commit", "Updated"});
+    m_overviewList->setColumnCount(5);
+    m_overviewList->setHeaderLabels({"Name", "Size", "LoC", "Last commit", "Updated"});
     m_overviewList->setRootIsDecorated(false);
     m_overviewList->setUniformRowHeights(true);
     m_overviewList->setSortingEnabled(false); // we sort the cached rows ourselves
@@ -14420,8 +14671,9 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Fixed);
     m_overviewList->setColumnWidth(1, 130);
-    m_overviewList->header()->setSectionResizeMode(2, QHeaderView::Stretch);
-    m_overviewList->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_overviewList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_overviewList->header()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_overviewList->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     enableHoverRowHighlight(m_overviewList);
     connect(m_overviewList, &QTreeWidget::itemClicked, this,
             [this](QTreeWidgetItem *item, int) {
@@ -15928,6 +16180,40 @@ void MainWindow::loadRepoOverview(const QString &path)
         }
     }
 
+    // Per-entry line counts (directories = recursive sum). Diffing the empty
+    // tree against the ref makes every blob a pure addition, so numstat's
+    // added-line column equals the blob's total line count — one fast git pass,
+    // no blob contents read into the client. Binary files report "-" and are
+    // skipped (they contribute 0 lines).
+    QHash<QString, qint64> childLoc;
+    QByteArray locOut;
+    static const QByteArray kEmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    if (runGitCapture(dir,
+                      {"diff", "--numstat", "--no-renames", "-z",
+                       QString::fromLatin1(kEmptyTree), currentRef()},
+                      &locOut, nullptr)) {
+        const QString prefix = path.isEmpty() ? QString() : path + "/";
+        for (const QByteArray &record : locOut.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int firstTab = record.indexOf('\t');
+            const int secondTab =
+                firstTab < 0 ? -1 : record.indexOf('\t', firstTab + 1);
+            if (secondTab < 0)
+                continue;
+            const QByteArray added = record.left(firstTab);
+            if (added == "-") // binary blob
+                continue;
+            const qint64 lines = added.toLongLong();
+            const QString blob =
+                QString::fromUtf8(record.mid(secondTab + 1));
+            if (!prefix.isEmpty() && !blob.startsWith(prefix))
+                continue;
+            const QString rel = prefix.isEmpty() ? blob : blob.mid(prefix.size());
+            childLoc[rel.section('/', 0, 0)] += lines;
+        }
+    }
+
     QString readmePath;
     for (const QByteArray &record : out.split('\0')) {
         if (record.isEmpty())
@@ -15944,6 +16230,7 @@ void MainWindow::loadRepoOverview(const QString &path)
         e.isDir = meta.at(1) == "tree";
         e.path = path.isEmpty() ? e.name : path + "/" + e.name;
         e.size = childBytes.value(e.name, 0);
+        e.loc = childLoc.value(e.name, 0);
         // Last commit that touched this entry: timestamp (for sorting), relative
         // "x ago" and subject (shown in the row).
         QByteArray logOut;
@@ -16047,9 +16334,16 @@ void MainWindow::populateOverviewTree()
         item->setText(0, e.name);
         item->setData(0, Qt::UserRole, e.path);
         item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
-        item->setText(2, e.subject);
-        item->setToolTip(2, e.subject);
-        item->setText(3, e.whenText);
+        item->setText(2, e.loc > 0 ? QLocale().toString(e.loc)
+                                   : QString::fromUtf8("\xE2\x80\x94"));
+        item->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        item->setForeground(2, QColor("#8b949e"));
+        if (e.loc > 0)
+            item->setToolTip(2, QString::fromUtf8("%1 lines of code")
+                                    .arg(QLocale().toString(e.loc)));
+        item->setText(3, e.subject);
+        item->setToolTip(3, e.subject);
+        item->setText(4, e.whenText);
         const double frac = m_overviewRepoBytes > 0
                                 ? double(e.size) / double(m_overviewRepoBytes)
                                 : 0.0;
@@ -20055,17 +20349,9 @@ void MainWindow::renderIssueThread(const Issue &issue)
             ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
                   .arg(issue.priority)
             : QStringLiteral("No priority"));
-    if (m_issueProgressValue) {
-        // A small text progress bar so the percent reads at a glance.
-        const int pct = qBound(0, issue.progress, 100);
-        const int filled = (pct + 5) / 10;
-        const QString bar = QString(filled, QChar(0x2588)) +
-                            QString(10 - filled, QChar(0x2591));
-        m_issueProgressValue->setText(
-            QStringLiteral("<span style='color:#3fb950'>%1</span> <b>%2%</b>")
-                .arg(bar)
-                .arg(pct));
-    }
+    if (m_issueProgressSlider)
+        static_cast<ProgressSlider *>(m_issueProgressSlider)
+            ->setValue(qBound(0, issue.progress, 100));
     if (m_issueEstimateValue) {
         m_issueEstimateValue->setText(
             QStringLiteral("~$%1 <span style='color:#8b949e'>(OpenAI to implement)</span>")
@@ -21546,6 +21832,17 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         cycleNavSolanaCurrency();
         return true;
     }
+    // Click a growing action-strip box (or its timer) to jump straight to that
+    // run's live output. The labels carry the run id as a dynamic property.
+    if (event->type() == QEvent::MouseButtonRelease) {
+        if (auto *w = qobject_cast<QWidget *>(obj)) {
+            const QVariant runId = w->property("actionRunId");
+            if (runId.isValid()) {
+                openActionRunFromNotification(runId.toInt());
+                return true;
+            }
+        }
+    }
     // Re-pin the unsynced-commits overlay whenever its host page resizes (e.g.
     // dragging the splitter), since it lives outside the layout.
     if (obj == m_commitsListPage && (event->type() == QEvent::Resize ||
@@ -21558,6 +21855,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_messageInput && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+            return true;
+    }
+    // Drag along the issue list's Progress column to set a row's percent.
+    if (m_issueTable && obj == m_issueTable->viewport() &&
+        (event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::MouseMove ||
+         event->type() == QEvent::MouseButtonRelease)) {
+        if (handleIssueProgressDrag(static_cast<QMouseEvent *>(event)))
             return true;
     }
     return QMainWindow::eventFilter(obj, event);
@@ -21794,6 +22099,68 @@ void MainWindow::nudgeIssuePriority(int direction)
         return;
     }
     setIssueInlineNotice(QStringLiteral("Priority set to %1.").arg(next));
+    reloadIssues();
+}
+
+bool MainWindow::handleIssueProgressDrag(QMouseEvent *ev)
+{
+    constexpr int kProgressCol = 11;
+    if (ev->type() == QEvent::MouseButtonPress) {
+        if (ev->button() != Qt::LeftButton)
+            return false;
+        const QModelIndex idx = m_issueTable->indexAt(ev->pos());
+        if (!idx.isValid() || idx.column() != kProgressCol ||
+            !m_issueTable->item(idx.row(), kProgressCol))
+            return false;
+        m_issueProgressDragRow = idx.row();
+        applyIssueProgressDragAt(ev->pos());
+        return true; // consume so the click doesn't select/open the row
+    }
+    if (m_issueProgressDragRow < 0)
+        return false; // not a progress drag we started
+    if (ev->type() == QEvent::MouseMove) {
+        if (!(ev->buttons() & Qt::LeftButton))
+            return false;
+        applyIssueProgressDragAt(ev->pos());
+        return true;
+    }
+    // MouseButtonRelease: commit the value to the store and refresh.
+    commitIssueProgressDrag();
+    m_issueProgressDragRow = -1;
+    return true;
+}
+
+// Live-update the dragged cell's painted percentage (kProgressBarRole) from the
+// pointer x, leaving the store write to commitIssueProgressDrag() on release.
+void MainWindow::applyIssueProgressDragAt(const QPoint &pos)
+{
+    QTableWidgetItem *item = m_issueTable->item(m_issueProgressDragRow, 11);
+    if (!item)
+        return;
+    const int pct = progressPctForX(m_issueTable->visualItemRect(item), pos.x(),
+                                    m_issueTable->fontMetrics());
+    item->setData(kProgressBarRole, pct);
+    item->setData(kTableSortRole, pct);
+    item->setToolTip(QStringLiteral("%1% complete").arg(pct));
+}
+
+void MainWindow::commitIssueProgressDrag()
+{
+    QTableWidgetItem *progressItem = m_issueTable->item(m_issueProgressDragRow, 11);
+    QTableWidgetItem *numberItem = m_issueTable->item(m_issueProgressDragRow, 0);
+    if (!progressItem || !numberItem)
+        return;
+    const int number = numberItem->data(Qt::UserRole).toInt();
+    const int pct = qBound(0, progressItem->data(kProgressBarRole).toInt(), 100);
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setProgress(number, pct, &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update progress." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice(
+        QStringLiteral("Issue #%1 progress set to %2%.").arg(number).arg(pct));
     reloadIssues();
 }
 
@@ -24066,9 +24433,7 @@ void MainWindow::flashMessage(const QString &text, bool error)
 
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty()) {
-        m_topMessage->hide();
-        if (m_topMessageCopy)
-            m_topMessageCopy->hide();
+        dismissTopMessage();
         return;
     }
     // Green for success, red for failure; compact pill in the centre of the bar.
@@ -24089,17 +24454,32 @@ void MainWindow::flashMessage(const QString &text, bool error)
                 m_topMessage->hide();
         });
     }
-    // Errors persist with a Copy button until the user acts on them; successes
-    // fade on their own and need no copy affordance.
+    // Errors persist with Copy / dismiss buttons until the user acts on them;
+    // successes fade on their own and need no affordance.
     if (error) {
         m_topMessageTimer->stop();
         if (m_topMessageCopy)
             m_topMessageCopy->show();
+        if (m_topMessageClose)
+            m_topMessageClose->show();
     } else {
         if (m_topMessageCopy)
             m_topMessageCopy->hide();
+        if (m_topMessageClose)
+            m_topMessageClose->hide();
         m_topMessageTimer->start(4000);
     }
+}
+
+// Hide the top toast and its error affordances (Copy / dismiss).
+void MainWindow::dismissTopMessage()
+{
+    if (m_topMessage)
+        m_topMessage->hide();
+    if (m_topMessageCopy)
+        m_topMessageCopy->hide();
+    if (m_topMessageClose)
+        m_topMessageClose->hide();
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
@@ -28487,7 +28867,6 @@ void MainWindow::updateActionStrip()
                              static_cast<qlonglong>(r->startedAtMs > 0
                                                         ? r->startedAtMs
                                                         : r->createdAtMs));
-            box->setAttribute(Qt::WA_TransparentForMouseEvents);
             box->setFixedHeight(22);
             box->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             box->setStyleSheet(
@@ -28497,10 +28876,20 @@ void MainWindow::updateActionStrip()
 
             auto *time = new QLabel;
             time->setObjectName("actionStripTime");
-            time->setAttribute(Qt::WA_TransparentForMouseEvents);
             time->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             time->setStyleSheet("#actionStripTime{color:#000;background:transparent;"
                                 "font-size:11px;}");
+
+            // Unlike the strip/row (which stay click-through), the box and its
+            // timer are live links: clicking either jumps to this run's output.
+            // They tag themselves with the run id and let MainWindow's event
+            // filter handle the click.
+            for (QLabel *hit : {box, time}) {
+                hit->setProperty("actionRunId", r->id);
+                hit->setCursor(Qt::PointingHandCursor);
+                hit->setToolTip(QStringLiteral("View this run's live output"));
+                hit->installEventFilter(this);
+            }
 
             h->addWidget(box);
             h->addWidget(time);
