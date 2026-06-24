@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 99
 title: have a delete button on the pr list to fully delete them
-status: open
+status: closed
 labels: [feature]
 milestone: MVP launch
 priority: 13
