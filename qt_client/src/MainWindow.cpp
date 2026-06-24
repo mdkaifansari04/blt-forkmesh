@@ -3753,8 +3753,9 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     repo.name = name;
     repo.cloneUrl = cloneUrl;
     repo.publishToNetwork = true;
-    // A private repo discovered via the authenticated catalog (always one we own)
-    // must keep its private flag so clone/fetch attaches the view token.
+    // A private repo discovered via the authenticated catalog — one we own, or
+    // one shared with us (issue #9) — must keep its private flag so clone/fetch
+    // attaches a view token (the owner's, or our grantee share token).
     repo.isPrivate = isPrivate;
     // Mirrored repos (cloned from another node) start with actions off; the user
     // can opt in per repo on the Settings/Actions tab.
@@ -5018,6 +5019,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: notifications section built"));
     m_sectionStack->addWidget(buildLogSection());        // 4 Log
     logStartup(QStringLiteral("  buildChatPage: log section built"));
+    m_sectionStack->addWidget(buildLeaderboardsSection()); // 5 Leaderboards
+    logStartup(QStringLiteral("  buildChatPage: leaderboards section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -5370,6 +5373,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_logNavButton, &QPushButton::clicked, this,
             [this] { showSection(4); });
 
+    // Leaderboards: the public network rankings (issue #11), section index 5.
+    m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
+    m_leaderboardNavButton->setObjectName("topNavButton");
+    m_leaderboardNavButton->setCheckable(true);
+    m_leaderboardNavButton->setCursor(Qt::PointingHandCursor);
+    m_leaderboardNavButton->setToolTip(
+        QString::fromUtf8("Leaderboards \xE2\x80\x94 network rankings"));
+    setOcticon(m_leaderboardNavButton, "graph", 16);
+    m_navGroup->addButton(m_leaderboardNavButton, 5); // section 5: Leaderboards
+    connect(m_leaderboardNavButton, &QPushButton::clicked, this,
+            [this] { showSection(5); });
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -5426,6 +5441,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_notificationButton);
     navRow->addWidget(m_settingsNavButton);
     navRow->addWidget(m_logNavButton);
+    navRow->addWidget(m_leaderboardNavButton);
     navRow->addStretch();
     layout->addLayout(navRow);
     // Home/Code is the initial section, so show its nav button selected up front.
@@ -6674,7 +6690,241 @@ void MainWindow::showSection(int index)
     } else if (index == 4 && m_settingsLog) {
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
+    } else if (index == 5) {
+        // Pull the latest rankings each time the Leaderboards section opens.
+        refreshLeaderboards();
     }
+}
+
+// --- Leaderboards (issue #11) ----------------------------------------------
+// A scrollable grid of ranking cards mirroring the website's /network/
+// leaderboards: mainnode uptime, top owners, most-mirrored and longest-hosted
+// repositories, contributor activity, and funds received by mainnodes,
+// contributors and projects. Data comes from /api/network/leaderboards.
+
+QWidget *MainWindow::buildLeaderboardsSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Leaderboards"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *subtitle = new QLabel(QString::fromUtf8(
+        "Mainnode uptime, top owners, the most-mirrored and longest-hosted "
+        "repositories, contributor activity, and funds received \xE2\x80\x94 "
+        "across the whole network."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    m_leaderboardsStatus = new QLabel(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
+    m_leaderboardsStatus->setObjectName("mutedLabel");
+    outer->addWidget(m_leaderboardsStatus);
+
+    // The boards themselves live in a grid of cards inside a scroll area so a
+    // tall list never forces the window taller.
+    m_leaderboardsContent = new QWidget;
+    auto *grid = new QGridLayout(m_leaderboardsContent);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setHorizontalSpacing(20);
+    grid->setVerticalSpacing(20);
+
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(m_leaderboardsContent);
+    outer->addWidget(scroll, 1);
+
+    return page;
+}
+
+void MainWindow::refreshLeaderboards()
+{
+    if (m_leaderboardsStatus)
+        m_leaderboardsStatus->setText(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
+
+    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
+    url.setPath(QStringLiteral("/api/network/leaderboards"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setRawHeader("accept", "application/json");
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (m_leaderboardsStatus)
+                m_leaderboardsStatus->setText(
+                    QStringLiteral("Leaderboards unavailable right now."));
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        populateLeaderboards(obj);
+    });
+}
+
+void MainWindow::populateLeaderboards(const QJsonObject &data)
+{
+    if (!m_leaderboardsContent)
+        return;
+    auto *grid = qobject_cast<QGridLayout *>(m_leaderboardsContent->layout());
+    if (!grid)
+        return;
+
+    // Clear any boards from a previous refresh.
+    QLayoutItem *old = nullptr;
+    while ((old = grid->takeAt(0))) {
+        if (old->widget())
+            old->widget()->deleteLater();
+        delete old;
+    }
+
+    // Build one board card from a JSON array, formatting each row's value.
+    auto makeBoard = [](const QString &boardTitle, const QString &boardSub,
+                        const QJsonArray &rows,
+                        const std::function<QString(const QJsonObject &)> &fmt)
+        -> QWidget * {
+        auto *card = new QFrame;
+        card->setObjectName("leaderboardCard");
+        card->setFrameShape(QFrame::StyledPanel);
+        auto *col = new QVBoxLayout(card);
+        col->setContentsMargins(16, 14, 16, 14);
+        col->setSpacing(2);
+
+        auto *h = new QLabel(boardTitle);
+        QFont hf = h->font();
+        hf.setBold(true);
+        hf.setPointSizeF(hf.pointSizeF() + 1);
+        h->setFont(hf);
+        col->addWidget(h);
+
+        auto *sub = new QLabel(boardSub);
+        sub->setObjectName("mutedLabel");
+        sub->setWordWrap(true);
+        QFont sf = sub->font();
+        sf.setPointSizeF(sf.pointSizeF() - 1);
+        sub->setFont(sf);
+        col->addWidget(sub);
+        col->addSpacing(6);
+
+        if (rows.isEmpty()) {
+            auto *empty = new QLabel(QStringLiteral("No data yet."));
+            empty->setObjectName("mutedLabel");
+            col->addWidget(empty);
+            return card;
+        }
+
+        int rank = 0;
+        for (const QJsonValue &v : rows) {
+            const QJsonObject row = v.toObject();
+            ++rank;
+            auto *line = new QHBoxLayout;
+            line->setContentsMargins(0, 2, 0, 2);
+            line->setSpacing(8);
+
+            auto *rankLabel = new QLabel(QString::number(rank));
+            rankLabel->setObjectName("mutedLabel");
+            rankLabel->setFixedWidth(20);
+            line->addWidget(rankLabel);
+
+            auto *name = new QLabel(row.value("name").toString(QStringLiteral("node")));
+            name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            line->addWidget(name, 1);
+
+            auto *value = new QLabel(fmt(row));
+            QFont vf = value->font();
+            vf.setBold(true);
+            value->setFont(vf);
+            value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            line->addWidget(value);
+
+            col->addLayout(line);
+        }
+        return card;
+    };
+
+    auto arr = [&](const char *key) { return data.value(QLatin1String(key)).toArray(); };
+    auto numVal = [](const QJsonObject &o, const char *k) {
+        return o.value(QLatin1String(k)).toDouble();
+    };
+    auto plural = [](double n, const QString &word) {
+        const long long v = static_cast<long long>(n);
+        return QString::number(v) + " " + word + (v == 1 ? "" : "s");
+    };
+    auto fmtMinutes = [](double m) {
+        const long long mins = static_cast<long long>(m);
+        const long long h = mins / 60, rem = mins % 60;
+        if (h && rem) return QStringLiteral("%1h %2m").arg(h).arg(rem);
+        if (h) return QStringLiteral("%1h").arg(h);
+        return QStringLiteral("%1m").arg(rem);
+    };
+    auto fmtAge = [](double ms) {
+        const long long days = static_cast<long long>(ms / 86400000.0);
+        if (days >= 1) return QString::number(days) + (days == 1 ? " day" : " days");
+        const long long hrs = static_cast<long long>(ms / 3600000.0);
+        return QString::number(hrs) + (hrs == 1 ? " hour" : " hours");
+    };
+    auto fmtSol = [numVal](const QJsonObject &o) {
+        double sol = o.value(QLatin1String("sol")).toDouble();
+        if (sol <= 0)
+            sol = numVal(o, "lamports") / 1e9;
+        return QString::number(sol, 'f', sol >= 1 ? 2 : 4) + " SOL";
+    };
+
+    const int hours = data.value("windowHours").toInt(48);
+
+    struct Board {
+        QString title, sub;
+        QJsonArray rows;
+        std::function<QString(const QJsonObject &)> fmt;
+    };
+    QList<Board> boards = {
+        {QStringLiteral("Mainnode uptime"),
+         QStringLiteral("Most minutes online \xC2\xB7 last %1h").arg(hours), arr("uptime"),
+         [fmtMinutes, numVal](const QJsonObject &o) { return fmtMinutes(numVal(o, "minutes")); }},
+        {QStringLiteral("Top owners"), QStringLiteral("Most public repositories"),
+         arr("repos"),
+         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "repos"), "repo"); }},
+        {QStringLiteral("Most mirrored"),
+         QStringLiteral("Repositories hosted under the most owners"), arr("mirrors"),
+         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "mirrors"), "owner"); }},
+        {QStringLiteral("Longest hosted"),
+         QStringLiteral("Repositories online the longest"), arr("hosted"),
+         [fmtAge, numVal](const QJsonObject &o) { return fmtAge(numVal(o, "ageMs")); }},
+        {QStringLiteral("Contributor activity"),
+         QStringLiteral("Issues + pull requests + commits"), arr("contributors"),
+         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "total"), "contribution"); }},
+        {QString::fromUtf8("Funds \xC2\xB7 mainnodes"),
+         QStringLiteral("Most received from the node split"), arr("fundsMainnodes"),
+         fmtSol},
+        {QString::fromUtf8("Funds \xC2\xB7 contributors"),
+         QStringLiteral("Most received from bounties"), arr("fundsContributors"),
+         fmtSol},
+        {QString::fromUtf8("Funds \xC2\xB7 projects"),
+         QStringLiteral("Most bounty funds earned"), arr("fundsProjects"), fmtSol},
+    };
+
+    const int columns = 2;
+    for (int i = 0; i < boards.size(); ++i) {
+        const Board &b = boards.at(i);
+        auto *card = makeBoard(b.title, b.sub, b.rows, b.fmt);
+        card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        grid->addWidget(card, i / columns, i % columns, Qt::AlignTop);
+    }
+    grid->setColumnStretch(0, 1);
+    grid->setColumnStretch(1, 1);
+    grid->setRowStretch(grid->rowCount(), 1);
+
+    if (m_leaderboardsStatus)
+        m_leaderboardsStatus->setText(QString());
 }
 
 QWidget *MainWindow::buildHomeSection()
@@ -21268,6 +21518,134 @@ QUrl MainWindow::bountyApiUrl(const RepositoryRecord &repo) const
     return url;
 }
 
+QUrl MainWindow::sharesApiUrl(const RepositoryRecord &repo) const
+{
+    // Private-repo collaborator ACL endpoint (issue #9).
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
+                "/shares");
+    return url;
+}
+
+void MainWindow::shareRepoRequest(const RepositoryRecord &repo,
+                                  const QString &grantee, const QString &action)
+{
+    // Grant ("add") or revoke ("remove") a collaborator on a private repo
+    // (issue #9). Owner-signed: only the repo owner may change the ACL. The
+    // action is bound into the signature so an add token can't be replayed as a
+    // remove and vice versa (matches the relay's forkmesh-share-v1 canonical).
+    if (!m_networkAccess || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-share-v1\n" + repo.owner + "\n" + repo.name + "\n" + grantee +
+         "\n" + action + "\n" + ts).toUtf8();
+    const QJsonObject payload{{"action", action},
+                              {"grantee", grantee},
+                              {"ts", ts},
+                              {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(sharesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, grantee, action] {
+                const QByteArray body = reply->readAll();
+                const auto err = reply->error();
+                const QString errStr = reply->errorString();
+                reply->deleteLater();
+                const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                if (err != QNetworkReply::NoError || !obj.value("ok").toBool()) {
+                    flashMessage(
+                        QStringLiteral("Could not update collaborators: %1")
+                            .arg(obj.value("error").toString(errStr)),
+                        true);
+                    return;
+                }
+                logSystem(QStringLiteral("%1 collaborator %2.")
+                              .arg(action == QLatin1String("add") ? "Added"
+                                                                  : "Removed",
+                                   grantee));
+                refreshRepoCollaborators();
+            });
+}
+
+void MainWindow::addRepoCollaborator(const QString &nameRaw)
+{
+    const QString grantee = nameRaw.trimmed().toLower();
+    if (grantee.isEmpty())
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    if (grantee == repo.owner) {
+        flashMessage(QStringLiteral("A repository is already readable by its "
+                                    "owner."),
+                     true);
+        return;
+    }
+    shareRepoRequest(repo, grantee, QStringLiteral("add"));
+    if (m_collabEdit)
+        m_collabEdit->clear();
+}
+
+void MainWindow::removeRepoCollaborator(const QString &nameRaw)
+{
+    const QString grantee = nameRaw.trimmed().toLower();
+    if (grantee.isEmpty())
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    shareRepoRequest(m_repositories.at(m_repoDetailIndex), grantee,
+                     QStringLiteral("remove"));
+}
+
+void MainWindow::refreshRepoCollaborators()
+{
+    if (!m_collabSection)
+        return;
+    const bool haveRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    // Sharing only applies to a private repo this node owns and has published —
+    // the ACL lives on the relay, so an unpublished or mirrored repo has none.
+    const RepositoryRecord blank;
+    const RepositoryRecord &repo =
+        haveRepo ? m_repositories.at(m_repoDetailIndex) : blank;
+    const bool show = haveRepo && !accountOwner().isEmpty() &&
+                      repo.owner == accountOwner() && repo.isPrivate &&
+                      repo.publishToNetwork;
+    m_collabSection->setVisible(show);
+    if (m_collabList)
+        m_collabList->clear();
+    if (!show || !m_networkAccess || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-shares-list-v1\n" + repo.owner + "\n" + repo.name + "\n" + ts)
+            .toUtf8();
+    QUrl url = sharesApiUrl(repo);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"),
+                       m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        if (!m_collabList)
+            return;
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        m_collabList->clear();
+        const QJsonArray grantees = obj.value("grantees").toArray();
+        for (const QJsonValue &v : grantees)
+            m_collabList->addItem(v.toString());
+        if (m_collabEmptyHint)
+            m_collabEmptyHint->setVisible(grantees.isEmpty());
+    });
+}
+
 void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                                     const QString &uri, const QString &address,
                                     double amountUsd, const QString &amountSol)
@@ -24117,12 +24495,23 @@ QStringList MainWindow::viewAuthGitArgs(const RepositoryRecord &repo,
     const QString name = segs.at(segs.size() - 1);
     if (!m_profileIdentity.isValid())
         return {};
+    const QString viewer = accountOwner();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Two read paths (issue #9): when this node owns the repo it signs the owner
+    // view token (Basic username = owner); when it's a collaborator the repo was
+    // shared with, it signs the share-view token with its OWN key (Basic username
+    // = this node's account) so the relay verifies against the grantee's key and
+    // checks the share ACL. The username tells the relay which path to take.
+    const bool asOwner = viewer.isEmpty() || viewer == owner;
+    const QString user = asOwner ? owner : viewer;
     const QByteArray canonical =
-        ("forkmesh-view-v1\n" + owner + "\n" + name + "\n" + ts).toUtf8();
+        asOwner
+            ? ("forkmesh-view-v1\n" + owner + "\n" + name + "\n" + ts).toUtf8()
+            : ("forkmesh-share-view-v1\n" + viewer + "\n" + owner + "\n" + name +
+               "\n" + ts).toUtf8();
     const QString password = ts + "." + m_profileIdentity.signData(canonical);
     const QByteArray basic =
-        (owner + ":" + password).toUtf8().toBase64();
+        (user + ":" + password).toUtf8().toBase64();
     return {QStringLiteral("-c"),
             QStringLiteral("http.extraHeader=Authorization: Basic ") +
                 QString::fromLatin1(basic)};
@@ -24341,6 +24730,11 @@ void MainWindow::refreshRepositoryList()
             label += "  \xC2\xB7 preview";
         else if (!repo.publishToNetwork)
             label += "  \xC2\xB7 local only";
+        else if (repo.isPrivate && !accountOwner().isEmpty() &&
+                 repo.owner != accountOwner())
+            // A private repo we don't own can only be here because its owner
+            // shared it with us (issue #9).
+            label += "  \xC2\xB7 shared";
         else
             label += repo.isPrivate ? "  \xC2\xB7 private"
                                     : "  \xC2\xB7 public";
@@ -25082,6 +25476,95 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     outer->addSpacing(10);
 
+    // --- Collaborators (private repos, issue #9) --------------------------
+    // Share a private repo with other accounts: they see it in their catalog
+    // once logged in and clone it with their own key. Only shown for a private
+    // repo this node owns and has published (refreshRepoCollaborators toggles
+    // visibility and loads the current list from the relay).
+    m_collabSection = new QWidget;
+    auto *collabLayout = new QVBoxLayout(m_collabSection);
+    collabLayout->setContentsMargins(0, 0, 0, 0);
+    collabLayout->setSpacing(8);
+
+    auto *collabHeading = new QLabel("Collaborators");
+    collabHeading->setObjectName("sectionLabel");
+    collabLayout->addWidget(collabHeading);
+
+    auto *collabHint = new QLabel(
+        "Accounts you share this private repository with. They can see it in "
+        "their catalog (once signed in) and clone it with their own key. The "
+        "repo stays hidden from the public website.");
+    collabHint->setObjectName("statusLine");
+    collabHint->setWordWrap(true);
+    collabLayout->addWidget(collabHint);
+
+    m_collabList = new QListWidget;
+    m_collabList->setObjectName("collabList");
+    m_collabList->setMaximumHeight(140);
+    collabLayout->addWidget(m_collabList);
+
+    m_collabEmptyHint = new QLabel("No collaborators yet.");
+    m_collabEmptyHint->setObjectName("statusLine");
+    collabLayout->addWidget(m_collabEmptyHint);
+
+    auto *collabRow = new QHBoxLayout;
+    m_collabEdit = new QLineEdit;
+    m_collabEdit->setPlaceholderText("account name to add");
+    collabRow->addWidget(m_collabEdit, 1);
+    auto *collabAddBtn = new QPushButton("Add");
+    collabAddBtn->setProperty("buttonSize", "sm");
+    collabAddBtn->setCursor(Qt::PointingHandCursor);
+    collabRow->addWidget(collabAddBtn);
+    auto *collabRemoveBtn = new QPushButton("Remove selected");
+    collabRemoveBtn->setProperty("buttonSize", "sm");
+    collabRemoveBtn->setCursor(Qt::PointingHandCursor);
+    collabRow->addWidget(collabRemoveBtn);
+    collabLayout->addLayout(collabRow);
+
+    auto addCollab = [this] {
+        if (m_collabEdit)
+            addRepoCollaborator(m_collabEdit->text());
+    };
+    connect(collabAddBtn, &QPushButton::clicked, this, addCollab);
+    connect(m_collabEdit, &QLineEdit::returnPressed, this, addCollab);
+    connect(collabRemoveBtn, &QPushButton::clicked, this, [this] {
+        if (m_collabList && m_collabList->currentItem())
+            removeRepoCollaborator(m_collabList->currentItem()->text());
+    });
+
+    outer->addWidget(m_collabSection);
+    outer->addSpacing(10);
+
+    // --- Source -----------------------------------------------------------
+    auto *sourceHeading = new QLabel("Source");
+    sourceHeading->setObjectName("sectionLabel");
+    outer->addWidget(sourceHeading);
+
+    m_repoSourceEdit = new QLineEdit;
+    m_repoSourceEdit->setPlaceholderText(
+        "https://forkmesh.com/<node>/<owner>/<name>");
+    m_repoSourceEdit->setToolTip(
+        "The upstream clone URL this mirror was forked from. Edit it to repoint "
+        "the mirror at a live node when the original location goes stale.");
+    auto *sourceUpdateBtn = new QPushButton("Update");
+    sourceUpdateBtn->setProperty("buttonSize", "sm");
+    sourceUpdateBtn->setCursor(Qt::PointingHandCursor);
+    connect(sourceUpdateBtn, &QPushButton::clicked, this,
+            &MainWindow::updateRepoSource);
+    connect(m_repoSourceEdit, &QLineEdit::returnPressed, this,
+            &MainWindow::updateRepoSource);
+    auto *sourceRow = new QHBoxLayout;
+    sourceRow->addWidget(m_repoSourceEdit, 1);
+    sourceRow->addWidget(sourceUpdateBtn);
+    outer->addLayout(sourceRow);
+
+    m_repoSourceHint = new QLabel;
+    m_repoSourceHint->setObjectName("statusLine");
+    m_repoSourceHint->setWordWrap(true);
+    outer->addWidget(m_repoSourceHint);
+
+    outer->addSpacing(10);
+
     // --- Actions ----------------------------------------------------------
     auto *actionsHeading = new QLabel("Actions");
     actionsHeading->setObjectName("sectionLabel");
@@ -25177,6 +25660,35 @@ void MainWindow::refreshRepoSettings()
         m_settingsActionsCheck->setChecked(
             haveRepo && m_repositories.at(m_repoDetailIndex).actionsEnabled);
     }
+    // Show/hide + reload the collaborator list for the open repo (issue #9).
+    refreshRepoCollaborators();
+    if (m_repoSourceEdit) {
+        QSignalBlocker block(m_repoSourceEdit);
+        m_repoSourceEdit->setEnabled(haveRepo);
+        m_repoSourceEdit->setText(
+            haveRepo ? m_repositories.at(m_repoDetailIndex).cloneUrl.trimmed()
+                     : QString());
+    }
+    if (m_repoSourceHint) {
+        if (!haveRepo) {
+            m_repoSourceHint->clear();
+        } else {
+            const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
+            if (!r.localPath.trimmed().isEmpty())
+                m_repoSourceHint->setText(
+                    "This repo is backed by a local working copy at " +
+                    r.localPath.trimmed() +
+                    "; syncs read from there. The clone URL above is the "
+                    "published/fork location.");
+            else if (r.cloneUrl.trimmed().isEmpty())
+                m_repoSourceHint->setText(
+                    "No upstream set — this node hosts the repo directly.");
+            else
+                m_repoSourceHint->setText(
+                    "The mirror fetches from this URL. Update it to repoint the "
+                    "fork at a different node, then sync to pull from it.");
+        }
+    }
     if (!m_repoVisibilityHint)
         return;
     if (!haveRepo) {
@@ -25196,6 +25708,35 @@ void MainWindow::refreshRepoSettings()
         m_repoVisibilityHint->setText(
             "Public: listed in the catalog and anyone can browse or clone it "
             "through the mainnode.");
+}
+
+void MainWindow::updateRepoSource()
+{
+    if (!m_repoSourceEdit)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString newUrl = m_repoSourceEdit->text().trimmed();
+    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
+    if (newUrl == repo.cloneUrl.trimmed()) {
+        refreshRepoSettings();
+        return;
+    }
+    repo.cloneUrl = newUrl;
+    saveRepositories();
+    // Repoint the bare mirror's origin so the next sync fetches from the new
+    // location. A repo backed by a local working copy fetches from that path
+    // instead (see repositorySource()), so leave its remote alone.
+    if (repo.localPath.trimmed().isEmpty() && !newUrl.isEmpty() &&
+        !repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
+        runGitCapture(repo.mirrorPath,
+                      {QStringLiteral("remote"), QStringLiteral("set-url"),
+                       QStringLiteral("origin"), newUrl},
+                      nullptr, nullptr);
+    logSystem(QStringLiteral("Source for %1/%2 set to %3.")
+                  .arg(repo.owner, repo.name,
+                       newUrl.isEmpty() ? QStringLiteral("(none)") : newUrl));
+    refreshRepoSettings();
 }
 
 void MainWindow::updateRepoDetailStatus()

@@ -113,7 +113,7 @@
       }
       .leaderboards {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 24px 32px;
         padding: 0 18px 18px;
       }
@@ -288,7 +288,7 @@
         <div class="panel-header">
           <div>
             <h2 id="leaderboards-title">Leaderboards</h2>
-            <p>Top nodes by uptime and owners by published repositories. More boards (most-mirrored repos, contributor activity, funds received) arrive as the network records the data behind them.</p>
+            <p>Mainnode uptime, top owners, the most-mirrored and longest-hosted repositories, contributor activity, and funds received by mainnodes, contributors and projects.</p>
           </div>
         </div>
         <div id="leaderboards" class="leaderboards" aria-live="polite">
@@ -517,16 +517,43 @@
               '<div class="board-empty">Leaderboards unavailable right now.</div>';
             return;
           }
-          const uptime = Array.isArray(data.uptime) ? data.uptime : [];
-          const repos = Array.isArray(data.repos) ? data.repos : [];
+          const arr = (k) => (Array.isArray(data[k]) ? data[k] : []);
           const hours = Number(data.windowHours) || 48;
+          const fmtAge = (ms) => {
+            const d = Math.floor((Number(ms) || 0) / 86400000);
+            if (d >= 1) return plural(d, "day");
+            const h = Math.floor((Number(ms) || 0) / 3600000);
+            return plural(h, "hour");
+          };
+          const fmtSol = (row) => {
+            const sol = Number(row.sol) || (Number(row.lamports) || 0) / 1e9;
+            return `${sol.toFixed(sol >= 1 ? 2 : 4)} SOL`;
+          };
           root.innerHTML = "";
           root.appendChild(board(
             "Mainnode uptime", `Most minutes online · last ${hours}h`,
-            uptime, (row) => fmtMinutes(row.minutes)));
+            arr("uptime"), (row) => fmtMinutes(row.minutes)));
           root.appendChild(board(
             "Top owners", "Most public repositories",
-            repos, (row) => plural(Number(row.repos) || 0, "repo")));
+            arr("repos"), (row) => plural(Number(row.repos) || 0, "repo")));
+          root.appendChild(board(
+            "Most mirrored", "Repositories hosted under the most owners",
+            arr("mirrors"), (row) => plural(Number(row.mirrors) || 0, "owner")));
+          root.appendChild(board(
+            "Longest hosted", "Repositories online the longest",
+            arr("hosted"), (row) => fmtAge(row.ageMs)));
+          root.appendChild(board(
+            "Contributor activity", "Issues + pull requests + commits",
+            arr("contributors"), (row) => plural(Number(row.total) || 0, "contribution")));
+          root.appendChild(board(
+            "Funds · mainnodes", "Most received from the node split",
+            arr("fundsMainnodes"), fmtSol));
+          root.appendChild(board(
+            "Funds · contributors", "Most received from bounties",
+            arr("fundsContributors"), fmtSol));
+          root.appendChild(board(
+            "Funds · projects", "Most bounty funds earned",
+            arr("fundsProjects"), fmtSol));
         }
         render();
         setInterval(render, 60000);
