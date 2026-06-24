@@ -9596,7 +9596,7 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueBountyButton, &QPushButton::clicked, this,
             &MainWindow::editIssueBounty);
     connect(m_issueAssigneesButton, &QPushButton::clicked, this,
-            &MainWindow::editIssueAssignees);
+            &MainWindow::pickIssueAssignees);
     return page;
 }
 
@@ -10050,19 +10050,34 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // Refresh: force a full rebuild that re-checks which commits are still
     // waiting to sync. Switching away and back skips the rebuild when nothing
     // changed, so this is the explicit way to re-scan after a commit/publish.
-    auto *refreshButton = new QPushButton("Refresh");
-    refreshButton->setObjectName("ghostButton");
-    refreshButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(refreshButton, "sync", 16);
-    refreshButton->setToolTip(
+    m_commitsRefreshButton = new QPushButton("Refresh");
+    m_commitsRefreshButton->setObjectName("ghostButton");
+    m_commitsRefreshButton->setCursor(Qt::PointingHandCursor);
+    // Idle icon drawn by refreshPixmap (angle 0) so the spinning state is the
+    // same glyph rotating, not a different icon swapping in.
+    m_commitsRefreshButton->setIcon(
+        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+    m_commitsRefreshButton->setToolTip(
         "Reload the commit list and re-check which commits are waiting to sync");
-    connect(refreshButton, &QPushButton::clicked, this,
-            [this] { loadCommits(); });
+    connect(m_commitsRefreshButton, &QPushButton::clicked, this, [this] {
+        startCommitsRefreshSpin();
+        // Defer the (synchronous) git + table rebuild one event-loop turn: the
+        // click returns immediately so the button feels responsive and the
+        // spinner paints before the reload briefly blocks the UI thread.
+        QTimer::singleShot(0, this, [this] {
+            loadCommits();
+            // The reload is near-instant, so stop on a short delay: that lets the
+            // spinner actually rotate a few frames as confirmation. The list is
+            // already rebuilt and interactive by now, so this tail is feedback,
+            // not blocking latency.
+            QTimer::singleShot(250, this, [this] { stopCommitsRefreshSpin(); });
+        });
+    });
 
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitSearch, 1);
-    searchRow->addWidget(refreshButton);
+    searchRow->addWidget(m_commitsRefreshButton);
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
@@ -10531,13 +10546,14 @@ QWidget *MainWindow::buildPullsTab()
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
+    m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullCloseButton, m_pullDeleteButton,
+                           m_pullEditFileButton, m_pullCloseButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullLinkIssueButton,
                            m_pullSplitButton}) {
         b->setObjectName("ghostButton");
@@ -10574,16 +10590,24 @@ QWidget *MainWindow::buildPullsTab()
         "Permanently delete this pull request and its head branch");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullResolveButton->setToolTip(
-        "Open a merge editor to resolve this pull request's conflicts and commit");
+        "Open a merge editor to resolve this pull request's conflicts and commit "
+        "the fix to its branch (the PR stays open, ready to merge)");
     m_pullResolveButton->hide(); // only shown when the PR has conflicts
     connect(m_pullResolveButton, &QPushButton::clicked, this,
             &MainWindow::resolveCurrentPullConflicts);
+    setOcticon(m_pullEditFileButton, "pencil", 16);
+    m_pullEditFileButton->setToolTip(
+        "Edit the selected file and commit the change to this pull request's "
+        "branch (the PR stays open, ready to merge)");
+    connect(m_pullEditFileButton, &QPushButton::clicked, this,
+            &MainWindow::editCurrentPullFile);
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
@@ -10608,6 +10632,8 @@ QWidget *MainWindow::buildPullsTab()
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item)
                     renderPullDiff(item->data(Qt::UserRole).toString());
+                if (m_pullEditFileButton && !item)
+                    m_pullEditFileButton->setEnabled(false);
             });
 
     // ---- Files changed page: file explorer | diff viewer.
@@ -11695,7 +11721,8 @@ void MainWindow::updatePullActionState()
         m_pullMergeButton->setToolTip(
             mergeable && !mergeClean
                 ? QStringLiteral("This pull request has conflicts — use "
-                                 "\"Resolve conflicts\" to merge it.")
+                                 "\"Resolve conflicts\" to commit a fix to its "
+                                 "branch, then merge.")
                 : QStringLiteral("Apply and merge this pull request"));
     }
     if (m_pullResolveButton) {
@@ -11703,6 +11730,9 @@ void MainWindow::updatePullActionState()
         m_pullResolveButton->setVisible(conflicted);
         m_pullResolveButton->setEnabled(conflicted);
     }
+    if (m_pullEditFileButton)
+        m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
+                                         m_pullFiles->currentItem());
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
     if (m_pullDeleteButton)
@@ -12094,11 +12124,14 @@ void MainWindow::resolveCurrentPullConflicts()
         return;
     }
 
-    // Shared tail run after the PR lands (clean apply or resolved merge).
-    const auto finalizeMerged = [this, current] {
-        logSystem(QStringLiteral("Merged pull request #%1.").arg(current.number));
-        closeIssuesLinkedFromPull(current);
-        fundBountiesForMergedPull(current);
+    // Shared tail run after the fix lands on the PR's branch. The PR stays open
+    // and becomes cleanly mergeable; issue-closing and bounty payout happen only
+    // on the later, explicit Merge (see mergeCurrentPull). The refreshed PR is
+    // propagated so peers/the contributor see the conflict-resolved version.
+    const auto finalizeResolved = [this, current] {
+        logSystem(QStringLiteral("Resolved conflicts on pull request #%1's branch; "
+                                 "it is updated and ready to merge.")
+                      .arg(current.number));
         reloadPulls();
         propagateRepoUpdate(m_repoDetailIndex);
     };
@@ -12112,8 +12145,9 @@ void MainWindow::resolveCurrentPullConflicts()
         return;
     }
     if (resolvedClean) {
-        // Re-checked clean and merged straight away — nothing to resolve.
-        finalizeMerged();
+        // Applied with no markers to edit — the fix is already committed on the
+        // PR's branch; just finalize.
+        finalizeResolved();
         return;
     }
 
@@ -12123,8 +12157,10 @@ void MainWindow::resolveCurrentPullConflicts()
     dlg.resize(960, 640);
 
     auto *intro = new QLabel(QStringLiteral(
-        "Resolve each conflict, then commit. <b>Ours</b> is your base branch; "
-        "<b>theirs</b> is the pull request. You can also edit the text directly."));
+        "Resolve each conflict, then commit the fix to the pull request's branch. "
+        "<b>Ours</b> is your base branch; <b>theirs</b> is the pull request. You "
+        "can also edit the text directly. The pull request stays open and becomes "
+        "ready to merge \xE2\x80\x94 your base branch is left untouched."));
     intro->setObjectName("statusLine");
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
@@ -12161,7 +12197,7 @@ void MainWindow::resolveCurrentPullConflicts()
     toolbar->addWidget(prevBtn);
     toolbar->addWidget(nextBtn);
 
-    auto *commitBtn = new QPushButton(QStringLiteral("Commit merge"));
+    auto *commitBtn = new QPushButton(QStringLiteral("Commit to branch"));
     commitBtn->setObjectName("primaryButton");
     commitBtn->setCursor(Qt::PointingHandCursor);
     auto *cancelBtn = new QPushButton(QStringLiteral("Cancel"));
@@ -12342,10 +12378,113 @@ void MainWindow::resolveCurrentPullConflicts()
 
     dlg.exec();
     if (committed) {
-        finalizeMerged();
+        finalizeResolved();
     } else {
         store.abortConflictMerge();
         logSystem(QStringLiteral("Cancelled conflict resolution for pull #%1.").arg(number));
+        reloadPulls();
+    }
+}
+
+void MainWindow::editCurrentPullFile()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber) {
+            found = true;
+            break;
+        }
+    if (!found)
+        return;
+    const int number = m_currentPullNumber;
+    if (writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath.isEmpty()) {
+        QMessageBox::warning(this, "Edit file",
+                             "This repository is read-only on this node.");
+        return;
+    }
+    QListWidgetItem *item = m_pullFiles ? m_pullFiles->currentItem() : nullptr;
+    if (!item) {
+        QMessageBox::information(this, "Edit file",
+                                 "Select a file from this pull request to edit.");
+        return;
+    }
+    const QString relPath = item->data(Qt::UserRole).toString();
+
+    // Check out the PR's branch with the PR applied and read the file to edit.
+    PullStore store = pullStoreForCurrentRepo();
+    QString content;
+    QString error;
+    if (!store.startPullFileEdit(number, relPath, &content, &error)) {
+        QMessageBox::warning(this, "Edit file", error);
+        return;
+    }
+
+    // ---- Editor dialog -----------------------------------------------------
+    QDialog dlg(this);
+    dlg.setWindowTitle(
+        QString::fromUtf8("Edit %1 \xE2\x80\x94 pull #%2").arg(relPath).arg(number));
+    dlg.resize(900, 620);
+
+    auto *intro = new QLabel(
+        QStringLiteral("Editing <b>%1</b>. Saving commits the change to this pull "
+                       "request's branch \xE2\x80\x94 the PR stays open and ready "
+                       "to merge; your base branch is left untouched.")
+            .arg(relPath.toHtmlEscaped()));
+    intro->setObjectName("statusLine");
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+
+    auto *editor = new QPlainTextEdit;
+    editor->setObjectName("codeEditor");
+    editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    applyLogFont(editor);
+    editor->setPlainText(content);
+
+    auto *saveBtn = new QPushButton(QStringLiteral("Commit to branch"));
+    saveBtn->setObjectName("primaryButton");
+    saveBtn->setCursor(Qt::PointingHandCursor);
+    auto *cancelBtn = new QPushButton(QStringLiteral("Cancel"));
+    cancelBtn->setObjectName("ghostButton");
+    cancelBtn->setCursor(Qt::PointingHandCursor);
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addStretch();
+    buttonRow->addWidget(cancelBtn);
+    buttonRow->addWidget(saveBtn);
+
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->addWidget(intro);
+    outer->addWidget(editor, 1);
+    outer->addLayout(buttonRow);
+
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    bool committed = false;
+    connect(saveBtn, &QPushButton::clicked, &dlg, [&] {
+        QString err;
+        if (store.finishPullFileEdit(number, relPath, editor->toPlainText(), &err)) {
+            committed = true;
+            dlg.accept();
+            return;
+        }
+        // Either nothing changed (the branch was already torn down) or a real
+        // failure — surface it and end the session; the safe move is to close.
+        QMessageBox::warning(&dlg, "Edit file", err);
+        dlg.reject();
+    });
+
+    dlg.exec();
+    if (committed) {
+        logSystem(QStringLiteral("Committed an edit to %1 on pull request #%2's "
+                                 "branch; it is updated and ready to merge.")
+                      .arg(relPath)
+                      .arg(number));
+        reloadPulls();
+        propagateRepoUpdate(m_repoDetailIndex);
+    } else {
+        store.abortConflictMerge();
         reloadPulls();
     }
 }
@@ -17012,6 +17151,10 @@ void MainWindow::loadCommits()
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
     QString loadedTip;
+    // Suspend painting while up to 300 rows (each with a cell-widget button) are
+    // built: otherwise the table repaints on every insertRow/setItem, which is
+    // what made a refresh feel sluggish. One repaint happens when re-enabled.
+    m_commitsTable->setUpdatesEnabled(false);
     for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
@@ -17113,6 +17256,11 @@ void MainWindow::loadCommits()
         del->setObjectName("issueIconButton");
         del->setFlat(true);
         del->setCursor(Qt::PointingHandCursor);
+        // Don't let the per-row button take keyboard focus: as a focusable cell
+        // widget it makes the table scroll itself to keep it visible, which read
+        // as the list "jumping" on click. The row click still selects/opens the
+        // commit; the trash button is mouse-only.
+        del->setFocusPolicy(Qt::NoFocus);
         del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
         del->setIconSize(QSize(15, 15));
         del->setEnabled(writable);
@@ -17124,6 +17272,7 @@ void MainWindow::loadCommits()
                 [this, fullHash] { deleteCommit(fullHash); });
         m_commitsTable->setCellWidget(row, kCommitActionCol, del);
     }
+    m_commitsTable->setUpdatesEnabled(true);
     m_commitsTable->setSortingEnabled(true);
 
     if (m_commitsUnsyncedBanner) {
@@ -19892,6 +20041,32 @@ void MainWindow::stopRefreshSpin()
     if (m_refreshButton)
         m_refreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
+}
+
+void MainWindow::startCommitsRefreshSpin()
+{
+    if (!m_commitsRefreshButton)
+        return;
+    if (!m_commitsRefreshSpinTimer) {
+        m_commitsRefreshSpinTimer = new QTimer(this);
+        connect(m_commitsRefreshSpinTimer, &QTimer::timeout, this, [this] {
+            m_commitsRefreshAngle = (m_commitsRefreshAngle + 30) % 360;
+            if (m_commitsRefreshButton)
+                m_commitsRefreshButton->setIcon(QIcon(refreshPixmap(
+                    QColor(Theme::kTextTertiary), m_commitsRefreshAngle, 16)));
+        });
+    }
+    m_commitsRefreshSpinTimer->start(60);
+}
+
+void MainWindow::stopCommitsRefreshSpin()
+{
+    if (m_commitsRefreshSpinTimer)
+        m_commitsRefreshSpinTimer->stop();
+    m_commitsRefreshAngle = 0;
+    if (m_commitsRefreshButton)
+        m_commitsRefreshButton->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
 }
 
 void MainWindow::startNodeSwitchSpin()
@@ -23245,6 +23420,125 @@ void MainWindow::reprioritizeBacklog()
     reloadIssues();
 }
 
+void MainWindow::pickIssueAssignees()
+{
+    if (m_currentIssueNumber < 0 || !m_issueAssigneesButton)
+        return;
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+
+    // The line edit mirrors the issue's current assignees; treat it as the
+    // source of truth so manual edits and the "Assign yourself" link round-trip.
+    const QStringList current = m_issueAssigneesEdit
+                                    ? splitIssueFieldList(m_issueAssigneesEdit->text())
+                                    : QStringList();
+    QSet<QString> selected(current.begin(), current.end());
+
+    // Candidates: every known mesh node, then any current assignee that isn't a
+    // known node (a name typed by hand) so opening the picker never drops it.
+    struct Candidate {
+        QString name;
+        QString platform;
+        bool online = false;
+        bool self = false;
+    };
+    QList<Candidate> candidates;
+    QSet<QString> seen;
+    for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+        if (e.name.isEmpty() || seen.contains(e.name))
+            continue;
+        seen.insert(e.name);
+        candidates.append({e.name, e.platform, e.online, e.self});
+    }
+    for (const QString &a : current) {
+        if (!a.isEmpty() && !seen.contains(a)) {
+            seen.insert(a);
+            candidates.append({a, QString(), false, false});
+        }
+    }
+
+    QMenu menu(this);
+    QAction *header = menu.addAction(QStringLiteral("Assign nodes"));
+    header->setEnabled(false);
+
+    auto *searchEdit = new QLineEdit(&menu);
+    searchEdit->setPlaceholderText(QStringLiteral("Search nodes") +
+                                   QString::fromUtf8("\xE2\x80\xA6"));
+    searchEdit->setClearButtonEnabled(true);
+    searchEdit->setMinimumWidth(240);
+    auto *searchAction = new QWidgetAction(&menu);
+    searchAction->setDefaultWidget(searchEdit);
+    menu.addAction(searchAction);
+    menu.addSeparator();
+
+    if (candidates.isEmpty()) {
+        QAction *empty = menu.addAction(QStringLiteral("No nodes yet"));
+        empty->setEnabled(false);
+    }
+
+    // A checkable list (not menu actions) so ticking several nodes in a row
+    // doesn't dismiss the popup the way a normal checkable QAction would.
+    auto *listWidget = new QListWidget(&menu);
+    listWidget->setObjectName("assigneePickerList");
+    listWidget->setMinimumWidth(240);
+    listWidget->setMaximumHeight(320);
+    listWidget->setFrameShape(QFrame::NoFrame);
+    for (const Candidate &c : std::as_const(candidates)) {
+        QString text = c.name;
+        if (c.self)
+            text += QStringLiteral(" (you)");
+        auto *item = new QListWidgetItem(osBadgeIcon(c.platform, c.online, 16),
+                                         text, listWidget);
+        item->setData(Qt::UserRole, c.name);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(selected.contains(c.name) ? Qt::Checked : Qt::Unchecked);
+    }
+    // Connect after populating so the setCheckState calls above don't churn the
+    // working set (it already starts equal to the issue's assignees).
+    connect(listWidget, &QListWidget::itemChanged, &menu,
+            [&selected](QListWidgetItem *item) {
+                const QString name = item->data(Qt::UserRole).toString();
+                if (item->checkState() == Qt::Checked)
+                    selected.insert(name);
+                else
+                    selected.remove(name);
+            });
+    auto *listAction = new QWidgetAction(&menu);
+    listAction->setDefaultWidget(listWidget);
+    menu.addAction(listAction);
+
+    connect(searchEdit, &QLineEdit::textChanged, listWidget,
+            [listWidget](const QString &text) {
+                const QString needle = text.trimmed().toLower();
+                for (int i = 0; i < listWidget->count(); ++i) {
+                    QListWidgetItem *it = listWidget->item(i);
+                    const QString name = it->data(Qt::UserRole).toString().toLower();
+                    it->setHidden(!needle.isEmpty() && !name.contains(needle));
+                }
+            });
+    QTimer::singleShot(0, searchEdit, [searchEdit] { searchEdit->setFocus(); });
+
+    menu.exec(m_issueAssigneesButton->mapToGlobal(
+        QPoint(0, m_issueAssigneesButton->height())));
+
+    // Persist once on close, and only if something actually changed, so an
+    // open-and-cancel doesn't log a no-op "set assignees" activity entry.
+    const QSet<QString> before(current.begin(), current.end());
+    if (selected == before || !m_issueAssigneesEdit)
+        return;
+    // Keep existing assignees in their current order; append newly-ticked nodes
+    // in node-list order.
+    QStringList result;
+    for (const QString &a : current)
+        if (selected.contains(a))
+            result << a;
+    for (const Candidate &c : std::as_const(candidates))
+        if (selected.contains(c.name) && !result.contains(c.name))
+            result << c.name;
+    m_issueAssigneesEdit->setText(result.join(", "));
+    saveIssueAssigneesInline();
+}
+
 void MainWindow::editIssueAssignees()
 {
     if (m_currentIssueNumber < 0)
@@ -24126,6 +24420,21 @@ QWidget *MainWindow::buildChatSection()
     // Intercept Ctrl+V so a clipboard image (e.g. a screenshot) is shared as a
     // file attachment instead of being dropped by the text-only line edit.
     m_messageInput->installEventFilter(this);
+
+    // @-mention autocomplete: a completer driven manually off the cursor (hence
+    // setWidget, not setCompleter, which would try to complete the whole line).
+    // updateMentionPopup() feeds it the "@token" being typed and pops the list;
+    // picking a name replaces that token with "@name ".
+    m_mentionModel = new QStringListModel(this);
+    m_mentionCompleter = new QCompleter(m_mentionModel, this);
+    m_mentionCompleter->setWidget(m_messageInput);
+    m_mentionCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_mentionCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_mentionCompleter->setFilterMode(Qt::MatchContains);
+    connect(m_mentionCompleter,
+            QOverload<const QString &>::of(&QCompleter::activated), this,
+            &MainWindow::insertMention);
+    refreshMentionCandidates();
     auto *sendButton = new QPushButton("Send");
     sendButton->setObjectName("primaryButton");
     auto *composerLayout = new QHBoxLayout(composer);
@@ -24194,6 +24503,10 @@ QWidget *MainWindow::buildChatSection()
             });
     connect(addChannelButton, &QPushButton::clicked, this, &MainWindow::promptAddChannel);
     connect(m_messageInput, &QLineEdit::textEdited, this, &MainWindow::onComposerEdited);
+    // Re-evaluate the @-mention popup when the caret moves (arrow keys, a click)
+    // so it follows the token or dismisses when the caret leaves it.
+    connect(m_messageInput, &QLineEdit::cursorPositionChanged, this,
+            [this] { updateMentionPopup(); });
     connect(m_messageInput, &QLineEdit::returnPressed, this, &MainWindow::sendCurrentMessage);
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::sendCurrentMessage);
 
@@ -25819,6 +26132,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
 
 void MainWindow::refreshChatMembers()
 {
+    // Keep the @-mention candidates in step with the roster (this runs on every
+    // roster update), even before the members column itself exists.
+    refreshMentionCandidates();
     if (!m_chatMembersLayout)
         return;
 
@@ -26037,6 +26353,9 @@ void MainWindow::sendCurrentMessage()
 
 void MainWindow::onComposerEdited(const QString &text)
 {
+    // Offer @-mention completions as the user types (independent of the typing
+    // indicator, which needs a live backend + conversation).
+    updateMentionPopup();
     if (!m_backend || m_currentConversation.isEmpty())
         return;
     if (text.trimmed().isEmpty()) {
@@ -26045,6 +26364,82 @@ void MainWindow::onComposerEdited(const QString &text)
     }
     sendTypingState(true);
     m_typingStopTimer->start(2500);
+}
+
+// Names a message can @-mention: every roster node except ourselves, de-duped
+// and sorted so the popup is stable. Self is excluded — you don't ping yourself.
+void MainWindow::refreshMentionCandidates()
+{
+    if (!m_mentionModel)
+        return;
+    QStringList names;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (member.self || member.name.trimmed().isEmpty())
+            continue;
+        if (!names.contains(member.name))
+            names.append(member.name);
+    }
+    names.sort(Qt::CaseInsensitive);
+    m_mentionModel->setStringList(names);
+}
+
+// The word ending at the caret that an @-mention is being typed into, or empty
+// when the caret isn't inside one. `tokenStart` (when given) receives the index
+// of the leading '@'. An '@' only opens a mention at the start of the line or
+// after whitespace, so emails and "a@b" mid-word don't trigger the popup.
+static QString mentionTokenAt(const QString &text, int cursor, int *tokenStart)
+{
+    if (tokenStart)
+        *tokenStart = -1;
+    int start = cursor - 1;
+    while (start >= 0 && !text.at(start).isSpace() &&
+           text.at(start) != QLatin1Char('@'))
+        --start;
+    if (start < 0 || text.at(start) != QLatin1Char('@'))
+        return QString();
+    if (start > 0 && !text.at(start - 1).isSpace())
+        return QString();
+    if (tokenStart)
+        *tokenStart = start;
+    return text.mid(start + 1, cursor - start - 1);
+}
+
+void MainWindow::updateMentionPopup()
+{
+    if (!m_mentionCompleter || !m_messageInput)
+        return;
+    int tokenStart = -1;
+    const QString token =
+        mentionTokenAt(m_messageInput->text(), m_messageInput->cursorPosition(),
+                       &tokenStart);
+    if (tokenStart < 0 || m_mentionModel->rowCount() == 0) {
+        m_mentionCompleter->popup()->hide();
+        return;
+    }
+    m_mentionCompleter->setCompletionPrefix(token);
+    if (m_mentionCompleter->completionCount() == 0) {
+        m_mentionCompleter->popup()->hide();
+        return;
+    }
+    // Width the popup to its widest entry; complete() anchors it under the input.
+    QRect rect = m_messageInput->rect();
+    rect.setWidth(m_mentionCompleter->popup()->sizeHintForColumn(0) + 24);
+    m_mentionCompleter->complete(rect);
+}
+
+void MainWindow::insertMention(const QString &name)
+{
+    if (!m_messageInput || name.isEmpty())
+        return;
+    QString text = m_messageInput->text();
+    int tokenStart = -1;
+    mentionTokenAt(text, m_messageInput->cursorPosition(), &tokenStart);
+    if (tokenStart < 0)
+        return;
+    const QString mention = QLatin1Char('@') + name + QLatin1Char(' ');
+    text.replace(tokenStart, m_messageInput->cursorPosition() - tokenStart, mention);
+    m_messageInput->setText(text);
+    m_messageInput->setCursorPosition(tokenStart + mention.length());
 }
 
 void MainWindow::sendTypingState(bool active)

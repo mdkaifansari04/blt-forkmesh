@@ -36,6 +36,7 @@ class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
+class QStringListModel;
 class QGraphicsOpacityEffect;
 class QLabel;
 class QMouseEvent;
@@ -398,6 +399,7 @@ private:
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
+    void editCurrentPullFile();         // edit the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
@@ -648,6 +650,10 @@ private:
     QIcon iconForDir(bool opened) const;
     void startRefreshSpin();
     void stopRefreshSpin();
+    // Busy feedback for the commits-page Refresh button: rotates its icon while a
+    // reload runs (kept visible briefly after, since the reload is near-instant).
+    void startCommitsRefreshSpin();
+    void stopCommitsRefreshSpin();
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
@@ -763,6 +769,11 @@ private:
     // derived from its text length and the OpenAI token price.
     static double openAiEstimateUsd(const Issue &issue);
     void editIssueAssignees();
+    // Gear next to "Assignees": pops a searchable, checkable dropdown of every
+    // known mesh node (plus any hand-typed assignee) so they can be ticked on or
+    // off. Persists via saveIssueAssigneesInline on close. editIssueAssignees
+    // still backs the inline "Assign yourself" text path.
+    void pickIssueAssignees();
     void saveIssueLabelsInline();
     void saveIssueMilestoneInline();
     void saveIssuePriorityInline();
@@ -873,6 +884,12 @@ private:
     void promptAddChannel();
     void sendCurrentMessage();
     void onComposerEdited(const QString &text);
+    // @-mention autocomplete in the chat composer: refresh the candidate names
+    // from the roster, show/hide the popup as an "@token" is typed, and replace
+    // that token with the chosen "@name " on selection.
+    void refreshMentionCandidates();
+    void updateMentionPopup();
+    void insertMention(const QString &name);
     void sendTypingState(bool active);
     void refreshTypingLabel();
     void attachFile();
@@ -1097,6 +1114,11 @@ private:
     bool m_stickToBottom = true;
     QLabel *m_typingLabel;
     QLineEdit *m_messageInput;
+    // @-mention autocomplete for the composer. Driven manually (setWidget, not
+    // setCompleter) so it completes the "@token" under the cursor rather than the
+    // whole line; its model holds the current roster's names.
+    QCompleter *m_mentionCompleter = nullptr;
+    QStringListModel *m_mentionModel = nullptr;
 
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;
@@ -1312,6 +1334,7 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
+    QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
@@ -1457,6 +1480,10 @@ private:
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
     int m_refreshAngle = 0;
+    // Commits-page Refresh button + its spin animation state.
+    QPushButton *m_commitsRefreshButton = nullptr;
+    QTimer *m_commitsRefreshSpinTimer = nullptr;
+    int m_commitsRefreshAngle = 0;
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
