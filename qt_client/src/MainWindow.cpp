@@ -4065,6 +4065,10 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
 
     QString reservedName = accountName;
     bool finalized = false;
+    // The node name is chosen on the previous screen, so when it's already valid
+    // we reserve it silently and skip the redundant name page — the wizard then
+    // presents as a 2-step flow (donate, then login).
+    const bool haveName = isValidNodeName(accountName);
 
     auto setStep = [&](int idx) {
         static const char *titles[] = {
@@ -4072,7 +4076,11 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
             "Donate to activate your node",
             "Create your login",
         };
-        stepLabel->setText(QStringLiteral("Step %1 of 3").arg(idx + 1));
+        // Page indices stay 0/1/2 internally; the visible "Step N of M" drops the
+        // hidden name page when the name was supplied up front.
+        const int total = haveName ? 2 : 3;
+        const int shown = haveName ? std::max(idx, 1) : idx + 1;
+        stepLabel->setText(QStringLiteral("Step %1 of %2").arg(shown).arg(total));
         titleLabel->setText(QString::fromUtf8(titles[idx]));
         stack->setCurrentIndex(idx);
     };
