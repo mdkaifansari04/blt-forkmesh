@@ -9907,6 +9907,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoPullsTab = b;
         if (i == 5)
             m_repoActionsTab = b; // handle for the Actions (N) badge
+        if (i == 8)
+            m_repoBranchesTab = b; // handle for the Branches (N) badge
         if (i == 10)
             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
         m_repoDetailTabs->addButton(b, i);
@@ -20107,6 +20109,9 @@ void MainWindow::loadBranchesAndTags()
                                           : QStringLiteral("branches")));
         m_branchesButton->setEnabled(!branches.isEmpty());
     }
+    if (m_repoBranchesTab)
+        m_repoBranchesTab->setText(
+            QStringLiteral("Branches (%1)").arg(formatCount(branches.size())));
 
     // Branch menu.
     if (m_branchButton) {
