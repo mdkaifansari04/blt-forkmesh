@@ -4,6 +4,7 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
 #include "../src/RoomCrypto.h"
 
@@ -562,6 +563,81 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
+
+        PullRequest reviewPr;
+        reviewPr.number = 99;
+        PullEvent approvingReview;
+        approvingReview.type = "review";
+        approvingReview.author = "reviewer-a";
+        approvingReview.state = "approved";
+        approvingReview.ts = 100;
+        PullEvent blockingReview;
+        blockingReview.type = "review";
+        blockingReview.author = "reviewer-b";
+        blockingReview.state = "changes_requested";
+        blockingReview.ts = 110;
+        PullEvent openThread;
+        openThread.type = "thread-comment";
+        openThread.id = "event-open";
+        openThread.threadId = "thread-open";
+        openThread.path = "src/a.cpp";
+        openThread.side = "new";
+        openThread.lineStart = 10;
+        openThread.lineEnd = 12;
+        openThread.body = "please guard this";
+        openThread.suggestionPatch = "@@ -10 +10 @@\n-old\n+new\n";
+        openThread.ts = 120;
+        PullEvent openReply;
+        openReply.type = "thread-reply";
+        openReply.threadId = "thread-open";
+        openReply.parentId = "event-open";
+        openReply.body = "reply";
+        openReply.ts = 130;
+        PullEvent appliedSuggestion;
+        appliedSuggestion.type = "suggestion-state";
+        appliedSuggestion.threadId = "thread-open";
+        appliedSuggestion.state = "applied";
+        appliedSuggestion.appliedCommit = "abc123";
+        appliedSuggestion.ts = 140;
+        PullEvent resolvedThread;
+        resolvedThread.type = "thread-comment";
+        resolvedThread.id = "event-resolved";
+        resolvedThread.threadId = "thread-resolved";
+        resolvedThread.path = "src/a.cpp";
+        resolvedThread.side = "old";
+        resolvedThread.lineStart = 20;
+        resolvedThread.lineEnd = 20;
+        resolvedThread.body = "remove this";
+        resolvedThread.ts = 150;
+        PullEvent resolvedState;
+        resolvedState.type = "thread-state";
+        resolvedState.threadId = "thread-resolved";
+        resolvedState.state = "resolved";
+        resolvedState.ts = 160;
+        PullEvent legacyLine;
+        legacyLine.type = "line-comment";
+        legacyLine.path = "src/b.cpp";
+        legacyLine.side = "new";
+        legacyLine.line = 5;
+        legacyLine.body = "legacy inline note";
+        legacyLine.ts = 170;
+        reviewPr.events = {approvingReview, blockingReview, openThread,
+                           openReply, appliedSuggestion, resolvedThread,
+                           resolvedState, legacyLine};
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(reviewPr);
+        check(snapshot.reviewSummary == "changes_requested",
+              "review model folds latest blocking review state");
+        check(snapshot.totalThreads == 3 && snapshot.unresolvedThreads == 2 &&
+                  snapshot.resolvedThreads == 1,
+              "review model counts resolved and unresolved threads");
+        check(snapshot.suggestions == 1,
+              "review model counts suggested changes");
+        check(snapshot.files.value("src/a.cpp").totalThreads == 2 &&
+                  snapshot.files.value("src/a.cpp").unresolvedThreads == 1,
+              "review model folds per-file thread counts");
+        check(snapshot.files.value("src/b.cpp").totalThreads == 1 &&
+                  snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
+              "review model treats legacy line-comments as unresolved threads");
 
         // --- CommitCommentStore round-trip -------------------------------
         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
