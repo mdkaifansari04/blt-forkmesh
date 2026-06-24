@@ -44,6 +44,7 @@ class QLabel;
 class QMouseEvent;
 class QLineEdit;
 class QListWidget;
+class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
 class QPlainTextEdit;
@@ -310,6 +311,8 @@ private:
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // Refresh the footer's centered git-identity label for the open repo.
+    void updateFooterGitIdentity();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
 
@@ -356,9 +359,8 @@ private:
     // Remove a commit from the browsed branch's history (source-of-truth only),
     // replaying its descendants onto its parent. Rewrites local history.
     void deleteCommit(const QString &hash);
-    // Overlay banner flagging unsynced commits: pin it over the table's top,
-    // reveal it, or fade it out — none of which touch the page layout.
-    void positionCommitsBanner();
+    // In-flow banner above the commit table flagging unsynced commits: reveal
+    // it, or fade it out (collapsing its row) when everything has synced.
     void showCommitsBanner(const QString &html);
     void hideCommitsBanner();
     // Open the issue or pull request referenced by "#<number>" in a commit
@@ -658,6 +660,16 @@ private:
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
     void loadAboutSidebar();
+    // --- Top-bar global search ("search everything"). One box that, as you type,
+    // searches across sections, every relay/node/repository, and (for the open
+    // repo) its issues, pull requests, branches, files and commit messages, then
+    // navigates straight to whatever result you pick.
+    QWidget *createGlobalSearchBox();          // build the box + results popup
+    void rebuildGlobalSearchResults();         // (re)populate the dropdown (debounced)
+    void positionGlobalSearchPopup();          // anchor the dropdown under the box
+    void moveGlobalSearchSelection(int delta); // keyboard up/down through results
+    void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
+    void hideGlobalSearchPopup();
     void loadCommits();
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
@@ -742,6 +754,11 @@ private:
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
     void loadRepoInsights();
+    // Insights "Contributors & activity": right-click a row to reassign that
+    // author's commits to a different identity (rewrites history via
+    // git filter-branch) to fix attribution.
+    void showInsightsContributorMenu(const QPoint &pos);
+    void reassignContributorIdentity(const QString &oldName);
     void setRepoBranch(const QString &branch);
     QString currentRef() const;
     QString repoGitDir() const;
@@ -1275,6 +1292,9 @@ private:
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
+    // Centered in the footer: the git identity (name <email>) configured for the
+    // repo currently open in the detail view. Updated by openRepoDetail.
+    QLabel *m_footerGitIdentity = nullptr;
 
     // Repo detail view
     int m_repoDetailIndex = -1;
@@ -1366,10 +1386,16 @@ private:
     // cached list — otherwise it keeps showing stale markers.
     QString m_commitsLoadedMirrorTip;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
+    // Top-bar "search everything" box and its floating results dropdown. The popup
+    // is parented to the window (not the short top bar) so it isn't clipped, and is
+    // NoFocus so clicking a result doesn't steal the keyboard from the search box.
+    QLineEdit *m_globalSearch = nullptr;
+    QListWidget *m_globalSearchPopup = nullptr;
+    QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
-    // The banner floats over the top of the commit table on its own layer so
-    // toggling it on a refresh never reflows the page; it fades out when cleared.
-    QWidget *m_commitsListPage = nullptr;      // parent the banner overlays
+    // The unsynced banner sits in the list page's layout above the table; it
+    // fades out (collapsing its row) when every commit has synced.
+    QWidget *m_commitsListPage = nullptr;
     QGraphicsOpacityEffect *m_commitsBannerOpacity = nullptr;
     QPropertyAnimation *m_commitsBannerFade = nullptr;
     QLabel *m_insightsSummary = nullptr;
@@ -1377,10 +1403,11 @@ private:
     QLabel *m_insightsLanguageBar = nullptr;
     QLabel *m_insightsLanguageLegend = nullptr;
     QLabel *m_insightsActivity = nullptr;
+    // Merged "Contributors & activity" table: name / commits / share / an
+    // embedded commits-over-time bar chart, all scoped to m_insightsRangeCombo.
     QTableWidget *m_insightsContributors = nullptr;
-    QTableWidget *m_insightsRecentCommits = nullptr;
-    // Container holding one per-contributor "commits over time" bar chart row.
-    QWidget *m_insightsCommitCharts = nullptr;
+    QComboBox *m_insightsRangeCombo = nullptr; // activity time window selector
+    QLabel *m_insightsActivityAxis = nullptr;  // "oldest <- ... -> newest" caption
     QPushButton *m_insightsRefreshButton = nullptr;
     // Source Control panel (top of the Commits tab).
     QWidget *m_scmPanel = nullptr;
