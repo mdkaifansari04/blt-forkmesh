@@ -6,7 +6,7 @@ status: open
 labels: [Phase 2]
 milestone: Phase 2
 priority: 4
-progress: 0
+progress: 55
 assignees: []
 createdAt: 1782149311554
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
