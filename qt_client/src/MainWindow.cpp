@@ -42,6 +42,7 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QStandardPaths>
@@ -65,10 +66,12 @@
 #include <QSslSocket>
 #include <QSslError>
 #include <QImage>
+#include <QKeyEvent>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QPropertyAnimation>
 #include <QRandomGenerator>
 #include <QEventLoop>
 #include <QFileSystemWatcher>
@@ -80,6 +83,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
+#include <QScreen>
 #include <QScrollArea>
 #include <QSet>
 #include <QScrollBar>
@@ -3301,6 +3305,20 @@ void MainWindow::startSession()
         m_setupError->show();
         return;
     }
+
+    // Website parity: there is no anonymous start. Require an account before
+    // entering the app — either this node already owns an active account / has
+    // logged in, or the user completes the paid signup (reserve → donate → set
+    // email + password) or logs in with an existing email + password. If they
+    // back out, stay on the welcome screen rather than starting unauthenticated.
+    if (!ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed()
+                                              : QString())) {
+        // ensureNodeAccount surfaces the reason (cancelled / failed) itself.
+        if (m_nameEdit)
+            m_nameEdit->setFocus();
+        return;
+    }
+
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
@@ -8663,11 +8681,38 @@ QWidget *MainWindow::buildRepoCommitsTab()
             });
     // Banner above the list flagging local commits that haven't reached the
     // network mirror yet (the rows themselves are tagged in the Commit column).
-    m_commitsUnsyncedBanner = new QLabel;
+    m_commitsListPage = listPage;
+    m_commitsUnsyncedBanner = new QLabel(listPage);
     m_commitsUnsyncedBanner->setObjectName("statusLine");
     m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
     m_commitsUnsyncedBanner->setWordWrap(true);
+    // Floats over the table on its own layer (parented to the page, not the
+    // layout) so toggling it on a refresh never shifts the search box or table;
+    // a card background keeps the rows behind it readable.
+    m_commitsUnsyncedBanner->setStyleSheet(
+        "#statusLine {"
+        "  background-color: rgba(210,153,34,0.16);"
+        "  border: 1px solid rgba(210,153,34,0.55);"
+        "  border-radius: 6px;"
+        "  padding: 6px 10px;"
+        "}");
+    // Fade-out animation: when the unsynced count drops to zero the note doesn't
+    // blink out, it eases away (InCubic stays opaque, then drops) so it lingers
+    // and stays readable a moment longer.
+    m_commitsBannerOpacity = new QGraphicsOpacityEffect(m_commitsUnsyncedBanner);
+    m_commitsBannerOpacity->setOpacity(1.0);
+    m_commitsUnsyncedBanner->setGraphicsEffect(m_commitsBannerOpacity);
+    m_commitsBannerFade = new QPropertyAnimation(m_commitsBannerOpacity,
+                                                 "opacity", this);
+    m_commitsBannerFade->setDuration(1500);
+    m_commitsBannerFade->setEasingCurve(QEasingCurve::InCubic);
+    connect(m_commitsBannerFade, &QPropertyAnimation::finished, this, [this] {
+        if (m_commitsUnsyncedBanner)
+            m_commitsUnsyncedBanner->hide();
+    });
     m_commitsUnsyncedBanner->hide();
+    // Keep the overlay pinned to the table as the splitter pane resizes.
+    listPage->installEventFilter(this);
 
     // Search box: type a hash (full or abbreviated) or words from the message to
     // filter the list; clearing it shows every commit again.
@@ -8680,7 +8725,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
-    listLayout->addWidget(m_commitsUnsyncedBanner);
+    // The unsynced banner is intentionally NOT added here — it's an overlay on
+    // its own layer (see above) so it never participates in this layout.
     listLayout->addWidget(m_commitSearch);
     listLayout->addWidget(m_commitsTable);
 
@@ -15509,15 +15555,14 @@ void MainWindow::loadCommits()
 
     if (m_commitsUnsyncedBanner) {
         if (unpushedShown > 0) {
-            m_commitsUnsyncedBanner->setText(
+            showCommitsBanner(
                 QString::fromUtf8(
                     "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 not yet "
                     "synced to the network mirror.</span>")
                     .arg(unpushedShown)
                     .arg(unpushedShown == 1 ? QString() : QStringLiteral("s")));
-            m_commitsUnsyncedBanner->show();
         } else {
-            m_commitsUnsyncedBanner->hide();
+            hideCommitsBanner();
         }
     }
 
@@ -15535,6 +15580,54 @@ void MainWindow::showCommitList()
 {
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(0);
+}
+
+// Pin the unsynced-commits overlay across the top of the commit table, inset a
+// little so its card sits inside the rows. Geometry is in the list page's
+// coordinates (both the banner and the table are its children).
+void MainWindow::positionCommitsBanner()
+{
+    if (!m_commitsUnsyncedBanner || !m_commitsTable || !m_commitsListPage)
+        return;
+    const QRect table = m_commitsTable->geometry();
+    const int margin = 8;
+    const int w = qMax(0, table.width() - 2 * margin);
+    int h = m_commitsUnsyncedBanner->heightForWidth(w);
+    if (h <= 0)
+        h = m_commitsUnsyncedBanner->sizeHint().height();
+    m_commitsUnsyncedBanner->setGeometry(table.x() + margin, table.y() + margin,
+                                         w, h);
+    m_commitsUnsyncedBanner->raise();
+}
+
+void MainWindow::showCommitsBanner(const QString &html)
+{
+    if (!m_commitsUnsyncedBanner)
+        return;
+    if (m_commitsBannerFade)
+        m_commitsBannerFade->stop(); // cancel any in-flight fade-out
+    if (m_commitsBannerOpacity)
+        m_commitsBannerOpacity->setOpacity(1.0);
+    m_commitsUnsyncedBanner->setText(html);
+    positionCommitsBanner();
+    m_commitsUnsyncedBanner->show();
+    m_commitsUnsyncedBanner->raise();
+}
+
+void MainWindow::hideCommitsBanner()
+{
+    if (!m_commitsUnsyncedBanner || m_commitsUnsyncedBanner->isHidden())
+        return;
+    // Ease the note away instead of snapping it off, so it stays readable a
+    // moment longer; the animation's finished handler does the actual hide().
+    if (!m_commitsBannerFade || !m_commitsBannerOpacity) {
+        m_commitsUnsyncedBanner->hide();
+        return;
+    }
+    m_commitsBannerFade->stop();
+    m_commitsBannerFade->setStartValue(m_commitsBannerOpacity->opacity());
+    m_commitsBannerFade->setEndValue(0.0);
+    m_commitsBannerFade->start();
 }
 
 void MainWindow::filterCommits(const QString &query)
@@ -18538,23 +18631,12 @@ void MainWindow::refreshIssueList()
     const QString search =
         m_issueSearch ? m_issueSearch->text().trimmed() : QString();
     const int keep = m_currentIssueNumber;
-    // Remember where the viewed issue currently sits (and whether its detail pane
-    // is open) so that, if a close drops it out of the filtered list, we can land
-    // the selection on the issue that slides into its place and keep the pane
-    // open instead of collapsing to the full-width list (issue #188).
-    const bool advanceToNext = m_advanceToNextOnReload;
-    m_advanceToNextOnReload = false;
+    // Remember whether the viewed issue's detail pane is open so that, if a close
+    // drops it out of the filtered list, we can keep the pane open on that same
+    // (now-closed) issue instead of collapsing to the full-width list (issue #188).
+    const bool keepCurrent = m_keepCurrentOnReload;
+    m_keepCurrentOnReload = false;
     const bool detailWasOpen = m_issueDetail && m_issueDetail->isVisible();
-    int keepRow = -1;
-    if (keep > 0) {
-        for (int r = 0; r < m_issueTable->rowCount(); ++r) {
-            QTableWidgetItem *it = m_issueTable->item(r, 0);
-            if (it && it->data(Qt::UserRole).toInt() == keep) {
-                keepRow = r;
-                break;
-            }
-        }
-    }
 
     // Disable sorting while inserting so rows aren't reordered mid-build.
     // Block signals during the full rebuild so that setRowCount(0),
@@ -18722,15 +18804,35 @@ void MainWindow::refreshIssueList()
         // Re-select the issue the user was already viewing (fires
         // itemSelectionChanged -> showIssue).
         m_issueTable->selectRow(selRow);
-    } else if (advanceToNext && detailWasOpen && m_issueTable->rowCount() > 0) {
-        // The viewed issue just dropped out of the list (e.g. closed while
-        // filtering to Open). Keep the detail panel open and move to the issue
-        // that took its place — the next one down, or the last row if it was at
-        // the end. selectRow fires itemSelectionChanged -> showIssue, which
-        // re-shows the pane for the new issue.
-        const int nextRow =
-            qMin(keepRow < 0 ? 0 : keepRow, m_issueTable->rowCount() - 1);
-        m_issueTable->selectRow(nextRow);
+    } else if (keepCurrent && detailWasOpen && keep > 0) {
+        // The viewed issue just dropped out of the filtered list (e.g. closed
+        // while filtering to Open). Stay put: keep the detail panel open on that
+        // same issue rather than jumping to another row or collapsing to the
+        // full-width list. loadAll() ignores the filter, so the issue is still in
+        // m_currentIssues — re-render its thread with no table row selected.
+        bool stillThere = false;
+        for (const Issue &issue : m_currentIssues) {
+            if (issue.number == keep) {
+                m_currentIssueNumber = keep;
+                renderIssueThread(issue);
+                updateIssueActionState();
+                stillThere = true;
+                break;
+            }
+        }
+        if (!stillThere) {
+            // The issue genuinely vanished (e.g. deleted) — fall back to the
+            // collapsed list below.
+            m_issueTable->clearSelection();
+            m_currentIssueNumber = -1;
+            if (m_issueDetail && m_issueDetail->isVisible()) {
+                m_issueDetail->hide();
+                if (m_issueDetailToggle)
+                    m_issueDetailToggle->setText("Show detail");
+            }
+            renderIssueThread(Issue());
+            updateIssueActionState();
+        }
     } else {
         // First load (or the viewed issue is gone): show the table full width
         // with no row selected; the detail panel stays hidden until a click.
@@ -20607,9 +20709,10 @@ void MainWindow::closeIssueWithComment()
     m_pendingIssueAttachments.clear();
     if (m_issueAttachButton)
         m_issueAttachButton->setText("Paste, drop, or click to add files");
-    // Closing may drop the issue out of the current filter; keep the detail panel
-    // on the next issue rather than collapsing to the list (mirrors toggleIssueStatus).
-    m_advanceToNextOnReload = true;
+    // Closing may drop the issue out of the current filter; stay on it (keep the
+    // detail panel open on the just-closed issue) rather than collapsing to the
+    // list or jumping away (mirrors toggleIssueStatus).
+    m_keepCurrentOnReload = true;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
     setIssueInlineNotice("Comment added and issue closed.");
@@ -20652,6 +20755,20 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         cycleNavSolanaCurrency();
         return true;
     }
+    // Re-pin the unsynced-commits overlay whenever its host page resizes (e.g.
+    // dragging the splitter), since it lives outside the layout.
+    if (obj == m_commitsListPage && (event->type() == QEvent::Resize ||
+                                     event->type() == QEvent::Show)) {
+        positionCommitsBanner();
+    }
+    // Pasting an image into the chat composer shares it as an attachment. Only
+    // consume the event when we actually sent an image; otherwise let the line
+    // edit handle a normal text paste.
+    if (obj == m_messageInput && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+            return true;
+    }
     return QMainWindow::eventFilter(obj, event);
 }
 
@@ -20672,9 +20789,9 @@ void MainWindow::toggleIssueStatus()
         return;
     }
     // If this toggle drops the issue out of the current filter (e.g. closing it
-    // while filtering to Open), advance to the next issue and keep the detail
-    // panel open rather than collapsing back to the list.
-    m_advanceToNextOnReload = true;
+    // while filtering to Open), stay on it: keep the detail panel open on the same
+    // issue rather than jumping away or collapsing back to the list.
+    m_keepCurrentOnReload = true;
     reloadIssues();
     setIssueInlineNotice(status == "open" ? "Issue closed." : "Issue reopened.");
 }
@@ -21841,6 +21958,9 @@ QWidget *MainWindow::buildChatSection()
     m_messageInput->setObjectName("messageInput");
     m_messageInput->setPlaceholderText("Message #general");
     m_messageInput->setMaxLength(16000);
+    // Intercept Ctrl+V so a clipboard image (e.g. a screenshot) is shared as a
+    // file attachment instead of being dropped by the text-only line edit.
+    m_messageInput->installEventFilter(this);
     auto *sendButton = new QPushButton("Send");
     sendButton->setObjectName("primaryButton");
     auto *composerLayout = new QHBoxLayout(composer);
@@ -22430,21 +22550,47 @@ QWidget *MainWindow::buildSettingsSection()
     auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
     auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
     auto *varDeleteButton = new QPushButton("Delete");
-    for (QPushButton *b : {varAddButton, varEditButton, varDeleteButton}) {
+    m_varsRevealButton = new QPushButton("Reveal");
+    for (QPushButton *b :
+         {varAddButton, varEditButton, varDeleteButton, m_varsRevealButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
     }
+    m_varsRevealButton->setToolTip("Show or hide the secret values in clear text");
     connect(varAddButton, &QPushButton::clicked, this,
             &MainWindow::addOrEditVariable);
     connect(varEditButton, &QPushButton::clicked, this,
             &MainWindow::addOrEditVariable);
     connect(varDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteSelectedVariable);
+    connect(m_varsRevealButton, &QPushButton::clicked, this,
+            &MainWindow::toggleVariablesRevealed);
+    // Click a revealed value to copy it to the clipboard. Masked rows do
+    // nothing — there is nothing useful to copy while hidden.
+    connect(m_varsTable, &QTableWidget::cellClicked, this,
+            [this](int row, int column) {
+                if (column != 1 || !m_varsRevealed)
+                    return;
+                QTableWidgetItem *item = m_varsTable->item(row, 1);
+                if (!item)
+                    return;
+                const QString value = item->data(Qt::UserRole).toString();
+                if (value.isEmpty())
+                    return;
+                QApplication::clipboard()->setText(value);
+                const QString name = m_varsTable->item(row, 0)
+                                         ? m_varsTable->item(row, 0)->text()
+                                         : QString();
+                logSystem(name.isEmpty()
+                              ? QStringLiteral("Copied value to clipboard.")
+                              : QStringLiteral("Copied %1 to clipboard.").arg(name));
+            });
     auto *varButtonRow = new QHBoxLayout;
     varButtonRow->setContentsMargins(0, 0, 0, 0);
     varButtonRow->addWidget(varAddButton);
     varButtonRow->addWidget(varEditButton);
     varButtonRow->addWidget(varDeleteButton);
+    varButtonRow->addWidget(m_varsRevealButton);
     varButtonRow->addStretch();
 
     auto *leaveButton = new QPushButton("Leave node");
@@ -23047,6 +23193,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
             &MainWindow::confirmAdminDeleteMessage);
     connect(row, &MessageRow::saveFileRequested, this,
             &MainWindow::saveIncomingFile);
+    connect(row, &MessageRow::imageActivated, this,
+            &MainWindow::showChatImageDetail);
     // Clicking a sender's avatar or name in chat opens their node profile. The
     // profile panel lives in the Home section, so switch there first — otherwise
     // the panel updates behind the Chat section and nothing appears to happen.
@@ -23742,6 +23890,100 @@ void MainWindow::attachFile()
     const QFileInfo info(path);
     const QString mime = QMimeDatabase().mimeTypeForFileNameAndData(path, data).name();
     m_backend->sendFile(m_currentConversation, info.fileName(), mime, data);
+}
+
+// Open a chat image attachment full-size in a lightbox dialog. The inline row
+// only shows a downscaled preview; this restores the original pixels (scaled down
+// only if larger than the screen) inside a scrollable, frameless viewer.
+void MainWindow::showChatImageDetail(const QString &fileName,
+                                     const QByteArray &data)
+{
+    QPixmap pixmap;
+    if (!pixmap.loadFromData(data)) {
+        // Not a decodable image after all — fall back to the save dialog.
+        saveIncomingFile(fileName, data);
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("imageDetailDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(fileName.isEmpty() ? QStringLiteral("Image")
+                                              : fileName);
+
+    // Cap the displayed size to most of the available screen so huge images
+    // don't open larger than the monitor; smaller images show at native size.
+    QSize maxSize(1200, 800);
+    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QSize avail = screen->availableSize();
+        maxSize = QSize(avail.width() * 9 / 10, avail.height() * 9 / 10);
+    }
+    QPixmap shown = pixmap;
+    if (pixmap.width() > maxSize.width() || pixmap.height() > maxSize.height())
+        shown = pixmap.scaled(maxSize, Qt::KeepAspectRatio,
+                              Qt::SmoothTransformation);
+
+    auto *imageLabel = new QLabel;
+    imageLabel->setAlignment(Qt::AlignCenter);
+    imageLabel->setPixmap(shown);
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("messageView");
+    scroll->setWidgetResizable(true);
+    scroll->setAlignment(Qt::AlignCenter);
+    scroll->setWidget(imageLabel);
+
+    auto *saveButton = new QPushButton(QStringLiteral("Save\xE2\x80\xA6"));
+    saveButton->setObjectName("ghostButton");
+    saveButton->setCursor(Qt::PointingHandCursor);
+    connect(saveButton, &QPushButton::clicked, this,
+            [this, fileName, data] { saveIncomingFile(fileName, data); });
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName("primaryButton");
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addWidget(new QLabel(
+        QStringLiteral("%1 \xC3\x97 %2").arg(pixmap.width()).arg(pixmap.height())));
+    buttonRow->addStretch();
+    buttonRow->addWidget(saveButton);
+    buttonRow->addWidget(closeButton);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+    layout->addWidget(scroll, 1);
+    layout->addLayout(buttonRow);
+
+    dialog->resize(qMin(shown.width() + 48, maxSize.width()),
+                   qMin(shown.height() + 96, maxSize.height()));
+    dialog->show();
+}
+
+// If the clipboard holds an image (e.g. a screenshot), share it in the current
+// conversation as a PNG attachment and return true. Used to support Ctrl+V in
+// the composer; returns false so a normal text paste proceeds as usual.
+bool MainWindow::trySendClipboardImage()
+{
+    if (!m_backend || m_currentConversation.isEmpty())
+        return false;
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasImage())
+        return false;
+    const QImage image = qvariant_cast<QImage>(mime->imageData());
+    if (image.isNull())
+        return false;
+    QByteArray data;
+    QBuffer buffer(&data);
+    buffer.open(QIODevice::WriteOnly);
+    if (!image.save(&buffer, "PNG"))
+        return false;
+    m_backend->sendFile(m_currentConversation,
+                        QStringLiteral("pasted-image.png"), QStringLiteral("image/png"),
+                        data);
+    return true;
 }
 
 void MainWindow::saveIncomingFile(const QString &fileName, const QByteArray &data)
@@ -25889,15 +26131,20 @@ void MainWindow::uninstallForkMesh()
     addDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
     addDir(QFileInfo(QSettings().fileName()).absolutePath());
     addDir(sourceDir);
+    // The IDE-extension handoff dir and the curl-installer's source checkout
+    // (lowercase "forkmesh") aren't covered by the standard locations above.
+    addDir(QDir::homePath() + QStringLiteral("/.forkmesh"));
+    addDir(dataHome + QStringLiteral("/forkmesh"));
 
     // Loose files: the login-autostart entry, the installed desktop launcher,
-    // and every hicolor icon bucket install.sh wrote.
+    // the curl-installer binary, and every hicolor icon bucket install.sh wrote.
     QStringList files;
     auto addFile = [&files](const QString &f) {
         if (!f.isEmpty() && QFileInfo::exists(f) && !files.contains(f))
             files << f;
     };
     addFile(autostartDesktopPath());
+    addFile(QDir::homePath() + QStringLiteral("/.local/bin/forkmesh"));
     addFile(dataHome + QStringLiteral("/applications/forkmesh.desktop"));
     addFile(dataHome + QStringLiteral("/icons/forkmesh.png"));
     QDirIterator iconIt(dataHome + QStringLiteral("/icons/hicolor"),
@@ -27880,10 +28127,15 @@ void MainWindow::reloadVariablesTable()
         const int row = m_varsTable->rowCount();
         m_varsTable->insertRow(row);
         m_varsTable->setItem(row, 0, new QTableWidgetItem(it.key()));
-        // Mask the value; the real text is kept in UserRole for editing.
+        // Show the value in clear text when revealed; otherwise mask it. The
+        // real text is always kept in UserRole for editing.
         auto *valueItem = new QTableWidgetItem(
-            QString(qMin(it.value().size(), 24), QChar(0x2022)));
+            m_varsRevealed ? it.value()
+                           : QString(qMin(it.value().size(), 24), QChar(0x2022)));
         valueItem->setData(Qt::UserRole, it.value());
+        // When revealed, the value is click-to-copy; hint at it.
+        if (m_varsRevealed)
+            valueItem->setToolTip("Click to copy to clipboard");
         m_varsTable->setItem(row, 1, valueItem);
     }
 }
@@ -27931,6 +28183,14 @@ void MainWindow::deleteSelectedVariable()
     QMap<QString, QString> vars = ActionStore::variables();
     vars.remove(name);
     ActionStore::setVariables(vars);
+    reloadVariablesTable();
+}
+
+void MainWindow::toggleVariablesRevealed()
+{
+    m_varsRevealed = !m_varsRevealed;
+    if (m_varsRevealButton)
+        m_varsRevealButton->setText(m_varsRevealed ? "Hide" : "Reveal");
     reloadVariablesTable();
 }
 

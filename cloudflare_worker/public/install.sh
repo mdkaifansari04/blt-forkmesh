@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.8.0 (2026-06-23)"
+INSTALLER_VERSION="0.9.0 (2026-06-23)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -92,6 +92,81 @@ resolve_install_node() {
   esac
   FORKMESH_NODE="$node"
 }
+
+# --- uninstall --------------------------------------------------------------
+# Remove ForkMesh completely: the binary, the cloned source, the desktop
+# launcher + icons, the login-autostart entry, AND every byte of user data
+# (settings, the node identity key, all mirrored repositories, and chat
+# history). A plain delete of the binary leaves this data behind — which is why
+# a reinstall used to show an old node name and stale chat. Run with:
+#   curl -fsSL https://forkmesh.com/install.sh | bash -s -- --uninstall
+uninstall_forkmesh() {
+  local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+  local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+
+  # Directories ForkMesh owns. QSettings org+app are both "ForkMesh", so the
+  # config/data/cache live under a capitalised "ForkMesh" dir; the installer's
+  # own checkout lives under the lowercase "forkmesh".
+  local dirs=(
+    "$config_home/ForkMesh"          # settings (node name, server, prefs)
+    "$data_home/ForkMesh"            # identity key, mirrors, repos, chat, actions
+    "$cache_home/ForkMesh"          # caches
+    "$HOME/.forkmesh"               # IDE-extension handoff dir
+    "$data_home/forkmesh"           # installer source checkout (parent of $SRC)
+  )
+  # Loose files: binary, desktop launcher, autostart entry, installed icons.
+  local files=(
+    "$BIN"
+    "$data_home/applications/forkmesh.desktop"
+    "$config_home/autostart/forkmesh.desktop"
+    "$data_home/icons/forkmesh.png"
+  )
+
+  printf '\033[31mThis removes ForkMesh and ALL of its data from this computer:\033[0m\n'
+  printf '  • the forkmesh binary and installed source\n'
+  printf '  • settings, the node identity key (the account cannot be recovered)\n'
+  printf '  • every mirrored repository, and all chat history\n'
+  printf '  • the desktop launcher, icons, and login-autostart entry\n\n'
+
+  # Honour a non-interactive confirm so `curl | bash` works: pass --yes (or set
+  # FORKMESH_ASSUME_YES=1). Otherwise prompt when a terminal is attached.
+  if [ "${FORKMESH_ASSUME_YES:-0}" != "1" ] && [ "${1:-}" != "--yes" ]; then
+    if [ -t 0 ]; then
+      printf 'Type DELETE to continue: '
+      local answer=""; read -r answer || answer=""
+      [ "$answer" = "DELETE" ] || die "Uninstall cancelled."
+    else
+      die "Refusing to uninstall without confirmation. Re-run with --yes (or set FORKMESH_ASSUME_YES=1) to proceed:  curl -fsSL $FORKMESH_HOST/install.sh | bash -s -- --uninstall --yes"
+    fi
+  fi
+
+  local d f
+  for d in "${dirs[@]}"; do
+    if [ -e "$d" ]; then rm -rf -- "$d" && say "Removed $d"; fi
+  done
+  for f in "${files[@]}"; do
+    if [ -e "$f" ]; then rm -f -- "$f" && say "Removed $f"; fi
+  done
+  # Every hicolor icon bucket the installer may have written.
+  find "$data_home/icons/hicolor" -name 'forkmesh.png' -delete 2>/dev/null || true
+  # Refresh desktop caches so the launcher disappears promptly.
+  command -v update-desktop-database >/dev/null 2>&1 \
+    && update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
+  command -v gtk-update-icon-cache >/dev/null 2>&1 \
+    && gtk-update-icon-cache -f -t "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+  say "ForkMesh has been completely removed."
+  exit 0
+}
+
+# Dispatch uninstall before any install work (and before the diag EXIT trap can
+# misreport a clean uninstall as a failed install step).
+for arg in "$@"; do
+  case "$arg" in
+    --uninstall|--remove|-u) CURRENT_STEP="uninstall"; trap - EXIT; shift || true
+      uninstall_forkmesh "$@" ;;
+  esac
+done
 
 printf '\033[32m╭───────────────────────────────────────────────╮\033[0m\n'
 printf '\033[32m│\033[0m  ForkMesh installer  \033[2mv%-24s\033[0m\033[32m│\033[0m\n' "$INSTALLER_VERSION"
@@ -333,15 +408,45 @@ diag deps 1 "${DIAG_MISSING:-none}"
 # of aborting, so on ANY failure we can wipe the source tree and run the whole
 # pipeline once more from a clean clone.
 
+# Sentinel written into a checkout this installer created and therefore owns.
+# Every destructive operation below refuses to delete a directory that does not
+# carry this marker, so $SRC (default or via FORKMESH_DIR) coinciding with a
+# hand-made developer checkout can never be wiped — a failed `git pull` must
+# never escalate to `rm -rf` of unsaved work.
+MANAGED_MARKER=".forkmesh-managed"
+owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
+
+# Refuse to remove $SRC unless we created it (or it does not exist yet).
+guard_src_removable() {
+  if [ -e "$SRC" ] && ! owns_src; then
+    die "$SRC already exists and was not created by this installer; refusing to delete it. Set FORKMESH_DIR to a fresh path, or remove it yourself if you are sure it is disposable."
+  fi
+}
+
+# Replace $SRC with a fresh shallow clone. Clone into a temporary sibling first
+# and swap it into place only after the clone fully succeeds, so a failed clone
+# (e.g. no mirror currently serving the repo) can never leave the user with a
+# half-deleted or missing $SRC.
 clean_clone() {
-  rm -rf "$SRC"
+  guard_src_removable
+  local tmp="$SRC.new.$$"
+  rm -rf "$tmp"
   say "Cloning $REPO"
-  git clone --depth 1 "$REPO" "$SRC"
+  if ! git clone --depth 1 "$REPO" "$tmp"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  : > "$tmp/$MANAGED_MARKER"
+  rm -rf "$SRC"
+  mv "$tmp" "$SRC"
 }
 
 fetch_source() {
   mkdir -p "$(dirname "$SRC")" || return 1
   if [ -d "$SRC/.git" ]; then
+    if ! owns_src; then
+      die "$SRC is an existing git checkout not created by this installer; refusing to modify it. Set FORKMESH_DIR to a different path to install alongside it."
+    fi
     say "Updating existing checkout in $SRC"
     # The stored remote was baked with the node id live at the original install.
     # That node may now be offline while a different mirror is online, so pulling
@@ -407,7 +512,8 @@ attempt_install() {
 }
 
 if ! attempt_install; then
-  warn "Install failed; removing $SRC and retrying once from a clean clone."
+  warn "Install failed; retrying once from a clean clone."
+  guard_src_removable
   rm -rf "$SRC"
   attempt_install \
     || die "Install failed again after a clean re-clone; see the messages above for the cause."
