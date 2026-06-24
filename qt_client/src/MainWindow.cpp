@@ -10577,10 +10577,17 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmCommitButton = new QPushButton("Commit");
     m_scmCommitButton->setObjectName("primaryButton");
     connect(m_scmCommitButton, &QPushButton::clicked, this, &MainWindow::scmCommit);
+    m_scmCommitPushButton = new QPushButton("Commit & push");
+    m_scmCommitPushButton->setObjectName("primaryButton");
+    m_scmCommitPushButton->setToolTip(
+        "Commit the staged changes, then publish them to the network mirror "
+        "(or push to the upstream branch).");
+    connect(m_scmCommitPushButton, &QPushButton::clicked, this,
+            &MainWindow::scmCommitAndPush);
     for (QPushButton *b : {m_scmCopyButton, m_scmStageAllButton,
                            m_scmUnstageAllButton, m_scmDiscardAllButton,
-                           m_scmCommitButton}) {
-        if (b != m_scmCommitButton)
+                           m_scmCommitButton, m_scmCommitPushButton}) {
+        if (b != m_scmCommitButton && b != m_scmCommitPushButton)
             b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -10599,6 +10606,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmUnstageAllButton);
     composeRow->addWidget(m_scmDiscardAllButton);
     composeRow->addWidget(m_scmCommitButton);
+    composeRow->addWidget(m_scmCommitPushButton);
     root->addLayout(composeRow);
 
     auto *header = new QHBoxLayout;
@@ -10712,6 +10720,8 @@ void MainWindow::refreshSourceControl()
             m_scmCountLabel->clear();
         if (m_scmCommitButton)
             m_scmCommitButton->setEnabled(false);
+        if (m_scmCommitPushButton)
+            m_scmCommitPushButton->setEnabled(false);
         if (m_scmGenerateButton)
             m_scmGenerateButton->setEnabled(false);
         return;
@@ -10838,6 +10848,8 @@ void MainWindow::refreshSourceControl()
     const bool anything = total > 0;
     if (m_scmCommitButton)
         m_scmCommitButton->setEnabled(anything);
+    if (m_scmCommitPushButton)
+        m_scmCommitPushButton->setEnabled(anything);
     if (m_scmGenerateButton)
         m_scmGenerateButton->setEnabled(anything);
     if (m_scmUnstageAllButton)
@@ -11029,15 +11041,15 @@ void MainWindow::scmDiscardAll()
     refreshSourceControl();
 }
 
-void MainWindow::scmCommit()
+bool MainWindow::performScmCommit()
 {
     const QString dir = repoGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
-        return;
+        return false;
     const QString msg = m_scmMessage ? m_scmMessage->text().trimmed() : QString();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
-        return;
+        return false;
     }
     QByteArray staged;
     runGitCapture(dir, {"diff", "--cached", "--name-only"}, &staged, nullptr);
@@ -11045,18 +11057,18 @@ void MainWindow::scmCommit()
         if (QMessageBox::question(
                 this, "Commit",
                 "Nothing is staged. Stage all changes and commit?") != QMessageBox::Yes)
-            return;
+            return false;
         QString err;
         if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err)) {
             QMessageBox::warning(this, "Commit", err.isEmpty() ? "git add failed." : err);
-            return;
+            return false;
         }
     }
     QString err;
     if (!runGitCapture(dir, {"commit", "-m", msg}, nullptr, &err)) {
         QMessageBox::warning(this, "Commit",
                              err.isEmpty() ? "git commit failed." : err.left(300));
-        return;
+        return false;
     }
     if (m_scmMessage)
         m_scmMessage->clear();
@@ -11064,6 +11076,22 @@ void MainWindow::scmCommit()
     loadCommits(); // refresh history + the working-changes panel
     if (m_repoDetailIndex >= 0)
         propagateRepoUpdate(m_repoDetailIndex);
+    return true;
+}
+
+void MainWindow::scmCommit()
+{
+    performScmCommit();
+}
+
+void MainWindow::scmCommitAndPush()
+{
+    // Only push once the commit actually lands; performScmCommit() surfaces any
+    // failure (empty message, git error) itself. pushCurrentRepoUpstream() then
+    // publishes to the served network mirror or pushes to the upstream branch,
+    // matching the "Publish N" button's behaviour.
+    if (performScmCommit())
+        pushCurrentRepoUpstream();
 }
 
 QString MainWindow::scmContextDiff() const
@@ -20268,6 +20296,7 @@ void MainWindow::loadBranchesPanel()
 
         // Ahead/behind vs the default branch.
         QString status = branch == base ? QStringLiteral("Default branch") : QString();
+        int behind = 0;
         qint64 ts = 0;
         if (!dir.isEmpty()) {
             if (branch != base) {
@@ -20279,9 +20308,11 @@ void MainWindow::loadBranchesPanel()
                     const QStringList parts =
                         QString::fromUtf8(counts).trimmed().split(
                             QRegularExpression(QStringLiteral("\\s+")));
-                    if (parts.size() >= 2)
+                    if (parts.size() >= 2) {
+                        behind = parts.at(0).toInt();
                         status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
                                      .arg(parts.at(0), parts.at(1));
+                    }
                 }
             }
             QByteArray when;
@@ -20298,6 +20329,32 @@ void MainWindow::loadBranchesPanel()
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(0, 0, 0, 0);
         actionRow->setSpacing(4);
+
+        // Bring this branch up to date by merging the default branch into it.
+        auto *updateButton = new QPushButton(QStringLiteral("Pull %1").arg(base));
+        updateButton->setObjectName("ghostButton");
+        updateButton->setProperty("buttonSize", "sm");
+        updateButton->setCursor(Qt::PointingHandCursor);
+        setOcticon(updateButton, "download", 14);
+        const bool canUpdate = writable && branch != base && behind > 0;
+        updateButton->setEnabled(canUpdate);
+        if (branch == base)
+            updateButton->setToolTip(
+                QStringLiteral("%1 is the default branch").arg(base));
+        else if (!writable)
+            updateButton->setToolTip(
+                "Read-only mirror \xE2\x80\x94 no working tree to update");
+        else if (behind == 0)
+            updateButton->setToolTip(
+                QStringLiteral("%1 is already up to date with %2").arg(branch, base));
+        else
+            updateButton->setToolTip(
+                QStringLiteral("Merge %1 into %2 (%3 commit(s) behind)")
+                    .arg(base, branch)
+                    .arg(behind));
+        connect(updateButton, &QPushButton::clicked, this,
+                [this, branch] { updateBranchFromBase(branch); });
+        actionRow->addWidget(updateButton);
 
         auto *prButton = new QPushButton("Create PR");
         prButton->setObjectName("ghostButton");
@@ -20489,6 +20546,117 @@ void MainWindow::createPullFromBranch(const QString &branch)
         QStringLiteral("Opened pull request #%1 from %2.").arg(number).arg(branch));
     m_currentPullNumber = number;
     switchToPullTab(number);
+}
+
+void MainWindow::updateBranchFromBase(const QString &branch)
+{
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (branch.isEmpty() || branch == base || dir.isEmpty())
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "This is a read-only mirror; branches can't be updated here.", true);
+        return;
+    }
+
+    // How far behind base is the branch? Nothing to do if it's already current.
+    int behind = 0, ahead = 0;
+    QByteArray counts;
+    if (runGitCapture(dir,
+                      {"rev-list", "--left-right", "--count", base + "..." + branch},
+                      &counts, nullptr)) {
+        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+            QRegularExpression(QStringLiteral("\\s+")));
+        if (parts.size() >= 2) {
+            behind = parts.at(0).toInt();
+            ahead = parts.at(1).toInt();
+        }
+    }
+    if (behind == 0) {
+        setRepoDetailNotice(
+            QStringLiteral("%1 is already up to date with %2.").arg(branch, base));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("Pull from %1").arg(base),
+            QStringLiteral("Merge %1 into %2 to bring it up to date?\n\n"
+                           "%2 is %3 commit(s) behind %1.")
+                .arg(base, branch)
+                .arg(behind),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+
+    QByteArray headOut;
+    QString currentBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+        currentBranch = QString::fromUtf8(headOut).trimmed();
+    const bool isCurrent = !currentBranch.isEmpty() && branch == currentBranch;
+
+    // When the branch is strictly behind (no commits of its own that base lacks)
+    // and isn't checked out, advance the ref without touching the working tree.
+    if (ahead == 0 && !isCurrent) {
+        QString err;
+        if (!runGitCapture(dir, {"fetch", ".", base + ":" + branch}, nullptr, &err)) {
+            setRepoDetailNotice(
+                err.isEmpty() ? "Could not fast-forward the branch." : err.left(240),
+                true);
+            return;
+        }
+        logSystem(QStringLiteral("Git: fast-forwarded %1 to %2.").arg(branch, base));
+        setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+        const QString browsed = m_repoBranch;
+        loadBranchesAndTags();
+        if (!browsed.isEmpty() && branches.contains(browsed))
+            setRepoBranch(browsed);
+        return;
+    }
+
+    // A merge commit is needed: it has to happen on a checkout, so the working
+    // tree must be clean before we switch branches and merge.
+    QByteArray status;
+    QString err;
+    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
+        !status.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            err.isEmpty() ? "Commit or stash local changes before updating this branch."
+                          : err.left(240),
+            true);
+        return;
+    }
+
+    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
+            true);
+        return;
+    }
+
+    if (!runGitCapture(dir, {"merge", "--no-edit", base}, nullptr, &err)) {
+        // Conflicts (or any failure) — abort so the tree is left clean, then
+        // restore the branch the user was actually on.
+        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!isCurrent && !currentBranch.isEmpty())
+            runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+        setRepoDetailNotice(
+            QStringLiteral("Merging %1 into %2 hit conflicts; %2 was left unchanged. "
+                           "Check out %2 and merge manually to resolve them.")
+                .arg(base, branch),
+            true);
+        return;
+    }
+
+    if (!isCurrent && !currentBranch.isEmpty())
+        runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+
+    logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
+    setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+    const QString browsed = m_repoBranch;
+    loadBranchesAndTags();
+    if (!browsed.isEmpty() && repoBranches().contains(browsed))
+        setRepoBranch(browsed);
 }
 
 // ---- Releases panel --------------------------------------------------------
