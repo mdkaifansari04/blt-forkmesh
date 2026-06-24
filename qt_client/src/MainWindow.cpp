@@ -165,6 +165,9 @@ bool currentThemeIsDark();
 constexpr int kCommitSummaryCol = 6;
 // Column showing the short commit hash (also flags unsynced commits).
 constexpr int kCommitHashCol = 2;
+// Trailing column carrying the per-row "delete from history" button. Only the
+// node holding the working copy (the source of truth) can act on it.
+constexpr int kCommitActionCol = 7;
 
 class SortTableWidgetItem : public QTableWidgetItem
 {
@@ -5185,8 +5188,14 @@ QWidget *MainWindow::buildChatPage()
 
 QWidget *MainWindow::buildNetworkLogDock()
 {
+    // Full-width, grey-bordered quick-add bar: the issue input expands on the
+    // left, then a flexible gap pushes the donate/Reddit/X cluster to the far
+    // right.
     auto *dock = new QWidget;
     dock->setObjectName("logDock");
+
+    auto *card = new QWidget;
+    card->setObjectName("quickAddCard");
 
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
@@ -5223,20 +5232,117 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setProperty("buttonSize", "sm");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
 
-    auto *quickAddRow = new QHBoxLayout(dock);
-    quickAddRow->setContentsMargins(12, 6, 8, 6);
+    // Far-right cluster: a standout donate button (opens the treasury QR), then
+    // the ForkMesh Reddit and Twitter/X links at the very edge.
+    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
+    donateButton->setObjectName("donateButton");
+    donateButton->setCursor(Qt::PointingHandCursor);
+    donateButton->setToolTip("Donate SOL directly to the ForkMesh treasury");
+
+    auto *redditButton = new QPushButton("Reddit");
+    redditButton->setObjectName("socialButton");
+    redditButton->setCursor(Qt::PointingHandCursor);
+    redditButton->setToolTip("ForkMesh on Reddit");
+
+    auto *twitterButton = new QPushButton("X");
+    twitterButton->setObjectName("socialButton");
+    twitterButton->setCursor(Qt::PointingHandCursor);
+    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+
+    m_issueQuickAdd->setMinimumWidth(360);
+
+    auto *quickAddRow = new QHBoxLayout(card);
+    quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
+    // Flexible gap so the donate/social cluster sits flush to the far right.
+    quickAddRow->addStretch(1);
+    quickAddRow->addWidget(donateButton);
+    quickAddRow->addWidget(redditButton);
+    quickAddRow->addWidget(twitterButton);
+
+    auto *dockRow = new QHBoxLayout(dock);
+    dockRow->setContentsMargins(0, 0, 0, 0);
+    dockRow->addWidget(card);
 
     connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
             &MainWindow::quickAddIssue);
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
+    connect(donateButton, &QPushButton::clicked, this,
+            &MainWindow::showTreasuryDonateDialog);
+    connect(redditButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
+    });
+    connect(twitterButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
+    });
     return dock;
+}
+
+void MainWindow::showTreasuryDonateDialog()
+{
+    // Pull the treasury address from the relay (kept server-side) and render a
+    // Solana QR so anyone can donate without us embedding the address.
+    int status = 0;
+    const QJsonObject resp = getAccountSync("treasury-address", &status);
+    const QString address = resp.value("address").toString().trimmed();
+    if (address.isEmpty()) {
+        QMessageBox::information(
+            this, "Donate to ForkMesh",
+            "The treasury isn't accepting donations right now. Please try again "
+            "later.");
+        return;
+    }
+    const QString uri = QStringLiteral("solana:%1").arg(address);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Donate to the ForkMesh treasury");
+    auto *l = new QVBoxLayout(&dialog);
+    l->setContentsMargins(20, 20, 20, 20);
+    l->setSpacing(12);
+
+    auto *intro = new QLabel(
+        "Scan this Solana QR or copy the address below to donate to the ForkMesh "
+        "treasury. Donations keep the relay and mirror network running.");
+    intro->setWordWrap(true);
+    l->addWidget(intro);
+
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
+    const QImage qr = QrCode::encodeToImage(uri, 6, 4);
+    if (!qr.isNull())
+        qrLabel->setPixmap(QPixmap::fromImage(qr));
+    l->addWidget(qrLabel);
+
+    auto *addrLabel = new QLabel(address);
+    addrLabel->setObjectName("payAddr");
+    addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    addrLabel->setWordWrap(true);
+    addrLabel->setAlignment(Qt::AlignCenter);
+    l->addWidget(addrLabel);
+
+    auto *row = new QHBoxLayout;
+    auto *copyBtn = new QPushButton("Copy address");
+    copyBtn->setObjectName("primaryButton");
+    copyBtn->setCursor(Qt::PointingHandCursor);
+    connect(copyBtn, &QPushButton::clicked, this, [address, copyBtn] {
+        QApplication::clipboard()->setText(address);
+        copyBtn->setText("Copied!");
+    });
+    auto *closeBtn = new QPushButton("Close");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    row->addStretch(1);
+    row->addWidget(copyBtn);
+    row->addWidget(closeBtn);
+    l->addLayout(row);
+
+    dialog.exec();
 }
 
 QWidget *MainWindow::buildLogSection()
@@ -9197,10 +9303,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
-    m_commitsTable = new QTableWidget(0, 7);
+    m_commitsTable = new QTableWidget(0, 8);
     m_commitsTable->setObjectName("commitsList");
     m_commitsTable->setHorizontalHeaderLabels(
-        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary"});
+        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -9224,6 +9330,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
         commitHeader->resizeSection(i, commitColWidths[i]);
     }
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
+    // Trailing action column: a fixed, narrow slot for the per-row delete button.
+    commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
+    commitHeader->resizeSection(kCommitActionCol, 38);
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
@@ -16009,6 +16118,10 @@ void MainWindow::loadCommits()
     // (and the banner can count) what hasn't synced.
     const QSet<QString> unpushed = unpushedCommitHashes();
     int unpushedShown = 0;
+    // Rewriting history is only meaningful on the source of truth (the node that
+    // holds the working copy). On a browse-only mirror the delete button is shown
+    // disabled, matching the Branches panel.
+    const bool writable = repoHasWorkingTree();
     for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
@@ -16099,6 +16212,25 @@ void MainWindow::loadCommits()
         delsItem->setForeground(QColor("#f85149"));
         delsItem->setData(kTableSortRole, dels);
         m_commitsTable->setItem(row, 5, delsItem);
+
+        // Per-row "delete from history" button. Enabled only on the source of
+        // truth; on a browse-only mirror it stays visible but disabled so the
+        // reason is discoverable.
+        const QString fullHash = f.at(0);
+        auto *del = new QPushButton;
+        del->setObjectName("issueIconButton");
+        del->setFlat(true);
+        del->setCursor(Qt::PointingHandCursor);
+        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+        del->setIconSize(QSize(15, 15));
+        del->setEnabled(writable);
+        del->setToolTip(writable
+                            ? QStringLiteral("Remove %1 from history").arg(f.at(1))
+                            : QStringLiteral("Read-only mirror — no working tree to "
+                                             "rewrite history in"));
+        connect(del, &QPushButton::clicked, this,
+                [this, fullHash] { deleteCommit(fullHash); });
+        m_commitsTable->setCellWidget(row, kCommitActionCol, del);
     }
     m_commitsTable->setSortingEnabled(true);
 
@@ -16129,6 +16261,82 @@ void MainWindow::showCommitList()
 {
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(0);
+}
+
+// Drop a single commit from the browsed branch's history, replaying every later
+// commit onto the one before it. Owner-only (the working copy is the source of
+// truth); the rewritten branch then diverges from the served mirror until the
+// next publish, so we refresh the publish button afterwards.
+void MainWindow::deleteCommit(const QString &hash)
+{
+    if (hash.isEmpty() || !repoHasWorkingTree())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    const QString branch = currentRef();
+
+    // Short hash + subject for a recognisable confirmation prompt.
+    QByteArray subjOut;
+    runGitCapture(dir, {"log", "-1", "--format=%h %s", hash}, &subjOut, nullptr);
+    const QString label = QString::fromUtf8(subjOut).trimmed();
+
+    if (QMessageBox::warning(
+            this, "Delete commit",
+            QStringLiteral(
+                "Remove commit \"%1\" from history?\n\n"
+                "This rewrites %2 and replays every later commit onto the one "
+                "before it. It can't be undone, and you'll need to publish again "
+                "to update the network mirror.")
+                .arg(label.isEmpty() ? hash.left(8) : label, branch),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    // Need a single parent to replay the descendants onto: the root commit has
+    // none, and a merge commit has two (rebasing it would flatten the merge).
+    QByteArray parentsOut;
+    if (!runGitCapture(dir, {"rev-list", "--parents", "-n", "1", hash},
+                       &parentsOut, nullptr)) {
+        setRepoDetailNotice("Could not inspect that commit.", true);
+        return;
+    }
+    // rev-list --parents prints "<commit> <parent1> <parent2>..."; the count of
+    // trailing fields is the number of parents.
+    const QStringList fields = QString::fromUtf8(parentsOut).trimmed().split(
+        QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (fields.size() < 2) {
+        setRepoDetailNotice(
+            "Can't delete the first commit — it has no parent to replay onto.", true);
+        return;
+    }
+    if (fields.size() > 2) {
+        setRepoDetailNotice(
+            "Can't drop a merge commit from history this way (it has two parents).",
+            true);
+        return;
+    }
+
+    // Replay <hash>..<branch> onto <hash>'s parent, dropping <hash> itself. A
+    // dirty tree or a conflict aborts the rebase; surface git's reason.
+    QString err;
+    if (!runGitCapture(dir, {"rebase", "--onto", hash + "^", hash, branch},
+                       nullptr, &err)) {
+        runGitCapture(dir, {"rebase", "--abort"}, nullptr, nullptr);
+        setRepoDetailNotice(
+            err.trimmed().isEmpty()
+                ? "Could not remove the commit — the rebase failed. Make sure the "
+                  "working tree is clean and try again."
+                : err.trimmed(),
+            true);
+        return;
+    }
+
+    logSystem(QStringLiteral("Git: removed commit %1 from %2.")
+                  .arg(hash.left(8), branch));
+    setRepoDetailNotice(QStringLiteral("Removed commit %1 from history.")
+                            .arg(hash.left(8)));
+    loadCommits();
+    updateRepoPushButton();
 }
 
 // Pin the unsynced-commits overlay across the top of the commit table, inset a
