@@ -19153,20 +19153,27 @@ void MainWindow::deleteCommit(const QString &hash)
 }
 
 // Pin the unsynced-commits overlay across the top of the commit table, inset a
-// little so its card sits inside the rows. Geometry is in the list page's
-// coordinates (both the banner and the table are its children).
+// little so its card sits inside the rows — below the column header, never over
+// it. Geometry is in the list page's coordinates (both the banner and the table
+// are its children).
 void MainWindow::positionCommitsBanner()
 {
     if (!m_commitsUnsyncedBanner || !m_commitsTable || !m_commitsListPage)
         return;
     const QRect table = m_commitsTable->geometry();
     const int margin = 8;
+    // Drop below the table frame + column header so the card floats over the
+    // first data rows, not on top of the "Author / Date / Commit …" titles.
+    const int headerOffset = m_commitsTable->frameWidth() +
+                             (m_commitsTable->horizontalHeader()->isVisible()
+                                  ? m_commitsTable->horizontalHeader()->height()
+                                  : 0);
     const int w = qMax(0, table.width() - 2 * margin);
     int h = m_commitsUnsyncedBanner->heightForWidth(w);
     if (h <= 0)
         h = m_commitsUnsyncedBanner->sizeHint().height();
-    m_commitsUnsyncedBanner->setGeometry(table.x() + margin, table.y() + margin,
-                                         w, h);
+    m_commitsUnsyncedBanner->setGeometry(table.x() + margin,
+                                         table.y() + headerOffset + margin, w, h);
     m_commitsUnsyncedBanner->raise();
 }
 
