@@ -125,6 +125,7 @@ QPushButton#socialButton {
     font-weight: 600; padding: 8px 12px;
 }
 QPushButton#socialButton:hover { color: #e6edf3; border-color: #6e7681; }
+#footerGitIdentity { color: #8b949e; font-size: 12px; }
 
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
@@ -401,6 +402,17 @@ QPushButton#memberDeleteButton:hover {
     border-radius: 6px; padding: 6px 10px;
 }
 #issueSearch:focus { border-color: #58a6ff; }
+#globalSearch {
+    background-color: #010409; border: 1px solid #30363d;
+    border-radius: 6px; padding: 5px 8px; color: #e6edf3;
+}
+#globalSearch:focus { border-color: #58a6ff; }
+#globalSearchPopup {
+    background-color: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; padding: 4px; outline: none;
+}
+#globalSearchPopup::item { color: #c9d1d9; padding: 6px 8px; border-radius: 6px; }
+#globalSearchPopup::item:selected { background-color: #1f6feb; color: #ffffff; }
 #issueTable {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
     gridline-color: #21262d;
@@ -1104,6 +1116,17 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
+#globalSearch {
+    background-color: #ffffff; border: 1px solid #d0d7de;
+    border-radius: 6px; padding: 5px 8px; color: #1f2328;
+}
+#globalSearch:focus { border-color: #0969da; }
+#globalSearchPopup {
+    background-color: #ffffff; border: 1px solid #d0d7de;
+    border-radius: 8px; padding: 4px; outline: none;
+}
+#globalSearchPopup::item { color: #1f2328; padding: 6px 8px; border-radius: 6px; }
+#globalSearchPopup::item:selected { background-color: #0969da; color: #ffffff; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */

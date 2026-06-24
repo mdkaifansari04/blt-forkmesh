@@ -5951,6 +5951,16 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     m_issueQuickAdd->setMinimumWidth(360);
 
+    // Centered between the quick-add controls and the donate/social cluster: the
+    // git identity (name <email>) configured for the repo we're viewing. Filled in
+    // by updateFooterGitIdentity() each time a repo opens.
+    m_footerGitIdentity = new QLabel;
+    m_footerGitIdentity->setObjectName("footerGitIdentity");
+    m_footerGitIdentity->setAlignment(Qt::AlignCenter);
+    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerGitIdentity->setToolTip(
+        "Git author identity configured for the repository you're viewing");
+
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
@@ -5959,7 +5969,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
-    // Flexible gap so the donate/social cluster sits flush to the far right.
+    // Two equal stretches keep the git identity centered between the quick-add
+    // controls and the donate/social cluster pinned to the far right.
+    quickAddRow->addStretch(1);
+    quickAddRow->addWidget(m_footerGitIdentity);
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(donateButton);
     quickAddRow->addWidget(redditButton);
@@ -5982,6 +5995,41 @@ QWidget *MainWindow::buildNetworkLogDock()
         QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
     });
     return dock;
+}
+
+void MainWindow::updateFooterGitIdentity()
+{
+    if (!m_footerGitIdentity)
+        return;
+    // No repo open (Log/Leaderboards/etc.): nothing repo-specific to show.
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_footerGitIdentity->clear();
+        return;
+    }
+    const QString dir = m_repositories.at(m_repoDetailIndex).localPath;
+    if (dir.isEmpty()) {
+        m_footerGitIdentity->clear();
+        return;
+    }
+    // `git config user.name/user.email` returns the effective value (repo-local
+    // overriding global), i.e. the identity commits in this repo are authored as.
+    QByteArray nameOut, emailOut;
+    QString name, email;
+    if (runGitCapture(dir, {"config", "user.name"}, &nameOut, nullptr))
+        name = QString::fromUtf8(nameOut).trimmed();
+    if (runGitCapture(dir, {"config", "user.email"}, &emailOut, nullptr))
+        email = QString::fromUtf8(emailOut).trimmed();
+
+    QString text;
+    if (!name.isEmpty() && !email.isEmpty())
+        text = QStringLiteral("%1 <%2>").arg(name, email);
+    else if (!name.isEmpty())
+        text = name;
+    else if (!email.isEmpty())
+        text = email;
+    else
+        text = QStringLiteral("git identity not set");
+    m_footerGitIdentity->setText(text);
 }
 
 void MainWindow::showTreasuryDonateDialog()
@@ -6372,6 +6420,10 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_repoMenuButton);
     // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
     // bar (see buildRepoDetail), not in the top navigation row.
+    mainRow->addSpacing(12);
+    // One box that searches everything (sections, relays, nodes, repos, and the
+    // open repo's issues/PRs/branches/files/commits) and jumps to the result.
+    mainRow->addWidget(createGlobalSearchBox());
     mainRow->addSpacing(6);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
@@ -8904,6 +8956,7 @@ void MainWindow::clearRepoDetail()
     loadBranchesAndTags();
     updateRepoCodeSize();
     updateRepoDetailStatus();
+    updateFooterGitIdentity();
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
@@ -10285,9 +10338,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsUnsyncedBanner->setObjectName("statusLine");
     m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
     m_commitsUnsyncedBanner->setWordWrap(true);
-    // Floats over the table on its own layer (parented to the page, not the
-    // layout) so toggling it on a refresh never shifts the search box or table;
-    // a card background keeps the rows behind it readable.
+    // A card background sets the note apart from the rows beneath it.
     m_commitsUnsyncedBanner->setStyleSheet(
         "#statusLine {"
         "  background-color: rgba(210,153,34,0.16);"
@@ -10310,8 +10361,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
             m_commitsUnsyncedBanner->hide();
     });
     m_commitsUnsyncedBanner->hide();
-    // Keep the overlay pinned to the table as the splitter pane resizes.
-    listPage->installEventFilter(this);
 
     // Search box: type a hash (full or abbreviated) or words from the message to
     // filter the list; clearing it shows every commit again.
@@ -10380,9 +10429,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
-    // The unsynced banner is intentionally NOT added here — it's an overlay on
-    // its own layer (see above) so it never participates in this layout.
+    // The unsynced banner sits in normal flow between the search row and the
+    // table: as a real laid-out widget it pushes the rows down instead of
+    // floating over them, so it can never hide the very (newest, top) commits it
+    // flags. When hidden it collapses to zero height and the table reclaims it.
     listLayout->addLayout(searchRow);
+    listLayout->addWidget(m_commitsUnsyncedBanner);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -11854,51 +11906,59 @@ QWidget *MainWindow::buildInsightsTab()
         table->horizontalHeader()->setHighlightSections(false);
     };
 
-    auto *contributorsLabel = new QLabel("CONTRIBUTORS");
+    // Merged "Contributors & activity": one row per contributor carrying the
+    // commit count, share, and a commits-over-time bar chart (formerly two
+    // separate sections). A time-range selector rescopes every column.
+    auto *contributorsLabel = new QLabel("CONTRIBUTORS & ACTIVITY");
     contributorsLabel->setObjectName("sectionLabel");
-    m_insightsContributors = new QTableWidget(0, 3);
-    m_insightsContributors->setHorizontalHeaderLabels({"Contributor", "Commits", "Share"});
+
+    m_insightsRangeCombo = new QComboBox;
+    m_insightsRangeCombo->setObjectName("ghostCombo");
+    m_insightsRangeCombo->setCursor(Qt::PointingHandCursor);
+    // userData = window in days; 0 means all time.
+    m_insightsRangeCombo->addItem("All time", 0);
+    m_insightsRangeCombo->addItem("Last 12 months", 365);
+    m_insightsRangeCombo->addItem("Last 90 days", 90);
+    m_insightsRangeCombo->addItem("Last 30 days", 30);
+    m_insightsRangeCombo->addItem("Last 7 days", 7);
+    connect(m_insightsRangeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this] { loadRepoInsights(); });
+
+    auto *contributorsHeader = new QHBoxLayout;
+    contributorsHeader->setContentsMargins(0, 0, 0, 0);
+    contributorsHeader->setSpacing(8);
+    contributorsHeader->addWidget(contributorsLabel, 1, Qt::AlignBottom);
+    contributorsHeader->addWidget(new QLabel("Activity range:"), 0, Qt::AlignVCenter);
+    contributorsHeader->addWidget(m_insightsRangeCombo, 0, Qt::AlignVCenter);
+
+    m_insightsContributors = new QTableWidget(0, 4);
+    m_insightsContributors->setHorizontalHeaderLabels(
+        {"Contributor", "Commits", "Share", "Activity"});
     configureTable(m_insightsContributors);
-    m_insightsContributors->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_insightsContributors->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::ResizeToContents);
-    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
-        2, QHeaderView::ResizeToContents);
-    m_insightsContributors->setMinimumHeight(220);
-
-    auto *recentLabel = new QLabel("RECENT ACTIVITY");
-    recentLabel->setObjectName("sectionLabel");
-    m_insightsRecentCommits = new QTableWidget(0, 4);
-    m_insightsRecentCommits->setHorizontalHeaderLabels(
-        {"Commit", "Author", "When", "Message"});
-    configureTable(m_insightsRecentCommits);
-    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
         0, QHeaderView::ResizeToContents);
-    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
         1, QHeaderView::ResizeToContents);
-    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
         2, QHeaderView::ResizeToContents);
-    m_insightsRecentCommits->horizontalHeader()->setSectionResizeMode(
+    m_insightsContributors->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::Stretch);
-    m_insightsRecentCommits->setMinimumHeight(240);
+    m_insightsContributors->verticalHeader()->setDefaultSectionSize(34);
+    m_insightsContributors->setMinimumHeight(260);
+    // Right-click a contributor to reassign their commits to another identity.
+    m_insightsContributors->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_insightsContributors, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showInsightsContributorMenu);
 
-    layout->addWidget(contributorsLabel);
+    // Caption under the table: the span the activity bars cover, oldest to newest.
+    m_insightsActivityAxis = new QLabel;
+    m_insightsActivityAxis->setObjectName("statusLine");
+    m_insightsActivityAxis->setTextFormat(Qt::RichText);
+    m_insightsActivityAxis->setWordWrap(true);
+
+    layout->addLayout(contributorsHeader);
     layout->addWidget(m_insightsContributors);
-
-    // Per-contributor "commits over time" bar charts, populated lazily in
-    // loadRepoInsights(). The container starts empty; one row is added per
-    // contributor (name + CommitBarChart) when a repo is loaded.
-    auto *commitActivityLabel = new QLabel("COMMIT ACTIVITY");
-    commitActivityLabel->setObjectName("sectionLabel");
-    m_insightsCommitCharts = new QWidget;
-    auto *chartsCol = new QVBoxLayout(m_insightsCommitCharts);
-    chartsCol->setContentsMargins(0, 0, 0, 0);
-    chartsCol->setSpacing(6);
-    layout->addWidget(commitActivityLabel);
-    layout->addWidget(m_insightsCommitCharts);
-
-    layout->addWidget(recentLabel);
-    layout->addWidget(m_insightsRecentCommits);
+    layout->addWidget(m_insightsActivityAxis);
 
     m_insightsActivity = new QLabel;
     m_insightsActivity->setObjectName("statusLine");
@@ -17469,6 +17529,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     updateRepoActionMenus();
     refreshRepoSettings();
     updateRepoCodeSize();
+    updateFooterGitIdentity();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -19070,6 +19131,414 @@ void MainWindow::generatePostFromSelectedCommits()
     dialog.exec();
 }
 
+// ---------------------------------------------------------------------------
+// Top-bar global search ("search everything").
+//
+// One box in the top bar that, as you type, searches across every place the app
+// knows about — sections, relays, nodes, repositories, and (for the open repo)
+// its issues, pull requests, branches, files and commit messages — and lists the
+// hits in a floating dropdown. Pick one (mouse or arrow keys + Enter) and it
+// navigates straight there.
+// ---------------------------------------------------------------------------
+namespace {
+// Payload roles on each dropdown item; the kind drives where activating it goes.
+constexpr int kGsKindRole = Qt::UserRole;     // GlobalSearchKind
+constexpr int kGsStr1Role = Qt::UserRole + 1; // primary payload (id/hash/path/branch)
+constexpr int kGsStr2Role = Qt::UserRole + 2; // secondary payload (e.g. node name)
+constexpr int kGsNumRole = Qt::UserRole + 3;  // numeric payload (index / number)
+enum GlobalSearchKind {
+    GsHeader = 0, // a non-selectable category label
+    GsSection,    // m_sectionStack index
+    GsRepo,       // m_repositories index
+    GsNode,       // roster member (str1 = id, str2 = name)
+    GsRelay,      // m_servers index
+    GsIssue,      // issue number in the open repo
+    GsPull,       // pull-request number in the open repo
+    GsBranch,     // branch name (str1) in the open repo
+    GsFile,       // path (str1) in the open repo
+    GsCommit,     // full hash (str1) in the open repo
+};
+} // namespace
+
+QWidget *MainWindow::createGlobalSearchBox()
+{
+    m_globalSearch = new QLineEdit;
+    m_globalSearch->setObjectName("globalSearch");
+    m_globalSearch->setClearButtonEnabled(true);
+    m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
+    m_globalSearch->setMinimumWidth(220);
+    m_globalSearch->setMaximumWidth(440);
+    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
+                              QLineEdit::LeadingPosition);
+    m_globalSearch->setToolTip(QString::fromUtf8(
+        "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "
+        "the open repo's issues, pull requests, branches, files and commits"));
+    m_globalSearch->installEventFilter(this);
+
+    // Floating results list. Parented to the window (not the short top bar) so it
+    // overlays content below the bar without being clipped, and NoFocus so clicking
+    // a result keeps the keyboard in the box (and never fires the box's focus-out).
+    m_globalSearchPopup = new QListWidget(this);
+    m_globalSearchPopup->setObjectName("globalSearchPopup");
+    m_globalSearchPopup->setFocusPolicy(Qt::NoFocus);
+    m_globalSearchPopup->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_globalSearchPopup->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_globalSearchPopup->setMouseTracking(true);
+    m_globalSearchPopup->hide();
+    connect(m_globalSearchPopup, &QListWidget::itemClicked, this,
+            &MainWindow::activateGlobalSearchItem);
+    // Keep the keyboard highlight following the mouse so Enter always lands on the
+    // row under the cursor.
+    connect(m_globalSearchPopup, &QListWidget::itemEntered, this,
+            [this](QListWidgetItem *it) {
+                if (it && (it->flags() & Qt::ItemIsSelectable))
+                    m_globalSearchPopup->setCurrentItem(it);
+            });
+
+    // Debounce: rebuild ~140 ms after the last keystroke, so fast typing (and the
+    // git-backed commit grep) doesn't run on every character.
+    m_globalSearchTimer = new QTimer(this);
+    m_globalSearchTimer->setSingleShot(true);
+    m_globalSearchTimer->setInterval(140);
+    connect(m_globalSearchTimer, &QTimer::timeout, this,
+            &MainWindow::rebuildGlobalSearchResults);
+    connect(m_globalSearch, &QLineEdit::textChanged, this, [this](const QString &t) {
+        if (t.trimmed().isEmpty()) {
+            m_globalSearchTimer->stop();
+            hideGlobalSearchPopup();
+        } else {
+            m_globalSearchTimer->start();
+        }
+    });
+    return m_globalSearch;
+}
+
+void MainWindow::rebuildGlobalSearchResults()
+{
+    if (!m_globalSearch || !m_globalSearchPopup)
+        return;
+    const QString needle = m_globalSearch->text().trimmed().toLower();
+    if (needle.isEmpty()) {
+        hideGlobalSearchPopup();
+        return;
+    }
+    m_globalSearchPopup->clear();
+
+    int total = 0;
+    constexpr int kMaxTotal = 80;
+
+    auto addHeader = [&](const QString &title) {
+        auto *h = new QListWidgetItem(title.toUpper());
+        h->setData(kGsKindRole, GsHeader);
+        h->setFlags(Qt::NoItemFlags); // not selectable, not hovered
+        QFont f = h->font();
+        f.setBold(true);
+        h->setFont(f);
+        h->setForeground(QColor("#8b949e"));
+        m_globalSearchPopup->addItem(h);
+    };
+    auto addResult = [&](const QString &icon, const QColor &iconColor,
+                         const QString &text, int kind, const QString &s1,
+                         const QString &s2, int num) -> bool {
+        if (total >= kMaxTotal)
+            return false;
+        auto *it = new QListWidgetItem(text);
+        if (!icon.isEmpty())
+            it->setIcon(themedOcticon(icon, iconColor, 15));
+        it->setData(kGsKindRole, kind);
+        it->setData(kGsStr1Role, s1);
+        it->setData(kGsStr2Role, s2);
+        it->setData(kGsNumRole, num);
+        m_globalSearchPopup->addItem(it);
+        ++total;
+        return true;
+    };
+
+    // --- Sections / "go to" -------------------------------------------------
+    struct Sec { const char *label; const char *icon; int index; };
+    static const Sec kSections[] = {
+        {"Home / Repositories", "home", 0},
+        {"Chat", "comment", 2},
+        {"Notifications", "bell", 3},
+        {"Network log", "list-unordered", 4},
+        {"Leaderboards", "graph", 5},
+        {"Settings", "gear", 1},
+    };
+    bool header = false;
+    for (const Sec &s : kSections) {
+        if (!QString::fromLatin1(s.label).toLower().contains(needle))
+            continue;
+        if (!header) { addHeader(QStringLiteral("Go to")); header = true; }
+        addResult(QString::fromLatin1(s.icon), QColor("#8b949e"),
+                  QString::fromLatin1(s.label), GsSection, QString(), QString(),
+                  s.index);
+    }
+
+    // --- Repositories -------------------------------------------------------
+    header = false;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &r = m_repositories.at(i);
+        const QString full = r.owner.isEmpty() ? r.name : r.owner + "/" + r.name;
+        if (!full.toLower().contains(needle) &&
+            !r.description.toLower().contains(needle))
+            continue;
+        if (!header) { addHeader(QStringLiteral("Repositories")); header = true; }
+        if (!addResult("repo", QColor("#8b949e"), full, GsRepo, QString(),
+                       QString(), i))
+            break;
+    }
+
+    // --- Nodes (roster) -----------------------------------------------------
+    header = false;
+    for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+        if (!m.name.toLower().contains(needle) && !m.id.toLower().contains(needle))
+            continue;
+        if (!header) { addHeader(QStringLiteral("Nodes")); header = true; }
+        QString label = m.name.isEmpty() ? m.id.left(12) : m.name;
+        if (m.self)
+            label += QStringLiteral("  (you)");
+        else if (!m.note.isEmpty())
+            label += QStringLiteral("  ") + m.note;
+        if (!addResult("person", m.online ? QColor("#3fb950") : QColor("#8b949e"),
+                       label, GsNode, m.id, m.name, 0))
+            break;
+    }
+
+    // --- Relays -------------------------------------------------------------
+    header = false;
+    for (int i = 0; i < m_servers.size(); ++i) {
+        const QString host = serverHost(m_servers.at(i).url);
+        if (!host.toLower().contains(needle))
+            continue;
+        if (!header) { addHeader(QStringLiteral("Relays")); header = true; }
+        const QString label =
+            i == m_activeServer ? host + QStringLiteral("  (active)") : host;
+        if (!addResult("server", QColor("#8b949e"), label, GsRelay, QString(),
+                       QString(), i))
+            break;
+    }
+
+    // --- The open repository's contents -------------------------------------
+    const bool repoOpen =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    if (repoOpen) {
+        const QString repoName = m_repositories.at(m_repoDetailIndex).name;
+        const QString suffix = QString::fromUtf8(" \xC2\xB7 ") + repoName;
+
+        // Issues (already in memory for the open repo).
+        header = false;
+        for (const Issue &iss : std::as_const(m_currentIssues)) {
+            if (iss.isDeleted())
+                continue;
+            const QString hay =
+                QStringLiteral("#%1 %2").arg(iss.number).arg(iss.title);
+            if (!hay.toLower().contains(needle))
+                continue;
+            if (!header) { addHeader(QStringLiteral("Issues") + suffix); header = true; }
+            const bool open = iss.status == QLatin1String("open");
+            if (!addResult(open ? "issue-opened" : "check-circle",
+                           open ? QColor("#3fb950") : QColor("#a371f7"),
+                           QStringLiteral("#%1  %2").arg(iss.number).arg(iss.title),
+                           GsIssue, QString(), QString(), iss.number))
+                break;
+        }
+
+        // Pull requests.
+        header = false;
+        for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+            const QString hay =
+                QStringLiteral("#%1 %2").arg(pr.number).arg(pr.title);
+            if (!hay.toLower().contains(needle))
+                continue;
+            if (!header) {
+                addHeader(QStringLiteral("Pull requests") + suffix);
+                header = true;
+            }
+            const QColor c = pr.status == QLatin1String("merged") ? QColor("#a371f7")
+                             : pr.status == QLatin1String("open") ? QColor("#3fb950")
+                                                                  : QColor("#8b949e");
+            if (!addResult("git-pull-request", c,
+                           QStringLiteral("#%1  %2").arg(pr.number).arg(pr.title),
+                           GsPull, QString(), QString(), pr.number))
+                break;
+        }
+
+        // Branches.
+        header = false;
+        const QString ref = currentRef();
+        for (const QString &b : repoBranches()) {
+            if (!b.toLower().contains(needle))
+                continue;
+            if (!header) { addHeader(QStringLiteral("Branches") + suffix); header = true; }
+            if (!addResult("repo-forked", QColor("#8b949e"),
+                           b == ref ? b + QStringLiteral("  (current)") : b,
+                           GsBranch, b, QString(), 0))
+                break;
+        }
+
+        // Files (reuse the in-memory go-to-file index, no extra git call).
+        if (m_fileCompleter && m_fileCompleter->model()) {
+            QAbstractItemModel *fm = m_fileCompleter->model();
+            header = false;
+            int fileHits = 0;
+            for (int r = 0; r < fm->rowCount() && fileHits < 12; ++r) {
+                const QString path = fm->index(r, 0).data().toString();
+                if (!path.toLower().contains(needle))
+                    continue;
+                if (!header) { addHeader(QStringLiteral("Files") + suffix); header = true; }
+                if (!addResult("file", QColor("#8b949e"), path, GsFile, path,
+                               QString(), 0))
+                    break;
+                ++fileHits;
+            }
+        }
+
+        // Commit messages (one bounded, literal git grep; needs >=2 chars).
+        if (needle.size() >= 2) {
+            const QString dir = repoGitDir();
+            QByteArray out;
+            if (!dir.isEmpty() &&
+                runGitCapture(dir,
+                              {"log", "--fixed-strings", "-i", "--grep=" + needle,
+                               "-n", "8", "--format=%H%x1f%h%x1f%s", ref},
+                              &out, nullptr)) {
+                header = false;
+                for (const QByteArray &line : out.split('\n')) {
+                    if (line.trimmed().isEmpty())
+                        continue;
+                    const QStringList f = QString::fromUtf8(line).split(QChar(0x1f));
+                    if (f.size() < 3)
+                        continue;
+                    if (!header) { addHeader(QStringLiteral("Commits") + suffix); header = true; }
+                    if (!addResult("git-branch", QColor("#8b949e"),
+                                   QStringLiteral("%1  %2").arg(f.at(1), f.at(2)),
+                                   GsCommit, f.at(0), QString(), 0))
+                        break;
+                }
+            }
+        }
+    }
+
+    if (total == 0) {
+        auto *none = new QListWidgetItem(QStringLiteral("No matches"));
+        none->setFlags(Qt::NoItemFlags);
+        none->setForeground(QColor("#8b949e"));
+        m_globalSearchPopup->addItem(none);
+    }
+
+    // Pre-select the first real result so Enter works without arrowing first.
+    for (int r = 0; r < m_globalSearchPopup->count(); ++r) {
+        if (m_globalSearchPopup->item(r)->flags() & Qt::ItemIsSelectable) {
+            m_globalSearchPopup->setCurrentRow(r);
+            break;
+        }
+    }
+    positionGlobalSearchPopup();
+    m_globalSearchPopup->raise();
+    m_globalSearchPopup->show();
+}
+
+void MainWindow::positionGlobalSearchPopup()
+{
+    if (!m_globalSearch || !m_globalSearchPopup)
+        return;
+    const QPoint topLeft =
+        m_globalSearch->mapTo(this, QPoint(0, m_globalSearch->height() + 4));
+    int w = std::max(m_globalSearch->width(), 380);
+    w = std::min(w, width() - topLeft.x() - 12);
+    w = std::max(w, 200);
+    int rowsH = 8;
+    for (int r = 0; r < m_globalSearchPopup->count(); ++r)
+        rowsH += m_globalSearchPopup->sizeHintForRow(r);
+    m_globalSearchPopup->setGeometry(topLeft.x(), topLeft.y(), w,
+                                     std::min(rowsH, 440));
+}
+
+void MainWindow::moveGlobalSearchSelection(int delta)
+{
+    if (!m_globalSearchPopup || !m_globalSearchPopup->isVisible())
+        return;
+    const int count = m_globalSearchPopup->count();
+    if (count == 0)
+        return;
+    int row = m_globalSearchPopup->currentRow();
+    for (int step = 0; step < count; ++step) {
+        row += delta;
+        if (row < 0)
+            row = count - 1;
+        else if (row >= count)
+            row = 0;
+        QListWidgetItem *it = m_globalSearchPopup->item(row);
+        if (it && (it->flags() & Qt::ItemIsSelectable)) {
+            m_globalSearchPopup->setCurrentRow(row);
+            m_globalSearchPopup->scrollToItem(it);
+            return;
+        }
+    }
+}
+
+void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
+{
+    if (!item || !(item->flags() & Qt::ItemIsSelectable))
+        return;
+    const int kind = item->data(kGsKindRole).toInt();
+    const QString s1 = item->data(kGsStr1Role).toString();
+    const QString s2 = item->data(kGsStr2Role).toString();
+    const int num = item->data(kGsNumRole).toInt();
+
+    hideGlobalSearchPopup();
+    if (m_globalSearch) {
+        QSignalBlocker block(m_globalSearch); // clearing must not re-trigger a rebuild
+        m_globalSearch->clear();
+    }
+
+    const bool repoOpen =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    auto clickRepoTab = [this](int idx) {
+        if (m_repoDetailTabs && m_repoDetailTabs->button(idx))
+            m_repoDetailTabs->button(idx)->click(); // switches tab + loads its data
+    };
+
+    switch (kind) {
+    case GsSection:
+        showSection(num);
+        break;
+    case GsRepo:
+        openRepoDetailDeferred(num);
+        break;
+    case GsNode:
+        showSection(0);
+        showNodeProfile(s1, s2);
+        break;
+    case GsRelay:
+        switchToServer(num);
+        break;
+    case GsIssue:
+        if (repoOpen) { showSection(0); clickRepoTab(2); showIssue(num); }
+        break;
+    case GsPull:
+        if (repoOpen) { showSection(0); clickRepoTab(4); showPull(num); }
+        break;
+    case GsBranch:
+        if (repoOpen) { showSection(0); setRepoBranch(s1); }
+        break;
+    case GsFile:
+        if (repoOpen) { showSection(0); clickRepoTab(0); openRepoFile(s1); }
+        break;
+    case GsCommit:
+        if (repoOpen) { showSection(0); clickRepoTab(1); showCommit(s1); }
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::hideGlobalSearchPopup()
+{
+    if (m_globalSearchPopup)
+        m_globalSearchPopup->hide();
+}
+
 void MainWindow::showCommitList()
 {
     if (m_commitsStack)
@@ -19152,31 +19621,6 @@ void MainWindow::deleteCommit(const QString &hash)
     updateRepoPushButton();
 }
 
-// Pin the unsynced-commits overlay across the top of the commit table, inset a
-// little so its card sits inside the rows — below the column header, never over
-// it. Geometry is in the list page's coordinates (both the banner and the table
-// are its children).
-void MainWindow::positionCommitsBanner()
-{
-    if (!m_commitsUnsyncedBanner || !m_commitsTable || !m_commitsListPage)
-        return;
-    const QRect table = m_commitsTable->geometry();
-    const int margin = 8;
-    // Drop below the table frame + column header so the card floats over the
-    // first data rows, not on top of the "Author / Date / Commit …" titles.
-    const int headerOffset = m_commitsTable->frameWidth() +
-                             (m_commitsTable->horizontalHeader()->isVisible()
-                                  ? m_commitsTable->horizontalHeader()->height()
-                                  : 0);
-    const int w = qMax(0, table.width() - 2 * margin);
-    int h = m_commitsUnsyncedBanner->heightForWidth(w);
-    if (h <= 0)
-        h = m_commitsUnsyncedBanner->sizeHint().height();
-    m_commitsUnsyncedBanner->setGeometry(table.x() + margin,
-                                         table.y() + headerOffset + margin, w, h);
-    m_commitsUnsyncedBanner->raise();
-}
-
 void MainWindow::showCommitsBanner(const QString &html)
 {
     if (!m_commitsUnsyncedBanner)
@@ -19186,9 +19630,7 @@ void MainWindow::showCommitsBanner(const QString &html)
     if (m_commitsBannerOpacity)
         m_commitsBannerOpacity->setOpacity(1.0);
     m_commitsUnsyncedBanner->setText(html);
-    positionCommitsBanner();
     m_commitsUnsyncedBanner->show();
-    m_commitsUnsyncedBanner->raise();
 }
 
 void MainWindow::hideCommitsBanner()
@@ -20292,27 +20734,14 @@ void MainWindow::loadRepoInsights()
 
     if (m_insightsContributors)
         m_insightsContributors->setRowCount(0);
-    if (m_insightsRecentCommits)
-        m_insightsRecentCommits->setRowCount(0);
     if (m_insightsLanguageBar)
         m_insightsLanguageBar->clear();
     if (m_insightsLanguageLegend)
         m_insightsLanguageLegend->clear();
     if (m_insightsActivity)
         m_insightsActivity->clear();
-    // Drop any commit-activity charts from a prior repo; rebuilt below when a
-    // repo with history is selected.
-    if (m_insightsCommitCharts) {
-        if (QLayout *old = m_insightsCommitCharts->layout()) {
-            QLayoutItem *item;
-            while ((item = old->takeAt(0))) {
-                if (QWidget *w = item->widget())
-                    w->deleteLater();
-                delete item;
-            }
-            delete old;
-        }
-    }
+    if (m_insightsActivityAxis)
+        m_insightsActivityAxis->clear();
 
     auto setNoRepo = [this] {
         m_insightsSummary->setText(
@@ -20356,7 +20785,6 @@ void MainWindow::loadRepoInsights()
     if (repo.publishedAtMs > 0)
         notes << QStringLiteral("Published: %1.").arg(formatRepoDate(repo.publishedAtMs));
 
-    QString commitCountText = QStringLiteral("0");
     qint64 fileCount = 0;
     qint64 totalBytes = 0;
     QHash<QString, qint64> bytesByLanguage;
@@ -20365,17 +20793,6 @@ void MainWindow::loadRepoInsights()
     if (dir.isEmpty()) {
         notes << QStringLiteral("No local checkout or mirror is available for Git history.");
     } else {
-        QByteArray countOut;
-        QString countErr;
-        if (runGitCapture(dir, {"rev-list", "--count", ref}, &countOut, &countErr)) {
-            commitCountText = QString::fromUtf8(countOut).trimmed();
-            if (commitCountText.isEmpty())
-                commitCountText = QStringLiteral("0");
-        } else {
-            notes << QStringLiteral("Commit count unavailable: %1.")
-                         .arg(countErr.isEmpty() ? QStringLiteral("git failed") : countErr.left(160));
-        }
-
         QByteArray treeOut;
         QString treeErr;
         if (runGitCapture(dir, {"ls-tree", "-r", "-l", ref}, &treeOut, &treeErr)) {
@@ -20439,7 +20856,6 @@ void MainWindow::loadRepoInsights()
     m_insightsSummary->setText(
         "<b>Repository summary</b>" +
         insightMetricsTable({
-            insightMetricCell("Commits", commitCountText, ref),
             insightMetricCell("Contributors", QStringLiteral("0"), "all branches"),
             insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
             insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
@@ -20498,83 +20914,34 @@ void MainWindow::loadRepoInsights()
                 ? "<span style='color:#8b949e'>No recognized code files yet.</span>"
                 : languageLegend);
 
+    // --- Contributors & activity (merged) -----------------------------------
+    // A single git-log pass over the selected time window yields, per author,
+    // a commit count and a bucketed timeline. The window comes from
+    // m_insightsRangeCombo (0 = all time). The count, share and the embedded
+    // bar chart all reflect that same window so the table reads as one unit.
+    const int windowDays =
+        m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
+    constexpr int kBuckets = 32;
+
     struct Contributor {
         QString name;
         int commits = 0;
+        QVector<int> buckets;
     };
+    QHash<QString, int> indexByName; // author name -> contributors[] index
     QList<Contributor> contributors;
     int contributorCommitTotal = 0;
+    qint64 minTs = 0, maxTs = 0;
+    int sharedMax = 1;
+
     if (!dir.isEmpty()) {
-        QByteArray shortlogOut;
-        QString shortlogErr;
-        if (runGitCapture(dir, {"shortlog", "-sn", "--all", "--no-merges"},
-                          &shortlogOut, &shortlogErr)) {
-            const QRegularExpression lineRe(QStringLiteral("^\\s*(\\d+)\\s+(.+)$"));
-            for (const QString &line : QString::fromUtf8(shortlogOut).split('\n')) {
-                const QRegularExpressionMatch match = lineRe.match(line);
-                if (!match.hasMatch())
-                    continue;
-                const int commits = match.captured(1).toInt();
-                const QString name = match.captured(2).trimmed();
-                if (name.isEmpty())
-                    continue;
-                contributors.append({name, commits});
-                contributorCommitTotal += commits;
-            }
-        } else {
-            notes << QStringLiteral("Contributor data unavailable: %1.")
-                         .arg(shortlogErr.isEmpty() ? QStringLiteral("git failed")
-                                                    : shortlogErr.left(160));
-        }
-    }
-    if (m_insightsContributors) {
-        const int shown = qMin(20, int(contributors.size()));
-        for (int i = 0; i < shown; ++i) {
-            const Contributor &contributor = contributors.at(i);
-            const int row = m_insightsContributors->rowCount();
-            m_insightsContributors->insertRow(row);
-            m_insightsContributors->setItem(row, 0, new QTableWidgetItem(contributor.name));
-            auto *countItem = new QTableWidgetItem;
-            countItem->setData(Qt::DisplayRole, contributor.commits);
-            m_insightsContributors->setItem(row, 1, countItem);
-            const double pct =
-                contributorCommitTotal > 0
-                    ? 100.0 * contributor.commits / contributorCommitTotal
-                    : 0.0;
-            m_insightsContributors->setItem(
-                row, 2, new QTableWidgetItem(QStringLiteral("%1%").arg(pct, 0, 'f', 1)));
-        }
-    }
-
-    // --- Commit activity: a per-contributor bar chart of commits over time.
-    // Every commit (author + unix time) is bucketed onto one shared timeline so
-    // the bars line up between contributors and overall volume is comparable.
-    if (m_insightsCommitCharts) {
-        // Tear down the previous repo/refresh's rows before rebuilding.
-        if (QLayout *old = m_insightsCommitCharts->layout()) {
-            QLayoutItem *item;
-            while ((item = old->takeAt(0))) {
-                if (QWidget *w = item->widget())
-                    w->deleteLater();
-                delete item;
-            }
-            delete old;
-        }
-        auto *col = new QVBoxLayout(m_insightsCommitCharts);
-        col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(6);
-
-        QHash<QString, QVector<int>> byAuthor; // name -> per-bucket counts
-        qint64 minTs = 0, maxTs = 0;
-        int sharedMax = 1;
-        constexpr int kBuckets = 32;
-
+        QStringList logArgs{"log", "--all", "--no-merges",
+                            "--format=%an%x1f%ct", "-n", "50000"};
+        if (windowDays > 0)
+            logArgs << QStringLiteral("--since=%1.days.ago").arg(windowDays);
         QByteArray logOut;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir,
-                          {"log", "--all", "--no-merges", "--format=%an%x1f%ct",
-                           "-n", "20000"},
-                          &logOut, nullptr)) {
+        QString logErr;
+        if (runGitCapture(dir, logArgs, &logOut, &logErr)) {
             struct Stamp {
                 QString author;
                 qint64 ts;
@@ -20586,89 +20953,119 @@ void MainWindow::loadRepoInsights()
                 const QStringList f = QString::fromUtf8(line).split(QLatin1Char('\x1f'));
                 if (f.size() < 2)
                     continue;
+                const QString author = f.at(0).trimmed();
                 const qint64 ts = f.at(1).toLongLong();
-                if (ts <= 0)
+                if (author.isEmpty() || ts <= 0)
                     continue;
-                stamps.append({f.at(0).trimmed(), ts});
+                stamps.append({author, ts});
                 if (minTs == 0 || ts < minTs)
                     minTs = ts;
                 if (ts > maxTs)
                     maxTs = ts;
             }
-            if (maxTs > minTs) {
-                const qint64 span = maxTs - minTs;
-                for (const Stamp &s : std::as_const(stamps)) {
-                    QVector<int> &v = byAuthor[s.author];
-                    if (v.isEmpty())
-                        v.resize(kBuckets);
+            const qint64 span = qMax<qint64>(1, maxTs - minTs);
+            for (const Stamp &s : std::as_const(stamps)) {
+                int idx = indexByName.value(s.author, -1);
+                if (idx < 0) {
+                    idx = int(contributors.size());
+                    indexByName.insert(s.author, idx);
+                    Contributor c;
+                    c.name = s.author;
+                    c.buckets.resize(kBuckets);
+                    contributors.append(c);
+                }
+                Contributor &c = contributors[idx];
+                ++c.commits;
+                ++contributorCommitTotal;
+                if (maxTs > minTs) {
                     const int b = qBound<int>(
                         0, int((s.ts - minTs) * kBuckets / (span + 1)), kBuckets - 1);
-                    v[b]++;
-                    sharedMax = qMax(sharedMax, v.at(b));
+                    ++c.buckets[b];
+                    sharedMax = qMax(sharedMax, c.buckets.at(b));
                 }
             }
-        }
-
-        if (byAuthor.isEmpty()) {
-            auto *empty = new QLabel(
-                "<span style='color:#8b949e'>Not enough commit history to chart "
-                "activity over time.</span>");
-            empty->setTextFormat(Qt::RichText);
-            col->addWidget(empty);
         } else {
-            // One row per top contributor (reusing the shortlog ranking), capped
-            // so the section stays compact.
-            const int shownRows = qMin(8, int(contributors.size()));
-            for (int i = 0; i < shownRows; ++i) {
-                const QString name = contributors.at(i).name;
-                const QVector<int> counts = byAuthor.value(name);
-                if (counts.isEmpty())
-                    continue;
-                auto *rowW = new QWidget;
-                auto *rowH = new QHBoxLayout(rowW);
-                rowH->setContentsMargins(0, 0, 0, 0);
-                rowH->setSpacing(10);
-
-                auto *nameLabel = new QLabel;
-                nameLabel->setObjectName("statusLine");
-                nameLabel->setFixedWidth(150);
-                nameLabel->setText(
-                    nameLabel->fontMetrics().elidedText(name, Qt::ElideRight, 150));
-                nameLabel->setToolTip(name);
-
-                auto *chart = new CommitBarChart(counts, sharedMax,
-                                                 insightContributorColor(name));
-                chart->setToolTip(QStringLiteral("%1 \xE2\x80\x94 %2 commits over time")
-                                      .arg(name)
-                                      .arg(contributors.at(i).commits));
-
-                rowH->addWidget(nameLabel);
-                rowH->addWidget(chart, 1);
-                col->addWidget(rowW);
-            }
-
-            // Axis caption: the span the bars cover, oldest (left) to newest.
-            auto *axis = new QLabel(
-                QStringLiteral(
-                    "<span style='color:#8b949e'>%1 &nbsp;&nbsp;\xE2\x86\x90 oldest "
-                    "&nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; newest \xE2\x86\x92&nbsp;&nbsp; "
-                    "%2</span>")
-                    .arg(QDateTime::fromSecsSinceEpoch(minTs).date().toString(
-                             "MMM yyyy"),
-                         QDateTime::fromSecsSinceEpoch(maxTs).date().toString(
-                             "MMM yyyy")));
-            axis->setTextFormat(Qt::RichText);
-            col->addWidget(axis);
+            notes << QStringLiteral("Contributor data unavailable: %1.")
+                         .arg(logErr.isEmpty() ? QStringLiteral("git failed")
+                                               : logErr.left(160));
         }
     }
 
-    // Refresh the contributor count now that the shortlog has been parsed.
+    std::sort(contributors.begin(), contributors.end(),
+              [](const Contributor &a, const Contributor &b) {
+                  if (a.commits != b.commits)
+                      return a.commits > b.commits;
+                  return a.name.localeAwareCompare(b.name) < 0;
+              });
+
+    if (m_insightsContributors) {
+        // Keep every contributor (no truncation); the table is in a scroll area.
+        for (const Contributor &c : std::as_const(contributors)) {
+            const int row = m_insightsContributors->rowCount();
+            m_insightsContributors->insertRow(row);
+
+            auto *nameItem = new QTableWidgetItem(c.name);
+            nameItem->setData(Qt::UserRole, c.name); // read by the reassign menu
+            m_insightsContributors->setItem(row, 0, nameItem);
+
+            auto *countItem = new QTableWidgetItem;
+            countItem->setData(Qt::DisplayRole, c.commits);
+            m_insightsContributors->setItem(row, 1, countItem);
+
+            const double pct = contributorCommitTotal > 0
+                                   ? 100.0 * c.commits / contributorCommitTotal
+                                   : 0.0;
+            m_insightsContributors->setItem(
+                row, 2, new QTableWidgetItem(QStringLiteral("%1%").arg(pct, 0, 'f', 1)));
+
+            if (maxTs > minTs) {
+                auto *chart = new CommitBarChart(c.buckets, sharedMax,
+                                                 insightContributorColor(c.name));
+                chart->setToolTip(
+                    QStringLiteral("%1 \xE2\x80\x94 %2 commits over time")
+                        .arg(c.name)
+                        .arg(c.commits));
+                m_insightsContributors->setCellWidget(row, 3, chart);
+            }
+        }
+        if (contributors.isEmpty()) {
+            const int row = m_insightsContributors->rowCount();
+            m_insightsContributors->insertRow(row);
+            auto *empty = new QTableWidgetItem(
+                windowDays > 0
+                    ? QStringLiteral("No commits in the selected range.")
+                    : QStringLiteral("No commit history available."));
+            empty->setForeground(QColor(0x8b, 0x94, 0x9e));
+            m_insightsContributors->setItem(row, 0, empty);
+            m_insightsContributors->setSpan(row, 0, 1, 4);
+        }
+    }
+
+    // Caption under the table: the span the bars cover, oldest to newest.
+    if (m_insightsActivityAxis) {
+        if (maxTs > minTs) {
+            m_insightsActivityAxis->setText(
+                QString::fromUtf8(
+                    "<span style='color:#8b949e'>%1 &nbsp;&nbsp;\xE2\x86\x90 oldest "
+                    "&nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; newest \xE2\x86\x92&nbsp;&nbsp; "
+                    "%2 &nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; right-click a contributor to "
+                    "reassign attribution</span>")
+                    .arg(QDateTime::fromSecsSinceEpoch(minTs).date().toString(
+                             "MMM d, yyyy"),
+                         QDateTime::fromSecsSinceEpoch(maxTs).date().toString(
+                             "MMM d, yyyy")));
+        } else {
+            m_insightsActivityAxis->clear();
+        }
+    }
+
+    // Refresh the contributor count now that the log has been parsed.
     m_insightsSummary->setText(
         "<b>Repository summary</b>" +
         insightMetricsTable({
-            insightMetricCell("Commits", commitCountText, ref),
             insightMetricCell("Contributors", QString::number(contributors.size()),
-                              "all branches"),
+                              windowDays > 0 ? QStringLiteral("in selected range")
+                                             : QStringLiteral("all branches")),
             insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
             insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
             insightMetricCell("Issues", QString::number(totalIssues),
@@ -20682,38 +21079,269 @@ void MainWindow::loadRepoInsights()
                                   .arg(closedPulls)),
         }));
 
-    if (!dir.isEmpty()) {
-        QByteArray logOut;
-        QString logErr;
-        if (runGitCapture(dir, {"log", "--format=%h%x1f%an%x1f%ar%x1f%s", "-n", "10", ref},
-                          &logOut, &logErr)) {
-            for (const QByteArray &record : logOut.split('\n')) {
-                if (record.trimmed().isEmpty())
-                    continue;
-                const QStringList fields = QString::fromUtf8(record).split('\x1f');
-                if (fields.size() < 4)
-                    continue;
-                const int row = m_insightsRecentCommits->rowCount();
-                m_insightsRecentCommits->insertRow(row);
-                m_insightsRecentCommits->setItem(row, 0, new QTableWidgetItem(fields.at(0)));
-                m_insightsRecentCommits->setItem(row, 1, new QTableWidgetItem(fields.at(1)));
-                m_insightsRecentCommits->setItem(row, 2, new QTableWidgetItem(fields.at(2)));
-                m_insightsRecentCommits->setItem(row, 3, new QTableWidgetItem(fields.at(3)));
-            }
-            if (m_insightsRecentCommits->rowCount() == 0)
-                notes << QStringLiteral("No recent commits on the selected ref.");
-        } else {
-            notes << QStringLiteral("Recent activity unavailable: %1.")
-                         .arg(logErr.isEmpty() ? QStringLiteral("git failed") : logErr.left(160));
-        }
-    }
-
     if (m_insightsActivity) {
         QStringList escapedNotes;
         for (const QString &note : std::as_const(notes))
             escapedNotes << note.toHtmlEscaped();
         m_insightsActivity->setText(escapedNotes.join("<br>"));
     }
+}
+
+// Right-click on a contributor row in the merged "Contributors & activity"
+// table: offer to reassign that author's commits to another identity.
+void MainWindow::showInsightsContributorMenu(const QPoint &pos)
+{
+    if (!m_insightsContributors)
+        return;
+    const QModelIndex idx = m_insightsContributors->indexAt(pos);
+    if (!idx.isValid())
+        return;
+    QTableWidgetItem *nameItem = m_insightsContributors->item(idx.row(), 0);
+    if (!nameItem)
+        return;
+    const QString name = nameItem->data(Qt::UserRole).toString().isEmpty()
+                             ? nameItem->text()
+                             : nameItem->data(Qt::UserRole).toString();
+    if (name.isEmpty())
+        return;
+
+    QMenu menu(this);
+    QAction *reassign =
+        menu.addAction(QStringLiteral("Reassign attribution for \"%1\"\xE2\x80\xA6").arg(name));
+    QAction *chosen = menu.exec(m_insightsContributors->viewport()->mapToGlobal(pos));
+    if (chosen == reassign)
+        reassignContributorIdentity(name);
+}
+
+// Rewrite history so every commit authored (or committed) by `oldName` is
+// re-attributed to a chosen name/email, fixing mis-attributed commits. Uses
+// git filter-branch, which rewrites all branches and changes commit hashes, so
+// it requires a clean local checkout and an explicit confirmation.
+void MainWindow::reassignContributorIdentity(const QString &oldName)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString dir = repo.localPath;
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        QMessageBox::warning(
+            this, QStringLiteral("Reassign attribution"),
+            QStringLiteral("Rewriting author identity needs a local checkout of this "
+                           "repository. This node only has a mirror or preview cache."));
+        return;
+    }
+
+    // A history rewrite checks out files at the end; refuse on a dirty tree.
+    QByteArray statusOut;
+    if (runGitCapture(dir, {"status", "--porcelain"}, &statusOut, nullptr) &&
+        !QString::fromUtf8(statusOut).trimmed().isEmpty()) {
+        QMessageBox::warning(
+            this, QStringLiteral("Reassign attribution"),
+            QStringLiteral("Commit or stash your local changes first \xE2\x80\x94 rewriting "
+                           "history requires a clean working tree."));
+        return;
+    }
+
+    // Collect the distinct author identities already in the repo so the target
+    // can be picked from existing ones, and find oldName's primary email.
+    QStringList identities;
+    QString primaryEmail;
+    {
+        QByteArray out;
+        if (runGitCapture(dir, {"log", "--all", "--format=%an%x1f%ae"}, &out, nullptr)) {
+            QSet<QString> seen;
+            QHash<QString, int> emailHits;
+            for (const QByteArray &line : out.split('\n')) {
+                const QStringList f =
+                    QString::fromUtf8(line).split(QLatin1Char('\x1f'));
+                if (f.size() < 2)
+                    continue;
+                const QString an = f.at(0).trimmed();
+                const QString ae = f.at(1).trimmed();
+                if (an.isEmpty())
+                    continue;
+                const QString display = QStringLiteral("%1 <%2>").arg(an, ae);
+                if (!seen.contains(display)) {
+                    seen.insert(display);
+                    identities << display;
+                }
+                if (an == oldName && !ae.isEmpty())
+                    ++emailHits[ae];
+            }
+            int best = 0;
+            for (auto it = emailHits.constBegin(); it != emailHits.constEnd(); ++it) {
+                if (it.value() > best) {
+                    best = it.value();
+                    primaryEmail = it.key();
+                }
+            }
+        }
+    }
+    identities.sort(Qt::CaseInsensitive);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Reassign attribution"));
+    auto *form = new QVBoxLayout(&dialog);
+
+    auto *intro = new QLabel(
+        QStringLiteral("Reassign every commit authored by <b>%1</b> to a different "
+                       "name and email.")
+            .arg(oldName.toHtmlEscaped()));
+    intro->setWordWrap(true);
+    form->addWidget(intro);
+
+    auto *pick = new QComboBox;
+    pick->addItem(QStringLiteral("\xE2\x80\x94 copy from an existing identity \xE2\x80\x94"));
+    for (const QString &id : std::as_const(identities))
+        pick->addItem(id);
+    form->addWidget(pick);
+
+    auto *grid = new QFormLayout;
+    auto *nameEdit = new QLineEdit(oldName);
+    auto *emailEdit = new QLineEdit(primaryEmail);
+    grid->addRow(QStringLiteral("New name"), nameEdit);
+    grid->addRow(QStringLiteral("New email"), emailEdit);
+    form->addLayout(grid);
+
+    // Selecting an existing identity fills the fields ("Name <email>").
+    connect(pick, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+            [pick, nameEdit, emailEdit](int i) {
+                if (i <= 0)
+                    return;
+                const QString text = pick->itemText(i);
+                const int lt = text.lastIndexOf(QLatin1Char('<'));
+                const int gt = text.lastIndexOf(QLatin1Char('>'));
+                if (lt > 0 && gt > lt) {
+                    nameEdit->setText(text.left(lt).trimmed());
+                    emailEdit->setText(text.mid(lt + 1, gt - lt - 1).trimmed());
+                }
+            });
+
+    auto *warn = new QLabel(
+        QStringLiteral("<span style='color:#d29922'>This rewrites history on all "
+                       "branches and changes commit hashes. It cannot be undone.</span>"));
+    warn->setWordWrap(true);
+    warn->setTextFormat(Qt::RichText);
+    form->addWidget(warn);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Reassign"));
+    form->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString newName = nameEdit->text().trimmed();
+    const QString newEmail = emailEdit->text().trimmed();
+    if (newName.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Reassign attribution"),
+                             QStringLiteral("The new name cannot be empty."));
+        return;
+    }
+    if (newName == oldName && newEmail == primaryEmail) {
+        QMessageBox::information(this, QStringLiteral("Reassign attribution"),
+                                 QStringLiteral("Nothing to change."));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("Reassign attribution"),
+            QStringLiteral("Re-attribute all commits by \"%1\" to \"%2 <%3>\"?\n\n"
+                           "This rewrites every branch and changes commit hashes "
+                           "from the first affected commit onward.")
+                .arg(oldName, newName, newEmail),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    // sh single-quote a value for safe embedding in the env-filter script.
+    auto shq = [](const QString &s) {
+        QString e = s;
+        e.replace(QLatin1Char('\''), QLatin1String("'\\''"));
+        return QLatin1Char('\'') + e + QLatin1Char('\'');
+    };
+    const QString script =
+        QStringLiteral(
+            "OLD=%1\n"
+            "if [ \"$GIT_AUTHOR_NAME\" = \"$OLD\" ]; then "
+            "export GIT_AUTHOR_NAME=%2; export GIT_AUTHOR_EMAIL=%3; fi\n"
+            "if [ \"$GIT_COMMITTER_NAME\" = \"$OLD\" ]; then "
+            "export GIT_COMMITTER_NAME=%2; export GIT_COMMITTER_EMAIL=%3; fi\n")
+            .arg(shq(oldName), shq(newName), shq(newEmail));
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("FILTER_BRANCH_SQUELCH_WARNING"), QStringLiteral("1"));
+
+    // filter-branch and the gc afterwards can run for many seconds; use a long
+    // poll loop that keeps the UI alive rather than runGitCapture's 8s cap.
+    auto runLong = [&env](const QString &d, const QStringList &args,
+                          QString *err) -> bool {
+        QProcess p;
+        p.setProcessEnvironment(env);
+        p.start("git", QStringList{"-C", d} + args);
+        QElapsedTimer timer;
+        timer.start();
+        while (!p.waitForFinished(50)) {
+            if (p.state() == QProcess::NotRunning)
+                break;
+            if (timer.hasExpired(300000)) {
+                p.kill();
+                if (err)
+                    *err = QStringLiteral("git timed out");
+                return false;
+            }
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
+        }
+        if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+            if (err)
+                *err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            return false;
+        }
+        return true;
+    };
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QString err;
+    bool ok = runLong(dir,
+                      {"filter-branch", "--force", "--env-filter", script,
+                       "--tag-name-filter", "cat", "--", "--all"},
+                      &err);
+    if (ok) {
+        // Drop filter-branch's backup refs and reclaim the rewritten objects so
+        // the new identity is the only one git reports.
+        QByteArray origRefs;
+        if (runGitCapture(dir, {"for-each-ref", "--format=%(refname)", "refs/original/"},
+                          &origRefs, nullptr)) {
+            for (const QByteArray &ref : origRefs.split('\n')) {
+                const QString r = QString::fromUtf8(ref).trimmed();
+                if (!r.isEmpty())
+                    runGitCapture(dir, {"update-ref", "-d", r}, nullptr, nullptr);
+            }
+        }
+        runLong(dir, {"reflog", "expire", "--expire=now", "--all"}, nullptr);
+        runLong(dir, {"gc", "--prune=now"}, nullptr);
+    }
+    QApplication::restoreOverrideCursor();
+
+    if (!ok) {
+        QMessageBox::critical(
+            this, QStringLiteral("Reassign attribution"),
+            QStringLiteral("History rewrite failed: %1")
+                .arg(err.isEmpty() ? QStringLiteral("git failed") : err.left(400)));
+        return;
+    }
+
+    QMessageBox::information(
+        this, QStringLiteral("Reassign attribution"),
+        QStringLiteral("Re-attributed commits by \"%1\" to \"%2 <%3>\".\n\n"
+                       "Commit hashes changed; re-publish or re-sync mirrors so "
+                       "peers pick up the rewrite.")
+            .arg(oldName, newName, newEmail));
+
+    loadRepoInsights();
+    loadCommits();
 }
 
 void MainWindow::loadRepoInfo()
@@ -20925,6 +21553,10 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchesTable->setHorizontalHeaderLabels(
         {"Branch", "Status", "Updated", ""});
     m_branchesTable->verticalHeader()->setVisible(false);
+    // Give each row enough height for the sm action buttons (max 28px tall) plus
+    // breathing room, so the buttons don't crowd the row above/below.
+    m_branchesTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_branchesTable->verticalHeader()->setDefaultSectionSize(36);
     m_branchesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_branchesTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_branchesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -21112,10 +21744,18 @@ void MainWindow::loadBranchesPanel()
         actionRow->addWidget(del);
 
         m_branchesTable->setCellWidget(row, 3, actions);
+        // Polish before measuring: the sm-button stylesheet (font-size/padding)
+        // only affects sizeHint() once the style is applied, so an unpolished
+        // measurement underestimates and the column clips "Pull main"/"Create PR".
+        actions->ensurePolished();
+        for (QWidget *child : actions->findChildren<QWidget *>())
+            child->ensurePolished();
         actionWidth = qMax(actionWidth, actions->sizeHint().width());
     }
     if (actionWidth > 0)
-        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth);
+        // A few px of slack so the rightmost button never sits flush against the
+        // column edge (the action row already carries an 8px right margin).
+        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 6);
     if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
@@ -25256,12 +25896,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
-    // Re-pin the unsynced-commits overlay whenever its host page resizes (e.g.
-    // dragging the splitter), since it lives outside the layout.
-    if (obj == m_commitsListPage && (event->type() == QEvent::Resize ||
-                                     event->type() == QEvent::Show)) {
-        positionCommitsBanner();
-    }
     // Pasting an image into the chat composer shares it as an attachment. Only
     // consume the event when we actually sent an image; otherwise let the line
     // edit handle a normal text paste.
@@ -25277,6 +25911,38 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
          event->type() == QEvent::MouseButtonRelease)) {
         if (handleIssueProgressDrag(static_cast<QMouseEvent *>(event)))
             return true;
+    }
+    // Global search box: drive the floating results dropdown from the keyboard
+    // (the dropdown is NoFocus, so it never takes the keyboard itself).
+    if (obj == m_globalSearch) {
+        if (event->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(event);
+            const bool open = m_globalSearchPopup && m_globalSearchPopup->isVisible();
+            switch (ke->key()) {
+            case Qt::Key_Down:
+                if (open) { moveGlobalSearchSelection(1); return true; }
+                break;
+            case Qt::Key_Up:
+                if (open) { moveGlobalSearchSelection(-1); return true; }
+                break;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                if (open) {
+                    activateGlobalSearchItem(m_globalSearchPopup->currentItem());
+                    return true;
+                }
+                break;
+            case Qt::Key_Escape:
+                if (open) { hideGlobalSearchPopup(); return true; }
+                break;
+            default:
+                break;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            // Clicking elsewhere dismisses the dropdown; clicking a result keeps
+            // focus in the box (the list is NoFocus), so this won't pre-empt it.
+            hideGlobalSearchPopup();
+        }
     }
     return QMainWindow::eventFilter(obj, event);
 }
