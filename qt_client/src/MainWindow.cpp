@@ -2670,6 +2670,22 @@ void setOcticon(QPushButton *button, const QString &name, int size = 16)
     applyStoredOcticon(button);
 }
 
+// Widen a changed-files list so its longest entry opens fully visible instead of
+// being elided, capped so an unusually long path doesn't crowd out the diff. Only
+// the minimum width is set, so the user can still drag the panel wider.
+void fitFileListToWidestEntry(QListWidget *list, int minW = 180, int maxW = 520)
+{
+    if (!list)
+        return;
+    const QFontMetrics fm(list->fontMetrics());
+    int widest = 0;
+    for (int i = 0; i < list->count(); ++i)
+        widest = qMax(widest, fm.horizontalAdvance(list->item(i)->text()));
+    // Leave room for the leading status icon, row padding, and the scrollbar.
+    const int chrome = 52 + list->verticalScrollBar()->sizeHint().width();
+    list->setMinimumWidth(qBound(minW, widest + chrome, maxW));
+}
+
 // Inline octicon for rich-text QLabels: a tinted SVG rendered to a base64 PNG
 // data URI so it can sit next to text in setText() HTML.
 QString octiconMarkup(const QString &name, int size,
@@ -10486,6 +10502,19 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitDownloadButton, &QPushButton::clicked, this,
             &MainWindow::downloadCommitPatch);
 
+    // Drop the shown commit from history (same rewrite as the per-row button in
+    // the list, but reachable from the diff view). Enabled only where there's a
+    // working tree to rewrite; showCommit keeps that in sync.
+    m_commitDeleteButton = new QPushButton("Delete commit");
+    m_commitDeleteButton->setObjectName("ghostButton");
+    m_commitDeleteButton->setCursor(Qt::PointingHandCursor);
+    m_commitDeleteButton->setToolTip(
+        "Remove this commit from history (rewrites the branch and replays the "
+        "later commits onto its parent)");
+    setOcticon(m_commitDeleteButton, "trash", 16);
+    connect(m_commitDeleteButton, &QPushButton::clicked, this,
+            [this] { deleteCommit(m_currentCommitHash); });
+
     // Switch between unified and side-by-side (split) diff rendering. The choice
     // is a shared, persisted preference (see diffSplitPref) used by both the
     // commit and pull-request diff views.
@@ -10516,6 +10545,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->addStretch();
     prevNextRow->addWidget(m_commitSplitButton);
     prevNextRow->addWidget(m_commitDownloadButton);
+    prevNextRow->addWidget(m_commitDeleteButton);
     prevNextRow->addWidget(m_commitPrevButton);
     prevNextRow->addWidget(m_commitNextButton);
     navCol->addLayout(prevNextRow);
@@ -12656,6 +12686,7 @@ void MainWindow::showPull(int number)
         m_pullFiles->addItem(item);
     }
     m_pullFiles->sortItems();
+    fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0)
         m_pullFiles->setCurrentRow(0);
     else
@@ -13951,6 +13982,362 @@ bool MainWindow::runMergeConflictEditor(
     refreshStatus();
     dlg.exec();
     return committed;
+}
+
+// ---- AI conflict auto-resolution ------------------------------------------
+// One-click alternative to the manual merge editor: a low-cost model rewrites
+// each conflicting file and the result is committed straight to the PR's own
+// branch (no new PR). The whole thing is surfaced as a live agent session so the
+// user can watch it work; PullStore's git-am session is held open across the
+// async API round-trips and finalized once every file resolves.
+
+void MainWindow::aiFixLog(const QString &text)
+{
+    if (!m_aiFix || !m_agentStore)
+        return;
+    if (AgentSession *s = findAgentSession(m_aiFix->sessionId))
+        m_agentStore->appendLog(*s, text);
+    onAgentLog(m_aiFix->sessionId, text); // live-append if this session is shown
+}
+
+void MainWindow::aiFixSetSessionStatus(const QString &status, const QString &error)
+{
+    if (!m_aiFix || !m_agentStore)
+        return;
+    AgentSession *s = findAgentSession(m_aiFix->sessionId);
+    if (!s)
+        return;
+    s->status = status;
+    s->costUsd = m_aiFix->costUsd;
+    s->promptTokens = int(m_aiFix->inTokens);
+    s->completionTokens = int(m_aiFix->outTokens);
+    s->totalTokens = int(m_aiFix->inTokens + m_aiFix->outTokens);
+    if (!error.isEmpty())
+        s->lastError = error;
+    if (status == AgentStatus::Success || status == AgentStatus::Failed ||
+        status == AgentStatus::Stopped)
+        s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(*s);
+    reloadAgents();
+    if (m_aiFix->sessionId == m_selectedAgentSessionId)
+        showAgentSession(m_aiFix->sessionId);
+}
+
+void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
+{
+    if (m_aiFix) {
+        flashMessage("An AI conflict fix is already running; wait for it to finish.",
+                     true);
+        return;
+    }
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int number = m_currentPullNumber;
+
+    const bool claude = provider == QLatin1String("claude");
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
+    const QString apiKey =
+        (claude ? QSettings().value(kClaudeApiKeySetting)
+                : QSettings().value(kCodexApiKeySetting))
+            .toString()
+            .trimmed();
+    if (apiKey.isEmpty()) {
+        flashMessage(claude ? "Add a Claude API key in Settings first."
+                            : "Add an OpenAI API key in Settings first.",
+                     true);
+        return;
+    }
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString workTree = writableRecordFor(repo).localPath;
+    if (workTree.isEmpty()) {
+        QMessageBox::warning(this, "Fix conflicts",
+                             "This repository is read-only on this node.");
+        return;
+    }
+
+    // Open the PR's isolated resolve branch and lay down the conflict markers.
+    // The store instance must outlive the async API calls (it carries the git-am
+    // state), so it lives on the heap and is freed in finish/fail.
+    auto *store = new PullStore(pullStoreForCurrentRepo());
+    QStringList conflicted;
+    bool resolvedClean = false;
+    QString error;
+    if (!store->startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
+        delete store;
+        QMessageBox::warning(this, "Fix conflicts", error);
+        return;
+    }
+
+    // Spin up a visible agent session so the run shows up on the Agents tab with a
+    // live "Running" indicator the moment work starts.
+    AgentSession session;
+    session.owner = repo.owner;
+    session.name = repo.name;
+    session.issueNumber = 0; // PR-scoped, not issue-scoped
+    session.issueTitle = QStringLiteral("Resolve conflicts on PR #%1").arg(number);
+    session.provider = provider; // "claude" | "openai"
+    session.prNumber = number;
+    session.branchName = QStringLiteral("pull/%1").arg(number);
+    session.status = AgentStatus::Running;
+    session = m_agentStore->createSession(session);
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("==> %1 (%2) resolving merge conflicts on pull request #%3.\n")
+            .arg(agentProviderName(provider), model)
+            .arg(number));
+
+    m_aiFix = new AiConflictFix;
+    m_aiFix->store = store;
+    m_aiFix->number = number;
+    m_aiFix->repoIndex = m_repoDetailIndex;
+    m_aiFix->sessionId = session.id;
+    m_aiFix->provider = provider;
+    m_aiFix->model = model;
+    m_aiFix->apiKey = apiKey;
+    m_aiFix->workTree = workTree;
+    m_aiFix->files = conflicted;
+
+    // Immediate "being worked on" indicator on the PR banner, plus jump to the
+    // Agents tab so the user can watch it run.
+    if (m_pullMergeStatus) {
+        m_pullMergeStatus->setText(QString::fromUtf8(
+            "<span style='color:#58a6ff'>\xF0\x9F\xA4\x96 %1 is resolving conflicts\xE2\x80\xA6 "
+            "watch it on the Agents tab.</span>").arg(agentProviderName(provider)));
+        m_pullMergeStatus->show();
+    }
+    updatePullActionState();
+    switchToAgentsTab(session.id);
+
+    if (resolvedClean) {
+        // No markers to edit — startConflictMerge already committed the apply on
+        // the branch; just finalize.
+        aiFixLog(QStringLiteral(
+            "==> Patch applied cleanly with no conflicts left to resolve.\n"));
+        aiFixFinish();
+        return;
+    }
+
+    aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
+                 .arg(conflicted.size())
+                 .arg(conflicted.join(QStringLiteral(", "))));
+    aiFixResolveNextFile();
+}
+
+void MainWindow::aiFixResolveNextFile()
+{
+    if (!m_aiFix)
+        return;
+    if (m_aiFix->index >= m_aiFix->files.size()) {
+        aiFixFinish();
+        return;
+    }
+    const QString rel = m_aiFix->files.at(m_aiFix->index);
+    QFile f(m_aiFix->workTree + QLatin1Char('/') + rel);
+    if (!f.open(QIODevice::ReadOnly)) {
+        aiFixFail(QStringLiteral("Could not read %1 from the working tree.").arg(rel));
+        return;
+    }
+    const QString content = QString::fromUtf8(f.readAll());
+    f.close();
+    // A single-shot rewrite can't reliably reproduce a very large file within the
+    // output budget, so bail to manual resolution rather than truncate.
+    if (content.size() > 60000) {
+        aiFixFail(QStringLiteral(
+                      "%1 is too large to auto-resolve \xE2\x80\x94 use \"Resolve "
+                      "conflicts\xE2\x80\xA6\" for this one.").arg(rel));
+        return;
+    }
+
+    aiFixLog(QStringLiteral("==> [net] Resolving %1 (%2/%3) with %4\xE2\x80\xA6\n")
+                 .arg(rel)
+                 .arg(m_aiFix->index + 1)
+                 .arg(m_aiFix->files.size())
+                 .arg(m_aiFix->model));
+
+    const bool claude = m_aiFix->provider == QLatin1String("claude");
+    const QString system = QStringLiteral(
+        "You are a careful software engineer resolving a Git merge conflict. You "
+        "output only the complete, fully merged file contents.");
+    const QString task =
+        QStringLiteral(
+            "The file `%1` contains Git merge conflict markers (<<<<<<<, =======, "
+            ">>>>>>>). Resolve every conflict by combining both sides into one "
+            "correct, coherent file. Keep all non-conflicting content exactly as "
+            "it is. Remove every conflict marker. Output ONLY the complete resolved "
+            "file contents \xE2\x80\x94 no explanation, no markdown code fences."
+            "\n\n----- BEGIN FILE -----\n%2\n----- END FILE -----")
+            .arg(rel, content);
+    // Budget enough output to reproduce the whole file (~1 token per 3 chars) with
+    // headroom, capped so a low-cost model stays low-cost.
+    const int outTok = qBound(1024, content.size() / 3 + 1024, 16000);
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", m_aiFix->model);
+        payload.insert("max_tokens", outTok);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", system + "\n\n" + task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        req.setRawHeader("x-api-key", m_aiFix->apiKey.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", m_aiFix->model);
+        payload.insert("instructions", system);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", outTok);
+        QNetworkRequest req =
+            openAiRequest(QUrl(QStringLiteral("https://api.openai.com/v1/responses")),
+                          m_aiFix->apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        if (!m_aiFix) // torn down (e.g. app closing) — nothing to do
+            return;
+        if (reply->error() != QNetworkReply::NoError) {
+            aiFixFail(QStringLiteral("API error: %1").arg(apiErrorSummary(reply, body)));
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        QString text;
+        if (claude) {
+            for (const QJsonValue &v : obj.value("content").toArray()) {
+                const QJsonObject o = v.toObject();
+                if (o.value("type").toString() == QLatin1String("text"))
+                    text += o.value("text").toString();
+            }
+            const QJsonObject usage = obj.value("usage").toObject();
+            const qint64 in = usage.value("input_tokens").toInt();
+            const qint64 out = usage.value("output_tokens").toInt();
+            m_aiFix->inTokens += in;
+            m_aiFix->outTokens += out;
+            m_aiFix->costUsd += in / 1e6 * 1.0 + out / 1e6 * 5.0; // Haiku 4.5 rates
+        } else {
+            text = openAiResponseText(obj);
+            qint64 in = 0, out = 0;
+            m_aiFix->costUsd += openAiAskCostUsd(obj, &in, &out);
+            m_aiFix->inTokens += in;
+            m_aiFix->outTokens += out;
+        }
+        aiFixApplyResolved(text);
+    });
+}
+
+void MainWindow::aiFixApplyResolved(const QString &resolvedIn)
+{
+    if (!m_aiFix)
+        return;
+    const QString rel = m_aiFix->files.at(m_aiFix->index);
+    QString resolved = resolvedIn;
+    // Strip an accidental ```lang ... ``` fence if the model added one.
+    if (resolved.startsWith(QStringLiteral("```"))) {
+        const int nl = resolved.indexOf(QLatin1Char('\n'));
+        if (nl >= 0)
+            resolved = resolved.mid(nl + 1);
+        if (resolved.endsWith(QStringLiteral("```")))
+            resolved.chop(3);
+        else if (resolved.endsWith(QStringLiteral("```\n")))
+            resolved.chop(4);
+    }
+    if (resolved.trimmed().isEmpty()) {
+        aiFixFail(QStringLiteral("The model returned no content for %1.").arg(rel));
+        return;
+    }
+    // The model must not have left any conflict markers behind.
+    if (resolved.contains(QStringLiteral("<<<<<<< ")) ||
+        resolved.contains(QStringLiteral("\n>>>>>>> ")) ||
+        resolved.startsWith(QStringLiteral(">>>>>>> "))) {
+        aiFixFail(QStringLiteral(
+                      "The model left conflict markers in %1 \xE2\x80\x94 resolve it "
+                      "manually instead.").arg(rel));
+        return;
+    }
+    if (!resolved.endsWith(QLatin1Char('\n')))
+        resolved.append(QLatin1Char('\n'));
+    QFile out(m_aiFix->workTree + QLatin1Char('/') + rel);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        aiFixFail(QStringLiteral("Could not write the resolved %1.").arg(rel));
+        return;
+    }
+    out.write(resolved.toUtf8());
+    out.close();
+    aiFixLog(QStringLiteral("==> Resolved %1.\n").arg(rel));
+    m_aiFix->index++;
+    aiFixResolveNextFile();
+}
+
+void MainWindow::aiFixFinish()
+{
+    if (!m_aiFix)
+        return;
+    const int number = m_aiFix->number;
+    const int repoIndex = m_aiFix->repoIndex;
+    QString error;
+    if (!m_aiFix->store->finishConflictMerge(number, &error)) {
+        aiFixFail(error.isEmpty() ? QStringLiteral("Could not commit the fix.")
+                                  : error);
+        return;
+    }
+    aiFixLog(QStringLiteral(
+                 "==> Committed the conflict fix to pull request #%1's branch "
+                 "(cost ~$%2).\n")
+                 .arg(number)
+                 .arg(QString::number(m_aiFix->costUsd, 'f', 4)));
+    aiFixSetSessionStatus(AgentStatus::Success);
+
+    delete m_aiFix->store;
+    delete m_aiFix;
+    m_aiFix = nullptr;
+
+    logSystem(QStringLiteral(
+                  "AI resolved conflicts on pull request #%1's branch; it is "
+                  "updated and ready to merge.").arg(number));
+    if (repoIndex == m_repoDetailIndex) {
+        reloadPulls();
+        showPull(number);
+    }
+    if (repoIndex >= 0)
+        propagateRepoUpdate(repoIndex);
+    flashMessage(QStringLiteral("Conflicts on PR #%1 fixed and committed.").arg(number));
+}
+
+void MainWindow::aiFixFail(const QString &message)
+{
+    if (!m_aiFix)
+        return;
+    const int number = m_aiFix->number;
+    const int repoIndex = m_aiFix->repoIndex;
+    aiFixLog(QStringLiteral("!! %1\n").arg(message));
+    aiFixSetSessionStatus(AgentStatus::Failed, message);
+    m_aiFix->store->abortConflictMerge(); // restore the working tree + drop the branch
+
+    delete m_aiFix->store;
+    delete m_aiFix;
+    m_aiFix = nullptr;
+
+    flashMessage(QStringLiteral("AI conflict fix failed: %1").arg(message), true);
+    if (repoIndex == m_repoDetailIndex) {
+        reloadPulls();
+        showPull(number);
+    }
 }
 
 void MainWindow::resolveCurrentPullConflicts()
@@ -15963,11 +16350,15 @@ void MainWindow::refreshAgentTable()
         idItem->setData(Qt::DisplayRole, session.id);
         idItem->setData(Qt::UserRole, session.id);
         m_agentTable->setItem(row, 0, idItem);
-        m_agentTable->setItem(row, 1,
-                              new QTableWidgetItem(
-                                  QStringLiteral("#%1 %2")
-                                      .arg(session.issueNumber)
-                                      .arg(session.issueTitle)));
+        // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
+        // conflict auto-fixer, issueNumber 0) just show their title.
+        m_agentTable->setItem(
+            row, 1,
+            new QTableWidgetItem(
+                session.issueNumber > 0
+                    ? QStringLiteral("#%1 %2").arg(session.issueNumber)
+                          .arg(session.issueTitle)
+                    : session.issueTitle));
         m_agentTable->setItem(row, 2,
                               new QTableWidgetItem(agentProviderName(session.provider)));
         auto *status = new QTableWidgetItem(agentStatusText(session.status));
@@ -16110,9 +16501,14 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentDetail)
         m_agentDetail->show();
     if (m_agentTitle)
-        m_agentTitle->setText(QStringLiteral("%1 on issue #%2")
-                                  .arg(agentProviderName(session->provider))
-                                  .arg(session->issueNumber));
+        m_agentTitle->setText(
+            session->issueNumber > 0
+                ? QStringLiteral("%1 on issue #%2")
+                      .arg(agentProviderName(session->provider))
+                      .arg(session->issueNumber)
+                : QStringLiteral("%1 on pull #%2")
+                      .arg(agentProviderName(session->provider))
+                      .arg(session->prNumber));
     if (m_agentMeta) {
         QString meta = QStringLiteral("%1/%2 · %3 · %4")
                            .arg(session->owner, session->name,
@@ -16422,7 +16818,9 @@ void MainWindow::deleteSelectedAgentSession()
     m_agentQueue.removeAll(snapshot.id);
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
-    if (repoIndex >= 0) {
+    // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
+    // issue event to clear — skip straight to removing the session.
+    if (repoIndex >= 0 && snapshot.issueNumber > 0) {
         const RepositoryRecord repo = m_repositories.at(repoIndex);
         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                               m_userName);
@@ -16743,17 +17141,24 @@ void MainWindow::updateAgentActionState()
         m_agentStopButton->setEnabled(running);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
+    // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) aren't
+    // backed by a re-runnable AgentRunner/issue, so Continue and steering don't
+    // apply to them.
+    const bool issueBacked = session && session->issueNumber > 0;
+    // Block deleting the session whose working-tree git-am the in-flight AI fix is
+    // still holding open.
+    const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
     // Sessions run in parallel, so Continue only depends on this session's own
     // state, not whether other sessions are busy.
     if (m_agentContinueButton)
         m_agentContinueButton->setEnabled(
-            session && !running && session->status != AgentStatus::Queued);
+            issueBacked && !running && session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
-        m_agentDeleteButton->setEnabled(selected);
+        m_agentDeleteButton->setEnabled(selected && !aiFixBusy);
     if (m_agentSendPromptButton)
-        m_agentSendPromptButton->setEnabled(selected);
+        m_agentSendPromptButton->setEnabled(issueBacked);
     if (m_agentPromptEdit)
-        m_agentPromptEdit->setEnabled(selected);
+        m_agentPromptEdit->setEnabled(issueBacked);
 }
 
 // ---- IDE extension integration --------------------------------------------
@@ -18807,12 +19212,16 @@ void MainWindow::loadCommits()
     if (currentRef() != m_commitsLoadedRef)
         m_commitsLimit = 300;
     m_commitsHasMore = false;
-    // Fetch one extra record so a full page tells us older history remains.
-    if (!runGitCapture(dir,
-                       {"log", "--numstat",
-                        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P",
-                        "-n", QString::number(m_commitsLimit + 1), currentRef()},
-                       &out, nullptr)) {
+    // Fetch one extra record so a full page tells us older history remains. When a
+    // search is active (m_commitsShowingAll) we drop the cap entirely so the filter
+    // can reach every commit in the current ref, including by hash.
+    QStringList logArgs{
+        "log", "--numstat",
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
+    if (!m_commitsShowingAll)
+        logArgs << "-n" << QString::number(m_commitsLimit + 1);
+    logArgs << currentRef();
+    if (!runGitCapture(dir, logArgs, &out, nullptr)) {
         m_commitsTable->setSortingEnabled(true);
         return;
     }
@@ -18840,8 +19249,10 @@ void MainWindow::loadCommits()
         if (record.trimmed().isEmpty())
             continue;
         // Stop at the current window; the extra fetched record means more remain,
-        // which the scroll handler uses to load the next page.
-        if (m_commitsTable->rowCount() >= m_commitsLimit) {
+        // which the scroll handler uses to load the next page. A search load
+        // (m_commitsShowingAll) has no cap — every commit is built so the filter
+        // can reach it.
+        if (!m_commitsShowingAll && m_commitsTable->rowCount() >= m_commitsLimit) {
             m_commitsHasMore = true;
             break;
         }
@@ -20098,6 +20509,22 @@ void MainWindow::filterCommits(const QString &query)
     if (!m_commitsTable)
         return;
     const QString needle = query.trimmed().toLower();
+    // A search has to span the whole history, not just the lazily-paged window, so
+    // a hash or message that lives deeper than the loaded rows still turns up. The
+    // first keystroke deepens the table to every commit; clearing it restores the
+    // paged window. loadCommits() re-applies this same filter at its tail, so the
+    // deepened pass falls through to the row loop below.
+    if (!needle.isEmpty() && !m_commitsShowingAll && m_commitsHasMore) {
+        m_commitsShowingAll = true;
+        loadCommits();
+        return;
+    }
+    if (needle.isEmpty() && m_commitsShowingAll) {
+        m_commitsShowingAll = false;
+        m_commitsLimit = 300;
+        loadCommits();
+        return;
+    }
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
         bool match = needle.isEmpty();
         if (!match) {
@@ -21010,6 +21437,19 @@ void MainWindow::showCommit(const QString &hash)
         m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
         m_commitDownloadButton->setEnabled(true);
+    if (m_commitDeleteButton) {
+        // History rewrites only make sense where this node owns the working tree;
+        // browse-only mirrors show the button disabled (matching the list rows).
+        const bool writable = repoHasWorkingTree();
+        m_commitDeleteButton->setEnabled(writable);
+        m_commitDeleteButton->setToolTip(
+            writable ? QStringLiteral(
+                           "Remove this commit from history (rewrites the branch and "
+                           "replays the later commits onto its parent)")
+                     : QStringLiteral(
+                           "Read-only mirror \xE2\x80\x94 no working tree to rewrite "
+                           "history in"));
+    }
     QByteArray patchRaw;
     runGitCapture(dir, {"diff", "-M", base, full.isEmpty() ? hash : full},
                   &patchRaw, nullptr);
@@ -21085,6 +21525,7 @@ void MainWindow::showCommit(const QString &hash)
             item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_commitFileList->addItem(item);
         }
+        fitFileListToWidestEntry(m_commitFileList);
     }
 
     // --- Theme-aware diff styling, then the rendered HTML.
@@ -22370,6 +22811,7 @@ void MainWindow::showBranchDiff(const QString &branch)
             item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_branchFileList->addItem(item);
         }
+        fitFileListToWidestEntry(m_branchFileList);
     }
 
     // Record each file header's position so the sticky bar can name the file

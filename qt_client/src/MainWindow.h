@@ -1481,6 +1481,7 @@ private:
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
+    QPushButton *m_commitDeleteButton = nullptr; // drop this commit from history
     QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
@@ -1735,6 +1736,10 @@ private:
     int m_commitsLimit = 300;
     bool m_commitsHasMore = false;
     bool m_commitsLoadingMore = false;
+    // While a commit search is active, the lazily-paged window is deepened to the
+    // whole history so the filter spans every commit (incl. by hash); cleared back
+    // to the paged window when the search box empties.
+    bool m_commitsShowingAll = false;
     int m_commitsRefreshAngle = 0;
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
