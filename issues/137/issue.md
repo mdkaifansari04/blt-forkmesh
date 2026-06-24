@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 137
 title: refresh issues and prs on the mirroring nodes when it receives a new commit
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 4
