@@ -288,7 +288,7 @@
         <div class="panel-header">
           <div>
             <h2 id="leaderboards-title">Leaderboards</h2>
-            <p>Mainnode uptime, top owners, the most-mirrored and longest-hosted repositories, contributor activity, and funds received by mainnodes, contributors and projects.</p>
+            <p>Mainnode uptime, top owners, the most-mirrored, longest-hosted and largest repositories, mirror data hosted per owner, contributor activity, and funds received by mainnodes, contributors and projects.</p>
           </div>
         </div>
         <div id="leaderboards" class="leaderboards" aria-live="polite">
@@ -529,6 +529,13 @@
             const sol = Number(row.sol) || (Number(row.lamports) || 0) / 1e9;
             return `${sol.toFixed(sol >= 1 ? 2 : 4)} SOL`;
           };
+          const fmtBytes = (b) => {
+            b = Number(b) || 0;
+            const units = ["B", "KB", "MB", "GB", "TB"];
+            let u = 0;
+            while (b >= 1024 && u < units.length - 1) { b /= 1024; u++; }
+            return `${u === 0 ? b : b.toFixed(1)} ${units[u]}`;
+          };
           root.innerHTML = "";
           root.appendChild(board(
             "Mainnode uptime", `Most minutes online · last ${hours}h`,
@@ -542,6 +549,12 @@
           root.appendChild(board(
             "Longest hosted", "Repositories online the longest",
             arr("hosted"), (row) => fmtAge(row.ageMs)));
+          root.appendChild(board(
+            "Largest repos", "Most mirror data per repository",
+            arr("largest"), (row) => fmtBytes(row.bytes)));
+          root.appendChild(board(
+            "Most data hosted", "Mirror data hosted per owner",
+            arr("dataHosted"), (row) => fmtBytes(row.bytes)));
           root.appendChild(board(
             "Contributor activity", "Issues + pull requests + commits",
             arr("contributors"), (row) => plural(Number(row.total) || 0, "contribution")));

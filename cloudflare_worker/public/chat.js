@@ -18,6 +18,7 @@ const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
 const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
+const clearBtn = document.querySelector("#chat-clear");
 const statusEl = document.querySelector("#chat-status");
 
 const enc = new TextEncoder();
@@ -186,6 +187,19 @@ function removeMessage(id) {
   if (!rec) return;
   if (rec.el && rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
   rows.delete(id);
+}
+
+// Wipe the on-screen transcript and restore the empty placeholder. This is a
+// local view-only clear: it doesn't delete anything on the relay or for other
+// clients. Cleared ids stay in `seen` so a replayed history can't bring them
+// back, while genuinely new incoming messages still appear.
+function clearChat() {
+  rows.clear();
+  logEl.textContent = "";
+  const empty = document.createElement("div");
+  empty.className = "chat-empty";
+  empty.textContent = "Type below to join the room.";
+  logEl.append(empty);
 }
 
 function appendSystem(text) {
@@ -377,6 +391,7 @@ if (logEl && input && sendBtn) {
   input.addEventListener("focus", connect);
   nameInput.addEventListener("focus", connect);
   sendBtn.addEventListener("click", sendCurrentMessage);
+  if (clearBtn) clearBtn.addEventListener("click", clearChat);
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

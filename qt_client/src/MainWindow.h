@@ -262,6 +262,21 @@ private:
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateRepoPushButton();   // show pending local commits for the open repo
     void pushCurrentRepoUpstream();
+    // Integrity pin: sha256 over the canonical heads+tags advertisement of a bare
+    // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
+    // The owner signs this on publish and the relay pins it. Empty when the mirror
+    // path is unset/unreadable.
+    QString mirrorStateHash(const QString &mirrorPath) const;
+    // Signed catalog-list URL (adds our viewer token so the relay also returns our
+    // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
+    QUrl catalogListUrl();
+    // Show/hide the "clones are being rejected" banner on the owner's node when the
+    // relay's pinned stateHash no longer matches the refs this node serves.
+    void refreshRepoPinBanner();
+    // Re-attest the open repo's current refs, overwriting a stale relay pin.
+    void resetRepoPin();
+    // Dialog explaining what the integrity pin is and why a reset is needed.
+    void showPinExplanation();
     // True when the open repo's branch tracks the ForkMesh relay (which serves
     // clone/fetch only, no git-receive-pack). Such repos publish by syncing the
     // served mirror from the local copy, not by a git push to the relay.
@@ -1012,6 +1027,10 @@ private:
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
+    QWidget *m_repoPinBanner = nullptr;      // "clones rejected — reset integrity pin" warning
+    QLabel *m_repoPinLabel = nullptr;        // explanatory text inside m_repoPinBanner
+    QPushButton *m_repoPinResetButton = nullptr; // re-attests the served refs
+    int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
         QString label;
