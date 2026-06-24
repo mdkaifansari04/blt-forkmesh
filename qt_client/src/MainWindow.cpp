@@ -2467,6 +2467,56 @@ QString languageColor(const QString &lang)
     return colors.value(lang, "#8b949e");
 }
 
+namespace {
+
+// While >0, the git wait below keeps the GUI event loop breathing instead of
+// blocking the main thread outright. A multi-second git read (a big ls-tree,
+// log --numstat, count-objects, …) would otherwise stop the app answering
+// window-manager pings and get flagged "Not Responding". User input is excluded
+// from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
+// m_repoDetailLoading guard backstops anything that still slips through.
+int g_gitKeepAliveDepth = 0;
+
+// Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
+// short slices and service the GUI between them so the window stays responsive
+// and spinners animate; otherwise block as before.
+bool waitForGit(QProcess &process, QString *err)
+{
+    if (g_gitKeepAliveDepth <= 0) {
+        if (process.waitForFinished(8000))
+            return true;
+        process.kill();
+        if (err)
+            *err = QStringLiteral("git timed out");
+        return false;
+    }
+    QElapsedTimer timer;
+    timer.start();
+    while (!process.waitForFinished(40)) {
+        if (process.state() == QProcess::NotRunning)
+            return true; // exited between polls; caller inspects the exit code
+        if (timer.hasExpired(8000)) {
+            process.kill();
+            if (err)
+                *err = QStringLiteral("git timed out");
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+    }
+    return true;
+}
+
+} // namespace
+
+// RAII: keep the GUI responsive across the run of synchronous git reads in an
+// interactive load (a node switch or opening a repo). Nestable.
+struct GitKeepAlive {
+    GitKeepAlive() { ++g_gitKeepAliveDepth; }
+    ~GitKeepAlive() { --g_gitKeepAliveDepth; }
+    GitKeepAlive(const GitKeepAlive &) = delete;
+    GitKeepAlive &operator=(const GitKeepAlive &) = delete;
+};
+
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
 bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
@@ -2474,11 +2524,8 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
 {
     QProcess process;
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(8000)) {
-        if (err)
-            *err = QStringLiteral("git timed out");
+    if (!waitForGit(process, err))
         return false;
-    }
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         if (err)
             *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
@@ -2496,11 +2543,8 @@ bool runGitCaptureWithEnv(const QString &dir, const QStringList &args,
     QProcess process;
     process.setProcessEnvironment(env);
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(8000)) {
-        if (err)
-            *err = QStringLiteral("git timed out");
+    if (!waitForGit(process, err))
         return false;
-    }
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         if (err)
             *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
@@ -8227,6 +8271,9 @@ void MainWindow::selectNode(const QString &node)
     logSystem(QStringLiteral("Switching to %1 — loading its repositories…")
                   .arg(label));
     startNodeSwitchSpin();
+    // Show the progress pill right away so the switch reads as in-flight even
+    // before the deferred load's first step lands.
+    showLoadStatus(QStringLiteral("Switching to %1…").arg(label));
     QApplication::setOverrideCursor(Qt::BusyCursor);
     QTimer::singleShot(0, this, [this, node, label] {
         // Always balance this call's setOverrideCursor push, even when a newer
@@ -15402,8 +15449,15 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_repoDetailLoading)
         return;
     m_repoDetailLoading = true;
+    // The load below fires a dozen blocking git reads, any of which can take
+    // seconds on a large repo. Keep the event loop alive across them so the
+    // window doesn't freeze (and the WM doesn't flag it "Not Responding").
+    GitKeepAlive keepAlive;
     m_repoDetailIndex = repoIndex;
-    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    // Copy by value: the keep-alive pump services queued slots between git reads,
+    // and a roster/network callback could mutate (and reallocate) m_repositories
+    // mid-load — a reference into it would dangle.
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
     nodeSwitchStep(QStringLiteral("Reading %1/%2 metadata…")
                        .arg(repo.owner, repo.name));
     if (!repo.previewOnly)
@@ -15468,9 +15522,17 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_repoFileTree->clear();
     m_treeLoadedForIndex = -1;
 
-    nodeSwitchStep(QStringLiteral("Indexing files for search…"));
-    loadFileSearchIndex();
-    logStartup(QStringLiteral("  openRepo: file search index built"));
+    // The file-search completer is only consulted once the user starts typing a
+    // path, and ls-tree -r is the single heaviest git read on a large repo —
+    // build it just after the repo paints so it never delays first view. Re-check
+    // the index so a fast follow-up switch doesn't index the wrong repo.
+    const int searchIndexFor = m_repoDetailIndex;
+    QTimer::singleShot(0, this, [this, searchIndexFor] {
+        if (m_repoDetailIndex != searchIndexFor)
+            return;
+        GitKeepAlive keepAlive;
+        loadFileSearchIndex();
+    });
     nodeSwitchStep(QStringLiteral("Loading README & about…"));
     loadAboutSidebar();
     logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
@@ -17790,6 +17852,13 @@ void MainWindow::submitCommitComment()
             QMessageBox::warning(this, "Comment", error);
             return;
         }
+        // Push the new comment into the bare mirror and tell mirroring peers
+        // right away (like issue/PR comments do) so it converges in seconds
+        // instead of at the next 5-minute auto-sync. Resolve the writable
+        // repo's own index — the open detail may be a read-only preview of a
+        // repo we actually host under a different entry.
+        const int srcIndex = repoIndexFor(rec.owner, rec.name);
+        propagateRepoUpdate(srcIndex >= 0 ? srcIndex : m_repoDetailIndex);
     } else {
         const CommitComment c =
             store.makeSignedComment(m_currentCommitHash, [&] {
@@ -18830,6 +18899,21 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.updatedMs = repo.lastSyncMs;
     selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
 
+    // If we are the source of truth, our working copy can be ahead of the bare
+    // mirror we serve (e.g. a comment was just committed and the mirror fetch
+    // hasn't run/finished). Count those un-mirrored commits so the self row can
+    // show a live "↑N to push" badge the moment a change is made.
+    int pendingPush = 0;
+    if (repoHasWorkingTree() && !repo.localPath.trimmed().isEmpty() &&
+        !selfAdvert.commit.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(repo.localPath,
+                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                           selfAdvert.commit + QStringLiteral("..HEAD")},
+                          &out, nullptr))
+            pendingPush = QString::fromUtf8(out).trimmed().toInt();
+    }
+
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row
     // always reads the live local HEAD via selfAdvert.
@@ -18953,6 +19037,17 @@ void MainWindow::loadMirrorNodesPanel()
             syncedItem->setToolTip(QString::fromUtf8(
                 "Behind the source \xC2\xB7 catches up at its next heartbeat"));
         }
+        // Our own row, when the working copy holds commits the served mirror
+        // doesn't yet: surface the pending push count instead of the sync time.
+        if (node.self && pendingPush > 0) {
+            syncedItem->setText(QString::fromUtf8("\xE2\x86\x91 %1 to push")
+                                    .arg(pendingPush));
+            syncedItem->setToolTip(
+                QString::fromUtf8("%1 local commit%2 not yet copied to this "
+                                  "node's served mirror")
+                    .arg(pendingPush)
+                    .arg(pendingPush == 1 ? "" : "s"));
+        }
         m_mirrorNodesTable->setItem(row, 2, syncedItem);
 
         // Tally for the owner-only alert below: are we the source of truth, and
@@ -19016,6 +19111,13 @@ void MainWindow::loadMirrorNodesPanel()
                         "mirror node%2 out of sync</span>")
                         .arg(outOfSyncPeers)
                         .arg(outOfSyncPeers == 1 ? "" : "s");
+        // Local commits not yet copied into the mirror we serve (a just-made
+        // comment/commit), shown until the background fetch catches the mirror up.
+        if (pendingPush > 0)
+            text += QString::fromUtf8(
+                        " \xC2\xB7 <span style='color:#d29922'>\xE2\x86\x91 %1 "
+                        "to push</span>")
+                        .arg(pendingPush);
         m_mirrorNodesSummary->setTextFormat(Qt::RichText);
         m_mirrorNodesSummary->setText(text);
     }
@@ -19533,26 +19635,68 @@ void MainWindow::openRepoDetailDeferred(int repoIndex)
     // Paint busy feedback immediately, then run the heavy synchronous load on the
     // next event-loop turn so the dropdown closes and the spinner shows first.
     startRepoSwitchSpin();
+    showLoadStatus(QStringLiteral("Opening repository…"));
     QApplication::setOverrideCursor(Qt::BusyCursor);
     QTimer::singleShot(0, this, [this, repoIndex] {
         m_repoOpenPending = -1;
+        QElapsedTimer timer;
+        timer.start();
+        // m_repoLoadActive lets nodeSwitchStep narrate this load too (it otherwise
+        // only speaks during node switches); openRepoDetail's steps update the pill.
+        m_repoLoadActive = true;
         openRepoDetail(repoIndex);
+        m_repoLoadActive = false;
         stopRepoSwitchSpin();
         QApplication::restoreOverrideCursor();
+        // Confirm the result where the user is looking: a brief toast for a slow
+        // open, otherwise just retire the progress pill.
+        const qint64 ms = timer.elapsed();
+        if (ms > 500 && repoIndex >= 0 && repoIndex < m_repositories.size()) {
+            const RepositoryRecord &r = m_repositories.at(repoIndex);
+            flashMessage(QStringLiteral("Opened %1/%2 in %3 ms.")
+                             .arg(r.owner, r.name)
+                             .arg(ms));
+        } else if (m_loadStatusShowing) {
+            dismissTopMessage();
+        }
     });
 }
 
 void MainWindow::nodeSwitchStep(const QString &what)
 {
-    // Surface a repo-load step to the in-app log, but only while a node switch is
-    // actually in progress (openRepoDetail is also called on startup and on plain
-    // repo clicks, which shouldn't spam the log). Yield to the event loop — with
+    // Narrate a repo-load step, but only while a user-driven load is in flight —
+    // a node switch (m_nodeSwitching) or opening a repo (m_repoLoadActive).
+    // openRepoDetail is also called on startup, which shouldn't spam the user.
+    // Show the step in the top bar and log it, then yield to the event loop —
     // user input excluded so a click can't re-enter the load — so the spinner
-    // keeps animating and each line appears as the work happens.
-    if (!m_nodeSwitching)
+    // keeps animating and each step appears as the work happens.
+    if (!m_nodeSwitching && !m_repoLoadActive)
         return;
+    showLoadStatus(what);
     logSystem(QStringLiteral("  • ") + what);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void MainWindow::showLoadStatus(const QString &what)
+{
+    if (!m_topMessage || what.isEmpty())
+        return;
+    m_topMessageRaw = what;
+    // Blue, persistent progress pill — distinct from the green success / red
+    // error toast — naming the current step. The node/repo button spinner and the
+    // node-switch bar convey motion; this conveys *what* is happening.
+    m_topMessage->setText(
+        QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
+            .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
+                 what.toHtmlEscaped()));
+    m_topMessage->show();
+    m_loadStatusShowing = true;
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageCopy)
+        m_topMessageCopy->hide();
+    if (m_topMessageClose)
+        m_topMessageClose->hide();
 }
 
 int MainWindow::issuesRepoIndex() const
@@ -24802,6 +24946,8 @@ void MainWindow::logSystem(const QString &text)
 
 void MainWindow::flashMessage(const QString &text, bool error)
 {
+    // A real result supersedes any in-flight progress pill (showLoadStatus).
+    m_loadStatusShowing = false;
     // Always keep a copy in the network log for history.
     logSystem(text);
     if (!m_topMessage)
@@ -24850,6 +24996,7 @@ void MainWindow::flashMessage(const QString &text, bool error)
 // Hide the top toast and its error affordances (Copy / dismiss).
 void MainWindow::dismissTopMessage()
 {
+    m_loadStatusShowing = false;
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageCopy)
@@ -25304,6 +25451,11 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // come and go or re-advertise fresher mirrors.
     if (m_repoDetailIndex >= 0)
         loadMirrorNodesPanel();
+    // A re-advertised roster can mean the source of truth just moved: pull any
+    // repo whose served state is now behind a peer's, immediately, instead of
+    // waiting for the next heartbeat/auto-sync.
+    if (!firstRoster)
+        syncMirrorsBehindRoster();
 }
 
 void MainWindow::refreshChatMembers()
@@ -27635,6 +27787,57 @@ void MainWindow::autoSyncMirrors()
     }
 }
 
+void MainWindow::syncMirrorsBehindRoster()
+{
+    // A peer just (re-)advertised its mirror set via hello. For every repo we
+    // mirror, if any online peer advertises a commit our bare mirror does not
+    // contain, pull it now rather than waiting for the 5-minute auto-sync. This
+    // backstops notifyMirrorUpdated (which is ephemeral and missed if we were
+    // offline/just connected): the moment the roster shows the source moved, we
+    // converge. syncRepository fetches refs/heads/* + refs/tags/*, so issue/PR
+    // and commit-comment changes (which live on refs/heads) come along too.
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.previewOnly || m_syncingRepos.contains(i))
+            continue;
+        if (repositorySource(repo).isEmpty())
+            continue; // we are the source — nothing upstream to pull
+        if (repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
+            continue; // no local mirror yet; the periodic clone handles the first
+        // Group every node's mirror of this repo by its shared upstream identity
+        // (with a clone-name / legacy fallback for older peers), exactly as
+        // loadMirrorNodesPanel does.
+        const QString canonical =
+            catalogOwner(repo) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        const QString source = repoSegment(repo.owner, QStringLiteral("owner")) +
+                               "/" + repoSegment(repo.name, QStringLiteral("repository"));
+        const QString legacy = repo.owner + "/" + repo.name;
+        bool behind = false;
+        for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+            if (node.self || !node.online)
+                continue;
+            for (const MirrorAdvert &m : node.mirrorDetails) {
+                if (m.source != source && m.ownerName != canonical &&
+                    m.ownerName != legacy)
+                    continue;
+                // A peer advertises a commit our mirror lacks → we are behind.
+                if (!m.commit.isEmpty() &&
+                    !runGitCapture(repo.mirrorPath,
+                                   {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                                    m.commit + QStringLiteral("^{commit}")},
+                                   nullptr, nullptr))
+                    behind = true;
+                break; // one advert per node for this repo
+            }
+            if (behind)
+                break;
+        }
+        if (behind)
+            syncRepository(i, /*quiet=*/true);
+    }
+}
+
 void MainWindow::propagateRepoUpdate(int index)
 {
     if (index < 0 || index >= m_repositories.size())
@@ -27652,6 +27855,12 @@ void MainWindow::propagateRepoUpdate(int index)
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
     // converging everyone in seconds rather than at the next 5-minute tick.
     syncRepository(index, /*quiet=*/true);
+    // The mirror fetch above is asynchronous; until it finishes our working copy
+    // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
+    // it surfaces the pending "↑N to push" state the instant the comment/commit
+    // lands, rather than only after the fetch completes.
+    if (index == m_repoDetailIndex)
+        loadMirrorNodesPanel();
 }
 
 void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
@@ -27718,20 +27927,18 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
     const QString myKey = m_profileIdentity.publicKey();
 
     bool dirty = false;
-    auto consider = [&](const QString &kind, int number, const QString &eventId,
-                        const QString &authorKey, const QString &authorName,
-                        const QString &text, const QString &context) {
+    // Raise (and record) one mention alert. stableKey dedups across scans;
+    // humanLocator is the "issue #12" / "PR #4" / "commit abc1234" phrase shown.
+    auto notifyMention = [&](const QString &stableKey, const QString &authorKey,
+                             const QString &authorName, const QString &text,
+                             const QString &humanLocator) {
         if (text.isEmpty() || !textMentionsNodeName(text, m_userName))
             return;
         if (!authorKey.isEmpty() && authorKey == myKey)
             return; // your own writing doesn't mention "you"
-        const QString key = QStringLiteral("%1#%2%3:%4")
-                                .arg(repoKey, kind)
-                                .arg(number)
-                                .arg(eventId);
-        if (seen.contains(key))
+        if (seen.contains(stableKey))
             return;
-        seen.insert(key);
+        seen.insert(stableKey);
         dirty = true;
         if (seeding)
             return; // recorded, but no alert for pre-existing history
@@ -27742,15 +27949,26 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         if (snippet.size() > 160)
             snippet = snippet.left(157) + QString::fromUtf8("\xE2\x80\xA6");
         const QString body =
-            QString::fromUtf8("%1 mentioned you in %2 %3#%4: \xE2\x80\x9C%5\xE2\x80\x9D")
-                .arg(who, repoKey, context)
-                .arg(number)
-                .arg(snippet);
+            QString::fromUtf8("%1 mentioned you in %2 %3: \xE2\x80\x9C%4\xE2\x80\x9D")
+                .arg(who, repoKey, humanLocator, snippet);
         if (notifyEnabled(kMentionAlertSetting)) {
             QApplication::alert(this, 0);
             postNotification(who + QStringLiteral(" mentioned you"), body);
         }
         addNotification(QStringLiteral("Mention"), body);
+    };
+    // Issues/PRs: preserve the existing "<repo>#<kind><number>:<eventId>" dedup
+    // key (so upgrades don't re-fire historical mentions) and "<kind> #<n>"
+    // wording exactly.
+    auto consider = [&](const QString &kind, int number, const QString &eventId,
+                        const QString &authorKey, const QString &authorName,
+                        const QString &text, const QString &context) {
+        const QString key = QStringLiteral("%1#%2%3:%4")
+                                .arg(repoKey, kind)
+                                .arg(number)
+                                .arg(eventId);
+        notifyMention(key, authorKey, authorName, text,
+                      context + QStringLiteral("#") + QString::number(number));
     };
 
     IssueStore issues(repo.localPath, repo.mirrorPath, &m_profileIdentity,
@@ -27776,6 +27994,18 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         for (const PullEvent &ev : pr.events)
             consider(QStringLiteral("pull"), pr.number, ev.id, ev.author,
                      ev.authorName, ev.body, QStringLiteral("PR "));
+    }
+
+    // Commit comments: per-commit conversations keyed by SHA (no number). Scan
+    // every commented commit so an @mention in a commit thread notifies too.
+    CommitCommentStore commitComments(repo.localPath, repo.mirrorPath,
+                                      &m_profileIdentity, m_userName);
+    for (const auto &thread : commitComments.loadAll()) {
+        const QString &sha = thread.first;
+        for (const CommitComment &c : thread.second)
+            notifyMention(QStringLiteral("%1#commit%2:%3").arg(repoKey, sha, c.id),
+                          c.author, c.authorName, c.body,
+                          QStringLiteral("commit %1").arg(sha.left(8)));
     }
 
     if (dirty) {
