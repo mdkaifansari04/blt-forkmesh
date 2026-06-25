@@ -4,7 +4,7 @@ number: 14
 title: feat: support pasted images in issue markdown
 base: main
 head: independent-v2-20260625-142017/04-markdown-image-paste
-status: open
+status: merged
 ts: 1782378602144
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -34,4 +34,3 @@ Commits included:
 Verification:
 - Clean cherry-pick onto baseline 9885c53.
 - Signed payload generated with PullStore-compatible 5-field canonical string including commits mbox.
-
