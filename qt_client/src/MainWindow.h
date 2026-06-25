@@ -29,6 +29,8 @@ class MessageRow;
 class MarkdownEditor;
 class TerminalWidget;
 class ClaudeIdeBridge;
+class ClaudeStreamSession;
+class ClaudeTranscriptView;
 class RepoHost;
 class ActionRunner;
 class QButtonGroup;
@@ -1758,6 +1760,17 @@ private:
     ClaudeIdeBridge *ensureIdeBridge();
     void onClaudeOpenDiff(const QString &tabName, const QString &oldPath,
                           const QString &newPath, const QString &newContents);
+    // Extension-style transcript for Claude Code sessions: claude runs in
+    // stream-json mode (ClaudeStreamSession) and the events render as native
+    // cards (ClaudeTranscriptView, output stack page 2). A header toggle flips
+    // to the raw process output (page 0) for debugging.
+    ClaudeTranscriptView *m_agentTranscript = nullptr;
+    ClaudeStreamSession *m_streamSession = nullptr;
+    QPushButton *m_transcriptModeButton = nullptr;
+    QPushButton *m_terminalModeButton = nullptr;
+    QWidget *m_agentOutputToggle = nullptr;
+    void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+                                   const QString &repoPath);
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;

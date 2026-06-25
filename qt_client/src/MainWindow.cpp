@@ -5,6 +5,8 @@
 #include "ActionRunner.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
+#include "ClaudeStreamSession.h"
+#include "ClaudeTranscriptView.h"
 #include "CommitCommentStore.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -16395,6 +16397,9 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
         if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
             runner->stop();
+        if (m_streamSession && m_selectedAgentSessionId == m_terminalSessionId &&
+            m_streamSession->running())
+            m_streamSession->stop();
     });
 
     m_agentContinueButton = new QPushButton("Continue");
@@ -16466,9 +16471,50 @@ QWidget *MainWindow::buildAgentsTab()
             }
         }
     });
+    // Extension-style transcript for Claude Code (issue #191 follow-up): renders
+    // the CLI's stream-json events as native cards.
+    m_agentTranscript = new ClaudeTranscriptView;
+    connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
+            [this](const QString &text) {
+                if (m_agentUsage)
+                    m_agentUsage->setText(text);
+            });
+
     m_agentOutputStack = new QStackedWidget;
-    m_agentOutputStack->addWidget(m_agentLog);      // page 0: piped log
-    m_agentOutputStack->addWidget(m_agentTerminal); // page 1: embedded terminal
+    m_agentOutputStack->addWidget(m_agentLog);        // page 0: raw / piped log
+    m_agentOutputStack->addWidget(m_agentTerminal);   // page 1: embedded terminal
+    m_agentOutputStack->addWidget(m_agentTranscript); // page 2: rich transcript
+
+    // Transcript | Raw toggle, shown only for Claude Code transcript sessions.
+    m_transcriptModeButton = new QPushButton(QStringLiteral("Transcript"));
+    m_terminalModeButton = new QPushButton(QStringLiteral("Raw output"));
+    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton}) {
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setObjectName("segButton");
+    }
+    m_transcriptModeButton->setChecked(true);
+    connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
+        m_transcriptModeButton->setChecked(true);
+        m_terminalModeButton->setChecked(false);
+        if (m_agentOutputStack)
+            m_agentOutputStack->setCurrentWidget(m_agentTranscript);
+    });
+    connect(m_terminalModeButton, &QPushButton::clicked, this, [this] {
+        m_terminalModeButton->setChecked(true);
+        m_transcriptModeButton->setChecked(false);
+        if (m_agentOutputStack)
+            m_agentOutputStack->setCurrentWidget(m_agentLog);
+    });
+    auto *toggleRow = new QHBoxLayout;
+    toggleRow->setContentsMargins(0, 0, 0, 0);
+    toggleRow->setSpacing(0);
+    toggleRow->addWidget(m_transcriptModeButton);
+    toggleRow->addWidget(m_terminalModeButton);
+    toggleRow->addStretch(1);
+    m_agentOutputToggle = new QWidget;
+    m_agentOutputToggle->setLayout(toggleRow);
+    m_agentOutputToggle->hide();
 
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText("Send an additional prompt to the running agent");
@@ -16483,7 +16529,13 @@ QWidget *MainWindow::buildAgentsTab()
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
             return;
-        if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+        if (m_streamSession && m_selectedAgentSessionId == m_terminalSessionId &&
+            m_streamSession->running()) {
+            // Steer the live Claude Code transcript session.
+            if (m_agentTranscript)
+                m_agentTranscript->addUserTurn(prompt);
+            m_streamSession->sendUserText(prompt);
+        } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
             m_agentStore->appendLog(
@@ -16514,6 +16566,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentUsage);
     detailLayout->addWidget(m_agentNetPanel);
+    detailLayout->addWidget(m_agentOutputToggle);
     detailLayout->addWidget(m_agentOutputStack, 1);
     detailLayout->addLayout(promptRow);
 
@@ -17341,13 +17394,27 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(log);
         m_agentLog->moveCursor(QTextCursor::End);
     }
-    // Show the embedded terminal only for the Claude Code session currently
-    // running in it; every other session shows its piped log.
+    // Pick the right output surface: the stream-json transcript for a live
+    // Claude Code session, the embedded terminal for a legacy terminal session,
+    // otherwise the piped log. The Transcript|Raw toggle shows only for the live
+    // transcript session.
     if (m_agentOutputStack) {
-        const bool live = sessionId == m_terminalSessionId && m_agentTerminal &&
-                          m_agentTerminal->isRunning();
-        m_agentOutputStack->setCurrentWidget(live ? static_cast<QWidget *>(m_agentTerminal)
-                                                  : static_cast<QWidget *>(m_agentLog));
+        const bool transcriptLive = sessionId == m_terminalSessionId &&
+                                    m_streamSession && m_streamSession->running();
+        const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
+                              m_agentTerminal->isRunning();
+        if (m_agentOutputToggle)
+            m_agentOutputToggle->setVisible(transcriptLive);
+        if (transcriptLive) {
+            const bool raw = m_terminalModeButton && m_terminalModeButton->isChecked();
+            m_agentOutputStack->setCurrentWidget(
+                raw ? static_cast<QWidget *>(m_agentLog)
+                    : static_cast<QWidget *>(m_agentTranscript));
+        } else if (termLive) {
+            m_agentOutputStack->setCurrentWidget(m_agentTerminal);
+        } else {
+            m_agentOutputStack->setCurrentWidget(m_agentLog);
+        }
     }
     updateAgentActionState();
 }
@@ -17716,10 +17783,11 @@ void MainWindow::processAgentQueue()
             m_agentStore->saveSession(*session);
             continue;
         }
-        // Claude Code runs interactively in the embedded terminal on the agent
-        // detail screen, not headlessly through a runner.
+        // Claude Code renders as a native stream-json transcript on the agent
+        // detail screen (with a Raw-output toggle), not headlessly through a
+        // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTerminal(*session, issue, repo.localPath);
+            startClaudeCodeTranscript(*session, issue, repo.localPath);
             continue;
         }
         const AgentSession snapshot = *session;
@@ -17890,6 +17958,85 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     if (m_agentOutputStack)
         m_agentOutputStack->setCurrentWidget(m_agentTerminal);
     m_agentTerminal->runCommand(cmd, repoPath, env);
+}
+
+// Run Claude Code in stream-json mode and render its events as a native,
+// extension-style transcript (issue #191 follow-up). Same auth model as the
+// terminal path (claude.ai login, no ANTHROPIC_API_KEY) and same IDE bridge, but
+// the output is parsed cards instead of a raw TUI. The raw stream stays reachable
+// via the "Raw output" toggle.
+void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+                                           const QString &repoPath)
+{
+    if (!m_agentTranscript || !m_agentStore)
+        return;
+
+    const QString prompt =
+        QStringLiteral(
+            "Resolve ForkMesh issue #%1: %2\n\n"
+            "The full issue is in issues/%1/issue.md. Implement the change end to "
+            "end, consistent with the surrounding code, then summarize what you "
+            "changed and how to verify it.\n")
+            .arg(session.issueNumber)
+            .arg(issue.title);
+
+    QStringList env;
+    env << QStringLiteral("ANTHROPIC_API_KEY"); // see startClaudeCodeTerminal
+    if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+        if (bridge->start(repoPath))
+            env << bridge->env();
+    }
+
+    // Fresh transcript + stream session for this run.
+    m_agentTranscript->clear();
+    m_agentTranscript->addUserTurn(prompt);
+    if (m_agentLog)
+        m_agentLog->clear();
+    if (m_streamSession)
+        m_streamSession->deleteLater();
+    m_streamSession = new ClaudeStreamSession(this);
+    const int sid = session.id;
+    connect(m_streamSession, &ClaudeStreamSession::event, m_agentTranscript,
+            &ClaudeTranscriptView::handleEvent);
+    connect(m_streamSession, &ClaudeStreamSession::rawLine, this,
+            [this](const QString &line) {
+                if (m_agentLog) {
+                    m_agentLog->moveCursor(QTextCursor::End);
+                    m_agentLog->insertPlainText(line + QLatin1Char('\n'));
+                }
+            });
+    connect(m_streamSession, &ClaudeStreamSession::finished, this,
+            [this, sid](int) {
+                if (AgentSession *s = findAgentSession(sid)) {
+                    if (s->status == AgentStatus::Running) {
+                        s->status = AgentStatus::Success;
+                        s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                        m_agentStore->saveSession(*s);
+                        reloadAgents();
+                    }
+                }
+            });
+
+    session.status = AgentStatus::Running;
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("\n==> Running Claude Code (stream-json transcript)\n"));
+
+    m_terminalSessionId = session.id;
+    switchToAgentsTab(session.id);
+    showAgentSession(session.id);
+    reloadAgents();
+    if (m_agentOutputToggle)
+        m_agentOutputToggle->show();
+    if (m_transcriptModeButton)
+        m_transcriptModeButton->setChecked(true);
+    if (m_terminalModeButton)
+        m_terminalModeButton->setChecked(false);
+    if (m_agentOutputStack)
+        m_agentOutputStack->setCurrentWidget(m_agentTranscript);
+    m_streamSession->start(repoPath, env, prompt, /*skipPermissions=*/true);
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
