@@ -20388,34 +20388,10 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             .arg(session.branchName)
             .arg(baseName);
 
-    // Give the agent its own worktree + branch so concurrent agents never share a
-    // working tree. Fall back to the live checkout if the worktree can't be made.
-    QString workdir = repoPath;
-    if (!session.baseRef.isEmpty()) {
-        const QString wtRoot =
-            QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-            + QStringLiteral("/forkmesh-worktrees");
-        QDir().mkpath(wtRoot);
-        const QString wtPath =
-            wtRoot + QStringLiteral("/issue-%1-s%2").arg(session.issueNumber).arg(sid);
-        gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("prune")});
-        gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("add"),
-                          QStringLiteral("-B"), session.branchName, wtPath,
-                          session.baseRef});
-        if (QDir(wtPath).exists()) {
-            workdir = wtPath;
-            m_streamWorktree[sid] = wtPath;
-        }
-    }
-
-    QStringList env;
-    env << QStringLiteral("ANTHROPIC_API_KEY"); // see startClaudeCodeTerminal
-    if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-        if (bridge->start(workdir))
-            env << bridge->env();
-    }
-
-    // Per-session buffers; tear down any prior stream for THIS session only.
+    // Per-session buffers; tear down any prior stream for THIS session only. The
+    // stream object and the UI hand-off below are set up *before* the worktree is
+    // created so assigning an agent feels instant — the slow checkout then runs
+    // asynchronously and the CLI starts from its continuation (issue #262).
     m_streamEvents[sid].clear();
     m_streamRaw[sid].clear();
     m_streamFiles[sid].clear();
@@ -20457,13 +20433,19 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             showAgentSession(sid);
     });
 
+    // Snapshot the fields the async continuation needs *before* reloadAgents()
+    // below rebuilds m_agentSessions and leaves the `session` reference dangling.
+    const QString branchName = session.branchName;
+    const QString baseRef = session.baseRef;
+    const int issueNumber = session.issueNumber;
+
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
-        session, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
-                                "on branch %1 in %2\n")
-                     .arg(session.branchName, workdir));
+        session,
+        QString::fromUtf8("\n==> Preparing an isolated worktree for branch %1\xE2\x80\xA6\n")
+            .arg(branchName));
 
     m_terminalSessionId = session.id;
     switchToAgentsTab(session.id);
@@ -20473,8 +20455,59 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         m_transcriptModeButton->setChecked(true);
     if (m_terminalModeButton)
         m_terminalModeButton->setChecked(false);
+
+    // Start the CLI once the working directory is ready. Pulled into a lambda
+    // because the worktree checkout below finishes asynchronously; the IDE bridge
+    // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    stream->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+        ClaudeStreamSession *live = m_streamSessions.value(sid);
+        if (!live)
+            return; // session was stopped or deleted while the worktree was building
+        QStringList env;
+        env << QStringLiteral("ANTHROPIC_API_KEY"); // see startClaudeCodeTerminal
+        if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+            if (bridge->start(workdir))
+                env << bridge->env();
+        }
+        if (AgentSession *as = findAgentSession(sid))
+            m_agentStore->appendLog(
+                *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
+                                    "on branch %1 in %2\n")
+                         .arg(branchName, workdir));
+        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+    };
+
+    // Give the agent its own worktree + branch so concurrent agents never share a
+    // working tree. The checkout can take a second or two on a large repo, so run
+    // it asynchronously and start the CLI from the continuation; fall back to the
+    // live checkout if there's no base commit or the worktree can't be made.
+    if (baseRef.isEmpty()) {
+        launch(repoPath);
+        return;
+    }
+    const QString wtRoot =
+        QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+        + QStringLiteral("/forkmesh-worktrees");
+    QDir().mkpath(wtRoot);
+    const QString wtPath =
+        wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
+    gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("prune")});
+    auto *add = new QProcess(this);
+    add->setWorkingDirectory(repoPath);
+    connect(add, &QProcess::finished, this,
+            [this, sid, add, wtPath, repoPath, launch](int, QProcess::ExitStatus) {
+                add->deleteLater();
+                QString workdir = repoPath;
+                if (QDir(wtPath).exists()) {
+                    workdir = wtPath;
+                    m_streamWorktree[sid] = wtPath;
+                }
+                launch(workdir);
+            });
+    add->start(QStringLiteral("git"),
+               {QStringLiteral("worktree"), QStringLiteral("add"), QStringLiteral("-B"),
+                branchName, wtPath, baseRef});
 }
 
 // Working directory for a session: its worktree if it has one, else the repo.
