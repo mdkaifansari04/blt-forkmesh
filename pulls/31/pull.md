@@ -15,4 +15,3 @@ sig: h-W8vNLqV8Xx5frB0-R1Nwj2VyhGjqRvrLi23rIDUuswIAQ0XhKJ92s6fRF9ahPJrrDdDKaLbA4
 - Merge main into agent/issue-251-have-an-option-in-settings-to-select-your-defauo
 - issue #251: add window test for default-agent picker seeding
 - Merge remote-tracking branch 'origin/main' into agent/issue-251-have-an-option-in-settings-to-select-your-defauo
-
