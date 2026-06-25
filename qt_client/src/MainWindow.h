@@ -153,12 +153,17 @@ public:
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
-                                               const QString &website);
+                                               const QString &website)
+    {
+        return saveRepoAboutMetadata(about, website, nullptr);
+    }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
     void testPublishRepository(int index) { publishRepository(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
+    void testShowPublishBar(bool on);
+    int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoHostCount() const { return m_repoHosts.size(); }
     void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
     {
@@ -469,6 +474,7 @@ private:
     // live agent session so the user can watch it. provider is "claude" | "openai".
     void fixCurrentPullConflictsWithAi(const QString &provider);
     void editCurrentPullFile();         // edit the selected file on the PR's branch
+    void deleteCurrentPullFile();       // delete the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
@@ -1431,6 +1437,8 @@ private:
     QTextBrowser *m_worktreeDiffView = nullptr;
     QListWidget *m_worktreeFileList = nullptr;
     QLabel *m_worktreeFilesSummary = nullptr;
+    QPushButton *m_worktreeMergeButton = nullptr; // merge the selected worktree into main
+    QString m_worktreeSelectedBranch;             // branch behind the open worktree detail
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_settingsTabIndex = -1; // index of the Settings page
@@ -1645,6 +1653,7 @@ private:
     QPushButton *m_pullFixClaudeButton = nullptr; // AI-resolve conflicts via Claude
     QPushButton *m_pullFixOpenAiButton = nullptr; // AI-resolve conflicts via OpenAI
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
+    QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullReopenButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
