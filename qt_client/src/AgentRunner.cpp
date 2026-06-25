@@ -78,6 +78,56 @@ bool branchExists(const QString &dir, const QString &branchName)
                       &ignored, nullptr);
 }
 
+// Returns the filesystem path of the worktree currently checked out to `branch`
+// (other than the main checkout), or an empty string if none. Used to find a
+// worktree a previous, interrupted run left behind.
+QString worktreePathForBranch(const QString &repoPath, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return QString();
+    QByteArray out;
+    if (!runCapture(repoPath,
+                    {QStringLiteral("worktree"), QStringLiteral("list"),
+                     QStringLiteral("--porcelain")},
+                    &out, nullptr))
+        return QString();
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    const int pathPrefix = QStringLiteral("worktree ").size();
+    const int branchPrefix = QStringLiteral("branch ").size();
+    QString currentPath;
+    const QList<QByteArray> lines = out.split('\n');
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(pathPrefix).trimmed();
+        else if (line.startsWith(QLatin1String("branch "))) {
+            if (line.mid(branchPrefix).trimmed() == want &&
+                !currentPath.isEmpty() && currentPath != repoPath)
+                return currentPath;
+        }
+    }
+    return QString();
+}
+
+// Drop any worktree a previous run left checked out to `branch` and prune stale
+// registrations, so a fresh `git worktree add` for this branch can succeed. A
+// run interrupted by an app restart never reaches cleanupWorktree(), so without
+// this the branch stays "already checked out" at the old (often deleted) path
+// and the resumed run would fail to create its worktree (issue #242).
+void releaseBranchWorktree(const QString &repoPath, const QString &branch)
+{
+    const QString leaked = worktreePathForBranch(repoPath, branch);
+    if (!leaked.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("remove"), QStringLiteral("--force"), leaked});
+        QDir(leaked).removeRecursively();
+    }
+    QProcess::execute(QStringLiteral("git"),
+                      {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                       QStringLiteral("prune")});
+}
+
 QString providerTitle(const QString &provider)
 {
     // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
@@ -209,6 +259,29 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
         m_session.baseBranch = m_session.baseRef;
     }
     m_store->saveSession(m_session);
+
+    // A run interrupted by an app restart can leave a worktree behind that still
+    // holds this session's branch (and in-flight edits it never saved as a
+    // patch). Recover those edits into the session patch — but only when nothing
+    // is saved yet, so a real prior patch is never clobbered — then release the
+    // stale worktree so this run can re-create one cleanly (issue #242).
+    if (existingSessionBranch && !m_session.baseRef.isEmpty()) {
+        const QString leaked = worktreePathForBranch(m_repoPath, m_session.branchName);
+        if (!leaked.isEmpty() && QDir(leaked).exists() &&
+            m_store->readPatch(m_session).trimmed().isEmpty()) {
+            QByteArray wip;
+            if (runCapture(leaked,
+                           {QStringLiteral("diff"), QStringLiteral("--binary"),
+                            m_session.baseRef},
+                           &wip, nullptr) &&
+                !QString::fromUtf8(wip).trimmed().isEmpty()) {
+                m_store->writePatch(m_session, QString::fromUtf8(wip));
+                emitLog(QStringLiteral(
+                    "==> Recovered in-flight changes from the interrupted run."));
+            }
+        }
+    }
+    releaseBranchWorktree(m_repoPath, m_session.branchName);
 
     m_worktree = QDir::tempPath() + QStringLiteral("/forkmesh-agent-") +
                  QString::number(m_session.id) + QLatin1Char('-') +
