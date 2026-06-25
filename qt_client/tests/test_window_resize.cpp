@@ -1,6 +1,7 @@
 #include "../src/MainWindow.h"
 
 #include <QApplication>
+#include <QFile>
 #include <QCheckBox>
 #include <QDebug>
 #include <QElapsedTimer>
@@ -330,6 +331,47 @@ int main(int argc, char *argv[])
               .arg(window.height())
               .arg(minHintHeight));
     if (!acceptsVerticalResize)
+        dumpTallMinimums(window);
+
+    // Repro: opening a repo and toggling the publish/sync bar (as happens on a
+    // push and when a mirror picks it up) must not grow the window on a small
+    // screen.
+    QTemporaryDir repoDir;
+    QProcess::execute(QStringLiteral("git"), {"-C", repoDir.path(), "init", "-q"});
+    QProcess::execute(QStringLiteral("git"),
+                      {"-C", repoDir.path(), "config", "user.email", "a@b.c"});
+    QProcess::execute(QStringLiteral("git"),
+                      {"-C", repoDir.path(), "config", "user.name", "t"});
+    {
+        QFile f(repoDir.path() + QStringLiteral("/README.md"));
+        if (f.open(QIODevice::WriteOnly)) { f.write("hi\n"); f.close(); }
+    }
+    QProcess::execute(QStringLiteral("git"), {"-C", repoDir.path(), "add", "-A"});
+    QProcess::execute(QStringLiteral("git"),
+                      {"-C", repoDir.path(), "commit", "-qm", "init"});
+    const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
+    window.testOpenRepository(repoIdx);
+    QApplication::processEvents();
+    window.resize(480, 420);
+    QApplication::processEvents();
+    window.testShowPublishBar(false);
+    QApplication::processEvents();
+    const int topBarHidden = window.testRepoTabContentTop();
+    const int hBarHidden = window.height();
+    window.testShowPublishBar(true);
+    QApplication::processEvents();
+    const int topBarShown = window.testRepoTabContentTop();
+    const int hBarShown = window.height();
+    qInfo("REPRO mirror-nodes @480x420: tab-content top hidden=%d shown=%d ; window h hidden=%d shown=%d",
+          topBarHidden, topBarShown, hBarHidden, hBarShown);
+    // The publish/sync bar reserves its height even when hidden, so toggling it
+    // (as a push then a mirror pickup does) must not shift the tab content beneath
+    // it nor grow the window — what read as the view "resizing" on small screens.
+    check(topBarHidden == topBarShown && hBarShown <= 420 + 8,
+          QString("publish/sync bar toggling does not reflow the page "
+                  "(tab-content top %1 -> %2, window height %3px)")
+              .arg(topBarHidden).arg(topBarShown).arg(hBarShown));
+    if (topBarHidden != topBarShown || hBarShown > 420 + 8)
         dumpTallMinimums(window);
 
     stopChildProcesses(window);

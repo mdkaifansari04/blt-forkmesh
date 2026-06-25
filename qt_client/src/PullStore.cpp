@@ -1308,6 +1308,48 @@ bool PullStore::finishPullFileEdit(int number, const QString &relPath,
         error);
 }
 
+bool PullStore::deletePullFile(int number, const QString &relPath, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Editing needs a local working tree.");
+        return false;
+    }
+    QStringList conflicted;
+    bool clean = false;
+    if (!beginPullBranch(number, &conflicted, &clean, error))
+        return false;
+    if (!clean) {
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("This pull request has conflicts - use "
+                                    "\"Resolve conflicts\" first, then delete.");
+        return false;
+    }
+    if (!QFileInfo::exists(m_workTree + "/" + relPath)) {
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("'%1' is not a file in this pull request.")
+                         .arg(relPath);
+        return false;
+    }
+    QString err;
+    if (!runGit(m_workTree, {"rm", "-f", "--", relPath}, nullptr, &err)) {
+        abortConflictMerge();
+        if (error)
+            *error = "git rm failed: " + err;
+        return false;
+    }
+    const QString msg = QStringLiteral("pull #%1: delete %2").arg(number).arg(relPath);
+    if (!runGit(m_workTree, {"commit", "-m", msg}, nullptr, &err)) {
+        abortConflictMerge();
+        if (error)
+            *error = "git commit failed: " + err;
+        return false;
+    }
+    return finalizeOnPullBranch(number, msg, error);
+}
+
 // Shared tail for the on-branch PR operations (resolve, edit): leave the work
 // branch, regenerate the PR's patch + commit series against the current base so
 // it stays cleanly mergeable, keep it open, and commit the refreshed pulls/
