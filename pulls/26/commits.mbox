@@ -1,0 +1,481 @@
+From 613ef370c73b68fe6c17d9a8d4a9975ac5357383 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 16:28:30 +0530
+Subject: [PATCH] feat: support pasted images in issue markdown
+
+(cherry picked from commit 1a904fb7a30ad4c77a64cc294a810b88477f7496)
+---
+ qt_client/src/IssueStore.cpp     | 97 ++++++++++++++++++++++++++++++--
+ qt_client/src/IssueStore.h       | 16 ++++++
+ qt_client/src/MainWindow.cpp     | 15 +++--
+ qt_client/src/MarkdownEditor.cpp | 88 +++++++++++++++++++++++++++--
+ qt_client/src/MarkdownEditor.h   | 19 ++++---
+ 5 files changed, 213 insertions(+), 22 deletions(-)
+
+diff --git a/qt_client/src/IssueStore.cpp b/qt_client/src/IssueStore.cpp
+index 1218ddb..2caa12c 100644
+--- a/qt_client/src/IssueStore.cpp
++++ b/qt_client/src/IssueStore.cpp
+@@ -196,6 +196,57 @@ const QRegularExpression &eventFileRe()
+     return re;
+ }
+ 
++QString pendingAttachmentPlaceholder(int index)
++{
++    return QStringLiteral("forkmesh-pending-image:%1").arg(index);
++}
++
++QStringList effectiveAttachmentPlaceholders(const QStringList &srcPaths,
++                                            const QStringList &placeholders)
++{
++    if (!placeholders.isEmpty())
++        return placeholders;
++    QStringList inferred;
++    for (int i = 0; i < srcPaths.size(); ++i)
++        inferred << pendingAttachmentPlaceholder(i);
++    return inferred;
++}
++
++QString replaceAttachmentPlaceholders(QString body, const QStringList &srcPaths,
++                                      const QStringList &placeholders,
++                                      const QStringList &copiedAttachments)
++{
++    const QStringList effective =
++        effectiveAttachmentPlaceholders(srcPaths, placeholders);
++    const int count = std::min(effective.size(), copiedAttachments.size());
++    QList<int> order;
++    order.reserve(count);
++    for (int i = 0; i < count; ++i)
++        order.append(i);
++    std::sort(order.begin(), order.end(), [&effective](int a, int b) {
++        return effective.at(a).size() > effective.at(b).size();
++    });
++    for (int i : order) {
++        if (!effective.at(i).isEmpty())
++            body.replace(effective.at(i), copiedAttachments.at(i));
++    }
++    return body;
++}
++
++bool copiedEveryAttachment(const QStringList &srcPaths,
++                           const QStringList &copiedAttachments,
++                           QString *error)
++{
++    if (copiedAttachments.size() == srcPaths.size())
++        return true;
++    if (error) {
++        *error = QStringLiteral("Could not copy %1 of %2 attachment(s).")
++                     .arg(srcPaths.size() - copiedAttachments.size())
++                     .arg(srcPaths.size());
++    }
++    return false;
++}
++
+ } // namespace
+ 
+ // ---- IssueEvent (JSON is the wire format for the relay inbox) ---------------
+@@ -848,6 +899,17 @@ int IssueStore::createIssue(const QString &title, const QString &body,
+                             int priority,
+                             const QStringList &assignees,
+                             const QStringList &attachmentSrcPaths, QString *error)
++{
++    return createIssue(title, body, labels, milestone, priority, assignees,
++                       attachmentSrcPaths, {}, error);
++}
++
++int IssueStore::createIssue(const QString &title, const QString &body,
++                            const QStringList &labels, const QString &milestone,
++                            int priority,
++                            const QStringList &assignees,
++                            const QStringList &attachmentSrcPaths,
++                            const QStringList &attachmentPlaceholders, QString *error)
+ {
+     if (!canWrite()) {
+         if (error)
+@@ -861,8 +923,11 @@ int IssueStore::createIssue(const QString &title, const QString &body,
+     ev.type = "open";
+     ev.id = QStringLiteral("open-%1").arg(number);
+     ev.title = title;
+-    ev.body = stripEdgeNewlines(body);
+     ev.attachments = copyAttachments(number, attachmentSrcPaths);
++    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
++        return -1;
++    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
++        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
+     ev = makeSignedEvent(number, ev);
+ 
+     Issue issue;
+@@ -887,6 +952,13 @@ int IssueStore::createIssue(const QString &title, const QString &body,
+ 
+ bool IssueStore::addComment(int number, const QString &body,
+                             const QStringList &attachmentSrcPaths, QString *error)
++{
++    return addComment(number, body, attachmentSrcPaths, {}, error);
++}
++
++bool IssueStore::addComment(int number, const QString &body,
++                            const QStringList &attachmentSrcPaths,
++                            const QStringList &attachmentPlaceholders, QString *error)
+ {
+     if (!canWrite()) {
+         if (error)
+@@ -901,8 +973,11 @@ bool IssueStore::addComment(int number, const QString &body,
+     }
+     IssueEvent ev;
+     ev.type = "comment";
+-    ev.body = stripEdgeNewlines(body);
+     ev.attachments = copyAttachments(number, attachmentSrcPaths);
++    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
++        return false;
++    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
++        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
+     ev = makeSignedEvent(number, ev);
+     issue.events.append(ev);
+     if (!writeIssueFile(issue, error))
+@@ -937,6 +1012,15 @@ bool IssueStore::addVote(int number, QString *error)
+ bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
+                            const QStringList &keepAttachments,
+                            const QStringList &newAttachmentSrcPaths, QString *error)
++{
++    return editEvent(number, eventId, newBody, keepAttachments,
++                     newAttachmentSrcPaths, {}, error);
++}
++
++bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
++                           const QStringList &keepAttachments,
++                           const QStringList &newAttachmentSrcPaths,
++                           const QStringList &newAttachmentPlaceholders, QString *error)
+ {
+     if (!canWrite())
+         return false;
+@@ -946,12 +1030,15 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
+     IssueEvent ev;
+     ev.type = "edit";
+     ev.target = eventId;
+-    ev.body = stripEdgeNewlines(newBody);
+     // An edit overwrites the target's attachment set, so carry forward the ones
+     // being kept (already in the issue folder) and copy in any newly added.
+     ev.attachments = keepAttachments;
+-    if (!newAttachmentSrcPaths.isEmpty())
+-        ev.attachments += copyAttachments(number, newAttachmentSrcPaths);
++    const QStringList copiedAttachments = copyAttachments(number, newAttachmentSrcPaths);
++    if (!copiedEveryAttachment(newAttachmentSrcPaths, copiedAttachments, error))
++        return false;
++    ev.attachments += copiedAttachments;
++    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
++        newBody, newAttachmentSrcPaths, newAttachmentPlaceholders, copiedAttachments));
+     ev = makeSignedEvent(number, ev);
+     issue.events.append(ev);
+     if (!writeIssueFile(issue, error))
+diff --git a/qt_client/src/IssueStore.h b/qt_client/src/IssueStore.h
+index 0083fac..dc27dce 100644
+--- a/qt_client/src/IssueStore.h
++++ b/qt_client/src/IssueStore.h
+@@ -114,8 +114,19 @@ public:
+                     int priority,
+                     const QStringList &assignees,
+                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
++    int createIssue(const QString &title, const QString &body,
++                    const QStringList &labels, const QString &milestone,
++                    int priority,
++                    const QStringList &assignees,
++                    const QStringList &attachmentSrcPaths,
++                    const QStringList &attachmentPlaceholders,
++                    QString *error = nullptr);
+     bool addComment(int number, const QString &body,
+                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
++    bool addComment(int number, const QString &body,
++                    const QStringList &attachmentSrcPaths,
++                    const QStringList &attachmentPlaceholders,
++                    QString *error = nullptr);
+     // Cast a vote on an issue (one vote per author). Owner-side write path.
+     bool addVote(int number, QString *error = nullptr);
+     // Edit an event's body. keepAttachments are existing issue-folder-relative
+@@ -124,6 +135,11 @@ public:
+                    const QStringList &keepAttachments = {},
+                    const QStringList &newAttachmentSrcPaths = {},
+                    QString *error = nullptr);
++    bool editEvent(int number, const QString &eventId, const QString &newBody,
++                   const QStringList &keepAttachments,
++                   const QStringList &newAttachmentSrcPaths,
++                   const QStringList &newAttachmentPlaceholders,
++                   QString *error = nullptr);
+     // Rename an issue via a signed "title" event (folds into Issue::title).
+     bool setTitle(int number, const QString &newTitle, QString *error = nullptr);
+     bool setStatus(int number, const QString &status, QString *error = nullptr);
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5fc59af..a0442d0 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -21430,7 +21430,9 @@ void MainWindow::renderIssueThread(const Issue &issue)
+                         QString error;
+                         if (!store.editEvent(num, eid, editor->markdown(),
+                                              eventAttachments,
+-                                             editor->pendingAttachments(), &error)) {
++                                             editor->pendingAttachments(),
++                                             editor->pendingAttachmentPlaceholders(),
++                                             &error)) {
+                             setIssueInlineNotice(
+                                 error.isEmpty() ? "Could not update the issue body."
+                                                 : error,
+@@ -22121,6 +22123,7 @@ void MainWindow::promptNewIssue()
+         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
+                                              milestone, priority, assignees,
+                                              bodyEdit->pendingAttachments(),
++                                             bodyEdit->pendingAttachmentPlaceholders(),
+                                              &error);
+         if (number < 0) {
+             setPageNotice(error.isEmpty() ? "Could not create the issue." : error,
+@@ -22547,6 +22550,8 @@ void MainWindow::addIssueComment()
+     const QString body = m_issueComposer ? m_issueComposer->markdown() : QString();
+     const QStringList attachments =
+         m_issueComposer ? m_issueComposer->pendingAttachments() : m_pendingIssueAttachments;
++    const QStringList placeholders =
++        m_issueComposer ? m_issueComposer->pendingAttachmentPlaceholders() : QStringList();
+     if (body.trimmed().isEmpty() && attachments.isEmpty())
+         return;
+     IssueStore store = issueStoreForCurrentRepo();
+@@ -22586,10 +22591,10 @@ void MainWindow::addIssueComment()
+ 
+     // Persist on the next tick so the optimistic card paints before the
+     // (comparatively slow) git commit and reload block the UI thread.
+-    QTimer::singleShot(0, this, [this, number, body, attachments]() {
++    QTimer::singleShot(0, this, [this, number, body, attachments, placeholders]() {
+         IssueStore store = issueStoreForCurrentRepo();
+         QString error;
+-        if (!store.addComment(number, body, attachments, &error)) {
++        if (!store.addComment(number, body, attachments, placeholders, &error)) {
+             setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
+                                  true);
+             reloadIssues(); // discard the optimistic card on failure
+@@ -22610,6 +22615,8 @@ void MainWindow::closeIssueWithComment()
+     const QStringList attachments =
+         m_issueComposer ? m_issueComposer->pendingAttachments()
+                         : m_pendingIssueAttachments;
++    const QStringList placeholders =
++        m_issueComposer ? m_issueComposer->pendingAttachmentPlaceholders() : QStringList();
+     // The whole point of this button is closing *with* a comment; an empty box
+     // should use plain "Close issue" instead.
+     if (body.trimmed().isEmpty() && attachments.isEmpty()) {
+@@ -22630,7 +22637,7 @@ void MainWindow::closeIssueWithComment()
+     // Persist the comment, then flip the status — both as one synchronous action
+     // so the comment is guaranteed to land before the close event.
+     QString error;
+-    if (!store.addComment(number, body, attachments, &error)) {
++    if (!store.addComment(number, body, attachments, placeholders, &error)) {
+         setIssueInlineNotice(error.isEmpty() ? "Could not add the comment." : error,
+                              true);
+         return;
+diff --git a/qt_client/src/MarkdownEditor.cpp b/qt_client/src/MarkdownEditor.cpp
+index 5ea2e50..9618d9f 100644
+--- a/qt_client/src/MarkdownEditor.cpp
++++ b/qt_client/src/MarkdownEditor.cpp
+@@ -1,24 +1,35 @@
+ #include "MarkdownEditor.h"
+ 
++#include <QClipboard>
++#include <QDir>
+ #include <QDragEnterEvent>
+ #include <QDropEvent>
++#include <QFile>
+ #include <QFileDialog>
+ #include <QFileInfo>
+ #include <QFontMetrics>
++#include <QGuiApplication>
+ #include <QHBoxLayout>
++#include <QImage>
+ #include <QKeyEvent>
++#include <QKeySequence>
+ #include <QListWidget>
+ #include <QMimeData>
++#include <QPixmap>
+ #include <QPlainTextEdit>
+ #include <QPushButton>
+ #include <QStackedWidget>
++#include <QTemporaryFile>
+ #include <QTextBlock>
+ #include <QTextBrowser>
+ #include <QTextCursor>
+ #include <QToolButton>
+ #include <QUrl>
++#include <QVariant>
+ #include <QVBoxLayout>
+ 
++#include <algorithm>
++
+ namespace {
+ const QStringList kImageSuffixes = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"};
+ 
+@@ -26,6 +37,11 @@ bool isImagePath(const QString &path)
+ {
+     return kImageSuffixes.contains(QFileInfo(path).suffix().toLower());
+ }
++
++QString pendingImagePlaceholder(int index)
++{
++    return QStringLiteral("forkmesh-pending-image:%1").arg(index);
++}
+ }  // namespace
+ 
+ MarkdownEditor::MarkdownEditor(QWidget *parent) : QWidget(parent)
+@@ -138,17 +154,23 @@ void MarkdownEditor::addImageFile(const QString &path)
+ {
+     if (path.isEmpty() || !isImagePath(path))
+         return;
+-    if (!m_attachments.contains(path))
++    int index = m_attachments.indexOf(path);
++    if (index < 0) {
++        index = m_attachments.size();
+         m_attachments.append(path);
++        m_attachmentPlaceholders.append(pendingImagePlaceholder(index));
++    }
++    const QString placeholder = m_attachmentPlaceholders.value(index);
+     const QString name = QFileInfo(path).fileName();
+     QTextCursor cursor = m_source->textCursor();
+-    cursor.insertText(QStringLiteral("\n![%1](attachments/%1)\n").arg(name));
++    cursor.insertText(QStringLiteral("\n![%1](%2)\n").arg(name, placeholder));
+     m_source->setFocus();
+ }
+ 
+ void MarkdownEditor::clearPendingAttachments()
+ {
+     m_attachments.clear();
++    m_attachmentPlaceholders.clear();
+ }
+ 
+ void MarkdownEditor::showWrite()
+@@ -313,7 +335,21 @@ bool MarkdownEditor::handleMentionKey(QKeyEvent *event)
+ 
+ void MarkdownEditor::updatePreview()
+ {
+-    m_preview->setMarkdown(m_source->toPlainText());
++    QString previewMarkdown = m_source->toPlainText();
++    const int count = std::min(m_attachments.size(), m_attachmentPlaceholders.size());
++    QList<int> order;
++    order.reserve(count);
++    for (int i = 0; i < count; ++i)
++        order.append(i);
++    std::sort(order.begin(), order.end(), [this](int a, int b) {
++        return m_attachmentPlaceholders.at(a).size() >
++               m_attachmentPlaceholders.at(b).size();
++    });
++    for (int i : order) {
++        previewMarkdown.replace(m_attachmentPlaceholders.at(i),
++                                QUrl::fromLocalFile(m_attachments.at(i)).toString());
++    }
++    m_preview->setMarkdown(previewMarkdown);
+ }
+ 
+ void MarkdownEditor::wrapSelection(const QString &left, const QString &right)
+@@ -333,12 +369,52 @@ void MarkdownEditor::chooseImage()
+         addImageFile(f);
+ }
+ 
++bool MarkdownEditor::pasteImageFromClipboard()
++{
++    const QClipboard *clipboard = QGuiApplication::clipboard();
++    if (!clipboard)
++        return false;
++    const QMimeData *mime = clipboard->mimeData();
++    if (!mime || !mime->hasImage())
++        return false;
++
++    const QVariant data = mime->imageData();
++    QImage image = qvariant_cast<QImage>(data);
++    if (image.isNull()) {
++        const QPixmap pixmap = qvariant_cast<QPixmap>(data);
++        if (!pixmap.isNull())
++            image = pixmap.toImage();
++    }
++    if (image.isNull())
++        return false;
++
++    QTemporaryFile file(QDir::tempPath() + "/forkmesh-paste-XXXXXX.png");
++    file.setAutoRemove(false);
++    if (!file.open())
++        return false;
++    const QString path = file.fileName();
++    if (!image.save(&file, "PNG")) {
++        file.close();
++        QFile::remove(path);
++        return false;
++    }
++    file.close();
++    addImageFile(path);
++    return true;
++}
++
+ bool MarkdownEditor::eventFilter(QObject *obj, QEvent *event)
+ {
+     if (obj == m_source) {
+-        if (event->type() == QEvent::KeyPress &&
+-            handleMentionKey(static_cast<QKeyEvent *>(event)))
+-            return true;
++        if (event->type() == QEvent::KeyPress) {
++            auto *key = static_cast<QKeyEvent *>(event);
++            if (key->matches(QKeySequence::Paste) && pasteImageFromClipboard()) {
++                key->accept();
++                return true;
++            }
++            if (handleMentionKey(key))
++                return true;
++        }
+         if (event->type() == QEvent::FocusOut)
+             hideMentionPopup();
+     }
+diff --git a/qt_client/src/MarkdownEditor.h b/qt_client/src/MarkdownEditor.h
+index 20e3540..82df683 100644
+--- a/qt_client/src/MarkdownEditor.h
++++ b/qt_client/src/MarkdownEditor.h
+@@ -11,10 +11,12 @@ class QStackedWidget;
+ class QTextBrowser;
+ 
+ // A markdown source editor with a live rendered preview, a small formatting
+-// toolbar, and image drag-and-drop. Dropped (or toolbar-inserted) images are
+-// recorded as pending attachments: the caller passes pendingAttachments() to the
+-// IssueStore, which copies them into the issue's attachments/ folder. The editor
+-// inserts an ![name](attachments/name) reference at the cursor for each image.
++// toolbar, and image drag-and-drop/paste. Dropped, pasted, or toolbar-inserted
++// images are recorded as pending attachments. The editor inserts temporary
++// forkmesh-pending-image:N markdown URLs; the caller passes both
++// pendingAttachments() and pendingAttachmentPlaceholders() to IssueStore, which
++// copies the images into the issue folder and rewrites the temporary URLs before
++// signing.
+ class MarkdownEditor : public QWidget
+ {
+     Q_OBJECT
+@@ -24,11 +26,12 @@ public:
+     void setMarkdown(const QString &text);
+     QString markdown() const;
+ 
+-    // Absolute source paths of images added via drop or the toolbar (de-duped).
++    // Absolute source paths of images added via drop, paste, or the toolbar (de-duped).
+     QStringList pendingAttachments() const { return m_attachments; }
++    QStringList pendingAttachmentPlaceholders() const { return m_attachmentPlaceholders; }
+ 
+-    // Directory whose attachments/ subfolder holds already-saved images, so the
+-    // preview can render existing ![](attachments/...) references.
++    // Directory that holds already-saved issue images, so the preview can render
++    // existing issue-relative ![](<filename>) references.
+     void setPreviewBasePath(const QString &dir);
+ 
+     void setPlaceholderText(const QString &text);
+@@ -49,6 +52,7 @@ private:
+     void showPreview();
+     void wrapSelection(const QString &left, const QString &right);
+     void chooseImage();
++    bool pasteImageFromClipboard();
+     void updatePreview();
+ 
+     // @-mention autocomplete. updateMentionPopup re-detects the @token under the
+@@ -65,6 +69,7 @@ private:
+     QPushButton *m_writeTab = nullptr;
+     QPushButton *m_previewTab = nullptr;
+     QStringList m_attachments;
++    QStringList m_attachmentPlaceholders;
+     QString m_basePath;
+ 
+     QStringList m_mentionCandidates;
+-- 
+2.50.1 (Apple Git-155)
+
