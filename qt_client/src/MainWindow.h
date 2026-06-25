@@ -9,6 +9,7 @@
 #include "ActionFile.h"
 #include "AgentStore.h"
 #include "AgentRunner.h"
+#include "ClaudeSessionScan.h"
 
 struct CommitComment; // CommitCommentStore.h
 
@@ -521,6 +522,8 @@ private:
     void initAgents();
     void reloadAgents();
     void refreshAgentTable();
+    void updateAgentTokenCell(int sessionId);  // live Tokens-column update
+    void updateAgentStatusCell(int sessionId); // in-place Status-column update
     void showAgentSession(int sessionId);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
@@ -855,6 +858,7 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // grow each bar by its run's elapsed time
+    void positionRepoPushButton(); // float "Sync changes" just above the Commits tab
     void updateActionStrip();    // build/show/hide the bars for in-flight runs
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
@@ -1733,6 +1737,7 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
+    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync changes" pinned over Commits
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
@@ -1846,6 +1851,7 @@ private:
     ClaudeTranscriptView *m_agentTranscript = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
+    QComboBox *m_agentDiffModeCombo = nullptr; // unified vs split diff selector
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
@@ -1859,6 +1865,9 @@ private:
     QHash<int, ClaudeStreamSession *> m_streamSessions;
     QHash<int, QList<QJsonObject>> m_streamEvents;
     QHash<int, QString> m_streamRaw;
+    QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
+    QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
+    void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
@@ -1873,7 +1882,40 @@ private:
     void stopStreamSession(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+
+    // ---- External Claude Code sessions ------------------------------------
+    // Claude Code runs started outside ForkMesh (a terminal, another editor) are
+    // detected from the transcripts the CLI writes to disk. They surface as extra
+    // spinners over the Agents tab; clicking one adds a read-only, temporary entry
+    // to the agents list whose transcript we render and tail live. Temp entries
+    // use synthetic ids <= kExternalIdBase (real sessions are positive; -1 is the
+    // "nothing selected" sentinel), and never touch the AgentStore.
+    static constexpr int kExternalIdBase = -1000;
+    QTimer *m_externalClaudeTimer = nullptr;
+    QList<ExternalClaudeSession> m_externalClaude;        // detected for the open repo
+    QHash<QString, int> m_externalTempId;                 // uuid -> synthetic id
+    QHash<int, ExternalClaudeSession> m_externalSurfaced; // synthetic id -> session
+    QHash<int, QString> m_externalSurfacedRepo;           // synthetic id -> "owner/name"
+    QHash<int, qint64> m_externalReadOffset;              // synthetic id -> tail offset
+    QString m_externalSig;          // last list/spinner signature, to skip no-op rebuilds
+    int m_nextExternalTempId = kExternalIdBase;
+    void scanExternalClaudeSessions();
+    void onExternalClaudeTick();
+    void injectExternalSessions();          // append surfaced temp entries to the list
+    int registerExternalSession(const QString &uuid); // auto-create a temp list entry
+    void surfaceExternalSession(const QString &uuid); // click -> jump to its entry
+    void unsurfaceExternalSession(int sessionId);     // remove a temp entry
+    int externalTempIdFor(const QString &uuid);
+    bool isExternalSession(int sessionId) const { return sessionId <= kExternalIdBase; }
+    bool externalIsLive(const QString &uuid) const; // still in the detected set
+    void renderExternalTranscript(int sessionId, bool full);
+    QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
     QPlainTextEdit *m_agentPromptEdit = nullptr;
+    QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
+    QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
+    QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
+    void addFilesToAgentPrompt();
+    void showAgentSlashMenu();
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;

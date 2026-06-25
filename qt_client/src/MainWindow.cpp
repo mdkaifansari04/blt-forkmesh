@@ -62,6 +62,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QWidgetAction>
+#include <QEnterEvent>
 #include <QMessageBox>
 #include <QMimeDatabase>
 #include <QMouseEvent>
@@ -831,6 +832,11 @@ const QString kLegacyClaudeCommand =
 // input) so it edits the worktree until done; ForkMesh then turns the diff into a
 // PR. Distinct from "Claude API" (the bundled python script) above.
 const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
+// Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
+// permission prompts). Read when a transcript session launches.
+const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// Transcript diff style: true => side-by-side (split), false => unified.
+const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 const QString kDefaultClaudeCodeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 // Claude Code in the embedded terminal runs interactively (not -p headless) so
@@ -2394,20 +2400,69 @@ public:
         setToolTip(task.trimmed().isEmpty() ? QString::fromUtf8("Agent running\xE2\x80\xA6")
                                             : task.trimmed());
     }
+    // External sessions (detected on disk, not launched by ForkMesh) get a dashed
+    // ring so they read as "watch only" alongside ForkMesh's own runs.
+    void setExternal(bool external)
+    {
+        m_external = external;
+        update();
+    }
+    // Clicking a spinner jumps to (or, for external sessions, surfaces) it.
+    void setOnClick(std::function<void()> cb)
+    {
+        m_onClick = std::move(cb);
+        setCursor(m_onClick ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    }
 
 protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && m_onClick)
+            m_onClick();
+        else
+            QWidget::mousePressEvent(e);
+    }
+    void enterEvent(QEnterEvent *) override
+    {
+        m_hover = true;
+        update();
+    }
+    void leaveEvent(QEvent *) override
+    {
+        m_hover = false;
+        update();
+    }
     void paintEvent(QPaintEvent *) override
     {
         QPainter g(this);
         g.setRenderHint(QPainter::Antialiasing);
         g.translate(width() / 2.0, height() / 2.0);
+        // On hover, fill a solid disc behind the icon. The icons sit on a nearly
+        // transparent overlay, so against some backgrounds they wash out under the
+        // cursor; an opaque backing keeps the hovered one clearly readable.
+        if (m_hover) {
+            g.setPen(Qt::NoPen);
+            g.setBrush(QColor("#30363d"));
+            g.drawEllipse(QPointF(0, 0), 10.0, 10.0);
+        }
+        // Steady dashed ring (drawn before the rotation) marks an external,
+        // watch-only session; the icon inside is shrunk so it doesn't touch it.
+        if (m_external) {
+            QPen ring(QColor("#d97757"));
+            ring.setWidthF(1.3);
+            ring.setStyle(Qt::DotLine);
+            g.setPen(ring);
+            g.setBrush(Qt::NoBrush);
+            g.drawEllipse(QPointF(0, 0), 9.0, 9.0);
+        }
         g.rotate(m_angle);
+        const double r = m_external ? 6.6 : 9.0;
         const QString svg = m_claude ? QStringLiteral(":/icons/providers/claude.svg")
                                      : QStringLiteral(":/icons/providers/openai.svg");
         if (QFile::exists(svg)) {
             QSvgRenderer renderer(svg);
             if (renderer.isValid()) {
-                renderer.render(&g, QRectF(-9, -9, 18, 18));
+                renderer.render(&g, QRectF(-r, -r, 2 * r, 2 * r));
                 return;
             }
         }
@@ -2457,6 +2512,9 @@ private:
 
     double m_angle = 0.0;
     bool m_claude = false;
+    bool m_external = false;
+    bool m_hover = false;
+    std::function<void()> m_onClick;
 };
 
 class CodePreviewEditor;
@@ -4040,6 +4098,7 @@ void MainWindow::testShowPublishBar(bool on)
         if (on) {
             m_repoPushButton->setText(QStringLiteral("Sync changes"));
             m_repoPushButton->setEnabled(true);
+            positionRepoPushButton(); // floats it above the Commits tab
         }
         m_repoPushButton->setVisible(on);
     }
@@ -7430,16 +7489,27 @@ void MainWindow::updateRepoPushButton()
     refreshCommitMarkersIfStale();
     m_repoPushButton->hide();
     m_repoPushButton->setEnabled(false);
+    if (m_repoPushTimer)
+        m_repoPushTimer->stop(); // hidden: no need to keep repositioning it
     if (m_repoPublishBar)
         m_repoPublishBar->hide();
-    // Reveal the button together with its row. The row reserves its height even
-    // when hidden (see buildRepoDetailSection), so revealing/hiding it never
-    // reflows the page underneath — important while a mirror picks up a push on
-    // the Mirror nodes screen.
+    // Reveal the floating sync button positioned just above the Commits tab. As an
+    // overlay (not a laid-out widget) it never reflows the page underneath — even
+    // while a mirror picks up a push on the Mirror nodes screen. A modest timer
+    // keeps it pinned over the tab as the window resizes or tabs reflow.
     auto reveal = [this] {
+        positionRepoPushButton(); // reparents to the page + anchors over Commits
         m_repoPushButton->show();
+        m_repoPushButton->raise();
         if (m_repoPublishBar)
             m_repoPublishBar->show();
+        if (!m_repoPushTimer) {
+            m_repoPushTimer = new QTimer(this);
+            connect(m_repoPushTimer, &QTimer::timeout, this,
+                    &MainWindow::positionRepoPushButton);
+        }
+        if (!m_repoPushTimer->isActive())
+            m_repoPushTimer->start(300);
     };
     // Outgoing (↑), incoming (↓), or both at once (⇅). The double-headed arrow is
     // how the button shows it's syncing both ways.
@@ -10326,7 +10396,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // the top-bar notification toast (see showPinWarning), where its "Reset
     // integrity pin" and "Why?" actions are clickable links.
 
-    m_repoPushButton = new QPushButton;
+    m_repoPushButton = new QPushButton(this);
     m_repoPushButton->setObjectName("primaryButton");
     m_repoPushButton->setCursor(Qt::PointingHandCursor);
     m_repoPushButton->hide();
@@ -10335,13 +10405,12 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    // The sync button lives at the right end of the tab row, whose height is fixed
-    // by the tabs. Showing/hiding it as sync state changes (a push, or a mirror
-    // picking it up) therefore never shifts the tab content below it — that shift
-    // is what read as the whole view "resizing" on small screens, most visibly on
-    // the Mirror nodes screen.
-    tabRow->addWidget(m_repoPushButton);
-    m_repoPublishBar = nullptr; // no separate row: the button sits in the tab row
+    // The "Sync changes" button floats in the band just above the Commits tab
+    // (see positionRepoPushButton) rather than living in the tab row: it's an
+    // overlay raised one above the tabs, so showing/hiding it as sync state
+    // changes never reflows the tab content below — that shift is what read as the
+    // whole view "resizing" on small screens, most visibly on Mirror nodes.
+    m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -17211,11 +17280,11 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 7);
+    m_agentTable = new QTableWidget(0, 8);
     m_agentTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_agentTable);
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "PR", "Cost", "When"});
+        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "When"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -17227,7 +17296,7 @@ QWidget *MainWindow::buildAgentsTab()
     agentHeader->setHighlightSections(false);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 7; ++c)
+    for (int c = 2; c < 8; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -17316,6 +17385,13 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentLimitsTimer, &QTimer::timeout, this,
             &MainWindow::refreshAgentLimitLabel);
     m_agentLimitsTimer->start();
+    // Detect Claude Code sessions running outside ForkMesh and stream the open
+    // one. Light enough (a directory scan + small tail reads) to poll often.
+    m_externalClaudeTimer = new QTimer(this);
+    m_externalClaudeTimer->setInterval(3 * 1000);
+    connect(m_externalClaudeTimer, &QTimer::timeout, this,
+            &MainWindow::onExternalClaudeTick);
+    m_externalClaudeTimer->start();
     listLayout->addLayout(usageText);
     listLayout->addWidget(m_agentTable, 1);
 
@@ -17414,6 +17490,8 @@ QWidget *MainWindow::buildAgentsTab()
     // Extension-style transcript for Claude Code (issue #191 follow-up): renders
     // the CLI's stream-json events as native cards.
     m_agentTranscript = new ClaudeTranscriptView;
+    m_agentTranscript->setSplitDiffs(
+        QSettings().value(kClaudeDiffSplitSetting, false).toBool());
     m_agentTranscript->setMinimumHeight(320); // never collapse to a thin strip
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
@@ -17464,12 +17542,34 @@ QWidget *MainWindow::buildAgentsTab()
         if (m_agentOutputStack)
             m_agentOutputStack->setCurrentWidget(m_agentLog);
     });
+    // Diff-style selector, sitting at the top of the output area (next to the
+    // Transcript|Raw toggle): pick unified or side-by-side diffs.
+    m_agentDiffModeCombo = new QComboBox;
+    m_agentDiffModeCombo->setObjectName("agentDiffMode");
+    m_agentDiffModeCombo->setCursor(Qt::PointingHandCursor);
+    m_agentDiffModeCombo->addItem(QStringLiteral("Unified diff"), false);
+    m_agentDiffModeCombo->addItem(QStringLiteral("Split diff"), true);
+    m_agentDiffModeCombo->setToolTip(
+        "How Edit/Write diffs are shown in the transcript");
+    m_agentDiffModeCombo->setCurrentIndex(
+        QSettings().value(kClaudeDiffSplitSetting, false).toBool() ? 1 : 0);
+    connect(m_agentDiffModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                const bool split = m_agentDiffModeCombo->currentData().toBool();
+                QSettings().setValue(kClaudeDiffSplitSetting, split);
+                if (m_agentTranscript)
+                    m_agentTranscript->setSplitDiffs(split);
+                if (m_selectedAgentSessionId != -1) // re-render with the new style
+                    showAgentSession(m_selectedAgentSessionId);
+            });
+
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
     toggleRow->addStretch(1);
+    toggleRow->addWidget(m_agentDiffModeCombo);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
     m_agentOutputToggle->hide();
@@ -17544,9 +17644,14 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentHourlyTimer->start();
 
     m_agentPromptEdit = new QPlainTextEdit;
-    m_agentPromptEdit->setPlaceholderText("Send an additional prompt to the running agent");
+    m_agentPromptEdit->setPlaceholderText(
+        QString::fromUtf8("Queue another message\xE2\x80\xA6"));
     m_agentPromptEdit->setMaximumHeight(92);
-    m_agentSendPromptButton = new QPushButton("Send prompt");
+    m_agentPromptEdit->setFrameShape(QFrame::NoFrame);
+    m_agentPromptEdit->setObjectName("agentComposerEdit");
+    m_agentPromptEdit->setStyleSheet(
+        QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+    m_agentSendPromptButton = new QPushButton("Send");
     m_agentSendPromptButton->setObjectName("primaryButton");
     m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentSendPromptButton, "comment", 16);
@@ -17565,6 +17670,14 @@ QWidget *MainWindow::buildAgentsTab()
                              {QStringLiteral("text"), prompt}};
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
+            // Replying clears the "Waiting" state — the agent is working again.
+            if (AgentSession *as = findAgentSession(sid);
+                as && as->status == AgentStatus::Waiting) {
+                as->status = AgentStatus::Running;
+                if (m_agentStore)
+                    m_agentStore->saveSession(*as);
+                updateAgentStatusCell(sid);
+            }
         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
@@ -17577,11 +17690,59 @@ QWidget *MainWindow::buildAgentsTab()
         m_agentPromptEdit->clear();
     });
 
-    auto *promptRow = new QHBoxLayout;
-    promptRow->setContentsMargins(0, 0, 0, 0);
-    promptRow->setSpacing(8);
-    promptRow->addWidget(m_agentPromptEdit, 1);
-    promptRow->addWidget(m_agentSendPromptButton, 0, Qt::AlignBottom);
+    // Composer accessory controls: add-files (+), a slash-command menu, and the
+    // Auto-mode selector — mirroring the Claude Code conversation input bar.
+    m_agentAddFilesButton = new QPushButton("+");
+    m_agentAddFilesButton->setObjectName("ghostButton");
+    m_agentAddFilesButton->setCursor(Qt::PointingHandCursor);
+    m_agentAddFilesButton->setFixedWidth(32);
+    m_agentAddFilesButton->setToolTip("Add files to the message (inserts @path references)");
+    connect(m_agentAddFilesButton, &QPushButton::clicked, this,
+            &MainWindow::addFilesToAgentPrompt);
+
+    m_agentSlashButton = new QPushButton("/");
+    m_agentSlashButton->setObjectName("ghostButton");
+    m_agentSlashButton->setCursor(Qt::PointingHandCursor);
+    m_agentSlashButton->setFixedWidth(32);
+    m_agentSlashButton->setToolTip("Insert a slash command");
+    connect(m_agentSlashButton, &QPushButton::clicked, this,
+            &MainWindow::showAgentSlashMenu);
+
+    m_agentAutoModeCombo = new QComboBox;
+    m_agentAutoModeCombo->setObjectName("agentAutoMode");
+    m_agentAutoModeCombo->setCursor(Qt::PointingHandCursor);
+    m_agentAutoModeCombo->addItem(QString::fromUtf8("\xE2\x9A\xA1 Auto mode"), true);
+    m_agentAutoModeCombo->addItem(QStringLiteral("Manual approve"), false);
+    m_agentAutoModeCombo->setToolTip(
+        "Auto mode runs the agent unattended (skips permission prompts). Manual "
+        "approve makes new sessions pause for approval.");
+    m_agentAutoModeCombo->setCurrentIndex(
+        QSettings().value(kClaudeAutoModeSetting, true).toBool() ? 0 : 1);
+    connect(m_agentAutoModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                QSettings().setValue(kClaudeAutoModeSetting,
+                                     m_agentAutoModeCombo->currentData().toBool());
+            });
+
+    // Composer styled like the Claude Code conversation input: a rounded panel
+    // with the message field above an accessory + send button row.
+    auto *composer = new QFrame;
+    composer->setObjectName("agentComposer");
+    composer->setStyleSheet(QStringLiteral(
+        "#agentComposer{background:#161b22;border:1px solid #30363d;border-radius:12px;}"));
+    auto *composerCol = new QVBoxLayout(composer);
+    composerCol->setContentsMargins(12, 10, 10, 8);
+    composerCol->setSpacing(6);
+    composerCol->addWidget(m_agentPromptEdit);
+    auto *composerBtns = new QHBoxLayout;
+    composerBtns->setContentsMargins(0, 0, 0, 0);
+    composerBtns->setSpacing(6);
+    composerBtns->addWidget(m_agentAddFilesButton);
+    composerBtns->addWidget(m_agentSlashButton);
+    composerBtns->addWidget(m_agentAutoModeCombo);
+    composerBtns->addStretch(1);
+    composerBtns->addWidget(m_agentSendPromptButton);
+    composerCol->addLayout(composerBtns);
 
     m_agentNetPanel = new QLabel;
     m_agentNetPanel->setObjectName("agentNetPanel");
@@ -17599,7 +17760,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentOutputToggle);
     detailLayout->addWidget(outputContainer, 1);
-    detailLayout->addLayout(promptRow);
+    detailLayout->addWidget(composer);
 
     m_agentDetail = detailPane;
     // Open full width: the table fills the page until a session is selected, at
@@ -18175,6 +18336,7 @@ void MainWindow::reloadAgents()
     if (!m_agentStore)
         return;
     m_agentSessions = m_agentStore->loadAllSessions();
+    injectExternalSessions(); // append any surfaced external (watch-only) sessions
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -18254,8 +18416,17 @@ void MainWindow::refreshAgentTable()
         cost->setData(Qt::UserRole, session.costUsd);
         cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
         m_agentTable->setItem(row, 5, cost);
+        // Live token usage, refreshed in place as the session streams (see
+        // updateAgentTokenCell). Sort by the raw number, not the formatted text.
+        auto *tokens = new QTableWidgetItem;
+        const qint64 toks = m_sessionTokens.value(session.id, session.totalTokens);
+        tokens->setData(Qt::DisplayRole,
+                        toks > 0 ? formatCount(toks) : QStringLiteral("-"));
+        tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+        tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
+        m_agentTable->setItem(row, 6, tokens);
         m_agentTable->setItem(
-            row, 6,
+            row, 7,
             new QTableWidgetItem(
                 QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
                     .toString(QStringLiteral("MMM d  hh:mm"))));
@@ -18355,18 +18526,36 @@ void MainWindow::showAgentSession(int sessionId)
 
     if (m_agentDetail)
         m_agentDetail->show();
-    if (m_agentTitle)
-        m_agentTitle->setText(
-            session->issueNumber > 0
-                ? QStringLiteral("#%1 · %2")
-                      .arg(session->issueNumber)
-                      .arg(session->issueTitle.isEmpty()
-                               ? agentProviderName(session->provider)
-                               : session->issueTitle)
-                : QStringLiteral("%1 · pull #%2")
-                      .arg(agentProviderName(session->provider))
-                      .arg(session->prNumber));
-    if (m_agentMeta) {
+    if (m_agentTitle) {
+        if (isExternalSession(sessionId)) {
+            const QString label = !session->issueTitle.isEmpty()
+                                      ? session->issueTitle
+                                      : (session->branchName.isEmpty()
+                                             ? QStringLiteral("session")
+                                             : session->branchName);
+            m_agentTitle->setText(QStringLiteral("External Claude Code · %1").arg(label));
+        } else {
+            m_agentTitle->setText(
+                session->issueNumber > 0
+                    ? QStringLiteral("#%1 · %2")
+                          .arg(session->issueNumber)
+                          .arg(session->issueTitle.isEmpty()
+                                   ? agentProviderName(session->provider)
+                                   : session->issueTitle)
+                    : QStringLiteral("%1 · pull #%2")
+                          .arg(agentProviderName(session->provider))
+                          .arg(session->prNumber));
+        }
+    }
+    if (m_agentMeta && isExternalSession(sessionId)) {
+        QString meta = QStringLiteral("External Claude Code · %1/%2 · %3")
+                           .arg(session->owner, session->name,
+                                agentStatusText(session->status));
+        if (!session->branchName.isEmpty())
+            meta += QStringLiteral(" · %1").arg(session->branchName);
+        meta += QStringLiteral(" · watch-only");
+        m_agentMeta->setText(meta);
+    } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible.
         QString pr = session->prNumber > 0
                          ? QStringLiteral("PR #%1 open").arg(session->prNumber)
@@ -18443,8 +18632,11 @@ void MainWindow::showAgentSession(int sessionId)
     // terminal sessions show the embedded terminal; everything else the log. The
     // Transcript|Raw toggle and the edited-files panel show only for transcript
     // sessions.
-    const bool transcript = isStreamTranscriptSession(sessionId);
-    if (transcript) {
+    const bool external = isExternalSession(sessionId);
+    const bool transcript = external || isStreamTranscriptSession(sessionId);
+    if (external) {
+        renderExternalTranscript(sessionId, /*full=*/true);
+    } else if (isStreamTranscriptSession(sessionId)) {
         renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
         if (m_agentLog)
@@ -18453,7 +18645,7 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
     if (m_agentFilesPanel)
-        m_agentFilesPanel->setVisible(transcript);
+        m_agentFilesPanel->setVisible(transcript && !external); // no edited-files panel for external
     if (m_agentOutputStack) {
         const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
                               m_agentTerminal->isRunning();
@@ -18660,6 +18852,60 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     processAgentQueue();
 }
 
+// Composer "+" : pick files and insert them as @path references (resolved
+// relative to the session's working directory, which Claude Code understands).
+void MainWindow::addFilesToAgentPrompt()
+{
+    if (!m_agentPromptEdit)
+        return;
+    QString dir = sessionWorkdir(m_selectedAgentSessionId);
+    if (dir.isEmpty())
+        dir = QDir::homePath();
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Add files to the message"), dir);
+    if (files.isEmpty())
+        return;
+    QString ins;
+    for (const QString &f : files) {
+        QString ref = f;
+        if (f.startsWith(dir + QLatin1Char('/')))
+            ref = f.mid(dir.size() + 1);
+        ins += QLatin1Char('@') + ref + QLatin1Char(' ');
+    }
+    m_agentPromptEdit->insertPlainText(ins);
+    m_agentPromptEdit->setFocus();
+}
+
+// Composer "/" : a menu of slash commands; the chosen one is dropped into the
+// message field ready to send.
+void MainWindow::showAgentSlashMenu()
+{
+    if (!m_agentSlashButton || !m_agentPromptEdit)
+        return;
+    static const QList<QPair<QString, QString>> kCommands = {
+        {QStringLiteral("/clear"), QStringLiteral("Clear the conversation history")},
+        {QStringLiteral("/compact"), QStringLiteral("Summarise and compact the context")},
+        {QStringLiteral("/context"), QStringLiteral("Show context-window usage")},
+        {QStringLiteral("/review"), QStringLiteral("Review the current changes")},
+        {QStringLiteral("/cost"), QStringLiteral("Show token and cost usage")},
+        {QStringLiteral("/help"), QStringLiteral("List available commands")},
+    };
+    QMenu menu(this);
+    for (const auto &c : kCommands) {
+        QAction *a = menu.addAction(QStringLiteral("%1  —  %2").arg(c.first, c.second));
+        a->setData(c.first);
+    }
+    QAction *chosen =
+        menu.exec(m_agentSlashButton->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    if (!chosen)
+        return;
+    m_agentPromptEdit->setPlainText(chosen->data().toString() + QLatin1Char(' '));
+    QTextCursor cur = m_agentPromptEdit->textCursor();
+    cur.movePosition(QTextCursor::End);
+    m_agentPromptEdit->setTextCursor(cur);
+    m_agentPromptEdit->setFocus();
+}
+
 void MainWindow::continueSelectedAgentSession()
 {
     if (!m_agentStore || m_selectedAgentSessionId <= 0)
@@ -18694,6 +18940,12 @@ void MainWindow::continueSelectedAgentSession()
 
 void MainWindow::deleteSelectedAgentSession()
 {
+    // External (watch-only) rows aren't in the store — Delete just drops the
+    // temporary mirror; the real session keeps running in its own process.
+    if (isExternalSession(m_selectedAgentSessionId)) {
+        unsurfaceExternalSession(m_selectedAgentSessionId);
+        return;
+    }
     if (!m_agentStore || m_selectedAgentSessionId <= 0)
         return;
     AgentSession *session = findAgentSession(m_selectedAgentSessionId);
@@ -19129,7 +19381,8 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
         if (AgentSession *as = findAgentSession(sid)) {
-            if (as->status == AgentStatus::Running) {
+            if (as->status == AgentStatus::Running ||
+                as->status == AgentStatus::Waiting) {
                 as->status = AgentStatus::Success;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_agentStore->saveSession(*as);
@@ -19159,7 +19412,8 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         m_transcriptModeButton->setChecked(true);
     if (m_terminalModeButton)
         m_terminalModeButton->setChecked(false);
-    stream->start(workdir, env, prompt, /*skipPermissions=*/true);
+    const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
+    stream->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
 }
 
 // Working directory for a session: its worktree if it has one, else the repo.
@@ -19213,6 +19467,267 @@ void MainWindow::stopStreamSession(int sessionId)
     updateAgentActionState();
 }
 
+// ---- External Claude Code sessions ----------------------------------------
+// Watch-only mirrors of `claude` runs started outside ForkMesh. See the header.
+
+// Directories ForkMesh's own stream sessions are driving, so the scanner doesn't
+// report them back to us as "external".
+QSet<QString> MainWindow::ownStreamCwds() const
+{
+    QSet<QString> out;
+    for (const QString &p : m_streamWorktree)
+        out.insert(QDir(p).absolutePath());
+    return out;
+}
+
+// Stable synthetic id for a uuid (so a session keeps its row across rescans).
+int MainWindow::externalTempIdFor(const QString &uuid)
+{
+    auto it = m_externalTempId.constFind(uuid);
+    if (it != m_externalTempId.constEnd())
+        return it.value();
+    const int id = m_nextExternalTempId--; // -1000, -1001, … (all <= kExternalIdBase)
+    m_externalTempId.insert(uuid, id);
+    return id;
+}
+
+// Re-detect the external sessions for the open repo and refresh the metadata of
+// any we've already surfaced.
+void MainWindow::scanExternalClaudeSessions()
+{
+    m_externalClaude.clear();
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.localPath.isEmpty())
+        return;
+    constexpr qint64 kActiveWindowMs = 90 * 1000; // written within 90s == "running"
+    m_externalClaude =
+        ClaudeSessionScan::scan(repo.localPath, ownStreamCwds(), kActiveWindowMs);
+    for (const ExternalClaudeSession &ext : std::as_const(m_externalClaude)) {
+        const int id = m_externalTempId.value(ext.uuid, 0);
+        if (id != 0 && m_externalSurfaced.contains(id)) {
+            ExternalClaudeSession &saved = m_externalSurfaced[id];
+            saved.lastActivityMs = ext.lastActivityMs;
+            saved.path = ext.path;
+            if (!ext.title.isEmpty())
+                saved.title = ext.title;
+        }
+    }
+}
+
+bool MainWindow::externalIsLive(const QString &uuid) const
+{
+    for (const ExternalClaudeSession &e : m_externalClaude)
+        if (e.uuid == uuid)
+            return true;
+    return false;
+}
+
+// Append the surfaced external sessions to m_agentSessions as read-only rows
+// (negative ids, never persisted). Idempotent: strips any it added before.
+void MainWindow::injectExternalSessions()
+{
+    m_agentSessions.erase(std::remove_if(m_agentSessions.begin(), m_agentSessions.end(),
+                                         [](const AgentSession &s) {
+                                             return s.id <= kExternalIdBase;
+                                         }),
+                          m_agentSessions.end());
+    for (auto it = m_externalSurfaced.constBegin(); it != m_externalSurfaced.constEnd();
+         ++it) {
+        const int id = it.key();
+        const ExternalClaudeSession &ext = it.value();
+        const QString repoKey = m_externalSurfacedRepo.value(id);
+        const int slash = repoKey.indexOf(QLatin1Char('/'));
+        AgentSession s;
+        s.id = id;
+        s.owner = repoKey.left(slash);
+        s.name = repoKey.mid(slash + 1);
+        s.provider = QStringLiteral("claude-code");
+        s.issueNumber = 0;
+        s.issueTitle = ext.title.isEmpty() ? QStringLiteral("Claude Code (external)")
+                                           : ext.title;
+        s.branchName = ext.gitBranch;
+        s.status = externalIsLive(ext.uuid) ? AgentStatus::Running : AgentStatus::Success;
+        s.createdAtMs = ext.lastActivityMs;
+        m_agentSessions.append(s);
+    }
+}
+
+// Click handler for an external spinner: add (or re-select) its read-only row.
+// Register a detected external session as a read-only list row WITHOUT navigating
+// to it. Called for every detection so the agents list and "Agents (N)" count
+// always reflect what's running, even before the user clicks. Returns its id (0
+// if it couldn't be registered).
+int MainWindow::registerExternalSession(const QString &uuid)
+{
+    const ExternalClaudeSession *found = nullptr;
+    for (const ExternalClaudeSession &e : std::as_const(m_externalClaude))
+        if (e.uuid == uuid) {
+            found = &e;
+            break;
+        }
+    if (!found || m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return 0;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const int id = externalTempIdFor(uuid);
+    if (!m_externalSurfaced.contains(id)) {
+        m_externalSurfaced.insert(id, *found);
+        m_externalSurfacedRepo.insert(id, repo.owner + QLatin1Char('/') + repo.name);
+        m_externalSig.clear(); // a new row — force a rebuild
+    } else {
+        m_externalSurfaced[id] = *found; // refresh metadata in place
+    }
+    return id;
+}
+
+// Clicking an external spinner just jumps to its (already auto-created) row.
+void MainWindow::surfaceExternalSession(const QString &uuid)
+{
+    const int id = registerExternalSession(uuid);
+    if (id == 0)
+        return;
+    m_externalReadOffset.remove(id); // fresh render on select
+    injectExternalSessions();        // so findAgentSession(id) resolves before the switch
+    switchToAgentsTab(id);           // shows the Agents tab + renders the detail
+    if (m_agentTable) {
+        for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+            QTableWidgetItem *cell = m_agentTable->item(r, 0);
+            if (cell && cell->data(Qt::UserRole).toInt() == id) {
+                m_agentTable->selectRow(r);
+                break;
+            }
+        }
+    }
+}
+
+// Delete on an external row just drops the temporary mirror (the real session,
+// owned by another process, is untouched).
+void MainWindow::unsurfaceExternalSession(int sessionId)
+{
+    if (!isExternalSession(sessionId))
+        return;
+    m_externalSurfaced.remove(sessionId);
+    m_externalSurfacedRepo.remove(sessionId);
+    m_externalReadOffset.remove(sessionId);
+    m_externalSig.clear();
+    if (m_selectedAgentSessionId == sessionId)
+        m_selectedAgentSessionId = -1;
+    reloadAgents();
+}
+
+// Periodic rescan: refresh spinners always (cheap, guarded internally) and the
+// list only when the detected/surfaced set actually changed; tail the open
+// external transcript so its progress streams in live.
+void MainWindow::onExternalClaudeTick()
+{
+    if (!m_agentStore)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        if (!m_externalClaude.isEmpty()) {
+            m_externalClaude.clear();
+            updateAgentsTabIndicator();
+        }
+        return;
+    }
+    scanExternalClaudeSessions();
+    // Auto-surface every detected session so it lands in the list (and the count)
+    // immediately — the user can then click the row to watch its transcript.
+    for (const ExternalClaudeSession &e : std::as_const(m_externalClaude))
+        registerExternalSession(e.uuid);
+
+    QStringList sig;
+    for (const ExternalClaudeSession &e : std::as_const(m_externalClaude))
+        sig << e.uuid;
+    sig.sort();
+    QStringList surfSig;
+    for (auto it = m_externalSurfaced.constBegin(); it != m_externalSurfaced.constEnd();
+         ++it)
+        surfSig << QStringLiteral("%1:%2").arg(it.key()).arg(externalIsLive(it.value().uuid));
+    surfSig.sort();
+    const QString combined = sig.join(QLatin1Char(',')) + QLatin1Char('|') +
+                             surfSig.join(QLatin1Char(','));
+    if (combined != m_externalSig) {
+        m_externalSig = combined;
+        injectExternalSessions();
+        refreshAgentTable();
+        updateAgentsTabIndicator();
+    }
+
+    if (isExternalSession(m_selectedAgentSessionId) &&
+        m_externalSurfaced.contains(m_selectedAgentSessionId))
+        renderExternalTranscript(m_selectedAgentSessionId, /*full=*/false);
+}
+
+// Render (full) or tail (incremental) a surfaced external session's transcript
+// into the shared transcript view + raw log.
+void MainWindow::renderExternalTranscript(int sessionId, bool full)
+{
+    if (!m_agentTranscript)
+        return;
+    auto it = m_externalSurfaced.constFind(sessionId);
+    if (it == m_externalSurfaced.constEnd())
+        return;
+    const ExternalClaudeSession ext = it.value();
+
+    qint64 offset;
+    if (full) {
+        m_agentTranscript->clear();
+        offset = ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024);
+    } else {
+        offset = m_externalReadOffset.value(sessionId, 0);
+    }
+    qint64 newOffset = offset;
+    const QList<QJsonObject> events =
+        ClaudeSessionScan::readEvents(ext.path, offset, &newOffset);
+    m_externalReadOffset[sessionId] = newOffset;
+
+    if (full)
+        m_sessionTokens[sessionId] = 0; // recount from the rendered tail
+    qint64 addedTokens = 0;
+    for (const QJsonObject &ev : events) {
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant"))
+            addedTokens += static_cast<qint64>(
+                ev.value(QStringLiteral("message")).toObject()
+                    .value(QStringLiteral("usage")).toObject()
+                    .value(QStringLiteral("output_tokens")).toDouble());
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("user")) {
+            // The on-disk "user" lines carry both real prompts (text) and tool
+            // results; handleEvent only renders the latter, so add prompt bubbles
+            // here. (Mixed lines are rare, so doing both is harmless.)
+            const QJsonValue cv = ev.value(QStringLiteral("message")).toObject()
+                                      .value(QStringLiteral("content"));
+            if (cv.isString()) {
+                if (!cv.toString().trimmed().isEmpty())
+                    m_agentTranscript->addUserTurn(cv.toString());
+            } else {
+                for (const QJsonValue &bv : cv.toArray()) {
+                    const QJsonObject b = bv.toObject();
+                    if (b.value(QStringLiteral("type")).toString() == QLatin1String("text")) {
+                        const QString t = b.value(QStringLiteral("text")).toString();
+                        if (!t.trimmed().isEmpty())
+                            m_agentTranscript->addUserTurn(t);
+                    }
+                }
+            }
+        }
+        m_agentTranscript->handleEvent(ev);
+    }
+    if (addedTokens > 0) {
+        m_sessionTokens[sessionId] += addedTokens;
+        updateAgentTokenCell(sessionId);
+    }
+
+    if (full && m_agentLog) {
+        QFile f(ext.path);
+        if (f.open(QIODevice::ReadOnly)) {
+            f.seek(ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024));
+            m_agentLog->setPlainText(QString::fromUtf8(f.readAll()));
+            m_agentLog->moveCursor(QTextCursor::End);
+        }
+    }
+}
+
 // Buffer one event for a session and, if that session is the one on screen,
 // render it live. Also collect the files it edits for the side panel.
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
@@ -19220,11 +19735,28 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     m_streamEvents[sessionId].append(ev);
 
     if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant")) {
+        // Accumulate token usage so the agents list shows it live (see
+        // updateAgentTokenCell) — counted for every session, selected or not.
+        const qint64 out = static_cast<qint64>(
+            ev.value(QStringLiteral("message")).toObject()
+                .value(QStringLiteral("usage")).toObject()
+                .value(QStringLiteral("output_tokens")).toDouble());
+        if (out > 0) {
+            m_sessionTokens[sessionId] += out;
+            if (AgentSession *as = findAgentSession(sessionId))
+                as->totalTokens = static_cast<int>(
+                    qMin<qint64>(m_sessionTokens.value(sessionId), 2'000'000'000));
+            updateAgentTokenCell(sessionId);
+        }
         const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
                                        .value(QStringLiteral("content")).toArray();
+        QString assistantText;
         for (const QJsonValue &bv : content) {
             const QJsonObject b = bv.toObject();
-            if (b.value(QStringLiteral("type")).toString() != QLatin1String("tool_use"))
+            const QString btype = b.value(QStringLiteral("type")).toString();
+            if (btype == QLatin1String("text"))
+                assistantText += b.value(QStringLiteral("text")).toString();
+            if (btype != QLatin1String("tool_use"))
                 continue;
             const QString name = b.value(QStringLiteral("name")).toString();
             if (name == QLatin1String("Edit") || name == QLatin1String("Write")
@@ -19235,7 +19767,15 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
                     m_streamFiles[sessionId].append(p);
             }
         }
+        if (!assistantText.trimmed().isEmpty())
+            m_lastAssistantText[sessionId] = assistantText.trimmed();
     }
+
+    // The turn finished (or the CLI is asking to use a tool while in manual mode):
+    // the agent is now waiting on the user — surface it (see notifyAgentWaiting).
+    const QString type = ev.value(QStringLiteral("type")).toString();
+    if (type == QLatin1String("result") || type == QLatin1String("control_request"))
+        notifyAgentWaiting(sessionId, type == QLatin1String("control_request"));
 
     if (sessionId == m_selectedAgentSessionId && m_agentTranscript) {
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
@@ -19243,6 +19783,86 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         else
             m_agentTranscript->handleEvent(ev);
         refreshAgentFilesPanel(sessionId);
+    }
+}
+
+// The agent's turn ended (or it needs permission) and it's now waiting on the
+// user: flag the session "Waiting" in the list and raise a top-bar notification.
+void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
+{
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s || s->status != AgentStatus::Running)
+        return; // only meaningful for a session that was actively running
+    s->status = AgentStatus::Waiting;
+    if (m_agentStore && !isExternalSession(sessionId))
+        m_agentStore->saveSession(*s);
+    updateAgentStatusCell(sessionId);
+
+    const QString who = s->issueNumber > 0 ? QStringLiteral("#%1").arg(s->issueNumber)
+                                           : QStringLiteral("Agent");
+    const QString last = m_lastAssistantText.value(sessionId);
+    const bool question = last.endsWith(QLatin1Char('?'));
+    QString snippet = last;
+    if (snippet.size() > 80)
+        snippet = snippet.left(79) + QString::fromUtf8("\xE2\x80\xA6");
+    const QString robot = QString::fromUtf8("\xF0\x9F\xA4\x96"); // 🤖
+    QString msg;
+    if (needsPermission)
+        msg = QStringLiteral("%1 %2 needs your approval to continue").arg(robot, who);
+    else if (question)
+        msg = QStringLiteral("%1 %2 has a question: %3").arg(robot, who, snippet);
+    else
+        msg = QStringLiteral("%1 %2 is waiting for your reply").arg(robot, who);
+    flashMessage(msg, /*error=*/false);
+}
+
+// Refresh just the Status cell for a session's row, in place — avoids the full
+// table rebuild (which would re-render the open transcript) on status flips.
+void MainWindow::updateAgentStatusCell(int sessionId)
+{
+    if (!m_agentTable)
+        return;
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
+            continue;
+        QSignalBlocker block(m_agentTable);
+        QTableWidgetItem *cell = m_agentTable->item(r, 3);
+        if (!cell) {
+            cell = new QTableWidgetItem;
+            m_agentTable->setItem(r, 3, cell);
+        }
+        cell->setText(agentStatusText(s->status));
+        cell->setForeground(agentStatusColor(s->status));
+        break;
+    }
+    if (sessionId == m_selectedAgentSessionId)
+        updateAgentActionState();
+}
+
+// Refresh just the Tokens cell for a session's row, in place — cheap enough to
+// call on every assistant message without rebuilding the whole table.
+void MainWindow::updateAgentTokenCell(int sessionId)
+{
+    if (!m_agentTable)
+        return;
+    const qint64 toks = m_sessionTokens.value(sessionId, 0);
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
+            continue;
+        QSignalBlocker block(m_agentTable);
+        QTableWidgetItem *cell = m_agentTable->item(r, 6);
+        if (!cell) {
+            cell = new QTableWidgetItem;
+            m_agentTable->setItem(r, 6, cell);
+        }
+        cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
+        cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+        break;
     }
 }
 
@@ -23852,7 +24472,7 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
 // Theme-aware stylesheet for the diff HTML produced by the renderers above,
 // shared by the commit and pull-request diff QTextBrowsers. Includes the
 // split-view central divider (td.nln) on top of the unified-view rules.
-QString diffStyleSheet()
+QString diffStyleSheet(int fontPt)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
     const QString addBg = dark ? "#12261c" : "#e6ffec";
@@ -23883,7 +24503,7 @@ QString diffStyleSheet()
                "margin-right:14px; }"
                ".sadd { color:#3fb950; font-weight:700; }"
                ".sdel { color:#f85149; font-weight:700; }"
-               ".difftable { font-family:monospace; font-size:12px; width:100%; "
+               ".difftable { font-family:monospace; font-size:%10px; width:100%; "
                "border-left:1px solid %7; border-right:1px solid %7; "
                "border-bottom:1px solid %7; }"
                ".imagetable { border-left:1px solid %7; border-right:1px solid %7; }"
@@ -23892,8 +24512,10 @@ QString diffStyleSheet()
                ".imgempty { color:%2; padding:60px 0; border:1px solid %7; }"
                ".imgcaption { color:%2; font-size:12px; margin-top:6px; }"
                "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
-               "white-space:nowrap; background:%9; border-right:1px solid %7; }"
-               "td.code { white-space:pre; padding:0 10px; color:%8; }"
+               "font-size:%10px; white-space:nowrap; background:%9; "
+               "border-right:1px solid %7; }"
+               "td.code { white-space:pre; padding:0 10px; color:%8; "
+               "font-size:%10px; }"
                ".add { background:%3; } .del { background:%4; }"
                ".hunk { color:%5; background:%6; }"
                "td.ln.hunk { background:%6; border-right:1px solid %7; }"
@@ -38280,6 +38902,32 @@ void MainWindow::positionActionStrip()
     m_actionStrip->raise();
 }
 
+// Float the "Sync changes" button in the band just above the Commits tab, raised
+// one above the tab bar. As an overlay it occupies no layout space, so toggling
+// it never shifts the tabs or page content.
+void MainWindow::positionRepoPushButton()
+{
+    if (!m_repoPushButton || !m_repoCommitsTab)
+        return;
+    QWidget *tabBar = m_repoCommitsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    if (m_repoPushButton->parentWidget() != page)
+        m_repoPushButton->setParent(page); // hides it; reveal() re-shows
+    const int w = m_repoPushButton->sizeHint().width();
+    const int h = m_repoPushButton->sizeHint().height();
+    const QPoint tl = m_repoCommitsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    m_repoPushButton->setGeometry(x, y, w, h);
+    m_repoPushButton->raise();
+}
+
 void MainWindow::ensureAgentSpinnerOverlay()
 {
     if (m_agentSpinnerOverlay || !m_repoAgentsTab)
@@ -38357,13 +39005,16 @@ void MainWindow::updateAgentsTabIndicator()
         if (s.owner != owner || s.name != name)
             continue;
         ++n;
+        if (s.id <= kExternalIdBase)
+            continue; // external (watch-only): its spinner comes from m_externalClaude
         if (s.status == AgentStatus::Running)
             running.append(&s);
     }
     m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(formatCount(n)));
 
     ensureAgentSpinnerOverlay();
-    const bool active = !running.isEmpty() && m_repoAgentsTab->isVisible();
+    const bool active = (!running.isEmpty() || !m_externalClaude.isEmpty()) &&
+                        m_repoAgentsTab->isVisible();
     if (!active) {
         if (m_agentsSpinTimer)
             m_agentsSpinTimer->stop();
@@ -38377,11 +39028,14 @@ void MainWindow::updateAgentsTabIndicator()
     if (!m_agentSpinnerOverlay)
         return;
 
-    // Only rebuild the spinners when the set of running sessions changes —
-    // recreating them every refresh would reset their rotation.
+    // Only rebuild the spinners when the set changes — recreating them every
+    // refresh would reset their rotation. The set = ForkMesh's own running
+    // sessions plus the external Claude Code sessions detected on disk.
     QList<int> ids;
     for (const AgentSession *s : std::as_const(running))
         ids.append(s->id);
+    for (const ExternalClaudeSession &e : std::as_const(m_externalClaude))
+        ids.append(externalTempIdFor(e.uuid));
     if (ids != m_agentSpinnerIds) {
         m_agentSpinnerIds = ids;
         while (QLayoutItem *item = m_agentSpinnerRow->takeAt(0)) {
@@ -38399,6 +39053,28 @@ void MainWindow::updateAgentsTabIndicator()
                           .arg(s->issueTitle.trimmed());
             spinner->setTask(QString::fromUtf8("%1 \xC2\xB7 %2")
                                  .arg(task, agentProviderName(s->provider)));
+            const int sid = s->id;
+            spinner->setOnClick([this, sid] {
+                switchToAgentsTab(sid);
+                showAgentSession(sid);
+            });
+            m_agentSpinnerRow->addWidget(spinner);
+        }
+        // External (watch-only) Claude Code sessions: a dashed-ring spinner that,
+        // when clicked, mirrors the session into the list as a temporary entry.
+        for (const ExternalClaudeSession &e : std::as_const(m_externalClaude)) {
+            auto *spinner = new AgentSpinner;
+            spinner->setProvider(QStringLiteral("claude-code"));
+            spinner->setExternal(true);
+            QString task = QString::fromUtf8("External Claude Code: %1")
+                               .arg(e.title.isEmpty() ? QStringLiteral("session")
+                                                      : e.title);
+            if (!e.gitBranch.isEmpty())
+                task += QString::fromUtf8(" \xC2\xB7 %1").arg(e.gitBranch);
+            task += QString::fromUtf8(" \xC2\xB7 click to watch");
+            spinner->setTask(task);
+            const QString uuid = e.uuid;
+            spinner->setOnClick([this, uuid] { surfaceExternalSession(uuid); });
             m_agentSpinnerRow->addWidget(spinner);
         }
     }

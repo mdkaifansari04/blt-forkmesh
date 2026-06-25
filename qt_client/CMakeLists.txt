@@ -67,6 +67,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeStreamSession.cpp
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
+    src/ClaudeSessionScan.h
+    src/ClaudeSessionScan.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
