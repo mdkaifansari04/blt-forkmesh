@@ -140,6 +140,11 @@ public:
                            QString *error = nullptr);
     bool finishPullFileEdit(int number, const QString &relPath,
                             const QString &content, QString *error = nullptr);
+    // Delete a file on the PR's branch in one step: checks out the branch with the
+    // PR applied (clean, conflict-free), removes the file, commits the deletion,
+    // returns to the original branch and regenerates the PR's patch — the PR stays
+    // open and mergeable. On failure the caller should abortConflictMerge().
+    bool deletePullFile(int number, const QString &relPath, QString *error = nullptr);
     // Build a minimal mbox (single commit) from a flat patch so `git am` can
     // apply it and credit the PR author. Public for testing.
     static QString syntheticMbox(const PullRequest &pr);

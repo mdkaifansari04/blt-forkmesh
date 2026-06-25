@@ -3964,6 +3964,43 @@ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &
     m_repositories.append(repo);
     return m_repositories.size() - 1;
 }
+
+int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
+                                       const QString &localPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.localPath = localPath;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+
+bool MainWindow::testOpenRepository(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    openRepoDetail(index);
+    return true;
+}
+
+void MainWindow::testShowPublishBar(bool on)
+{
+    if (m_repoPushButton) {
+        if (on) {
+            m_repoPushButton->setText(QStringLiteral("Sync changes"));
+            m_repoPushButton->setEnabled(true);
+        }
+        m_repoPushButton->setVisible(on);
+    }
+    if (m_repoPublishBar)
+        m_repoPublishBar->setVisible(on);
+}
+
+int MainWindow::testRepoTabContentTop()
+{
+    return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;
+}
 #endif
 
 void MainWindow::startSession()
@@ -7334,12 +7371,21 @@ void MainWindow::updateRepoPushButton()
     m_repoPushButton->setEnabled(false);
     if (m_repoPublishBar)
         m_repoPublishBar->hide();
-    // Reveal the button together with its row so the row leaves no empty gap
-    // above the tab bar when there is nothing to publish.
+    // Reveal the button together with its row. The row reserves its height even
+    // when hidden (see buildRepoDetailSection), so revealing/hiding it never
+    // reflows the page underneath — important while a mirror picks up a push on
+    // the Mirror nodes screen.
     auto reveal = [this] {
         m_repoPushButton->show();
         if (m_repoPublishBar)
             m_repoPublishBar->show();
+    };
+    // Outgoing (↑), incoming (↓), or both at once (⇅). The double-headed arrow is
+    // how the button shows it's syncing both ways.
+    auto arrow = [](int out, int in) -> QString {
+        if (out > 0 && in > 0) return QString::fromUtf8(" \xE2\x87\x85"); // ⇅
+        if (in > 0) return QString::fromUtf8(" \xE2\x86\x93");            // ↓
+        return QString::fromUtf8(" \xE2\x86\x91");                        // ↑
     };
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -7348,10 +7394,42 @@ void MainWindow::updateRepoPushButton()
     if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
         return;
 
+    // Commits we're behind by (incoming, to pull) — from the served mirror for a
+    // relay repo, else the configured upstream. Used to flag a two-way sync.
+    auto behindCount = [this](const RepositoryRecord &r) -> int {
+        QString ref;
+        if (!r.mirrorPath.isEmpty())
+            ref = mirrorBranchCommit(r.mirrorPath, mirrorHeadBranch(r.mirrorPath));
+        else {
+            QByteArray u;
+            if (runGitCapture(r.localPath,
+                              {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                               QStringLiteral("--symbolic-full-name"),
+                               QStringLiteral("@{upstream}")},
+                              &u, nullptr))
+                ref = QString::fromUtf8(u).trimmed();
+        }
+        if (ref.isEmpty())
+            return 0;
+        QByteArray b;
+        if (!runGitCapture(r.localPath,
+                           {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                            QStringLiteral("HEAD..%1").arg(ref)},
+                           &b, nullptr))
+            return 0;
+        return QString::fromUtf8(b).trimmed().toInt();
+    };
+
     if (m_pushingRepos.contains(m_repoDetailIndex)) {
+        const int behind = behindCount(repo);
         setOcticon(m_repoPushButton, "sync", 14);
-        m_repoPushButton->setText(QStringLiteral("Syncing..."));
-        m_repoPushButton->setToolTip(QStringLiteral("Syncing local commits upstream"));
+        m_repoPushButton->setText(QString::fromUtf8("Syncing changes")
+                                  + arrow(1, behind) + QString::fromUtf8("\xE2\x80\xA6"));
+        m_repoPushButton->setToolTip(
+            behind > 0
+                ? QStringLiteral("Syncing both ways: pushing local commits and "
+                                 "pulling %1 incoming").arg(behind)
+                : QStringLiteral("Syncing local commits upstream"));
         reveal();
         return;
     }
@@ -7361,29 +7439,32 @@ void MainWindow::updateRepoPushButton()
     QString relayBranch;
     int unpublished = 0;
     if (relayPublishRepo(repo, &relayBranch, &unpublished)) {
+        const int behind = behindCount(repo);
         if (m_syncingRepos.contains(m_repoDetailIndex)) {
-            setOcticon(m_repoPushButton, "upload", 14);
-            m_repoPushButton->setText(QStringLiteral("Publishing..."));
+            setOcticon(m_repoPushButton, "sync", 14);
+            m_repoPushButton->setText(QString::fromUtf8("Syncing changes")
+                                      + arrow(qMax(unpublished, 1), behind)
+                                      + QString::fromUtf8("\xE2\x80\xA6"));
             m_repoPushButton->setToolTip(
-                QStringLiteral("Publishing local commits to your served mirror"));
+                behind > 0
+                    ? QStringLiteral("Syncing both ways: publishing to your served "
+                                     "mirror and pulling %1 incoming").arg(behind)
+                    : QStringLiteral("Publishing local commits to your served mirror"));
             reveal();
             return;
         }
         if (unpublished <= 0)
             return;
-        // Compact label: just "Publish N" (the full "N local commits …" wording
-        // stays in the tooltip). It sits in a small button above the tab bar.
-        // Reset the icon explicitly: the same button doubles as the plain-git
-        // "Sync" affordance below, which swaps in the sync octicon.
-        setOcticon(m_repoPushButton, "upload", 14);
-        m_repoPushButton->setText(
-            QStringLiteral("Publish %1").arg(unpublished));
+        setOcticon(m_repoPushButton, "sync", 14);
+        m_repoPushButton->setText(QString::fromUtf8("Sync changes") + arrow(unpublished, behind));
         m_repoPushButton->setToolTip(
-            QStringLiteral("Publish %1 local commit%2 from %3/%4 to your served "
-                           "mirror so the network can fetch them")
+            QStringLiteral("Sync %1 local commit%2 from %3/%4 with your served "
+                           "mirror%5")
                 .arg(unpublished)
                 .arg(unpublished == 1 ? QString() : QStringLiteral("s"),
-                     repo.owner, repo.name));
+                     repo.owner, repo.name,
+                     behind > 0 ? QStringLiteral(" (and pull %1 incoming)").arg(behind)
+                                : QString()));
         m_repoPushButton->setEnabled(true);
         reveal();
         return;
@@ -7409,18 +7490,20 @@ void MainWindow::updateRepoPushButton()
     const int ahead = QString::fromUtf8(countOut).trimmed().toInt();
     if (ahead <= 0)
         return;
+    const int behind = behindCount(repo);
 
-    // A repo with a real upstream remote (origin/main, …). Present it as a
-    // "Sync" button — the same network terminology used everywhere else in the
-    // app — rather than a raw "Push N commits to origin/main". The count and
-    // target move to the tooltip; pushCurrentRepoUpstream still does the push.
+    // A repo with a real upstream remote (origin/main, …). "Sync changes" with a
+    // direction arrow — ⇅ when there's also incoming to pull. The count and target
+    // move to the tooltip; pushCurrentRepoUpstream still does the push.
     setOcticon(m_repoPushButton, "sync", 14);
-    m_repoPushButton->setText(QStringLiteral("Sync"));
+    m_repoPushButton->setText(QString::fromUtf8("Sync changes") + arrow(ahead, behind));
     m_repoPushButton->setToolTip(
-        QStringLiteral("Sync %1 local commit%2 from %3/%4 to %5")
+        QStringLiteral("Sync %1 local commit%2 from %3/%4 to %5%6")
             .arg(ahead)
             .arg(ahead == 1 ? QString() : QStringLiteral("s"),
-                 repo.owner, repo.name, upstream));
+                 repo.owner, repo.name, upstream,
+                 behind > 0 ? QStringLiteral(" (and pull %1 incoming)").arg(behind)
+                            : QString()));
     m_repoPushButton->setEnabled(true);
     reveal();
 }
@@ -10186,25 +10269,18 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoPushButton->setObjectName("primaryButton");
     m_repoPushButton->setCursor(Qt::PointingHandCursor);
     m_repoPushButton->hide();
-    // A bit smaller than a standard primary button: it sits just above the tab
-    // bar, so trim the padding/font while keeping the green primaryButton look.
     m_repoPushButton->setStyleSheet(
         QStringLiteral("QPushButton#primaryButton{padding:3px 10px;font-size:12px;}"));
-    setOcticon(m_repoPushButton, "upload", 14);
+    setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-
-    // "Publish N" sits in its own row right above the tab bar, left-aligned over
-    // the Code/Commits tabs. The row hides itself when there is nothing to
-    // publish so it leaves no empty gap (see updateRepoPushButton).
-    auto *publishRow = new QHBoxLayout;
-    publishRow->setContentsMargins(12, 0, 12, 0);
-    publishRow->setSpacing(0);
-    publishRow->addWidget(m_repoPushButton);
-    publishRow->addStretch();
-    m_repoPublishBar = new QWidget;
-    m_repoPublishBar->setLayout(publishRow);
-    m_repoPublishBar->hide();
+    // The sync button lives at the right end of the tab row, whose height is fixed
+    // by the tabs. Showing/hiding it as sync state changes (a push, or a mirror
+    // picking it up) therefore never shifts the tab content below it — that shift
+    // is what read as the whole view "resizing" on small screens, most visibly on
+    // the Mirror nodes screen.
+    tabRow->addWidget(m_repoPushButton);
+    m_repoPublishBar = nullptr; // no separate row: the button sits in the tab row
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -10294,7 +10370,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addLayout(headerRow);
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
-    layout->addWidget(m_repoPublishBar);
     layout->addWidget(tabBar);
     layout->addWidget(m_repoDetailStack, 1);
     return page;
@@ -12785,6 +12860,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFixClaudeButton = new QPushButton("Fix with Claude");
     m_pullFixOpenAiButton = new QPushButton("Fix with OpenAI");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
+    m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullReopenButton = new QPushButton("Reopen");
     m_pullDeleteButton = new QPushButton("Delete");
@@ -12793,7 +12869,8 @@ QWidget *MainWindow::buildPullsTab()
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixClaudeButton, m_pullFixOpenAiButton,
-                           m_pullEditFileButton, m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
+                           m_pullEditFileButton, m_pullDeleteFileButton,
+                           m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullLinkIssueButton,
                            m_pullSplitButton}) {
         b->setObjectName("ghostButton");
@@ -12860,6 +12937,12 @@ QWidget *MainWindow::buildPullsTab()
         "branch (the PR stays open, ready to merge)");
     connect(m_pullEditFileButton, &QPushButton::clicked, this,
             &MainWindow::editCurrentPullFile);
+    setOcticon(m_pullDeleteFileButton, "trash", 16);
+    m_pullDeleteFileButton->setToolTip(
+        "Delete the selected file and commit the deletion to this pull request's "
+        "branch (the PR stays open, ready to merge)");
+    connect(m_pullDeleteFileButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentPullFile);
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
@@ -12869,6 +12952,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullFixClaudeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullFixOpenAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
@@ -12923,8 +13007,12 @@ QWidget *MainWindow::buildPullsTab()
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item)
                     renderPullDiff(item->data(Qt::UserRole).toString());
-                if (m_pullEditFileButton && !item)
-                    m_pullEditFileButton->setEnabled(false);
+                if (!item) {
+                    if (m_pullEditFileButton)
+                        m_pullEditFileButton->setEnabled(false);
+                    if (m_pullDeleteFileButton)
+                        m_pullDeleteFileButton->setEnabled(false);
+                }
             });
 
     // ---- Files changed page: file explorer | diff viewer.
@@ -14497,6 +14585,9 @@ void MainWindow::updatePullActionState()
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
                                          m_pullFiles->currentItem());
+    if (m_pullDeleteFileButton)
+        m_pullDeleteFileButton->setEnabled(writable && have && open && m_pullFiles &&
+                                           m_pullFiles->currentItem());
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
     if (m_pullReopenButton) {
@@ -15692,6 +15783,59 @@ void MainWindow::editCurrentPullFile()
         propagateRepoUpdate(m_repoDetailIndex);
     } else {
         store.abortConflictMerge();
+        reloadPulls();
+    }
+}
+
+void MainWindow::deleteCurrentPullFile()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber) {
+            found = true;
+            break;
+        }
+    if (!found)
+        return;
+    const int number = m_currentPullNumber;
+    if (writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath.isEmpty()) {
+        QMessageBox::warning(this, "Delete file",
+                             "This repository is read-only on this node.");
+        return;
+    }
+    QListWidgetItem *item = m_pullFiles ? m_pullFiles->currentItem() : nullptr;
+    if (!item) {
+        QMessageBox::information(this, "Delete file",
+                                 "Select a file from this pull request to delete.");
+        return;
+    }
+    const QString relPath = item->data(Qt::UserRole).toString();
+    if (QMessageBox::warning(
+            this, "Delete file",
+            QStringLiteral("Delete \"%1\" on pull request #%2's branch? The deletion "
+                           "is committed to the PR (which stays open and ready to "
+                           "merge); your base branch is left untouched.")
+                .arg(relPath)
+                .arg(number),
+            QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
+        return;
+
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (store.deletePullFile(number, relPath, &error)) {
+        logSystem(QStringLiteral("Deleted %1 on pull request #%2's branch; it is "
+                                 "updated and ready to merge.")
+                      .arg(relPath)
+                      .arg(number));
+        reloadPulls();
+        propagateRepoUpdate(m_repoDetailIndex);
+    } else {
+        store.abortConflictMerge();
+        QMessageBox::warning(this, "Delete file",
+                             error.isEmpty() ? "Could not delete the file." : error);
         reloadPulls();
     }
 }
@@ -24857,11 +25001,37 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeDiffView->setOpenExternalLinks(false);
     m_worktreeDiffView->setLineWrapMode(QTextEdit::NoWrap);
 
+    // Detail pane: a toolbar with a prominent "Merge into main" for the selected
+    // worktree, over its diff. Mirrors the per-row button but is reachable while
+    // reviewing the changes here (it merges whichever worktree is selected).
+    m_worktreeMergeButton = new QPushButton("Merge into main");
+    m_worktreeMergeButton->setObjectName("primaryButton");
+    m_worktreeMergeButton->setProperty("buttonSize", "sm");
+    m_worktreeMergeButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeMergeButton, "check-circle", 14);
+    m_worktreeMergeButton->setToolTip(
+        "Merge the selected worktree's branch into the default branch");
+    m_worktreeMergeButton->setEnabled(false);
+    connect(m_worktreeMergeButton, &QPushButton::clicked, this, [this] {
+        if (!m_worktreeSelectedBranch.isEmpty())
+            mergeWorktreeIntoMain(m_worktreeSelectedBranch);
+    });
+    auto *detailBar = new QHBoxLayout;
+    detailBar->setContentsMargins(0, 0, 0, 0);
+    detailBar->addStretch();
+    detailBar->addWidget(m_worktreeMergeButton);
+    auto *diffPane = new QWidget;
+    auto *diffPaneLayout = new QVBoxLayout(diffPane);
+    diffPaneLayout->setContentsMargins(0, 0, 0, 0);
+    diffPaneLayout->setSpacing(6);
+    diffPaneLayout->addLayout(detailBar);
+    diffPaneLayout->addWidget(m_worktreeDiffView, 1);
+
     auto *split = new QSplitter(Qt::Horizontal);
     split->setChildrenCollapsible(false);
     split->addWidget(m_worktreesTable);
     split->addWidget(filesPane);
-    split->addWidget(m_worktreeDiffView);
+    split->addWidget(diffPane);
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
@@ -25022,6 +25192,12 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
 
     const QString base = repoDefaultBranch(repoBranches());
+    // Remember the selected worktree's branch and (de)activate the detail merge
+    // button: only a real feature branch (not the default branch) can be merged in.
+    m_worktreeSelectedBranch = branch;
+    if (m_worktreeMergeButton)
+        m_worktreeMergeButton->setEnabled(!branch.isEmpty() && branch != base &&
+                                          repoHasWorkingTree());
     QByteArray out;
     bool ok = false;
     if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
