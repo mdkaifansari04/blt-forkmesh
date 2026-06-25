@@ -1,6 +1,303 @@
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 3f53b22..bd04598 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -264,17 +264,39 @@ async def verify_pull_event(pr):
+ def pull_comment_content(ev):
+     # Mirrors PullStore::contentForSigning. Fields joined by NUL.
+     t = ev.get("type", "")
++    def int_field(name):
++        try:
++            return str(int(ev.get(name, 0)))
++        except (TypeError, ValueError):
++            return "0"
+     if t == "comment":
+         return ev.get("body", "")
+     if t == "review":
+         return "\x00".join([ev.get("state", ""), ev.get("body", "")])
+     if t == "line-comment":
+-        try:
+-            line = str(int(ev.get("line", 0)))
+-        except (TypeError, ValueError):
+-            line = "0"
+         return "\x00".join([
+-            ev.get("path", ""), ev.get("side", ""), line, ev.get("body", ""),
++            ev.get("path", ""), ev.get("side", ""), int_field("line"),
++            ev.get("body", ""),
++        ])
++    if t == "thread-comment":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("path", ""), ev.get("side", ""),
++            int_field("lineStart"), int_field("lineEnd"), ev.get("body", ""),
++            ev.get("suggestionPatch", ""),
++        ])
++    if t == "thread-reply":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("parentId", ""),
++            ev.get("body", ""),
++        ])
++    if t == "thread-state":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("state", ""), ev.get("body", ""),
++        ])
++    if t == "suggestion-state":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("state", ""),
++            ev.get("appliedCommit", ""), ev.get("body", ""),
+         ])
+     return ""
+ 
+@@ -285,8 +307,11 @@ async def verify_pull_comment_event(number, ev):
+     author = ev.get("author", "")
+     signature = ev.get("sig", "")
+     event_type = ev.get("type", "")
+-    if not author or not signature or \
+-            event_type not in ("comment", "review", "line-comment"):
++    allowed_types = (
++        "comment", "review", "line-comment", "thread-comment", "thread-reply",
++        "thread-state", "suggestion-state",
++    )
++    if not author or not signature or event_type not in allowed_types:
+         return False
+     try:
+         ts = int(ev.get("ts", 0))
+diff --git a/cloudflare_worker/tests/test_crypto.py b/cloudflare_worker/tests/test_crypto.py
+index bbecb70..69196a5 100644
+--- a/cloudflare_worker/tests/test_crypto.py
++++ b/cloudflare_worker/tests/test_crypto.py
+@@ -52,15 +52,37 @@ def _sha256_hex(s):
+ def pull_comment_content(ev):
+     # Mirrors entry.py:pull_comment_content / PullStore::contentForSigning.
+     t = ev.get("type", "")
++    def int_field(name):
++        return str(int(ev.get(name, 0)))
+     if t == "comment":
+         return ev.get("body", "")
+     if t == "review":
+         return "\x00".join([ev.get("state", ""), ev.get("body", "")])
+     if t == "line-comment":
+         return "\x00".join([
+-            ev.get("path", ""), ev.get("side", ""), str(int(ev.get("line", 0))),
++            ev.get("path", ""), ev.get("side", ""), int_field("line"),
+             ev.get("body", ""),
+         ])
++    if t == "thread-comment":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("path", ""), ev.get("side", ""),
++            int_field("lineStart"), int_field("lineEnd"), ev.get("body", ""),
++            ev.get("suggestionPatch", ""),
++        ])
++    if t == "thread-reply":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("parentId", ""),
++            ev.get("body", ""),
++        ])
++    if t == "thread-state":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("state", ""), ev.get("body", ""),
++        ])
++    if t == "suggestion-state":
++        return "\x00".join([
++            ev.get("threadId", ""), ev.get("state", ""),
++            ev.get("appliedCommit", ""), ev.get("body", ""),
++        ])
+     return ""
+ 
+ 
+@@ -180,6 +202,44 @@ def main():
+         "forkmesh-pull-comment-v1\nline-comment\n5\nTESTPUB\n2500\n"
+         "a2574c2b392fd0db6b7e4b0d025d4094bb410691dca7686ddf095d63881f4985",
+     )
++    check(
++        "pull thread-comment canonical vector",
++        pull_comment_canonical(
++            5, {"type": "thread-comment", "author": "TESTPUB", "ts": 2600,
++                "threadId": "thread-1", "path": "src/x.cpp", "side": "new",
++                "lineStart": 42, "lineEnd": 44, "body": "Use guard",
++                "suggestionPatch": "@@ -1 +1 @@\n-old\n+new\n"}),
++        "forkmesh-pull-comment-v1\nthread-comment\n5\nTESTPUB\n2600\n"
++        "adbf1313d68a9d32f69734e23b1b7713d6c30dcd77b628513f8b04b5a459fe81",
++    )
++    check(
++        "pull thread-reply canonical vector",
++        pull_comment_canonical(
++            5, {"type": "thread-reply", "author": "TESTPUB", "ts": 2700,
++                "threadId": "thread-1", "parentId": "event-1",
++                "body": "I pushed a fix"}),
++        "forkmesh-pull-comment-v1\nthread-reply\n5\nTESTPUB\n2700\n"
++        "cd9fc0caa43648948f6a976d570191b9a4d85bee1d984a7aacc483a7487196dd",
++    )
++    check(
++        "pull thread-state canonical vector",
++        pull_comment_canonical(
++            5, {"type": "thread-state", "author": "TESTPUB", "ts": 2800,
++                "threadId": "thread-1", "state": "resolved",
++                "body": "resolved after update"}),
++        "forkmesh-pull-comment-v1\nthread-state\n5\nTESTPUB\n2800\n"
++        "b652054bd993fa340a565f6ec3e0c88dc728c8b69d7fdf723acc6bdccc1c07df",
++    )
++    check(
++        "pull suggestion-state canonical vector",
++        pull_comment_canonical(
++            5, {"type": "suggestion-state", "author": "TESTPUB", "ts": 2900,
++                "threadId": "thread-1", "state": "applied",
++                "appliedCommit": "abc123def456",
++                "body": "applied in follow-up"}),
++        "forkmesh-pull-comment-v1\nsuggestion-state\n5\nTESTPUB\n2900\n"
++        "07ce71665f21bcb839faeb956910a9ca369d79167e6f6e52f60c4d01344f3c52",
++    )
+     check(
+         "commit-comment canonical vector",
+         commit_comment_canonical(
+diff --git a/docs/superpowers/plans/2026-06-24-github-grade-pr-review-experience.md b/docs/superpowers/plans/2026-06-24-github-grade-pr-review-experience.md
+new file mode 100644
+index 0000000..ae3b31d
+--- /dev/null
++++ b/docs/superpowers/plans/2026-06-24-github-grade-pr-review-experience.md
+@@ -0,0 +1,140 @@
++# GitHub-Grade PR Review Experience Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
++> Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Build the first production vertical slice of the approved GitHub-grade PR review experience.
++
++**Architecture:** Extend the signed PR event model first, then build a widget-free review folding model, then connect that model to the Qt PR detail UI.
++Worker and Flutter canonical signing are updated with the same event content rules so cross-node review sync remains compatible.
++
++**Tech Stack:** Qt 6 Widgets, C++17, Cloudflare Worker Python, Flutter Dart service code, CMake, existing shell test runner.
++
++---
++
++## Files
++
++- Modify: `qt_client/src/PullStore.h`
++- Modify: `qt_client/src/PullStore.cpp`
++- Create: `qt_client/src/PullReviewModel.h`
++- Create: `qt_client/src/PullReviewModel.cpp`
++- Modify: `qt_client/src/MainWindow.h`
++- Modify: `qt_client/src/MainWindow.cpp`
++- Modify: `qt_client/src/Theme.h`
++- Modify: `qt_client/CMakeLists.txt`
++- Modify: `qt_client/tests/test_crypto.cpp`
++- Modify: `cloudflare_worker/src/entry.py`
++- Modify: `cloudflare_worker/tests/test_crypto.py`
++- Modify: `flutter_app/lib/services/inbox_service.dart`
++
++## Task 1: Signed Review Event Schema
++
++- [ ] **Step 1: Write failing Qt canonical and round-trip tests**
++
++Add `thread-comment`, `thread-reply`, `thread-state`, and `suggestion-state` checks to `qt_client/tests/test_crypto.cpp`.
++The tests must assert exact canonical strings and a PullStore round-trip through event files.
++
++- [ ] **Step 2: Run Qt tests and verify failure**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: compile failure or test failure because the new fields and helpers do not exist yet.
++
++- [ ] **Step 3: Implement PullEvent fields and PullStore helpers**
++
++Extend `PullEvent` with `threadId`, `parentId`, `lineStart`, `lineEnd`, `suggestionPatch`, `targetPath`, and `appliedCommit`.
++Update JSON, frontmatter read/write, signing content, and helper methods for new event types.
++
++- [ ] **Step 4: Run Qt tests and verify pass for Task 1**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: all existing and new Qt tests pass.
++
++## Task 2: Worker and Flutter Canonical Compatibility
++
++- [ ] **Step 1: Write failing Worker canonical tests**
++
++Add the same canonical vectors to `cloudflare_worker/tests/test_crypto.py`.
++The tests should fail until `pull_comment_content()` supports the new event types.
++
++- [ ] **Step 2: Run Worker crypto tests and verify failure**
++
++Run: `python3 cloudflare_worker/tests/test_crypto.py`
++Expected: failures for new pull review event vectors.
++
++- [ ] **Step 3: Implement Worker and Flutter content rules**
++
++Update `cloudflare_worker/src/entry.py` and `flutter_app/lib/services/inbox_service.dart` so all new event types use the same NUL-joined fields as Qt.
++
++- [ ] **Step 4: Run Worker tests and Qt tests**
++
++Run: `python3 cloudflare_worker/tests/test_crypto.py`
++Run: `cd qt_client && ./run.sh test`
++Expected: both pass.
++
++## Task 3: Pull Review Folding Model
++
++- [ ] **Step 1: Write failing model tests**
++
++Add tests in `qt_client/tests/test_crypto.cpp` for a synthetic `PullRequest` with an approval, a changes-requested review, one unresolved thread, one resolved thread, and one suggestion.
++The tests should include per-file unresolved counts and old `line-comment` compatibility.
++
++- [ ] **Step 2: Run Qt tests and verify failure**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: compile failure because `PullReviewModel` does not exist.
++
++- [ ] **Step 3: Implement `PullReviewModel`**
++
++Create `PullReviewModel.h` and `PullReviewModel.cpp`.
++Expose `PullReviewSnapshot buildPullReviewSnapshot(const PullRequest &pr)`.
++Return top-level item counts, thread records, per-file counts, unresolved counts, and suggestion state.
++
++- [ ] **Step 4: Add model to CMake and run Qt tests**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: all Qt tests pass.
++
++## Task 4: Qt Review Summary and Thread UI
++
++- [ ] **Step 1: Write a failing window smoke assertion**
++
++Add a narrow assertion to `qt_client/tests/test_window_resize.cpp` that the PR detail exposes a `pullReviewSummary` widget when a PR is selected.
++
++- [ ] **Step 2: Run Qt tests and verify failure**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: failure because the summary widget is missing.
++
++- [ ] **Step 3: Implement summary and file badges**
++
++Add a `QLabel *m_pullReviewSummary` member.
++Render Review, Checks, Merge, Threads, and Links gates from `PullReviewSnapshot`.
++Update the Files changed list text and tooltip with unresolved thread counts.
++
++- [ ] **Step 4: Implement diff thread actions**
++
++Render `thread-comment`, `thread-reply`, `thread-state`, and suggestion bodies inline below diff anchors.
++Handle `thread:reply:<id>`, `thread:resolve:<id>`, and `thread:unresolve:<id>` anchors from the diff browser.
++Create new line discussions as `thread-comment` events while preserving old `line-comment` display.
++
++- [ ] **Step 5: Run Qt tests**
++
++Run: `cd qt_client && ./run.sh test`
++Expected: all Qt tests pass.
++
++## Task 5: Final Verification
++
++- [ ] **Step 1: Run all touched test suites**
++
++Run: `cd qt_client && ./run.sh test`
++Run: `python3 cloudflare_worker/tests/test_crypto.py`
++
++- [ ] **Step 2: Review diff**
++
++Run: `git diff --stat`
++Run: `git diff --check`
++
++- [ ] **Step 3: Commit intended files**
++
++Use a conventional commit message.
++Do not add co-author metadata.
 diff --git a/docs/superpowers/specs/2026-06-24-github-grade-pr-review-experience-design.md b/docs/superpowers/specs/2026-06-24-github-grade-pr-review-experience-design.md
 new file mode 100644
-index 00000000..27184453
+index 0000000..2718445
 --- /dev/null
 +++ b/docs/superpowers/specs/2026-06-24-github-grade-pr-review-experience-design.md
 @@ -0,0 +1,294 @@
@@ -298,3 +595,726 @@ index 00000000..27184453
 +Reviewer assignment can be added later if ForkMesh introduces ownership or codeowner metadata.
 +Required checks can be added later if repositories define merge policies.
 +Stacked PR awareness can be added later if ForkMesh introduces PR dependencies.
+diff --git a/flutter_app/lib/services/inbox_service.dart b/flutter_app/lib/services/inbox_service.dart
+index e127a13..58df5ac 100644
+--- a/flutter_app/lib/services/inbox_service.dart
++++ b/flutter_app/lib/services/inbox_service.dart
+@@ -171,6 +171,31 @@ class InboxService {
+       case 'line-comment':
+         final line = '${(ev['line'] as num?)?.toInt() ?? 0}';
+         return [ev['path'] ?? '', ev['side'] ?? '', line, ev['body'] ?? ''].join('\x00');
++      case 'thread-comment':
++        final lineStart = '${(ev['lineStart'] as num?)?.toInt() ?? 0}';
++        final lineEnd = '${(ev['lineEnd'] as num?)?.toInt() ?? 0}';
++        return [
++          ev['threadId'] ?? '',
++          ev['path'] ?? '',
++          ev['side'] ?? '',
++          lineStart,
++          lineEnd,
++          ev['body'] ?? '',
++          ev['suggestionPatch'] ?? '',
++        ].join('\x00');
++      case 'thread-reply':
++        return [ev['threadId'] ?? '', ev['parentId'] ?? '', ev['body'] ?? '']
++            .join('\x00');
++      case 'thread-state':
++        return [ev['threadId'] ?? '', ev['state'] ?? '', ev['body'] ?? '']
++            .join('\x00');
++      case 'suggestion-state':
++        return [
++          ev['threadId'] ?? '',
++          ev['state'] ?? '',
++          ev['appliedCommit'] ?? '',
++          ev['body'] ?? '',
++        ].join('\x00');
+       default:
+         return '';
+     }
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 5d7611f..d378d2e 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -34,6 +34,8 @@ set(FORKMESH_APP_SOURCES
+     src/IssueBurnup.cpp
+     src/PullStore.h
+     src/PullStore.cpp
++    src/PullReviewModel.h
++    src/PullReviewModel.cpp
+     src/CommitCommentStore.h
+     src/CommitCommentStore.cpp
+     src/ActionFile.h
+@@ -95,6 +97,8 @@ if(FORKMESH_BUILD_TESTS)
+         src/IssueBurnup.cpp
+         src/PullStore.h
+         src/PullStore.cpp
++        src/PullReviewModel.h
++        src/PullReviewModel.cpp
+         src/CommitCommentStore.h
+         src/CommitCommentStore.cpp
+     )
+diff --git a/qt_client/src/PullReviewModel.cpp b/qt_client/src/PullReviewModel.cpp
+new file mode 100644
+index 0000000..c854e37
+--- /dev/null
++++ b/qt_client/src/PullReviewModel.cpp
+@@ -0,0 +1,136 @@
++#include "PullReviewModel.h"
++
++#include <QHash>
++
++namespace {
++
++QString legacyThreadId(const PullEvent &ev, int index)
++{
++    if (!ev.id.isEmpty())
++        return ev.id;
++    return QStringLiteral("legacy:%1:%2:%3:%4")
++        .arg(ev.path, ev.side)
++        .arg(ev.line)
++        .arg(index);
++}
++
++int ensureThread(QList<PullReviewThread> &threads, QHash<QString, int> &indexById,
++                 const QString &id)
++{
++    const QString key = id.isEmpty()
++                            ? QStringLiteral("thread:%1").arg(threads.size() + 1)
++                            : id;
++    const auto it = indexById.constFind(key);
++    if (it != indexById.constEnd())
++        return it.value();
++    PullReviewThread thread;
++    thread.id = key;
++    threads.append(thread);
++    const int index = threads.size() - 1;
++    indexById.insert(key, index);
++    return index;
++}
++
++void copyAnchor(PullReviewThread &thread, const PullEvent &ev)
++{
++    if (!ev.path.isEmpty())
++        thread.path = ev.path;
++    if (!ev.side.isEmpty())
++        thread.side = ev.side;
++    if (ev.lineStart > 0)
++        thread.lineStart = ev.lineStart;
++    if (ev.lineEnd > 0)
++        thread.lineEnd = ev.lineEnd;
++    if (thread.lineStart == 0 && ev.line > 0)
++        thread.lineStart = ev.line;
++    if (thread.lineEnd == 0 && ev.line > 0)
++        thread.lineEnd = ev.line;
++}
++
++} // namespace
++
++PullReviewSnapshot buildPullReviewSnapshot(const PullRequest &pr)
++{
++    PullReviewSnapshot snapshot;
++    snapshot.reviewSummary = pr.reviewSummary();
++
++    QHash<QString, int> indexById;
++    for (int i = 0; i < pr.events.size(); ++i) {
++        const PullEvent &ev = pr.events.at(i);
++        if (ev.type == QLatin1String("comment") ||
++            ev.type == QLatin1String("review")) {
++            ++snapshot.topLevelItems;
++            continue;
++        }
++
++        if (ev.type == QLatin1String("line-comment")) {
++            const int index =
++                ensureThread(snapshot.threads, indexById, legacyThreadId(ev, i));
++            PullReviewThread &thread = snapshot.threads[index];
++            copyAnchor(thread, ev);
++            thread.events.append(ev);
++            continue;
++        }
++
++        if (ev.type == QLatin1String("thread-comment")) {
++            const int index =
++                ensureThread(snapshot.threads, indexById, ev.threadId);
++            PullReviewThread &thread = snapshot.threads[index];
++            copyAnchor(thread, ev);
++            if (!ev.suggestionPatch.isEmpty())
++                thread.hasSuggestion = true;
++            thread.events.append(ev);
++            continue;
++        }
++
++        if (ev.type == QLatin1String("thread-reply")) {
++            const int index =
++                ensureThread(snapshot.threads, indexById, ev.threadId);
++            snapshot.threads[index].events.append(ev);
++            continue;
++        }
++
++        if (ev.type == QLatin1String("thread-state")) {
++            const int index =
++                ensureThread(snapshot.threads, indexById, ev.threadId);
++            PullReviewThread &thread = snapshot.threads[index];
++            thread.resolved = ev.state == QLatin1String("resolved");
++            thread.events.append(ev);
++            continue;
++        }
++
++        if (ev.type == QLatin1String("suggestion-state")) {
++            const int index =
++                ensureThread(snapshot.threads, indexById, ev.threadId);
++            PullReviewThread &thread = snapshot.threads[index];
++            thread.suggestionState = ev.state;
++            thread.appliedCommit = ev.appliedCommit;
++            thread.events.append(ev);
++            continue;
++        }
++    }
++
++    snapshot.totalThreads = snapshot.threads.size();
++    for (const PullReviewThread &thread : std::as_const(snapshot.threads)) {
++        if (thread.resolved)
++            ++snapshot.resolvedThreads;
++        else
++            ++snapshot.unresolvedThreads;
++        if (thread.hasSuggestion)
++            ++snapshot.suggestions;
++        if (thread.path.isEmpty())
++            continue;
++        PullReviewFileSummary summary = snapshot.files.value(thread.path);
++        summary.path = thread.path;
++        ++summary.totalThreads;
++        if (thread.resolved)
++            ++summary.resolvedThreads;
++        else
++            ++summary.unresolvedThreads;
++        if (thread.hasSuggestion)
++            ++summary.suggestions;
++        snapshot.files.insert(thread.path, summary);
++    }
++
++    return snapshot;
++}
+diff --git a/qt_client/src/PullReviewModel.h b/qt_client/src/PullReviewModel.h
+new file mode 100644
+index 0000000..c7be8dd
+--- /dev/null
++++ b/qt_client/src/PullReviewModel.h
+@@ -0,0 +1,41 @@
++#pragma once
++
++#include "PullStore.h"
++
++#include <QHash>
++#include <QList>
++#include <QString>
++
++struct PullReviewFileSummary {
++    QString path;
++    int totalThreads = 0;
++    int unresolvedThreads = 0;
++    int resolvedThreads = 0;
++    int suggestions = 0;
++};
++
++struct PullReviewThread {
++    QString id;
++    QString path;
++    QString side;
++    int lineStart = 0;
++    int lineEnd = 0;
++    bool resolved = false;
++    bool hasSuggestion = false;
++    QString suggestionState;
++    QString appliedCommit;
++    QList<PullEvent> events;
++};
++
++struct PullReviewSnapshot {
++    QString reviewSummary;
++    int topLevelItems = 0;
++    int totalThreads = 0;
++    int unresolvedThreads = 0;
++    int resolvedThreads = 0;
++    int suggestions = 0;
++    QList<PullReviewThread> threads;
++    QHash<QString, PullReviewFileSummary> files;
++};
++
++PullReviewSnapshot buildPullReviewSnapshot(const PullRequest &pr);
+diff --git a/qt_client/src/PullStore.cpp b/qt_client/src/PullStore.cpp
+index e734aa2..8d8dc45 100644
+--- a/qt_client/src/PullStore.cpp
++++ b/qt_client/src/PullStore.cpp
+@@ -135,6 +135,24 @@ QString stripEdgeNewlines(QString s)
+     return s;
+ }
+ 
++QString encodeFrontMatterBlob(const QString &s)
++{
++    if (s.isEmpty())
++        return QString();
++    return QString::fromLatin1(
++        s.toUtf8().toBase64(QByteArray::Base64UrlEncoding |
++                            QByteArray::OmitTrailingEquals));
++}
++
++QString decodeFrontMatterBlob(const QString &s)
++{
++    if (s.isEmpty())
++        return QString();
++    return QString::fromUtf8(QByteArray::fromBase64(
++        s.toLatin1(), QByteArray::Base64UrlEncoding |
++                         QByteArray::OmitTrailingEquals));
++}
++
+ PullEvent eventFromFrontMatter(const FrontMatter &fm)
+ {
+     PullEvent ev;
+@@ -147,6 +165,13 @@ PullEvent eventFromFrontMatter(const FrontMatter &fm)
+     ev.path = fm.get("path");
+     ev.side = fm.get("side");
+     ev.line = int(fm.num("line"));
++    ev.threadId = fm.get("threadId");
++    ev.parentId = fm.get("parentId");
++    ev.lineStart = int(fm.num("lineStart"));
++    ev.lineEnd = int(fm.num("lineEnd"));
++    ev.suggestionPatch = decodeFrontMatterBlob(fm.get("suggestionPatchB64"));
++    ev.targetPath = fm.get("targetPath");
++    ev.appliedCommit = fm.get("appliedCommit");
+     ev.sig = fm.get("sig");
+     ev.body = fm.body;
+     return ev;
+@@ -161,7 +186,11 @@ QJsonObject PullEvent::toJson() const
+     return {{"type", type},   {"id", id},     {"author", author},
+             {"authorName", authorName}, {"ts", double(ts)}, {"body", body},
+             {"state", state}, {"path", path}, {"side", side},
+-            {"line", line},   {"sig", sig}};
++            {"line", line},   {"threadId", threadId},
++            {"parentId", parentId}, {"lineStart", lineStart},
++            {"lineEnd", lineEnd}, {"suggestionPatch", suggestionPatch},
++            {"targetPath", targetPath}, {"appliedCommit", appliedCommit},
++            {"sig", sig}};
+ }
+ 
+ PullEvent PullEvent::fromJson(const QJsonObject &obj)
+@@ -177,6 +206,13 @@ PullEvent PullEvent::fromJson(const QJsonObject &obj)
+     ev.path = obj.value("path").toString();
+     ev.side = obj.value("side").toString();
+     ev.line = obj.value("line").toInt();
++    ev.threadId = obj.value("threadId").toString();
++    ev.parentId = obj.value("parentId").toString();
++    ev.lineStart = obj.value("lineStart").toInt();
++    ev.lineEnd = obj.value("lineEnd").toInt();
++    ev.suggestionPatch = obj.value("suggestionPatch").toString();
++    ev.targetPath = obj.value("targetPath").toString();
++    ev.appliedCommit = obj.value("appliedCommit").toString();
+     ev.sig = obj.value("sig").toString();
+     return ev;
+ }
+@@ -313,6 +349,16 @@ QString PullStore::contentForSigning(const PullEvent &ev)
+         return ev.state + nul + ev.body;
+     if (ev.type == "line-comment")
+         return ev.path + nul + ev.side + nul + QString::number(ev.line) + nul + ev.body;
++    if (ev.type == "thread-comment")
++        return ev.threadId + nul + ev.path + nul + ev.side + nul +
++               QString::number(ev.lineStart) + nul + QString::number(ev.lineEnd) +
++               nul + ev.body + nul + ev.suggestionPatch;
++    if (ev.type == "thread-reply")
++        return ev.threadId + nul + ev.parentId + nul + ev.body;
++    if (ev.type == "thread-state")
++        return ev.threadId + nul + ev.state + nul + ev.body;
++    if (ev.type == "suggestion-state")
++        return ev.threadId + nul + ev.state + nul + ev.appliedCommit + nul + ev.body;
+     return QString();
+ }
+ 
+@@ -335,6 +381,8 @@ PullEvent PullStore::makeSignedEvent(int number, PullEvent ev) const
+ {
+     if (ev.id.isEmpty())
+         ev.id = newId();
++    if (ev.type == QLatin1String("thread-comment") && ev.threadId.isEmpty())
++        ev.threadId = ev.id;
+     ev.author = m_identity ? m_identity->publicKey() : QString();
+     if (ev.authorName.isEmpty())
+         ev.authorName = m_authorName;
+@@ -389,6 +437,25 @@ bool PullStore::writeEventFile(int number, int index, const PullEvent &ev,
+         lines << "side: " + ev.side;
+         lines << "line: " + QString::number(ev.line);
+     }
++    if (!ev.threadId.isEmpty())
++        lines << "threadId: " + ev.threadId;
++    if (!ev.parentId.isEmpty())
++        lines << "parentId: " + ev.parentId;
++    if (ev.type == "thread-comment") {
++        lines << "path: " + ev.path;
++        lines << "side: " + ev.side;
++        lines << "lineStart: " + QString::number(ev.lineStart);
++        lines << "lineEnd: " + QString::number(ev.lineEnd);
++    }
++    if (!ev.suggestionPatch.isEmpty())
++        lines << "suggestionPatchB64: " + encodeFrontMatterBlob(ev.suggestionPatch);
++    if (!ev.targetPath.isEmpty())
++        lines << "targetPath: " + ev.targetPath;
++    if (!ev.appliedCommit.isEmpty())
++        lines << "appliedCommit: " + ev.appliedCommit;
++    if ((ev.type == "thread-state" || ev.type == "suggestion-state") &&
++        !ev.state.isEmpty())
++        lines << "state: " + ev.state;
+     lines << "sig: " + ev.sig;
+     lines << "---";
+     lines << "";
+@@ -465,6 +532,96 @@ bool PullStore::addLineComment(int number, const QString &path, const QString &s
+         error);
+ }
+ 
++bool PullStore::addThreadComment(int number, const QString &path,
++                                 const QString &side, int lineStart, int lineEnd,
++                                 const QString &body,
++                                 const QString &suggestionPatch, QString *error)
++{
++    if (!canWrite()) {
++        if (error)
++            *error = QStringLiteral("This repository is read-only on this node.");
++        return false;
++    }
++    PullEvent ev;
++    ev.type = "thread-comment";
++    ev.path = path;
++    ev.side = side;
++    ev.lineStart = lineStart;
++    ev.lineEnd = lineEnd > 0 ? lineEnd : lineStart;
++    ev.body = stripEdgeNewlines(body);
++    ev.suggestionPatch = stripEdgeNewlines(suggestionPatch);
++    ev = makeSignedEvent(number, ev);
++    return appendEvent(
++        number, ev,
++        QStringLiteral("pull #%1: thread on %2:%3")
++            .arg(number)
++            .arg(path)
++            .arg(lineStart),
++        error);
++}
++
++bool PullStore::addThreadReply(int number, const QString &threadId,
++                               const QString &parentId, const QString &body,
++                               QString *error)
++{
++    if (!canWrite()) {
++        if (error)
++            *error = QStringLiteral("This repository is read-only on this node.");
++        return false;
++    }
++    PullEvent ev;
++    ev.type = "thread-reply";
++    ev.threadId = threadId;
++    ev.parentId = parentId;
++    ev.body = stripEdgeNewlines(body);
++    ev = makeSignedEvent(number, ev);
++    return appendEvent(number, ev,
++                       QStringLiteral("pull #%1: thread reply").arg(number),
++                       error);
++}
++
++bool PullStore::setThreadState(int number, const QString &threadId,
++                               const QString &state, const QString &body,
++                               QString *error)
++{
++    if (!canWrite()) {
++        if (error)
++            *error = QStringLiteral("This repository is read-only on this node.");
++        return false;
++    }
++    PullEvent ev;
++    ev.type = "thread-state";
++    ev.threadId = threadId;
++    ev.state = state;
++    ev.body = stripEdgeNewlines(body);
++    ev = makeSignedEvent(number, ev);
++    return appendEvent(
++        number, ev,
++        QStringLiteral("pull #%1: thread %2").arg(number).arg(state), error);
++}
++
++bool PullStore::setSuggestionState(int number, const QString &threadId,
++                                   const QString &state,
++                                   const QString &appliedCommit,
++                                   const QString &body, QString *error)
++{
++    if (!canWrite()) {
++        if (error)
++            *error = QStringLiteral("This repository is read-only on this node.");
++        return false;
++    }
++    PullEvent ev;
++    ev.type = "suggestion-state";
++    ev.threadId = threadId;
++    ev.state = state;
++    ev.appliedCommit = appliedCommit;
++    ev.body = stripEdgeNewlines(body);
++    ev = makeSignedEvent(number, ev);
++    return appendEvent(
++        number, ev,
++        QStringLiteral("pull #%1: suggestion %2").arg(number).arg(state), error);
++}
++
+ bool PullStore::applyRemoteEvent(int number, const PullEvent &ev, QString *error)
+ {
+     if (!canWrite())
+diff --git a/qt_client/src/PullStore.h b/qt_client/src/PullStore.h
+index edd5601..239240e 100644
+--- a/qt_client/src/PullStore.h
++++ b/qt_client/src/PullStore.h
+@@ -24,6 +24,15 @@ struct PullEvent {
+     QString path;
+     QString side;
+     int line = 0;
++    // review threads and suggestions: a durable thread id plus optional range,
++    // parent reply, suggestion patch, and applied commit state.
++    QString threadId;
++    QString parentId;
++    int lineStart = 0;
++    int lineEnd = 0;
++    QString suggestionPatch;
++    QString targetPath;
++    QString appliedCommit;
+     QString sig;
+ 
+     QJsonObject toJson() const; // wire format for the relay inbox
+@@ -128,6 +137,21 @@ public:
+     // Append a signed comment anchored to a specific file + line of the diff.
+     bool addLineComment(int number, const QString &path, const QString &side,
+                         int line, const QString &body, QString *error = nullptr);
++    bool addThreadComment(int number, const QString &path, const QString &side,
++                          int lineStart, int lineEnd, const QString &body,
++                          const QString &suggestionPatch = QString(),
++                          QString *error = nullptr);
++    bool addThreadReply(int number, const QString &threadId,
++                        const QString &parentId, const QString &body,
++                        QString *error = nullptr);
++    bool setThreadState(int number, const QString &threadId, const QString &state,
++                        const QString &body = QString(),
++                        QString *error = nullptr);
++    bool setSuggestionState(int number, const QString &threadId,
++                            const QString &state,
++                            const QString &appliedCommit = QString(),
++                            const QString &body = QString(),
++                            QString *error = nullptr);
+     // Merge a signed event received from the relay inbox into pulls/<N>/. The
+     // event must already be signed and verified by the caller.
+     bool applyRemoteEvent(int number, const PullEvent &ev, QString *error = nullptr);
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index ccca663..ca9fa2e 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -2,6 +2,7 @@
+ #include "../src/ForkMeshIdentity.h"
+ #include "../src/IssueBurnup.h"
+ #include "../src/IssueStore.h"
++#include "../src/PullReviewModel.h"
+ #include "../src/PullStore.h"
+ #include "../src/RoomCrypto.h"
+ 
+@@ -217,6 +218,64 @@ int main(int argc, char *argv[])
+     check(PullStore::canonicalString(5, pullLine) == expectedPullLine,
+           "pull line-comment canonical string matches the cross-language vector");
+ 
++    PullEvent pullThread;
++    pullThread.type = "thread-comment";
++    pullThread.author = "TESTPUB";
++    pullThread.ts = 2600;
++    pullThread.threadId = "thread-1";
++    pullThread.path = "src/x.cpp";
++    pullThread.side = "new";
++    pullThread.lineStart = 42;
++    pullThread.lineEnd = 44;
++    pullThread.body = "Use guard";
++    pullThread.suggestionPatch = "@@ -1 +1 @@\n-old\n+new\n";
++    const QByteArray expectedPullThread =
++        "forkmesh-pull-comment-v1\nthread-comment\n5\nTESTPUB\n2600\n"
++        "adbf1313d68a9d32f69734e23b1b7713d6c30dcd77b628513f8b04b5a459fe81";
++    check(PullStore::canonicalString(5, pullThread) == expectedPullThread,
++          "pull thread-comment canonical string matches the cross-language vector");
++
++    PullEvent pullReply;
++    pullReply.type = "thread-reply";
++    pullReply.author = "TESTPUB";
++    pullReply.ts = 2700;
++    pullReply.threadId = "thread-1";
++    pullReply.parentId = "event-1";
++    pullReply.body = "I pushed a fix";
++    const QByteArray expectedPullReply =
++        "forkmesh-pull-comment-v1\nthread-reply\n5\nTESTPUB\n2700\n"
++        "cd9fc0caa43648948f6a976d570191b9a4d85bee1d984a7aacc483a7487196dd";
++    check(PullStore::canonicalString(5, pullReply) == expectedPullReply,
++          "pull thread-reply canonical string matches the cross-language vector");
++
++    PullEvent pullThreadState;
++    pullThreadState.type = "thread-state";
++    pullThreadState.author = "TESTPUB";
++    pullThreadState.ts = 2800;
++    pullThreadState.threadId = "thread-1";
++    pullThreadState.state = "resolved";
++    pullThreadState.body = "resolved after update";
++    const QByteArray expectedPullThreadState =
++        "forkmesh-pull-comment-v1\nthread-state\n5\nTESTPUB\n2800\n"
++        "b652054bd993fa340a565f6ec3e0c88dc728c8b69d7fdf723acc6bdccc1c07df";
++    check(PullStore::canonicalString(5, pullThreadState) == expectedPullThreadState,
++          "pull thread-state canonical string matches the cross-language vector");
++
++    PullEvent pullSuggestionState;
++    pullSuggestionState.type = "suggestion-state";
++    pullSuggestionState.author = "TESTPUB";
++    pullSuggestionState.ts = 2900;
++    pullSuggestionState.threadId = "thread-1";
++    pullSuggestionState.state = "applied";
++    pullSuggestionState.appliedCommit = "abc123def456";
++    pullSuggestionState.body = "applied in follow-up";
++    const QByteArray expectedPullSuggestionState =
++        "forkmesh-pull-comment-v1\nsuggestion-state\n5\nTESTPUB\n2900\n"
++        "07ce71665f21bcb839faeb956910a9ca369d79167e6f6e52f60c4d01344f3c52";
++    check(PullStore::canonicalString(5, pullSuggestionState) ==
++              expectedPullSuggestionState,
++          "pull suggestion-state canonical string matches the cross-language vector");
++
+     // --- Commit comment signing ------------------------------------------
+     CommitComment commitVec;
+     commitVec.author = "TESTPUB";
+@@ -414,16 +473,50 @@ int main(int argc, char *argv[])
+         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
+         check(pulls.addLineComment(pn, "x", "new", 1, "inline note", &err),
+               "PR addLineComment succeeds");
++        check(pulls.addThreadComment(pn, "x", "new", 1, 2, "thread note",
++                                     "@@ -0,0 +1 @@\n+suggested\n", &err),
++              "PR addThreadComment succeeds");
++        check(pulls.addThreadReply(pn, "thread-1", "event-1", "reply note", &err),
++              "PR addThreadReply succeeds");
++        check(pulls.setThreadState(pn, "thread-1", "resolved", "fixed", &err),
++              "PR setThreadState succeeds");
++        check(pulls.setSuggestionState(pn, "thread-1", "applied", "abc123",
++                                       "applied", &err),
++              "PR setSuggestionState succeeds");
+         QList<PullRequest> loadedPulls = pulls.loadAll();
+-        check(!loadedPulls.isEmpty() && loadedPulls.first().events.size() == 3,
++        check(!loadedPulls.isEmpty() && loadedPulls.first().events.size() == 7,
+               "PR conversation events round-trip from NNNN-*.md");
+-        bool sawLine = false;
+-        if (!loadedPulls.isEmpty())
+-            for (const PullEvent &e : loadedPulls.first().events)
++        bool sawLine = false, sawThread = false, sawReply = false;
++        bool sawResolved = false, sawSuggestionApplied = false;
++        if (!loadedPulls.isEmpty()) {
++            for (const PullEvent &e : loadedPulls.first().events) {
+                 if (e.type == "line-comment" && e.path == "x" && e.side == "new" &&
+-                    e.line == 1 && e.body == "inline note")
++                    e.line == 1 && e.body == "inline note") {
+                     sawLine = true;
++                } else if (e.type == "thread-comment" && e.path == "x" &&
++                           e.side == "new" && e.lineStart == 1 && e.lineEnd == 2 &&
++                           e.body == "thread note" &&
++                           e.suggestionPatch.contains("+suggested")) {
++                    sawThread = true;
++                } else if (e.type == "thread-reply" && e.threadId == "thread-1" &&
++                           e.parentId == "event-1" && e.body == "reply note") {
++                    sawReply = true;
++                } else if (e.type == "thread-state" && e.threadId == "thread-1" &&
++                           e.state == "resolved" && e.body == "fixed") {
++                    sawResolved = true;
++                } else if (e.type == "suggestion-state" &&
++                           e.threadId == "thread-1" && e.state == "applied" &&
++                           e.appliedCommit == "abc123") {
++                    sawSuggestionApplied = true;
++                }
++            }
++        }
+         check(sawLine, "line-comment round-trips with path/side/line");
++        check(sawThread, "thread-comment round-trips with anchor and suggestion");
++        check(sawReply, "thread-reply round-trips with thread and parent");
++        check(sawResolved, "thread-state round-trips with resolved state");
++        check(sawSuggestionApplied,
++              "suggestion-state round-trips with applied commit");
+         check(!loadedPulls.isEmpty() &&
+                   loadedPulls.first().reviewSummary() == "approved",
+               "PR review summary folds to approved");
+@@ -442,6 +535,81 @@ int main(int argc, char *argv[])
+                   loadedPulls.first().reviewSummary() == "changes_requested",
+               "a later changes-requested review supersedes approval");
+ 
++        PullRequest reviewPr;
++        reviewPr.number = 99;
++        PullEvent approvingReview;
++        approvingReview.type = "review";
++        approvingReview.author = "reviewer-a";
++        approvingReview.state = "approved";
++        approvingReview.ts = 100;
++        PullEvent blockingReview;
++        blockingReview.type = "review";
++        blockingReview.author = "reviewer-b";
++        blockingReview.state = "changes_requested";
++        blockingReview.ts = 110;
++        PullEvent openThread;
++        openThread.type = "thread-comment";
++        openThread.id = "event-open";
++        openThread.threadId = "thread-open";
++        openThread.path = "src/a.cpp";
++        openThread.side = "new";
++        openThread.lineStart = 10;
++        openThread.lineEnd = 12;
++        openThread.body = "please guard this";
++        openThread.suggestionPatch = "@@ -10 +10 @@\n-old\n+new\n";
++        openThread.ts = 120;
++        PullEvent openReply;
++        openReply.type = "thread-reply";
++        openReply.threadId = "thread-open";
++        openReply.parentId = "event-open";
++        openReply.body = "reply";
++        openReply.ts = 130;
++        PullEvent appliedSuggestion;
++        appliedSuggestion.type = "suggestion-state";
++        appliedSuggestion.threadId = "thread-open";
++        appliedSuggestion.state = "applied";
++        appliedSuggestion.appliedCommit = "abc123";
++        appliedSuggestion.ts = 140;
++        PullEvent resolvedThread;
++        resolvedThread.type = "thread-comment";
++        resolvedThread.id = "event-resolved";
++        resolvedThread.threadId = "thread-resolved";
++        resolvedThread.path = "src/a.cpp";
++        resolvedThread.side = "old";
++        resolvedThread.lineStart = 20;
++        resolvedThread.lineEnd = 20;
++        resolvedThread.body = "remove this";
++        resolvedThread.ts = 150;
++        PullEvent resolvedState;
++        resolvedState.type = "thread-state";
++        resolvedState.threadId = "thread-resolved";
++        resolvedState.state = "resolved";
++        resolvedState.ts = 160;
++        PullEvent legacyLine;
++        legacyLine.type = "line-comment";
++        legacyLine.path = "src/b.cpp";
++        legacyLine.side = "new";
++        legacyLine.line = 5;
++        legacyLine.body = "legacy inline note";
++        legacyLine.ts = 170;
++        reviewPr.events = {approvingReview, blockingReview, openThread,
++                           openReply, appliedSuggestion, resolvedThread,
++                           resolvedState, legacyLine};
++        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(reviewPr);
++        check(snapshot.reviewSummary == "changes_requested",
++              "review model folds latest blocking review state");
++        check(snapshot.totalThreads == 3 && snapshot.unresolvedThreads == 2 &&
++                  snapshot.resolvedThreads == 1,
++              "review model counts resolved and unresolved threads");
++        check(snapshot.suggestions == 1,
++              "review model counts suggested changes");
++        check(snapshot.files.value("src/a.cpp").totalThreads == 2 &&
++                  snapshot.files.value("src/a.cpp").unresolvedThreads == 1,
++              "review model folds per-file thread counts");
++        check(snapshot.files.value("src/b.cpp").totalThreads == 1 &&
++                  snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
++              "review model treats legacy line-comments as unresolved threads");
++
+         // --- CommitCommentStore round-trip -------------------------------
+         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
+         CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
