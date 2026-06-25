@@ -5,7 +5,7 @@ title: Native Claude Code IDE integration: have the app act as the IDE the claud
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 1
 progress: 0
 assignees: []
 createdAt: 1782335051280
