@@ -2695,6 +2695,29 @@ void fitFileListToWidestEntry(QListWidget *list, int minW = 180, int maxW = 520)
     list->setMinimumWidth(qBound(minW, widest + chrome, maxW));
 }
 
+// Same idea for the Source Control file tree (column 0 holds the full relative
+// path), so the changes panel opens wide enough that filenames aren't clipped.
+// Items live one level under their group header, hence the 2x indentation.
+void fitTreeToWidestEntry(QTreeWidget *tree, int minW = 240, int maxW = 620)
+{
+    if (!tree)
+        return;
+    const QFontMetrics fm(tree->fontMetrics());
+    const int indent = tree->indentation();
+    int widest = 0;
+    for (int g = 0; g < tree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *grp = tree->topLevelItem(g);
+        for (int c = 0; c < grp->childCount(); ++c)
+            widest = qMax(widest, fm.horizontalAdvance(grp->child(c)->text(0))
+                                      + 2 * indent + 24); // indents + file icon
+    }
+    if (widest == 0)
+        return;
+    const int chrome =
+        16 + tree->columnWidth(1) + tree->verticalScrollBar()->sizeHint().width();
+    tree->setMinimumWidth(qBound(minW, widest + chrome, maxW));
+}
+
 // Inline octicon for rich-text QLabels: a tinted SVG rendered to a base64 PNG
 // data URI so it can sit next to text in setText() HTML.
 QString octiconMarkup(const QString &name, int size,
@@ -11042,10 +11065,19 @@ QWidget *MainWindow::buildSourceControlPanel()
         "(or push to the upstream branch).");
     connect(m_scmCommitPushButton, &QPushButton::clicked, this,
             &MainWindow::scmCommitAndPush);
+    m_scmStageCommitPushButton = new QPushButton("Stage all, commit & push");
+    m_scmStageCommitPushButton->setObjectName("primaryButton");
+    m_scmStageCommitPushButton->setToolTip(
+        "Stage every change, commit them, then publish to the network mirror "
+        "(or push to the upstream branch) — in one click.");
+    connect(m_scmStageCommitPushButton, &QPushButton::clicked, this,
+            &MainWindow::scmStageAllCommitAndPush);
     for (QPushButton *b : {m_scmCopyButton, m_scmStageAllButton,
                            m_scmUnstageAllButton, m_scmDiscardAllButton,
-                           m_scmCommitButton, m_scmCommitPushButton}) {
-        if (b != m_scmCommitButton && b != m_scmCommitPushButton)
+                           m_scmCommitButton, m_scmCommitPushButton,
+                           m_scmStageCommitPushButton}) {
+        if (b != m_scmCommitButton && b != m_scmCommitPushButton &&
+            b != m_scmStageCommitPushButton)
             b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -11066,6 +11098,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmDiscardAllButton);
     composeRow->addWidget(m_scmCommitButton);
     composeRow->addWidget(m_scmCommitPushButton);
+    composeRow->addWidget(m_scmStageCommitPushButton);
     root->addLayout(composeRow);
 
     auto *header = new QHBoxLayout;
@@ -11112,7 +11145,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setObjectName("fileTree");
     m_scmTree->setColumnCount(2);
     m_scmTree->setHeaderHidden(true);
-    m_scmTree->setMinimumWidth(220);
+    m_scmTree->setMinimumWidth(240);
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setStretchLastSection(false);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -11140,7 +11173,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     bodySplit->addWidget(m_scmDiff);
     bodySplit->setStretchFactor(0, 0);
     bodySplit->setStretchFactor(1, 1);
-    bodySplit->setSizes({260, 520});
+    bodySplit->setSizes({360, 520});
     root->addWidget(bodySplit, 1);
 
     m_scmEmptyNote =
@@ -11181,6 +11214,8 @@ void MainWindow::refreshSourceControl()
             m_scmCommitButton->setEnabled(false);
         if (m_scmCommitPushButton)
             m_scmCommitPushButton->setEnabled(false);
+        if (m_scmStageCommitPushButton)
+            m_scmStageCommitPushButton->setEnabled(false);
         if (m_scmGenerateButton)
             m_scmGenerateButton->setEnabled(false);
         return;
@@ -11346,6 +11381,9 @@ void MainWindow::refreshSourceControl()
     };
     addGroup("Staged Changes", staged, /*stagedGroup=*/true);
     addGroup("Changes", changes, /*stagedGroup=*/false);
+    // Widen the tree so the full relative paths are always visible (capped so the
+    // diff still has room); the user can drag the splitter wider from there.
+    fitTreeToWidestEntry(m_scmTree);
 
     const int total = staged.size() + changes.size();
     if (m_scmCountLabel)
@@ -11355,6 +11393,8 @@ void MainWindow::refreshSourceControl()
         m_scmCommitButton->setEnabled(anything);
     if (m_scmCommitPushButton)
         m_scmCommitPushButton->setEnabled(anything);
+    if (m_scmStageCommitPushButton)
+        m_scmStageCommitPushButton->setEnabled(anything);
     if (m_scmGenerateButton) {
         // Enable Generate when there are current changes, OR when the
         // duration dropdown covers committed history (past hour / all day)
@@ -11640,6 +11680,28 @@ void MainWindow::scmCommitAndPush()
     // failure (empty message, git error) itself. pushCurrentRepoUpstream() then
     // publishes to the served network mirror or pushes to the upstream branch,
     // matching the "Publish N" button's behaviour.
+    if (performScmCommit())
+        pushCurrentRepoUpstream();
+}
+
+void MainWindow::scmStageAllCommitAndPush()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || !repoHasWorkingTree())
+        return;
+    // Check the message before staging, so a missing one doesn't leave everything
+    // staged for nothing (performScmCommit re-checks once the commit runs).
+    if (!m_scmMessage || m_scmMessage->text().trimmed().isEmpty()) {
+        QMessageBox::information(this, "Commit", "Enter a commit message first.");
+        return;
+    }
+    QString err;
+    if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err)) {
+        QMessageBox::warning(this, "Stage all",
+                             err.isEmpty() ? "git add failed." : err);
+        return;
+    }
+    refreshSourceControl();
     if (performScmCommit())
         pushCurrentRepoUpstream();
 }
