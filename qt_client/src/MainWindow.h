@@ -1,6 +1,8 @@
 #pragma once
 
 #include "ChatBackend.h"
+#include "DiscussionInboxBackoff.h"
+#include "DiscussionStore.h"
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
 #include "PullStore.h"
@@ -416,6 +418,22 @@ private:
     QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
 
+    // Discussions tab (signed repository discussions with inbox fallback).
+    QWidget *buildDiscussionsTab();
+    DiscussionStore discussionStoreForCurrentRepo() const;
+    void reloadDiscussions();
+    void showDiscussion(int number);
+    void renderDiscussionThread(const Discussion &discussion);
+    void updateDiscussionActionState();
+    void createDiscussionDialog();
+    void postDiscussionComment();
+    void submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
+                                      const QString &titleIfNew = QString());
+    QUrl discussionsApiUrl(const RepositoryRecord &repo) const;
+    void syncDiscussionsInbox();
+    void drainDiscussionsInboxFor(RepositoryRecord repo, bool interactive);
+    void setDiscussionInlineNotice(const QString &message, bool isError = false);
+
     // Pull requests tab (cross-node, patch-based) with explorer + diff viewer.
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
@@ -643,6 +661,7 @@ private:
     void updateRepoCodeSize();
     void updateRepoCommitCount();
     void updateRepoIssueCount();
+    void updateRepoDiscussionCount();
     void updateRepoPullCount();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
@@ -1424,6 +1443,7 @@ private:
     QPushButton *m_repoCommitsTab = nullptr;
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
+    QPushButton *m_repoDiscussionsTab = nullptr;
     QPushButton *m_repoAgentsTab = nullptr;
     // Floating strip of slowly-spinning provider marks shown just above the
     // Agents tab while agents are busy (up to 5 visible, scroll for more).
@@ -1643,6 +1663,25 @@ private:
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+
+    // Discussions tab
+    QTableWidget *m_discussionTable = nullptr;
+    QLineEdit *m_discussionSearch = nullptr;
+    QComboBox *m_discussionCategoryFilter = nullptr;
+    QPushButton *m_discussionNewButton = nullptr;
+    QPushButton *m_discussionSyncButton = nullptr;
+    QLabel *m_discussionTitle = nullptr;
+    QLabel *m_discussionMeta = nullptr;
+    QLabel *m_discussionInlineNotice = nullptr;
+    QScrollArea *m_discussionThreadScroll = nullptr;
+    QWidget *m_discussionThreadContainer = nullptr;
+    QVBoxLayout *m_discussionThreadLayout = nullptr;
+    MarkdownEditor *m_discussionComposer = nullptr;
+    QPushButton *m_discussionCommentButton = nullptr;
+    QLabel *m_discussionCategorySummary = nullptr;
+    QList<Discussion> m_currentDiscussions;
+    int m_currentDiscussionNumber = -1;
+    DiscussionInboxBackoff m_discussionInboxBackoff;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group

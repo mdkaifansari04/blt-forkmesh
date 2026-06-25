@@ -103,6 +103,28 @@ def commit_comment_canonical(sha, c):
     )
 
 
+def discussion_event_content(ev):
+    # Mirrors entry.py:discussion_event_content / DiscussionStore::contentForSigning.
+    t = ev.get("type", "")
+    if t == "open":
+        return "\x00".join([
+            ev.get("title", ""), ev.get("body", ""), ev.get("category", "")
+        ])
+    if t == "comment":
+        return ev.get("body", "")
+    return ""
+
+
+def discussion_event_canonical(number, ev):
+    # Mirrors entry.py:verify_discussion_event canonical construction.
+    return (
+        "forkmesh-discussion-event-v1\n" + ev.get("type", "") + "\n" +
+        str(int(number)) + "\n" + ev.get("author", "") + "\n" +
+        str(int(ev.get("ts", 0))) + "\n" +
+        _sha256_hex(discussion_event_content(ev))
+    )
+
+
 # --- Test runner -------------------------------------------------------------
 
 _failures = []
@@ -246,6 +268,32 @@ def main():
             "abc123", {"author": "TESTPUB", "ts": 3000, "body": "Nice"}),
         "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
         "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060",
+    )
+    check(
+        "discussion open canonical vector",
+        discussion_event_canonical(
+            1, {"type": "open", "author": "TESTPUB", "ts": 1000,
+                "title": "Welcome", "category": "Announcements",
+                "body": "Hello discussion"}),
+        "forkmesh-discussion-event-v1\nopen\n1\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2",
+    )
+    check(
+        "discussion inbox-open canonical vector",
+        discussion_event_canonical(
+            0, {"type": "open", "author": "TESTPUB", "ts": 1000,
+                "title": "Welcome", "category": "Announcements",
+                "body": "Hello discussion"}),
+        "forkmesh-discussion-event-v1\nopen\n0\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2",
+    )
+    check(
+        "discussion comment canonical vector",
+        discussion_event_canonical(
+            1, {"type": "comment", "author": "TESTPUB", "ts": 2000,
+                "body": "Reply body"}),
+        "forkmesh-discussion-event-v1\ncomment\n1\nTESTPUB\n2000\n"
+        "b87e74db2baf019fb26d1a764aa329723024c6be7f13e5a92a60690b301bc3e9",
     )
     # Host-auth token canonical — must match the client signer + the C++ vector.
     check(

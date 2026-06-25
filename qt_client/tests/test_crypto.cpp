@@ -1,6 +1,8 @@
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
+#include "../src/DiscussionInboxBackoff.h"
+#include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
@@ -306,6 +308,58 @@ int main(int argc, char *argv[])
               expectedPullSuggestionState,
           "pull suggestion-state canonical string matches the cross-language vector");
 
+    // --- Discussion event signing ---------------------------------------
+    // Pin the canonical byte format so the C++ client and worker verifier
+    // stay byte-identical. The discussion number is bound.
+    DiscussionEvent openDiscussion;
+    openDiscussion.type = "open";
+    openDiscussion.author = "TESTPUB";
+    openDiscussion.ts = 1000;
+    openDiscussion.title = "Welcome";
+    openDiscussion.category = "Announcements";
+    openDiscussion.body = "Hello discussion";
+    const QByteArray expectedDiscussionOpen =
+        "forkmesh-discussion-event-v1\nopen\n1\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2";
+    check(DiscussionStore::canonicalString(1, openDiscussion) ==
+              expectedDiscussionOpen,
+          "discussion open canonical string matches the worker vector");
+    const QByteArray expectedDiscussionInboxOpen =
+        "forkmesh-discussion-event-v1\nopen\n0\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2";
+    check(DiscussionStore::canonicalString(0, openDiscussion) ==
+              expectedDiscussionInboxOpen,
+          "discussion inbox-open canonical string matches the worker vector");
+
+    DiscussionEvent discussionComment;
+    discussionComment.type = "comment";
+    discussionComment.author = "TESTPUB";
+    discussionComment.ts = 2000;
+    discussionComment.body = "Reply body";
+    const QByteArray expectedDiscussionComment =
+        "forkmesh-discussion-event-v1\ncomment\n1\nTESTPUB\n2000\n"
+        "b87e74db2baf019fb26d1a764aa329723024c6be7f13e5a92a60690b301bc3e9";
+    check(DiscussionStore::canonicalString(1, discussionComment) ==
+              expectedDiscussionComment,
+          "discussion comment canonical string matches the worker vector");
+
+    DiscussionInboxBackoff inboxBackoff;
+    const QString discussionInboxKey =
+        "https://forkmesh.com/api/repo/alice/project/discussions";
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 1000),
+          "discussion inbox sync starts without a capability backoff");
+    inboxBackoff.markUnsupported(discussionInboxKey, 1000);
+    check(inboxBackoff.shouldBackOff(discussionInboxKey, 1000),
+          "discussion inbox 404 backs off repeated sync attempts");
+    check(inboxBackoff.shouldBackOff(discussionInboxKey, 1000 + 599999),
+          "discussion inbox backoff lasts for the cooldown window");
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 1000 + 600000),
+          "discussion inbox backoff expires after the cooldown window");
+    inboxBackoff.markUnsupported(discussionInboxKey, 2000);
+    inboxBackoff.clear(discussionInboxKey);
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 2000),
+          "successful discussion inbox sync clears the unsupported backoff");
+
     // --- Commit comment signing ------------------------------------------
     CommitComment commitVec;
     commitVec.author = "TESTPUB";
@@ -564,6 +618,28 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
+
+        // --- DiscussionStore round-trip ---------------------------------
+        DiscussionStore discussions(tmp.path(), QString(), &identity, "tester");
+        const int dn = discussions.createDiscussion(
+            "Welcome", "Hello **discussion**", "Announcements", &err);
+        check(dn == 1, "createDiscussion returns the first discussion number");
+        check(discussions.addComment(dn, "first reply", &err),
+              "discussion addComment succeeds");
+        QList<Discussion> loadedDiscussions = discussions.loadAll();
+        check(!loadedDiscussions.isEmpty() &&
+                  loadedDiscussions.first().title == "Welcome" &&
+                  loadedDiscussions.first().category == "Announcements" &&
+                  loadedDiscussions.first().events.size() == 2,
+              "discussion loads back with title, category and comments");
+        DiscussionEvent remoteComment;
+        remoteComment.type = "comment";
+        remoteComment.body = "remote reply";
+        remoteComment = discussions.makeSignedEvent(dn, remoteComment);
+        check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
+              "discussion remote comment applies");
+        check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
+              "discussion remote comment reapply is idempotent");
 
         PullRequest reviewPr;
         reviewPr.number = 99;
