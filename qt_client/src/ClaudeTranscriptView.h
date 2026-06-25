@@ -9,6 +9,7 @@ class QVBoxLayout;
 class QWidget;
 class QLabel;
 class QPropertyAnimation;
+class QResizeEvent;
 class Collapsible;
 
 // Renders a Claude Code session as a native, extension-style chat transcript by
@@ -40,11 +41,15 @@ signals:
     // Running totals as the session spends them (assistant usage + result).
     void statsChanged(qint64 tokens, double costUsd);
 
+protected:
+    // Keep the bottom spacer tall enough that the newest card can scroll to the
+    // top of the viewport (chat-style "latest pinned up").
+    void resizeEvent(QResizeEvent *e) override;
+
 private:
     void applyScheme();
-    void addRow(QWidget *card, bool animate = true);
-    bool isAtBottom() const;
-    void scrollToBottomSoon();
+    void addRow(QWidget *card);
+    void scrollToNewCard(QWidget *card);
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
     QString accentFor(const QString &toolName) const;
@@ -74,6 +79,7 @@ private:
     Palette m_p;
     QWidget *m_container = nullptr;
     QVBoxLayout *m_col = nullptr;
+    QWidget *m_bottomSpacer = nullptr; // grows to a viewport height (see resizeEvent)
 
     struct ToolCard {
         Collapsible *card = nullptr;
