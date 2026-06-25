@@ -1731,6 +1731,9 @@ private:
     QLabel *m_agentApiKeyStatus = nullptr;
     QLabel *m_agentClaudeSpend = nullptr;
     QLabel *m_agentClaudeStatus = nullptr;
+    // Remaining API credits fetched from each provider.
+    QLabel *m_agentOpenAiCredit = nullptr;
+    QLabel *m_agentClaudeCredit = nullptr;
     // Combined OpenAI + Claude month-to-date spend. The doubles hold the last
     // known numeric USD figure per provider (NaN = not yet known) so the total
     // can be recomputed whenever either side refreshes.

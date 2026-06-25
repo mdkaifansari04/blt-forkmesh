@@ -4,7 +4,7 @@ number: 4
 title: Agent: issue #201 show the claude and open ai remaining credits for the api usage in agents
 base: main
 head: agent/issue-201-claude-api-2
-status: open
+status: merged
 ts: 1782349139029
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
