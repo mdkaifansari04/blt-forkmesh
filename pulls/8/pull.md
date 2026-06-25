@@ -4,7 +4,7 @@ number: 8
 title: Agent: issue #215 even if the pr says merged have a reopen button please on the qt app
 base: main
 head: agent/issue-215-claude-api-7
-status: open
+status: merged
 ts: 1782351696719
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
