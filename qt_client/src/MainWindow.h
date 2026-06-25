@@ -636,6 +636,8 @@ private:
     QString repoDefaultBranch(const QStringList &branches) const;
     QWidget *buildBranchesTab();
     void loadBranchesPanel();
+    QWidget *buildWorktreesTab();
+    void loadWorktreesPanel();
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1383,6 +1385,10 @@ private:
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
     int m_insightsTabIndex = -1; // index of the Insights page
     int m_branchesTabIndex = -1; // index of the Branches page
+    int m_worktreesTabIndex = -1; // index of the Worktrees page (next to Branches)
+    QPushButton *m_repoWorktreesTab = nullptr; // handle for the Worktrees (N) badge
+    QTableWidget *m_worktreesTable = nullptr;
+    QLabel *m_worktreesSummary = nullptr;
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_settingsTabIndex = -1; // index of the Settings page
