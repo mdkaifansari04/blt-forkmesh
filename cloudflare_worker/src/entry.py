@@ -5621,6 +5621,22 @@ class Default(WorkerEntrypoint):
                 }
             )
 
+        # Build/version marker for deploy verification. deploy.sh stamps BUILD_REV
+        # (the git rev being shipped) as a Worker var on every production deploy and
+        # then polls this endpoint: if the live rev never flips to the one it just
+        # built, the upload didn't actually take effect on this origin (e.g. it hit
+        # the wrong Cloudflare account — the account drift that let stale code keep
+        # serving while the deploy reported success), and the script aborts loudly
+        # instead of reporting a phantom success.
+        if url.path in ("/api/version", "/api/version/"):
+            return json_response(
+                {
+                    "ok": True,
+                    "rev": str(getattr(self.env, "BUILD_REV", "") or "dev"),
+                    "now": Date.now(),
+                }
+            )
+
         # Cached aggregate stats for the homepage/network page. Served before the
         # per-repo handlers so a burst of visitors collapses to one computation
         # per colo per TTL instead of a Durable Object fan-out per page view.

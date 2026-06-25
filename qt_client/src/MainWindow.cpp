@@ -24216,7 +24216,49 @@ QWidget *MainWindow::buildWorktreesTab()
                 if (QTableWidgetItem *it = m_worktreesTable->item(row, 1))
                     QDesktopServices::openUrl(QUrl::fromLocalFile(it->text()));
             });
-    layout->addWidget(m_worktreesTable, 1);
+    // Selecting a worktree previews its changes vs the default branch.
+    connect(m_worktreesTable, &QTableWidget::currentCellChanged, this,
+            [this](int row, int, int, int) {
+                QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+                QTableWidgetItem *p = m_worktreesTable->item(row, 1);
+                showWorktreeDiff(b ? b->data(Qt::UserRole).toString() : QString(),
+                                 p ? p->text() : QString());
+            });
+
+    // File-change list + diff viewer beside the table (same pattern as Branches).
+    m_worktreeFilesSummary = new QLabel;
+    m_worktreeFilesSummary->setObjectName("sectionLabel");
+    m_worktreeFilesSummary->setTextFormat(Qt::RichText);
+    m_worktreeFileList = new QListWidget;
+    m_worktreeFileList->setObjectName("overviewList");
+    m_worktreeFileList->setMinimumWidth(170);
+    connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item && m_worktreeDiffView)
+                    m_worktreeDiffView->scrollToAnchor(item->data(Qt::UserRole).toString());
+            });
+    auto *filesPane = new QWidget;
+    auto *filesLayout = new QVBoxLayout(filesPane);
+    filesLayout->setContentsMargins(0, 0, 0, 0);
+    filesLayout->setSpacing(6);
+    filesLayout->addWidget(m_worktreeFilesSummary);
+    filesLayout->addWidget(m_worktreeFileList, 1);
+
+    m_worktreeDiffView = new QTextBrowser;
+    m_worktreeDiffView->setObjectName("diffView");
+    m_worktreeDiffView->setOpenExternalLinks(false);
+    m_worktreeDiffView->setLineWrapMode(QTextEdit::NoWrap);
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
+    split->addWidget(m_worktreesTable);
+    split->addWidget(filesPane);
+    split->addWidget(m_worktreeDiffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 0);
+    split->setStretchFactor(2, 1);
+    split->setSizes({560, 180, 760});
+    layout->addWidget(split, 1);
     return page;
 }
 
@@ -24277,6 +24319,7 @@ void MainWindow::loadWorktreesPanel()
         auto *bItem = new QTableWidgetItem(branchLabel);
         bItem->setIcon(themedOcticon(isMain ? "check-circle" : "git-branch",
                                      QColor(isMain ? "#3fb950" : "#8b949e"), 14));
+        bItem->setData(Qt::UserRole, wt.branch); // real branch for diff/merge
         m_worktreesTable->setItem(row, 0, bItem);
         m_worktreesTable->setItem(row, 1, new QTableWidgetItem(wt.path));
 
@@ -24302,6 +24345,25 @@ void MainWindow::loadWorktreesPanel()
         connect(openBtn, &QPushButton::clicked, this,
                 [p] { QDesktopServices::openUrl(QUrl::fromLocalFile(p)); });
         h->addWidget(openBtn);
+        if (!isMain && !wt.branch.isEmpty()) {
+            const QString branch = wt.branch;
+            // Merge this worktree's branch straight into the default branch.
+            auto *mergeBtn = new QPushButton("Merge into main");
+            mergeBtn->setObjectName("ghostButton");
+            mergeBtn->setCursor(Qt::PointingHandCursor);
+            setOcticon(mergeBtn, "check-circle", 14);
+            connect(mergeBtn, &QPushButton::clicked, this,
+                    [this, branch] { mergeWorktreeIntoMain(branch); });
+            h->addWidget(mergeBtn);
+            // Or open a pull request from it (the review-first path).
+            auto *prBtn = new QPushButton("Create PR");
+            prBtn->setObjectName("ghostButton");
+            prBtn->setCursor(Qt::PointingHandCursor);
+            setOcticon(prBtn, "git-pull-request", 14);
+            connect(prBtn, &QPushButton::clicked, this,
+                    [this, branch] { createPullFromBranch(branch); });
+            h->addWidget(prBtn);
+        }
         if (!isMain) {
             auto *rmBtn = new QPushButton("Remove");
             rmBtn->setObjectName("ghostButton");
@@ -24335,6 +24397,116 @@ void MainWindow::loadWorktreesPanel()
         m_repoWorktreesTab->setText(wts.size() > 1
                                         ? QStringLiteral("Worktrees (%1)").arg(wts.size())
                                         : QStringLiteral("Worktrees"));
+}
+
+// Show a worktree's changes vs the default branch: everything in the worktree
+// (committed + uncommitted) when its folder is present, else the branch's commits.
+void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktreePath)
+{
+    if (!m_worktreeDiffView)
+        return;
+    if (m_worktreeFileList) {
+        QSignalBlocker block(m_worktreeFileList);
+        m_worktreeFileList->clear();
+    }
+    if (m_worktreeFilesSummary)
+        m_worktreeFilesSummary->clear();
+    m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+
+    const QString base = repoDefaultBranch(repoBranches());
+    QByteArray out;
+    bool ok = false;
+    if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
+        ok = runGitCapture(worktreePath, {"diff", base}, &out, nullptr);
+    else if (!branch.isEmpty())
+        ok = runGitCapture(repoGitDir(), {"diff", base + ".." + branch}, &out, nullptr);
+    if (!ok) {
+        m_worktreeDiffView->clear();
+        return;
+    }
+
+    QList<DiffFileEntry> files;
+    const QString html =
+        renderDiffHtml(QString::fromUtf8(out), files, repoGitDir(), base, branch,
+                       QString(), QHash<QString, QString>(), QSet<QString>());
+    m_worktreeDiffView->setHtml(
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>No changes vs %1.</p>")
+                  .arg(base.toHtmlEscaped())
+            : html);
+    if (m_worktreeFilesSummary)
+        m_worktreeFilesSummary->setText(QStringLiteral("%1 file%2 changed")
+                                            .arg(files.size())
+                                            .arg(files.size() == 1 ? "" : "s"));
+    if (m_worktreeFileList) {
+        QSignalBlocker block(m_worktreeFileList);
+        for (const DiffFileEntry &f : files) {
+            const QString name = f.path.section(QLatin1Char('/'), -1);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QColor tint("#d29922");
+            QString icon = "file-diff";
+            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
+            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
+            item->setIcon(themedOcticon(icon, tint, 14));
+            item->setData(Qt::UserRole, f.anchor);
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            m_worktreeFileList->addItem(item);
+        }
+        fitFileListToWidestEntry(m_worktreeFileList);
+    }
+}
+
+// Merge a worktree's branch into the repo's default branch. Direct + safe: only
+// when the primary checkout is ON the default branch and clean (otherwise it
+// would clobber concurrent WIP) — else point the user at Create PR.
+void MainWindow::mergeWorktreeIntoMain(const QString &branch)
+{
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
+    if (branch.isEmpty() || branch == base || dir.isEmpty())
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
+        return;
+    }
+    const QString current = m_repoBranch.isEmpty() ? base : m_repoBranch;
+    if (current != base) {
+        setRepoDetailNotice(
+            QStringLiteral("Switch the repo to %1 first (it's on %2), or use Create PR.")
+                .arg(base, current), true);
+        return;
+    }
+    QByteArray st;
+    if (runGitCapture(dir, {"status", "--porcelain"}, &st, nullptr)
+        && !QString::fromUtf8(st).trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "The checkout has uncommitted changes — commit/stash them or use Create PR.",
+            true);
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Merge into %1").arg(base),
+            QStringLiteral("Merge branch %1 into %2?").arg(branch, base))
+        != QMessageBox::Yes)
+        return;
+
+    QString err;
+    if (runGitCapture(dir,
+                      {"merge", "--no-ff", branch,
+                       "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
+                      nullptr, &err)) {
+        setRepoDetailNotice(QStringLiteral("Merged %1 into %2.").arg(branch, base), false);
+    } else {
+        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR and use "
+                           "\"Fix with agent\" on the Branches tab.").arg(branch), true);
+    }
+    loadWorktreesPanel();
+    if (m_branchesTable)
+        loadBranchesPanel();
 }
 
 QWidget *MainWindow::buildBranchesTab()
