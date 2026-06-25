@@ -837,6 +837,8 @@ const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeComma
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
+// Diff viewer text size (points), adjustable with the +/- zoom control.
+const QString kDiffFontPtSetting = QStringLiteral("ui/diffFontPt");
 const QString kDefaultClaudeCodeCommand =
     QStringLiteral("claude -p \"$(cat {promptFile})\" --dangerously-skip-permissions");
 // Claude Code in the embedded terminal runs interactively (not -p headless) so
@@ -10519,7 +10521,7 @@ struct DiffFileEntry {
     int dels = 0;
     QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
 };
-QString diffStyleSheet();
+QString diffStyleSheet(int fontPt = 12);
 // anchorFile (when set) makes the line-number gutters clickable comment anchors
 // (href "cmt:<side>:<line>"); lineNotes maps "<side>:<line>" to HTML inserted
 // as a full-width row beneath that line (for already-posted inline comments).
@@ -11218,7 +11220,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
 
     auto *bodySplit = new QSplitter(Qt::Horizontal);
     bodySplit->setChildrenCollapsible(false);
@@ -11494,7 +11496,7 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     // this cache whenever the working tree changes.
     const QString key =
         QStringLiteral("%1|%2|%3").arg(int(staged)).arg(int(untracked)).arg(path);
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     auto cached = m_scmDiffCache.constFind(key);
     if (cached != m_scmDiffCache.constEnd()) {
         m_scmDiff->setHtml(*cached);
@@ -11525,7 +11527,7 @@ void MainWindow::showScmDiffAll(bool staged)
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return;
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
 
     QByteArray out;
     if (staged) {
@@ -13171,7 +13173,15 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullNextButton, "chevron-down", 14);
     connect(m_pullNextButton, &QPushButton::clicked, this,
             [this] { pullSelectAdjacentChange(1); });
-    for (QPushButton *b : {m_pullPrevButton, m_pullNextButton}) {
+    // +/- zoom for the diff text size (shared by every diff view via diffStyleSheet).
+    m_diffFontPt = qBound(8, QSettings().value(kDiffFontPtSetting, 12).toInt(), 28);
+    auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92")); // −
+    diffZoomOut->setToolTip("Smaller diff text");
+    connect(diffZoomOut, &QPushButton::clicked, this, [this] { adjustDiffFont(-1); });
+    auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
+    diffZoomIn->setToolTip("Larger diff text");
+    connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
+    for (QPushButton *b : {m_pullPrevButton, m_pullNextButton, diffZoomOut, diffZoomIn}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -13182,6 +13192,8 @@ QWidget *MainWindow::buildPullsTab()
     filesHeaderLabel->setObjectName("sectionLabel");
     filesHeader->addWidget(filesHeaderLabel);
     filesHeader->addStretch();
+    filesHeader->addWidget(diffZoomOut);
+    filesHeader->addWidget(diffZoomIn);
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
@@ -13885,6 +13897,19 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
+// +/- zoom: change the diff viewer text size and re-render what's on screen.
+void MainWindow::adjustDiffFont(int delta)
+{
+    const int next = qBound(8, m_diffFontPt + delta, 28);
+    if (next == m_diffFontPt)
+        return;
+    m_diffFontPt = next;
+    QSettings().setValue(kDiffFontPtSetting, m_diffFontPt);
+    if (m_pullDiff && m_pullFiles && m_pullFiles->currentItem())
+        renderPullDiff(m_pullFiles->currentItem()->data(Qt::UserRole).toString());
+    m_scmDiffCache.clear(); // other diff views re-render at the new size next time
+}
+
 void MainWindow::renderPullDiff(const QString &filePath)
 {
     if (!m_pullDiff)
@@ -13993,7 +14018,7 @@ void MainWindow::renderPullDiff(const QString &filePath)
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
-    m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     m_pullDiff->setHtml(html.isEmpty()
                             ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
                             : html);
@@ -24590,7 +24615,8 @@ QString diffStyleSheet(int fontPt)
                ".suggestion { background:%9; border:1px solid %7; color:%8; "
                "padding:8px; margin-top:6px; white-space:pre; }"
                ".notehdr { color:%2; font-size:11px; margin-bottom:4px; }")
-        .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg);
+        .arg(headBg, lnFg, addBg, delBg, hunkFg, hunkBg, border, fg, gutterBg)
+        .arg(qBound(8, fontPt, 28));
 }
 
 } // namespace
@@ -24770,7 +24796,7 @@ void MainWindow::showCommit(const QString &hash)
 
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
-        m_commitDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+        m_commitDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
         m_commitDiffView->setHtml(diffHtml.isEmpty()
                                       ? QStringLiteral("<p style='color:#8b949e'>"
                                                        "No changes in this commit.</p>")
@@ -26095,7 +26121,7 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     }
     if (m_worktreeFilesSummary)
         m_worktreeFilesSummary->clear();
-    m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
 
     const QString base = repoDefaultBranch(repoBranches());
     // Remember the selected worktree and (de)activate the detail buttons: only a
@@ -26734,7 +26760,7 @@ void MainWindow::showBranchDiff(const QString &branch)
     }
     if (m_branchFilesSummary)
         m_branchFilesSummary->clear();
-    m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
+    m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
         m_branchDiffView->clear();

@@ -424,6 +424,7 @@ private:
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
     void renderPullDiff(const QString &filePath);
+    void adjustDiffFont(int delta); // +/- diff text-size zoom
     // Step the Files-changed view through every change: first the open file's
     // hunks, then on to the next/previous file. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
@@ -1684,6 +1685,7 @@ private:
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
+    int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
