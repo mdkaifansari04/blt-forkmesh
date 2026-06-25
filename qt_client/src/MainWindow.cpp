@@ -774,6 +774,12 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// On by default: when the periodic inbox poll finds new issues, merge and
+// commit them automatically — but only while the owner's working tree has no
+// uncommitted tracked changes, so issue commits never interleave with work in
+// progress (issue #193). Off → incoming issues wait in the inbox for a manual
+// "Sync inbox" click. The manual button is never gated by this.
+const QString kAutoSyncIssuesSetting = QStringLiteral("repos/autoSyncIssues");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
@@ -2961,6 +2967,21 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
     return true;
 }
 
+// True when `workTree` has no uncommitted *tracked* changes — a clean base for
+// the auto-issue-sync to land issue commits on (issue #193). Untracked files
+// (build output, scratch notes) are ignored: an issues-only commit never
+// touches them. A failed status check is treated as "not clean" so we err on
+// the side of leaving incoming issues in the inbox rather than committing.
+bool worktreeTrackedClean(const QString &workTree)
+{
+    QByteArray status;
+    if (!runGitCapture(workTree,
+                       {"status", "--porcelain", "--untracked-files=no"},
+                       &status, nullptr))
+        return false;
+    return QString::fromUtf8(status).trimmed().isEmpty();
+}
+
 // Capture git's stdout regardless of exit code. Some diff commands exit non-zero
 // when differences exist (`diff --no-index` returns 1), which runGitCapture
 // treats as failure and discards the output we actually want.
@@ -3963,6 +3984,31 @@ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &
     repo.publishToNetwork = true;
     m_repositories.append(repo);
     return m_repositories.size() - 1;
+}
+
+int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
+                                       const QString &localPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.localPath = localPath;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+
+bool MainWindow::testOpenRepository(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    openRepoDetail(index);
+    return m_repoDetailIndex == index;
+}
+
+bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
+                                           const QString &website)
+{
+    return saveRepoAboutMetadata(about, website, nullptr);
 }
 #endif
 
@@ -16082,7 +16128,14 @@ void MainWindow::pollOwnedInboxes()
         if (!probe.canWrite())
             continue; // not the owner of this repo; nothing to drain
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
+        // Auto-sync incoming issues only when the option is on (Settings →
+        // Repositories) and the working tree is clean, so issue commits never
+        // land on top of in-progress edits. Otherwise leave them in the inbox
+        // for a manual "Sync inbox" (issue #193).
+        const bool autoSyncIssues =
+            QSettings().value(kAutoSyncIssuesSetting, true).toBool();
+        if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
+            drainIssuesInboxFor(repo, /*interactive=*/false);
         drainPullsInboxFor(repo, /*interactive=*/false);
         drainCommitInboxFor(repo, /*interactive=*/false);
     }
@@ -31614,6 +31667,26 @@ QWidget *MainWindow::buildSettingsSection()
     previewCacheRow->addWidget(m_previewCacheRootEdit, 1);
     previewCacheRow->addWidget(previewCacheChangeButton);
 
+    // Auto-sync incoming issues (issue #193): when on, the periodic inbox poll
+    // merges and commits issues filed on this node's repos as they arrive — but
+    // only while the working tree is clean, so it never interleaves issue
+    // commits with the owner's in-progress edits.
+    auto *issuesSyncLabel = new QLabel("ISSUES");
+    issuesSyncLabel->setObjectName("sectionLabel");
+    auto *autoSyncIssuesCheck =
+        new QCheckBox("Auto-sync new issues when the working tree is clean");
+    autoSyncIssuesCheck->setChecked(
+        QSettings().value(kAutoSyncIssuesSetting, true).toBool());
+    autoSyncIssuesCheck->setToolTip(
+        "Automatically merge and commit issues filed on your repositories as "
+        "they arrive in the inbox — but only while the repo's working tree has "
+        "no uncommitted changes, so issue commits never land on top of work in "
+        "progress. When off, or while the tree is dirty, incoming issues wait "
+        "in the inbox until you click \"Sync inbox\".");
+    connect(autoSyncIssuesCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoSyncIssuesSetting, enabled);
+    });
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -31884,6 +31957,9 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(previewCacheLabel);
     reposCol->addLayout(previewCacheRow);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(issuesSyncLabel);
+    reposCol->addWidget(autoSyncIssuesCheck);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
