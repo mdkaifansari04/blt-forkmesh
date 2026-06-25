@@ -63,6 +63,10 @@ set(FORKMESH_APP_SOURCES
     src/TerminalWidget.cpp
     src/ClaudeIdeBridge.h
     src/ClaudeIdeBridge.cpp
+    src/ClaudeStreamSession.h
+    src/ClaudeStreamSession.cpp
+    src/ClaudeTranscriptView.h
+    src/ClaudeTranscriptView.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
