@@ -12456,6 +12456,34 @@ QWidget *MainWindow::buildPullsTab()
     conversationInnerLayout->addWidget(m_pullLinksValue);
     conversationInnerLayout->addWidget(m_pullChecksSummary);
     conversationInnerLayout->addWidget(composerBlock);
+
+    // Agent revision row: shown only when this PR was created by an agent session.
+    // Lets the reviewer type feedback and send it back to the agent for revisions.
+    m_pullAgentRevisionRow = new QWidget;
+    m_pullAgentRevisionRow->setObjectName("agentRevisionRow");
+    auto *agentRevisionLayout = new QHBoxLayout(m_pullAgentRevisionRow);
+    agentRevisionLayout->setContentsMargins(0, 4, 0, 0);
+    agentRevisionLayout->setSpacing(6);
+    m_pullAgentRevisionEdit = new QLineEdit;
+    m_pullAgentRevisionEdit->setPlaceholderText(
+        "Describe the revision for the agentâ¦");
+    m_pullSendToAgentButton = new QPushButton("Send to agent");
+    m_pullSendToAgentButton->setObjectName("primaryButton");
+    m_pullSendToAgentButton->setProperty("buttonSize", "sm");
+    m_pullSendToAgentButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_pullSendToAgentButton, "rocket", 16);
+    m_pullSendToAgentButton->setToolTip(
+        "Post this note as a PR comment and re-queue the agent with the revision "
+        "instructions so it continues work on the same branch");
+    agentRevisionLayout->addWidget(m_pullAgentRevisionEdit, 1);
+    agentRevisionLayout->addWidget(m_pullSendToAgentButton);
+    connect(m_pullSendToAgentButton, &QPushButton::clicked,
+            this, &MainWindow::sendPullRevisionToAgent);
+    connect(m_pullAgentRevisionEdit, &QLineEdit::returnPressed,
+            this, &MainWindow::sendPullRevisionToAgent);
+    m_pullAgentRevisionRow->hide(); // only visible when this PR has a linked agent
+    conversationInnerLayout->addWidget(m_pullAgentRevisionRow);
+
     conversationInnerLayout->addStretch();
 
     m_pullThreadScroll = new QScrollArea;
@@ -13320,6 +13348,60 @@ void MainWindow::submitPullComment()
     showPull(m_currentPullNumber);
 }
 
+void MainWindow::sendPullRevisionToAgent()
+{
+    if (m_currentPullNumber < 0 || !m_pullAgentRevisionEdit || !m_agentStore)
+        return;
+    const QString feedback = m_pullAgentRevisionEdit->text().trimmed();
+    if (feedback.isEmpty()) {
+        flashMessage(QStringLiteral("Enter revision feedback first."));
+        return;
+    }
+
+    // Find the agent session linked to this PR.
+    AgentSession *session = nullptr;
+    for (AgentSession &s : m_agentSessions) {
+        if (s.prNumber == m_currentPullNumber) {
+            session = &s;
+            break;
+        }
+    }
+    if (!session) {
+        flashMessage(QStringLiteral("No agent session found for this pull request."),
+                     true);
+        return;
+    }
+
+    // Post the feedback as a PR comment so it appears in the thread.
+    PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        store.addComment(m_currentPullNumber, feedback, &error);
+    }
+
+    // Append the revision note to the agent log and re-queue.
+    m_agentStore->appendLog(
+        *session,
+        QStringLiteral("\n==> Revision feedback from PR #%1:\n%2")
+            .arg(m_currentPullNumber)
+            .arg(feedback));
+    session->status = AgentStatus::Queued;
+    session->lastError.clear();
+    session->finishedAtMs = 0;
+    m_agentStore->saveSession(*session);
+
+    const int sessionId = session->id;
+    if (!m_agentQueue.contains(sessionId))
+        m_agentQueue.append(sessionId);
+
+    m_pullAgentRevisionEdit->clear();
+    reloadAgents();
+    reloadPulls();
+    showPull(m_currentPullNumber);
+    flashMessage(QStringLiteral("Revision sent to agent session #%1.").arg(sessionId));
+    processAgentQueue();
+}
+
 void MainWindow::submitPullReview(const QString &state)
 {
     if (m_currentPullNumber < 0 || !m_pullComposer)
@@ -13448,6 +13530,13 @@ void MainWindow::updatePullActionState()
         m_pullDeleteButton->setEnabled(writable && have);
     if (m_pullDeleteBranchButton)
         m_pullDeleteBranchButton->setEnabled(writable && have);
+    // Show the agent revision row only when this PR was produced by an agent session.
+    if (m_pullAgentRevisionRow) {
+        const bool hasAgent = have && agentSessionForPull(m_currentPullNumber) != nullptr;
+        m_pullAgentRevisionRow->setVisible(hasAgent);
+        if (m_pullSendToAgentButton)
+            m_pullSendToAgentButton->setEnabled(hasAgent && writable);
+    }
 }
 
 void MainWindow::promptNewPull()
