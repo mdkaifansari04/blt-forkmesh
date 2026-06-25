@@ -1,0 +1,36 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index a67df765..c4e7500e 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -10818,6 +10818,14 @@ QWidget *MainWindow::buildSourceControlPanel()
+     m_scmGenDuration->addItem("Past hour");
+     m_scmGenDuration->addItem("All day");
+     m_scmGenDuration->setToolTip("Which changes to summarise");
++    // When the user switches to "Past hour" or "All day", enable the Generate
++    // button immediately — commits exist in those windows even with a clean tree.
++    connect(m_scmGenDuration, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [this](int) {
++                // Re-evaluate the Generate button enable state now that the
++                // duration scope has changed.
++                refreshSourceControl();
++            });
+ 
+     m_scmCopyButton = new QPushButton("Copy");
+     m_scmCopyButton->setToolTip("Copy the message to the clipboard");
+@@ -11182,8 +11190,14 @@ void MainWindow::refreshSourceControl()
+         m_scmCommitButton->setEnabled(anything);
+     if (m_scmCommitPushButton)
+         m_scmCommitPushButton->setEnabled(anything);
+-    if (m_scmGenerateButton)
+-        m_scmGenerateButton->setEnabled(anything);
++    if (m_scmGenerateButton) {
++        // Enable Generate when there are current changes, OR when the
++        // duration dropdown covers committed history (past hour / all day)
++        // — in those modes, commits exist even with a clean working tree.
++        const bool durCoversHistory =
++            m_scmGenDuration && m_scmGenDuration->currentIndex() > 0;
++        m_scmGenerateButton->setEnabled(anything || durCoversHistory);
++    }
+     if (m_scmUnstageAllButton)
+         m_scmUnstageAllButton->setEnabled(!staged.isEmpty());
+     if (m_scmDiscardAllButton)
