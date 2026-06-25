@@ -8,6 +8,12 @@
 #   ./deploy.sh secrets  (re)push only the .env.production secrets, no redeploy
 #   ./deploy.sh dev      run the Worker locally instead of deploying
 #   ./deploy.sh dry-run   build and validate without uploading
+#
+# A production deploy stamps a BUILD_REV var and then VERIFIES the live origin is
+# serving it (GET /api/version). If the public site never reports the new rev the
+# deploy is treated as FAILED (exit 1) — this is what catches an upload that
+# "succeeded" but landed on the wrong Cloudflare account, leaving stale code live.
+# Override the verified origin with DEPLOY_VERIFY_URL (default https://forkmesh.com).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -87,6 +93,60 @@ require_cloudflare_account() {
     fi
     echo "ERROR: CLOUDFLARE_ACCOUNT_ID is missing." >&2
     echo "       Set it in $ENV_FILE (or the CI secret that writes that file) before deploying." >&2
+    return 1
+}
+
+# A stamp identifying exactly which build we are shipping. The git rev (marked
+# -dirty when the tree has uncommitted changes) when available, else a UTC
+# timestamp. Passed to the Worker as the BUILD_REV var and echoed back by
+# /api/version so a deploy can prove the new code is actually live.
+build_rev() {
+    local rev
+    if rev="$(git rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$rev" ]; then
+        if ! git diff --quiet HEAD 2>/dev/null || \
+           [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+            rev="${rev}-dirty-$(date -u +%s)"
+        fi
+        printf '%s' "$rev"
+    else
+        printf 'ts-%s' "$(date -u +%Y%m%d%H%M%S)"
+    fi
+}
+
+# After a deploy, confirm the live origin is actually serving the build we just
+# shipped. Polls /api/version (allowing for edge propagation) and matches its
+# reported rev against the BUILD_REV we stamped. A mismatch that never resolves
+# means the upload didn't take effect on the public origin — most often because
+# it landed on the wrong Cloudflare account — so we FAIL LOUDLY rather than let a
+# phantom "Done." hide stale code. Override the origin with DEPLOY_VERIFY_URL.
+verify_deploy() {
+    local expected="$1"
+    local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
+    base="${base%/}"
+    local url="$base/api/version"
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "note: curl not found — skipping post-deploy verification." >&2
+        return 0
+    fi
+    echo "Verifying $url is serving BUILD_REV=$expected ..."
+    local attempt body got
+    for attempt in $(seq 1 20); do
+        body="$(curl -fsS --max-time 15 "$url" 2>/dev/null || true)"
+        # Pull "rev":"<value>" out of the JSON without needing jq.
+        got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        if [ "$got" = "$expected" ]; then
+            echo "Verified: live origin is serving build $expected."
+            return 0
+        fi
+        echo "  attempt $attempt/20: live rev='${got:-<none>}' (want '$expected'); retrying in 6s..." >&2
+        sleep 6
+    done
+    echo "ERROR: $base never reported BUILD_REV=$expected after the deploy." >&2
+    echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
+    echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
+    echo "       custom domain still routes to an old Worker). Check that" >&2
+    echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
+    echo "       forkmesh.com, then redeploy." >&2
     return 1
 }
 
@@ -173,11 +233,20 @@ push_secrets() {
 case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
-        echo "Deploying ForkMesh website + relay to Cloudflare..."
-        pywrangler deploy
+        BUILD_REV="$(build_rev)"
+        echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV)..."
+        # Stamp the build into the Worker as a plaintext var so /api/version can
+        # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
+        # them) and we re-pass it every deploy, so it persists; secrets are
+        # untouched. This is the marker verify_deploy checks below.
+        pywrangler deploy --var "BUILD_REV:${BUILD_REV}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         push_secrets
+        # Prove the public origin is actually serving what we just uploaded. A
+        # failed/no-op/wrong-account deploy now aborts here instead of printing a
+        # phantom success.
+        verify_deploy "$BUILD_REV"
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
         ;;
     secrets)

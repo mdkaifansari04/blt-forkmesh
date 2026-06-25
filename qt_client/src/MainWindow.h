@@ -638,6 +638,8 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+    void showWorktreeDiff(const QString &branch, const QString &worktreePath);
+    void mergeWorktreeIntoMain(const QString &branch);
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1389,6 +1391,9 @@ private:
     QPushButton *m_repoWorktreesTab = nullptr; // handle for the Worktrees (N) badge
     QTableWidget *m_worktreesTable = nullptr;
     QLabel *m_worktreesSummary = nullptr;
+    QTextBrowser *m_worktreeDiffView = nullptr;
+    QListWidget *m_worktreeFileList = nullptr;
+    QLabel *m_worktreeFilesSummary = nullptr;
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_settingsTabIndex = -1; // index of the Settings page
