@@ -10123,6 +10123,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Security and quality", "shield-check"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
+                                {"Worktrees", "file-directory"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
                                 {"Settings", "gear"}};
@@ -10164,8 +10165,10 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoActionsTab = b; // handle for the Actions (N) badge
         if (i == 8)
             m_repoBranchesTab = b; // handle for the Branches (N) badge
-        if (i == 10)
-            m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
+        if (i == 9)
+            m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
+        if (i == 11)
+            m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge (shifted +1)
         m_repoDetailTabs->addButton(b, i);
         tabRow->addWidget(b);
     }
@@ -10216,6 +10219,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
     m_branchesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
+    m_worktreesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildWorktreesTab());                   // 9 Worktrees
     m_releasesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 9 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
@@ -10270,6 +10275,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadRepoInsights();
         else if (id == m_branchesTabIndex)
             loadBranchesPanel();
+        else if (id == m_worktreesTabIndex)
+            loadWorktreesPanel();
         else if (id == m_releasesTabIndex)
             loadReleasesPanel();
         else if (id == m_mirrorNodesTabIndex)
