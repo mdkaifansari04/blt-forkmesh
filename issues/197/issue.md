@@ -5,7 +5,7 @@ title: when on the file browser screen of the code tab and we are on a file next
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 25
 progress: 0
 assignees: []
 createdAt: 1782348147268

@@ -5,7 +5,7 @@ title: add a feature on branches page to delete all branches with 0 behind and 0
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 29
 progress: 0
 assignees: []
 createdAt: 1782353178594

@@ -5,7 +5,7 @@ title: the pin check is blocking make it run in the background please
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 7
 progress: 0
 assignees: []
 createdAt: 1782354812078

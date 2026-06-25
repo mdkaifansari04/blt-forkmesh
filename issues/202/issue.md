@@ -5,7 +5,7 @@ title: delete pr and branch makes the app freeze
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 4
 progress: 0
 assignees: []
 createdAt: 1782349190544

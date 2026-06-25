@@ -5,7 +5,7 @@ title: if I click on a working agent icon above the agents tab then show that ac
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 32
 progress: 0
 assignees: []
 createdAt: 1782349668081

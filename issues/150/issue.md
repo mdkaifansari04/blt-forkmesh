@@ -5,7 +5,7 @@ title: show if there are conflicts on the PR - have a button to assign to an age
 status: open
 labels: [Phase 2]
 milestone: Phase 2
-priority: 15
+priority: 13
 progress: 41
 assignees: []
 createdAt: 1782168775715

@@ -5,7 +5,7 @@ title: Make it so you can download the app and mirror on your phone
 status: open
 labels: [feature]
 milestone: Phase 2
-priority: 86
+priority: 53
 progress: 0
 assignees: []
 createdAt: 1781685766624
