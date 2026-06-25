@@ -20400,6 +20400,109 @@ void MainWindow::openMostRecentCommit()
     showCommit(item->data(Qt::UserRole).toString());
 }
 
+namespace {
+
+// Top-level trees the ForkMesh client owns as serialized data (issues, pull
+// requests, commit comments, coves). Conflicts here during a history rewrite are
+// expected and safe to resolve mechanically: the client reuses issue/pull
+// numbers, so dropping an old commit can leave an earlier "N" in place and a
+// later "<thing> N: open" then replays onto it. Source files are not in this set
+// and must never be auto-resolved.
+bool isInboxDataPath(const QString &rel)
+{
+    return rel.startsWith(QLatin1String("issues/"))
+        || rel.startsWith(QLatin1String("pulls/"))
+        || rel.startsWith(QLatin1String("commits/"))
+        || rel.startsWith(QLatin1String(".forkmesh/"));
+}
+
+// Absolute path of the in-progress interactive-rebase state directory, or empty
+// when no rebase is underway (so this also doubles as "is a rebase running?").
+QString rebaseMergeDir(const QString &dir)
+{
+    QByteArray out;
+    if (!runGitCapture(dir, {"rev-parse", "--git-path", "rebase-merge"}, &out,
+                       nullptr))
+        return QString();
+    QString path = QString::fromUtf8(out).trimmed();
+    if (path.isEmpty())
+        return QString();
+    if (!QDir::isAbsolutePath(path))
+        path = dir + "/" + path;
+    return QFileInfo::exists(path) ? path : QString();
+}
+
+// Files the current rebase step left unmerged.
+QStringList rebaseUnmergedFiles(const QString &dir)
+{
+    const QByteArray out =
+        gitCaptureStdout(dir, {"diff", "--name-only", "--diff-filter=U"});
+    return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+}
+
+// Drive an in-progress "drop commit" rebase to completion. The replay only
+// conflicts on the reused-number data files described above, so for each one we
+// keep the version from the commit being replayed (its `--theirs` side: rebase
+// swaps the conflict sides) and continue. A conflict in any other file is a real
+// code conflict we can't safely guess at, so we stop and report which files —
+// the caller then aborts, leaving history untouched.
+bool driveDeleteCommitRebase(const QString &dir, QString *err)
+{
+    // The loop exits when the rebase finishes (its state directory disappears);
+    // the large cap is only an infinite-loop backstop.
+    for (int step = 0; step < 100000; ++step) {
+        if (rebaseMergeDir(dir).isEmpty())
+            return true; // rebase finished cleanly
+
+        const QStringList unmerged = rebaseUnmergedFiles(dir);
+        QStringList blockers;
+        for (const QString &f : unmerged)
+            if (!isInboxDataPath(f))
+                blockers << f;
+        if (!blockers.isEmpty()) {
+            if (err)
+                *err = QStringLiteral(
+                           "Can't remove this commit automatically — replaying a "
+                           "later commit conflicts in %1. Resolve those files by "
+                           "hand, or revert the commit instead. History was left "
+                           "unchanged.")
+                           .arg(blockers.join(QStringLiteral(", ")));
+            return false;
+        }
+
+        // Reproduce the replayed commit's own version of each data file.
+        for (const QString &f : unmerged) {
+            if (runGitCapture(dir, {"checkout", "--theirs", "--", f}, nullptr,
+                              nullptr))
+                runGitCapture(dir, {"add", "--", f}, nullptr, nullptr);
+            else
+                // No `--theirs` side: the replayed commit deleted the file.
+                runGitCapture(dir, {"rm", "--force", "--", f}, nullptr, nullptr);
+        }
+
+        // If the resolution leaves nothing to commit, skip the now-empty step;
+        // otherwise continue. core.editor=true stops --continue from blocking on
+        // a commit-message editor. The exit code is intentionally ignored:
+        // --continue also returns non-zero when it stops at the next conflict,
+        // which the next iteration handles.
+        const bool nothingToCommit =
+            runGitCapture(dir, {"diff", "--cached", "--quiet"}, nullptr, nullptr);
+        const QStringList advance =
+            nothingToCommit
+                ? QStringList{"rebase", "--skip"}
+                : QStringList{"-c", "core.editor=true", "rebase", "--continue"};
+        runGitCapture(dir, advance, nullptr, nullptr);
+    }
+
+    if (err)
+        *err = QStringLiteral(
+            "Gave up removing the commit after too many conflict steps; history "
+            "was left unchanged.");
+    return false;
+}
+
+} // namespace
+
 // Drop a single commit from the browsed branch's history, replaying every later
 // commit onto the one before it. Owner-only (the working copy is the source of
 // truth); the rewritten branch then diverges from the served mirror until the
@@ -20453,19 +20556,31 @@ void MainWindow::deleteCommit(const QString &hash)
         return;
     }
 
-    // Replay <hash>..<branch> onto <hash>'s parent, dropping <hash> itself. A
-    // dirty tree or a conflict aborts the rebase; surface git's reason.
+    // Replay <hash>..<branch> onto <hash>'s parent, dropping <hash> itself. The
+    // replay conflicts whenever a later commit reuses an issue/pull number the
+    // dropped commit touched; driveDeleteCommitRebase auto-resolves those
+    // data-file conflicts and keeps going. Anything else — a dirty tree before
+    // the rebase starts, or a real code conflict — aborts and surfaces why.
     QString err;
     if (!runGitCapture(dir, {"rebase", "--onto", hash + "^", hash, branch},
                        nullptr, &err)) {
-        runGitCapture(dir, {"rebase", "--abort"}, nullptr, nullptr);
-        setRepoDetailNotice(
-            err.trimmed().isEmpty()
-                ? "Could not remove the commit — the rebase failed. Make sure the "
-                  "working tree is clean and try again."
-                : err.trimmed(),
-            true);
-        return;
+        if (rebaseMergeDir(dir).isEmpty()) {
+            // The rebase never got underway (e.g. a dirty working tree); there is
+            // nothing in progress to abort.
+            setRepoDetailNotice(
+                err.trimmed().isEmpty()
+                    ? "Could not remove the commit — the rebase failed. Make "
+                      "sure the working tree is clean and try again."
+                    : err.trimmed(),
+                true);
+            return;
+        }
+        QString driveErr;
+        if (!driveDeleteCommitRebase(dir, &driveErr)) {
+            runGitCapture(dir, {"rebase", "--abort"}, nullptr, nullptr);
+            setRepoDetailNotice(driveErr, true);
+            return;
+        }
     }
 
     logSystem(QStringLiteral("Git: removed commit %1 from %2.")
@@ -22530,6 +22645,11 @@ void MainWindow::loadBranchesPanel()
 {
     if (!m_branchesTable)
         return;
+    // Remember which branch's diff is on screen. Clearing the rows below fires
+    // currentCellChanged with no current item, which blanks the diff pane and
+    // resets m_branchDiffBranch; we re-select this branch's row at the end so
+    // the diff stays on screen (now reflecting any merge we just performed).
+    const QString previouslyViewed = m_branchDiffBranch;
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const QStringList branches = repoBranches();
@@ -22682,6 +22802,21 @@ void MainWindow::loadBranchesPanel()
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
         m_branchesTable->setItem(0, 0, empty);
+        return;
+    }
+
+    // Re-select the row the user was viewing (falling back to the checked-out
+    // branch) so rebuilding the table doesn't leave the diff pane blank. Setting
+    // the current cell re-fires currentCellChanged, which re-renders the diff.
+    QString target = previouslyViewed;
+    if (target.isEmpty() || !branches.contains(target))
+        target = selected;
+    for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && it->text() == target) {
+            m_branchesTable->setCurrentCell(r, 0);
+            break;
+        }
     }
 }
 
