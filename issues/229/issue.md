@@ -5,7 +5,7 @@ title: have insights show the number of contributors in the tab
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 44
 progress: 0
 assignees: []
 createdAt: 1782355015749

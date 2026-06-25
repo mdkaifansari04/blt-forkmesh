@@ -5,7 +5,7 @@ title: make a chekcbox in settings to auto push new issues (if clean)
 status: open
 labels: []
 milestone: 
-priority: 9
+priority: 20
 progress: 0
 assignees: []
 createdAt: 1782339177891

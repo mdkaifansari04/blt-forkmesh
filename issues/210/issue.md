@@ -5,7 +5,7 @@ title: delete pr also freezinjg
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 5
 progress: 0
 assignees: []
 createdAt: 1782350444131

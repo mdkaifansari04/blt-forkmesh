@@ -5,7 +5,7 @@ title: on the website show the counts of things faster currently the fist time y
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 8
 progress: 0
 assignees: []
 createdAt: 1782353853248

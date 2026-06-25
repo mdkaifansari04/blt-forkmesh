@@ -5,7 +5,7 @@ title: add a reopen pr button
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 19
 progress: 0
 assignees: []
 createdAt: 1782350548595

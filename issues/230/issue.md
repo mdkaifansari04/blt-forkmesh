@@ -5,7 +5,7 @@ title: fix the log to show black text and remove the grey background
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 12
 progress: 0
 assignees: []
 createdAt: 1782355088794

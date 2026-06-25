@@ -5,7 +5,7 @@ title: a new node joined but I don't see it on the source of truth only see sour
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 10
 progress: 0
 assignees: []
 createdAt: 1782354724705
