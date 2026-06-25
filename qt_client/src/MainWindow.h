@@ -667,6 +667,9 @@ private:
     void loadWorktreesPanel();
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     void mergeWorktreeIntoMain(const QString &branch);
+    // Merge the default branch into a worktree's branch, run inside that worktree,
+    // so it picks up the latest from main without leaving its folder.
+    void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1437,8 +1440,10 @@ private:
     QTextBrowser *m_worktreeDiffView = nullptr;
     QListWidget *m_worktreeFileList = nullptr;
     QLabel *m_worktreeFilesSummary = nullptr;
-    QPushButton *m_worktreeMergeButton = nullptr; // merge the selected worktree into main
-    QString m_worktreeSelectedBranch;             // branch behind the open worktree detail
+    QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
+    QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
+    QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
+    QString m_worktreeSelectedPath;                // its on-disk worktree folder
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_settingsTabIndex = -1; // index of the Settings page
