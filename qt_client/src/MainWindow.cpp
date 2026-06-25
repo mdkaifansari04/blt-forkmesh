@@ -24145,6 +24145,198 @@ bool MainWindow::repoHasWorkingTree() const
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
 
+// Worktrees tab (next to Branches): lists this repo's git worktrees — the main
+// checkout plus each agent's isolated worktree+branch — with open/remove/prune.
+QWidget *MainWindow::buildWorktreesTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    auto *heading = new QLabel("Worktrees");
+    heading->setObjectName("channelTitle");
+    m_worktreesSummary = new QLabel;
+    m_worktreesSummary->setObjectName("statusLine");
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadWorktreesPanel);
+    auto *pruneButton = new QPushButton("Prune");
+    pruneButton->setObjectName("ghostButton");
+    pruneButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(pruneButton, "trash", 16);
+    pruneButton->setToolTip("Drop registrations for worktrees whose folders are gone");
+    connect(pruneButton, &QPushButton::clicked, this, [this] {
+        QString repoPath;
+        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            repoPath = m_repositories.at(m_repoDetailIndex).localPath;
+        if (!repoPath.isEmpty())
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath,
+                               QStringLiteral("worktree"), QStringLiteral("prune")});
+        loadWorktreesPanel();
+    });
+    headerRow->addWidget(heading);
+    headerRow->addWidget(m_worktreesSummary);
+    headerRow->addStretch();
+    headerRow->addWidget(pruneButton);
+    headerRow->addWidget(refreshButton);
+    layout->addLayout(headerRow);
+
+    auto *info = new QLabel("Each agent works in its own worktree + branch, so "
+                            "concurrent agents never share a working tree.");
+    info->setObjectName("statusLine");
+    info->setWordWrap(true);
+    layout->addWidget(info);
+
+    m_worktreesTable = new QTableWidget(0, 4);
+    m_worktreesTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_worktreesTable);
+    m_worktreesTable->setHorizontalHeaderLabels({"Branch", "Path", "Status", ""});
+    m_worktreesTable->verticalHeader()->setVisible(false);
+    m_worktreesTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_worktreesTable->verticalHeader()->setDefaultSectionSize(36);
+    m_worktreesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_worktreesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_worktreesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_worktreesTable->setShowGrid(false);
+    m_worktreesTable->setWordWrap(false);
+    QHeaderView *wh = m_worktreesTable->horizontalHeader();
+    wh->setHighlightSections(false);
+    wh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    wh->setSectionResizeMode(1, QHeaderView::Stretch);
+    wh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    wh->setSectionResizeMode(3, QHeaderView::Fixed);
+    connect(m_worktreesTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                if (QTableWidgetItem *it = m_worktreesTable->item(row, 1))
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(it->text()));
+            });
+    layout->addWidget(m_worktreesTable, 1);
+    return page;
+}
+
+void MainWindow::loadWorktreesPanel()
+{
+    if (!m_worktreesTable)
+        return;
+    m_worktreesTable->setRowCount(0);
+    QString repoPath;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+        repoPath = m_repositories.at(m_repoDetailIndex).localPath;
+    if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
+        if (m_worktreesSummary)
+            m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
+        if (m_repoWorktreesTab)
+            m_repoWorktreesTab->setText(QStringLiteral("Worktrees"));
+        return;
+    }
+
+    struct WT { QString path, branch, head; bool detached = false; };
+    QList<WT> wts;
+    WT cur;
+    bool have = false;
+    QByteArray out;
+    if (runGitCapture(repoPath, {QStringLiteral("worktree"), QStringLiteral("list"),
+                                 QStringLiteral("--porcelain")}, &out, nullptr)) {
+        for (const QString &raw : QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+            const QString line = raw.trimmed();
+            if (line.isEmpty()) {
+                if (have) wts.append(cur);
+                cur = WT();
+                have = false;
+                continue;
+            }
+            have = true;
+            if (line.startsWith(QLatin1String("worktree ")))
+                cur.path = line.mid(9);
+            else if (line.startsWith(QLatin1String("HEAD ")))
+                cur.head = line.mid(5);
+            else if (line.startsWith(QLatin1String("branch ")))
+                cur.branch = line.mid(7).replace(QLatin1String("refs/heads/"), QString());
+            else if (line == QLatin1String("detached"))
+                cur.detached = true;
+        }
+        if (have) wts.append(cur);
+    }
+
+    const QString mainPath = QDir(repoPath).absolutePath();
+    int actionWidth = 0;
+    for (const WT &wt : wts) {
+        const int row = m_worktreesTable->rowCount();
+        m_worktreesTable->insertRow(row);
+        const bool isMain = QDir(wt.path).absolutePath() == mainPath;
+
+        const QString branchLabel =
+            wt.detached ? QStringLiteral("(detached %1)").arg(wt.head.left(8))
+                        : (wt.branch.isEmpty() ? QStringLiteral("(none)") : wt.branch);
+        auto *bItem = new QTableWidgetItem(branchLabel);
+        bItem->setIcon(themedOcticon(isMain ? "check-circle" : "git-branch",
+                                     QColor(isMain ? "#3fb950" : "#8b949e"), 14));
+        m_worktreesTable->setItem(row, 0, bItem);
+        m_worktreesTable->setItem(row, 1, new QTableWidgetItem(wt.path));
+
+        QString status = isMain ? QStringLiteral("main checkout") : QString();
+        QByteArray st;
+        if (runGitCapture(wt.path, {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                          &st, nullptr)
+            && !QString::fromUtf8(st).trimmed().isEmpty())
+            status = status.isEmpty() ? QStringLiteral("uncommitted changes")
+                                      : status + QStringLiteral(" · dirty");
+        if (status.isEmpty())
+            status = QStringLiteral("clean");
+        m_worktreesTable->setItem(row, 2, new QTableWidgetItem(status));
+
+        auto *cell = new QWidget;
+        auto *h = new QHBoxLayout(cell);
+        h->setContentsMargins(4, 2, 4, 2);
+        h->setSpacing(4);
+        auto *openBtn = new QPushButton("Open");
+        openBtn->setObjectName("ghostButton");
+        openBtn->setCursor(Qt::PointingHandCursor);
+        const QString p = wt.path;
+        connect(openBtn, &QPushButton::clicked, this,
+                [p] { QDesktopServices::openUrl(QUrl::fromLocalFile(p)); });
+        h->addWidget(openBtn);
+        if (!isMain) {
+            auto *rmBtn = new QPushButton("Remove");
+            rmBtn->setObjectName("ghostButton");
+            rmBtn->setCursor(Qt::PointingHandCursor);
+            const QString branch = wt.branch;
+            connect(rmBtn, &QPushButton::clicked, this, [this, p, branch, repoPath] {
+                if (QMessageBox::question(
+                        this, QStringLiteral("Remove worktree"),
+                        QStringLiteral("Remove the worktree at\n%1\n(branch %2)?\n\n"
+                                       "Uncommitted changes there will be lost.")
+                            .arg(p, branch.isEmpty() ? QStringLiteral("-") : branch))
+                    != QMessageBox::Yes)
+                    return;
+                QProcess::execute(QStringLiteral("git"),
+                                  {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                                   QStringLiteral("remove"), QStringLiteral("--force"), p});
+                loadWorktreesPanel();
+            });
+            h->addWidget(rmBtn);
+        }
+        h->addStretch();
+        m_worktreesTable->setCellWidget(row, 3, cell);
+        actionWidth = qMax(actionWidth, cell->sizeHint().width());
+    }
+    if (actionWidth > 0)
+        m_worktreesTable->setColumnWidth(3, actionWidth + 12);
+    if (m_worktreesSummary)
+        m_worktreesSummary->setText(
+            QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
+    if (m_repoWorktreesTab)
+        m_repoWorktreesTab->setText(wts.size() > 1
+                                        ? QStringLiteral("Worktrees (%1)").arg(wts.size())
+                                        : QStringLiteral("Worktrees"));
+}
+
 QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
