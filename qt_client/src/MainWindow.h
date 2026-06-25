@@ -15,6 +15,7 @@ struct CommitComment; // CommitCommentStore.h
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QMainWindow>
 #include <QMap>
@@ -1766,12 +1767,32 @@ private:
     // cards (ClaudeTranscriptView, output stack page 2). A header toggle flips
     // to the raw process output (page 0) for debugging.
     ClaudeTranscriptView *m_agentTranscript = nullptr;
-    ClaudeStreamSession *m_streamSession = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
     QWidget *m_agentOutputToggle = nullptr;
+    QListWidget *m_agentFilesList = nullptr;     // files edited in this session
+    QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
+    QProgressBar *m_agentUsageBar = nullptr;     // weekly usage graph
+    QProgressBar *m_agentUsage5hBar = nullptr;   // 5-hour usage graph
+    QLabel *m_agentStatsLabel = nullptr;         // live tokens + cost counter
+    QTimer *m_agentHourlyTimer = nullptr;        // refreshes usage + files hourly
+    // Each running Claude Code session has its own worktree + stream + buffered
+    // events, so their output never leaks across sessions; the transcript view is
+    // repainted from the selected session's buffer.
+    QHash<int, ClaudeStreamSession *> m_streamSessions;
+    QHash<int, QList<QJsonObject>> m_streamEvents;
+    QHash<int, QString> m_streamRaw;
+    QHash<int, QStringList> m_streamFiles;
+    QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
                                    const QString &repoPath);
+    void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
+    void renderTranscriptForSession(int sessionId);
+    void refreshAgentFilesPanel(int sessionId);
+    void maybeCreatePullForStreamSession(int sessionId);
+    bool isStreamTranscriptSession(int sessionId) const;
+    // Working directory for a session: its worktree if it has one, else the repo.
+    QString sessionWorkdir(int sessionId);
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;

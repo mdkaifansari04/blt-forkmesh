@@ -524,6 +524,23 @@ def repo_mirror_group_key(record):
     return "name:" + name
 
 
+def repo_mirror_same_group(target, record):
+    # Whether `record` mirrors the same logical repo as `target`. They match when
+    # they share a root (first) commit. A mirror cloned from the relay can have an
+    # unset HEAD and so publish an empty rootCommit (issue #243); when either side
+    # lacks a root, fall back to matching the repo name so such a mirror still
+    # groups with its source of truth instead of vanishing from the owner's
+    # mirror-nodes list. Two differing non-empty roots mean a genuine fork with
+    # rewritten history, which stays in its own group.
+    troot = str((target or {}).get("rootCommit") or "").strip().lower()
+    rroot = str((record or {}).get("rootCommit") or "").strip().lower()
+    if troot and rroot:
+        return troot == rroot
+    tname = str((target or {}).get("name") or "").strip().lower()
+    rname = str((record or {}).get("name") or "").strip().lower()
+    return bool(tname) and tname == rname
+
+
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
 ):
@@ -547,7 +564,9 @@ def build_repo_mirrors_payload(
         return None
 
     group_key = repo_mirror_group_key(target["data"])
-    members = [r for r in public_rows if repo_mirror_group_key(r["data"]) == group_key]
+    members = [
+        r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
+    ]
     freshest_sync = 0
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)

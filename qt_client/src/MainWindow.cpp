@@ -16398,9 +16398,9 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
         if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
             runner->stop();
-        if (m_streamSession && m_selectedAgentSessionId == m_terminalSessionId &&
-            m_streamSession->running())
-            m_streamSession->stop();
+        if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId))
+            if (s->running())
+                s->stop();
     });
 
     m_agentContinueButton = new QPushButton("Continue");
@@ -16475,10 +16475,28 @@ QWidget *MainWindow::buildAgentsTab()
     // Extension-style transcript for Claude Code (issue #191 follow-up): renders
     // the CLI's stream-json events as native cards.
     m_agentTranscript = new ClaudeTranscriptView;
+    m_agentTranscript->setMinimumHeight(320); // never collapse to a thin strip
+    m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
-            [this](const QString &text) {
-                if (m_agentUsage)
-                    m_agentUsage->setText(text);
+            [this](const QString &kind, const QString &text, int percent) {
+                QProgressBar *bar = kind == QLatin1String("5h") ? m_agentUsage5hBar
+                                                                : m_agentUsageBar;
+                if (bar) {
+                    bar->setValue(qBound(0, percent, 100));
+                    bar->setFormat((kind == QLatin1String("5h")
+                                        ? QStringLiteral("5h: %1")
+                                        : QStringLiteral("Weekly: %1")).arg(text));
+                    bar->show();
+                }
+            });
+    connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
+            [this](qint64 tokens, double cost) {
+                if (m_agentStatsLabel) {
+                    m_agentStatsLabel->setText(
+                        QStringLiteral("⛁ %1 tokens · $%2")
+                            .arg(QLocale().toString(tokens)).arg(cost, 0, 'f', 4));
+                    m_agentStatsLabel->show();
+                }
             });
 
     m_agentOutputStack = new QStackedWidget;
@@ -16517,6 +16535,75 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputToggle->setLayout(toggleRow);
     m_agentOutputToggle->hide();
 
+    // Edited-files panel beside the live transcript: the files this session has
+    // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
+    // refreshed from `git diff` hourly). Double-click opens the file.
+    m_agentFilesList = new QListWidget;
+    m_agentFilesList->setObjectName("agentFilesList");
+    m_agentFilesList->setMinimumWidth(190);
+    m_agentFilesList->setMaximumWidth(280);
+    connect(m_agentFilesList, &QListWidget::itemActivated, this,
+            [](QListWidgetItem *it) {
+                const QString path = it->data(Qt::UserRole).toString();
+                if (!path.isEmpty())
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+            });
+    auto *filesV = new QVBoxLayout;
+    filesV->setContentsMargins(0, 0, 0, 0);
+    filesV->setSpacing(4);
+    auto *filesHeading = new QLabel(QStringLiteral("Edited files"));
+    filesHeading->setObjectName("agentFilesHeading");
+    filesV->addWidget(filesHeading);
+    filesV->addWidget(m_agentFilesList, 1);
+    m_agentFilesPanel = new QWidget;
+    m_agentFilesPanel->setLayout(filesV);
+    m_agentFilesPanel->hide();
+
+    // Files panel on the LEFT, the output stack fills the rest.
+    auto *outputRow = new QHBoxLayout;
+    outputRow->setContentsMargins(0, 0, 0, 0);
+    outputRow->setSpacing(10);
+    outputRow->addWidget(m_agentFilesPanel);
+    outputRow->addWidget(m_agentOutputStack, 1);
+    auto *outputContainer = new QWidget;
+    outputContainer->setLayout(outputRow);
+    outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // 5-hour + weekly usage graphs, fed live by rate_limit events and refreshed
+    // hourly, plus a live token/cost counter.
+    auto makeUsageBar = [](const QString &name) {
+        auto *b = new QProgressBar;
+        b->setObjectName(name);
+        b->setRange(0, 100);
+        b->setTextVisible(true);
+        b->setMaximumHeight(16);
+        b->hide();
+        return b;
+    };
+    m_agentUsage5hBar = makeUsageBar(QStringLiteral("agentUsage5hBar"));
+    m_agentUsageBar = makeUsageBar(QStringLiteral("agentUsageBar"));
+    m_agentStatsLabel = new QLabel;
+    m_agentStatsLabel->setObjectName("agentStatsLabel");
+    m_agentStatsLabel->hide();
+    auto *usageRow = new QHBoxLayout;
+    usageRow->setContentsMargins(0, 0, 0, 0);
+    usageRow->setSpacing(10);
+    usageRow->addWidget(m_agentUsage5hBar, 1);
+    usageRow->addWidget(m_agentUsageBar, 1);
+    usageRow->addWidget(m_agentStatsLabel);
+    auto *usageRowWidget = new QWidget;
+    usageRowWidget->setLayout(usageRow);
+
+    // Refresh usage + the edited-files list once an hour while the app runs.
+    m_agentHourlyTimer = new QTimer(this);
+    m_agentHourlyTimer->setInterval(60 * 60 * 1000);
+    connect(m_agentHourlyTimer, &QTimer::timeout, this, [this] {
+        refreshClaudeSpend();
+        if (m_selectedAgentSessionId > 0)
+            refreshAgentFilesPanel(m_selectedAgentSessionId);
+    });
+    m_agentHourlyTimer->start();
+
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText("Send an additional prompt to the running agent");
     m_agentPromptEdit->setMaximumHeight(92);
@@ -16530,12 +16617,15 @@ QWidget *MainWindow::buildAgentsTab()
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
             return;
-        if (m_streamSession && m_selectedAgentSessionId == m_terminalSessionId &&
-            m_streamSession->running()) {
-            // Steer the live Claude Code transcript session.
-            if (m_agentTranscript)
-                m_agentTranscript->addUserTurn(prompt);
-            m_streamSession->sendUserText(prompt);
+        if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
+            s && s->running()) {
+            // Steer the live Claude Code transcript session: record the turn in
+            // this session's buffer so it survives view switches, then send it.
+            const int sid = m_selectedAgentSessionId;
+            QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                             {QStringLiteral("text"), prompt}};
+            applyTranscriptEvent(sid, turn);
+            s->sendUserText(prompt);
         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
@@ -16566,9 +16656,10 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentUsage);
+    detailLayout->addWidget(usageRowWidget);
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentOutputToggle);
-    detailLayout->addWidget(m_agentOutputStack, 1);
+    detailLayout->addWidget(outputContainer, 1);
     detailLayout->addLayout(promptRow);
 
     m_agentDetail = detailPane;
@@ -17319,21 +17410,25 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentTitle)
         m_agentTitle->setText(
             session->issueNumber > 0
-                ? QStringLiteral("%1 on issue #%2")
-                      .arg(agentProviderName(session->provider))
+                ? QStringLiteral("#%1 · %2")
                       .arg(session->issueNumber)
-                : QStringLiteral("%1 on pull #%2")
+                      .arg(session->issueTitle.isEmpty()
+                               ? agentProviderName(session->provider)
+                               : session->issueTitle)
+                : QStringLiteral("%1 · pull #%2")
                       .arg(agentProviderName(session->provider))
                       .arg(session->prNumber));
     if (m_agentMeta) {
-        QString meta = QStringLiteral("%1/%2 · %3 · %4")
-                           .arg(session->owner, session->name,
+        // PR status, spelled out so it's always visible.
+        QString pr = session->prNumber > 0
+                         ? QStringLiteral("PR #%1 open").arg(session->prNumber)
+                         : (session->createPr ? QStringLiteral("PR opens on finish")
+                                              : QStringLiteral("no PR"));
+        QString meta = QStringLiteral("%1 · %2/%3 · %4 · %5 · %6")
+                           .arg(agentProviderName(session->provider),
+                                session->owner, session->name,
                                 agentStatusText(session->status),
-                                session->branchName);
-        if (session->prNumber > 0)
-            meta += QStringLiteral(" · PR #%1").arg(session->prNumber);
-        else if (session->createPr)
-            meta += QStringLiteral(" · PR requested");
+                                session->branchName, pr);
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += QStringLiteral(" · %1s")
                         .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -17395,18 +17490,26 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(log);
         m_agentLog->moveCursor(QTextCursor::End);
     }
-    // Pick the right output surface: the stream-json transcript for a live
-    // Claude Code session, the embedded terminal for a legacy terminal session,
-    // otherwise the piped log. The Transcript|Raw toggle shows only for the live
-    // transcript session.
+    // Pick the right output surface. A Claude Code session renders its OWN
+    // buffered transcript (so output never leaks between sessions); legacy
+    // terminal sessions show the embedded terminal; everything else the log. The
+    // Transcript|Raw toggle and the edited-files panel show only for transcript
+    // sessions.
+    const bool transcript = isStreamTranscriptSession(sessionId);
+    if (transcript) {
+        renderTranscriptForSession(sessionId);
+        refreshAgentFilesPanel(sessionId);
+        if (m_agentLog)
+            m_agentLog->setPlainText(m_streamRaw.value(sessionId));
+    }
+    if (m_agentOutputToggle)
+        m_agentOutputToggle->setVisible(transcript);
+    if (m_agentFilesPanel)
+        m_agentFilesPanel->setVisible(transcript);
     if (m_agentOutputStack) {
-        const bool transcriptLive = sessionId == m_terminalSessionId &&
-                                    m_streamSession && m_streamSession->running();
         const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
                               m_agentTerminal->isRunning();
-        if (m_agentOutputToggle)
-            m_agentOutputToggle->setVisible(transcriptLive);
-        if (transcriptLive) {
+        if (transcript) {
             const bool raw = m_terminalModeButton && m_terminalModeButton->isChecked();
             m_agentOutputStack->setCurrentWidget(
                 raw ? static_cast<QWidget *>(m_agentLog)
@@ -17565,10 +17668,22 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
-    session.branchName = QStringLiteral("agent/issue-%1-%2-%3")
-                             .arg(session.issueNumber)
-                             .arg(provider)
-                             .arg(session.id);
+    // A descriptive, related branch name: agent/issue-<n>-<title-slug>.
+    QString slug;
+    for (QChar ch : session.issueTitle.toLower()) {
+        const char a = ch.toLatin1();
+        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
+            slug.append(ch);
+        else if (!slug.isEmpty() && !slug.endsWith(QLatin1Char('-')))
+            slug.append(QLatin1Char('-'));
+    }
+    slug = slug.left(48);
+    while (slug.endsWith(QLatin1Char('-')))
+        slug.chop(1);
+    if (slug.isEmpty())
+        slug = provider;
+    session.branchName =
+        QStringLiteral("agent/issue-%1-%2").arg(session.issueNumber).arg(slug);
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -17964,80 +18079,291 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 // Run Claude Code in stream-json mode and render its events as a native,
 // extension-style transcript (issue #191 follow-up). Same auth model as the
 // terminal path (claude.ai login, no ANTHROPIC_API_KEY) and same IDE bridge, but
-// the output is parsed cards instead of a raw TUI. The raw stream stays reachable
-// via the "Raw output" toggle.
+// the output is parsed cards instead of a raw TUI. Each session keeps its own
+// stream + event buffer so output never leaks across sessions; the raw stream
+// stays reachable via the "Raw output" toggle, and a PR is opened on finish.
 void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
                                            const QString &repoPath)
 {
     if (!m_agentTranscript || !m_agentStore)
         return;
+    const int sid = session.id;
 
+    auto gitOut = [](const QString &dir, const QStringList &args) -> QString {
+        QProcess git;
+        git.setWorkingDirectory(dir);
+        git.start(QStringLiteral("git"), args);
+        if (git.waitForFinished(8000) && git.exitCode() == 0)
+            return QString::fromUtf8(git.readAllStandardOutput()).trimmed();
+        return QString();
+    };
+    // Capture the base commit/branch so we can diff this session into a PR.
+    if (session.baseRef.isEmpty()) {
+        session.baseRef = gitOut(repoPath, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+        const QString b = gitOut(repoPath, {QStringLiteral("rev-parse"),
+                                            QStringLiteral("--abbrev-ref"), QStringLiteral("HEAD")});
+        if (!b.isEmpty() && b != QLatin1String("HEAD"))
+            session.baseBranch = b;
+    }
+    if (session.baseBranch.isEmpty())
+        session.baseBranch = session.baseRef;
+    session.createPr = true; // always open a PR for a finished transcript session
+
+    const QString baseName =
+        session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
     const QString prompt =
         QStringLiteral(
             "Resolve ForkMesh issue #%1: %2\n\n"
-            "The full issue is in issues/%1/issue.md. Implement the change end to "
-            "end, consistent with the surrounding code, then summarize what you "
-            "changed and how to verify it.\n")
+            "You are working in a dedicated git worktree on branch `%3` (forked "
+            "from `%4`). The full issue is in issues/%1/issue.md. Work end to end:\n"
+            "1. Implement the change, consistent with the surrounding code.\n"
+            "2. If `%4` has advanced, rebase or merge it into your branch and "
+            "resolve any conflicts.\n"
+            "3. Run the project's tests and linting, and fix any failures.\n"
+            "4. Commit everything to `%3` with a clear message.\n"
+            "ForkMesh will open the pull request from your branch. Finally, "
+            "summarize what you changed and how to verify it.\n")
             .arg(session.issueNumber)
-            .arg(issue.title);
+            .arg(issue.title)
+            .arg(session.branchName)
+            .arg(baseName);
+
+    // Give the agent its own worktree + branch so concurrent agents never share a
+    // working tree. Fall back to the live checkout if the worktree can't be made.
+    QString workdir = repoPath;
+    if (!session.baseRef.isEmpty()) {
+        const QString wtRoot =
+            QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+            + QStringLiteral("/forkmesh-worktrees");
+        QDir().mkpath(wtRoot);
+        const QString wtPath =
+            wtRoot + QStringLiteral("/issue-%1-s%2").arg(session.issueNumber).arg(sid);
+        gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("prune")});
+        gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("add"),
+                          QStringLiteral("-B"), session.branchName, wtPath,
+                          session.baseRef});
+        if (QDir(wtPath).exists()) {
+            workdir = wtPath;
+            m_streamWorktree[sid] = wtPath;
+        }
+    }
 
     QStringList env;
     env << QStringLiteral("ANTHROPIC_API_KEY"); // see startClaudeCodeTerminal
     if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-        if (bridge->start(repoPath))
+        if (bridge->start(workdir))
             env << bridge->env();
     }
 
-    // Fresh transcript + stream session for this run.
-    m_agentTranscript->clear();
-    m_agentTranscript->addUserTurn(prompt);
-    if (m_agentLog)
-        m_agentLog->clear();
-    if (m_streamSession)
-        m_streamSession->deleteLater();
-    m_streamSession = new ClaudeStreamSession(this);
-    const int sid = session.id;
-    connect(m_streamSession, &ClaudeStreamSession::event, m_agentTranscript,
-            &ClaudeTranscriptView::handleEvent);
-    connect(m_streamSession, &ClaudeStreamSession::rawLine, this,
-            [this](const QString &line) {
-                if (m_agentLog) {
-                    m_agentLog->moveCursor(QTextCursor::End);
-                    m_agentLog->insertPlainText(line + QLatin1Char('\n'));
-                }
-            });
-    connect(m_streamSession, &ClaudeStreamSession::finished, this,
-            [this, sid](int) {
-                if (AgentSession *s = findAgentSession(sid)) {
-                    if (s->status == AgentStatus::Running) {
-                        s->status = AgentStatus::Success;
-                        s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                        m_agentStore->saveSession(*s);
-                        reloadAgents();
-                    }
-                }
-            });
+    // Per-session buffers; tear down any prior stream for THIS session only.
+    m_streamEvents[sid].clear();
+    m_streamRaw[sid].clear();
+    m_streamFiles[sid].clear();
+    if (ClaudeStreamSession *old = m_streamSessions.take(sid))
+        old->deleteLater();
+    auto *stream = new ClaudeStreamSession(this);
+    m_streamSessions.insert(sid, stream);
+    // Record the initial user turn so it replays when switching back to this view.
+    applyTranscriptEvent(sid, QJsonObject{
+                                  {QStringLiteral("type"), QStringLiteral("_local_user")},
+                                  {QStringLiteral("text"), prompt}});
+    connect(stream, &ClaudeStreamSession::event, this,
+            [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
+    connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
+        QString &buf = m_streamRaw[sid];
+        buf += line + QLatin1Char('\n');
+        if (buf.size() > 400000)
+            buf = buf.right(300000);
+        if (sid == m_selectedAgentSessionId && m_agentLog) {
+            m_agentLog->moveCursor(QTextCursor::End);
+            m_agentLog->insertPlainText(line + QLatin1Char('\n'));
+        }
+    });
+    connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
+        if (AgentSession *as = findAgentSession(sid)) {
+            if (as->status == AgentStatus::Running) {
+                as->status = AgentStatus::Success;
+                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                m_agentStore->saveSession(*as);
+            }
+        }
+        maybeCreatePullForStreamSession(sid);
+        if (ClaudeStreamSession *done = m_streamSessions.take(sid))
+            done->deleteLater();
+        reloadAgents();
+        if (sid == m_selectedAgentSessionId)
+            showAgentSession(sid);
+    });
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
-        session,
-        QStringLiteral("\n==> Running Claude Code (stream-json transcript)\n"));
+        session, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
+                                "on branch %1 in %2\n")
+                     .arg(session.branchName, workdir));
 
     m_terminalSessionId = session.id;
     switchToAgentsTab(session.id);
-    showAgentSession(session.id);
+    showAgentSession(session.id); // renders the buffered turn + selects the surface
     reloadAgents();
-    if (m_agentOutputToggle)
-        m_agentOutputToggle->show();
     if (m_transcriptModeButton)
         m_transcriptModeButton->setChecked(true);
     if (m_terminalModeButton)
         m_terminalModeButton->setChecked(false);
-    if (m_agentOutputStack)
-        m_agentOutputStack->setCurrentWidget(m_agentTranscript);
-    m_streamSession->start(repoPath, env, prompt, /*skipPermissions=*/true);
+    stream->start(workdir, env, prompt, /*skipPermissions=*/true);
+}
+
+// Working directory for a session: its worktree if it has one, else the repo.
+QString MainWindow::sessionWorkdir(int sessionId)
+{
+    if (m_streamWorktree.contains(sessionId))
+        return m_streamWorktree.value(sessionId);
+    if (const AgentSession *s = findAgentSession(sessionId)) {
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri >= 0)
+            return m_repositories.at(ri).localPath;
+    }
+    return QString();
+}
+
+bool MainWindow::isStreamTranscriptSession(int sessionId) const
+{
+    return m_streamSessions.contains(sessionId) || m_streamEvents.contains(sessionId);
+}
+
+// Buffer one event for a session and, if that session is the one on screen,
+// render it live. Also collect the files it edits for the side panel.
+void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
+{
+    m_streamEvents[sessionId].append(ev);
+
+    if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant")) {
+        const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+                                       .value(QStringLiteral("content")).toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject b = bv.toObject();
+            if (b.value(QStringLiteral("type")).toString() != QLatin1String("tool_use"))
+                continue;
+            const QString name = b.value(QStringLiteral("name")).toString();
+            if (name == QLatin1String("Edit") || name == QLatin1String("Write")
+                || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
+                const QString p = b.value(QStringLiteral("input")).toObject()
+                                      .value(QStringLiteral("file_path")).toString();
+                if (!p.isEmpty() && !m_streamFiles[sessionId].contains(p))
+                    m_streamFiles[sessionId].append(p);
+            }
+        }
+    }
+
+    if (sessionId == m_selectedAgentSessionId && m_agentTranscript) {
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+            m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
+        else
+            m_agentTranscript->handleEvent(ev);
+        refreshAgentFilesPanel(sessionId);
+    }
+}
+
+// Repaint the transcript view from a session's buffered events (on selection).
+void MainWindow::renderTranscriptForSession(int sessionId)
+{
+    if (!m_agentTranscript)
+        return;
+    m_agentTranscript->clear();
+    const QList<QJsonObject> &events = m_streamEvents[sessionId];
+    for (const QJsonObject &ev : events) {
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+            m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
+        else
+            m_agentTranscript->handleEvent(ev);
+    }
+}
+
+// Fill the edited-files panel: the union of files seen in tool calls and the
+// repo's current working-tree changes.
+void MainWindow::refreshAgentFilesPanel(int sessionId)
+{
+    if (!m_agentFilesList)
+        return;
+    const QString repoPath = sessionWorkdir(sessionId); // the worktree, if any
+
+    QStringList absPaths;
+    auto addAbs = [&](const QString &p) {
+        QString abs = QDir::isAbsolutePath(p) || repoPath.isEmpty()
+                          ? p : QDir(repoPath).filePath(p);
+        if (!absPaths.contains(abs))
+            absPaths.append(abs);
+    };
+    for (const QString &p : m_streamFiles.value(sessionId))
+        addAbs(p);
+    if (!repoPath.isEmpty()) {
+        QProcess git;
+        git.setWorkingDirectory(repoPath);
+        git.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only")});
+        if (git.waitForFinished(3000) && git.exitCode() == 0)
+            for (const QString &f : QString::fromUtf8(git.readAllStandardOutput())
+                                        .split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+                addAbs(f);
+    }
+
+    m_agentFilesList->clear();
+    for (const QString &abs : absPaths) {
+        const QString label = repoPath.isEmpty() ? abs
+                                                  : QDir(repoPath).relativeFilePath(abs);
+        auto *it = new QListWidgetItem(label);
+        it->setToolTip(abs);
+        it->setData(Qt::UserRole, abs);
+        m_agentFilesList->addItem(it);
+    }
+}
+
+// Open a ForkMesh pull request from the session's changes (diff since baseRef),
+// mirroring onAgentFinished's PR path but for the live-tree transcript session.
+void MainWindow::maybeCreatePullForStreamSession(int sessionId)
+{
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s || !s->createPr || s->prNumber > 0 || !m_agentStore || s->baseRef.isEmpty())
+        return;
+    const int ri = repoIndexFor(s->owner, s->name);
+    if (ri < 0)
+        return;
+    const RepositoryRecord repo = m_repositories.at(ri);
+    const QString workdir = sessionWorkdir(sessionId); // diff in the worktree
+
+    QString patch;
+    {
+        QProcess git;
+        git.setWorkingDirectory(workdir);
+        git.start(QStringLiteral("git"),
+                  {QStringLiteral("diff"), QStringLiteral("--binary"), s->baseRef});
+        if (git.waitForFinished(8000) && git.exitCode() == 0)
+            patch = QString::fromUtf8(git.readAllStandardOutput());
+    }
+    if (patch.trimmed().isEmpty()) {
+        m_agentStore->appendLog(
+            *s, QStringLiteral("==> No code changes; no pull request created.\n"));
+        return;
+    }
+    m_agentStore->writePatch(*s, patch);
+    PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+    QString error;
+    const int pr = store.createPull(
+        QStringLiteral("Agent: issue #%1 %2").arg(s->issueNumber).arg(s->issueTitle),
+        QStringLiteral("Created from a Claude Code session for issue #%1.")
+            .arg(s->issueNumber),
+        s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
+        QString(), &error);
+    if (pr > 0) {
+        s->prNumber = pr;
+        m_agentStore->saveSession(*s);
+        m_agentStore->appendLog(*s, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
+        if (ri == m_repoDetailIndex)
+            reloadPulls();
+    } else {
+        m_agentStore->appendLog(
+            *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+    }
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
@@ -34416,15 +34742,27 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
                 ? repo.localPath
                 : repo.mirrorPath;
-        QByteArray out;
-        if (!gitDir.trimmed().isEmpty() &&
-            runGitCapture(gitDir, {"rev-list", "--max-parents=0", "HEAD"}, &out,
-                          nullptr)) {
+        // Resolve the earliest root commit. Prefer HEAD, but fall back to --all:
+        // a bare mirror cloned from the relay can carry an unset/dangling HEAD
+        // (the relay serves git-upload-pack without advertising a symref HEAD), so
+        // "rev-list ... HEAD" fails and leaves rootCommit empty. An empty root drops
+        // that mirror into a different group key (worker repo_mirror_group_key), so
+        // the owner's mirror-nodes panel never lists it next to the source of truth
+        // — the node shows up on the mirror but not on the source (issue #243). --all
+        // walks every ref the mirror holds, yielding the same root the source-of-
+        // truth computes from its working tree regardless of HEAD's state.
+        auto firstRoot = [&](const QStringList &args) -> QString {
+            QByteArray out;
+            if (gitDir.trimmed().isEmpty() ||
+                !runGitCapture(gitDir, args, &out, nullptr))
+                return QString();
             const QStringList roots =
                 QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-            if (!roots.isEmpty())
-                rootCommit = roots.last().trimmed(); // earliest root commit
-        }
+            return roots.isEmpty() ? QString() : roots.last().trimmed();
+        };
+        rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
+        if (rootCommit.isEmpty())
+            rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
     }
     // Owner-signed fingerprint of the refs this node serves (sha256 over the
     // canonical heads+tags advertisement). The relay pins this and refuses to
