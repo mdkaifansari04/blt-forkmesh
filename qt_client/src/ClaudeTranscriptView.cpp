@@ -22,8 +22,11 @@ namespace {
 QString esc(const QString &s) { return s.toHtmlEscaped(); }
 } // namespace
 
-// A foldable section: a clickable header (▸/▾) over a body, with an optional
-// accent colour (header text + left border). Plain QFrame — toggle is a lambda.
+// A foldable section: a clickable header (▸/▾) over a body. Instead of a heavy
+// grey card it draws as an open section with a coloured accent bar down the left,
+// so the transcript reads as a lively timeline rather than a stack of boxes. The
+// body folds open/shut with a height animation, and a section can softly pulse
+// while it is live (the streaming "Thinking…" card).
 class Collapsible : public QFrame
 {
 public:
@@ -32,44 +35,115 @@ public:
                 QWidget *parent = nullptr)
         : QFrame(parent), m_open(expanded), m_label(header)
     {
+        const QString bar = accent.isEmpty() ? p.border : accent;
         const QString hdr = accent.isEmpty() ? p.text : accent;
-        setStyleSheet(QStringLiteral("QFrame{background:%1;border:1px solid %2;"
-                                     "border-left:3px solid %3;border-radius:8px;}")
-                          .arg(p.surface, p.border, accent.isEmpty() ? p.border : accent));
+        setObjectName(QStringLiteral("xscript_section"));
+        // Transparent body, just an accent stripe on the left — no boxed-in grey.
+        setStyleSheet(QStringLiteral(
+                          "QFrame#xscript_section{background:transparent;border:none;"
+                          "border-left:3px solid %1;border-top-left-radius:0;"
+                          "border-bottom-left-radius:0;border-radius:6px;}")
+                          .arg(bar));
         auto *v = new QVBoxLayout(this);
-        v->setContentsMargins(10, 8, 10, 8);
+        v->setContentsMargins(12, 6, 6, 6);
         v->setSpacing(6);
         m_btn = new QPushButton(this);
         m_btn->setCursor(Qt::PointingHandCursor);
         m_btn->setStyleSheet(QStringLiteral(
             "QPushButton{border:none;background:transparent;text-align:left;"
-            "color:%1;font-weight:600;padding:0;}").arg(hdr));
+            "color:%1;font-weight:600;padding:0;}"
+            "QPushButton:hover{color:%2;}").arg(hdr, p.accent));
         v->addWidget(m_btn);
         m_bodyWidget = new QWidget(this);
         m_bodyWidget->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
         m_bodyLayout = new QVBoxLayout(m_bodyWidget);
-        m_bodyLayout->setContentsMargins(0, 0, 0, 0);
+        m_bodyLayout->setContentsMargins(0, 2, 0, 0);
         m_bodyLayout->setSpacing(6);
         v->addWidget(m_bodyWidget);
         QObject::connect(m_btn, &QPushButton::clicked, m_btn,
                          [this] { setExpanded(!m_open); });
-        refresh();
+        m_bodyWidget->setVisible(m_open); // initial state: no animation
+        updateHeaderText();
     }
     QVBoxLayout *body() { return m_bodyLayout; }
-    void setHeaderText(const QString &t) { m_label = t; refresh(); }
-    void setExpanded(bool on) { m_open = on; refresh(); }
+    void setHeaderText(const QString &t) { m_label = t; updateHeaderText(); }
+
+    void setExpanded(bool on)
+    {
+        if (on == m_open)
+            return;
+        m_open = on;
+        updateHeaderText();
+        animateBody();
+    }
+
+    // Softly breathe the whole section's opacity while it is live, then settle to
+    // fully opaque. Used for the streaming "Thinking…" card.
+    void setPulsing(bool on)
+    {
+        if (!on) {
+            if (m_pulse) {
+                m_pulse->stop();
+                m_pulse->deleteLater();
+                m_pulse = nullptr;
+            }
+            setGraphicsEffect(nullptr);
+            return;
+        }
+        if (m_pulse)
+            return;
+        auto *eff = new QGraphicsOpacityEffect(this);
+        setGraphicsEffect(eff);
+        m_pulse = new QPropertyAnimation(eff, "opacity", this);
+        m_pulse->setDuration(1300);
+        m_pulse->setStartValue(1.0);
+        m_pulse->setKeyValueAt(0.5, 0.55);
+        m_pulse->setEndValue(1.0);
+        m_pulse->setEasingCurve(QEasingCurve::InOutSine);
+        m_pulse->setLoopCount(-1);
+        m_pulse->start();
+    }
 
 private:
-    void refresh()
+    void updateHeaderText()
     {
-        m_bodyWidget->setVisible(m_open);
         m_btn->setText((m_open ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + m_label);
+    }
+    void animateBody()
+    {
+        if (!m_anim) {
+            m_anim = new QPropertyAnimation(m_bodyWidget, "maximumHeight", this);
+            // stop() never emits finished, so a reconfigured run can't trip the
+            // previous one's settle step — we just read m_open here.
+            QObject::connect(m_anim, &QPropertyAnimation::finished, this, [this] {
+                if (m_open)
+                    m_bodyWidget->setMaximumHeight(QWIDGETSIZE_MAX);
+                else
+                    m_bodyWidget->setVisible(false);
+            });
+        }
+        m_anim->stop();
+        if (m_open) {
+            m_bodyWidget->setVisible(true);
+            m_anim->setDuration(180);
+            m_anim->setEasingCurve(QEasingCurve::OutCubic);
+            m_anim->setStartValue(0);
+            m_anim->setEndValue(qMax(0, m_bodyWidget->sizeHint().height()));
+        } else {
+            m_anim->setDuration(160);
+            m_anim->setEasingCurve(QEasingCurve::InCubic);
+            m_anim->setStartValue(m_bodyWidget->height());
+            m_anim->setEndValue(0);
+        }
+        m_anim->start();
     }
     QPushButton *m_btn = nullptr;
     QWidget *m_bodyWidget = nullptr;
     QVBoxLayout *m_bodyLayout = nullptr;
     bool m_open = true;
     QString m_label;
+    QPropertyAnimation *m_anim = nullptr;  // body fold animation
+    QPropertyAnimation *m_pulse = nullptr; // live "breathing" while streaming
 };
 
 ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent)

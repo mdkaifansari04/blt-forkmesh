@@ -40,13 +40,11 @@ signals:
     // Running totals as the session spends them (assistant usage + result).
     void statsChanged(qint64 tokens, double costUsd);
 
-protected:
-    void resizeEvent(QResizeEvent *e) override;
-
 private:
     void applyScheme();
-    void addRow(QWidget *card);
-    void scrollToNewCard(QWidget *card);
+    void addRow(QWidget *card, bool animate = true);
+    bool isAtBottom() const;
+    void scrollToBottomSoon();
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
     QString accentFor(const QString &toolName) const;
@@ -88,7 +86,6 @@ private:
     QString m_thinkingText;
     int m_thinkingTokens = 0;
 
-    QWidget *m_bottomSpacer = nullptr;          // lets the newest card scroll to top
     QPropertyAnimation *m_scrollAnim = nullptr; // smooth scrolling
     qint64 m_totalTokens = 0;
     double m_totalCost = 0.0;

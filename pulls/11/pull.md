@@ -4,7 +4,7 @@ number: 11
 title: fix: prevent issue deletion from freezing the app
 base: main
 head: independent-v2-20260625-142017/01-issue-141-delete-freeze
-status: open
+status: merged
 ts: 1782378602029
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -34,4 +34,3 @@ Commits included:
 Verification:
 - Clean cherry-pick onto baseline 9885c53.
 - Signed payload generated with PullStore-compatible 5-field canonical string including commits mbox.
-
