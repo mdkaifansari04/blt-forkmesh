@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QUuid>
 
@@ -17,13 +18,21 @@
 namespace {
 
 constexpr int kGitTimeoutMs = 15000;
+// History rewrites (filter-branch) replay every commit, so they need far longer
+// than an ordinary git invocation.
+constexpr int kGitRewriteTimeoutMs = 120000;
 
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
-            QString *errText = nullptr)
+            QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
 {
     QProcess process;
+    if (args.contains(QStringLiteral("filter-branch"))) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("FILTER_BRANCH_SQUELCH_WARNING"), QStringLiteral("1"));
+        process.setProcessEnvironment(env);
+    }
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(kGitTimeoutMs)) {
+    if (!process.waitForFinished(timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;
@@ -150,6 +159,64 @@ PullEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.sig = fm.get("sig");
     ev.body = fm.body;
     return ev;
+}
+
+// filter-branch leaves the pre-rewrite tips under refs/original/*; drop them so
+// the old (un-purged) history is actually unreachable and can be gc'd.
+bool removeOriginalRefs(const QString &workTree, QString *error)
+{
+    QByteArray refs;
+    QString err;
+    if (!runGit(workTree, {"for-each-ref", "--format=%(refname)", "refs/original"},
+                &refs, &err, kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git for-each-ref failed: ") + err;
+        return false;
+    }
+    const QList<QByteArray> lines = refs.split('\n');
+    for (const QByteArray &line : lines) {
+        const QString ref = QString::fromUtf8(line).trimmed();
+        if (ref.isEmpty())
+            continue;
+        if (!runGit(workTree, {"update-ref", "-d", ref}, nullptr, &err,
+                    kGitRewriteTimeoutMs)) {
+            if (error)
+                *error = QStringLiteral("git update-ref failed: ") + err;
+            return false;
+        }
+    }
+    return true;
+}
+
+// A history rewrite requires a clean tree. Refuse if anything tracked *other*
+// than the pull being deleted is staged/modified, so we never replay or discard
+// a collaborator's in-flight work (agents share this working tree).
+bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
+                                QString *error)
+{
+    QByteArray status;
+    QString err;
+    if (!runGit(workTree, {"status", "--porcelain", "--untracked-files=no"}, &status,
+                &err)) {
+        if (error)
+            *error = QStringLiteral("git status failed: ") + err;
+        return true;
+    }
+    const QString prefix = relPath + "/";
+    const QList<QByteArray> lines = status.split('\n');
+    for (const QByteArray &line : lines) {
+        if (line.size() < 4)
+            continue;
+        const QString path = QString::fromUtf8(line.mid(3)).trimmed();
+        if (path != relPath && !path.startsWith(prefix)) {
+            if (error) {
+                *error = QStringLiteral("Commit or stash unrelated tracked changes "
+                                        "before deleting a pull request.");
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -1280,6 +1347,12 @@ bool PullStore::deletePull(int number, QString *error)
     }
     const QString relPath = QStringLiteral("pulls/%1").arg(number);
     QString err;
+    if (hasUnrelatedTrackedChanges(m_workTree, relPath, error))
+        return false;
+
+    // First commit a normal deletion so the work tree is clean for the history
+    // rewrite below, which then prunes this commit along with the prior
+    // pull-only commits (e.g. "pull #N: open" and its changes.patch).
     runGit(m_workTree, {"rm", "-r", "--ignore-unmatch", "--", relPath}, nullptr, nullptr);
     if (QDir(dir).exists() && !QDir(dir).removeRecursively()) {
         if (error)
@@ -1295,6 +1368,60 @@ bool PullStore::deletePull(int number, QString *error)
                 *error = QStringLiteral("git commit failed: ") + err;
             return false;
         }
+    }
+
+    // Purge pulls/<number> from every commit so the diff text it carried
+    // (changes.patch / commits.mbox) can no longer be found by searching
+    // history. Without this the soft delete above only hides the files at the
+    // tip; older commits still contain them.
+    QByteArray refs;
+    if (!runGit(m_workTree, {"rev-list", "--all", "--max-count=1"}, &refs, &err,
+                kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git rev-list failed: ") + err;
+        return false;
+    }
+    if (refs.trimmed().isEmpty())
+        return true;
+
+    const QString indexFilter =
+        QStringLiteral("git rm -r --cached --ignore-unmatch -- %1").arg(relPath);
+    QByteArray out;
+    if (!runGit(m_workTree,
+                {"filter-branch", "--force", "--index-filter", indexFilter,
+                 "--prune-empty", "--tag-name-filter", "cat", "--", "--all"},
+                &out, &err, kGitRewriteTimeoutMs)) {
+        const QString stdoutText = QString::fromUtf8(out);
+        if (!err.contains(QStringLiteral("Not a valid object name HEAD")) &&
+            !stdoutText.contains(QStringLiteral("was deleted"))) {
+            if (error)
+                *error = QStringLiteral("git history rewrite failed: ") + err;
+            return false;
+        }
+    }
+
+    if (!runGit(m_workTree, {"rev-parse", "--verify", "HEAD"}, nullptr, nullptr) &&
+        !runGit(m_workTree, {"commit", "--allow-empty", "-m",
+                             QStringLiteral("Initial commit")},
+                nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("git commit failed: ") + err;
+        return false;
+    }
+    if (!removeOriginalRefs(m_workTree, error))
+        return false;
+    if (!runGit(m_workTree, {"reflog", "expire", "--expire=now",
+                             "--expire-unreachable=now", "--all"},
+                nullptr, &err, kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git reflog expire failed: ") + err;
+        return false;
+    }
+    if (!runGit(m_workTree, {"gc", "--prune=now"}, nullptr, &err,
+                kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git gc failed: ") + err;
+        return false;
     }
     return true;
 }
