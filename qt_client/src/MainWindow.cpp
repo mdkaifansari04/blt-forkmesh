@@ -19445,12 +19445,13 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
         QString &buf = m_streamRaw[sid];
-        buf += line + QLatin1Char('\n');
+        // Separate each JSON object with a blank line so the raw view is readable.
+        buf += line + QStringLiteral("\n\n");
         if (buf.size() > 400000)
             buf = buf.right(300000);
         if (sid == m_selectedAgentSessionId && m_agentLog) {
             m_agentLog->moveCursor(QTextCursor::End);
-            m_agentLog->insertPlainText(line + QLatin1Char('\n'));
+            m_agentLog->insertPlainText(line + QStringLiteral("\n\n"));
         }
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
@@ -19796,7 +19797,10 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         QFile f(ext.path);
         if (f.open(QIODevice::ReadOnly)) {
             f.seek(ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024));
-            m_agentLog->setPlainText(QString::fromUtf8(f.readAll()));
+            // Separate each JSON object with a blank line so the raw view is readable.
+            const QStringList objs =
+                QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            m_agentLog->setPlainText(objs.join(QStringLiteral("\n\n")));
             m_agentLog->moveCursor(QTextCursor::End);
         }
     }
