@@ -666,10 +666,17 @@ private:
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
-    void mergeWorktreeIntoMain(const QString &branch);
+    // Merge a worktree's branch into the default branch. On success the now-merged
+    // worktree is removed (its work is in main); pass its folder so it can be.
+    void mergeWorktreeIntoMain(const QString &branch,
+                               const QString &worktreePath = QString());
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // Remove a worktree's folder (git worktree remove --force). confirm=true asks
+    // first; the post-merge cleanup calls it silently.
+    void removeWorktree(const QString &worktreePath, const QString &branch,
+                        bool confirm);
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1442,6 +1449,7 @@ private:
     QLabel *m_worktreeFilesSummary = nullptr;
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
+    QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
     int m_releasesTabIndex = -1; // index of the Releases page
@@ -1857,6 +1865,9 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;
+    // Stop a live Claude Code stream session (the Stop button). stop() emits no
+    // `finished`, so transition the session to Stopped and refresh here.
+    void stopStreamSession(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
     QPlainTextEdit *m_agentPromptEdit = nullptr;

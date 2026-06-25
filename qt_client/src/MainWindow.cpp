@@ -17266,9 +17266,7 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
         if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
             runner->stop();
-        if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId))
-            if (s->running())
-                s->stop();
+        stopStreamSession(m_selectedAgentSessionId);
     });
 
     m_agentContinueButton = new QPushButton("Continue");
@@ -19109,6 +19107,39 @@ bool MainWindow::isStreamTranscriptSession(int sessionId) const
     return m_streamSessions.contains(sessionId) || m_streamEvents.contains(sessionId);
 }
 
+// Stop the Claude Code CLI for a session and transition it to Stopped. The
+// natural-finish path runs in ClaudeStreamSession::finished, but stop() kills
+// the process without emitting `finished`, so the session would otherwise hang
+// on "Running" with a dangling map entry. Do that teardown here instead.
+void MainWindow::stopStreamSession(int sessionId)
+{
+    ClaudeStreamSession *stream = m_streamSessions.take(sessionId);
+    if (!stream)
+        return;
+    stream->stop();
+    stream->deleteLater();
+
+    QString &raw = m_streamRaw[sessionId];
+    raw += QStringLiteral("\n==> Stop requested by user.\n");
+    if (sessionId == m_selectedAgentSessionId && m_agentLog) {
+        m_agentLog->moveCursor(QTextCursor::End);
+        m_agentLog->insertPlainText(QStringLiteral("\n==> Stop requested by user.\n"));
+    }
+
+    if (AgentSession *as = findAgentSession(sessionId);
+        as && as->status == AgentStatus::Running) {
+        as->status = AgentStatus::Stopped;
+        as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_agentStore)
+            m_agentStore->saveSession(*as);
+    }
+
+    reloadAgents();
+    if (sessionId == m_selectedAgentSessionId)
+        showAgentSession(sessionId);
+    updateAgentActionState();
+}
+
 // Buffer one event for a session and, if that session is the one on screen,
 // render it live. Also collect the files it edits for the side panel.
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
@@ -19340,7 +19371,12 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 void MainWindow::updateAgentActionState()
 {
     const bool selected = m_selectedAgentSessionId > 0;
-    const bool running = selected && runnerForSession(m_selectedAgentSessionId);
+    // A session is "running" if a headless AgentRunner is driving it, OR a live
+    // Claude Code stream-json session (no runner) is still attached.
+    ClaudeStreamSession *stream =
+        selected ? m_streamSessions.value(m_selectedAgentSessionId) : nullptr;
+    const bool running = selected && (runnerForSession(m_selectedAgentSessionId) ||
+                                      (stream && stream->running()));
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
@@ -25123,7 +25159,7 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeMergeButton->setEnabled(false);
     connect(m_worktreeMergeButton, &QPushButton::clicked, this, [this] {
         if (!m_worktreeSelectedBranch.isEmpty())
-            mergeWorktreeIntoMain(m_worktreeSelectedBranch);
+            mergeWorktreeIntoMain(m_worktreeSelectedBranch, m_worktreeSelectedPath);
     });
     // The reverse direction: pull the default branch into this worktree so it
     // catches up with main before you keep working (or merge it back).
@@ -25139,11 +25175,23 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
     });
+    m_worktreeRemoveButton = new QPushButton("Remove");
+    m_worktreeRemoveButton->setObjectName("ghostButton");
+    m_worktreeRemoveButton->setProperty("buttonSize", "sm");
+    m_worktreeRemoveButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeRemoveButton, "trash", 14);
+    m_worktreeRemoveButton->setToolTip("Remove the selected worktree's folder");
+    m_worktreeRemoveButton->setEnabled(false);
+    connect(m_worktreeRemoveButton, &QPushButton::clicked, this, [this] {
+        if (!m_worktreeSelectedPath.isEmpty())
+            removeWorktree(m_worktreeSelectedPath, m_worktreeSelectedBranch, true);
+    });
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addStretch();
     detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
+    detailBar->addWidget(m_worktreeRemoveButton);
     auto *diffPane = new QWidget;
     auto *diffPaneLayout = new QVBoxLayout(diffPane);
     diffPaneLayout->setContentsMargins(0, 0, 0, 0);
@@ -25255,7 +25303,7 @@ void MainWindow::loadWorktreesPanel()
             mergeBtn->setCursor(Qt::PointingHandCursor);
             setOcticon(mergeBtn, "check-circle", 14);
             connect(mergeBtn, &QPushButton::clicked, this,
-                    [this, branch] { mergeWorktreeIntoMain(branch); });
+                    [this, branch, p] { mergeWorktreeIntoMain(branch, p); });
             h->addWidget(mergeBtn);
             // Or open a pull request from it (the review-first path).
             auto *prBtn = new QPushButton("Create PR");
@@ -25270,20 +25318,10 @@ void MainWindow::loadWorktreesPanel()
             auto *rmBtn = new QPushButton("Remove");
             rmBtn->setObjectName("ghostButton");
             rmBtn->setCursor(Qt::PointingHandCursor);
+            setOcticon(rmBtn, "trash", 14);
             const QString branch = wt.branch;
-            connect(rmBtn, &QPushButton::clicked, this, [this, p, branch, repoPath] {
-                if (QMessageBox::question(
-                        this, QStringLiteral("Remove worktree"),
-                        QStringLiteral("Remove the worktree at\n%1\n(branch %2)?\n\n"
-                                       "Uncommitted changes there will be lost.")
-                            .arg(p, branch.isEmpty() ? QStringLiteral("-") : branch))
-                    != QMessageBox::Yes)
-                    return;
-                QProcess::execute(QStringLiteral("git"),
-                                  {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                                   QStringLiteral("remove"), QStringLiteral("--force"), p});
-                loadWorktreesPanel();
-            });
+            connect(rmBtn, &QPushButton::clicked, this,
+                    [this, p, branch] { removeWorktree(p, branch, true); });
             h->addWidget(rmBtn);
         }
         h->addStretch();
@@ -25322,11 +25360,18 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     m_worktreeSelectedBranch = branch;
     m_worktreeSelectedPath = worktreePath;
     const bool feature = !branch.isEmpty() && branch != base;
+    QString repoLocal;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+        repoLocal = m_repositories.at(m_repoDetailIndex).localPath;
+    const bool isMain = !worktreePath.isEmpty() && !repoLocal.isEmpty() &&
+                        QDir(worktreePath).absolutePath() == QDir(repoLocal).absolutePath();
     if (m_worktreeMergeButton)
         m_worktreeMergeButton->setEnabled(feature && repoHasWorkingTree());
     if (m_worktreeUpdateButton)
         m_worktreeUpdateButton->setEnabled(feature && !worktreePath.isEmpty() &&
                                            QDir(worktreePath).exists());
+    if (m_worktreeRemoveButton)
+        m_worktreeRemoveButton->setEnabled(!isMain && !worktreePath.isEmpty());
     QByteArray out;
     bool ok = false;
     if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
@@ -25374,7 +25419,8 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branch)
+void MainWindow::mergeWorktreeIntoMain(const QString &branch,
+                                       const QString &worktreePath)
 {
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
@@ -25410,7 +25456,20 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch)
                       {"merge", "--no-ff", branch,
                        "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
                       nullptr, &err)) {
-        setRepoDetailNotice(QStringLiteral("Merged %1 into %2.").arg(branch, base), false);
+        // The branch is now in main, so the worktree has served its purpose — clean
+        // it up (silently; the merge was already confirmed). Removing a worktree
+        // leaves its branch behind, which is fine: it stays mergeable/visible.
+        bool removed = false;
+        if (!worktreePath.isEmpty() &&
+            QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
+            removeWorktree(worktreePath, branch, /*confirm=*/false);
+            removed = !QDir(worktreePath).exists();
+        }
+        setRepoDetailNotice(
+            removed ? QStringLiteral("Merged %1 into %2 and removed its worktree.")
+                          .arg(branch, base)
+                    : QStringLiteral("Merged %1 into %2.").arg(branch, base),
+            false);
     } else {
         runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
         setRepoDetailNotice(
@@ -25420,6 +25479,35 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch)
     loadWorktreesPanel();
     if (m_branchesTable)
         loadBranchesPanel();
+}
+
+void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
+                                bool confirm)
+{
+    if (worktreePath.isEmpty())
+        return;
+    QString repoPath;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+        repoPath = m_repositories.at(m_repoDetailIndex).localPath;
+    if (repoPath.isEmpty())
+        return;
+    if (QDir(worktreePath).absolutePath() == QDir(repoPath).absolutePath()) {
+        setRepoDetailNotice("That's the main checkout — it can't be removed here.",
+                            true);
+        return;
+    }
+    if (confirm &&
+        QMessageBox::question(
+            this, QStringLiteral("Remove worktree"),
+            QStringLiteral("Remove the worktree at\n%1\n(branch %2)?\n\n"
+                           "Uncommitted changes there will be lost.")
+                .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
+            != QMessageBox::Yes)
+        return;
+    QProcess::execute(QStringLiteral("git"),
+                      {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                       QStringLiteral("remove"), QStringLiteral("--force"), worktreePath});
+    loadWorktreesPanel();
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
