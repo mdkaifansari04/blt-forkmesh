@@ -25016,9 +25016,24 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedBranch.isEmpty())
             mergeWorktreeIntoMain(m_worktreeSelectedBranch);
     });
+    // The reverse direction: pull the default branch into this worktree so it
+    // catches up with main before you keep working (or merge it back).
+    m_worktreeUpdateButton = new QPushButton("Update from main");
+    m_worktreeUpdateButton->setObjectName("ghostButton");
+    m_worktreeUpdateButton->setProperty("buttonSize", "sm");
+    m_worktreeUpdateButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeUpdateButton, "sync", 14);
+    m_worktreeUpdateButton->setToolTip(
+        "Merge the default branch into the selected worktree's branch");
+    m_worktreeUpdateButton->setEnabled(false);
+    connect(m_worktreeUpdateButton, &QPushButton::clicked, this, [this] {
+        if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
+            updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
+    });
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addStretch();
+    detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
     auto *diffPane = new QWidget;
     auto *diffPaneLayout = new QVBoxLayout(diffPane);
@@ -25192,12 +25207,17 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet());
 
     const QString base = repoDefaultBranch(repoBranches());
-    // Remember the selected worktree's branch and (de)activate the detail merge
-    // button: only a real feature branch (not the default branch) can be merged in.
+    // Remember the selected worktree and (de)activate the detail buttons: only a
+    // real feature branch (not the default branch) can be merged either way, and
+    // "Update from main" also needs the worktree's folder on disk to merge into.
     m_worktreeSelectedBranch = branch;
+    m_worktreeSelectedPath = worktreePath;
+    const bool feature = !branch.isEmpty() && branch != base;
     if (m_worktreeMergeButton)
-        m_worktreeMergeButton->setEnabled(!branch.isEmpty() && branch != base &&
-                                          repoHasWorkingTree());
+        m_worktreeMergeButton->setEnabled(feature && repoHasWorkingTree());
+    if (m_worktreeUpdateButton)
+        m_worktreeUpdateButton->setEnabled(feature && !worktreePath.isEmpty() &&
+                                           QDir(worktreePath).exists());
     QByteArray out;
     bool ok = false;
     if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
@@ -25291,6 +25311,46 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch)
     loadWorktreesPanel();
     if (m_branchesTable)
         loadBranchesPanel();
+}
+
+void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
+                                        const QString &branch)
+{
+    const QString base = repoDefaultBranch(repoBranches());
+    if (worktreePath.isEmpty() || branch.isEmpty() || branch == base)
+        return;
+    if (!QDir(worktreePath).exists()) {
+        setRepoDetailNotice("That worktree's folder is gone.", true);
+        loadWorktreesPanel();
+        return;
+    }
+    // A merge into a dirty tree is unsafe — make the user commit/stash first.
+    QByteArray st;
+    if (runGitCapture(worktreePath, {"status", "--porcelain"}, &st, nullptr) &&
+        !QString::fromUtf8(st).trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Worktree %1 has uncommitted changes — commit or stash "
+                           "them before updating from %2.")
+                .arg(branch, base),
+            true);
+        return;
+    }
+    QString err;
+    if (runGitCapture(worktreePath,
+                      {"merge", base, "-m",
+                       QStringLiteral("Merge %1 into %2").arg(base, branch)},
+                      nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 from %2.").arg(branch, base), false);
+    } else {
+        runGitCapture(worktreePath, {"merge", "--abort"}, nullptr, nullptr);
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't update %1 from %2 cleanly (conflicts) — resolve "
+                           "them in that worktree.")
+                .arg(branch, base),
+            true);
+    }
+    loadWorktreesPanel();
 }
 
 QWidget *MainWindow::buildBranchesTab()
