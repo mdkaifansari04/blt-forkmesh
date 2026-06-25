@@ -3953,33 +3953,6 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
-int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
-                                       const QString &localPath)
-{
-    RepositoryRecord repo;
-    repo.owner = owner;
-    repo.name = name;
-    repo.localPath = localPath;
-    repo.publishToNetwork = false;
-    m_repositories.append(repo);
-    return m_repositories.size() - 1;
-}
-
-bool MainWindow::testOpenRepository(int index)
-{
-    if (index < 0 || index >= m_repositories.size())
-        return false;
-    openRepoDetail(index);
-    updateRepoSwitcher();
-    return m_repoDetailIndex == index;
-}
-
-bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
-                                           const QString &website)
-{
-    return saveRepoAboutMetadata(about, website);
-}
-
 int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
                                            const QString &mirrorPath)
 {
