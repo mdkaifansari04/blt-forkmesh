@@ -1,0 +1,1313 @@
+From 0e2ad346752d2dbecd383458d7e2e8ab0f3e1778 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 16:10:58 +0530
+Subject: [PATCH 1/3] fix: link references in conversations
+
+(cherry picked from commit 071ac0656872eb3e5e936c14551da121223c9a53)
+---
+ .../2026-06-24-issue-154-reference-linking.md |  23 ++
+ qt_client/CMakeLists.txt                      |   2 +
+ qt_client/src/MainWindow.cpp                  | 160 +++++++++--
+ qt_client/src/MainWindow.h                    |  10 +-
+ qt_client/src/ReferenceLinks.h                | 264 ++++++++++++++++++
+ qt_client/tests/test_crypto.cpp               |  37 +++
+ 6 files changed, 466 insertions(+), 30 deletions(-)
+ create mode 100644 docs/superpowers/plans/2026-06-24-issue-154-reference-linking.md
+ create mode 100644 qt_client/src/ReferenceLinks.h
+
+diff --git a/docs/superpowers/plans/2026-06-24-issue-154-reference-linking.md b/docs/superpowers/plans/2026-06-24-issue-154-reference-linking.md
+new file mode 100644
+index 0000000..8902bf9
+--- /dev/null
++++ b/docs/superpowers/plans/2026-06-24-issue-154-reference-linking.md
+@@ -0,0 +1,23 @@
++# Issue 154 Reference Linking Plan
++
++## Goal
++
++Qt thread views should turn references in PRs, issue comments, and commit comments into clickable in-app links.
++Users should also be able to copy durable ForkMesh links for PR and commit conversation cards.
++
++## Decisions
++
++Plain `#123` references resolve to issue `123`.
++Explicit `PR #123` and `pull request #123` references resolve to pull request `123`.
++Hex commit hashes from 7 to 40 characters resolve to commit links.
++Existing Markdown links, URLs, inline code, and fenced code blocks are not rewritten.
++Stored Markdown remains raw and link rewriting happens only at render time.
++
++## Tasks
++
++1. Add focused tests for the Markdown reference linker.
++2. Implement a small Qt helper that rewrites display Markdown into in-app reference links.
++3. Use the helper in issue, PR, and commit conversation body rendering.
++4. Handle in-app reference link activation for issues, PRs, commits, and `forkmesh://` deep links.
++5. Add copy-link actions to PR and commit conversation cards.
++6. Run the Qt test command for verification.
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 5d7611f..7af790f 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -36,6 +36,7 @@ set(FORKMESH_APP_SOURCES
+     src/PullStore.cpp
+     src/CommitCommentStore.h
+     src/CommitCommentStore.cpp
++    src/ReferenceLinks.h
+     src/ActionFile.h
+     src/ActionFile.cpp
+     src/ActionStore.h
+@@ -97,6 +98,7 @@ if(FORKMESH_BUILD_TESTS)
+         src/PullStore.cpp
+         src/CommitCommentStore.h
+         src/CommitCommentStore.cpp
++        src/ReferenceLinks.h
+     )
+     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+     if(APPLE)
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5fc59af..fffa703 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -7,6 +7,7 @@
+ #include "CommitCommentStore.h"
+ #include "IssueBurnup.h"
+ #include "QrCode.h"
++#include "ReferenceLinks.h"
+ 
+ #include "MarkdownEditor.h"
+ #include "MessageRow.h"
+@@ -10178,8 +10179,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
+     m_commitMessage->setTextFormat(Qt::RichText);
+     m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                              Qt::LinksAccessibleByMouse);
+-    // "#123" references in the message are rendered as ref: links; open the
+-    // matching pull request or issue when one is clicked.
++    // "#123" references in the message are rendered as ref: links and open
++    // issues first. PR/comment bodies use typed Markdown reference links.
+     connect(m_commitMessage, &QLabel::linkActivated, this,
+             [this](const QString &href) {
+                 if (href.startsWith(QStringLiteral("ref:")))
+@@ -11216,7 +11217,7 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
+ 
+ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
+                                      const QString &headerHtml, const QString &body,
+-                                     const QString &accent)
++                                     const QString &accent, const QString &copyLink)
+ {
+     if (!layout)
+         return;
+@@ -11244,19 +11245,46 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
+     headerBox->setObjectName("issueTimelineHeader");
+     auto *headerRow = new QHBoxLayout(headerBox);
+     headerRow->setContentsMargins(16, 8, 10, 8);
++    headerRow->setSpacing(8);
+     auto *header = new QLabel(headerHtml);
+     header->setTextFormat(Qt::RichText);
+     headerRow->addWidget(header);
+     headerRow->addStretch();
++    if (!copyLink.isEmpty() || !body.trimmed().isEmpty()) {
++        auto *menu = new QMenu(card);
++        if (!copyLink.isEmpty()) {
++            QAction *copyLinkAction = menu->addAction("Copy link");
++            connect(copyLinkAction, &QAction::triggered, this, [this, copyLink]() {
++                QApplication::clipboard()->setText(copyLink);
++                flashMessage("Link copied.");
++            });
++        }
++        if (!body.trimmed().isEmpty()) {
++            QAction *copyMarkdownAction = menu->addAction("Copy Markdown");
++            connect(copyMarkdownAction, &QAction::triggered, this, [this, body]() {
++                QApplication::clipboard()->setText(body);
++                flashMessage("Markdown copied.");
++            });
++        }
++        auto *actionsButton = new QToolButton(headerBox);
++        actionsButton->setObjectName("issueActionButton");
++        actionsButton->setText("...");
++        actionsButton->setCursor(Qt::PointingHandCursor);
++        actionsButton->setPopupMode(QToolButton::InstantPopup);
++        actionsButton->setMenu(menu);
++        headerRow->addWidget(actionsButton);
++    }
+     cardLayout->addWidget(headerBox);
+ 
+     if (!body.trimmed().isEmpty()) {
+         auto *bodyLabel = new QLabel;
+         bodyLabel->setTextFormat(Qt::MarkdownText);
+-        bodyLabel->setText(body);
++        bodyLabel->setText(ReferenceLinks::linkifyMarkdownReferences(body));
+         bodyLabel->setWordWrap(true);
+         bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+-        bodyLabel->setOpenExternalLinks(true);
++        bodyLabel->setOpenExternalLinks(false);
++        connect(bodyLabel, &QLabel::linkActivated, this,
++                &MainWindow::openReferenceLink);
+         bodyLabel->setContentsMargins(16, 12, 16, 14);
+         cardLayout->addWidget(bodyLabel);
+     }
+@@ -11302,12 +11330,20 @@ void MainWindow::renderPullThread(const PullRequest &pr)
+ 
+     // The PR description as the opening card.
+     const QString opener = pr.authorName.isEmpty() ? pr.author.left(10) : pr.authorName;
++    QString linkOwner = QStringLiteral("repo");
++    QString linkRepo = QStringLiteral("pull");
++    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
++        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
++        linkRepo = m_repositories.at(m_repoDetailIndex).name;
++    }
++    const QString pullLink =
++        QStringLiteral("forkmesh://pull/%1/%2/%3").arg(linkOwner, linkRepo).arg(pr.number);
+     addConversationCard(
+         m_pullThreadLayout, opener,
+         QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
+                        "request %2</span>")
+             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
+-        pr.description);
++        pr.description, QString(), pullLink + QStringLiteral("#open"));
+ 
+     for (const PullEvent &ev : pr.events) {
+         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+@@ -11335,7 +11371,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
+             m_pullThreadLayout, who,
+             QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
+                 .arg(who.toHtmlEscaped(), verb, when),
+-            ev.body, accent);
++            ev.body, accent,
++            pullLink + QStringLiteral("#%1")
++                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id));
+     }
+     m_pullThreadLayout->addStretch();
+ }
+@@ -17300,28 +17338,84 @@ void MainWindow::filterCommits(const QString &query)
+ }
+ 
+ void MainWindow::openCommitReference(int number)
++{
++    openIssueReference(number);
++}
++
++void MainWindow::openIssueReference(int number)
+ {
+     if (number <= 0)
+         return;
+-    // Decide issue vs. pull request by number: prefer a PR when one matches,
+-    // otherwise treat it as an issue. Reload both lists so a reference resolves
+-    // even if the user hasn't opened those tabs yet this session.
+-    reloadPulls();
+-    bool isPull = false;
+-    for (const PullRequest &pr : std::as_const(m_currentPulls))
+-        if (pr.number == number) {
+-            isPull = true;
+-            break;
++    if (m_repoDetailTabs && m_repoDetailTabs->button(2))
++        m_repoDetailTabs->button(2)->click();
++    reloadIssues();
++    showIssue(number);
++}
++
++void MainWindow::openPullReference(int number)
++{
++    if (number <= 0)
++        return;
++    switchToPullTab(number);
++}
++
++void MainWindow::openCommitHashReference(const QString &hash)
++{
++    const QString ref = hash.trimmed();
++    if (ref.isEmpty())
++        return;
++    if (m_repoDetailTabs && m_repoDetailTabs->button(1))
++        m_repoDetailTabs->button(1)->setChecked(true);
++    if (m_repoDetailStack)
++        m_repoDetailStack->setCurrentIndex(1);
++    showCommit(ref);
++}
++
++void MainWindow::openReferenceLink(const QString &href)
++{
++    if (href.startsWith(QStringLiteral("fm-issue:"))) {
++        openIssueReference(href.mid(9).toInt());
++        return;
++    }
++    if (href.startsWith(QStringLiteral("fm-pull:"))) {
++        openPullReference(href.mid(8).toInt());
++        return;
++    }
++    if (href.startsWith(QStringLiteral("fm-commit:"))) {
++        openCommitHashReference(href.mid(10));
++        return;
++    }
++
++    const QUrl url(href);
++    if (url.scheme() == QLatin1String("forkmesh")) {
++        const QString kind = url.host();
++        const QStringList parts =
++            url.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
++        auto switchLinkedRepo = [&]() {
++            if (parts.size() < 2)
++                return;
++            const int repoIndex = repoIndexFor(parts.at(0), parts.at(1));
++            if (repoIndex >= 0 && repoIndex != m_repoDetailIndex)
++                openRepoDetail(repoIndex);
++        };
++        if ((kind == QLatin1String("issue") || kind == QLatin1String("pull")) &&
++            parts.size() >= 3) {
++            switchLinkedRepo();
++            const int number = parts.last().toInt();
++            if (kind == QLatin1String("issue"))
++                openIssueReference(number);
++            else
++                openPullReference(number);
++            return;
++        }
++        if (kind == QLatin1String("commit") && parts.size() >= 3) {
++            switchLinkedRepo();
++            openCommitHashReference(parts.last());
++            return;
+         }
+-    const int tabId = isPull ? 4 : 2; // 4 = Pull requests, 2 = Issues
+-    if (m_repoDetailTabs && m_repoDetailTabs->button(tabId))
+-        m_repoDetailTabs->button(tabId)->click(); // switches tab + loads data
+-    if (isPull)
+-        showPull(number);
+-    else {
+-        reloadIssues();
+-        showIssue(number);
+     }
++
++    QDesktopServices::openUrl(url.isValid() ? url : QUrl::fromUserInput(href));
+ }
+ 
+ void MainWindow::downloadCommitPatch()
+@@ -18158,6 +18252,14 @@ void MainWindow::renderCommitThread(const QString &sha)
+         m_commitThreadLayout->addStretch();
+         return;
+     }
++    QString linkOwner = QStringLiteral("repo");
++    QString linkRepo = QStringLiteral("commit");
++    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
++        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
++        linkRepo = m_repositories.at(m_repoDetailIndex).name;
++    }
++    const QString commitLink =
++        QStringLiteral("forkmesh://commit/%1/%2/%3").arg(linkOwner, linkRepo, sha);
+     const RepositoryRecord rec =
+         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+             ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
+@@ -18170,7 +18272,9 @@ void MainWindow::renderCommitThread(const QString &sha)
+             m_commitThreadLayout, who,
+             QStringLiteral("<b>%1</b> <span style='color:#8b949e'>commented %2</span>")
+                 .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
+-            c.body);
++            c.body, QString(),
++            commitLink + QStringLiteral("#%1")
++                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id));
+     }
+     m_commitThreadLayout->addStretch();
+ }
+@@ -21347,10 +21451,12 @@ void MainWindow::renderIssueThread(const Issue &issue)
+             clearBody();
+             auto *body = new QLabel;
+             body->setTextFormat(Qt::MarkdownText);
+-            body->setText(eventBody);
++            body->setText(ReferenceLinks::linkifyMarkdownReferences(eventBody));
+             body->setWordWrap(true);
+             body->setTextInteractionFlags(Qt::TextBrowserInteraction);
+-            body->setOpenExternalLinks(true);
++            body->setOpenExternalLinks(false);
++            connect(body, &QLabel::linkActivated, this,
++                    &MainWindow::openReferenceLink);
+             const bool emptyEditableDescription =
+                 writable && isOpen && eventBody.trimmed().isEmpty();
+             if (emptyEditableDescription) {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index ba7f561..8d10e1a 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -342,9 +342,12 @@ private:
+     void positionCommitsBanner();
+     void showCommitsBanner(const QString &html);
+     void hideCommitsBanner();
+-    // Open the issue or pull request referenced by "#<number>" in a commit
+-    // message (a PR if one matches, otherwise an issue).
++    // Open the issue referenced by "#<number>" in a commit message.
+     void openCommitReference(int number);
++    void openIssueReference(int number);
++    void openPullReference(int number);
++    void openCommitHashReference(const QString &hash);
++    void openReferenceLink(const QString &href);
+     // Filter the commit list by the search box (matches hash or summary).
+     void filterCommits(const QString &query);
+     void downloadCommitPatch();           // save the open commit as a .patch file
+@@ -357,7 +360,8 @@ private:
+     // already-escaped "<b>name</b> verb when" line; an accent colors the card edge.
+     void addConversationCard(QVBoxLayout *layout, const QString &author,
+                              const QString &headerHtml, const QString &body,
+-                             const QString &accent = QString());
++                             const QString &accent = QString(),
++                             const QString &copyLink = QString());
+     QWidget *buildAboutSidebar();
+     QWidget *buildInsightsTab();
+     QWidget *buildPlaceholderTab(const QString &name);
+diff --git a/qt_client/src/ReferenceLinks.h b/qt_client/src/ReferenceLinks.h
+new file mode 100644
+index 0000000..a292063
+--- /dev/null
++++ b/qt_client/src/ReferenceLinks.h
+@@ -0,0 +1,264 @@
++#pragma once
++
++#include <QString>
++
++namespace ReferenceLinks {
++
++inline bool isHexChar(QChar c)
++{
++    return c.isDigit() || (c >= QLatin1Char('a') && c <= QLatin1Char('f')) ||
++           (c >= QLatin1Char('A') && c <= QLatin1Char('F'));
++}
++
++inline bool isTokenBoundary(const QString &text, int index)
++{
++    if (index < 0 || index >= text.size())
++        return true;
++    const QChar c = text.at(index);
++    return !c.isLetterOrNumber() && c != QLatin1Char('_');
++}
++
++inline int readDigits(const QString &text, int start)
++{
++    int end = start;
++    while (end < text.size() && text.at(end).isDigit())
++        ++end;
++    return end;
++}
++
++inline int readHexRun(const QString &text, int start)
++{
++    int end = start;
++    while (end < text.size() && isHexChar(text.at(end)))
++        ++end;
++    return end;
++}
++
++inline int copyUrl(const QString &text, int start, QString *out)
++{
++    int end = start;
++    while (end < text.size() && !text.at(end).isSpace())
++        ++end;
++    int linkEnd = end;
++    while (linkEnd > start &&
++           (text.at(linkEnd - 1) == QLatin1Char('.') ||
++            text.at(linkEnd - 1) == QLatin1Char(',') ||
++            text.at(linkEnd - 1) == QLatin1Char(';') ||
++            text.at(linkEnd - 1) == QLatin1Char(':') ||
++            text.at(linkEnd - 1) == QLatin1Char('!') ||
++            text.at(linkEnd - 1) == QLatin1Char('?')))
++        --linkEnd;
++    *out += text.mid(start, linkEnd - start);
++    *out += text.mid(linkEnd, end - linkEnd);
++    return end;
++}
++
++inline int linkForkMeshUrl(const QString &text, int start, QString *out)
++{
++    int end = start;
++    while (end < text.size() && !text.at(end).isSpace())
++        ++end;
++    int linkEnd = end;
++    while (linkEnd > start &&
++           (text.at(linkEnd - 1) == QLatin1Char('.') ||
++            text.at(linkEnd - 1) == QLatin1Char(',') ||
++            text.at(linkEnd - 1) == QLatin1Char(';') ||
++            text.at(linkEnd - 1) == QLatin1Char(':') ||
++            text.at(linkEnd - 1) == QLatin1Char('!') ||
++            text.at(linkEnd - 1) == QLatin1Char('?')))
++        --linkEnd;
++    const QString url = text.mid(start, linkEnd - start);
++    out->append(QStringLiteral("[%1](%1)").arg(url));
++    out->append(text.mid(linkEnd, end - linkEnd));
++    return end;
++}
++
++inline int copyProtectedBracketLink(const QString &text, int start, QString *out)
++{
++    const int labelEnd = text.indexOf(QLatin1Char(']'), start + 1);
++    if (labelEnd < 0)
++        return start;
++
++    if (labelEnd + 1 < text.size() && text.at(labelEnd + 1) == QLatin1Char('(')) {
++        const int targetEnd = text.indexOf(QLatin1Char(')'), labelEnd + 2);
++        if (targetEnd < 0)
++            return start;
++        *out += text.mid(start, targetEnd - start + 1);
++        return targetEnd + 1;
++    }
++
++    if (labelEnd + 1 < text.size() && text.at(labelEnd + 1) == QLatin1Char('[')) {
++        const int refEnd = text.indexOf(QLatin1Char(']'), labelEnd + 2);
++        if (refEnd < 0)
++            return start;
++        *out += text.mid(start, refEnd - start + 1);
++        return refEnd + 1;
++    }
++
++    return start;
++}
++
++inline int copyBacktickSpan(const QString &text, int start, QString *out)
++{
++    int tickCount = 0;
++    while (start + tickCount < text.size() &&
++           text.at(start + tickCount) == QLatin1Char('`'))
++        ++tickCount;
++    if (tickCount <= 0)
++        return start;
++
++    const QString delimiter(tickCount, QLatin1Char('`'));
++    const int close = text.indexOf(delimiter, start + tickCount);
++    if (close < 0) {
++        *out += text.mid(start, tickCount);
++        return start + tickCount;
++    }
++    *out += text.mid(start, close - start + tickCount);
++    return close + tickCount;
++}
++
++inline bool isReferenceDefinitionLineStart(const QString &text, int start)
++{
++    int i = start;
++    while (i < text.size() &&
++           (text.at(i) == QLatin1Char(' ') || text.at(i) == QLatin1Char('\t')))
++        ++i;
++    if (i >= text.size() || text.at(i) != QLatin1Char('['))
++        return false;
++    const int close = text.indexOf(QLatin1String("]:"), i + 1);
++    if (close < 0)
++        return false;
++    const int newline = text.indexOf(QLatin1Char('\n'), i + 1);
++    return newline < 0 || close < newline;
++}
++
++inline QString issueLink(const QString &label, const QString &number)
++{
++    return QStringLiteral("[%1](fm-issue:%2)").arg(label, number);
++}
++
++inline QString pullLink(const QString &label, const QString &number)
++{
++    return QStringLiteral("[%1](fm-pull:%2)").arg(label, number);
++}
++
++inline QString commitLink(const QString &sha)
++{
++    return QStringLiteral("[%1](fm-commit:%1)").arg(sha);
++}
++
++inline QString linkifyMarkdownReferences(const QString &input)
++{
++    QString out;
++    bool fencedCode = false;
++    bool lineStart = true;
++
++    for (int i = 0; i < input.size();) {
++        if (lineStart && input.mid(i, 3) == QLatin1String("```")) {
++            fencedCode = !fencedCode;
++            out += input.mid(i, 3);
++            i += 3;
++            lineStart = false;
++            continue;
++        }
++
++        if (lineStart && isReferenceDefinitionLineStart(input, i)) {
++            const int newline = input.indexOf(QLatin1Char('\n'), i);
++            const int end = newline < 0 ? input.size() : newline;
++            out += input.mid(i, end - i);
++            i = end;
++            lineStart = false;
++            continue;
++        }
++
++        const QChar c = input.at(i);
++        if (c == QLatin1Char('\n')) {
++            out += c;
++            ++i;
++            lineStart = true;
++            continue;
++        }
++        lineStart = false;
++
++        if (c == QLatin1Char('`')) {
++            i = copyBacktickSpan(input, i, &out);
++            continue;
++        }
++
++        if (fencedCode) {
++            out += c;
++            ++i;
++            continue;
++        }
++
++        if (c == QLatin1Char('[')) {
++            const int copied = copyProtectedBracketLink(input, i, &out);
++            if (copied != i) {
++                i = copied;
++                continue;
++            }
++        }
++
++        if (input.mid(i).startsWith(QLatin1String("forkmesh://"))) {
++            i = linkForkMeshUrl(input, i, &out);
++            continue;
++        }
++
++        if (input.mid(i).startsWith(QLatin1String("https://")) ||
++            input.mid(i).startsWith(QLatin1String("http://"))) {
++            i = copyUrl(input, i, &out);
++            continue;
++        }
++
++        const QString rest = input.mid(i);
++        if (rest.startsWith(QLatin1String("pull request #"),
++                            Qt::CaseInsensitive)) {
++            const int digitsStart = i + 14;
++            const int digitsEnd = readDigits(input, digitsStart);
++            if (digitsEnd > digitsStart) {
++                const QString label = input.mid(i, digitsEnd - i);
++                out += pullLink(label, input.mid(digitsStart, digitsEnd - digitsStart));
++                i = digitsEnd;
++                continue;
++            }
++        }
++
++        if (rest.startsWith(QLatin1String("PR #"), Qt::CaseInsensitive)) {
++            const int digitsStart = i + 4;
++            const int digitsEnd = readDigits(input, digitsStart);
++            if (digitsEnd > digitsStart) {
++                const QString label = input.mid(i, digitsEnd - i);
++                out += pullLink(label, input.mid(digitsStart, digitsEnd - digitsStart));
++                i = digitsEnd;
++                continue;
++            }
++        }
++
++        if (c == QLatin1Char('#') && isTokenBoundary(input, i - 1)) {
++            const int digitsStart = i + 1;
++            const int digitsEnd = readDigits(input, digitsStart);
++            if (digitsEnd > digitsStart) {
++                const QString number = input.mid(digitsStart, digitsEnd - digitsStart);
++                out += issueLink(QStringLiteral("#") + number, number);
++                i = digitsEnd;
++                continue;
++            }
++        }
++
++        if (isHexChar(c) && isTokenBoundary(input, i - 1)) {
++            const int end = readHexRun(input, i);
++            const int len = end - i;
++            if (len >= 7 && len <= 40 && isTokenBoundary(input, end)) {
++                out += commitLink(input.mid(i, len));
++                i = end;
++                continue;
++            }
++        }
++
++        out += c;
++        ++i;
++    }
++    return out;
++}
++
++} // namespace ReferenceLinks
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index ccca663..a77641e 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -3,6 +3,7 @@
+ #include "../src/IssueBurnup.h"
+ #include "../src/IssueStore.h"
+ #include "../src/PullStore.h"
++#include "../src/ReferenceLinks.h"
+ #include "../src/RoomCrypto.h"
+ 
+ #include <QByteArray>
+@@ -68,6 +69,42 @@ int main(int argc, char *argv[])
+     app.setApplicationName("ForkMeshCryptoTest");
+     app.setOrganizationName("ForkMesh");
+ 
++    {
++        const QString linked = ReferenceLinks::linkifyMarkdownReferences(
++            "See #154, PR #7, pull request #8, abcdef1, and "
++            "forkmesh://pull/owner/repo/7#open.");
++        check(linked.contains("[#154](fm-issue:154)"),
++              "plain # references render as issue links");
++        check(linked.contains("[PR #7](fm-pull:7)"),
++              "explicit PR references render as pull links");
++        check(linked.contains("[pull request #8](fm-pull:8)"),
++              "explicit pull request references render as pull links");
++        check(linked.contains("[abcdef1](fm-commit:abcdef1)"),
++              "pasted commit hashes render as commit links");
++        check(linked.contains("[forkmesh://pull/owner/repo/7#open]"
++                              "(forkmesh://pull/owner/repo/7#open)"),
++              "pasted ForkMesh deep links render as clickable links");
++    }
++
++    {
++        const QString input =
++            "Already [#154](https://example.test/issues/154), `#155`, "
++            "https://example.test/#156\n```\n#157 abcdef1\n```";
++        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
++        check(linked == input,
++              "reference linker skips existing links, URLs, inline code, and code blocks");
++    }
++
++    {
++        const QString input =
++            "Already [#154][issue], ``#155 abcdef1``, and a definition.\n"
++            "\n"
++            "[issue]: forkmesh://issue/owner/repo/154";
++        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
++        check(linked == input,
++              "reference linker skips reference-style links and multi-backtick code");
++    }
++
+     ForkMeshIdentity identity;
+     check(identity.load(), "Ed25519 identity loads or generates");
+     check(identity.isValid(), "Ed25519 identity is valid");
+-- 
+2.50.1 (Apple Git-155)
+
+
+From c0a2cb5011426355b6e5c3750f736576e1c27655 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 16:18:32 +0530
+Subject: [PATCH 2/3] docs: design issue 156 development links
+
+(cherry picked from commit 4638f0a302424167704e81e144a2e3a1419acc55)
+---
+ ...4-issue-156-development-pr-links-design.md | 187 ++++++++++++++++++
+ 1 file changed, 187 insertions(+)
+ create mode 100644 docs/superpowers/specs/2026-06-24-issue-156-development-pr-links-design.md
+
+diff --git a/docs/superpowers/specs/2026-06-24-issue-156-development-pr-links-design.md b/docs/superpowers/specs/2026-06-24-issue-156-development-pr-links-design.md
+new file mode 100644
+index 0000000..91b2e45
+--- /dev/null
++++ b/docs/superpowers/specs/2026-06-24-issue-156-development-pr-links-design.md
+@@ -0,0 +1,187 @@
++# Issue Development PR Links Design
++
++Issue: #156 - when the agent takes and completes an issue make sure to link the PR back to the issue through the development section, and let users link PRs there.
++
++Date: 2026-06-24.
++
++## Context
++
++ForkMesh issues live in `issues/<number>/` with signed append-only markdown events.
++ForkMesh pull requests live in `pulls/<number>/` with signed PR metadata and signed conversation events.
++The Qt client already has an issue sidebar with a `Development` section.
++The Qt client already has a PR header action for linking an issue.
++Manual linking currently works by posting reciprocal thread comments.
++An issue-side note says `Linked pull request #N.`
++A PR-side note says `Linked issue #N.`
++The current issue sidebar discovers linked PRs by scanning PR references and issue-thread link notes.
++Agent-created PRs currently store `AgentSession::prNumber` and include issue text in the PR description.
++
++## Problem
++
++Issue #156 needs the agent-completion path and the user-driven link path to behave like one feature.
++The current baseline mostly infers agent-created PR links from session state and PR text.
++That makes the link visible only while local agent session metadata is present and refreshed.
++It also means the issue thread may not get an explicit durable note that the PR was linked.
++Manual linking is present, but the parsing and link-detection behavior sits inside `MainWindow`, which makes it harder to test directly.
++The issue detail pane may also need an explicit refresh after an agent creates a PR so the `Development` section updates immediately.
++
++## Decision
++
++Keep the existing issue sidebar `Development` section and reciprocal comment model.
++Make agent-created PRs use the same durable link note model as manual links.
++When an agent successfully creates a PR for an issue, ForkMesh should add `Linked pull request #N.` to the issue thread and `Linked issue #M.` to the PR thread.
++The PR description should continue to include the issue reference because it is useful context and helps mirrors that have not yet received issue comments.
++Move the reference extraction rules into a small helper so manual links, agent links, close-on-merge, and tests can share the same behavior.
++Refresh the open PR list and the currently selected issue detail after the agent PR is created.
++
++## Goals
++
++Show agent-created PRs in the issue sidebar `Development` section immediately after the agent completes.
++Persist the link in issue and PR history, not only in local `AgentSession` metadata.
++Let users link a PR from the issue sidebar.
++Let users link an issue from the PR header.
++Avoid duplicate link comments when the same issue and PR are already linked.
++Keep existing `closes #N`, `fixes #N`, `issue #N`, and explicit `Linked issue #N` behavior working.
++Add focused tests for link extraction and agent-created PR link persistence.
++
++## Non-Goals
++
++Do not add a new issue event type for development links in this issue.
++Do not rewrite existing issue or PR history.
++Do not change the signed issue or PR canonical formats.
++Do not require relay or Worker schema changes.
++Do not automatically merge or close PRs.
++Do not replace the existing manual link buttons with a larger relationship editor.
++
++## User Experience
++
++The issue sidebar keeps the current `Development` heading.
++When no PR is linked, it should show `No linked pull requests.`
++When PRs are linked, it should list each as a clickable `pull request #N`.
++The existing pull-request icon button next to `Development` remains the entry point for manual linking from the issue page.
++The PR header keeps its `Link issue` action.
++After a user links an issue and PR, both threads get visible comments that explain the relationship.
++After an agent creates a PR from an issue, the same visible relationship appears without a second manual action.
++If the user is already viewing the issue when the agent completes, the Development section should update in place.
++
++## Link Model
++
++The first implementation should keep links as ordinary signed comments.
++This is compatible with the current append-only store and relay inbox.
++It also makes links visible to users who inspect issue and PR conversations outside the sidebar.
++
++The durable issue-side comment should be:
++
++```text
++Linked pull request #<prNumber>.
++```
++
++The durable PR-side comment should be:
++
++```text
++Linked issue #<issueNumber>.
++```
++
++Before writing either comment, the UI should check whether the relationship is already discoverable.
++If the relationship already exists, the UI should not add duplicate link notes.
++
++## Reference Extraction
++
++Create a small helper for extracting issue numbers from PR text and PR numbers from issue text.
++The helper should cover existing behavior:
++
++- `issue #123`
++- `issue-123`
++- `closes #123`
++- `closed #123`
++- `fixes #123`
++- `fixed #123`
++- `resolves #123`
++- `resolved #123`
++- `Linked issue #123`
++- `pull request #45`
++- `PR #45`
++
++The helper should return sorted unique numbers.
++`MainWindow::issuesLinkedFromPull()` should combine helper results with `AgentSession::issueNumber` for local in-progress and recently completed agent sessions.
++`MainWindow::pullsLinkedToIssue()` should combine PR-side references with issue-thread PR references.
++
++## Agent Completion
++
++When `MainWindow::onAgentFinished()` successfully creates a PR for an issue session, it should store `session->prNumber` as it does today.
++Then it should post durable link notes for the issue and PR if they are missing.
++This should happen only after `PullStore::createPull()` returns a valid PR number.
++If one side of the link note fails to write, the agent log should record the error and the UI should keep the inferred link from `AgentSession`.
++The failure should not mark the successful agent run as failed because the code patch and PR creation already succeeded.
++
++For PR-conflict agent sessions with a linked issue, the replacement PR should also get the same explicit issue link.
++The original PR remains linked through its own existing references.
++The replacement PR should link to the issue if `session->issueNumber > 0`.
++
++## Data Flow
++
++Manual issue-page link:
++
++1. User clicks the issue sidebar link button.
++2. User chooses or types a PR number.
++3. ForkMesh posts the issue-side link comment if missing.
++4. ForkMesh posts the PR-side link comment if missing.
++5. ForkMesh reloads issues and PRs.
++6. ForkMesh re-renders the open issue or PR detail.
++
++Manual PR-page link:
++
++1. User clicks `Link issue`.
++2. User chooses or types an issue number.
++3. ForkMesh posts the PR-side link comment if missing.
++4. ForkMesh posts the issue-side link comment if missing.
++5. ForkMesh reloads issues and PRs.
++6. ForkMesh re-renders the open PR or issue detail.
++
++Agent issue completion:
++
++1. Agent succeeds and writes a patch.
++2. ForkMesh creates the PR.
++3. ForkMesh records `session->prNumber`.
++4. ForkMesh posts missing reciprocal link comments.
++5. ForkMesh reloads PRs.
++6. ForkMesh refreshes the issue list and re-renders the selected issue if it is still open.
++
++## Error Handling
++
++If a repo is read-only, manual link comments should continue to use the existing relay inbox fallback.
++If a relay submission fails asynchronously, the current implementation should at least delete the network reply and avoid blocking the UI.
++If a direct local comment write fails, log the failure with the issue or PR number.
++If the agent-created PR link comments fail, keep the PR and session because the primary agent work succeeded.
++If a typed issue or PR number does not exist locally, allow the note because mirrored or remote history may arrive later.
++
++## Testing
++
++Add unit coverage for the shared extraction helper.
++Verify issue references are extracted from PR titles, descriptions, branches, and comments.
++Verify PR references are extracted from issue comments.
++Verify duplicate references are de-duplicated and sorted.
++Verify manual link notes are recognized by the extraction helper.
++Add a focused store-level test for reciprocal link comments if it can be done without constructing `MainWindow`.
++Add a narrow regression test around `AgentSession::prNumber` plus PR description or link note recognition.
++Run `cd qt_client && ./run.sh test`.
++
++## Acceptance Criteria
++
++An agent-created PR appears in the issue `Development` section after the agent completes.
++The issue thread records a visible link note for the agent-created PR.
++The PR thread records a visible link note for the issue.
++Manual linking from the issue page still links both directions.
++Manual linking from the PR page still links both directions.
++Repeated linking does not create duplicate link comments.
++Existing closing keywords still drive merge-time issue closure.
++Existing explicit `Linked issue #N` and `Linked pull request #N` notes still work.
++The Qt test suite passes.
++
++## Open Decisions
++
++Use ordinary signed comments for the first implementation.
++This avoids changing canonical issue or PR event formats.
++
++Keep the current compact sidebar UI.
++This issue should make the Development section reliable, not build a full relationship management surface.
+-- 
+2.50.1 (Apple Git-155)
+
+
+From fed12e8fc8c7ae5c161eda2538c76ef90e1c07a7 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 16:52:15 +0530
+Subject: [PATCH 3/3] fix: link development pull requests to issues
+
+(cherry picked from commit ffdfd9ea9497634e0227d636c41e501a68891118)
+---
+ qt_client/src/MainWindow.cpp    | 204 +++++++++++++++++++++++---------
+ qt_client/src/MainWindow.h      |   7 ++
+ qt_client/src/ReferenceLinks.h  |  60 ++++++++++
+ qt_client/tests/test_crypto.cpp |  21 ++++
+ 4 files changed, 238 insertions(+), 54 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index fffa703..8796929 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -12410,22 +12410,9 @@ void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
+     if (!store.canWrite())
+         return;
+ 
+-    static const QRegularExpression issueRefRe(
+-        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
+-                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
+-        QRegularExpression::CaseInsensitiveOption);
+-
+-    const QString haystack =
+-        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
+-    QSet<int> linked;
+-    auto it = issueRefRe.globalMatch(haystack);
+-    while (it.hasNext()) {
+-        const QRegularExpressionMatch match = it.next();
+-        const int number =
+-            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
+-        if (number > 0)
+-            linked.insert(number);
+-    }
++    const QList<int> linked = ReferenceLinks::extractClosingIssueReferences(
++        QStringList{pr.title, pr.description, pr.head, pr.base}
++            .join(QLatin1Char('\n')));
+     if (linked.isEmpty())
+         return;
+ 
+@@ -12435,7 +12422,7 @@ void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
+ 
+     int closedCount = 0;
+     QString lastClosed;
+-    for (const int number : std::as_const(linked)) {
++    for (const int number : linked) {
+         const Issue issue = byNumber.value(number);
+         if (issue.number <= 0 || issue.status == QLatin1String("closed"))
+             continue;
+@@ -12475,6 +12462,53 @@ void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
+     }
+ }
+ 
++namespace {
++
++QList<int> issueReferencesForPull(const PullRequest &pr)
++{
++    QStringList parts{pr.title, pr.description, pr.head, pr.base};
++    for (const PullEvent &ev : pr.events)
++        if (!ev.body.isEmpty())
++            parts << ev.body;
++    return ReferenceLinks::extractIssueReferences(parts.join(QLatin1Char('\n')));
++}
++
++bool issueThreadReferencesPull(const QList<Issue> &issues, int issueNumber,
++                               int pullNumber)
++{
++    if (issueNumber <= 0 || pullNumber <= 0)
++        return false;
++    for (const Issue &issue : issues) {
++        if (issue.number != issueNumber)
++            continue;
++        for (const IssueEvent &ev : issue.events)
++            if (!ev.body.isEmpty() &&
++                ReferenceLinks::extractPullReferences(ev.body).contains(pullNumber))
++                return true;
++        return false;
++    }
++    return false;
++}
++
++bool pullConversationReferencesIssue(const QList<PullRequest> &pulls, int pullNumber,
++                                     int issueNumber)
++{
++    if (pullNumber <= 0 || issueNumber <= 0)
++        return false;
++    for (const PullRequest &pr : pulls) {
++        if (pr.number != pullNumber)
++            continue;
++        for (const PullEvent &ev : pr.events)
++            if (!ev.body.isEmpty() &&
++                ReferenceLinks::extractIssueReferences(ev.body).contains(issueNumber))
++                return true;
++        return false;
++    }
++    return false;
++}
++
++} // namespace
++
+ QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
+ {
+     QSet<int> linked;
+@@ -12482,26 +12516,8 @@ QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
+     if (const AgentSession *session = agentSessionForPull(pr.number))
+         if (session->issueNumber > 0)
+             linked.insert(session->issueNumber);
+-    // Plus any "closes #N" style reference in the PR text.
+-    static const QRegularExpression issueRefRe(
+-        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
+-                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
+-        QRegularExpression::CaseInsensitiveOption);
+-    // Scan the PR text and every comment/review body so explicit "Linked issue
+-    // #N" notes posted into the conversation are picked up too.
+-    QStringList haystackParts{pr.title, pr.description, pr.head, pr.base};
+-    for (const PullEvent &ev : pr.events)
+-        if (!ev.body.isEmpty())
+-            haystackParts << ev.body;
+-    const QString haystack = haystackParts.join('\n');
+-    auto it = issueRefRe.globalMatch(haystack);
+-    while (it.hasNext()) {
+-        const QRegularExpressionMatch match = it.next();
+-        const int number =
+-            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
+-        if (number > 0)
+-            linked.insert(number);
+-    }
++    for (const int number : issueReferencesForPull(pr))
++        linked.insert(number);
+     QList<int> result = linked.values();
+     std::sort(result.begin(), result.end());
+     return result;
+@@ -12518,21 +12534,14 @@ QList<int> MainWindow::pullsLinkedToIssue(int issueNumber) const
+             linked.insert(pr.number);
+     // Secondary direction: explicit "pull request #M" / "PR #M" notes left in
+     // this issue's own thread.
+-    static const QRegularExpression pullRefRe(
+-        QStringLiteral("\\b(?:pull[-\\s]request|pr)[-\\s]*#?(\\d+)\\b"),
+-        QRegularExpression::CaseInsensitiveOption);
+     for (const Issue &issue : m_currentIssues) {
+         if (issue.number != issueNumber)
+             continue;
+         for (const IssueEvent &ev : issue.events) {
+             if (ev.body.isEmpty())
+                 continue;
+-            auto pit = pullRefRe.globalMatch(ev.body);
+-            while (pit.hasNext()) {
+-                const int number = pit.next().captured(1).toInt();
+-                if (number > 0)
+-                    linked.insert(number);
+-            }
++            for (const int number : ReferenceLinks::extractPullReferences(ev.body))
++                linked.insert(number);
+         }
+         break;
+     }
+@@ -12541,6 +12550,91 @@ QList<int> MainWindow::pullsLinkedToIssue(int issueNumber) const
+     return result;
+ }
+ 
++bool MainWindow::issueThreadMentionsPull(int issueNumber, int pullNumber) const
++{
++    return issueThreadReferencesPull(m_currentIssues, issueNumber, pullNumber);
++}
++
++bool MainWindow::pullThreadMentionsIssue(int pullNumber, int issueNumber) const
++{
++    return pullConversationReferencesIssue(m_currentPulls, pullNumber, issueNumber);
++}
++
++void MainWindow::postIssuePullLinkCommentsIfMissing(int issueNumber, int pullNumber)
++{
++    if (issueNumber <= 0 || pullNumber <= 0)
++        return;
++    if (!issueThreadMentionsPull(issueNumber, pullNumber)) {
++        postIssueLinkComment(
++            issueNumber,
++            QStringLiteral("Linked pull request #%1.").arg(pullNumber));
++    }
++    if (!pullThreadMentionsIssue(pullNumber, issueNumber)) {
++        postPullLinkComment(
++            pullNumber,
++            QStringLiteral("Linked issue #%1.").arg(issueNumber));
++    }
++}
++
++void MainWindow::recordAgentIssuePullLink(const RepositoryRecord &repo,
++                                          int issueNumber, int pullNumber,
++                                          const AgentSession &session)
++{
++    if (!m_agentStore || issueNumber <= 0 || pullNumber <= 0)
++        return;
++
++    IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
++                          m_userName);
++    PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
++                        m_userName);
++    const QList<Issue> issues = issueStore.loadAll();
++    const QList<PullRequest> pulls = pullStore.loadAll();
++
++    if (!issueThreadReferencesPull(issues, issueNumber, pullNumber)) {
++        QString error;
++        if (!issueStore.addComment(
++                issueNumber,
++                QStringLiteral("Linked pull request #%1.").arg(pullNumber), {},
++                &error)) {
++            m_agentStore->appendLog(
++                session,
++                QStringLiteral("!! Could not add issue link note for issue #%1 "
++                               "and pull request #%2: %3")
++                    .arg(issueNumber)
++                    .arg(pullNumber)
++                    .arg(error));
++        }
++    }
++
++    if (!pullConversationReferencesIssue(pulls, pullNumber, issueNumber)) {
++        QString error;
++        if (!pullStore.addComment(
++                pullNumber,
++                QStringLiteral("Linked issue #%1.").arg(issueNumber), &error)) {
++            m_agentStore->appendLog(
++                session,
++                QStringLiteral("!! Could not add pull request link note for pull "
++                               "request #%1 and issue #%2: %3")
++                    .arg(pullNumber)
++                    .arg(issueNumber)
++                    .arg(error));
++        }
++    }
++}
++
++void MainWindow::refreshIssueDevelopmentForCurrentIssue()
++{
++    if (m_currentIssueNumber <= 0)
++        return;
++    for (const Issue &issue : m_currentIssues) {
++        if (issue.number == m_currentIssueNumber) {
++            renderIssueThread(issue);
++            updateIssueActionState();
++            return;
++        }
++    }
++}
++
+ void MainWindow::postIssueLinkComment(int issueNumber, const QString &body)
+ {
+     if (issueNumber <= 0)
+@@ -12637,10 +12731,7 @@ void MainWindow::linkPullToIssueFromIssuePage()
+     }
+     if (chosen <= 0)
+         return;
+-    postIssueLinkComment(issueNumber,
+-                         QStringLiteral("Linked pull request #%1.").arg(chosen));
+-    postPullLinkComment(chosen,
+-                        QStringLiteral("Linked issue #%1.").arg(issueNumber));
++    postIssuePullLinkCommentsIfMissing(issueNumber, chosen);
+     reloadIssues();
+     reloadPulls();
+     showIssue(issueNumber);
+@@ -12692,10 +12783,7 @@ void MainWindow::linkIssueToPullFromPullPage()
+     }
+     if (chosen <= 0)
+         return;
+-    postPullLinkComment(pullNumber,
+-                        QStringLiteral("Linked issue #%1.").arg(chosen));
+-    postIssueLinkComment(chosen,
+-                         QStringLiteral("Linked pull request #%1.").arg(pullNumber));
++    postIssuePullLinkCommentsIfMissing(chosen, pullNumber);
+     reloadIssues();
+     reloadPulls();
+     showPull(pullNumber);
+@@ -14986,8 +15074,16 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
+                     m_agentStore->appendLog(
+                         *session,
+                         QStringLiteral("==> Created pull request #%1.").arg(pr));
++                    if (session->issueNumber > 0)
++                        recordAgentIssuePullLink(repo, session->issueNumber, pr,
++                                                 *session);
+                     if (repoIndex == m_repoDetailIndex)
+                         reloadPulls();
++                    if (repoIndex == issuesRepoIndex())
++                        reloadIssues();
++                    if (repoIndex == m_repoDetailIndex &&
++                        repoIndex == issuesRepoIndex())
++                        refreshIssueDevelopmentForCurrentIssue();
+                 } else {
+                     m_agentStore->appendLog(
+                         *session,
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 8d10e1a..3ee039a 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -416,6 +416,13 @@ private:
+     // #N, agent-created, or an explicit "Linked issue #N" note) point at this
+     // issue, plus "Linked pull request #M" notes in the issue's own thread.
+     QList<int> pullsLinkedToIssue(int issueNumber) const;
++    bool issueThreadMentionsPull(int issueNumber, int pullNumber) const;
++    bool pullThreadMentionsIssue(int pullNumber, int issueNumber) const;
++    void postIssuePullLinkCommentsIfMissing(int issueNumber, int pullNumber);
++    void recordAgentIssuePullLink(const RepositoryRecord &repo,
++                                  int issueNumber, int pullNumber,
++                                  const AgentSession &session);
++    void refreshIssueDevelopmentForCurrentIssue();
+     // Prompt for the other side and cross-post a link note on both threads.
+     void linkPullToIssueFromIssuePage(); // issue page: pick a PR to link
+     void linkIssueToPullFromPullPage();  // PR page: pick an issue to link
+diff --git a/qt_client/src/ReferenceLinks.h b/qt_client/src/ReferenceLinks.h
+index a292063..5f2e6e1 100644
+--- a/qt_client/src/ReferenceLinks.h
++++ b/qt_client/src/ReferenceLinks.h
+@@ -1,7 +1,12 @@
+ #pragma once
+ 
++#include <QList>
++#include <QRegularExpression>
++#include <QSet>
+ #include <QString>
+ 
++#include <algorithm>
++
+ namespace ReferenceLinks {
+ 
+ inline bool isHexChar(QChar c)
+@@ -147,6 +152,61 @@ inline QString commitLink(const QString &sha)
+     return QStringLiteral("[%1](fm-commit:%1)").arg(sha);
+ }
+ 
++inline QList<int> sortedReferenceNumbers(const QSet<int> &numbers)
++{
++    QList<int> result = numbers.values();
++    std::sort(result.begin(), result.end());
++    return result;
++}
++
++inline QList<int> extractIssueReferences(const QString &text)
++{
++    static const QRegularExpression issueRefRe(
++        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
++                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)\\b"),
++        QRegularExpression::CaseInsensitiveOption);
++    QSet<int> numbers;
++    auto it = issueRefRe.globalMatch(text);
++    while (it.hasNext()) {
++        const QRegularExpressionMatch match = it.next();
++        const int number =
++            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
++        if (number > 0)
++            numbers.insert(number);
++    }
++    return sortedReferenceNumbers(numbers);
++}
++
++inline QList<int> extractClosingIssueReferences(const QString &text)
++{
++    static const QRegularExpression closingRefRe(
++        QStringLiteral("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)\\b"),
++        QRegularExpression::CaseInsensitiveOption);
++    QSet<int> numbers;
++    auto it = closingRefRe.globalMatch(text);
++    while (it.hasNext()) {
++        const int number = it.next().captured(1).toInt();
++        if (number > 0)
++            numbers.insert(number);
++    }
++    return sortedReferenceNumbers(numbers);
++}
++
++inline QList<int> extractPullReferences(const QString &text)
++{
++    static const QRegularExpression pullRefRe(
++        QStringLiteral("\\b(?:pull[-\\s]request|pr)[-\\s]*#?(\\d+)\\b"),
++        QRegularExpression::CaseInsensitiveOption);
++    QSet<int> numbers;
++    auto it = pullRefRe.globalMatch(text);
++    while (it.hasNext()) {
++        const int number = it.next().captured(1).toInt();
++        if (number > 0)
++            numbers.insert(number);
++    }
++    return sortedReferenceNumbers(numbers);
++}
++
+ inline QString linkifyMarkdownReferences(const QString &input)
+ {
+     QString out;
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index a77641e..7e7cdaf 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -105,6 +105,27 @@ int main(int argc, char *argv[])
+               "reference linker skips reference-style links and multi-backtick code");
+     }
+ 
++    {
++        const QList<int> issues = ReferenceLinks::extractIssueReferences(
++            "issue #156, closes #42, fixed #7, resolves #42, Linked issue #9");
++        check(issues == QList<int>({7, 9, 42, 156}),
++              "issue reference extractor dedupes and sorts issue numbers");
++    }
++
++    {
++        const QList<int> closing = ReferenceLinks::extractClosingIssueReferences(
++            "Linked issue #156, issue #99, closes #42, fixed #7, resolves #42");
++        check(closing == QList<int>({7, 42}),
++              "closing issue extractor ignores linked and plain issue references");
++    }
++
++    {
++        const QList<int> pulls = ReferenceLinks::extractPullReferences(
++            "Linked pull request #12, PR #5, pull-request 12");
++        check(pulls == QList<int>({5, 12}),
++              "pull reference extractor dedupes and sorts PR numbers");
++    }
++
+     ForkMeshIdentity identity;
+     check(identity.load(), "Ed25519 identity loads or generates");
+     check(identity.isValid(), "Ed25519 identity is valid");
+-- 
+2.50.1 (Apple Git-155)
+
