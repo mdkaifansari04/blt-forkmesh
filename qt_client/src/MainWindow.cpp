@@ -396,6 +396,41 @@ void enableHoverRowHighlight(QAbstractItemView *view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
 
+// Lets the user drag-resize a table's columns while keeping their content-fitted
+// starting widths. Qt's ResizeToContents header mode auto-sizes a column but
+// locks the divider so it can't be dragged; this leaves the existing per-column
+// modes in place for the initial layout, then — once real rows have populated —
+// snapshots each ResizeToContents column's fitted width and switches it to
+// Interactive so it becomes draggable. Stretch and Fixed columns are left as the
+// caller configured them (Stretch keeps absorbing slack; Fixed button columns
+// stay put). Call once after the header has been configured.
+void makeColumnsResizable(QTableWidget *table)
+{
+    if (!table || !table->model())
+        return;
+    QHeaderView *header = table->horizontalHeader();
+    auto done = std::make_shared<bool>(false);
+    QObject::connect(
+        table->model(), &QAbstractItemModel::rowsInserted, table,
+        [table, header, done]() {
+            if (*done)
+                return;
+            *done = true;
+            // Defer to the next event-loop turn so the snapshot reflects the
+            // freshly-set cell contents rather than the just-inserted empty rows.
+            QTimer::singleShot(0, table, [header]() {
+                for (int i = 0; i < header->count(); ++i) {
+                    if (header->sectionResizeMode(i) != QHeaderView::ResizeToContents)
+                        continue;
+                    const int w = header->sectionSize(i);
+                    header->setSectionResizeMode(i, QHeaderView::Interactive);
+                    if (w > 0)
+                        header->resizeSection(i, w);
+                }
+            });
+        });
+}
+
 // Shared geometry + painting for the issue progress bars, so the list-column
 // delegate and the draggable detail-panel slider stay pixel-identical. The bar
 // fills the cell minus an "NN%" label drawn at the right edge.
@@ -9518,6 +9553,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Est. cost
     header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Bounty
     header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
+    makeColumnsResizable(m_issueTable);
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
     m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
     // Drag along a Progress cell to set the value (handled in eventFilter).
@@ -9539,6 +9575,7 @@ QWidget *MainWindow::buildIssuesSection()
     msHeader->setSectionResizeMode(0, QHeaderView::Stretch);
     for (int i = 1; i < 6; ++i)
         msHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_issueMilestonesTable);
 
     m_issueLabelsTable = new QTableWidget(0, 5);
     m_issueLabelsTable->setObjectName("issueTable");
@@ -9556,6 +9593,7 @@ QWidget *MainWindow::buildIssuesSection()
     labelHeader->setSectionResizeMode(0, QHeaderView::Stretch);
     for (int i = 1; i < 5; ++i)
         labelHeader->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_issueLabelsTable);
 
     m_issueListStack = new QStackedWidget;
     m_issueListStack->addWidget(m_issueTable);          // 0 Issues
@@ -12629,6 +12667,7 @@ QWidget *MainWindow::buildRepoSecurityTab()
     header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     header->setSectionResizeMode(2, QHeaderView::Stretch);
     header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_securityFindingsTable);
     m_securityFindingsTable->setMinimumHeight(220);
     layout->addWidget(m_securityFindingsTable);
     layout->addStretch();
@@ -12943,6 +12982,7 @@ QWidget *MainWindow::buildInsightsTab()
         2, QHeaderView::ResizeToContents);
     m_insightsContributors->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::Stretch);
+    makeColumnsResizable(m_insightsContributors);
     m_insightsContributors->verticalHeader()->setDefaultSectionSize(34);
     m_insightsContributors->setMinimumHeight(260);
     // Right-click a contributor to reassign their commits to another identity.
@@ -13052,6 +13092,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     dh->setSectionResizeMode(1, QHeaderView::Stretch);
     for (int c = 2; c < 6; ++c)
         dh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_discussionTable);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -13837,6 +13878,7 @@ QWidget *MainWindow::buildPullsTab()
     ph->setSectionResizeMode(1, QHeaderView::Stretch);
     for (int c = 2; c < 8; ++c)
         ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_pullTable);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -14130,6 +14172,7 @@ QWidget *MainWindow::buildPullsTab()
     ch->setSectionResizeMode(1, QHeaderView::Stretch);
     ch->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     ch->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_pullChecksTable);
     connect(m_pullChecksTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const QModelIndexList rows = m_pullChecksTable->selectionModel()->selectedRows();
         if (rows.isEmpty())
@@ -18314,6 +18357,7 @@ QWidget *MainWindow::buildAgentsTab()
     agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
     for (int c = 2; c < 8; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_agentTable);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
@@ -26835,6 +26879,7 @@ QWidget *MainWindow::buildWorktreesTab()
     wh->setSectionResizeMode(1, QHeaderView::Stretch);
     wh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     wh->setSectionResizeMode(3, QHeaderView::Fixed);
+    makeColumnsResizable(m_worktreesTable);
     connect(m_worktreesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
                 if (QTableWidgetItem *it = m_worktreesTable->item(row, 1))
@@ -27343,6 +27388,7 @@ QWidget *MainWindow::buildBranchesTab()
     // cell widgets, so it would collapse this column and clip the buttons.
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
     bh->setSectionResizeMode(3, QHeaderView::Fixed);
+    makeColumnsResizable(m_branchesTable);
     connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *it = m_branchesTable->item(row, 0);
@@ -28446,6 +28492,7 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(2, QHeaderView::Stretch);
     rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_releasesTable);
     connect(m_releasesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *it = m_releasesTable->item(row, 0);
@@ -28574,6 +28621,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Platform
     mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Version
     mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Node id
+    makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
     m_mirrorNodesTable->setItemDelegateForColumn(
@@ -39506,6 +39554,7 @@ QWidget *MainWindow::buildNotificationsSection()
         0, QHeaderView::ResizeToContents);
     m_notificationsTable->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_notificationsTable);
     m_notificationsTable->horizontalHeader()->setSortIndicator(
         3, Qt::DescendingOrder); // newest first by default
     connect(m_notificationsTable, &QTableWidget::itemDoubleClicked, this,
