@@ -1,0 +1,19 @@
+{
+    "cipher": {
+        "body": "zlcgYl3kUZKg9N3i/toQ3crCRGsxG2nNs6PCTtQhHA==",
+        "nonce": "R/NCruQ0oLLP+hQK",
+        "tag": "/eJ+KCVxGhP/8fXYRWmJHA=="
+    },
+    "createdAtMs": 1782355168195,
+    "creator": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "id": "80a85168-1e6f-48b8-910c-28635028466e",
+    "kdf": {
+        "algo": "pbkdf2-sha256",
+        "rounds": 600000,
+        "salt": "rZIey6U+Ox1EpbpIH1FUUg=="
+    },
+    "kind": "cove",
+    "name": "Launch Plan",
+    "notifyOnOpen": true,
+    "v": 1
+}
