@@ -1,0 +1,290 @@
+From 24820b925bcbc4758223c3dd028b07684c2add48 Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Thu, 25 Jun 2026 17:25:36 -0400
+Subject: [PATCH 1/2] issue #251: add Settings option to select your default AI
+ agent
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add a "Default agent" picker to Settings → Agents (OpenAI API, Claude
+API, or Claude Code) stored in agents/defaultProvider. The quick-add bar
+and the issue-detail "Assign agent" provider pickers now seed themselves
+from this default instead of always starting on OpenAI API, and changing
+the default updates any live pickers immediately. Unknown/unset values
+fall back to OpenAI API.
+
+Also drop duplicate FORKMESH_WINDOW_TESTS helper definitions
+(testAddLocalRepository/testOpenRepository/testSaveRepoAboutMetadata)
+that two branches independently restored (e36dabd0 and 5b36ff96), which
+were redefinitions that broke the forkmesh-window-tests build.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/MainWindow.cpp | 86 +++++++++++++++++++++++++-----------
+ qt_client/src/MainWindow.h   |  3 ++
+ 2 files changed, 62 insertions(+), 27 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 80cc45a0..6823932f 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -854,6 +854,39 @@ bool agentIsClaudeProvider(const QString &provider)
+     return provider.startsWith(QLatin1String("claude"));
+ }
+ 
++// User's preferred default agent (Settings → Agents). One of the canonical
++// provider ids "openai", "claude-api" or "claude-code"; the quick-add and
++// issue-detail provider pickers start on this value. Falls back to OpenAI API
++// for an unset/unknown stored value.
++const QString kDefaultAgentProviderSetting =
++    QStringLiteral("agents/defaultProvider");
++const QString kFallbackAgentProvider = QStringLiteral("openai");
++
++QString defaultAgentProvider()
++{
++    const QString value =
++        QSettings()
++            .value(kDefaultAgentProviderSetting, kFallbackAgentProvider)
++            .toString()
++            .trimmed();
++    if (value == QLatin1String("openai") ||
++        value == QLatin1String("claude-api") ||
++        value == QLatin1String("claude-code"))
++        return value;
++    return kFallbackAgentProvider;
++}
++
++// Point a provider QComboBox (built with the openai/claude-api/claude-code item
++// data) at the user's saved default agent, falling back to the first item when
++// the stored value isn't present.
++void selectDefaultAgentProvider(QComboBox *combo)
++{
++    if (!combo)
++        return;
++    const int index = combo->findData(defaultAgentProvider());
++    combo->setCurrentIndex(index >= 0 ? index : 0);
++}
++
+ // Materialize the bundled Claude agent script into the app data dir and return
+ // its path. The script talks to the Anthropic API directly using
+ // ANTHROPIC_API_KEY, so no `claude` binary is required.
+@@ -3976,33 +4009,6 @@ QString MainWindow::testSavedSolanaAddress() const
+     return QSettings().value(kSolanaSetting).toString().trimmed();
+ }
+ 
+-int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
+-                                       const QString &localPath)
+-{
+-    RepositoryRecord repo;
+-    repo.owner = owner;
+-    repo.name = name;
+-    repo.localPath = localPath;
+-    repo.publishToNetwork = false;
+-    m_repositories.append(repo);
+-    return m_repositories.size() - 1;
+-}
+-
+-bool MainWindow::testOpenRepository(int index)
+-{
+-    if (index < 0 || index >= m_repositories.size())
+-        return false;
+-    openRepoDetail(index);
+-    updateRepoSwitcher();
+-    return m_repoDetailIndex == index;
+-}
+-
+-bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
+-                                           const QString &website)
+-{
+-    return saveRepoAboutMetadata(about, website);
+-}
+-
+ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
+                                            const QString &mirrorPath)
+ {
+@@ -6048,6 +6054,7 @@ QWidget *MainWindow::buildNetworkLogDock()
+     // tracked agent session, working until ForkMesh can open a PR from its diff.
+     m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                      QStringLiteral("claude-code"));
++    selectDefaultAgentProvider(m_quickAddAgentProvider);
+     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
+     m_quickAddCreatePr = new QCheckBox("Create PR");
+     m_quickAddCreatePr->setToolTip(
+@@ -9866,6 +9873,7 @@ QWidget *MainWindow::buildIssuesSection()
+     // tracked agent session, working until ForkMesh can open a PR from its diff.
+     m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
+                                   QStringLiteral("claude-code"));
++    selectDefaultAgentProvider(m_issueAgentProvider);
+     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
+     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
+     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
+@@ -32621,6 +32629,29 @@ QWidget *MainWindow::buildSettingsSection()
+     agentsHint->setObjectName("statusLine");
+     agentsHint->setWordWrap(true);
+ 
++    // Default agent: which provider the quick-add bar and issue-detail "Assign
++    // agent" picker start on. Stored as the canonical provider id so the pickers
++    // (built elsewhere) can seed themselves via selectDefaultAgentProvider().
++    m_defaultAgentProviderCombo = new QComboBox;
++    m_defaultAgentProviderCombo->addItem(QStringLiteral("OpenAI API"),
++                                         QStringLiteral("openai"));
++    m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude API"),
++                                         QStringLiteral("claude-api"));
++    m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude Code"),
++                                         QStringLiteral("claude-code"));
++    selectDefaultAgentProvider(m_defaultAgentProviderCombo);
++    m_defaultAgentProviderCombo->setToolTip(
++        "Provider pre-selected when you assign a coding agent to an issue.");
++    connect(m_defaultAgentProviderCombo, &QComboBox::currentIndexChanged, this,
++            [this] {
++                const QString provider =
++                    m_defaultAgentProviderCombo->currentData().toString();
++                QSettings().setValue(kDefaultAgentProviderSetting, provider);
++                // Keep the live pickers in step with the new default.
++                selectDefaultAgentProvider(m_quickAddAgentProvider);
++                selectDefaultAgentProvider(m_issueAgentProvider);
++            });
++
+     m_codexApiKeyEdit = new QLineEdit;
+     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
+     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
+@@ -32705,6 +32736,7 @@ QWidget *MainWindow::buildSettingsSection()
+     auto *agentForm = new QFormLayout;
+     agentForm->setLabelAlignment(Qt::AlignLeft);
+     agentForm->setSpacing(8);
++    agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
+     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
+     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
+     agentForm->addRow("OpenAI model", m_codexModelEdit);
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 4d271814..885802c9 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -1375,6 +1375,9 @@ private:
+     QLabel *m_importStatus = nullptr;
+     QCheckBox *m_autostartCheck = nullptr;
+     QComboBox *m_themeCombo = nullptr;
++    // Default coding-agent provider for new assignments; seeds the quick-add and
++    // issue-detail provider pickers. OpenAI API | Claude API | Claude Code.
++    QComboBox *m_defaultAgentProviderCombo = nullptr;
+     QLineEdit *m_codexApiKeyEdit = nullptr;
+     QLineEdit *m_openAiAdminKeyEdit = nullptr;
+     QLineEdit *m_codexModelEdit = nullptr;
+-- 
+2.47.3
+
+
+From 5193ebdbe7176a8cafee1ddb11a32718b8d3e647 Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Thu, 25 Jun 2026 18:12:17 -0400
+Subject: [PATCH 2/2] issue #251: add window test for default-agent picker
+ seeding
+
+Lock in the Settings "Default agent" behaviour added in 24820b92 with a
+forkmesh-window-tests case: a window built while agents/defaultProvider is
+"claude-code" must start both the quick-add and issue-detail provider
+pickers on Claude Code (not the OpenAI fallback), and changing the default
+afterwards must re-seed the live pickers.
+
+Adds the FORKMESH_WINDOW_TESTS helpers it needs (testQuickAddAgentProvider,
+testIssueAgentProvider, testSetDefaultAgentProvider), declared and defined
+in the same commit.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/MainWindow.cpp           | 22 ++++++++++++++++++++++
+ qt_client/src/MainWindow.h             |  6 ++++++
+ qt_client/tests/test_window_resize.cpp | 26 ++++++++++++++++++++++++++
+ 3 files changed, 54 insertions(+)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 6823932f..745945b4 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -4009,6 +4009,28 @@ QString MainWindow::testSavedSolanaAddress() const
+     return QSettings().value(kSolanaSetting).toString().trimmed();
+ }
+ 
++QString MainWindow::testQuickAddAgentProvider() const
++{
++    return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
++                                   : QString();
++}
++
++QString MainWindow::testIssueAgentProvider() const
++{
++    return m_issueAgentProvider ? m_issueAgentProvider->currentData().toString()
++                                : QString();
++}
++
++void MainWindow::testSetDefaultAgentProvider(const QString &provider)
++{
++    if (!m_defaultAgentProviderCombo)
++        return;
++    // Drive it like a user picking the value so the connected slot persists the
++    // setting and re-seeds the live pickers.
++    const int index = m_defaultAgentProviderCombo->findData(provider);
++    m_defaultAgentProviderCombo->setCurrentIndex(index >= 0 ? index : 0);
++}
++
+ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
+                                            const QString &mirrorPath)
+ {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 885802c9..f04829b3 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -174,6 +174,12 @@ public:
+     {
+         return m_issueHistoryDeleteInProgress;
+     }
++    // Provider id (openai/claude-api/claude-code) currently selected in each
++    // agent-assignment picker, plus a way to drive the Settings "Default agent"
++    // combo as a user would, so tests can assert the default seeds/updates them.
++    QString testQuickAddAgentProvider() const;
++    QString testIssueAgentProvider() const;
++    void testSetDefaultAgentProvider(const QString &provider);
+ #endif
+ 
+ protected:
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index c4780c8a..a9cae7f2 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -374,6 +374,32 @@ int main(int argc, char *argv[])
+     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
+         dumpTallMinimums(window);
+ 
++    // issue #251: the Settings "Default agent" choice should seed the agent
++    // pickers. A window built while the default is Claude Code must start both
++    // the quick-add and issue-detail pickers there (not the OpenAI fallback),
++    // and changing the default afterwards must update the live pickers.
++    {
++        QSettings().setValue(QStringLiteral("agents/defaultProvider"),
++                             QStringLiteral("claude-code"));
++        MainWindow seeded;
++        seeded.show();
++        QApplication::processEvents();
++        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-code") &&
++                  seeded.testIssueAgentProvider() == QStringLiteral("claude-code"),
++              QString("default agent seeds the pickers (quick-add %1, issue %2)")
++                  .arg(seeded.testQuickAddAgentProvider(),
++                       seeded.testIssueAgentProvider()));
++
++        seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
++        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
++                  seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),
++              QString("changing the default updates the live pickers "
++                      "(quick-add %1, issue %2)")
++                  .arg(seeded.testQuickAddAgentProvider(),
++                       seeded.testIssueAgentProvider()));
++        stopChildProcesses(seeded);
++    }
++
+     stopChildProcesses(window);
+     return failures == 0 ? 0 : 1;
+ }
+-- 
+2.47.3
+
