@@ -628,6 +628,13 @@ private:
     void setDiffViewed(const QString &context, const QString &path, bool viewed);
     // Merge the default branch into `branch` so it catches up with main.
     void updateBranchFromBase(const QString &branch);
+    // Merge the default branch into every branch that's behind it in one pass;
+    // clean merges land via plumbing (no checkout), conflicts are reported so the
+    // list can surface them and offer "Fix with agent".
+    void pullBaseIntoAllBranches();
+    // Merge the default branch into `branch` and have a low-cost model resolve any
+    // conflicts, committing the merge onto the branch (watched on the Agents tab).
+    void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
     void deleteSelectedBranches();
@@ -1357,6 +1364,7 @@ private:
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
+    QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
     QTextBrowser *m_branchDiffView = nullptr;
@@ -1454,6 +1462,7 @@ private:
     QPushButton *m_scmGenerateButton = nullptr;
     QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
     QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
+    QComboBox *m_scmGenDuration = nullptr;    // diff scope: current / past hour / all day
     QPushButton *m_scmCopyButton = nullptr;   // copy the message to the clipboard
     QLabel *m_scmGenStatus = nullptr;         // inline cost / progress note
     bool m_scmGenerating = false;             // a generation request is in flight
@@ -1673,8 +1682,8 @@ private:
     // PullStore carries the git-am session state across the async API calls, so it
     // must outlive each network reply; the struct is null when nothing is running.
     struct AiConflictFix {
-        PullStore *store = nullptr;
-        int number = 0;       // PR number
+        PullStore *store = nullptr; // null in branch-merge mode
+        int number = 0;       // PR number (PR mode)
         int repoIndex = -1;
         int sessionId = 0;    // backing agent session
         QString provider;     // "claude" | "openai"
@@ -1686,6 +1695,13 @@ private:
         double costUsd = 0.0;
         qint64 inTokens = 0;
         qint64 outTokens = 0;
+        // Branch-merge mode: resolving a `branch <- baseBranch` merge already laid
+        // down (with conflict markers) in the working tree, instead of a PR patch
+        // apply. finish/fail commit-or-abort the merge directly.
+        bool branchMerge = false;
+        QString branch;        // target branch being brought up to date
+        QString baseBranch;    // base branch merged into it
+        QString restoreBranch; // branch to check back out when done
     };
     AiConflictFix *m_aiFix = nullptr;
     void aiFixResolveNextFile();           // send the next conflicted file to the model
