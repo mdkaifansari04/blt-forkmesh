@@ -4,7 +4,7 @@ number: 22
 title: feat: add durable repository discussions
 base: main
 head: kaif/durable-repository-discussions-20260625-161434
-status: open
+status: merged
 ts: 1782407932197
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -28,4 +28,3 @@ Verification:
 - `python3 cloudflare_worker/tests/test_crypto.py` passed.
 - `cd qt_client && ./run.sh test` passed.
 - Signature verified locally; patch applies from main; commits mbox replays with git am --3way.
-
