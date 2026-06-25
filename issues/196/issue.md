@@ -5,7 +5,7 @@ title: make sure avatars show up correctly on the issue descripption section
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 14
 progress: 0
 assignees: []
 createdAt: 1782347127384
