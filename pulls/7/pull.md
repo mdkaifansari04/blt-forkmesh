@@ -4,7 +4,7 @@ number: 7
 title: Agent: issue #213 if I click the generate drop down to be all day or past hour and x post then make the generate button active so we can generate it on commits
 base: main
 head: agent/issue-213-claude-api-6
-status: open
+status: merged
 ts: 1782351203236
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
