@@ -785,6 +785,8 @@ private:
     void scmCommit();
     // Commit the staged changes, then publish/push them (see pushCurrentRepoUpstream).
     void scmCommitAndPush();
+    // One click: stage every change (git add -A), commit, then publish/push.
+    void scmStageAllCommitAndPush();
     // Shared commit body for both buttons above. Returns true once a commit lands
     // so "Commit & push" only pushes after a successful commit.
     bool performScmCommit();
@@ -1564,6 +1566,7 @@ private:
     int m_scmHeuristicVariant = 0;            // cycles on-device drafts on re-click
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
+    QPushButton *m_scmStageCommitPushButton = nullptr; // stage all, commit, push
     QPushButton *m_scmStageAllButton = nullptr;
     QPushButton *m_scmUnstageAllButton = nullptr;
     QPushButton *m_scmDiscardAllButton = nullptr;
