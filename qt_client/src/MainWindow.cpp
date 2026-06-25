@@ -25064,11 +25064,15 @@ void MainWindow::loadMirrorNodesPanel()
     qint64 maxRepoBytes = 0;   // best (largest, == most complete) copy seen
     bool weAreSource = false;  // this node holds the source-of-truth copy
     int outOfSyncPeers = 0;    // other nodes whose served state != the source
+    // Names already shown from the live chat roster, so the catalog-backed merge
+    // below (issue #223) doesn't list a node twice when it's also present in chat.
+    QSet<QString> shownNames;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
             continue;
+        shownNames.insert(node.name.trimmed().toLower());
 
         // The source of truth: the node whose clone identity equals the shared
         // source (the owner advertises ownerName == source); also match by name.
@@ -25193,6 +25197,80 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, 6, idItem);
         ++count;
     }
+
+    // --- Catalog-backed mirrors (issue #223) --------------------------------
+    // The loop above only sees nodes currently live in the chat room, so a
+    // mirror with intermittent presence is invisible to the owner. Supplement
+    // with the worker's /mirrors list — every node that has published a mirror
+    // record for this source — adding any not already shown from the roster.
+    if (m_catalogMirrorsSource == source) {
+        for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
+            const QJsonObject m = value.toObject();
+            const QString nodeName = m.value("node").toString().trimmed();
+            if (nodeName.isEmpty() || shownNames.contains(nodeName.toLower()))
+                continue;
+            shownNames.insert(nodeName.toLower());
+            const bool isSource =
+                nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
+            const bool online =
+                m.value("status").toString() == QLatin1String("online");
+            const int row = m_mirrorNodesTable->rowCount();
+            m_mirrorNodesTable->insertRow(row);
+            auto *nameItem = new SortTableWidgetItem(
+                nodeName + (isSource
+                                ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
+                                : QString()));
+            nameItem->setIcon(themedOcticon(
+                "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+            nameItem->setData(kTableSortRole,
+                              (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
+                                  nodeName.toLower());
+            nameItem->setToolTip(
+                online
+                    ? QStringLiteral("Online now")
+                    : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
+            m_mirrorNodesTable->setItem(row, 0, nameItem);
+            m_mirrorNodesTable->setItem(
+                row, 1, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            const qint64 syncedSecs = qint64(m.value("lastSync").toDouble()) / 1000;
+            auto *syncedItem = new SortTableWidgetItem(
+                syncedSecs > 0 ? formatShortRelativeTime(syncedSecs) + " ago"
+                               : QString::fromUtf8("\xE2\x80\x94"));
+            syncedItem->setData(kTableSortRole, double(syncedSecs));
+            if (syncedSecs > 0)
+                syncedItem->setToolTip(
+                    QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
+            m_mirrorNodesTable->setItem(row, 2, syncedItem);
+            const qint64 nodeBytes = qint64(m.value("sizeBytes").toDouble());
+            auto *sizeItem = new SortTableWidgetItem(
+                nodeBytes > 0 ? formatByteSize(nodeBytes)
+                              : QString::fromUtf8("\xE2\x80\x94"));
+            sizeItem->setData(kTableSortRole, double(nodeBytes));
+            sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            m_mirrorNodesTable->setItem(row, 3, sizeItem);
+            if (nodeBytes > 0) {
+                totalBytes += nodeBytes;
+                maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
+            }
+            for (int col : {4, 5, 6})
+                m_mirrorNodesTable->setItem(
+                    row, col,
+                    new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            ++count;
+        }
+    }
+    // Refresh the catalog mirror list (throttled per source); the async reply
+    // re-renders this panel so newly-discovered mirrors appear without a restart.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_catalogMirrorsFetchSource != source ||
+        nowMs - m_catalogMirrorsFetchedMs > 15000) {
+        m_catalogMirrorsFetchSource = source;
+        m_catalogMirrorsFetchedMs = nowMs;
+        fetchCatalogMirrors(sourceOwner,
+                            repoSegment(repo.name, QStringLiteral("repository")),
+                            source);
+    }
+
     m_mirrorNodesTable->setSortingEnabled(true);
 
     if (m_mirrorNodesSummary) {
@@ -25234,6 +25312,42 @@ void MainWindow::loadMirrorNodesPanel()
         empty->setForeground(QColor("#8b949e"));
         m_mirrorNodesTable->setItem(0, 0, empty);
     }
+}
+
+void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
+                                     const QString &source)
+{
+    // The live chat roster only shows nodes currently present in the room, so a
+    // mirror with intermittent presence is invisible to the owner (issue #223).
+    // The worker's public /mirrors endpoint lists every node that has published
+    // a mirror record for this repo group; we cache the result and merge it into
+    // loadMirrorNodesPanel(). Public read — no auth token required.
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty())
+        return;
+    QUrl url = catalogApiUrl(); // same host/scheme as the catalog
+    url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo))));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source]() {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject resp = QJsonDocument::fromJson(body).object();
+        if (!resp.value("ok").toBool())
+            return;
+        m_catalogMirrorsSource = source;
+        m_catalogMirrorsCache = resp.value("mirrors").toArray();
+        // Re-render only if the user is still viewing this repo group, so the
+        // freshly discovered mirrors show up without waiting for a roster tick.
+        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+            const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
+            const QString cur =
+                repoSegment(r.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(r.name, QStringLiteral("repository"));
+            if (cur == source)
+                loadMirrorNodesPanel();
+        }
+    });
 }
 
 void MainWindow::promptNewRelease()
