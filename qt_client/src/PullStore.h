@@ -146,8 +146,11 @@ public:
 
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
-    // Remove the PR folder entirely and commit the deletion.
-    bool deletePull(int number, QString *error = nullptr);
+    // Remove the PR folder entirely and commit the deletion. This is fast and
+    // leaves history intact. Pass rewriteHistory=true to also purge the PR's diff
+    // text (changes.patch / commits.mbox) from every commit via a filter-branch
+    // rewrite — thorough but slow (seconds to minutes on a large repo).
+    bool deletePull(int number, bool rewriteHistory, QString *error = nullptr);
 
     // Conversation: append a signed comment or review event, then commit. The
     // review state is one of approved | changes_requested | commented.

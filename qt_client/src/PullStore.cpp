@@ -1489,7 +1489,7 @@ bool PullStore::applyRemotePull(const PullRequest &incoming, QString *error)
 }
 
 
-bool PullStore::deletePull(int number, QString *error)
+bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
 {
     if (!canWrite()) {
         if (error)
@@ -1526,6 +1526,11 @@ bool PullStore::deletePull(int number, QString *error)
             return false;
         }
     }
+
+    // Default path: the PR folder is gone at the tip, which is all most callers
+    // want. Skip the expensive full-history rewrite unless explicitly requested.
+    if (!rewriteHistory)
+        return true;
 
     // Purge pulls/<number> from every commit so the diff text it carried
     // (changes.patch / commits.mbox) can no longer be found by searching
