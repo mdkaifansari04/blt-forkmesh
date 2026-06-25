@@ -374,6 +374,32 @@ int main(int argc, char *argv[])
     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
         dumpTallMinimums(window);
 
+    // issue #251: the Settings "Default agent" choice should seed the agent
+    // pickers. A window built while the default is Claude Code must start both
+    // the quick-add and issue-detail pickers there (not the OpenAI fallback),
+    // and changing the default afterwards must update the live pickers.
+    {
+        QSettings().setValue(QStringLiteral("agents/defaultProvider"),
+                             QStringLiteral("claude-code"));
+        MainWindow seeded;
+        seeded.show();
+        QApplication::processEvents();
+        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-code") &&
+                  seeded.testIssueAgentProvider() == QStringLiteral("claude-code"),
+              QString("default agent seeds the pickers (quick-add %1, issue %2)")
+                  .arg(seeded.testQuickAddAgentProvider(),
+                       seeded.testIssueAgentProvider()));
+
+        seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
+        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
+                  seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),
+              QString("changing the default updates the live pickers "
+                      "(quick-add %1, issue %2)")
+                  .arg(seeded.testQuickAddAgentProvider(),
+                       seeded.testIssueAgentProvider()));
+        stopChildProcesses(seeded);
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }
