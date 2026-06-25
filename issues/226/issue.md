@@ -1,0 +1,24 @@
+---
+schema: forkmesh-issue-v1
+number: 226
+title: show number of releases in releases tab
+status: open
+labels: []
+milestone: 
+priority: 0
+progress: 0
+assignees: []
+createdAt: 1782354908601
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
+type: open
+id: open-226
+ts: 1782354908601
+attachments: []
+sig: qNDHYsSnYr42tP5ULvIfKOWlTZAnxwMnBtosE-NMpzZOa4rqIMv7aJ3h7k1D4WNkZrlcGdW41nPDBCZWMcUmDA
+---
+
+
