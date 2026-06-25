@@ -488,6 +488,9 @@ private:
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
     void setPullDeleteButtonsEnabled(bool enabled);
+    // Confirm a PR deletion; *rewriteHistory is set from an opt-in checkbox
+    // (off by default — a plain delete is fast and leaves history intact).
+    bool confirmPullDeletion(const QString &prompt, bool *rewriteHistory);
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
     void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
@@ -778,9 +781,25 @@ private:
     // The unified working-tree diff used as context for AI generation (staged if
     // anything is staged, else all unstaged+untracked changes), capped for cost.
     QString scmContextDiff() const;
+    // The `git diff` scope argument(s) selecting the same change set scmContextDiff()
+    // describes: a window's base commit, the staged set, or all unstaged+untracked
+    // edits. An empty list means plain `git diff`.
+    QStringList scmDiffScopeArgs() const;
+    // Draft a Conventional-Commits-style message from the change set's structure
+    // alone — file paths, add/delete counts, statuses, the branch name and the
+    // function names git records in hunk headers — with no model and no network.
+    // A best-effort first draft for the on-device option in the model picker.
+    // variant 0 is the deterministic best draft; higher values rotate symbol
+    // choice and verb phrasing so repeated Generate clicks offer alternatives.
+    QString scmHeuristicCommitMessage(int variant = 0) const;
+    // When the on-device engine is selected, fill the (empty) message field from
+    // the current changes automatically. No-op for the paid AI models, while a
+    // message is being generated, or once the user has typed something.
+    void autoFillScmMessage();
     // Draft the commit message (or an X post) inline from the changes using the
     // model picked in the compose bar — no dialog, the result lands in the
-    // message box and the cost shows beside it.
+    // message box and the cost shows beside it. The "On-device (no AI)" pick
+    // routes to scmHeuristicCommitMessage() instead of an API call.
     void generateScmMessage();
     // True when the commit table already shows the current branch's current tip,
     // so a tab click can skip the expensive rebuild. Does one cheap `git
@@ -1515,6 +1534,7 @@ private:
     QPushButton *m_scmCopyButton = nullptr;   // copy the message to the clipboard
     QLabel *m_scmGenStatus = nullptr;         // inline cost / progress note
     bool m_scmGenerating = false;             // a generation request is in flight
+    int m_scmHeuristicVariant = 0;            // cycles on-device drafts on re-click
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageAllButton = nullptr;

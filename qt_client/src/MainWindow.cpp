@@ -10855,8 +10855,18 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmGenModel = new QComboBox;
     for (int i = 0; i < kScmAiModelCount; ++i)
         m_scmGenModel->addItem(QString::fromLatin1(kScmAiModels[i].label), i);
-    m_scmGenModel->setCurrentIndex(2); // Claude Haiku 4.5: cheap + fast for short text
-    m_scmGenModel->setToolTip("Model used to draft the message");
+    // On-device option: no model, no API key, no cost — drafts the message
+    // locally from the diff's structure. The sentinel data -1 routes
+    // generateScmMessage() to the heuristic path. It's the default: free, instant
+    // and private, and it auto-fills as the changes change (see autoFillScmMessage).
+    m_scmGenModel->addItem(QStringLiteral("On-device (no AI)"), -1);
+    m_scmGenModel->setCurrentIndex(m_scmGenModel->findData(-1));
+    m_scmGenModel->setToolTip(
+        "How to draft the message: on-device (no AI), or a Claude/OpenAI model");
+    // Switching engine: auto-fill immediately when on-device is chosen (no-op for
+    // the paid models, which only run on an explicit Generate click).
+    connect(m_scmGenModel, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { autoFillScmMessage(); });
 
     m_scmGenKind = new QComboBox;
     m_scmGenKind->addItem("Commit message");
@@ -11256,6 +11266,10 @@ void MainWindow::refreshSourceControl()
     if (m_scmDiscardAllButton)
         m_scmDiscardAllButton->setEnabled(!changes.isEmpty());
 
+    // On-device drafting is free, local and instant, so when it's the selected
+    // engine auto-fill the message from the changes (never the paid AI models).
+    autoFillScmMessage();
+
     // Re-select the file that was open before the rebuild (re-showing its diff) if
     // it still has changes; otherwise leave the diff cleared.
     if (!prevPath.isEmpty()) {
@@ -11570,6 +11584,504 @@ QString MainWindow::scmContextDiff() const
     return text;
 }
 
+QStringList MainWindow::scmDiffScopeArgs() const
+{
+    const QString dir = repoGitDir();
+    const int dur = m_scmGenDuration ? m_scmGenDuration->currentIndex() : 0;
+    if (!dir.isEmpty() && (dur == 1 || dur == 2)) {
+        const QString cutoff =
+            dur == 1 ? QStringLiteral("1 hour ago") : QStringLiteral("midnight");
+        QByteArray revOut;
+        runGitCapture(dir, {"rev-list", "-1", "--before=" + cutoff, "HEAD"}, &revOut,
+                      nullptr);
+        const QString rev = QString::fromUtf8(revOut).trimmed();
+        if (!rev.isEmpty())
+            return {rev};
+    }
+    QByteArray staged;
+    if (!dir.isEmpty())
+        runGitCapture(dir, {"diff", "--cached", "--name-only"}, &staged, nullptr);
+    if (!staged.trimmed().isEmpty())
+        return {QStringLiteral("--cached")};
+    return {};
+}
+
+// A local, model-free commit-message drafter. It parses the diff to find the
+// symbols that changed — types/functions added or removed (keyword-led definitions
+// in any language, plus C++ header declarations) and the functions whose bodies
+// changed (from git's hunk-header context) — drops generic/internal names, then
+// builds the subject from the single most significant symbol, humanizing its
+// camelCase into words ("scmHeuristicCommitMessage" -> "scm heuristic commit
+// message"). The conventional type comes from the file kinds, the branch name, the
+// change shape and a bug-fix keyword scan. Not as good as the AI models, but
+// instant, private and free — and far more specific than "update N files"; the
+// result lands in the editable message field. `variant` > 0 rotates the symbol
+// choice and verb wording so re-clicking Generate offers alternative drafts.
+QString MainWindow::scmHeuristicCommitMessage(int variant) const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    const QStringList scope = scmDiffScopeArgs();
+
+    struct Change {
+        QChar status;
+        QString path;    // new path (for renames)
+        QString oldPath; // only set for renames
+    };
+    QList<Change> changes;
+    const QString ns = QString::fromUtf8(gitCaptureStdout(
+        dir, QStringList{"diff"} + scope + QStringList{"--name-status"}));
+    for (const QString &row : ns.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList f = row.split(QLatin1Char('\t'), Qt::SkipEmptyParts);
+        if (f.isEmpty())
+            continue;
+        const QChar st = f.first().isEmpty() ? QChar('M') : f.first().at(0);
+        Change c{st, f.last(), QString()};
+        if ((st == QLatin1Char('R') || st == QLatin1Char('C')) && f.size() >= 3)
+            c.oldPath = f.at(1);
+        changes.append(c);
+    }
+    // Untracked files only surface under the plain working-tree scope.
+    if (scope.isEmpty()) {
+        const QString u = QString::fromUtf8(gitCaptureStdout(
+            dir, {"ls-files", "--others", "--exclude-standard"}));
+        for (const QString &p : u.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            changes.append({QChar('A'), p.trimmed(), QString()});
+    }
+    if (changes.isEmpty())
+        return QString();
+
+    // Per-path category, used to pick a conventional type when the whole change
+    // set is one flavour.
+    auto category = [](const QString &path) -> QString {
+        const QString p = path.toLower();
+        const QString base = p.section(QLatin1Char('/'), -1);
+        if (p.contains(QLatin1String(".github/workflows/")))
+            return QStringLiteral("ci");
+        if (base.endsWith(QLatin1String(".md")) || base.endsWith(QLatin1String(".rst"))
+            || p.contains(QLatin1String("/docs/")) || p.startsWith(QLatin1String("docs/"))
+            || base.startsWith(QLatin1String("readme"))
+            || base.startsWith(QLatin1String("changelog")))
+            return QStringLiteral("docs");
+        if (p.contains(QLatin1String("/tests/")) || p.contains(QLatin1String("/test/"))
+            || base.startsWith(QLatin1String("test_"))
+            || base.contains(QLatin1String("_test."))
+            || base.contains(QLatin1String(".test."))
+            || base.contains(QLatin1String("spec.")))
+            return QStringLiteral("test");
+        if (base == QLatin1String("cmakelists.txt") || base.endsWith(QLatin1String(".cmake"))
+            || base == QLatin1String("makefile") || base == QLatin1String("dockerfile")
+            || base == QLatin1String("package.json") || base.endsWith(QLatin1String(".lock"))
+            || base.endsWith(QLatin1String(".yml")) || base.endsWith(QLatin1String(".yaml"))
+            || base.endsWith(QLatin1String(".toml")) || base == QLatin1String(".gitignore"))
+            return QStringLiteral("build");
+        return QStringLiteral("code");
+    };
+
+    int added = 0, removed = 0, renamed = 0;
+    QString commonCat;
+    bool uniformCat = true;
+    QStringList commonDir;
+    bool firstDir = true;
+    for (const Change &c : changes) {
+        if (c.status == QLatin1Char('A')) ++added;
+        else if (c.status == QLatin1Char('D')) ++removed;
+        else if (c.status == QLatin1Char('R')) ++renamed;
+
+        const QString cat = category(c.path);
+        if (commonCat.isEmpty()) commonCat = cat;
+        else if (commonCat != cat) uniformCat = false;
+
+        const int slash = c.path.lastIndexOf(QLatin1Char('/'));
+        const QStringList parts =
+            (slash >= 0 ? c.path.left(slash) : QString()).split(QLatin1Char('/'),
+                                                                Qt::SkipEmptyParts);
+        if (firstDir) { commonDir = parts; firstDir = false; }
+        else {
+            int k = 0;
+            while (k < commonDir.size() && k < parts.size() && commonDir[k] == parts[k])
+                ++k;
+            commonDir = commonDir.mid(0, k);
+        }
+    }
+
+    // ---- content analysis: walk the patch and classify which functions/types were
+    // added, removed, or had their bodies changed. Naming the actual symbols is what
+    // makes the message describe the change instead of just counting files. ----
+    QHash<QString, int> addedType, addedFn, removedType, removedFn, touchedFn;
+    QString addedText; // added code lines, for the bug-fix keyword scan
+    {
+        const QString patch = QString::fromUtf8(gitCaptureStdout(
+            dir, QStringList{"diff"} + scope + QStringList{"--unified=0"}));
+        // Enclosing function from a hunk-header context: the identifier just before
+        // the first '(' (after any Class:: qualifier).
+        auto funcFromContext = [](const QString &ctx) -> QString {
+            const int paren = ctx.indexOf(QLatin1Char('('));
+            if (paren < 0)
+                return QString();
+            static const QRegularExpression tail(
+                QStringLiteral("([A-Za-z_][A-Za-z0-9_]*)\\s*$"));
+            const auto m = tail.match(ctx.left(paren));
+            if (!m.hasMatch())
+                return QString();
+            static const QSet<QString> kw = {
+                QStringLiteral("if"),    QStringLiteral("for"),
+                QStringLiteral("while"), QStringLiteral("switch"),
+                QStringLiteral("catch"), QStringLiteral("return"),
+                QStringLiteral("sizeof")};
+            return kw.contains(m.captured(1)) ? QString() : m.captured(1);
+        };
+        // Definitions introduced/removed on one line. Keyword-led forms work for any
+        // language; in a header a "<type> name(args);" declaration counts too.
+        // All anchored at the start of the (comment-stripped) line: a real
+        // definition begins the statement, whereas prose mentioning "function" or
+        // "struct" inside a comment does not.
+        static const QRegularExpression typeDef(QStringLiteral(
+            "^(?:typedef\\s+)?(?:class|struct|enum)\\s+(?:class\\s+)?([A-Za-z_]\\w*)"));
+        static const QRegularExpression langFn(QStringLiteral(
+            "^(?:export\\s+|public\\s+|private\\s+|pub\\s+|async\\s+|static\\s+)*"
+            "(?:def|func|fn|function|sub)\\s+([A-Za-z_]\\w*)"));
+        static const QRegularExpression headerDecl(QStringLiteral(
+            "^[A-Za-z_][\\w:<>,*&\\s]*\\s[*&]*([A-Za-z_]\\w*)\\s*\\([^;{]*\\)\\s*"
+            "(?:const|override|noexcept|final|=\\s*\\w+|\\s)*;\\s*$"));
+        auto scanDefs = [&](const QString &content, bool header,
+                            QHash<QString, int> &types, QHash<QString, int> &fns) {
+            QString t = content.trimmed();
+            // Skip comment and preprocessor lines so their prose can't pose as code.
+            if (t.isEmpty() || t.startsWith(QLatin1String("//"))
+                || t.startsWith(QLatin1Char('*')) || t.startsWith(QLatin1String("/*"))
+                || t.startsWith(QLatin1Char('#')))
+                return;
+            const int cmt = t.indexOf(QLatin1String("//"));
+            if (cmt > 0)
+                t = t.left(cmt).trimmed();
+            const auto mt = typeDef.match(t);
+            if (mt.hasMatch()) { ++types[mt.captured(1)]; return; }
+            const auto ml = langFn.match(t);
+            if (ml.hasMatch()) { ++fns[ml.captured(1)]; return; }
+            if (header) {
+                const auto mh = headerDecl.match(t);
+                if (mh.hasMatch())
+                    ++fns[mh.captured(1)];
+            }
+        };
+
+        QString file;
+        bool header = false;
+        int seen = 0;
+        const QStringList lines = patch.split(QLatin1Char('\n'));
+        for (const QString &line : lines) {
+            if (++seen > 40000) // bound the work on a very large diff
+                break;
+            if (line.startsWith(QLatin1String("+++ "))) {
+                file = line.mid(4).trimmed();
+                if (file.startsWith(QLatin1String("b/")))
+                    file = file.mid(2);
+                const QString lower = file.toLower();
+                header = lower.endsWith(QLatin1String(".h"))
+                         || lower.endsWith(QLatin1String(".hpp"))
+                         || lower.endsWith(QLatin1String(".hh"))
+                         || lower.endsWith(QLatin1String(".hxx"));
+                continue;
+            }
+            if (line.startsWith(QLatin1String("--- ")))
+                continue;
+            if (line.startsWith(QLatin1String("@@"))) {
+                const int second = line.indexOf(QLatin1String("@@"), 2);
+                if (second >= 0) {
+                    const QString fn = funcFromContext(line.mid(second + 2));
+                    if (!fn.isEmpty())
+                        ++touchedFn[fn];
+                }
+                continue;
+            }
+            if (line.startsWith(QLatin1Char('+'))) {
+                const QString content = line.mid(1);
+                scanDefs(content, header, addedType, addedFn);
+                addedText += content.toLower();
+                addedText += QLatin1Char('\n');
+            } else if (line.startsWith(QLatin1Char('-'))) {
+                scanDefs(line.mid(1), header, removedType, removedFn);
+            }
+        }
+    }
+
+    // Split camelCase / snake_case / digit runs into lowercase words — a symbol's
+    // own name is the developer's description of what it does, so "deletePullAndBranch"
+    // reads back as "delete pull and branch".
+    auto humanize = [](const QString &name) -> QString {
+        QString out;
+        for (int i = 0; i < name.size(); ++i) {
+            const QChar c = name.at(i);
+            if (c == QLatin1Char('_') || c == QLatin1Char('-')) {
+                if (!out.isEmpty() && !out.endsWith(QLatin1Char(' ')))
+                    out += QLatin1Char(' ');
+                continue;
+            }
+            const bool prevLower = i > 0 && name.at(i - 1).isLower();
+            const bool prevUpper = i > 0 && name.at(i - 1).isUpper();
+            const bool nextLower = i + 1 < name.size() && name.at(i + 1).isLower();
+            const bool boundary = (c.isUpper() && prevLower)              // fooBar
+                                  || (c.isUpper() && prevUpper && nextLower) // HTMLParser
+                                  || (c.isDigit() && i > 0 && !name.at(i - 1).isDigit());
+            if (boundary && !out.isEmpty() && !out.endsWith(QLatin1Char(' ')))
+                out += QLatin1Char(' ');
+            out += c.toLower();
+        }
+        return out.simplified();
+    };
+
+    // Generic / internal names that make a poor headline.
+    static const QSet<QString> kGeneric = {
+        QStringLiteral("change"),  QStringLiteral("data"),    QStringLiteral("item"),
+        QStringLiteral("info"),    QStringLiteral("helper"),  QStringLiteral("impl"),
+        QStringLiteral("result"),  QStringLiteral("options"), QStringLiteral("option"),
+        QStringLiteral("config"),  QStringLiteral("context"), QStringLiteral("entry"),
+        QStringLiteral("node"),    QStringLiteral("pair"),    QStringLiteral("tmp"),
+        QStringLiteral("temp"),    QStringLiteral("foo"),     QStringLiteral("bar"),
+        QStringLiteral("base"),    QStringLiteral("value"),   QStringLiteral("object"),
+        QStringLiteral("list"),    QStringLiteral("map"),     QStringLiteral("util"),
+        QStringLiteral("utils"),   QStringLiteral("main"),    QStringLiteral("init"),
+        QStringLiteral("state"),   QStringLiteral("params"),  QStringLiteral("args"),
+        QStringLiteral("type"),    QStringLiteral("types"),   QStringLiteral("handler")};
+
+    // Rank one or more (freq, opposite-side, bonus) buckets together by descriptive
+    // merit, dropping the opposite side and generic names. Merging into a single
+    // sort (rather than concatenating) lets a well-named function outrank a terse
+    // internal struct, while `bonus` still tilts ties toward new types.
+    struct Bucket {
+        const QHash<QString, int> *freq;
+        const QHash<QString, int> *exclude;
+        int bonus;
+    };
+    auto rankMerged = [&](std::initializer_list<Bucket> buckets) -> QStringList {
+        struct Cand { QString name; int score; };
+        QList<Cand> cs;
+        for (const Bucket &b : buckets)
+            for (auto i = b.freq->cbegin(); i != b.freq->cend(); ++i) {
+                const QString &n = i.key();
+                if (b.exclude->contains(n) || kGeneric.contains(n.toLower())
+                    || n.size() < 4)
+                    continue;
+                const int words = humanize(n).count(QLatin1Char(' ')) + 1;
+                cs.append({n, b.bonus + qMin(words, 4) + qMin(i.value(), 3)});
+            }
+        std::sort(cs.begin(), cs.end(), [](const Cand &a, const Cand &b) {
+            if (a.score != b.score) return a.score > b.score;
+            return a.name < b.name;
+        });
+        QStringList out;
+        for (const Cand &c : cs) out << c.name;
+        return out;
+    };
+    auto fileStems = [&](QChar status) -> QStringList {
+        QStringList out;
+        for (const Change &c : changes)
+            if (c.status == status) {
+                QString b = c.path.section(QLatin1Char('/'), -1);
+                const int dot = b.lastIndexOf(QLatin1Char('.'));
+                if (dot > 0) b = b.left(dot);
+                if (!kGeneric.contains(b.toLower()))
+                    out << b;
+            }
+        return out;
+    };
+
+    const QHash<QString, int> none;
+    // New symbols, ranked together (a small type tilt breaks ties toward classes,
+    // but descriptiveness wins — so a one-line helper struct can't beat a
+    // well-named function). Fall back to whole new file names.
+    QStringList newNames =
+        rankMerged({{&addedType, &removedType, 2}, {&addedFn, &removedFn, 1}});
+    QStringList goneNames =
+        rankMerged({{&removedType, &addedType, 2}, {&removedFn, &addedFn, 1}});
+    if (newNames.isEmpty() && added > 0)
+        newNames = fileStems(QChar('A'));
+    if (goneNames.isEmpty() && removed > 0)
+        goneNames = fileStems(QChar('D'));
+    // Functions whose bodies changed (not net added or removed).
+    QHash<QString, int> changedFreq = touchedFn;
+    for (const QString &n : addedFn.keys()) changedFreq.remove(n);
+    for (const QString &n : addedType.keys()) changedFreq.remove(n);
+    for (const QString &n : removedFn.keys()) changedFreq.remove(n);
+    for (const QString &n : removedType.keys()) changedFreq.remove(n);
+    const QStringList chgNames = rankMerged({{&changedFreq, &none, 0}});
+
+    // fix-signal: words in the added code that strongly suggest a bug fix.
+    static const QRegularExpression fixWords(QStringLiteral(
+        "\\b(fix|bug|crash|freeze|hang|leak|deadlock|segfault|overflow|regression|"
+        "guard|workaround|race)\\b"));
+    const bool fixy = fixWords.match(addedText).hasMatch();
+
+    // ---- conventional type ----
+    QString type;
+    if (uniformCat && commonCat != QLatin1String("code"))
+        type = commonCat;
+    if (type.isEmpty()) {
+        const QString branch = QString::fromUtf8(gitCaptureStdout(
+            dir, {"rev-parse", "--abbrev-ref", "HEAD"})).trimmed().toLower();
+        if (branch.contains(QLatin1String("fix")) || branch.contains(QLatin1String("bug"))
+            || branch.contains(QLatin1String("hotfix")))
+            type = QStringLiteral("fix");
+        else if (branch.contains(QLatin1String("feat")))
+            type = QStringLiteral("feat");
+        else if (branch.contains(QLatin1String("refactor")))
+            type = QStringLiteral("refactor");
+    }
+    if (type.isEmpty()) {
+        if (!newNames.isEmpty() && goneNames.isEmpty() && removed == 0 && renamed == 0)
+            type = QStringLiteral("feat");
+        else if (fixy)
+            type = QStringLiteral("fix");
+        else if (!chgNames.isEmpty() || !goneNames.isEmpty() || !newNames.isEmpty()
+                 || removed > 0 || renamed > 0)
+            type = QStringLiteral("refactor");
+        else
+            type = QStringLiteral("chore");
+    }
+
+    // ---- subject: name the headline symbol(s), humanized. A second name is added
+    // only when it's a clearly different theme (different first word), so we never
+    // emit "scm X and scm Y" or a vague "and N more" tail. ----
+    // On a re-click (variant > 0) rotate the pool so a different symbol leads —
+    // but only among the strongest few, so cycling never digs down to the noisy
+    // low-ranked tail (terse internal structs, etc.).
+    auto rotate = [&](QStringList names) -> QStringList {
+        if (names.size() > 4)
+            names = names.mid(0, 4);
+        if (variant > 0 && names.size() > 1) {
+            const int off = variant % names.size();
+            names = names.mid(off) + names.mid(0, off);
+        }
+        return names;
+    };
+    auto headline = [&](const QStringList &all) -> QStringList {
+        const QStringList names = rotate(all);
+        QStringList out;
+        for (const QString &n : names) {
+            if (out.isEmpty()) { out << n; continue; }
+            if (humanize(n).section(QLatin1Char(' '), 0, 0)
+                != humanize(out.first()).section(QLatin1Char(' '), 0, 0)) {
+                out << n;
+                break;
+            }
+        }
+        return out;
+    };
+
+    QString subject;
+    QString verb;     // "" means let the conventional type carry the verb
+    QStringList pick; // the chosen symbol name(s)
+    const bool renameOne =
+        changes.size() == 1 && renamed == 1 && !changes.first().oldPath.isEmpty();
+    if (renameOne) {
+        subject = QStringLiteral("rename %1 to %2")
+                      .arg(changes.first().oldPath.section(QLatin1Char('/'), -1),
+                           changes.first().path.section(QLatin1Char('/'), -1));
+    } else if (!newNames.isEmpty()) {
+        verb = QStringLiteral("add");
+        pick = headline(newNames);
+    } else if (!goneNames.isEmpty()) {
+        verb = QStringLiteral("remove");
+        pick = headline(goneNames);
+    } else if (!chgNames.isEmpty()) {
+        pick = headline(chgNames);
+    }
+    // Vary the wording on a re-click: a synonym for add/remove, or a light verb in
+    // front of a body-change subject (which normally lets the type carry the verb).
+    if (variant > 0 && !renameOne) {
+        if (verb == QLatin1String("add")) {
+            static const QStringList syn = {QStringLiteral("add"),
+                QStringLiteral("introduce"), QStringLiteral("implement"),
+                QStringLiteral("create"), QStringLiteral("wire up")};
+            verb = syn.at(variant % syn.size());
+        } else if (verb == QLatin1String("remove")) {
+            static const QStringList syn = {QStringLiteral("remove"),
+                QStringLiteral("drop"), QStringLiteral("delete"),
+                QStringLiteral("strip out")};
+            verb = syn.at(variant % syn.size());
+        } else if (verb.isEmpty() && !pick.isEmpty()) {
+            static const QStringList syn = {QString(), QStringLiteral("tweak"),
+                QStringLiteral("rework"), QStringLiteral("refine"),
+                QStringLiteral("revise"), QStringLiteral("adjust")};
+            verb = syn.at(variant % syn.size());
+        }
+    }
+    auto compose = [&](int maxNames) -> QString {
+        QStringList words;
+        for (const QString &n : pick.mid(0, maxNames))
+            words << humanize(n);
+        QString ph;
+        if (words.size() >= 2) {
+            // Use a comma when a name already contains "and" to avoid "X and Y and Z".
+            const QString sep = (words[0].contains(QStringLiteral(" and "))
+                                 || words[1].contains(QStringLiteral(" and ")))
+                                    ? QStringLiteral(", ")
+                                    : QStringLiteral(" and ");
+            ph = words[0] + sep + words[1];
+        } else {
+            ph = words.value(0);
+        }
+        if (ph.isEmpty())
+            return QString();
+        return verb.isEmpty() ? ph : verb + QLatin1Char(' ') + ph;
+    };
+    if (subject.isEmpty() && !pick.isEmpty())
+        subject = compose(2);
+    if (subject.isEmpty()) {
+        // Nothing nameable (e.g. data/config only): fall back to a file summary.
+        const QString fv = added == changes.size()    ? QStringLiteral("add")
+                           : removed == changes.size() ? QStringLiteral("remove")
+                           : renamed == changes.size() ? QStringLiteral("rename")
+                                                       : QStringLiteral("update");
+        subject = changes.size() == 1
+                      ? QStringLiteral("%1 %2").arg(
+                            fv, changes.first().path.section(QLatin1Char('/'), -1))
+                      : QStringLiteral("%1 %2 files").arg(fv).arg(changes.size());
+    }
+
+    // Optional scope: the common directory, unless it's a generic container.
+    static const QSet<QString> kGenericScope = {
+        QStringLiteral("src"),     QStringLiteral("lib"),  QStringLiteral("source"),
+        QStringLiteral("sources"), QStringLiteral("app"),  QStringLiteral("code"),
+        QStringLiteral("include"), QStringLiteral("dist")};
+    QString scopeName = commonDir.isEmpty() ? QString() : commonDir.last();
+    if (kGenericScope.contains(scopeName.toLower()))
+        scopeName.clear();
+
+    auto assemble = [&](const QString &subj) {
+        QString m = type;
+        if (!scopeName.isEmpty() && scopeName.size() <= 20)
+            m += QStringLiteral("(%1)").arg(scopeName);
+        return m + QStringLiteral(": ") + subj;
+    };
+    QString msg = assemble(subject);
+    // If naming two themes overran, fall back to just the first.
+    if (msg.size() > 72 && pick.size() >= 2)
+        msg = assemble(compose(1));
+    return msg;
+}
+
+void MainWindow::autoFillScmMessage()
+{
+    // Only the free, local, instant drafter runs on its own — never the paid AI
+    // models, and never over a message the user has started typing.
+    if (m_scmGenerating || !m_scmMessage || !m_scmGenModel
+        || m_scmGenModel->currentData().toInt() != -1
+        || !m_scmMessage->text().trimmed().isEmpty())
+        return;
+    const QString msg = scmHeuristicCommitMessage(0); // 0 = the deterministic best
+    if (msg.isEmpty())
+        return;
+    m_scmHeuristicVariant = 0; // a fresh auto-fill restarts the "vary on click" cycle
+    m_scmMessage->setText(msg);
+    if (m_scmGenStatus)
+        m_scmGenStatus->setText(QString::fromUtf8(
+            "%1 chars \xc2\xb7 on-device, auto \xc2\xb7 \xE2\x86\xBB click to vary")
+                                    .arg(msg.size()));
+}
+
 void MainWindow::generateScmMessage()
 {
     if (m_scmGenerating)
@@ -11581,7 +12093,25 @@ void MainWindow::generateScmMessage()
         return;
     }
     const int mi = m_scmGenModel ? m_scmGenModel->currentData().toInt() : 0;
-    if (mi < 0 || mi >= kScmAiModelCount)
+    if (mi < 0) { // On-device (no AI): derive the message locally from the diff.
+        // Each explicit click advances the variant so re-clicking "refreshes" to an
+        // alternative phrasing/symbol choice (auto-fill always uses variant 0).
+        const QString msg = scmHeuristicCommitMessage(++m_scmHeuristicVariant);
+        if (msg.isEmpty()) {
+            m_scmHeuristicVariant = 0;
+            if (m_scmGenStatus)
+                m_scmGenStatus->setText("No changes to describe.");
+            return;
+        }
+        if (m_scmMessage)
+            m_scmMessage->setText(msg);
+        const int n = m_scmMessage ? m_scmMessage->text().size() : msg.size();
+        if (m_scmGenStatus)
+            m_scmGenStatus->setText(
+                QString::fromUtf8("%1 chars \xc2\xb7 on-device, no cost \xc2\xb7 \xE2\x86\xBB click to vary").arg(n));
+        return;
+    }
+    if (mi >= kScmAiModelCount)
         return;
     const ScmAiModel model = kScmAiModels[mi];
     const bool isCommit = !(m_scmGenKind && m_scmGenKind->currentIndex() == 1);
@@ -15655,6 +16185,22 @@ void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
         m_pullDeleteBranchButton->setEnabled(enabled);
 }
 
+bool MainWindow::confirmPullDeletion(const QString &prompt, bool *rewriteHistory)
+{
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("Delete pull request"),
+                    prompt, QMessageBox::Ok | QMessageBox::Cancel, this);
+    // Opt-in, off by default: the plain delete just removes the PR record (and is
+    // fast); ticking this also runs the slow filter-branch scrub of the diff text.
+    auto *purge = new QCheckBox(
+        QStringLiteral("Also scrub the PR's diff from git history (slow)"));
+    purge->setChecked(false);
+    box.setCheckBox(purge); // QMessageBox takes ownership
+    const bool confirmed = box.exec() == QMessageBox::Ok;
+    if (rewriteHistory)
+        *rewriteHistory = confirmed && purge->isChecked();
+    return confirmed;
+}
+
 void MainWindow::deleteCurrentPull()
 {
     if (m_currentPullNumber < 0)
@@ -15664,42 +16210,45 @@ void MainWindow::deleteCurrentPull()
             QStringLiteral("A pull request deletion is already running."));
         return;
     }
+    bool rewriteHistory = false;
     if (!m_pullDeleteConfirmPending) {
         m_pullDeleteConfirmPending = true;
-        // Show a simple message box confirmation instead of inline notice
-        // (pull detail panel has no equivalent inline notice widget).
-        const int ret = QMessageBox::warning(
-            this, "Delete pull request",
+        // Show a message box confirmation instead of inline notice (the pull
+        // detail panel has no equivalent inline notice widget).
+        const QString prompt =
             QStringLiteral("Permanently delete pull request #%1? This cannot be undone.")
-                .arg(m_currentPullNumber),
-            QMessageBox::Ok | QMessageBox::Cancel);
+                .arg(m_currentPullNumber);
+        const bool confirmed = confirmPullDeletion(prompt, &rewriteHistory);
         m_pullDeleteConfirmPending = false;
-        if (ret != QMessageBox::Ok)
+        if (!confirmed)
             return;
     }
 
-    // deletePull rewrites all of git history (filter-branch + gc + reflog expire)
-    // so the diff text the PR carried can no longer be recovered — slow enough to
-    // freeze the UI for many seconds if run inline. Shell it out to a worker thread
-    // (deletePull only touches git, no event signing, so a copied store is safe)
-    // and report back on the main thread.
+    // The plain delete just drops the PR folder at the tip and is fast. Only the
+    // opt-in history rewrite (filter-branch + gc + reflog expire) is slow enough to
+    // freeze the UI — either way, run it on a worker thread (deletePull only touches
+    // git, no event signing, so a copied store is safe) and report back on the main
+    // thread.
     const int deleted = m_currentPullNumber;
     m_pullDeleteInProgress = true;
     setPullDeleteButtonsEnabled(false);
     setRepoDetailNotice(
-        QStringLiteral("Deleting pull request #%1 and rewriting history… this can "
-                       "take a while.")
-            .arg(deleted));
+        rewriteHistory
+            ? QStringLiteral("Deleting pull request #%1 and rewriting history… this "
+                             "can take a while.")
+                  .arg(deleted)
+            : QStringLiteral("Deleting pull request #%1…").arg(deleted));
     QApplication::setOverrideCursor(Qt::BusyCursor);
 
     PullStore store = pullStoreForCurrentRepo();
     auto ok = std::make_shared<bool>(false);
     auto error = std::make_shared<QString>();
-    QThread *worker = QThread::create([store, deleted, ok, error]() mutable {
-        QString err;
-        *ok = store.deletePull(deleted, &err);
-        *error = err;
-    });
+    QThread *worker =
+        QThread::create([store, deleted, rewriteHistory, ok, error]() mutable {
+            QString err;
+            *ok = store.deletePull(deleted, rewriteHistory, &err);
+            *error = err;
+        });
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error, deleted]() {
                 m_pullDeleteInProgress = false;
@@ -15760,35 +16309,38 @@ void MainWindow::deleteCurrentPullAndBranch()
             : QStringLiteral("Permanently delete pull request #%1? This cannot be "
                              "undone.")
                   .arg(m_currentPullNumber);
-    if (QMessageBox::warning(this, "Delete pull request", prompt,
-                             QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
+    bool rewriteHistory = false;
+    if (!confirmPullDeletion(prompt, &rewriteHistory))
         return;
 
-    // deletePull rewrites all of git history (filter-branch + gc + reflog expire)
-    // so the diff text the PR carried can no longer be recovered — slow enough to
-    // freeze the UI for many seconds if run inline. Shell it out to a worker
-    // thread (deletePull only touches git, no event signing, so a copied store is
-    // safe) and report back on the main thread. The branch removal and list
-    // reloads are cheap and stay on the main thread in the finished handler.
+    // The plain delete just drops the PR folder (and the branch ref) and is fast.
+    // Only the opt-in history rewrite (filter-branch + gc + reflog expire) is slow
+    // enough to freeze the UI — either way, run deletePull on a worker thread
+    // (it only touches git, no event signing, so a copied store is safe) and report
+    // back on the main thread. The branch removal and list reloads are cheap and
+    // stay on the main thread in the finished handler.
     const int deleted = m_currentPullNumber;
     const QString dir = repoGitDir();
     const bool haveWorkTree = repoHasWorkingTree();
     m_pullDeleteInProgress = true;
     setRepoDetailNotice(
-        QStringLiteral("Deleting pull request #%1 and rewriting history… this can "
-                       "take a while.")
-            .arg(deleted));
+        rewriteHistory
+            ? QStringLiteral("Deleting pull request #%1 and rewriting history… this "
+                             "can take a while.")
+                  .arg(deleted)
+            : QStringLiteral("Deleting pull request #%1…").arg(deleted));
     setPullDeleteButtonsEnabled(false);
     QApplication::setOverrideCursor(Qt::BusyCursor);
 
     PullStore store = pullStoreForCurrentRepo();
     auto ok = std::make_shared<bool>(false);
     auto error = std::make_shared<QString>();
-    QThread *worker = QThread::create([store, deleted, ok, error]() mutable {
-        QString err;
-        *ok = store.deletePull(deleted, &err);
-        *error = err;
-    });
+    QThread *worker =
+        QThread::create([store, deleted, rewriteHistory, ok, error]() mutable {
+            QString err;
+            *ok = store.deletePull(deleted, rewriteHistory, &err);
+            *error = err;
+        });
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error, deleted, head, haveBranch, dir,
              haveWorkTree]() {
