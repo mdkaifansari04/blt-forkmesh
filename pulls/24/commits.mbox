@@ -1,0 +1,859 @@
+From cba9c410a6b8f6ce298c8b069fca864cd048e788 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 15:44:19 +0530
+Subject: [PATCH] feat: harden relay federation deployment
+
+(cherry picked from commit 95be243364be828ef5efa58132d27133f64cc08e)
+---
+ cloudflare_worker/.env.production.example     |  10 +
+ cloudflare_worker/README.md                   |  58 +++
+ cloudflare_worker/deploy.sh                   | 125 +++++-
+ cloudflare_worker/migrate.sh                  |  13 +
+ cloudflare_worker/src/entry.py                |  17 +
+ cloudflare_worker/tests/test_federation.py    | 109 ++++++
+ .../plans/2026-06-24-relay-federation-mvp.md  | 363 ++++++++++++++++++
+ 7 files changed, 685 insertions(+), 10 deletions(-)
+ create mode 100644 cloudflare_worker/tests/test_federation.py
+ create mode 100644 docs/superpowers/plans/2026-06-24-relay-federation-mvp.md
+
+diff --git a/cloudflare_worker/.env.production.example b/cloudflare_worker/.env.production.example
+index da13e29..297137f 100644
+--- a/cloudflare_worker/.env.production.example
++++ b/cloudflare_worker/.env.production.example
+@@ -13,6 +13,16 @@
+ # ID and forks deploy to their own account. Find yours: `wrangler whoami`.
+ CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
+ 
++# Optional second-relay deployment settings.
++# Set these only for a federated relay, never on the main forkmesh.com relay.
++# A federated relay must use its own Worker name and its own D1 database.
++# FORKMESH_WORKER_NAME=forkmesh-relay-yourname
++# FORKMESH_D1_NAME=forkmesh-yourname
++# FORKMESH_D1_DATABASE_ID=your-second-relay-d1-database-id
++# MAIN_RELAY_URL=https://forkmesh.com
++# RELAY_LABEL=your-relay-label
++# PUBLIC_BASE_URL=https://your-relay.example
++
+ # Admin error dashboard at https://<host>/<ADMIN_PATH>, gated by HTTP Basic auth.
+ # ADMIN_PATH must start with "admin-" so it is routed to the worker.
+ ADMIN_PATH=admin-CHANGE-ME-TO-SOMETHING-RANDOM
+diff --git a/cloudflare_worker/README.md b/cloudflare_worker/README.md
+index b1747fe..eee8d11 100644
+--- a/cloudflare_worker/README.md
++++ b/cloudflare_worker/README.md
+@@ -67,6 +67,64 @@ prefer.
+ Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
+ environment variables for the health response.
+ 
++## Second Relay Federation
++
++ForkMesh can run a second relay as a federated Worker deployment.
++The main relay is the deployment with no `MAIN_RELAY_URL`.
++A federated relay sets `MAIN_RELAY_URL=https://forkmesh.com`, keeps its own D1 database and Durable Objects, and signs relay-to-main calls with an auto-generated Ed25519 identity stored in `relay_self`.
++Signup custody stays on the main relay, so the federated relay stores only the returned deposit address and federation reference.
++
++Create a separate D1 database for the second relay:
++
++```sh
++uvx --from workers-py pywrangler d1 create forkmesh-yourname
++```
++
++Copy `.env.production.example` to `.env.production` and fill the second-relay settings:
++
++```sh
++FORKMESH_WORKER_NAME=forkmesh-relay-yourname
++FORKMESH_D1_NAME=forkmesh-yourname
++FORKMESH_D1_DATABASE_ID=your-second-relay-d1-database-id
++MAIN_RELAY_URL=https://forkmesh.com
++RELAY_LABEL=your-relay-label
++PUBLIC_BASE_URL=https://your-relay.example
++```
++
++Keep `FORKMESH_D1_DATABASE_ID` distinct from the committed primary D1 id.
++`deploy.sh` fails early when `MAIN_RELAY_URL` is set but the Worker name or D1 target still points at the primary relay.
++`TREASURY_SOLANA_ADDRESS` is required on the main relay.
++It is optional on a federated relay because treasury lookup and signup custody proxy through the main relay.
++
++Validate and deploy the federated relay:
++
++```sh
++./deploy.sh dry-run
++./deploy.sh deploy
++```
++
++After deployment, check health:
++
++```sh
++curl -s https://your-relay.example/health
++```
++
++The response should include `"relayRole":"federated"` and a `federation` object.
++Cron registers the relay with the main relay at `/api/federation/register`.
++Until approval, the main relay records it as `pending` and rejects custody or node-presence reports with `relay_not_approved`.
++
++Approve the relay on the main relay with either a direct D1 update:
++
++```sql
++UPDATE relays SET status = 'approved' WHERE label = 'your-relay-label';
++```
++
++or the signed admin API `/api/accounts/admin-relay-approve`.
++After approval, point the Qt client's relay switcher at the second relay host.
++Verify that the client connects, signup payment proxying works, account finalization completes locally, heartbeats continue, and the main relay network payout view includes approved federated presence.
++
++This MVP does not merge catalogs across relays, bridge chat rooms across relays, add automatic relay discovery, or add WebRTC routing.
++
+ ## Mainnode Binding
+ 
+ The Durable Object binding is `FORKMESH_MAINNODE_ROOM`. Each object is keyed by
+diff --git a/cloudflare_worker/deploy.sh b/cloudflare_worker/deploy.sh
+index 64f7dca..b27a137 100755
+--- a/cloudflare_worker/deploy.sh
++++ b/cloudflare_worker/deploy.sh
+@@ -35,6 +35,13 @@ pywrangler() {
+ # secret that isn't in the config), so the admin URL keeps working. The Worker
+ # reads them the same way (env.ADMIN_PATH, etc.).
+ ENV_FILE=".env.production"
++PRIMARY_D1_DATABASE_ID="bf90dd5d-338a-421f-9867-5252d2193c2d"
++FORKMESH_WORKER_NAME="${FORKMESH_WORKER_NAME:-}"
++FORKMESH_D1_NAME="${FORKMESH_D1_NAME:-}"
++FORKMESH_D1_DATABASE_ID="${FORKMESH_D1_DATABASE_ID:-}"
++MAIN_RELAY_URL_VALUE="${MAIN_RELAY_URL:-}"
++GENERATED_CONFIG=""
++WRANGLER_CONFIG_ARGS=()
+ 
+ # Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
+ # or space on a value is a classic cause of a secret that "exists" in the
+@@ -76,6 +83,25 @@ if [ -f "$ENV_FILE" ]; then
+                 [ -n "$value" ] && export "$key=$value"
+                 continue
+                 ;;
++            FORKMESH_WORKER_NAME)
++                FORKMESH_WORKER_NAME="$value"
++                [ -n "$value" ] && export FORKMESH_WORKER_NAME="$value"
++                continue
++                ;;
++            FORKMESH_D1_NAME)
++                FORKMESH_D1_NAME="$value"
++                [ -n "$value" ] && export FORKMESH_D1_NAME="$value"
++                continue
++                ;;
++            FORKMESH_D1_DATABASE_ID)
++                FORKMESH_D1_DATABASE_ID="$value"
++                [ -n "$value" ] && export FORKMESH_D1_DATABASE_ID="$value"
++                continue
++                ;;
++            MAIN_RELAY_URL)
++                MAIN_RELAY_URL_VALUE="$value"
++                [ -n "$value" ] && export MAIN_RELAY_URL="$value"
++                ;;
+         esac
+         VAR_ARGS+=(--var "${key}:${value}")          # .env uses =, wrangler uses :
+     done < "$ENV_FILE"
+@@ -90,6 +116,63 @@ require_cloudflare_account() {
+     return 1
+ }
+ 
++require_safe_federated_target() {
++    local main_url="${MAIN_RELAY_URL_VALUE:-${MAIN_RELAY_URL:-}}"
++    [ -z "$main_url" ] && return 0
++
++    if [ -z "$FORKMESH_WORKER_NAME" ] || [ "$FORKMESH_WORKER_NAME" = "forkmesh-relay" ]; then
++        echo "ERROR: federated relay deploy requires FORKMESH_WORKER_NAME distinct from forkmesh-relay." >&2
++        return 1
++    fi
++    if [ -z "$FORKMESH_D1_NAME" ] || [ "$FORKMESH_D1_NAME" = "forkmesh" ]; then
++        echo "ERROR: federated relay deploy requires FORKMESH_D1_NAME for its own D1 database." >&2
++        return 1
++    fi
++    if [ -z "$FORKMESH_D1_DATABASE_ID" ] || [ "$FORKMESH_D1_DATABASE_ID" = "$PRIMARY_D1_DATABASE_ID" ]; then
++        echo "ERROR: federated relay deploy requires FORKMESH_D1_DATABASE_ID for a non-primary D1 database." >&2
++        return 1
++    fi
++}
++
++cleanup_generated_config() {
++    if [ -n "$GENERATED_CONFIG" ] && [ -f "$GENERATED_CONFIG" ]; then
++        rm -f "$GENERATED_CONFIG"
++    fi
++}
++trap cleanup_generated_config EXIT
++
++prepare_wrangler_config() {
++    WRANGLER_CONFIG_ARGS=()
++    if [ -z "$FORKMESH_WORKER_NAME" ] && [ -z "$FORKMESH_D1_NAME" ] && [ -z "$FORKMESH_D1_DATABASE_ID" ]; then
++        return 0
++    fi
++    if [ -z "$FORKMESH_D1_NAME" ] || [ -z "$FORKMESH_D1_DATABASE_ID" ]; then
++        echo "ERROR: FORKMESH_D1_NAME and FORKMESH_D1_DATABASE_ID must be set together." >&2
++        return 1
++    fi
++
++    GENERATED_CONFIG="$(mktemp "${TMPDIR:-/tmp}/forkmesh-wrangler.XXXXXX.toml")"
++    awk \
++        -v worker_name="$FORKMESH_WORKER_NAME" \
++        -v d1_name="$FORKMESH_D1_NAME" \
++        -v d1_id="$FORKMESH_D1_DATABASE_ID" '
++        /^name = / && worker_name != "" {
++            print "name = \"" worker_name "\""
++            next
++        }
++        /^database_name = / && d1_name != "" {
++            print "database_name = \"" d1_name "\""
++            next
++        }
++        /^database_id = / && d1_id != "" {
++            print "database_id = \"" d1_id "\""
++            next
++        }
++        { print }
++    ' wrangler.toml > "$GENERATED_CONFIG"
++    WRANGLER_CONFIG_ARGS=(--config "$GENERATED_CONFIG")
++}
++
+ # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
+ # Idempotent (re-running updates values) and persists across redeploys. Requires
+ # the Worker to already exist, so run it after `pywrangler deploy`.
+@@ -101,7 +184,10 @@ push_secrets() {
+     # Worker secrets that MUST be set for the site to work; an empty/missing one
+     # is a hard error, not a silent skip (that's what made a broken deploy look
+     # successful). TREASURY_BCH_ADDRESS is optional (legacy), so it's not listed.
+-    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS "
++    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS "
++    if [ -z "${MAIN_RELAY_URL_VALUE:-${MAIN_RELAY_URL:-}}" ]; then
++        required="${required} TREASURY_SOLANA_ADDRESS "
++    fi
+ 
+     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+     local count=0
+@@ -114,8 +200,11 @@ push_secrets() {
+         key="$(trim "${line%%=*}")"
+         value="$(trim "${line#*=}")"
+         [ -z "$key" ] && continue
+-        # CLOUDFLARE_* are wrangler config (exported above), not Worker secrets.
+-        case "$key" in CLOUDFLARE_*) continue ;; esac
++        # CLOUDFLARE_* and FORKMESH_* deploy settings are config, not Worker secrets.
++        case "$key" in
++            CLOUDFLARE_*|FORKMESH_WORKER_NAME|FORKMESH_D1_NAME|FORKMESH_D1_DATABASE_ID)
++                continue ;;
++        esac
+         # Never push an empty value: it sets a blank secret, which looks "set" in
+         # the dashboard but locks out the admin path / basic auth at runtime.
+         if [ -z "$value" ]; then
+@@ -131,7 +220,11 @@ push_secrets() {
+         # Feed the value on stdin terminated by a newline — the documented
+         # non-interactive form; wrangler strips the single trailing newline. The
+         # previous no-newline pipe could leave the value unread (blank secret).
+-        printf '%s\n' "$value" | pywrangler secret put "$key"
++        if [ -n "$FORKMESH_WORKER_NAME" ]; then
++            printf '%s\n' "$value" | pywrangler secret put "$key" --name "$FORKMESH_WORKER_NAME"
++        else
++            printf '%s\n' "$value" | pywrangler secret put "$key"
++        fi
+         pushed+=("$key")
+         count=$((count + 1))
+     done < "$ENV_FILE"
+@@ -153,7 +246,12 @@ push_secrets() {
+     # Verify: confirm each pushed name actually exists on the Worker now, so a
+     # silently-failed `secret put` becomes a loud error instead of a mystery.
+     local listed
+-    if listed="$(pywrangler secret list 2>/dev/null)"; then
++    if [ -n "$FORKMESH_WORKER_NAME" ]; then
++        listed="$(pywrangler secret list --name "$FORKMESH_WORKER_NAME" 2>/dev/null || true)"
++    else
++        listed="$(pywrangler secret list 2>/dev/null || true)"
++    fi
++    if [ -n "$listed" ]; then
+         local missing=()
+         local k
+         for k in ${pushed[@]+"${pushed[@]}"}; do
+@@ -173,24 +271,31 @@ push_secrets() {
+ case "${1:-deploy}" in
+     deploy)
+         require_cloudflare_account
+-        echo "Deploying ForkMesh website + relay to Cloudflare..."
+-        pywrangler deploy
++        require_safe_federated_target
++        prepare_wrangler_config
++        echo "Deploying ForkMesh website + relay to Cloudflare as ${FORKMESH_WORKER_NAME:-forkmesh-relay}..."
++        pywrangler deploy "${WRANGLER_CONFIG_ARGS[@]}"
+         # Secrets are set after the Worker exists; unlike plaintext vars they
+         # survive this and future deploys, so the admin dashboard keeps working.
+         push_secrets
+-        echo "Done. Live at https://forkmesh.com (and any custom domain)."
++        echo "Done. Check /health on the deployed relay before sending users to it."
+         ;;
+     secrets)
+         require_cloudflare_account
++        require_safe_federated_target
+         # Re-push just the .env.production secrets, no full redeploy.
+         push_secrets
+         ;;
+     dev)
+-        pywrangler dev ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
++        require_safe_federated_target
++        prepare_wrangler_config
++        pywrangler dev "${WRANGLER_CONFIG_ARGS[@]}" "${VAR_ARGS[@]}"
+         ;;
+     dry-run)
+         require_cloudflare_account
+-        pywrangler deploy --dry-run
++        require_safe_federated_target
++        prepare_wrangler_config
++        pywrangler deploy "${WRANGLER_CONFIG_ARGS[@]}" --dry-run
+         ;;
+     *)
+         echo "Usage: $0 [deploy|secrets|dev|dry-run]" >&2
+diff --git a/cloudflare_worker/migrate.sh b/cloudflare_worker/migrate.sh
+index e43857d..8afef1a 100755
+--- a/cloudflare_worker/migrate.sh
++++ b/cloudflare_worker/migrate.sh
+@@ -8,6 +8,18 @@ set -euo pipefail
+ cd "$(dirname "$0")"
+ 
+ DB="${FORKMESH_D1_NAME:-forkmesh}"
++PRIMARY_D1_DATABASE_ID="bf90dd5d-338a-421f-9867-5252d2193c2d"
++
++if [ -n "${MAIN_RELAY_URL:-}" ]; then
++  if [ -z "${FORKMESH_D1_NAME:-}" ] || [ "$DB" = "forkmesh" ]; then
++    echo "migrate.sh: ERROR: federated relay migrations require FORKMESH_D1_NAME for a second-relay D1 database." >&2
++    exit 1
++  fi
++  if [ -z "${FORKMESH_D1_DATABASE_ID:-}" ] || [ "${FORKMESH_D1_DATABASE_ID:-}" = "$PRIMARY_D1_DATABASE_ID" ]; then
++    echo "migrate.sh: ERROR: federated relay migrations require FORKMESH_D1_DATABASE_ID for a non-primary D1 database." >&2
++    exit 1
++  fi
++fi
+ 
+ # Nothing to do until a real D1 database is wired up: skip (don't fail the
+ # build) while wrangler.toml still has the placeholder id.
+@@ -31,6 +43,7 @@ fi
+ SCOPE="--remote"
+ [ "${FORKMESH_D1_LOCAL:-0}" = "1" ] && SCOPE="--local"
+ 
++echo "migrate.sh: target D1 database name: '$DB'"
+ echo "migrate.sh: applying D1 migrations to '$DB' ($SCOPE)"
+ # Non-interactive (build subprocess): wrangler auto-confirms when stdout is not
+ # a TTY. Each migration is tracked in d1_migrations and applied at most once.
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 3f53b22..e9dc787 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -3593,6 +3593,21 @@ def _is_main_relay(env):
+     return not _main_relay_url(env)
+ 
+ 
++def _relay_role(env):
++    return "main" if _is_main_relay(env) else "federated"
++
++
++def _federation_status(env):
++    main_url = _main_relay_url(env)
++    return {
++        "role": _relay_role(env),
++        "mainRelayConfigured": bool(main_url),
++        "mainRelayUrl": main_url,
++        "relayLabel": clean_string(getattr(env, "RELAY_LABEL", "") or "", 80),
++        "publicBaseUrl": clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200),
++    }
++
++
+ async def _new_ed25519_identity():
+     # Fresh Ed25519 keypair as (raw pubkey base64url, seed base64url) — the same
+     # base64url-raw shape the desktop identity and ed25519_verify use.
+@@ -5431,6 +5446,8 @@ class Default(WorkerEntrypoint):
+                     "service": "forkmesh-mainnode",
+                     "node": getattr(self.env, "NODE_NAME", "forkmesh"),
+                     "nodeSolanaAddress": getattr(self.env, "NODE_SOLANA_ADDRESS", ""),
++                    "relayRole": _relay_role(self.env),
++                    "federation": _federation_status(self.env),
+                     "websocket": "/api/repo/{owner}/{repo}/rooms/{room}/ws",
+                     "compatWebsocket": "/api/room/{room}/ws",
+                     "capabilities": [
+diff --git a/cloudflare_worker/tests/test_federation.py b/cloudflare_worker/tests/test_federation.py
+new file mode 100644
+index 0000000..03b2cf3
+--- /dev/null
++++ b/cloudflare_worker/tests/test_federation.py
+@@ -0,0 +1,109 @@
++#!/usr/bin/env python3
++"""Relay federation source contract checks.
++
++The Worker depends on the Cloudflare Python runtime, so these tests pin the
++federation contract by reading the source files directly. They cover the pieces
++that let a second relay exist without accidentally sharing the main relay's D1
++state or weakening the relay approval gate.
++"""
++
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++ENTRY = ROOT / "src" / "entry.py"
++MIGRATION = ROOT / "migrations" / "0012_federation.sql"
++WRANGLER = ROOT / "wrangler.toml"
++DEPLOY = ROOT / "deploy.sh"
++MIGRATE = ROOT / "migrate.sh"
++ENV_EXAMPLE = ROOT / ".env.production.example"
++README = ROOT / "README.md"
++
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++MIGRATION_TEXT = MIGRATION.read_text(encoding="utf-8")
++WRANGLER_TEXT = WRANGLER.read_text(encoding="utf-8")
++DEPLOY_TEXT = DEPLOY.read_text(encoding="utf-8")
++MIGRATE_TEXT = MIGRATE.read_text(encoding="utf-8")
++ENV_TEXT = ENV_EXAMPLE.read_text(encoding="utf-8")
++README_TEXT = README.read_text(encoding="utf-8")
++
++
++def test_federation_role_switch_is_main_relay_url_only():
++    assert "def _main_relay_url(env):" in ENTRY_TEXT
++    assert 'getattr(env, "MAIN_RELAY_URL", "")' in ENTRY_TEXT
++    assert "def _is_main_relay(env):" in ENTRY_TEXT
++    assert "return not _main_relay_url(env)" in ENTRY_TEXT
++
++
++def test_federation_canonical_contract_is_pinned():
++    assert 'FEDERATION_CANON = "forkmesh-federation-v1"' in ENTRY_TEXT
++    assert (
++        'FEDERATION_CANON + "\\n" + pubkey + "\\n" + str(ts) + "\\n" +'
++        in ENTRY_TEXT
++    )
++    assert "body_hash).encode()" in ENTRY_TEXT
++    assert "X-Relay-Pubkey" in ENTRY_TEXT
++    assert "X-Relay-Ts" in ENTRY_TEXT
++    assert "X-Relay-Sig" in ENTRY_TEXT
++
++
++def test_main_relay_federation_routes_are_wired():
++    for path in (
++        "/api/federation/register",
++        "/api/federation/donation-address",
++        "/api/federation/donation-status",
++        "/api/federation/nodes",
++        "/api/federation/treasury-address",
++    ):
++        assert path in ENTRY_TEXT
++    assert 'if url.path.startswith("/api/federation/"):' in ENTRY_TEXT
++    assert "return await federation_handler(self.env, request)" in ENTRY_TEXT
++
++
++def test_approval_gate_protects_custody_and_presence():
++    assert "async def _relay_authorized(env, request, body_str):" in ENTRY_TEXT
++    assert 'row.get("status") != "approved"' in ENTRY_TEXT
++    assert (
++        'return json_response({"error": "relay_not_approved"}, status=401)'
++        in ENTRY_TEXT
++    )
++    assert ENTRY_TEXT.count("relay_not_approved") >= 3
++
++
++def test_federated_relay_does_not_store_signup_deposit_secret():
++    assert "return await _federated_donation_address(env, request)" in ENTRY_TEXT
++    assert 'rec["fed_reference"] = reply.get("reference", "")' in ENTRY_TEXT
++    assert 'rec.pop("donation_secret", None)' in ENTRY_TEXT
++
++
++def test_federation_schema_exists_in_code_and_migration():
++    for table in ("relays", "federated_presence", "federated_signup", "relay_self"):
++        assert f"CREATE TABLE IF NOT EXISTS {table}" in ENTRY_TEXT
++    for table in ("relays", "federated_presence", "federated_signup"):
++        assert f"CREATE TABLE IF NOT EXISTS {table}" in MIGRATION_TEXT
++
++
++def test_health_exposes_relay_role_metadata():
++    assert '"relayRole":' in ENTRY_TEXT
++    assert '"federation":' in ENTRY_TEXT
++    assert '"mainRelayConfigured":' in ENTRY_TEXT
++    assert '"relayLabel":' in ENTRY_TEXT
++    assert '"publicBaseUrl":' in ENTRY_TEXT
++
++
++def test_second_relay_config_is_documented_and_guarded():
++    for token in (
++        "FORKMESH_WORKER_NAME",
++        "FORKMESH_D1_NAME",
++        "FORKMESH_D1_DATABASE_ID",
++        "MAIN_RELAY_URL",
++        "RELAY_LABEL",
++        "PUBLIC_BASE_URL",
++    ):
++        assert token in ENV_TEXT
++        assert token in DEPLOY_TEXT or token in MIGRATE_TEXT or token in README_TEXT
++    assert "require_safe_federated_target" in DEPLOY_TEXT
++    assert "PRIMARY_D1_DATABASE_ID" in DEPLOY_TEXT
++    assert "FORKMESH_D1_NAME" in MIGRATE_TEXT
++    assert "Second Relay Federation" in README_TEXT
++    assert "relayRole" in README_TEXT
+diff --git a/docs/superpowers/plans/2026-06-24-relay-federation-mvp.md b/docs/superpowers/plans/2026-06-24-relay-federation-mvp.md
+new file mode 100644
+index 0000000..4841973
+--- /dev/null
++++ b/docs/superpowers/plans/2026-06-24-relay-federation-mvp.md
+@@ -0,0 +1,363 @@
++# Relay Federation MVP Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
++> Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Make a second ForkMesh Cloudflare Worker relay deployable, visible, test-covered, and safe to federate with the main relay.
++
++**Architecture:** Keep the existing main-vs-federated relay model where `MAIN_RELAY_URL` selects federated mode.
++Harden the operational layer around it with deploy/migration safeguards, health metadata, docs, and source-level tests.
++Do not add cross-relay catalog merging, room bridging, automatic relay discovery, or WebRTC.
++
++**Tech Stack:** Python Cloudflare Worker, Bash deploy scripts, D1 migrations, stdlib/pytest source-contract tests, Markdown docs.
++
++---
++
++## File Map
++
++Modify `cloudflare_worker/src/entry.py` to expose federation role metadata in `/health` and `/api/mainnode`.
++Modify `cloudflare_worker/deploy.sh` to support safe second-relay overrides and fail before a federated deploy can target the primary D1 by accident.
++Modify `cloudflare_worker/migrate.sh` to make the D1 target explicit and fail early for unsafe federated defaults.
++Modify `cloudflare_worker/.env.production.example` to document second-relay environment variables.
++Modify `cloudflare_worker/README.md` to document the second-relay operator flow.
++Create `cloudflare_worker/tests/test_federation.py` for source-level federation contract checks.
++Keep the existing design spec at `docs/superpowers/specs/2026-06-24-relay-federation-mvp-design.md`.
++
++## Task 1: Federation Source Contract Tests
++
++**Files:**
++- Create: `cloudflare_worker/tests/test_federation.py`
++- Test: `cloudflare_worker/tests/test_federation.py`
++
++- [ ] **Step 1: Write source-level federation tests**
++
++Create `cloudflare_worker/tests/test_federation.py` with tests that read `cloudflare_worker/src/entry.py`, `cloudflare_worker/wrangler.toml`, `cloudflare_worker/migrations/0012_federation.sql`, `cloudflare_worker/deploy.sh`, `cloudflare_worker/migrate.sh`, and `cloudflare_worker/.env.production.example`.
++Include tests for these facts:
++
++```python
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++ENTRY = ROOT / "src" / "entry.py"
++MIGRATION = ROOT / "migrations" / "0012_federation.sql"
++WRANGLER = ROOT / "wrangler.toml"
++DEPLOY = ROOT / "deploy.sh"
++MIGRATE = ROOT / "migrate.sh"
++ENV_EXAMPLE = ROOT / ".env.production.example"
++README = ROOT / "README.md"
++
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++MIGRATION_TEXT = MIGRATION.read_text(encoding="utf-8")
++WRANGLER_TEXT = WRANGLER.read_text(encoding="utf-8")
++DEPLOY_TEXT = DEPLOY.read_text(encoding="utf-8")
++MIGRATE_TEXT = MIGRATE.read_text(encoding="utf-8")
++ENV_TEXT = ENV_EXAMPLE.read_text(encoding="utf-8")
++README_TEXT = README.read_text(encoding="utf-8")
++
++
++def test_federation_role_switch_is_main_relay_url_only():
++    assert 'def _main_relay_url(env):' in ENTRY_TEXT
++    assert 'getattr(env, "MAIN_RELAY_URL", "")' in ENTRY_TEXT
++    assert 'def _is_main_relay(env):' in ENTRY_TEXT
++    assert 'return not _main_relay_url(env)' in ENTRY_TEXT
++
++
++def test_federation_canonical_contract_is_pinned():
++    assert 'FEDERATION_CANON = "forkmesh-federation-v1"' in ENTRY_TEXT
++    assert 'FEDERATION_CANON + "\\n" + pubkey + "\\n" + str(ts) + "\\n" +' in ENTRY_TEXT
++    assert 'body_hash).encode()' in ENTRY_TEXT
++    assert 'X-Relay-Pubkey' in ENTRY_TEXT
++    assert 'X-Relay-Ts' in ENTRY_TEXT
++    assert 'X-Relay-Sig' in ENTRY_TEXT
++
++
++def test_main_relay_federation_routes_are_wired():
++    for path in (
++        "/api/federation/register",
++        "/api/federation/donation-address",
++        "/api/federation/donation-status",
++        "/api/federation/nodes",
++        "/api/federation/treasury-address",
++    ):
++        assert path in ENTRY_TEXT
++    assert 'if url.path.startswith("/api/federation/"):' in ENTRY_TEXT
++    assert 'return await federation_handler(self.env, request)' in ENTRY_TEXT
++
++
++def test_approval_gate_protects_custody_and_presence():
++    assert 'async def _relay_authorized(env, request, body_str):' in ENTRY_TEXT
++    assert 'row.get("status") != "approved"' in ENTRY_TEXT
++    assert 'return json_response({"error": "relay_not_approved"}, status=401)' in ENTRY_TEXT
++    assert ENTRY_TEXT.count('relay_not_approved') >= 3
++
++
++def test_federated_relay_does_not_store_signup_deposit_secret():
++    assert 'return await _federated_donation_address(env, request)' in ENTRY_TEXT
++    assert 'rec["fed_reference"] = reply.get("reference", "")' in ENTRY_TEXT
++    assert 'rec.pop("donation_secret", None)' in ENTRY_TEXT
++
++
++def test_federation_schema_exists_in_code_and_migration():
++    for table in ("relays", "federated_presence", "federated_signup", "relay_self"):
++        assert f"CREATE TABLE IF NOT EXISTS {table}" in ENTRY_TEXT
++    for table in ("relays", "federated_presence", "federated_signup"):
++        assert f"CREATE TABLE IF NOT EXISTS {table}" in MIGRATION_TEXT
++
++
++def test_health_exposes_relay_role_metadata():
++    assert '"relayRole":' in ENTRY_TEXT
++    assert '"federation":' in ENTRY_TEXT
++    assert '"mainRelayConfigured":' in ENTRY_TEXT
++    assert '"relayLabel":' in ENTRY_TEXT
++    assert '"publicBaseUrl":' in ENTRY_TEXT
++
++
++def test_second_relay_config_is_documented_and_guarded():
++    for token in (
++        "FORKMESH_WORKER_NAME",
++        "FORKMESH_D1_NAME",
++        "FORKMESH_D1_DATABASE_ID",
++        "MAIN_RELAY_URL",
++        "RELAY_LABEL",
++        "PUBLIC_BASE_URL",
++    ):
++        assert token in ENV_TEXT
++        assert token in DEPLOY_TEXT or token in MIGRATE_TEXT or token in README_TEXT
++    assert "require_safe_federated_target" in DEPLOY_TEXT
++    assert "PRIMARY_D1_DATABASE_ID" in DEPLOY_TEXT
++    assert "FORKMESH_D1_NAME" in MIGRATE_TEXT
++```
++
++- [ ] **Step 2: Run the new tests and verify they fail**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_federation.py -q
++```
++
++Expected: tests fail because health metadata and deploy/migration/env/docs safeguards do not exist yet.
++
++## Task 2: Health Metadata
++
++**Files:**
++- Modify: `cloudflare_worker/src/entry.py`
++- Test: `cloudflare_worker/tests/test_federation.py`
++
++- [ ] **Step 1: Add a small federation status helper**
++
++In `cloudflare_worker/src/entry.py`, near `_main_relay_url` and `_is_main_relay`, add:
++
++```python
++def _relay_role(env):
++    return "main" if _is_main_relay(env) else "federated"
++
++
++def _federation_status(env):
++    main_url = _main_relay_url(env)
++    return {
++        "role": _relay_role(env),
++        "mainRelayConfigured": bool(main_url),
++        "mainRelayUrl": main_url,
++        "relayLabel": clean_string(getattr(env, "RELAY_LABEL", "") or "", 80),
++        "publicBaseUrl": clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200),
++    }
++```
++
++- [ ] **Step 2: Wire helper into `/health` and `/api/mainnode`**
++
++In the health JSON response, add:
++
++```python
++"relayRole": _relay_role(self.env),
++"federation": _federation_status(self.env),
++```
++
++The response must not include secrets, private keys, D1 database ids, admin paths, or data keys.
++
++- [ ] **Step 3: Run the federation test slice**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_federation.py -q
++```
++
++Expected: health metadata test passes.
++Other tests may still fail until deploy/docs work lands.
++
++## Task 3: Safe Second-Relay Deploy Configuration
++
++**Files:**
++- Modify: `cloudflare_worker/deploy.sh`
++- Modify: `cloudflare_worker/migrate.sh`
++- Test: `cloudflare_worker/tests/test_federation.py`
++
++- [ ] **Step 1: Teach `deploy.sh` about second-relay env names**
++
++In `cloudflare_worker/deploy.sh`, collect these optional settings from `.env.production`:
++
++```bash
++FORKMESH_WORKER_NAME
++FORKMESH_D1_NAME
++FORKMESH_D1_DATABASE_ID
++MAIN_RELAY_URL
++RELAY_LABEL
++PUBLIC_BASE_URL
++```
++
++Keep `CLOUDFLARE_*` behavior unchanged.
++Do not push `FORKMESH_WORKER_NAME`, `FORKMESH_D1_NAME`, or `FORKMESH_D1_DATABASE_ID` as Worker secrets.
++Do pass `MAIN_RELAY_URL`, `RELAY_LABEL`, and `PUBLIC_BASE_URL` to local `dev` as vars and deploy them as Worker secrets or variables consistently with the existing env-loading model.
++
++- [ ] **Step 2: Add fail-fast federated target guard**
++
++Add a `require_safe_federated_target` function that fails when `MAIN_RELAY_URL` is non-empty and the deployment still targets the primary D1.
++Use the committed primary id as a string constant so the guard can catch accidental reuse:
++
++```bash
++PRIMARY_D1_DATABASE_ID="bf90dd5d-338a-421f-9867-5252d2193c2d"
++```
++
++The guard should reject a federated relay when `FORKMESH_D1_DATABASE_ID` is empty, equal to `PRIMARY_D1_DATABASE_ID`, or when `FORKMESH_D1_NAME` is empty or equal to `forkmesh`.
++The error should explain that a second relay needs its own D1 database.
++
++- [ ] **Step 3: Pass safe overrides to pywrangler**
++
++When `FORKMESH_WORKER_NAME` is set, deploy with `--name "$FORKMESH_WORKER_NAME"`.
++When `FORKMESH_D1_NAME` and `FORKMESH_D1_DATABASE_ID` are set, generate or select a temporary deploy config that points the `DB` binding at that D1 database.
++Keep the default primary deploy unchanged when these variables are absent.
++
++- [ ] **Step 4: Update `migrate.sh` target behavior**
++
++In `cloudflare_worker/migrate.sh`, keep the current default:
++
++```bash
++DB="${FORKMESH_D1_NAME:-forkmesh}"
++```
++
++Add output that clearly prints the target D1 name.
++If `MAIN_RELAY_URL` is set and `FORKMESH_D1_NAME` is unset or `forkmesh`, fail with a clear second-relay D1 error before running migrations.
++
++- [ ] **Step 5: Run source contract tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_federation.py -q
++```
++
++Expected: deploy/migration guard tests pass after the source contains the expected names and guard.
++
++## Task 4: Second-Relay Operator Docs
++
++**Files:**
++- Modify: `cloudflare_worker/.env.production.example`
++- Modify: `cloudflare_worker/README.md`
++- Test: `cloudflare_worker/tests/test_federation.py`
++
++- [ ] **Step 1: Add second-relay env example**
++
++Add a commented section to `.env.production.example` that documents:
++
++```bash
++# Optional second-relay deployment settings.
++# Set these only for a federated relay, never on the main forkmesh.com relay.
++# FORKMESH_WORKER_NAME=forkmesh-relay-yourname
++# FORKMESH_D1_NAME=forkmesh-yourname
++# FORKMESH_D1_DATABASE_ID=your-second-relay-d1-database-id
++# MAIN_RELAY_URL=https://forkmesh.com
++# RELAY_LABEL=your-relay-label
++# PUBLIC_BASE_URL=https://your-relay.example
++```
++
++- [ ] **Step 2: Add README operator flow**
++
++Add a `Second Relay Federation` section to `cloudflare_worker/README.md`.
++Include these steps:
++
++```text
++1. Create a new D1 database for the second relay.
++2. Fill `.env.production` with a distinct worker name, D1 name, D1 database id, `MAIN_RELAY_URL`, `RELAY_LABEL`, and `PUBLIC_BASE_URL`.
++3. Run `./deploy.sh dry-run`.
++4. Run `./deploy.sh deploy`.
++5. Confirm `/health` reports `relayRole: federated`.
++6. Wait for cron registration or trigger a scheduled run in Cloudflare.
++7. Approve the pending relay on main by direct D1 update or signed admin API.
++8. Point the Qt relay switcher at the second relay host.
++9. Verify signup payment proxy, account finalization, heartbeat, and main relay payout visibility.
++```
++
++Make it explicit that cross-relay catalog discovery and room bridging are not part of this MVP.
++
++- [ ] **Step 3: Run source contract tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_federation.py -q
++```
++
++Expected: docs-related tests pass.
++
++## Task 5: Full Verification And User Test Instructions
++
++**Files:**
++- No code files unless verification finds issues.
++
++- [ ] **Step 1: Run full Worker tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests
++```
++
++Expected: all tests pass.
++
++- [ ] **Step 2: Run a source hygiene check for em dash in edited Markdown and shell files**
++
++Run:
++
++```bash
++git diff -- . | python3 -c 'import sys
++bad = False
++for line in sys.stdin:
++    if line.startswith("+++") or not line.startswith("+"):
++        continue
++    if "\u2014" in line:
++        print("added diff line contains U+2014:", line.rstrip())
++        bad = True
++raise SystemExit(1 if bad else 0)'
++```
++
++Expected: no matches.
++
++- [ ] **Step 3: Report how to test manually**
++
++Tell the user to test locally with:
++
++```bash
++uvx pytest cloudflare_worker/tests
++```
++
++Tell the user to test a dry-run federated config by copying `.env.production.example` to `.env.production`, filling a separate second-relay D1 name/id and `MAIN_RELAY_URL=https://forkmesh.com`, then running:
++
++```bash
++cd cloudflare_worker
++./deploy.sh dry-run
++```
++
++Tell the user to confirm the live second relay after deployment with:
++
++```bash
++curl -s https://<second-relay-host>/health
++```
++
++Expected manual health output includes `"relayRole":"federated"` and a `federation` object.
++
++## Commit Policy
++
++Do not commit after implementation until the user confirms testing is complete and asks for the commit.
++When the user asks for the commit, stage only the intended files from this plan and use a conventional commit message.
+-- 
+2.50.1 (Apple Git-155)
+
