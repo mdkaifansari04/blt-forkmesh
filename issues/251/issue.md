@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 251
 title: have an option in settings to select your defauolt ai - openai api, claude code, or claude api
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
