@@ -4034,33 +4034,6 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
-int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
-                                       const QString &localPath)
-{
-    RepositoryRecord repo;
-    repo.owner = owner;
-    repo.name = name;
-    repo.localPath = localPath;
-    repo.publishToNetwork = false;
-    m_repositories.append(repo);
-    return m_repositories.size() - 1;
-}
-
-bool MainWindow::testOpenRepository(int index)
-{
-    if (index < 0 || index >= m_repositories.size())
-        return false;
-    openRepoDetail(index);
-    updateRepoSwitcher();
-    return m_repoDetailIndex == index;
-}
-
-bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
-                                           const QString &website)
-{
-    return saveRepoAboutMetadata(about, website);
-}
-
 int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
                                            const QString &mirrorPath)
 {
@@ -13385,6 +13358,25 @@ QWidget *MainWindow::buildPullsTab()
     composerBlockLayout->addWidget(m_pullComposer);
     composerBlockLayout->addLayout(composerButtons);
 
+    // Conflicting-files card: surfaces, inline above the comment composer, which
+    // files of a conflicted PR no longer apply to the base. Populated (and shown
+    // only when the PR is conflicted) in updatePullActionState(). The link jumps
+    // to the Files changed tab so the reviewer can inspect them.
+    m_pullConflictDetails = new QLabel;
+    m_pullConflictDetails->setObjectName("issueTimelineCard");
+    m_pullConflictDetails->setTextFormat(Qt::RichText);
+    m_pullConflictDetails->setWordWrap(true);
+    m_pullConflictDetails->setContentsMargins(16, 12, 16, 12);
+    m_pullConflictDetails->setOpenExternalLinks(false);
+    m_pullConflictDetails->hide();
+    connect(m_pullConflictDetails, &QLabel::linkActivated, this,
+            [this](const QString &) {
+                if (m_pullTabFiles)
+                    m_pullTabFiles->setChecked(true);
+                if (m_pullSubStack)
+                    m_pullSubStack->setCurrentIndex(3);
+            });
+
     auto *conversationInner = new QWidget;
     auto *conversationInnerLayout = new QVBoxLayout(conversationInner);
     conversationInnerLayout->setContentsMargins(0, 0, 0, 0);
@@ -13392,6 +13384,7 @@ QWidget *MainWindow::buildPullsTab()
     conversationInnerLayout->addWidget(m_pullThreadContainer);
     conversationInnerLayout->addWidget(m_pullLinksValue);
     conversationInnerLayout->addWidget(m_pullChecksSummary);
+    conversationInnerLayout->addWidget(m_pullConflictDetails);
     conversationInnerLayout->addWidget(composerBlock);
 
     // Agent revision row: shown only when this PR was created by an agent session.
@@ -13534,7 +13527,22 @@ void MainWindow::reloadPulls()
 {
     if (!m_pullTable)
         return;
-    m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    const PullStore store = pullStoreForCurrentRepo();
+    m_currentPulls = store.loadAll();
+    // Pre-compute which open PRs no longer apply cleanly so refreshPullList() can
+    // badge their rows. Done here (not per refresh) so typing in the search box
+    // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
+    // we have a working tree to test the patch against.
+    m_pullConflictByNumber.clear();
+    if (store.canWrite()) {
+        for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+            if (pr.status != QLatin1String("open"))
+                continue;
+            bool clean = false;
+            if (store.checkMergeable(pr.number, &clean, nullptr) && !clean)
+                m_pullConflictByNumber.insert(pr.number, true);
+        }
+    }
     updateRepoPullCount();
     refreshPullList();
     updatePullActionState();
@@ -13570,6 +13578,13 @@ void MainWindow::refreshPullList()
         st->setForeground(QColor(pr.status == "merged"  ? "#a371f7"
                                  : pr.status == "closed" ? "#f85149"
                                                          : "#3fb950"));
+        // Badge open PRs whose patch no longer applies to the base with a small
+        // conflict icon so the list flags them without opening the detail pane.
+        if (m_pullConflictByNumber.value(pr.number, false)) {
+            st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
+            st->setToolTip(
+                QStringLiteral("This pull request has merge conflicts"));
+        }
         m_pullTable->setItem(row, 3, st);
         auto *files = new QTableWidgetItem;
         files->setData(Qt::DisplayRole, pr.filesChanged);
@@ -14806,6 +14821,40 @@ void MainWindow::updatePullActionState()
                 : QStringLiteral("Apply and merge this pull request"));
     }
     const bool conflicted = mergeable && !mergeClean;
+    // Conflicting-files card in the conversation, above the comment composer:
+    // list every file that no longer applies so the reviewer sees what to fix
+    // without leaving the thread. Hidden whenever the PR merges cleanly.
+    if (m_pullConflictDetails) {
+        if (!conflicted) {
+            m_pullConflictDetails->hide();
+        } else {
+            QString body;
+            if (conflictFiles.isEmpty()) {
+                body = QStringLiteral(
+                    "The patch no longer applies to the current base.");
+            } else {
+                QStringList items;
+                for (const QString &f : std::as_const(conflictFiles))
+                    items << QStringLiteral("<li><code>%1</code></li>")
+                                 .arg(f.toHtmlEscaped());
+                body = QStringLiteral(
+                           "%1 conflicting file%2:<ul style='margin:6px 0 0 0;"
+                           "-qt-list-indent:1'>%3</ul>")
+                           .arg(conflictFiles.size())
+                           .arg(conflictFiles.size() == 1 ? QString()
+                                                          : QStringLiteral("s"),
+                                items.join(QString()));
+            }
+            m_pullConflictDetails->setText(
+                QString::fromUtf8(
+                    "<b style='color:#f85149'>\xE2\x9A\xA0 Merge conflicts</b>"
+                    "<br>%1<br><a href='tab:files' "
+                    "style='color:#58a6ff;text-decoration:none'>"
+                    "View files changed \xE2\x86\x92</a>")
+                    .arg(body));
+            m_pullConflictDetails->show();
+        }
+    }
     // A running AI fix holds the working tree in a git-am session for this PR, so
     // every conflict action stays disabled until it lands or aborts.
     const bool aiFixBusy = m_aiFix && m_aiFix->number == m_currentPullNumber;
