@@ -691,6 +691,10 @@ private:
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
     void loadMirrorNodesPanel();
+    // Fetch the worker's catalog mirror list for a repo group so the owner sees
+    // every published mirror, not just nodes live in the chat room (issue #223).
+    void fetchCatalogMirrors(const QString &owner, const QString &repo,
+                             const QString &source);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
@@ -1944,6 +1948,13 @@ private:
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;
+    // Catalog-backed mirror list (issue #223): the worker's /mirrors payload for
+    // the repo group currently shown in the mirror-nodes panel, merged in so a
+    // mirror that isn't live in the chat room is still listed for the owner.
+    QString m_catalogMirrorsSource;        // "owner/name" the cache holds
+    QJsonArray m_catalogMirrorsCache;      // last /mirrors payload's "mirrors"
+    QString m_catalogMirrorsFetchSource;   // source the last fetch was kicked for
+    qint64 m_catalogMirrorsFetchedMs = 0;  // throttle: last fetch kick time
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
