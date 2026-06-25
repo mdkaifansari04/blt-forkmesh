@@ -7320,8 +7320,9 @@ void MainWindow::updateRepoPushButton()
         return;
 
     if (m_pushingRepos.contains(m_repoDetailIndex)) {
-        m_repoPushButton->setText(QStringLiteral("Pushing..."));
-        m_repoPushButton->setToolTip(QStringLiteral("Pushing local commits upstream"));
+        setOcticon(m_repoPushButton, "sync", 14);
+        m_repoPushButton->setText(QStringLiteral("Syncing..."));
+        m_repoPushButton->setToolTip(QStringLiteral("Syncing local commits upstream"));
         reveal();
         return;
     }
@@ -7332,6 +7333,7 @@ void MainWindow::updateRepoPushButton()
     int unpublished = 0;
     if (relayPublishRepo(repo, &relayBranch, &unpublished)) {
         if (m_syncingRepos.contains(m_repoDetailIndex)) {
+            setOcticon(m_repoPushButton, "upload", 14);
             m_repoPushButton->setText(QStringLiteral("Publishing..."));
             m_repoPushButton->setToolTip(
                 QStringLiteral("Publishing local commits to your served mirror"));
@@ -7342,6 +7344,9 @@ void MainWindow::updateRepoPushButton()
             return;
         // Compact label: just "Publish N" (the full "N local commits …" wording
         // stays in the tooltip). It sits in a small button above the tab bar.
+        // Reset the icon explicitly: the same button doubles as the plain-git
+        // "Sync" affordance below, which swaps in the sync octicon.
+        setOcticon(m_repoPushButton, "upload", 14);
         m_repoPushButton->setText(
             QStringLiteral("Publish %1").arg(unpublished));
         m_repoPushButton->setToolTip(
@@ -7376,14 +7381,17 @@ void MainWindow::updateRepoPushButton()
     if (ahead <= 0)
         return;
 
-    m_repoPushButton->setText(
-        QStringLiteral("Push %1 commit%2 to %3")
+    // A repo with a real upstream remote (origin/main, …). Present it as a
+    // "Sync" button — the same network terminology used everywhere else in the
+    // app — rather than a raw "Push N commits to origin/main". The count and
+    // target move to the tooltip; pushCurrentRepoUpstream still does the push.
+    setOcticon(m_repoPushButton, "sync", 14);
+    m_repoPushButton->setText(QStringLiteral("Sync"));
+    m_repoPushButton->setToolTip(
+        QStringLiteral("Sync %1 local commit%2 from %3/%4 to %5")
             .arg(ahead)
             .arg(ahead == 1 ? QString() : QStringLiteral("s"),
-                 upstream));
-    m_repoPushButton->setToolTip(
-        QStringLiteral("Push local commits from %1/%2 to %3")
-            .arg(repo.owner, repo.name, upstream));
+                 repo.owner, repo.name, upstream));
     m_repoPushButton->setEnabled(true);
     reveal();
 }
@@ -10763,6 +10771,15 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmGenKind->addItem("X post");
     m_scmGenKind->setToolTip("What to generate from the changes");
 
+    // How far back to look for the changes being described: just the current
+    // uncommitted edits, everything since an hour ago, or everything since
+    // midnight (each window also includes the current uncommitted edits).
+    m_scmGenDuration = new QComboBox;
+    m_scmGenDuration->addItem("Current changes");
+    m_scmGenDuration->addItem("Past hour");
+    m_scmGenDuration->addItem("All day");
+    m_scmGenDuration->setToolTip("Which changes to summarise");
+
     m_scmCopyButton = new QPushButton("Copy");
     m_scmCopyButton->setToolTip("Copy the message to the clipboard");
     setOcticon(m_scmCopyButton, "copy", 14);
@@ -10829,6 +10846,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmGenerateButton);
     composeRow->addWidget(m_scmGenModel);
     composeRow->addWidget(m_scmGenKind);
+    composeRow->addWidget(m_scmGenDuration);
     composeRow->addWidget(m_scmCopyButton);
     composeRow->addWidget(m_scmGenStatus);
     composeRow->addWidget(m_scmStageAllButton);
@@ -11409,8 +11427,28 @@ QString MainWindow::scmContextDiff() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
-    QByteArray staged = gitCaptureStdout(dir, {"diff", "--cached"});
-    QByteArray diff = staged.trimmed().isEmpty() ? gitCaptureStdout(dir, {"diff"}) : staged;
+
+    // Duration scope: 0 = current uncommitted edits only, 1 = since an hour ago,
+    // 2 = since midnight. For a window we diff the working tree against the newest
+    // commit older than the cutoff, which captures everything committed within the
+    // window plus the current uncommitted edits in one diff.
+    const int dur = m_scmGenDuration ? m_scmGenDuration->currentIndex() : 0;
+    QByteArray diff;
+    if (dur == 1 || dur == 2) {
+        const QString cutoff =
+            dur == 1 ? QStringLiteral("1 hour ago") : QStringLiteral("midnight");
+        QByteArray revOut;
+        runGitCapture(dir, {"rev-list", "-1", "--before=" + cutoff, "HEAD"}, &revOut,
+                      nullptr);
+        const QString rev = QString::fromUtf8(revOut).trimmed();
+        if (!rev.isEmpty())
+            diff = gitCaptureStdout(dir, {"diff", rev});
+    }
+    // Current changes, or a fallback when nothing was committed within the window.
+    if (diff.trimmed().isEmpty()) {
+        QByteArray staged = gitCaptureStdout(dir, {"diff", "--cached"});
+        diff = staged.trimmed().isEmpty() ? gitCaptureStdout(dir, {"diff"}) : staged;
+    }
     QString text = QString::fromUtf8(diff);
     // Note any untracked files, whose contents don't appear in `git diff`.
     QByteArray untracked;
@@ -14293,6 +14331,41 @@ void MainWindow::aiFixFinish()
 {
     if (!m_aiFix)
         return;
+    // Branch-merge mode: commit the resolved merge onto the checked-out branch,
+    // then restore the branch we came from. No PullStore involved.
+    if (m_aiFix->branchMerge) {
+        const QString dir = m_aiFix->workTree;
+        const QString branch = m_aiFix->branch;
+        const QString base = m_aiFix->baseBranch;
+        const QString restore = m_aiFix->restoreBranch;
+        const int repoIndex = m_aiFix->repoIndex;
+        const double cost = m_aiFix->costUsd;
+        QString error;
+        if (!runGitCapture(dir, {"add", "-A"}, nullptr, &error) ||
+            !runGitCapture(dir, {"commit", "--no-edit"}, nullptr, &error)) {
+            aiFixFail(error.isEmpty() ? QStringLiteral("Could not commit the merge.")
+                                      : error);
+            return;
+        }
+        if (!restore.isEmpty() && restore != branch)
+            runGitCapture(dir, {"checkout", restore}, nullptr, nullptr);
+        aiFixLog(QStringLiteral("==> Committed the merge of %1 into %2 (cost ~$%3).\n")
+                     .arg(base, branch, QString::number(cost, 'f', 4)));
+        aiFixSetSessionStatus(AgentStatus::Success);
+        delete m_aiFix;
+        m_aiFix = nullptr;
+        logSystem(QStringLiteral("AI resolved conflicts merging %1 into %2.")
+                      .arg(base, branch));
+        if (repoIndex == m_repoDetailIndex) {
+            loadBranchesAndTags();
+            loadBranchesPanel();
+        }
+        if (repoIndex >= 0)
+            propagateRepoUpdate(repoIndex);
+        flashMessage(
+            QStringLiteral("Resolved conflicts: %1 merged into %2.").arg(base, branch));
+        return;
+    }
     const int number = m_aiFix->number;
     const int repoIndex = m_aiFix->repoIndex;
     QString error;
@@ -14328,6 +14401,27 @@ void MainWindow::aiFixFail(const QString &message)
 {
     if (!m_aiFix)
         return;
+    // Branch-merge mode: abort the in-progress merge and restore the branch we
+    // came from. No PullStore involved.
+    if (m_aiFix->branchMerge) {
+        const QString dir = m_aiFix->workTree;
+        const QString branch = m_aiFix->branch;
+        const QString restore = m_aiFix->restoreBranch;
+        const int repoIndex = m_aiFix->repoIndex;
+        aiFixLog(QStringLiteral("!! %1\n").arg(message));
+        aiFixSetSessionStatus(AgentStatus::Failed, message);
+        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!restore.isEmpty() && restore != branch)
+            runGitCapture(dir, {"checkout", restore}, nullptr, nullptr);
+        delete m_aiFix;
+        m_aiFix = nullptr;
+        flashMessage(QStringLiteral("AI conflict fix failed: %1").arg(message), true);
+        if (repoIndex == m_repoDetailIndex) {
+            loadBranchesAndTags();
+            loadBranchesPanel();
+        }
+        return;
+    }
     const int number = m_aiFix->number;
     const int repoIndex = m_aiFix->repoIndex;
     aiFixLog(QStringLiteral("!! %1\n").arg(message));
@@ -20588,9 +20682,18 @@ void MainWindow::deleteCommit(const QString &hash)
         }
     }
 
-    logSystem(QStringLiteral("Git: removed commit %1 from %2.")
+    // A rebase drop only makes the commit unreachable — it (and the pre-rewrite
+    // chain the rebase orphaned) stays in the object store, recoverable via the
+    // reflog. The commit is meant to disappear, so expire the reflog and prune to
+    // physically remove it: no dangling object, no trace in history.
+    runGitCapture(dir, {"reflog", "expire", "--expire=now", "--all"}, nullptr,
+                  nullptr);
+    runGitCapture(dir, {"gc", "--prune=now", "--quiet"}, nullptr, nullptr);
+
+    logSystem(QStringLiteral("Git: removed commit %1 from %2 and pruned it from "
+                             "the repository.")
                   .arg(hash.left(8), branch));
-    setRepoDetailNotice(QStringLiteral("Removed commit %1 from history.")
+    setRepoDetailNotice(QStringLiteral("Removed commit %1 — gone from history.")
                             .arg(hash.left(8)));
     loadCommits();
     updateRepoPushButton();
@@ -22521,6 +22624,11 @@ bool MainWindow::repoHasWorkingTree() const
 
 // ---- Branches panel --------------------------------------------------------
 
+// Defined further down (next to pullBaseIntoAllBranches); declared here so
+// loadBranchesPanel can probe each branch for merge conflicts.
+static QString branchMergeTree(const QString &dir, const QString &base,
+                               const QString &branch);
+
 QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
@@ -22545,9 +22653,19 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadBranchesPanel);
     addRefreshSpin(refreshButton);
+    // Bring every behind branch up to date with the default branch in one click;
+    // its label/enabled state is refreshed in loadBranchesPanel() once the base
+    // name and behind-counts are known.
+    m_branchPullAllButton = new QPushButton("Pull into all");
+    m_branchPullAllButton->setObjectName("ghostButton");
+    m_branchPullAllButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchPullAllButton, "download", 16);
+    connect(m_branchPullAllButton, &QPushButton::clicked, this,
+            &MainWindow::pullBaseIntoAllBranches);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
+    headerRow->addWidget(m_branchPullAllButton);
     headerRow->addWidget(refreshButton);
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
@@ -22671,6 +22789,7 @@ void MainWindow::loadBranchesPanel()
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
+    bool anyBehind = false;
     for (const QString &branch : branches) {
         const int row = m_branchesTable->rowCount();
         m_branchesTable->insertRow(row);
@@ -22685,6 +22804,8 @@ void MainWindow::loadBranchesPanel()
         // Ahead/behind vs the default branch.
         QString status = branch == base ? QStringLiteral("Default branch") : QString();
         int behind = 0;
+        int ahead = 0;
+        bool hasConflict = false;
         qint64 ts = 0;
         if (!dir.isEmpty()) {
             if (branch != base) {
@@ -22698,17 +22819,30 @@ void MainWindow::loadBranchesPanel()
                             QRegularExpression(QStringLiteral("\\s+")));
                     if (parts.size() >= 2) {
                         behind = parts.at(0).toInt();
+                        ahead = parts.at(1).toInt();
                         status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
                                      .arg(parts.at(0), parts.at(1));
                     }
                 }
+                // Only a branch with its own commits *and* base commits it lacks
+                // can conflict; probe that case with an in-memory merge so the row
+                // can flag it and offer "Fix with agent".
+                if (behind > 0 && ahead > 0)
+                    hasConflict = branchMergeTree(dir, base, branch).isEmpty();
+                if (hasConflict)
+                    status += QString::fromUtf8(" \xC2\xB7 conflicts");
             }
             QByteArray when;
             if (runGitCapture(dir,
                               {"log", "-1", "--format=%ct", branch}, &when, nullptr))
                 ts = QString::fromUtf8(when).trimmed().toLongLong();
         }
-        m_branchesTable->setItem(row, 1, new QTableWidgetItem(status));
+        auto *statusItem = new QTableWidgetItem(status);
+        if (hasConflict) {
+            statusItem->setForeground(QColor("#f85149"));
+            statusItem->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
+        }
+        m_branchesTable->setItem(row, 1, statusItem);
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         m_branchesTable->setItem(row, 2, updated);
 
@@ -22730,6 +22864,8 @@ void MainWindow::loadBranchesPanel()
         updateButton->setCursor(Qt::PointingHandCursor);
         setOcticon(updateButton, "download", 14);
         const bool canUpdate = writable && branch != base && behind > 0;
+        if (canUpdate)
+            anyBehind = true;
         updateButton->setEnabled(canUpdate);
         if (branch == base)
             updateButton->setToolTip(
@@ -22748,6 +22884,32 @@ void MainWindow::loadBranchesPanel()
         connect(updateButton, &QPushButton::clicked, this,
                 [this, branch] { updateBranchFromBase(branch); });
         actionRow->addWidget(updateButton);
+
+        // When base can't merge cleanly, offer a one-click AI fix that resolves
+        // the conflicts and commits the merge onto this branch.
+        if (hasConflict) {
+            auto *fixButton = new QPushButton(QStringLiteral("Fix with agent"));
+            fixButton->setObjectName("ghostButton");
+            fixButton->setProperty("buttonSize", "sm");
+            fixButton->setCursor(Qt::PointingHandCursor);
+            setOcticon(fixButton, "rocket", 14);
+            fixButton->setEnabled(writable);
+            fixButton->setToolTip(
+                QStringLiteral("Let a low-cost model merge %1 into %2 and resolve "
+                               "the conflicts \xE2\x80\x94 watch it on the Agents tab")
+                    .arg(base, branch));
+            auto *fixMenu = new QMenu(fixButton);
+            connect(fixMenu->addAction(QStringLiteral("Fix with Claude")),
+                    &QAction::triggered, this, [this, branch] {
+                        fixBranchConflictsWithAgent(branch, QStringLiteral("claude"));
+                    });
+            connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")),
+                    &QAction::triggered, this, [this, branch] {
+                        fixBranchConflictsWithAgent(branch, QStringLiteral("openai"));
+                    });
+            fixButton->setMenu(fixMenu);
+            actionRow->addWidget(fixButton);
+        }
 
         auto *prButton = new QPushButton("Create PR");
         prButton->setObjectName("ghostButton");
@@ -22802,6 +22964,24 @@ void MainWindow::loadBranchesPanel()
         // A little slack so the rightmost button never sits flush against the
         // column edge (the action row already carries an 8px right margin).
         m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 8);
+
+    // Header "Pull <base> into all" reflects the current base and is enabled only
+    // when there's at least one behind branch to update.
+    if (m_branchPullAllButton) {
+        m_branchPullAllButton->setText(
+            base.isEmpty() ? QStringLiteral("Pull into all")
+                           : QStringLiteral("Pull %1 into all").arg(base));
+        m_branchPullAllButton->setEnabled(writable && anyBehind);
+        m_branchPullAllButton->setToolTip(
+            !writable
+                ? QStringLiteral("Read-only mirror \xE2\x80\x94 nothing to update")
+                : anyBehind
+                      ? QStringLiteral("Merge %1 into every branch that's behind it")
+                            .arg(base)
+                      : QStringLiteral("All branches are up to date with %1")
+                            .arg(base));
+    }
+
     if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
@@ -23181,6 +23361,299 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     loadBranchesAndTags();
     if (!browsed.isEmpty() && repoBranches().contains(browsed))
         setRepoBranch(browsed);
+}
+
+// Would merging `base` into `branch` conflict? Answered with an in-memory merge
+// (`merge-tree --write-tree`) that never touches the working tree or index, so it
+// is safe to call while building the panel. Returns the merged tree's oid (clean)
+// or an empty string (conflicts, or an unmergeable/error case).
+static QString branchMergeTree(const QString &dir, const QString &base,
+                               const QString &branch)
+{
+    QByteArray out;
+    if (!runGitCapture(dir, {"merge-tree", "--write-tree", branch, base}, &out,
+                       nullptr))
+        return QString(); // non-zero exit == conflicts (or error)
+    return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).value(0);
+}
+
+void MainWindow::pullBaseIntoAllBranches()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "This is a read-only mirror; branches can't be updated here.", true);
+        return;
+    }
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (base.isEmpty())
+        return;
+
+    // The checked-out branch can't be advanced by a bare ref update without
+    // desyncing its working tree, so the batch skips it (it's usually the base);
+    // the user can still update it individually with its row's "Pull" button.
+    QByteArray headOut;
+    QString currentBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+        currentBranch = QString::fromUtf8(headOut).trimmed();
+
+    // First pass: how many branches are actually behind, so the confirmation can
+    // state the scope (and we can bail early when there's nothing to do).
+    const auto behindOf = [&](const QString &branch, int *ahead) -> int {
+        QByteArray counts;
+        if (!runGitCapture(dir,
+                           {"rev-list", "--left-right", "--count",
+                            base + "..." + branch},
+                           &counts, nullptr))
+            return 0;
+        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+            QRegularExpression(QStringLiteral("\\s+")));
+        if (parts.size() < 2)
+            return 0;
+        if (ahead)
+            *ahead = parts.at(1).toInt();
+        return parts.at(0).toInt();
+    };
+
+    int behindCount = 0;
+    for (const QString &branch : branches) {
+        if (branch == base || branch == currentBranch)
+            continue;
+        if (behindOf(branch, nullptr) > 0)
+            ++behindCount;
+    }
+    if (behindCount == 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Every branch is already up to date with %1.").arg(base));
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Pull %1 into all branches").arg(base),
+            QStringLiteral("Merge %1 into the %2 branch(es) that are behind it?\n\n"
+                           "Clean merges are applied automatically; any branch "
+                           "with conflicts is left untouched and flagged in the "
+                           "list so you can fix it.")
+                .arg(base)
+                .arg(behindCount),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+
+    int updated = 0;
+    QStringList conflicts, skipped;
+    for (const QString &branch : branches) {
+        if (branch == base)
+            continue;
+        int ahead = 0;
+        const int behind = behindOf(branch, &ahead);
+        if (behind == 0)
+            continue;
+        if (branch == currentBranch) {
+            skipped << branch;
+            continue;
+        }
+        // No commits of its own: a plain fast-forward of the ref, no merge needed.
+        if (ahead == 0) {
+            if (runGitCapture(dir, {"fetch", ".", base + ":" + branch}, nullptr,
+                              nullptr))
+                ++updated;
+            else
+                conflicts << branch;
+            continue;
+        }
+        // Real merge: resolve it in memory; on a clean result, write the merge
+        // commit straight onto the branch ref without disturbing the work tree.
+        const QString tree = branchMergeTree(dir, base, branch);
+        if (tree.isEmpty()) {
+            conflicts << branch;
+            continue;
+        }
+        QByteArray commitOut;
+        const QString msg = QStringLiteral("Merge %1 into %2").arg(base, branch);
+        if (!runGitCapture(dir,
+                           {"commit-tree", tree, "-p", branch, "-p", base, "-m", msg},
+                           &commitOut, nullptr)) {
+            conflicts << branch;
+            continue;
+        }
+        const QString commit = QString::fromUtf8(commitOut).trimmed();
+        if (commit.isEmpty() ||
+            !runGitCapture(dir, {"update-ref", "refs/heads/" + branch, commit},
+                           nullptr, nullptr)) {
+            conflicts << branch;
+            continue;
+        }
+        ++updated;
+    }
+
+    logSystem(QStringLiteral("Git: pulled %1 into %2 branch(es); %3 conflict(s).")
+                  .arg(base)
+                  .arg(updated)
+                  .arg(conflicts.size()));
+    const QString browsed = m_repoBranch;
+    loadBranchesAndTags();
+    loadBranchesPanel();
+    if (!browsed.isEmpty() && repoBranches().contains(browsed))
+        setRepoBranch(browsed);
+
+    QString summary =
+        QStringLiteral("Pulled %1 into %2 branch(es).").arg(base).arg(updated);
+    if (!conflicts.isEmpty())
+        summary += QStringLiteral(" %1 have conflicts (%2) — use \"Fix with "
+                                  "agent\" in the list.")
+                       .arg(conflicts.size())
+                       .arg(conflicts.join(QStringLiteral(", ")));
+    if (!skipped.isEmpty())
+        summary += QStringLiteral(" Skipped the checked-out branch %1.")
+                       .arg(skipped.join(QStringLiteral(", ")));
+    setRepoDetailNotice(summary, !conflicts.isEmpty());
+}
+
+void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
+                                             const QString &provider)
+{
+    if (m_aiFix) {
+        flashMessage("An AI conflict fix is already running; wait for it to finish.",
+                     true);
+        return;
+    }
+    if (!m_agentStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString dir = writableRecordFor(repo).localPath;
+    if (dir.isEmpty()) {
+        QMessageBox::warning(this, "Fix with agent",
+                             "This repository is read-only on this node.");
+        return;
+    }
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (branch.isEmpty() || branch == base || base.isEmpty())
+        return;
+
+    const bool claude = provider == QLatin1String("claude");
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
+    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                                   : QSettings().value(kCodexApiKeySetting))
+                               .toString()
+                               .trimmed();
+    if (apiKey.isEmpty()) {
+        flashMessage(claude ? "Add a Claude API key in Settings first."
+                            : "Add an OpenAI API key in Settings first.",
+                     true);
+        return;
+    }
+
+    // Nothing to do if it's already current.
+    QByteArray counts;
+    int behind = 0;
+    if (runGitCapture(dir,
+                      {"rev-list", "--left-right", "--count", base + "..." + branch},
+                      &counts, nullptr)) {
+        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+            QRegularExpression(QStringLiteral("\\s+")));
+        if (!parts.isEmpty())
+            behind = parts.at(0).toInt();
+    }
+    if (behind == 0) {
+        setRepoDetailNotice(
+            QStringLiteral("%1 is already up to date with %2.").arg(branch, base));
+        return;
+    }
+
+    // The merge happens on a checkout, so the working tree must be clean first.
+    QByteArray status;
+    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, nullptr) ||
+        !status.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "Commit or stash local changes before fixing this branch.", true);
+        return;
+    }
+
+    QByteArray headOut;
+    QString restoreBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+        restoreBranch = QString::fromUtf8(headOut).trimmed();
+    const bool isCurrent = restoreBranch == branch;
+
+    QString err;
+    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(160)),
+            true);
+        return;
+    }
+
+    // A clean merge needs no agent — commit it and we're done.
+    if (runGitCapture(dir, {"merge", "--no-edit", base}, nullptr, &err)) {
+        if (!isCurrent && !restoreBranch.isEmpty())
+            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+        logSystem(QStringLiteral("Git: merged %1 into %2 (no conflicts).")
+                      .arg(base, branch));
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 with %2 (no conflicts).").arg(branch, base));
+        loadBranchesAndTags();
+        loadBranchesPanel();
+        return;
+    }
+
+    QByteArray unmerged;
+    runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+                  nullptr);
+    const QStringList conflicted =
+        QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
+    if (conflicted.isEmpty()) {
+        // Failed for some other reason — restore as before.
+        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!isCurrent && !restoreBranch.isEmpty())
+            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+        setRepoDetailNotice(
+            QStringLiteral("Could not merge %1 into %2: %3")
+                .arg(base, branch, err.left(160)),
+            true);
+        return;
+    }
+
+    // Spin up a visible agent session so the run shows on the Agents tab.
+    AgentSession session;
+    session.owner = repo.owner;
+    session.name = repo.name;
+    session.issueNumber = 0; // branch-scoped, not issue- or PR-scoped
+    session.issueTitle =
+        QStringLiteral("Resolve conflicts merging %1 into %2").arg(base, branch);
+    session.provider = provider;
+    session.branchName = branch;
+    session.status = AgentStatus::Running;
+    session = m_agentStore->createSession(session);
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
+            .arg(agentProviderName(provider), model, base, branch));
+
+    m_aiFix = new AiConflictFix;
+    m_aiFix->branchMerge = true;
+    m_aiFix->repoIndex = m_repoDetailIndex;
+    m_aiFix->sessionId = session.id;
+    m_aiFix->provider = provider;
+    m_aiFix->model = model;
+    m_aiFix->apiKey = apiKey;
+    m_aiFix->workTree = dir;
+    m_aiFix->files = conflicted;
+    m_aiFix->branch = branch;
+    m_aiFix->baseBranch = base;
+    m_aiFix->restoreBranch = restoreBranch;
+
+    switchToAgentsTab(session.id);
+    aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
+                 .arg(conflicted.size())
+                 .arg(conflicted.join(QStringLiteral(", "))));
+    aiFixResolveNextFile();
 }
 
 void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
