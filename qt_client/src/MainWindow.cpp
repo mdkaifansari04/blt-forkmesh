@@ -4069,6 +4069,28 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
+QString MainWindow::testQuickAddAgentProvider() const
+{
+    return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
+                                   : QString();
+}
+
+QString MainWindow::testIssueAgentProvider() const
+{
+    return m_issueAgentProvider ? m_issueAgentProvider->currentData().toString()
+                                : QString();
+}
+
+void MainWindow::testSetDefaultAgentProvider(const QString &provider)
+{
+    if (!m_defaultAgentProviderCombo)
+        return;
+    // Drive it like a user picking the value so the connected slot persists the
+    // setting and re-seeds the live pickers.
+    const int index = m_defaultAgentProviderCombo->findData(provider);
+    m_defaultAgentProviderCombo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
 int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
                                            const QString &mirrorPath)
 {

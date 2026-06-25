@@ -177,6 +177,12 @@ public:
     {
         return m_issueHistoryDeleteInProgress;
     }
+    // Provider id (openai/claude-api/claude-code) currently selected in each
+    // agent-assignment picker, plus a way to drive the Settings "Default agent"
+    // combo as a user would, so tests can assert the default seeds/updates them.
+    QString testQuickAddAgentProvider() const;
+    QString testIssueAgentProvider() const;
+    void testSetDefaultAgentProvider(const QString &provider);
 #endif
 
 protected:
