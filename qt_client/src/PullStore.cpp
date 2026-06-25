@@ -144,6 +144,24 @@ QString stripEdgeNewlines(QString s)
     return s;
 }
 
+QString encodeFrontMatterBlob(const QString &s)
+{
+    if (s.isEmpty())
+        return QString();
+    return QString::fromLatin1(
+        s.toUtf8().toBase64(QByteArray::Base64UrlEncoding |
+                            QByteArray::OmitTrailingEquals));
+}
+
+QString decodeFrontMatterBlob(const QString &s)
+{
+    if (s.isEmpty())
+        return QString();
+    return QString::fromUtf8(QByteArray::fromBase64(
+        s.toLatin1(), QByteArray::Base64UrlEncoding |
+                         QByteArray::OmitTrailingEquals));
+}
+
 PullEvent eventFromFrontMatter(const FrontMatter &fm)
 {
     PullEvent ev;
@@ -156,6 +174,13 @@ PullEvent eventFromFrontMatter(const FrontMatter &fm)
     ev.path = fm.get("path");
     ev.side = fm.get("side");
     ev.line = int(fm.num("line"));
+    ev.threadId = fm.get("threadId");
+    ev.parentId = fm.get("parentId");
+    ev.lineStart = int(fm.num("lineStart"));
+    ev.lineEnd = int(fm.num("lineEnd"));
+    ev.suggestionPatch = decodeFrontMatterBlob(fm.get("suggestionPatchB64"));
+    ev.targetPath = fm.get("targetPath");
+    ev.appliedCommit = fm.get("appliedCommit");
     ev.sig = fm.get("sig");
     ev.body = fm.body;
     return ev;
@@ -228,7 +253,11 @@ QJsonObject PullEvent::toJson() const
     return {{"type", type},   {"id", id},     {"author", author},
             {"authorName", authorName}, {"ts", double(ts)}, {"body", body},
             {"state", state}, {"path", path}, {"side", side},
-            {"line", line},   {"sig", sig}};
+            {"line", line},   {"threadId", threadId},
+            {"parentId", parentId}, {"lineStart", lineStart},
+            {"lineEnd", lineEnd}, {"suggestionPatch", suggestionPatch},
+            {"targetPath", targetPath}, {"appliedCommit", appliedCommit},
+            {"sig", sig}};
 }
 
 PullEvent PullEvent::fromJson(const QJsonObject &obj)
@@ -244,6 +273,13 @@ PullEvent PullEvent::fromJson(const QJsonObject &obj)
     ev.path = obj.value("path").toString();
     ev.side = obj.value("side").toString();
     ev.line = obj.value("line").toInt();
+    ev.threadId = obj.value("threadId").toString();
+    ev.parentId = obj.value("parentId").toString();
+    ev.lineStart = obj.value("lineStart").toInt();
+    ev.lineEnd = obj.value("lineEnd").toInt();
+    ev.suggestionPatch = obj.value("suggestionPatch").toString();
+    ev.targetPath = obj.value("targetPath").toString();
+    ev.appliedCommit = obj.value("appliedCommit").toString();
     ev.sig = obj.value("sig").toString();
     return ev;
 }
@@ -380,6 +416,16 @@ QString PullStore::contentForSigning(const PullEvent &ev)
         return ev.state + nul + ev.body;
     if (ev.type == "line-comment")
         return ev.path + nul + ev.side + nul + QString::number(ev.line) + nul + ev.body;
+    if (ev.type == "thread-comment")
+        return ev.threadId + nul + ev.path + nul + ev.side + nul +
+               QString::number(ev.lineStart) + nul + QString::number(ev.lineEnd) +
+               nul + ev.body + nul + ev.suggestionPatch;
+    if (ev.type == "thread-reply")
+        return ev.threadId + nul + ev.parentId + nul + ev.body;
+    if (ev.type == "thread-state")
+        return ev.threadId + nul + ev.state + nul + ev.body;
+    if (ev.type == "suggestion-state")
+        return ev.threadId + nul + ev.state + nul + ev.appliedCommit + nul + ev.body;
     return QString();
 }
 
@@ -402,6 +448,8 @@ PullEvent PullStore::makeSignedEvent(int number, PullEvent ev) const
 {
     if (ev.id.isEmpty())
         ev.id = newId();
+    if (ev.type == QLatin1String("thread-comment") && ev.threadId.isEmpty())
+        ev.threadId = ev.id;
     ev.author = m_identity ? m_identity->publicKey() : QString();
     if (ev.authorName.isEmpty())
         ev.authorName = m_authorName;
@@ -456,6 +504,25 @@ bool PullStore::writeEventFile(int number, int index, const PullEvent &ev,
         lines << "side: " + ev.side;
         lines << "line: " + QString::number(ev.line);
     }
+    if (!ev.threadId.isEmpty())
+        lines << "threadId: " + ev.threadId;
+    if (!ev.parentId.isEmpty())
+        lines << "parentId: " + ev.parentId;
+    if (ev.type == "thread-comment") {
+        lines << "path: " + ev.path;
+        lines << "side: " + ev.side;
+        lines << "lineStart: " + QString::number(ev.lineStart);
+        lines << "lineEnd: " + QString::number(ev.lineEnd);
+    }
+    if (!ev.suggestionPatch.isEmpty())
+        lines << "suggestionPatchB64: " + encodeFrontMatterBlob(ev.suggestionPatch);
+    if (!ev.targetPath.isEmpty())
+        lines << "targetPath: " + ev.targetPath;
+    if (!ev.appliedCommit.isEmpty())
+        lines << "appliedCommit: " + ev.appliedCommit;
+    if ((ev.type == "thread-state" || ev.type == "suggestion-state") &&
+        !ev.state.isEmpty())
+        lines << "state: " + ev.state;
     lines << "sig: " + ev.sig;
     lines << "---";
     lines << "";
@@ -530,6 +597,96 @@ bool PullStore::addLineComment(int number, const QString &path, const QString &s
         number, ev,
         QStringLiteral("pull #%1: comment on %2:%3").arg(number).arg(path).arg(line),
         error);
+}
+
+bool PullStore::addThreadComment(int number, const QString &path,
+                                 const QString &side, int lineStart, int lineEnd,
+                                 const QString &body,
+                                 const QString &suggestionPatch, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "thread-comment";
+    ev.path = path;
+    ev.side = side;
+    ev.lineStart = lineStart;
+    ev.lineEnd = lineEnd > 0 ? lineEnd : lineStart;
+    ev.body = stripEdgeNewlines(body);
+    ev.suggestionPatch = stripEdgeNewlines(suggestionPatch);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(
+        number, ev,
+        QStringLiteral("pull #%1: thread on %2:%3")
+            .arg(number)
+            .arg(path)
+            .arg(lineStart),
+        error);
+}
+
+bool PullStore::addThreadReply(int number, const QString &threadId,
+                               const QString &parentId, const QString &body,
+                               QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "thread-reply";
+    ev.threadId = threadId;
+    ev.parentId = parentId;
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(number, ev,
+                       QStringLiteral("pull #%1: thread reply").arg(number),
+                       error);
+}
+
+bool PullStore::setThreadState(int number, const QString &threadId,
+                               const QString &state, const QString &body,
+                               QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "thread-state";
+    ev.threadId = threadId;
+    ev.state = state;
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(
+        number, ev,
+        QStringLiteral("pull #%1: thread %2").arg(number).arg(state), error);
+}
+
+bool PullStore::setSuggestionState(int number, const QString &threadId,
+                                   const QString &state,
+                                   const QString &appliedCommit,
+                                   const QString &body, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    PullEvent ev;
+    ev.type = "suggestion-state";
+    ev.threadId = threadId;
+    ev.state = state;
+    ev.appliedCommit = appliedCommit;
+    ev.body = stripEdgeNewlines(body);
+    ev = makeSignedEvent(number, ev);
+    return appendEvent(
+        number, ev,
+        QStringLiteral("pull #%1: suggestion %2").arg(number).arg(state), error);
 }
 
 bool PullStore::applyRemoteEvent(int number, const PullEvent &ev, QString *error)
