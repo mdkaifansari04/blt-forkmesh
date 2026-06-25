@@ -1,0 +1,24 @@
+---
+schema: forkmesh-issue-v1
+number: 195
+title: globally if you click on a commit hash it should bring you to that commit
+status: open
+labels: []
+milestone: 
+priority: 0
+progress: 0
+assignees: []
+createdAt: 1782347014981
+author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+authorName: newnewnode
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
+type: open
+id: open-195
+ts: 1782347014981
+attachments: []
+sig: epILXTt_uWmtPJdfvhssu-lTGkEd-7uyv73xihZQxLJmM_ryEzMCGktsmBobPXg9X1uvfXXbSr4foJRJSvdJCw
+---
+
+
