@@ -1,0 +1,148 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index ed4602e9..d4675f1e 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -797,6 +797,10 @@ const QString kOpenAiSpendTextSetting = QStringLiteral("agents/openAiSpendText")
+ const QString kOpenAiSpendTsSetting = QStringLiteral("agents/openAiSpendTs");
+ const QString kClaudeSpendTextSetting = QStringLiteral("agents/claudeSpendText");
+ const QString kClaudeSpendTsSetting = QStringLiteral("agents/claudeSpendTs");
++const QString kOpenAiCreditTextSetting = QStringLiteral("agents/openAiCreditText");
++const QString kOpenAiCreditTsSetting = QStringLiteral("agents/openAiCreditTs");
++const QString kClaudeCreditTextSetting = QStringLiteral("agents/claudeCreditText");
++const QString kClaudeCreditTsSetting = QStringLiteral("agents/claudeCreditTs");
+ // Anchors (epoch ms) for the rolling 5-hour and weekly usage windows. They are
+ // reset to "now" whenever an agent runs after the previous window has elapsed,
+ // so the agent sessions screen can count down the time left in each window.
+@@ -15700,6 +15704,10 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentOpenAiSpend->setObjectName("channelTitle");
+     m_agentOpenAiSpend->setWordWrap(true);
+     m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    m_agentOpenAiCredit = new QLabel("OpenAI remaining credits: not yet refreshed");
++    m_agentOpenAiCredit->setObjectName("statusLine");
++    m_agentOpenAiCredit->setWordWrap(true);
++    m_agentOpenAiCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
+     m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each OpenAI API session.");
+     m_agentApiKeyStatus->setObjectName("statusLine");
+     m_agentApiKeyStatus->setWordWrap(true);
+@@ -15708,6 +15716,10 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentClaudeSpend->setObjectName("channelTitle");
+     m_agentClaudeSpend->setWordWrap(true);
+     m_agentClaudeSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    m_agentClaudeCredit = new QLabel("Claude remaining credits: not yet refreshed");
++    m_agentClaudeCredit->setObjectName("statusLine");
++    m_agentClaudeCredit->setWordWrap(true);
++    m_agentClaudeCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
+     m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude API session.");
+     m_agentClaudeStatus->setObjectName("statusLine");
+     m_agentClaudeStatus->setWordWrap(true);
+@@ -15748,8 +15760,10 @@ QWidget *MainWindow::buildAgentsTab()
+     usageText->setContentsMargins(0, 0, 0, 0);
+     usageText->setSpacing(4);
+     usageText->addLayout(openAiStatsRow);
++    usageText->addWidget(m_agentOpenAiCredit);
+     usageText->addWidget(m_agentApiKeyStatus);
+     usageText->addLayout(claudeStatsRow);
++    usageText->addWidget(m_agentClaudeCredit);
+     usageText->addWidget(m_agentClaudeStatus);
+     usageText->addWidget(m_agentTotalSpend);
+     m_agentLimitsLabel = new QLabel;
+@@ -16137,6 +16151,39 @@ void MainWindow::testOpenAiAgentKey()
+                 });
+     };
+ 
++    // Fetch remaining credit grants (prepaid balance). This endpoint works with
++    // a regular API key and returns total granted vs used credit amounts.
++    QNetworkReply *creditReply = m_networkAccess->get(
++        openAiRequest(QUrl(QStringLiteral(
++            "https://api.openai.com/v1/dashboard/billing/credit_grants")),
++            apiKey));
++    connect(creditReply, &QNetworkReply::finished, this,
++            [this, creditReply] {
++        const QByteArray body = creditReply->readAll();
++        creditReply->deleteLater();
++        if (!m_agentOpenAiCredit)
++            return;
++        if (creditReply->error() != QNetworkReply::NoError) {
++            m_agentOpenAiCredit->setText(
++                QStringLiteral("OpenAI remaining credits: unavailable (%1)")
++                    .arg(apiErrorSummary(creditReply, body)));
++            return;
++        }
++        const QJsonObject obj = QJsonDocument::fromJson(body).object();
++        // The response contains total_granted and total_used in USD cents.
++        // total_available = total_granted - total_used.
++        const double granted = obj.value(QStringLiteral("total_granted")).toDouble();
++        const double used    = obj.value(QStringLiteral("total_used")).toDouble();
++        const double available = obj.value(QStringLiteral("total_available")).toDouble(
++            granted - used);
++        const QString text =
++            QStringLiteral("OpenAI remaining credits: $%1 USD (of $%2 granted)")
++                .arg(QString::number(available, 'f', 2),
++                     QString::number(granted, 'f', 2));
++        m_agentOpenAiCredit->setText(text);
++        cacheSpendLabel(kOpenAiCreditTextSetting, kOpenAiCreditTsSetting, text);
++    });
++
+     QNetworkReply *reply =
+         m_networkAccess->get(openAiRequest(
+             QUrl(QStringLiteral("https://api.openai.com/v1/models")), apiKey));
+@@ -16192,6 +16239,8 @@ void MainWindow::applyCachedSpendLabels()
+     };
+     restore(m_agentOpenAiSpend, kOpenAiSpendTextSetting, kOpenAiSpendTsSetting);
+     restore(m_agentClaudeSpend, kClaudeSpendTextSetting, kClaudeSpendTsSetting);
++    restore(m_agentOpenAiCredit, kOpenAiCreditTextSetting, kOpenAiCreditTsSetting);
++    restore(m_agentClaudeCredit, kClaudeCreditTextSetting, kClaudeCreditTsSetting);
+ }
+ 
+ void MainWindow::markAgentLimitWindow(const QString &provider)
+@@ -16294,6 +16343,10 @@ void MainWindow::refreshClaudeSpend()
+                 "see spend. A regular API key can't read organization costs.");
+         if (m_agentClaudeSpend)
+             m_agentClaudeSpend->setText("Claude spend this month: needs Admin key");
++        if (m_agentClaudeCredit)
++            m_agentClaudeCredit->setText(
++                "Claude remaining credits: add an Admin key to see spend; "
++                "remaining balance is visible in the Anthropic Console.");
+         return;
+     }
+     if (!m_networkAccess) {
+@@ -16384,6 +16437,25 @@ void MainWindow::refreshClaudeSpend()
+             }
+             if (m_agentClaudeStatus)
+                 m_agentClaudeStatus->setText("Claude spend refreshed.");
++            // Anthropic does not expose a remaining-credits endpoint for the
++            // Admin API; derive the best available estimate from the session
++            // token tracking data stored on each AgentSession and show it
++            // alongside the spend figure.
++            if (m_agentClaudeCredit) {
++                double totalCreditUsed = 0.0;
++                for (const AgentSession &s : std::as_const(m_agentSessions)) {
++                    if (s.provider.startsWith(QLatin1String("claude")))
++                        totalCreditUsed += s.costUsd;
++                }
++                const QString creditText =
++                    QStringLiteral(
++                        "Claude remaining credits: check the Anthropic Console "
++                        "(API does not expose credit balance). "
++                        "Estimated local session spend: $%1 USD.")
++                        .arg(QString::number(totalCreditUsed, 'f', 4));
++                m_agentClaudeCredit->setText(creditText);
++                cacheSpendLabel(kClaudeCreditTextSetting, kClaudeCreditTsSetting, creditText);
++            }
+             updateAgentTotalSpend();
+         });
+     };
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 813c9ca5..a7536699 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -1731,6 +1731,9 @@ private:
+     QLabel *m_agentApiKeyStatus = nullptr;
+     QLabel *m_agentClaudeSpend = nullptr;
+     QLabel *m_agentClaudeStatus = nullptr;
++    // Remaining API credits fetched from each provider.
++    QLabel *m_agentOpenAiCredit = nullptr;
++    QLabel *m_agentClaudeCredit = nullptr;
+     // Combined OpenAI + Claude month-to-date spend. The doubles hold the last
+     // known numeric USD figure per provider (NaN = not yet known) so the total
+     // can be recomputed whenever either side refreshes.
