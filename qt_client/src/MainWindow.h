@@ -1010,6 +1010,7 @@ private:
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     void flashMessage(const QString &text, bool error = false);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
+    void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1183,6 +1184,8 @@ private:
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QString m_topMessageRaw;              // plain text of the current toast, for copy
+    bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
+    bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
 
     // Setup widgets

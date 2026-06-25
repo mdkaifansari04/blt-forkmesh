@@ -6281,6 +6281,11 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setObjectName("topMessage");
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
+    // Hard cap on the pill's width so a long toast can never widen the window; the
+    // text itself is elided to one line in flashMessage. Hovering an elided toast
+    // opens a scrollable modal with the full message (see eventFilter).
+    m_topMessage->setMaximumWidth(620);
+    m_topMessage->installEventFilter(this);
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -27018,6 +27023,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
         return QMainWindow::eventFilter(obj, event); // never consume expose
     }
+    // The toast pill is elided to one line; hovering (or clicking) one that was
+    // truncated opens a scrollable modal with the full message. Deferred so the
+    // dialog's nested event loop doesn't run inside event delivery.
+    if (obj == m_topMessage && m_topMessageElided
+        && (event->type() == QEvent::Enter
+            || event->type() == QEvent::MouseButtonRelease)) {
+        QTimer::singleShot(0, this, [this] { showFullMessageDialog(); });
+        return false; // let normal handling (selection, links) proceed too
+    }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
         cycleNavSolanaCurrency();
@@ -29833,6 +29847,46 @@ void MainWindow::logSystem(const QString &text)
     appendNetworkLogLine(line);
 }
 
+// Show the full text of the current toast in a scrollable modal. The pill itself
+// is elided so it can never widen the window; this dialog is how the whole message
+// (e.g. a long git error) gets read or copied.
+void MainWindow::showFullMessageDialog()
+{
+    if (m_topMessageRaw.isEmpty() || m_topMessageDialogOpen)
+        return;
+    m_topMessageDialogOpen = true;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Message"));
+    dlg.resize(560, 320);
+    auto *layout = new QVBoxLayout(&dlg);
+
+    auto *view = new QPlainTextEdit(&dlg);
+    view->setReadOnly(true);
+    view->setLineWrapMode(QPlainTextEdit::WidgetWidth); // wrap; vertical scroll only
+    view->setPlainText(m_topMessageRaw);
+    layout->addWidget(view);
+
+    auto *row = new QHBoxLayout;
+    row->addStretch();
+    auto *copyBtn = new QPushButton(QStringLiteral("Copy"), &dlg);
+    copyBtn->setObjectName("ghostButton");
+    copyBtn->setCursor(Qt::PointingHandCursor);
+    connect(copyBtn, &QPushButton::clicked, &dlg, [this] {
+        QGuiApplication::clipboard()->setText(m_topMessageRaw);
+    });
+    auto *closeBtn = new QPushButton(QStringLiteral("Close"), &dlg);
+    closeBtn->setObjectName("ghostButton");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    row->addWidget(copyBtn);
+    row->addWidget(closeBtn);
+    layout->addLayout(row);
+
+    dlg.exec();
+    m_topMessageDialogOpen = false;
+}
+
 void MainWindow::flashMessage(const QString &text, bool error)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
@@ -29855,9 +29909,21 @@ void MainWindow::flashMessage(const QString &text, bool error)
     // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
     m_pinWarningActive = false;
     m_topMessageRaw = trimmed;
+    // Keep the pill compact: a long message (a multi-line git error, say) must not
+    // stretch the top bar and drag the whole window wide. Show an elided one-liner;
+    // the full text is preserved in m_topMessageRaw and is reachable by hovering the
+    // toast (a scrollable modal) or via Copy.
+    constexpr int kToastMaxChars = 100;
+    QString display = trimmed;
+    m_topMessageElided = display.size() > kToastMaxChars;
+    if (m_topMessageElided)
+        display = display.left(kToastMaxChars - 1).trimmed()
+                  + QString::fromUtf8("\xE2\x80\xA6"); // …
+    m_topMessage->setCursor(m_topMessageElided ? Qt::PointingHandCursor
+                                               : Qt::ArrowCursor);
     m_topMessage->setText(
         QStringLiteral("<span style='color:%1'>%2 %3</span>")
-            .arg(fg, glyph, trimmed.toHtmlEscaped()));
+            .arg(fg, glyph, display.toHtmlEscaped()));
     m_topMessage->show();
 
     if (!m_topMessageTimer) {
