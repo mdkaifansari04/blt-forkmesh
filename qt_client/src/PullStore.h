@@ -24,6 +24,15 @@ struct PullEvent {
     QString path;
     QString side;
     int line = 0;
+    // review threads and suggestions: a durable thread id plus optional range,
+    // parent reply, suggestion patch, and applied commit state.
+    QString threadId;
+    QString parentId;
+    int lineStart = 0;
+    int lineEnd = 0;
+    QString suggestionPatch;
+    QString targetPath;
+    QString appliedCommit;
     QString sig;
 
     QJsonObject toJson() const; // wire format for the relay inbox
@@ -148,6 +157,21 @@ public:
     // Append a signed comment anchored to a specific file + line of the diff.
     bool addLineComment(int number, const QString &path, const QString &side,
                         int line, const QString &body, QString *error = nullptr);
+    bool addThreadComment(int number, const QString &path, const QString &side,
+                          int lineStart, int lineEnd, const QString &body,
+                          const QString &suggestionPatch = QString(),
+                          QString *error = nullptr);
+    bool addThreadReply(int number, const QString &threadId,
+                        const QString &parentId, const QString &body,
+                        QString *error = nullptr);
+    bool setThreadState(int number, const QString &threadId, const QString &state,
+                        const QString &body = QString(),
+                        QString *error = nullptr);
+    bool setSuggestionState(int number, const QString &threadId,
+                            const QString &state,
+                            const QString &appliedCommit = QString(),
+                            const QString &body = QString(),
+                            QString *error = nullptr);
     // Merge a signed event received from the relay inbox into pulls/<N>/. The
     // event must already be signed and verified by the caller.
     bool applyRemoteEvent(int number, const PullEvent &ev, QString *error = nullptr);
