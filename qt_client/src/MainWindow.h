@@ -1380,6 +1380,7 @@ private:
     QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
+    int m_insightsTabIndex = -1; // index of the Insights page
     int m_branchesTabIndex = -1; // index of the Branches page
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
