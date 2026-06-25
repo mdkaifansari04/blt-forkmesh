@@ -17210,10 +17210,19 @@ void MainWindow::initAgents()
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
         if (session.status == AgentStatus::Running) {
-            session.status = AgentStatus::Stopped;
-            session.lastError = QStringLiteral("Interrupted by app shutdown.");
-            session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            // ForkMesh was restarted while this agent was working. The previous
+            // run's process is gone (its output pipe died with the old app), so
+            // resume the session automatically instead of abandoning it: re-queue
+            // it to pick up from its saved branch, patch and transcript context.
+            // AgentRunner clears any worktree the interrupted run leaked behind so
+            // the resumed run can re-create one cleanly (issue #242).
+            session.status = AgentStatus::Queued;
+            session.lastError.clear();
+            session.finishedAtMs = 0;
             m_agentStore->saveSession(session);
+            m_agentStore->appendLog(
+                session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
+            m_agentQueue.append(session.id);
         } else if (session.status == AgentStatus::Queued) {
             m_agentQueue.append(session.id);
         }
