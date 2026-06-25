@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 130
 title: get relay server federation going so we can have a second relay
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 1
