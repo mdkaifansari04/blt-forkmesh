@@ -38,6 +38,8 @@ set(FORKMESH_APP_SOURCES
     src/IssueStore.cpp
     src/IssueBurnup.h
     src/IssueBurnup.cpp
+    src/DiscussionStore.h
+    src/DiscussionStore.cpp
     src/PullStore.h
     src/PullStore.cpp
     src/PullReviewModel.h
@@ -114,6 +116,8 @@ if(FORKMESH_BUILD_TESTS)
         src/IssueStore.cpp
         src/IssueBurnup.h
         src/IssueBurnup.cpp
+        src/DiscussionStore.h
+        src/DiscussionStore.cpp
         src/PullStore.h
         src/PullStore.cpp
         src/PullReviewModel.h

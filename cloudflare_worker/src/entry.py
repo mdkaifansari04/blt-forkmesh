@@ -50,8 +50,8 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
-# Per-author cap across the issue/pull/commit inboxes, so one signing key can't
-# fill a repo's whole inbox to the global cap and block everyone else.
+# Per-author cap across the issue/pull/commit/discussion inboxes, so one signing
+# key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
 # issue body but still bounded.
@@ -60,6 +60,9 @@ MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
 MAX_PENDING_COMMIT_COMMENTS = 500
+# Discussion inbox: signed open/comment events for read-only contributors.
+MAX_DISCUSSION_BYTES = 64 * 1024
+MAX_PENDING_DISCUSSIONS = 500
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -70,6 +73,8 @@ REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
+# Discussion inbox: signed discussion open/comment submissions from any node.
+REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
 # Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
 # and split it 90/10 to the PR author + treasury when the issue's PR merges.
 REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
@@ -228,6 +233,55 @@ async def verify_issue_event(number, ev):
     canonical = (
         "forkmesh-issue-event-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
         author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
+
+
+DISCUSSION_CATEGORIES = {
+    "Announcements", "Ideas", "Q&A", "Show and tell", "Maintainer notes",
+}
+DISCUSSION_CATEGORY_MAP = {
+    category.lower(): category for category in DISCUSSION_CATEGORIES
+}
+
+
+def normalized_discussion_category(value):
+    return DISCUSSION_CATEGORY_MAP.get(clean_string(value, 80).strip().lower(), "")
+
+
+def discussion_event_content(ev):
+    # Mirrors DiscussionStore::contentForSigning. Fields joined by NUL.
+    t = ev.get("type", "")
+    if t == "open":
+        return "\x00".join([
+            ev.get("title", ""), ev.get("body", ""), ev.get("category", "")
+        ])
+    if t == "comment":
+        return ev.get("body", "")
+    return ""
+
+
+async def verify_discussion_event(number, ev):
+    # Mirrors DiscussionStore::canonicalString(number, ev): the signature binds
+    # the canonical discussion number plus type-specific content. New discussions
+    # submitted through the inbox are signed with number 0 because the owner
+    # assigns the durable repo number when draining the inbox.
+    author = ev.get("author", "")
+    signature = ev.get("sig", "")
+    event_type = ev.get("type", "")
+    if not author or not signature or event_type not in ("open", "comment"):
+        return False
+    if event_type == "open" and not normalized_discussion_category(
+            ev.get("category", "")):
+        return False
+    try:
+        ts = int(ev.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(discussion_event_content(ev))
+    canonical = (
+        "forkmesh-discussion-event-v1\n" + event_type + "\n" + str(int(number)) +
+        "\n" + author + "\n" + str(ts) + "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
 
@@ -1521,6 +1575,10 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
+    """CREATE TABLE IF NOT EXISTS discussion_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        data TEXT NOT NULL, submitter_bi TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
     # Issue bounty escrow: one row per (repo, issue number). data is the encrypted
     # record holding the deposit address, its Ed25519 seed, the required amount,
     # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
@@ -1652,7 +1710,7 @@ async def ensure_schema(env):
     # Plaintext blind index of the (signature-verified) submitter on each inbox
     # row, so a per-author quota can be enforced with a COUNT instead of
     # decrypting every pending row. Added separately for tables predating it.
-    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox"):
+    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox", "discussion_inbox"):
         try:
             await env.DB.prepare(
                 "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
@@ -4370,7 +4428,7 @@ async def accounts_handler(env, request):
     return json_response({"error": "not_found"}, status=404)
 
 
-# --- Issue & pull submission inboxes (encrypted) ----------------------------
+# --- Repository submission inboxes (encrypted) ------------------------------
 
 async def _authorize_owner(env, request, owner):
     if not owner:
@@ -4637,6 +4695,72 @@ async def commits_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def discussions_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        event = data.get("event")
+        if not isinstance(event, dict):
+            return json_response({"error": "event_required"}, status=400)
+        try:
+            number = int(data.get("number", 0))
+        except (TypeError, ValueError):
+            number = 0
+        if event.get("type", "") == "open":
+            number = 0
+        if len(discussion_event_content(event).encode("utf-8")) > MAX_DISCUSSION_BYTES:
+            return json_response({"error": "discussion_too_large"}, status=413)
+        if not await verify_discussion_event(number, event):
+            return json_response({"error": "bad_signature"}, status=401)
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM discussion_inbox WHERE repo_bi=?", repo_bi
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_DISCUSSIONS:
+            return json_response({"error": "inbox_full"}, status=429)
+        submitter_bi = await blind_index(env, event.get("author", ""))
+        if await _inbox_author_over_quota(
+                env, "discussion_inbox", repo_bi, submitter_bi):
+            return json_response({"error": "author_quota"}, status=429)
+        item = {
+            "number": number,
+            "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
+            "event": event,
+            "submitter": clean_string(event.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        }
+        await d1_run(
+            env,
+            "INSERT INTO discussion_inbox (repo_bi, data, submitter_bi) "
+            "VALUES (?,?,?)",
+            repo_bi, await encrypt_row(env, item), submitter_bi,
+        )
+        return json_response({"ok": True}, status=201)
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env, "SELECT data FROM discussion_inbox WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
+        )
+        pending = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        return json_response({"ok": True, "pending": pending})
+
+    if method == "DELETE":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -5697,6 +5821,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await commits_handler(self.env, request, owner, repo)
+
+        discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
+        if discussions_match:
+            owner = safe_segment(discussions_match.group(1))
+            repo = safe_segment(discussions_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await discussions_handler(self.env, request, owner, repo)
 
         bounty_match = REPO_BOUNTY_RE.match(url.path)
         if bounty_match:

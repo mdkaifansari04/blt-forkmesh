@@ -653,7 +653,10 @@ const pullsSectionEl = document.querySelector("#pulls");
 const pullListEl = document.querySelector("#pull-list");
 const pullsMetaEl = document.querySelector("#pulls-meta");
 const tabDiscussionsEl = document.querySelector("#tab-discussions");
+const tabDiscussionsCountEl = document.querySelector("#tab-discussions-count");
 const discussionsSectionEl = document.querySelector("#discussions");
+const discussionListEl = document.querySelector("#discussion-list");
+const discussionsMetaEl = document.querySelector("#discussions-meta");
 const tabMirrorsEl = document.querySelector("#tab-mirrors");
 const mirrorsSectionEl = document.querySelector("#repo-mirrors");
 const mirrorSummaryEl = document.querySelector("#mirror-summary");
@@ -662,6 +665,9 @@ const mirrorsMetaEl = document.querySelector("#mirrors-meta");
 let pullsLoadedFor = null;
 let pullsToken = 0;
 let pullsCountToken = 0;
+let discussionsLoadedFor = null;
+let discussionsToken = 0;
+let discussionsCountToken = 0;
 let mirrorsLoadedFor = null;
 let mirrorsToken = 0;
 
@@ -813,6 +819,20 @@ async function loadPullCount() {
   tabPullsCountEl.textContent = String(count);
 }
 
+async function loadDiscussionCount() {
+  if (!tabDiscussionsCountEl) return;
+  const token = ++discussionsCountToken;
+  const { data, error } = await pullPath("tree", "discussions");
+  if (token !== discussionsCountToken) return;
+  const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+  if (!data || !Array.isArray(data.entries)) {
+    if (!hostDown) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+  const count = data.entries.filter((e) => e.type === "tree" && /^\d+$/.test(e.name)).length;
+  tabDiscussionsCountEl.textContent = String(count);
+}
+
 async function loadPulls(owner, name) {
   if (!pullListEl) return;
   const token = ++pullsToken;
@@ -877,6 +897,94 @@ async function loadPulls(owner, name) {
   if (tabPullsCountEl) tabPullsCountEl.textContent = String(pulls.length);
   pullListEl.replaceChildren(
     ...pulls.map((p) => pullRow(p.number, p.title, p.status, p.base, p.head, p.signed))
+  );
+}
+
+function discussionRow(number, title, category) {
+  const row = document.createElement("button");
+  row.className = "file-row issue-row";
+  row.type = "button";
+  const dot = document.createElement("span");
+  dot.className = "issue-dot is-open";
+  dot.title = "Discussion";
+  const label = document.createElement("span");
+  label.className = "file-name";
+  label.textContent = `#${number} ${title}`;
+  const categoryEl = document.createElement("span");
+  categoryEl.className = "file-note";
+  categoryEl.textContent = category || "Discussion";
+  row.append(dot, label, categoryEl);
+  row.addEventListener("click", () => {
+    if (fileState)
+      go(blobUrl(fileState.owner, fileState.name, `discussions/${number}/discussion.md`));
+  });
+  return row;
+}
+
+async function loadDiscussions(owner, name) {
+  if (!discussionListEl) return;
+  const token = ++discussionsToken;
+  discussionListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
+  if (discussionsMetaEl) discussionsMetaEl.textContent = "";
+
+  const { data, source, error } = await pullPath("tree", "discussions");
+  if (token !== discussionsToken) return;
+  if (!data || !Array.isArray(data.entries)) {
+    discussionListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+    note.textContent = hostDown
+      ? unavailableMessage(error)
+      : "No discussions have been published for this repository yet.";
+    discussionListEl.append(note);
+    if (tabDiscussionsCountEl && !hostDown) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+
+  if (discussionsMetaEl) {
+    discussionsMetaEl.className = "file-meta";
+    if (source === "live") {
+      discussionsMetaEl.textContent = "● live from host";
+      discussionsMetaEl.classList.add("source-live");
+    } else if (source === "cached") {
+      discussionsMetaEl.textContent = "● cached · host offline";
+      discussionsMetaEl.classList.add("source-cached");
+    }
+  }
+
+  const numbers = data.entries
+    .filter((e) => e.type === "tree" && /^\d+$/.test(e.name))
+    .map((e) => parseInt(e.name, 10));
+  if (!numbers.length) {
+    discussionListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent = "No discussions have been published for this repository yet.";
+    discussionListEl.append(note);
+    if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+
+  const discussions = await Promise.all(
+    numbers.map(async (n) => {
+      const { data: blob } = await pullPath("blob", `discussions/${n}/discussion.md`);
+      const fm = parseFrontmatter(blob && blob.content);
+      const createdAt = Number(fm.createdAt || fm.ts || 0);
+      return {
+        number: n,
+        title: fm.title || `Discussion #${n}`,
+        category: fm.category || "Discussion",
+        sortKey: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : n,
+      };
+    })
+  );
+  if (token !== discussionsToken) return;
+
+  discussions.sort((a, b) => b.sortKey - a.sortKey || b.number - a.number);
+  if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = String(discussions.length);
+  discussionListEl.replaceChildren(
+    ...discussions.map((d) => discussionRow(d.number, d.title, d.category))
   );
 }
 
@@ -1164,6 +1272,10 @@ function showRepoTab(tab) {
   if (tab === "pulls" && pullsLoadedFor !== repoKey) {
     pullsLoadedFor = repoKey;
     loadPulls(fileState.owner, fileState.name);
+  }
+  if (tab === "discussions" && discussionsLoadedFor !== repoKey) {
+    discussionsLoadedFor = repoKey;
+    loadDiscussions(fileState.owner, fileState.name);
   }
   if (tab === "mirrors" && mirrorsLoadedFor !== repoKey) {
     loadMirrors(fileState.owner, fileState.name);
@@ -1624,17 +1736,20 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
     checkHost(owner, name, repoStatus);
   }
   resetDownloadProgress();
-  // Reset to the Code tab; issues/commits/pulls lazy-load when their tab is opened.
+  // Reset to the Code tab; issues/commits/pulls/discussions lazy-load when their tab is opened.
   issuesLoadedFor = null;
   commitsLoadedFor = null;
   pullsLoadedFor = null;
+  discussionsLoadedFor = null;
   mirrorsLoadedFor = null;
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
   if (tabPullsCountEl) tabPullsCountEl.textContent = "";
+  if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
   renderRepoPath(owner, name, mode, filePath);
   loadPullCount();
+  loadDiscussionCount();
   loadLatestCommit(owner, name);
 }
 
