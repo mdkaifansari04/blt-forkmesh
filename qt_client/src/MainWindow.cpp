@@ -34416,15 +34416,27 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
                 ? repo.localPath
                 : repo.mirrorPath;
-        QByteArray out;
-        if (!gitDir.trimmed().isEmpty() &&
-            runGitCapture(gitDir, {"rev-list", "--max-parents=0", "HEAD"}, &out,
-                          nullptr)) {
+        // Resolve the earliest root commit. Prefer HEAD, but fall back to --all:
+        // a bare mirror cloned from the relay can carry an unset/dangling HEAD
+        // (the relay serves git-upload-pack without advertising a symref HEAD), so
+        // "rev-list ... HEAD" fails and leaves rootCommit empty. An empty root drops
+        // that mirror into a different group key (worker repo_mirror_group_key), so
+        // the owner's mirror-nodes panel never lists it next to the source of truth
+        // — the node shows up on the mirror but not on the source (issue #243). --all
+        // walks every ref the mirror holds, yielding the same root the source-of-
+        // truth computes from its working tree regardless of HEAD's state.
+        auto firstRoot = [&](const QStringList &args) -> QString {
+            QByteArray out;
+            if (gitDir.trimmed().isEmpty() ||
+                !runGitCapture(gitDir, args, &out, nullptr))
+                return QString();
             const QStringList roots =
                 QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-            if (!roots.isEmpty())
-                rootCommit = roots.last().trimmed(); // earliest root commit
-        }
+            return roots.isEmpty() ? QString() : roots.last().trimmed();
+        };
+        rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
+        if (rootCommit.isEmpty())
+            rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
     }
     // Owner-signed fingerprint of the refs this node serves (sha256 over the
     // canonical heads+tags advertisement). The relay pins this and refuses to

@@ -26,10 +26,16 @@ def _load(*names, extra_globals=None):
     return [namespace[name] for name in names]
 
 
-_mirror_ms, build_repo_mirrors_payload, repo_mirror_group_key = _load(
+(
+    _mirror_ms,
+    build_repo_mirrors_payload,
+    repo_mirror_group_key,
+    repo_mirror_same_group,
+) = _load(
     "_mirror_ms",
     "build_repo_mirrors_payload",
     "repo_mirror_group_key",
+    "repo_mirror_same_group",
 )
 
 
@@ -53,6 +59,17 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
 def test_group_key_prefers_root_commit_and_falls_back_to_name():
     assert repo_mirror_group_key({"rootCommit": "ABC", "name": "forkmesh"}) == "root:abc"
     assert repo_mirror_group_key({"rootCommit": "", "name": "ForkMesh"}) == "name:forkmesh"
+
+
+def test_same_group_matches_root_then_name():
+    rooted = {"rootCommit": "ABC", "name": "forkmesh"}
+    # Identical root -> same group; differing non-empty root -> separate (fork).
+    assert repo_mirror_same_group(rooted, {"rootCommit": "abc", "name": "forkmesh"})
+    assert not repo_mirror_same_group(rooted, {"rootCommit": "def", "name": "forkmesh"})
+    # Missing root on either side falls back to a case-insensitive name match.
+    assert repo_mirror_same_group(rooted, {"rootCommit": "", "name": "ForkMesh"})
+    assert repo_mirror_same_group({"name": "forkmesh"}, {"rootCommit": "abc", "name": "forkmesh"})
+    assert not repo_mirror_same_group(rooted, {"rootCommit": "", "name": "other"})
 
 
 def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
@@ -91,6 +108,27 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["hostedSince"] == 80_000
     assert payload["mirrors"][1]["behind"] is True
     assert payload["mirrors"][1]["cloneAvailable"] is True
+
+
+def test_payload_groups_mirror_with_missing_root_commit_by_name():
+    # A mirror cloned from the relay can have an unset HEAD and publish an empty
+    # rootCommit (issue #243). It must still group with the source of truth (which
+    # does advertise a root) instead of dropping into its own name-keyed bucket and
+    # vanishing from the owner's mirror-nodes list.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10),
+        _row("b", "kaif-node", "forkmesh", root="", synced="980000", size=20),
+        _row("c", "fork-owner", "forkmesh", root="def", synced="970000", size=30),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+
+    # The empty-root mirror joins the source's root group by name; the genuine fork
+    # (a different non-empty root) stays out.
+    assert payload["groupKey"] == "root:abc"
+    assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "kaif-node"]
 
 
 def test_payload_falls_back_to_repo_name_when_root_commit_is_absent():
@@ -171,6 +209,7 @@ def _load_handler(*, rows, presence=None, first_hosted=None):
         "method_name",
         "_mirror_ms",
         "repo_mirror_group_key",
+        "repo_mirror_same_group",
         "build_repo_mirrors_payload",
         extra_globals=namespace,
     )
