@@ -416,6 +416,7 @@ private:
                                  const QString &name, const QString &commit,
                                  const QString &ref);
     void submitPullComment();                       // post a comment on the PR
+    void sendPullRevisionToAgent();                 // re-queue the linked agent with revision feedback
     void submitPullReview(const QString &state);    // approve / request changes
     void promptNewPull();
     void importPatchAsPull(); // read a .patch/.diff file and open it as a PR
@@ -1596,6 +1597,10 @@ private:
     QPushButton *m_pullCommentButton = nullptr;
     QPushButton *m_pullApproveButton = nullptr;
     QPushButton *m_pullRequestChangesButton = nullptr;
+    // Agent revision: send feedback back to the agent that created this PR.
+    QWidget *m_pullAgentRevisionRow = nullptr;
+    QLineEdit *m_pullAgentRevisionEdit = nullptr;
+    QPushButton *m_pullSendToAgentButton = nullptr;
     QPushButton *m_pullLinkIssueButton = nullptr; // "Link issue" in the PR header
     QLabel *m_pullLinksValue = nullptr;           // linked issues card in the thread
     // Checks tab: action runs for this PR's commits + a manual trigger.
