@@ -418,6 +418,12 @@ private:
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
     void renderPullDiff(const QString &filePath);
+    // Step the Files-changed view through every change: first the open file's
+    // hunks, then on to the next/previous file. delta is +1 (next) or -1 (prev).
+    void pullSelectAdjacentChange(int delta);
+    // Scroll the pull diff to the next/previous hunk header; returns false when
+    // there is no further hunk in that direction (so the caller can move files).
+    bool pullScrollToAdjacentHunk(int delta, bool fromEnd = false);
     // Handle a click on a diff line-number anchor ("cmt:<side>:<line>"): prompt
     // for a comment and attach it to that line of the current PR file.
     void onPullDiffAnchorClicked(const QUrl &url);
@@ -1646,6 +1652,8 @@ private:
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
+    QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
+    QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
