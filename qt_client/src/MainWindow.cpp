@@ -7379,8 +7379,19 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
         serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
     if (relayHost.isEmpty())
         relayHost = serverHost(kDefaultServerUrl);
-    if (relayHost.isEmpty() ||
-        QUrl(QString::fromUtf8(urlOut).trimmed()).host() != relayHost)
+    const QString remoteUrl = QString::fromUtf8(urlOut).trimmed();
+    const bool isRelay =
+        !relayHost.isEmpty() && QUrl(remoteUrl).host() == relayHost;
+    // Or the upstream is this repo's own served mirror (a local bare repo): then
+    // "publish" must force-sync that mirror from the working copy via
+    // syncRepository, never a raw `git push`. The mirror is also advanced by the
+    // app's own background sync (and agents pushing branches into it), so a plain
+    // push to its `main` races and gets "[remote rejected] main" (a ref-lock /
+    // non-fast-forward).
+    const bool isOwnMirror =
+        !remoteUrl.isEmpty() && QUrl(remoteUrl).host().isEmpty() &&
+        QDir(remoteUrl).absolutePath() == QDir(repo.mirrorPath).absolutePath();
+    if (!isRelay && !isOwnMirror)
         return false;
 
     // Local branch + commits not yet folded into the served mirror. The mirror's
