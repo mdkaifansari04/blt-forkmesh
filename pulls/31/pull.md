@@ -4,7 +4,7 @@ number: 31
 title: issue #251: add Settings option to select your default AI agent
 base: main
 head: agent/issue-251-have-an-option-in-settings-to-select-your-defauo
-status: open
+status: merged
 ts: 1782426742888
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
