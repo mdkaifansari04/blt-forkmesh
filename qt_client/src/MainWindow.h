@@ -525,6 +525,16 @@ private:
     void reopenCurrentPull();
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
+    // Merge the PR, then delete it and its head branch in one confirmed step
+    // (issue #261). The merge runs first and synchronously; only if it succeeds
+    // do we drop the PR record and its branch.
+    void mergeAndDeleteCurrentPull();
+    // Shared worker: delete a PR record and (best-effort) remove its local head
+    // branch, reporting through the repo-detail notice. The caller owns the
+    // confirmation (and any prior merge); pass propagate=true to push the result
+    // to the mirror (the merge-and-delete flow needs the merge to reach peers).
+    void deletePullAndBranchAsync(int number, const QString &head, bool haveBranch,
+                                  bool rewriteHistory, bool propagate);
     void setPullDeleteButtonsEnabled(bool enabled);
     // Confirm a PR deletion; *rewriteHistory is set from an opt-in checkbox
     // (off by default — a plain delete is fast and leaves history intact).
@@ -1727,6 +1737,7 @@ private:
     QPushButton *m_pullReopenButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
+    QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;

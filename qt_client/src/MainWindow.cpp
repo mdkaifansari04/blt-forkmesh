@@ -13862,14 +13862,15 @@ QWidget *MainWindow::buildPullsTab()
     m_pullReopenButton = new QPushButton("Reopen");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
+    m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixClaudeButton, m_pullFixOpenAiButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
                            m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
-                           m_pullDeleteBranchButton, m_pullLinkIssueButton,
-                           m_pullSplitButton}) {
+                           m_pullDeleteBranchButton, m_pullMergeDeleteButton,
+                           m_pullLinkIssueButton, m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -13905,6 +13906,9 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
     m_pullDeleteBranchButton->setToolTip(
         "Permanently delete this pull request and its head branch");
+    setOcticon(m_pullMergeDeleteButton, "check-circle", 16);
+    m_pullMergeDeleteButton->setToolTip(
+        "Merge this pull request, then permanently delete it and its head branch");
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullResolveButton->setToolTip(
         "Open a merge editor to resolve this pull request's conflicts and commit "
@@ -13951,6 +13955,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
@@ -14371,6 +14376,8 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullUpdateButton, &QPushButton::clicked,
             this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
+    connect(m_pullMergeDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::mergeAndDeleteCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     connect(m_pullReopenButton, &QPushButton::clicked, this, &MainWindow::reopenCurrentPull);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
@@ -15698,6 +15705,11 @@ void MainWindow::updatePullActionState()
                                  "branch, then merge.")
                 : QStringLiteral("Apply and merge this pull request"));
     }
+    // "Merge + delete branch" gates on the same merge-readiness as Merge (it
+    // merges first), and on no delete worker already running.
+    if (m_pullMergeDeleteButton)
+        m_pullMergeDeleteButton->setEnabled(mergeable && mergeClean &&
+                                            !m_pullDeleteInProgress);
     const bool conflicted = mergeable && !mergeClean;
     // Conflicting-files card in the conversation, above the comment composer:
     // list every file that no longer applies so the reviewer sees what to fix
@@ -17497,14 +17509,17 @@ void MainWindow::reopenCurrentPull()
     reloadPulls();
 }
 
-// Toggle both pull-delete buttons together so neither can launch a second
-// history rewrite while one worker thread is running.
+// Toggle the pull-delete buttons together so none can launch a second history
+// rewrite while one worker thread is running. The proper enable state is
+// restored by updatePullActionState() (via reloadPulls) once the worker settles.
 void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
 {
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(enabled);
     if (m_pullDeleteBranchButton)
         m_pullDeleteBranchButton->setEnabled(enabled);
+    if (m_pullMergeDeleteButton)
+        m_pullMergeDeleteButton->setEnabled(enabled);
 }
 
 bool MainWindow::confirmPullDeletion(const QString &prompt, bool *rewriteHistory)
@@ -17635,13 +17650,84 @@ void MainWindow::deleteCurrentPullAndBranch()
     if (!confirmPullDeletion(prompt, &rewriteHistory))
         return;
 
-    // The plain delete just drops the PR folder (and the branch ref) and is fast.
-    // Only the opt-in history rewrite (filter-branch + gc + reflog expire) is slow
-    // enough to freeze the UI — either way, run deletePull on a worker thread
-    // (it only touches git, no event signing, so a copied store is safe) and report
-    // back on the main thread. The branch removal and list reloads are cheap and
-    // stay on the main thread in the finished handler.
-    const int deleted = m_currentPullNumber;
+    deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
+                             /*propagate=*/false);
+}
+
+// Merge the pull request, then delete it and its head branch in one confirmed
+// step — the "merge, delete PR + branch" workflow (issue #261). The merge runs
+// first and synchronously; only if it succeeds do we drop the PR record and its
+// branch. The deletion (and best-effort branch removal) reuses the same worker
+// flow as deleteCurrentPullAndBranch.
+void MainWindow::mergeAndDeleteCurrentPull()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    if (m_pullDeleteInProgress) {
+        setRepoDetailNotice(
+            QStringLiteral("A pull request deletion is already running."));
+        return;
+    }
+    PullRequest current;
+    bool found = false;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number == m_currentPullNumber) {
+            current = pr;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        return;
+
+    // Never touch the base branch (or the branch currently checked out): only a
+    // distinct feature branch is a safe target.
+    const QString head = current.head;
+    const bool haveBranch =
+        !head.isEmpty() && head != current.base && head != currentRef();
+
+    const QString prompt =
+        haveBranch
+            ? QStringLiteral("Merge pull request #%1, then permanently delete it and "
+                             "its branch \"%2\"? This cannot be undone.")
+                  .arg(m_currentPullNumber)
+                  .arg(head)
+            : QStringLiteral("Merge pull request #%1, then permanently delete it? "
+                             "This cannot be undone.")
+                  .arg(m_currentPullNumber);
+    bool rewriteHistory = false;
+    if (!confirmPullDeletion(prompt, &rewriteHistory))
+        return;
+
+    // Merge first, synchronously. If it fails (e.g. fresh conflicts) bail out
+    // before touching the PR record or its branch.
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.mergePull(m_currentPullNumber, &error)) {
+        QMessageBox::warning(this, "Merge pull request", error);
+        return;
+    }
+    logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
+    closeIssuesLinkedFromPull(current);
+    fundBountiesForMergedPull(current);
+
+    // Now delete the merged PR and its branch. propagate=true so the merge (and
+    // the PR's removal) reaches peers via the mirror.
+    deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
+                             /*propagate=*/true);
+}
+
+// Shared worker: delete the PR record (optionally scrubbing its diff from
+// history) on a background thread, then best-effort remove its local head branch
+// and reload the lists on the main thread. The plain delete just drops the PR
+// folder (and the branch ref) and is fast; only the opt-in history rewrite
+// (filter-branch + gc + reflog expire) is slow enough to need a worker — either
+// way deletePull only touches git (no event signing) so a copied store is safe.
+void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
+                                          bool haveBranch, bool rewriteHistory,
+                                          bool propagate)
+{
+    const int deleted = number;
     const QString dir = repoGitDir();
     const bool haveWorkTree = repoHasWorkingTree();
     m_pullDeleteInProgress = true;
@@ -17664,8 +17750,8 @@ void MainWindow::deleteCurrentPullAndBranch()
             *error = err;
         });
     connect(worker, &QThread::finished, this,
-            [this, worker, ok, error, deleted, head, haveBranch, dir,
-             haveWorkTree]() {
+            [this, worker, ok, error, deleted, head, haveBranch, dir, haveWorkTree,
+             propagate]() {
                 m_pullDeleteInProgress = false;
                 QApplication::restoreOverrideCursor();
                 setPullDeleteButtonsEnabled(true);
@@ -17707,6 +17793,8 @@ void MainWindow::deleteCurrentPullAndBranch()
                         QStringLiteral("Deleted pull request #%1.").arg(deleted));
                 else
                     setRepoDetailNotice(branchErrorNotice, true);
+                if (propagate)
+                    propagateRepoUpdate(m_repoDetailIndex);
                 worker->deleteLater();
             });
     worker->start();
