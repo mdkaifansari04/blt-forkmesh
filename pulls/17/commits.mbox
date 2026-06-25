@@ -1,0 +1,40 @@
+From 4be2ac7bcb312f33c2138e8b99cb212cef187c33 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 21:55:59 +0530
+Subject: [PATCH] fix: normalize window log output
+
+(cherry picked from commit 1243de6335f631b72d33f16c1dcd5656dfa894dd)
+---
+ qt_client/src/MainWindow.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5fc59af..2894f11 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -20017,7 +20017,9 @@ void MainWindow::nodeSwitchStep(const QString &what)
+     if (!m_nodeSwitching && !m_repoLoadActive)
+         return;
+     showLoadStatus(what);
+-    logSystem(QStringLiteral("  • ") + what);
++    QString plain = what;
++    plain.replace(QChar(0x2026), QStringLiteral("..."));
++    logSystem(QStringLiteral("  - ") + plain);
+     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+ }
+ 
+@@ -25281,7 +25283,10 @@ void MainWindow::logSystem(const QString &text)
+ {
+     const QString time =
+         QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+-    const QString line = time + "  " + text;
++    QString plain = text;
++    plain.replace(QChar(0x2014), QLatin1Char('-'));
++    plain.replace(QChar(0x2026), QStringLiteral("..."));
++    const QString line = time + "  " + plain;
+     m_networkLog.append(line);
+     while (m_networkLog.size() > kNetworkLogLimit)
+         m_networkLog.removeFirst();
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,27 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5fc59af..2894f11 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -20017,7 +20017,9 @@ void MainWindow::nodeSwitchStep(const QString &what)
+     if (!m_nodeSwitching && !m_repoLoadActive)
+         return;
+     showLoadStatus(what);
+-    logSystem(QStringLiteral("  • ") + what);
++    QString plain = what;
++    plain.replace(QChar(0x2026), QStringLiteral("..."));
++    logSystem(QStringLiteral("  - ") + plain);
+     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+ }
+ 
+@@ -25281,7 +25283,10 @@ void MainWindow::logSystem(const QString &text)
+ {
+     const QString time =
+         QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+-    const QString line = time + "  " + text;
++    QString plain = text;
++    plain.replace(QChar(0x2014), QLatin1Char('-'));
++    plain.replace(QChar(0x2026), QStringLiteral("..."));
++    const QString line = time + "  " + plain;
+     m_networkLog.append(line);
+     while (m_networkLog.size() > kNetworkLogLimit)
+         m_networkLog.removeFirst();
