@@ -466,6 +466,7 @@ private:
     void postIssueLinkComment(int issueNumber, const QString &body);
     void postPullLinkComment(int pullNumber, const QString &body);
     void closeCurrentPull();
+    void reopenCurrentPull();
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
     void syncPullsInbox();
@@ -1583,6 +1584,7 @@ private:
     QPushButton *m_pullFixOpenAiButton = nullptr; // AI-resolve conflicts via OpenAI
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
+    QPushButton *m_pullReopenButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     bool m_pullDeleteConfirmPending = false;

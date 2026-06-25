@@ -12203,13 +12203,14 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFixOpenAiButton = new QPushButton("Fix with OpenAI");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
+    m_pullReopenButton = new QPushButton("Reopen");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixClaudeButton, m_pullFixOpenAiButton,
-                           m_pullEditFileButton, m_pullCloseButton, m_pullDeleteButton,
+                           m_pullEditFileButton, m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullLinkIssueButton,
                            m_pullSplitButton}) {
         b->setObjectName("ghostButton");
@@ -12239,6 +12240,9 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
             &MainWindow::linkIssueToPullFromPullPage);
     setOcticon(m_pullCloseButton, "circle-slash", 16);
+    setOcticon(m_pullReopenButton, "issue-reopened", 16);
+    m_pullReopenButton->setToolTip("Reopen this pull request");
+    m_pullReopenButton->hide(); // only shown when the PR is closed
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -12283,6 +12287,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullFixOpenAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -12611,6 +12616,7 @@ QWidget *MainWindow::buildPullsTab()
             this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
+    connect(m_pullReopenButton, &QPushButton::clicked, this, &MainWindow::reopenCurrentPull);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
     connect(m_pullDeleteBranchButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullAndBranch);
@@ -13468,9 +13474,13 @@ void MainWindow::updatePullActionState()
     const bool writable = store.canWrite();
     const bool have = m_currentPullNumber >= 0;
     bool open = false;
-    for (const PullRequest &pr : m_currentPulls)
-        if (pr.number == m_currentPullNumber)
-            open = pr.status == "open";
+    bool closed = false;
+    for (const PullRequest &pr : m_currentPulls) {
+        if (pr.number == m_currentPullNumber) {
+            open   = pr.status == "open";
+            closed = pr.status == "closed";
+        }
+    }
     const bool mergeable = writable && have && open;
     bool behind = false;
     if (mergeable)
@@ -13561,6 +13571,10 @@ void MainWindow::updatePullActionState()
                                          m_pullFiles->currentItem());
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
+    if (m_pullReopenButton) {
+        m_pullReopenButton->setVisible(writable && have && closed);
+        m_pullReopenButton->setEnabled(writable && have && closed);
+    }
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
     if (m_pullDeleteBranchButton)
@@ -15219,6 +15233,17 @@ void MainWindow::closeCurrentPull()
     QString error;
     if (!store.setStatus(m_currentPullNumber, "closed", &error))
         QMessageBox::warning(this, "Close pull request", error);
+    reloadPulls();
+}
+
+void MainWindow::reopenCurrentPull()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    PullStore store = pullStoreForCurrentRepo();
+    QString error;
+    if (!store.setStatus(m_currentPullNumber, "open", &error))
+        QMessageBox::warning(this, "Reopen pull request", error);
     reloadPulls();
 }
 
