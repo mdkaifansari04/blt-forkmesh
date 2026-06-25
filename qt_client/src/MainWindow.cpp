@@ -10532,6 +10532,19 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitDeleteButton, &QPushButton::clicked, this,
             [this] { deleteCommit(m_currentCommitHash); });
 
+    // Undo the shown commit without rewriting history: record a new commit that
+    // reverses its changes (git revert). Like delete, needs a working tree to
+    // commit into; showCommit keeps the enabled state in sync.
+    m_commitRevertButton = new QPushButton("Restore commit");
+    m_commitRevertButton->setObjectName("ghostButton");
+    m_commitRevertButton->setCursor(Qt::PointingHandCursor);
+    m_commitRevertButton->setToolTip(
+        "Undo this commit by committing the reverse of its changes (history is "
+        "kept)");
+    setOcticon(m_commitRevertButton, "history", 16);
+    connect(m_commitRevertButton, &QPushButton::clicked, this,
+            [this] { revertCommit(m_currentCommitHash); });
+
     // Switch between unified and side-by-side (split) diff rendering. The choice
     // is a shared, persisted preference (see diffSplitPref) used by both the
     // commit and pull-request diff views.
@@ -10563,6 +10576,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->addWidget(m_commitSplitButton);
     prevNextRow->addWidget(m_commitDownloadButton);
     prevNextRow->addWidget(m_commitDeleteButton);
+    prevNextRow->addWidget(m_commitRevertButton);
     prevNextRow->addWidget(m_commitPrevButton);
     prevNextRow->addWidget(m_commitNextButton);
     navCol->addLayout(prevNextRow);
@@ -20771,6 +20785,88 @@ void MainWindow::deleteCommit(const QString &hash)
     updateRepoPushButton();
 }
 
+// Undo a commit by recording its inverse as a brand-new commit on top of the
+// branch (git revert). Unlike deleteCommit this keeps history intact, so it's
+// the safe way to back out a change that's already been published. Owner-only
+// (it writes a commit into the working copy); the branch then diverges from the
+// served mirror until the next publish, so we refresh the publish button after.
+void MainWindow::revertCommit(const QString &hash)
+{
+    if (hash.isEmpty() || !repoHasWorkingTree())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    const QString branch = currentRef();
+
+    // Short hash + subject for a recognisable confirmation prompt.
+    QByteArray subjOut;
+    runGitCapture(dir, {"log", "-1", "--format=%h %s", hash}, &subjOut, nullptr);
+    const QString label = QString::fromUtf8(subjOut).trimmed();
+
+    if (QMessageBox::question(
+            this, "Restore commit",
+            QStringLiteral(
+                "Undo commit \"%1\"?\n\n"
+                "This adds a new commit to %2 that reverses its changes. History "
+                "is kept, so the original commit stays in the log — you'll need to "
+                "publish again to update the network mirror.")
+                .arg(label.isEmpty() ? hash.left(8) : label, branch),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    // A merge commit has two parents, so git can't tell which side to reverse
+    // without an explicit mainline; refuse rather than guess.
+    QByteArray parentsOut;
+    if (!runGitCapture(dir, {"rev-list", "--parents", "-n", "1", hash},
+                       &parentsOut, nullptr)) {
+        setRepoDetailNotice("Could not inspect that commit.", true);
+        return;
+    }
+    // rev-list --parents prints "<commit> <parent1> <parent2>..."; trailing
+    // fields beyond the first are parents.
+    const QStringList fields = QString::fromUtf8(parentsOut).trimmed().split(
+        QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (fields.size() > 2) {
+        setRepoDetailNotice(
+            "Can't revert a merge commit this way (it has two parents).", true);
+        return;
+    }
+
+    // Record the inverse commit. --no-edit takes git's default "Revert \"...\""
+    // message instead of opening an editor. A conflict (a later commit touched
+    // the same lines) leaves a revert in progress: abort it so the working tree
+    // is restored, then surface why. A failure with nothing in progress is a
+    // pre-flight refusal — most often a dirty working tree.
+    QString err;
+    if (!runGitCapture(dir, {"revert", "--no-edit", hash}, nullptr, &err)) {
+        if (QFileInfo::exists(dir + QStringLiteral("/.git/REVERT_HEAD")) ||
+            QFileInfo::exists(dir + QStringLiteral("/.git/sequencer"))) {
+            runGitCapture(dir, {"revert", "--abort"}, nullptr, nullptr);
+            setRepoDetailNotice(
+                "Couldn't revert cleanly — a later commit changed the same lines. "
+                "History was left unchanged.",
+                true);
+        } else {
+            setRepoDetailNotice(
+                err.trimmed().isEmpty()
+                    ? "Could not revert the commit. Make sure the working tree is "
+                      "clean and try again."
+                    : err.trimmed(),
+                true);
+        }
+        return;
+    }
+
+    logSystem(QStringLiteral("Git: reverted commit %1 on %2 with a new commit.")
+                  .arg(hash.left(8), branch));
+    setRepoDetailNotice(
+        QStringLiteral("Reverted commit %1 — added a commit that undoes it.")
+            .arg(hash.left(8)));
+    loadCommits();
+    updateRepoPushButton();
+}
+
 void MainWindow::showCommitsBanner(const QString &html)
 {
     if (!m_commitsUnsyncedBanner)
@@ -21732,18 +21828,31 @@ void MainWindow::showCommit(const QString &hash)
         m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
         m_commitDownloadButton->setEnabled(true);
-    if (m_commitDeleteButton) {
-        // History rewrites only make sense where this node owns the working tree;
-        // browse-only mirrors show the button disabled (matching the list rows).
+    if (m_commitDeleteButton || m_commitRevertButton) {
+        // History rewrites and revert commits only make sense where this node owns
+        // the working tree; browse-only mirrors show the buttons disabled (matching
+        // the list rows).
         const bool writable = repoHasWorkingTree();
-        m_commitDeleteButton->setEnabled(writable);
-        m_commitDeleteButton->setToolTip(
-            writable ? QStringLiteral(
-                           "Remove this commit from history (rewrites the branch and "
-                           "replays the later commits onto its parent)")
-                     : QStringLiteral(
-                           "Read-only mirror \xE2\x80\x94 no working tree to rewrite "
-                           "history in"));
+        if (m_commitDeleteButton) {
+            m_commitDeleteButton->setEnabled(writable);
+            m_commitDeleteButton->setToolTip(
+                writable ? QStringLiteral(
+                               "Remove this commit from history (rewrites the branch "
+                               "and replays the later commits onto its parent)")
+                         : QStringLiteral(
+                               "Read-only mirror \xE2\x80\x94 no working tree to "
+                               "rewrite history in"));
+        }
+        if (m_commitRevertButton) {
+            m_commitRevertButton->setEnabled(writable);
+            m_commitRevertButton->setToolTip(
+                writable ? QStringLiteral(
+                               "Undo this commit by committing the reverse of its "
+                               "changes (history is kept)")
+                         : QStringLiteral(
+                               "Read-only mirror \xE2\x80\x94 no working tree to "
+                               "commit a revert into"));
+        }
     }
     QByteArray patchRaw;
     runGitCapture(dir, {"diff", "-M", base, full.isEmpty() ? hash : full},

@@ -362,6 +362,9 @@ private:
     // Remove a commit from the browsed branch's history (source-of-truth only),
     // replaying its descendants onto its parent. Rewrites local history.
     void deleteCommit(const QString &hash);
+    // Undo a commit by recording a new commit that reverses its changes
+    // (git revert). Keeps history intact, unlike deleteCommit. Owner-only.
+    void revertCommit(const QString &hash);
     // In-flow banner above the commit table flagging unsynced commits: reveal
     // it, or fade it out (collapsing its row) when everything has synced.
     void showCommitsBanner(const QString &html);
@@ -1494,6 +1497,7 @@ private:
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
     QPushButton *m_commitDeleteButton = nullptr; // drop this commit from history
+    QPushButton *m_commitRevertButton = nullptr; // commit the inverse of this one
     QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
