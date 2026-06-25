@@ -862,6 +862,39 @@ bool agentIsClaudeProvider(const QString &provider)
     return provider.startsWith(QLatin1String("claude"));
 }
 
+// User's preferred default agent (Settings → Agents). One of the canonical
+// provider ids "openai", "claude-api" or "claude-code"; the quick-add and
+// issue-detail provider pickers start on this value. Falls back to OpenAI API
+// for an unset/unknown stored value.
+const QString kDefaultAgentProviderSetting =
+    QStringLiteral("agents/defaultProvider");
+const QString kFallbackAgentProvider = QStringLiteral("openai");
+
+QString defaultAgentProvider()
+{
+    const QString value =
+        QSettings()
+            .value(kDefaultAgentProviderSetting, kFallbackAgentProvider)
+            .toString()
+            .trimmed();
+    if (value == QLatin1String("openai") ||
+        value == QLatin1String("claude-api") ||
+        value == QLatin1String("claude-code"))
+        return value;
+    return kFallbackAgentProvider;
+}
+
+// Point a provider QComboBox (built with the openai/claude-api/claude-code item
+// data) at the user's saved default agent, falling back to the first item when
+// the stored value isn't present.
+void selectDefaultAgentProvider(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    const int index = combo->findData(defaultAgentProvider());
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
 // ANTHROPIC_API_KEY, so no `claude` binary is required.
@@ -4036,33 +4069,6 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
-int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
-                                       const QString &localPath)
-{
-    RepositoryRecord repo;
-    repo.owner = owner;
-    repo.name = name;
-    repo.localPath = localPath;
-    repo.publishToNetwork = false;
-    m_repositories.append(repo);
-    return m_repositories.size() - 1;
-}
-
-bool MainWindow::testOpenRepository(int index)
-{
-    if (index < 0 || index >= m_repositories.size())
-        return false;
-    openRepoDetail(index);
-    updateRepoSwitcher();
-    return m_repoDetailIndex == index;
-}
-
-bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
-                                           const QString &website)
-{
-    return saveRepoAboutMetadata(about, website);
-}
-
 int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
                                            const QString &mirrorPath)
 {
@@ -6109,6 +6115,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
                                      QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
@@ -9941,6 +9948,7 @@ QWidget *MainWindow::buildIssuesSection()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_issueAgentProvider->addItem(QStringLiteral("Claude Code"),
                                   QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(m_issueAgentProvider);
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
@@ -34164,6 +34172,29 @@ QWidget *MainWindow::buildSettingsSection()
     agentsHint->setObjectName("statusLine");
     agentsHint->setWordWrap(true);
 
+    // Default agent: which provider the quick-add bar and issue-detail "Assign
+    // agent" picker start on. Stored as the canonical provider id so the pickers
+    // (built elsewhere) can seed themselves via selectDefaultAgentProvider().
+    m_defaultAgentProviderCombo = new QComboBox;
+    m_defaultAgentProviderCombo->addItem(QStringLiteral("OpenAI API"),
+                                         QStringLiteral("openai"));
+    m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude API"),
+                                         QStringLiteral("claude-api"));
+    m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude Code"),
+                                         QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(m_defaultAgentProviderCombo);
+    m_defaultAgentProviderCombo->setToolTip(
+        "Provider pre-selected when you assign a coding agent to an issue.");
+    connect(m_defaultAgentProviderCombo, &QComboBox::currentIndexChanged, this,
+            [this] {
+                const QString provider =
+                    m_defaultAgentProviderCombo->currentData().toString();
+                QSettings().setValue(kDefaultAgentProviderSetting, provider);
+                // Keep the live pickers in step with the new default.
+                selectDefaultAgentProvider(m_quickAddAgentProvider);
+                selectDefaultAgentProvider(m_issueAgentProvider);
+            });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -34248,6 +34279,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *agentForm = new QFormLayout;
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
+    agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
