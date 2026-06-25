@@ -40,4 +40,3 @@ Verification:
 - `cd cloudflare_worker && python3 -m py_compile src/entry.py` passed.
 - `cd qt_client && ./run.sh test` passed.
 - Signed with updated PullStore-compatible 5-field canonical string including commits mbox.
-
