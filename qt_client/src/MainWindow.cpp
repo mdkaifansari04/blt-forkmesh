@@ -4,6 +4,7 @@
 #include "ActionFile.h"
 #include "ActionRunner.h"
 #include "ClaudeAgentScript.h"
+#include "ClaudeIdeBridge.h"
 #include "CommitCommentStore.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -7422,21 +7423,13 @@ void MainWindow::updateRepoPushButton()
     reveal();
 }
 
-// sha256 over the canonical heads+tags advertisement of a bare mirror:
-// "<objectname> <refname>" lines for refs/heads/* and refs/tags/* only, sorted,
-// joined by '\n'. This MUST stay byte-for-byte identical to the worker's
+// Canonicalize and hash the stdout of `git for-each-ref
+// --format=%(objectname) %(refname) refs/heads/ refs/tags/` into the sha256 the
+// relay pins. This MUST stay byte-for-byte identical to the worker's
 // advertised_refs_canonical() so the relay's integrity pin matches what we sign
 // (the worker rejects every clone whose live refs don't hash to the pin).
-QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
+static QString hashForEachRefOutput(const QByteArray &out)
 {
-    if (mirrorPath.trimmed().isEmpty())
-        return QString();
-    QByteArray out;
-    if (!runGitCapture(mirrorPath,
-                       {"for-each-ref", "--format=%(objectname) %(refname)",
-                        "refs/heads/", "refs/tags/"},
-                       &out, nullptr))
-        return QString();
     QStringList lines;
     const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
     for (const QString &raw : rows) {
@@ -7450,6 +7443,22 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
         QCryptographicHash::hash(lines.join('\n').toUtf8(),
                                  QCryptographicHash::Sha256)
             .toHex());
+}
+
+// sha256 over the canonical heads+tags advertisement of a bare mirror (see
+// hashForEachRefOutput). Synchronous; refreshRepoPinBanner runs the same git
+// command asynchronously to avoid blocking the UI thread.
+QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
+{
+    if (mirrorPath.trimmed().isEmpty())
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(mirrorPath,
+                       {"for-each-ref", "--format=%(objectname) %(refname)",
+                        "refs/heads/", "refs/tags/"},
+                       &out, nullptr))
+        return QString();
+    return hashForEachRefOutput(out);
 }
 
 // Surface the relay's tamper/rollback gate to the owner: when the pinned
@@ -7481,45 +7490,78 @@ void MainWindow::refreshRepoPinBanner()
     // to see (see loadMirrorNodesPanel), not the mirror's.
     if (!repoHasWorkingTree())
         return;
-    const QString localHash = mirrorStateHash(repo.mirrorPath);
-    if (localHash.isEmpty())
-        return;
 
     const int index = m_repoDetailIndex;
     const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString mirrorPath = repo.mirrorPath;
     m_repoPinCheckIndex = index;
 
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(catalogListUrl()));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, index, owner, name, localHash] {
-                reply->deleteLater();
-                // The user may have switched repos while this was in flight.
+    // Hash the live refs off the UI thread. `git for-each-ref` shells out and can
+    // stall on a large or busy mirror, and this fires every time a repo detail
+    // opens (and after every sync/reset); doing it synchronously froze the window.
+    // Drive the subprocess through the event loop, then compare against the relay's
+    // pin with the same async catalog fetch as before.
+    QProcess *git = new QProcess(this);
+    connect(git, &QProcess::errorOccurred, this,
+            [this, git, index](QProcess::ProcessError e) {
+                // Only FailedToStart skips finished(); every other error still
+                // emits finished(), which owns the cleanup below.
+                if (e != QProcess::FailedToStart)
+                    return;
+                git->deleteLater();
+                if (m_repoPinCheckIndex == index)
+                    m_repoPinCheckIndex = -1;
+            });
+    connect(git, &QProcess::finished, this,
+            [this, git, index, owner, name](int code, QProcess::ExitStatus status) {
+                git->deleteLater();
+                // The user may have switched repos while git was running.
                 if (!m_topMessage || m_repoPinCheckIndex != index ||
                     m_repoDetailIndex != index)
                     return;
-                const QJsonArray repos =
-                    QJsonDocument::fromJson(reply->readAll())
-                        .object()
-                        .value("repositories")
-                        .toArray();
-                QString pinned;
-                bool found = false;
-                for (const QJsonValue &v : repos) {
-                    const QJsonObject o = v.toObject();
-                    if (o.value("owner").toString() == owner &&
-                        o.value("name").toString() == name) {
-                        pinned = o.value("stateHash").toString();
-                        found = true;
-                        break;
-                    }
-                }
-                // Only a non-empty pin that disagrees with our live refs blocks
-                // clones. An absent pin fails open on the relay (nothing to fix),
-                // and a matching pin is healthy.
-                if (found && !pinned.isEmpty() && pinned != localHash)
-                    showPinWarning();
+                if (status != QProcess::NormalExit || code != 0)
+                    return;
+                const QString localHash =
+                    hashForEachRefOutput(git->readAllStandardOutput());
+                if (localHash.isEmpty())
+                    return;
+
+                QNetworkReply *reply =
+                    m_networkAccess->get(QNetworkRequest(catalogListUrl()));
+                connect(reply, &QNetworkReply::finished, this,
+                        [this, reply, index, owner, name, localHash] {
+                            reply->deleteLater();
+                            // The user may have switched repos in flight.
+                            if (!m_topMessage || m_repoPinCheckIndex != index ||
+                                m_repoDetailIndex != index)
+                                return;
+                            const QJsonArray repos =
+                                QJsonDocument::fromJson(reply->readAll())
+                                    .object()
+                                    .value("repositories")
+                                    .toArray();
+                            QString pinned;
+                            bool found = false;
+                            for (const QJsonValue &v : repos) {
+                                const QJsonObject o = v.toObject();
+                                if (o.value("owner").toString() == owner &&
+                                    o.value("name").toString() == name) {
+                                    pinned = o.value("stateHash").toString();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            // Only a non-empty pin that disagrees with our live
+                            // refs blocks clones. An absent pin fails open on the
+                            // relay (nothing to fix), a matching pin is healthy.
+                            if (found && !pinned.isEmpty() && pinned != localHash)
+                                showPinWarning();
+                        });
             });
+    git->start("git", QStringList{"-C", mirrorPath, "for-each-ref",
+                                  "--format=%(objectname) %(refname)",
+                                  "refs/heads/", "refs/tags/"});
 }
 
 // Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error
@@ -17690,6 +17732,88 @@ void MainWindow::processAgentQueue()
     reloadAgents();
 }
 
+// Lazily create the IDE bridge that lets the `claude` CLI talk back to the app
+// as if it were VS Code (issue #191). Parented to the window, so its destructor
+// removes the lockfile on shutdown.
+ClaudeIdeBridge *MainWindow::ensureIdeBridge()
+{
+    if (m_ideBridge)
+        return m_ideBridge;
+    m_ideBridge = new ClaudeIdeBridge(this);
+    connect(m_ideBridge, &ClaudeIdeBridge::openDiffRequested, this,
+            &MainWindow::onClaudeOpenDiff);
+    connect(m_ideBridge, &ClaudeIdeBridge::openFileRequested, this,
+            [this](const QString &path) {
+                flashMessage(QStringLiteral("Claude Code opened %1")
+                                 .arg(QFileInfo(path).fileName()));
+            });
+    connect(m_ideBridge, &ClaudeIdeBridge::clientConnected, this, [this] {
+        flashMessage(QStringLiteral("Claude Code connected to the in-app IDE"));
+    });
+    connect(m_ideBridge, &ClaudeIdeBridge::log, this, [this](const QString &line) {
+        if (m_terminalSessionId > 0 && m_agentStore) {
+            if (AgentSession *s = findAgentSession(m_terminalSessionId))
+                m_agentStore->appendLog(*s, line + QLatin1Char('\n'));
+        }
+    });
+    return m_ideBridge;
+}
+
+// Show Claude's proposed change as a side-by-side diff and report the user's
+// accept/reject decision back to the CLI. openDiff is a blocking tool: the CLI
+// waits on this reply, so resolveDiff() must be called exactly once.
+void MainWindow::onClaudeOpenDiff(const QString &tabName, const QString &oldPath,
+                                  const QString &newPath, const QString &newContents)
+{
+    if (!m_ideBridge)
+        return;
+    QString oldContents;
+    if (QFile f(oldPath); f.open(QIODevice::ReadOnly)) {
+        oldContents = QString::fromUtf8(f.readAll());
+        f.close();
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tabName.isEmpty()
+                           ? QStringLiteral("Claude Code: proposed change")
+                           : tabName);
+    dlg.resize(960, 640);
+    auto *layout = new QVBoxLayout(&dlg);
+    const QString shown = newPath.isEmpty() ? oldPath : newPath;
+    layout->addWidget(new QLabel(
+        QStringLiteral("Claude Code proposes changes to <b>%1</b>")
+            .arg(shown.toHtmlEscaped()),
+        &dlg));
+
+    auto *split = new QSplitter(Qt::Horizontal, &dlg);
+    auto makePane = [&](const QString &title, const QString &text) {
+        auto *box = new QWidget(split);
+        auto *v = new QVBoxLayout(box);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->addWidget(new QLabel(title, box));
+        auto *edit = new QPlainTextEdit(box);
+        edit->setReadOnly(true);
+        edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+        edit->setPlainText(text);
+        edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        v->addWidget(edit);
+        return box;
+    };
+    split->addWidget(makePane(QStringLiteral("Current (on disk)"), oldContents));
+    split->addWidget(makePane(QStringLiteral("Proposed by Claude"), newContents));
+    layout->addWidget(split, 1);
+
+    auto *buttons = new QDialogButtonBox(&dlg);
+    buttons->addButton(QStringLiteral("Accept"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(QStringLiteral("Reject"), QDialogButtonBox::RejectRole);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    const bool accepted = dlg.exec() == QDialog::Accepted;
+    m_ideBridge->resolveDiff(tabName, accepted, newContents);
+}
+
 // Run Claude Code interactively in the built-in terminal on the agent detail
 // screen, working in the repo checkout. The session already exists (created by
 // assignIssueToAgent); here we just launch it and show the terminal.
@@ -17741,6 +17865,15 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     // ANTHROPIC_API_KEY inherited from the shell too; an entry without '=' tells
     // the terminal to unset the variable in the child.
     env << QStringLiteral("ANTHROPIC_API_KEY");
+
+    // Make ForkMesh act as the IDE this CLI connects to (issue #191): start the
+    // localhost bridge for this checkout and inject the discovery env vars so
+    // `claude` auto-connects (in-app diffs, selection, open-file context). The
+    // user can also trigger it from the CLI with /ide.
+    if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+        if (bridge->start(repoPath))
+            env << bridge->env();
+    }
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
