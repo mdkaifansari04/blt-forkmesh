@@ -15312,38 +15312,78 @@ void MainWindow::deleteCurrentPullAndBranch()
                              QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
         return;
 
-    PullStore store = pullStoreForCurrentRepo();
-    QString error;
-    if (!store.deletePull(m_currentPullNumber, &error)) {
-        QMessageBox::warning(this, "Delete pull request",
-                             error.isEmpty() ? "Could not delete the pull request."
-                                             : error);
-        return;
-    }
+    // deletePull rewrites all of git history (filter-branch + gc + reflog expire)
+    // so the diff text the PR carried can no longer be recovered — slow enough to
+    // freeze the UI for many seconds if run inline. Shell it out to a worker
+    // thread (deletePull only touches git, no event signing, so a copied store is
+    // safe) and report back on the main thread. The branch removal and list
+    // reloads are cheap and stay on the main thread in the finished handler.
     const int deleted = m_currentPullNumber;
-    m_currentPullNumber = -1;
+    const QString dir = repoGitDir();
+    const bool haveWorkTree = repoHasWorkingTree();
+    setRepoDetailNotice(
+        QStringLiteral("Deleting pull request #%1 and rewriting history… this can "
+                       "take a while.")
+            .arg(deleted));
+    if (m_pullDeleteBranchButton)
+        m_pullDeleteBranchButton->setEnabled(false);
+    QApplication::setOverrideCursor(Qt::BusyCursor);
 
-    // Best-effort branch removal; -D force-deletes since the user confirmed and
-    // the PR carrying the work is gone. A missing branch is not an error here.
-    if (haveBranch && repoHasWorkingTree()) {
-        const QString dir = repoGitDir();
-        QString branchErr;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"branch", "-D", head}, nullptr, &branchErr)) {
-            logSystem(QStringLiteral("Git: deleted branch %1 for PR #%2.")
-                          .arg(head)
-                          .arg(deleted));
-            loadBranchesAndTags();
-        } else if (!branchErr.trimmed().isEmpty()) {
-            setRepoDetailNotice(
-                QStringLiteral("Deleted PR #%1, but its branch could not be "
-                               "removed: %2")
-                    .arg(deleted)
-                    .arg(branchErr.trimmed()),
-                true);
-        }
-    }
-    reloadPulls();
+    PullStore store = pullStoreForCurrentRepo();
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    QThread *worker = QThread::create([store, deleted, ok, error]() mutable {
+        QString err;
+        *ok = store.deletePull(deleted, &err);
+        *error = err;
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, ok, error, deleted, head, haveBranch, dir,
+             haveWorkTree]() {
+                QApplication::restoreOverrideCursor();
+                if (m_pullDeleteBranchButton)
+                    m_pullDeleteBranchButton->setEnabled(true);
+                if (!*ok) {
+                    QMessageBox::warning(
+                        this, "Delete pull request",
+                        error->isEmpty()
+                            ? QStringLiteral("Could not delete the pull request.")
+                            : *error);
+                    worker->deleteLater();
+                    return;
+                }
+                if (m_currentPullNumber == deleted)
+                    m_currentPullNumber = -1;
+
+                // Best-effort branch removal; -D force-deletes since the user
+                // confirmed and the PR carrying the work is gone. A missing branch
+                // is not an error here.
+                QString branchErrorNotice;
+                if (haveBranch && haveWorkTree && !dir.isEmpty()) {
+                    QString branchErr;
+                    if (runGitCapture(dir, {"branch", "-D", head}, nullptr,
+                                      &branchErr)) {
+                        logSystem(QStringLiteral("Git: deleted branch %1 for PR #%2.")
+                                      .arg(head)
+                                      .arg(deleted));
+                        loadBranchesAndTags();
+                    } else if (!branchErr.trimmed().isEmpty()) {
+                        branchErrorNotice =
+                            QStringLiteral("Deleted PR #%1, but its branch could not "
+                                           "be removed: %2")
+                                .arg(deleted)
+                                .arg(branchErr.trimmed());
+                    }
+                }
+                reloadPulls();
+                if (branchErrorNotice.isEmpty())
+                    setRepoDetailNotice(
+                        QStringLiteral("Deleted pull request #%1.").arg(deleted));
+                else
+                    setRepoDetailNotice(branchErrorNotice, true);
+                worker->deleteLater();
+            });
+    worker->start();
 }
 
 QUrl MainWindow::pullsApiUrl(const RepositoryRecord &repo) const
