@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 193
-title: make a chekcbox in settings to auto push new issues (if clean)
+title: make a chekcbox in settings to auto sync  new issues (if clean)
 status: open
 labels: []
 milestone: 
