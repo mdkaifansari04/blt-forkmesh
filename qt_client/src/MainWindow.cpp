@@ -12242,7 +12242,7 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
-    m_pullReopenButton->hide(); // only shown when the PR is closed
+    m_pullReopenButton->hide(); // only shown when the PR is closed or merged
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -13475,10 +13475,12 @@ void MainWindow::updatePullActionState()
     const bool have = m_currentPullNumber >= 0;
     bool open = false;
     bool closed = false;
+    bool merged = false;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
             closed = pr.status == "closed";
+            merged = pr.status == "merged";
         }
     }
     const bool mergeable = writable && have && open;
@@ -13572,8 +13574,8 @@ void MainWindow::updatePullActionState()
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
     if (m_pullReopenButton) {
-        m_pullReopenButton->setVisible(writable && have && closed);
-        m_pullReopenButton->setEnabled(writable && have && closed);
+        m_pullReopenButton->setVisible(writable && have && (closed || merged));
+        m_pullReopenButton->setEnabled(writable && have && (closed || merged));
     }
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
