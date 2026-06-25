@@ -595,6 +595,26 @@ def repo_mirror_same_group(target, record):
     return bool(tname) and tname == rname
 
 
+def mirroring_owner_set(records):
+    # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
+    # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one
+    # owner hosts (a single repo with no mirror elsewhere) don't qualify their
+    # owner. Grouping reuses repo_mirror_group_key (root commit, name fallback)
+    # so two nodes serving the same logical repo land in one group. Used to keep
+    # nodes that mirror nothing for anyone out of the donation split (issue #94).
+    groups = {}
+    for rec in records or []:
+        owner = str((rec or {}).get("owner") or "").strip()
+        if not owner:
+            continue
+        groups.setdefault(repo_mirror_group_key(rec), set()).add(owner.lower())
+    owners = set()
+    for members in groups.values():
+        if len(members) > 1:
+            owners |= members
+    return owners
+
+
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
 ):
@@ -779,6 +799,7 @@ async def _network_payout_nodes(env):
              ORDER BY COALESCE(ap.ts, 0) DESC, a.name ASC""",
         cutoff,
     )
+    mirroring = await _mirroring_owners(env)
     nodes = []
     seen_wallets = set()
     for row in rows:
@@ -789,7 +810,11 @@ async def _network_payout_nodes(env):
         wallet = (rec.get("solana") or "").strip()
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
-        eligible = bool(online and has_wallet and wallet not in seen_wallets)
+        first_wallet = has_wallet and wallet not in seen_wallets
+        # A node only shares the split if it mirrors a repo for another node, so
+        # its eligibility on /network/ must reflect that too (issue #94).
+        mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
+        eligible = bool(online and first_wallet and mirrors_repo)
         balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
         if has_wallet:
             seen_wallets.add(wallet)
@@ -798,8 +823,10 @@ async def _network_payout_nodes(env):
             reason = "offline"
         elif not has_wallet:
             reason = "missing_wallet"
-        elif not eligible:
+        elif not first_wallet:
             reason = "duplicate_wallet"
+        elif not mirrors_repo:
+            reason = "no_mirrors"
         nodes.append({
             "name": name or _short_presence_label("node", row.get("name_bi")),
             "wallet": wallet if has_wallet else "",
@@ -1524,8 +1551,9 @@ DONATION_ADDRESS_DELETE_GRACE_MS = 60 * 60 * 1000
 # from signup confirmation now that signup payments go directly to treasury.
 TREASURY_SPLIT_NUMERATOR = 1
 TREASURY_SPLIT_DENOMINATOR = 2
-# The reward split is over every online node with a payout wallet, not just the
-# first batch returned by the presence table.
+# The node half is split over every online node with a payout wallet that
+# actually mirrors a repo for another node (issue #94) — single-repo-only nodes
+# add no redundancy, so they don't share the pool. See _mirroring_owners.
 SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
@@ -3269,14 +3297,38 @@ async def _account_heartbeat(env, request):
     return json_response(response)
 
 
+async def _mirroring_owners(env):
+    # Set of owner names that actually mirror a repo for another node, used to
+    # keep single-repo-only nodes out of the donation split (issue #94). Best
+    # effort: on any read error return None so callers keep their prior behaviour
+    # (fail open) rather than starving every node of its share.
+    try:
+        rows = await d1_all(
+            env, "SELECT data FROM repositories WHERE is_private = 0")
+    except Exception:
+        return None
+    records = []
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+            continue
+        records.append(rec)
+    return mirroring_owner_set(records)
+
+
 async def _online_payout_addresses(env):
-    # Deduplicated payout addresses of currently-online, active accounts. Stale
-    # presence rows self-heal here so the table stays bounded.
+    # Deduplicated payout addresses of currently-online, active accounts that
+    # actually mirror a repo for another node. A node hosting only its own
+    # un-mirrored repos adds no redundancy, so it is left out of the split
+    # (issue #94). Stale presence rows self-heal here so the table stays bounded.
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
         await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
     except Exception:
         pass
+    mirroring = await _mirroring_owners(env)
     rows = await d1_all(
         env, "SELECT name_bi FROM account_presence WHERE ts >= ? ORDER BY ts DESC",
         cutoff,
@@ -3285,11 +3337,15 @@ async def _online_payout_addresses(env):
     addresses = []
     for r in rows:
         row = await d1_first(
-            env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+            env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
         if not rec or rec.get("status") != "active":
+            continue
+        owner = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+        # Only nodes that mirror a repo shared with another node earn a share.
+        if mirroring is not None and owner.lower() not in mirroring:
             continue
         solana = (rec.get("solana") or "").strip()
         if not solana or not SOLANA_RE.match(solana) or solana in seen:
