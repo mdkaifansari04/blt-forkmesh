@@ -1,0 +1,1980 @@
+diff --git a/cloudflare_worker/public/catalog.js b/cloudflare_worker/public/catalog.js
+index fc8ec85..5eb1626 100644
+--- a/cloudflare_worker/public/catalog.js
++++ b/cloudflare_worker/public/catalog.js
+@@ -654,11 +654,16 @@ const pullListEl = document.querySelector("#pull-list");
+ const pullsMetaEl = document.querySelector("#pulls-meta");
+ const tabDiscussionsEl = document.querySelector("#tab-discussions");
+ const discussionsSectionEl = document.querySelector("#discussions");
+-const tabNetworkEl = document.querySelector("#tab-network");
+-const repoNetworkSectionEl = document.querySelector("#repo-network");
++const tabMirrorsEl = document.querySelector("#tab-mirrors");
++const mirrorsSectionEl = document.querySelector("#repo-mirrors");
++const mirrorSummaryEl = document.querySelector("#mirror-summary");
++const mirrorListEl = document.querySelector("#mirror-list");
++const mirrorsMetaEl = document.querySelector("#mirrors-meta");
+ let pullsLoadedFor = null;
+ let pullsToken = 0;
+ let pullsCountToken = 0;
++let mirrorsLoadedFor = null;
++let mirrorsToken = 0;
+ 
+ // Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
+ function parseFrontmatter(content) {
+@@ -1130,7 +1135,7 @@ function showRepoTab(tab) {
+     issues: issuesSectionEl,
+     pulls: pullsSectionEl,
+     discussions: discussionsSectionEl,
+-    network: repoNetworkSectionEl,
++    mirrors: mirrorsSectionEl,
+   };
+   for (const [name, section] of Object.entries(sections)) {
+     if (section) section.hidden = name !== tab;
+@@ -1141,7 +1146,7 @@ function showRepoTab(tab) {
+     issues: tabIssuesEl,
+     pulls: tabPullsEl,
+     discussions: tabDiscussionsEl,
+-    network: tabNetworkEl,
++    mirrors: tabMirrorsEl,
+   };
+   for (const [name, button] of Object.entries(tabs)) {
+     if (button) button.classList.toggle("is-active", name === tab);
+@@ -1160,6 +1165,151 @@ function showRepoTab(tab) {
+     pullsLoadedFor = repoKey;
+     loadPulls(fileState.owner, fileState.name);
+   }
++  if (tab === "mirrors" && mirrorsLoadedFor !== repoKey) {
++    loadMirrors(fileState.owner, fileState.name);
++  }
++}
++
++function formatRelativeMs(value, empty = "not recent") {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n <= 0) return empty;
++  const diff = Math.max(0, Date.now() - n);
++  const sec = Math.floor(diff / 1000);
++  if (sec < 60) return sec <= 5 ? "now" : `${sec}s ago`;
++  const min = Math.floor(sec / 60);
++  if (min < 60) return `${min}m ago`;
++  const hours = Math.floor(min / 60);
++  if (hours < 48) return `${hours}h ago`;
++  return `${Math.floor(hours / 24)}d ago`;
++}
++
++function formatDurationMs(value, empty = "not synced") {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n < 0) return empty;
++  if (n < 60 * 1000) return "<1m";
++  const min = Math.floor(n / 60000);
++  if (min < 60) return `${min}m`;
++  const hours = Math.floor(min / 60);
++  if (hours < 48) return `${hours}h`;
++  return `${Math.floor(hours / 24)}d`;
++}
++
++function timestampTitle(value) {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n <= 0) return "";
++  return new Date(n).toLocaleString();
++}
++
++function mirrorSummaryItem(label, value) {
++  const item = document.createElement("div");
++  item.className = "mirror-summary-item";
++  const labelEl = document.createElement("span");
++  labelEl.textContent = label;
++  const valueEl = document.createElement("strong");
++  valueEl.textContent = value;
++  item.append(labelEl, valueEl);
++  return item;
++}
++
++function renderMirrorSummary(summary) {
++  if (!mirrorSummaryEl) return;
++  const mirrors = Number(summary && summary.mirrors) || 0;
++  const available = Number(summary && summary.cloneAvailable) || 0;
++  const hosted = summary && summary.longestHostedSince;
++  const data = Number(summary && summary.dataHostedBytes) || 0;
++  mirrorSummaryEl.replaceChildren(
++    mirrorSummaryItem("Mirror nodes", String(mirrors)),
++    mirrorSummaryItem("Clone availability", `${available} online`),
++    mirrorSummaryItem("Longest hosted", formatRelativeMs(hosted, "unknown")),
++    mirrorSummaryItem("Data hosted", formatSize(data))
++  );
++}
++
++function td(label, text) {
++  const cell = document.createElement("td");
++  cell.dataset.label = label;
++  cell.textContent = text;
++  return cell;
++}
++
++function mirrorStatusPill(mirror) {
++  const wrap = document.createElement("span");
++  wrap.className = "mirror-status-stack";
++  const pill = document.createElement("span");
++  pill.className = mirror.status === "online" ? "status-pill online" : "status-pill offline";
++  pill.replaceChildren(
++    document.createElement("span"),
++    document.createTextNode(mirror.status === "online" ? "Online" : "Offline")
++  );
++  wrap.append(pill);
++  if (mirror.behind) {
++    const behind = document.createElement("span");
++    behind.className = "status-pill behind";
++    behind.replaceChildren(
++      document.createElement("span"),
++      document.createTextNode("Behind")
++    );
++    wrap.append(behind);
++  }
++  return wrap;
++}
++
++function mirrorRow(mirror) {
++  const row = document.createElement("tr");
++  const node = document.createElement("td");
++  node.dataset.label = "Node";
++  const link = document.createElement("a");
++  link.href = repoRoute(mirror.owner, mirror.repo);
++  link.textContent = mirror.node || mirror.owner || "node";
++  link.addEventListener("click", (event) => routeCatalogClick(event, mirror.owner, mirror.repo));
++  node.append(link);
++  const status = document.createElement("td");
++  status.dataset.label = "Status";
++  status.append(mirrorStatusPill(mirror));
++  const seen = td("Last seen", formatRelativeMs(mirror.lastSeen));
++  seen.title = timestampTitle(mirror.lastSeen);
++  const hosted = td("Hosted since", formatRelativeMs(mirror.hostedSince, "unknown"));
++  hosted.title = timestampTitle(mirror.hostedSince);
++  const sync = td("Sync age", formatDurationMs(mirror.syncAgeMs));
++  if (mirror.behind) {
++    sync.classList.add("mirror-sync-behind");
++    sync.textContent = `${sync.textContent} behind`;
++  }
++  const clone = td("Clone available", mirror.cloneAvailable ? "Yes" : "No");
++  row.append(node, status, seen, hosted, sync, clone);
++  return row;
++}
++
++async function loadMirrors(owner, name) {
++  if (!mirrorListEl) return;
++  const token = ++mirrorsToken;
++  mirrorListEl.innerHTML = `<tr><td colspan="6">Loading mirror health...</td></tr>`;
++  if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();
++  if (mirrorsMetaEl) mirrorsMetaEl.textContent = "";
++  try {
++    const response = await fetch(
++      `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/mirrors`,
++      { headers: { accept: "application/json" } }
++    );
++    const data = await response.json();
++    if (token !== mirrorsToken) return;
++    if (!response.ok || !data.ok) throw new Error((data && data.error) || `HTTP ${response.status}`);
++    renderMirrorSummary(data.summary || {});
++    mirrorsLoadedFor = `${owner}/${name}`;
++    const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
++    if (mirrorsMetaEl) mirrorsMetaEl.textContent = `${mirrors.length} mirror${mirrors.length === 1 ? "" : "s"}`;
++    if (!mirrors.length) {
++      mirrorListEl.innerHTML = `<tr><td colspan="6">No mirror nodes are published for this repository yet.</td></tr>`;
++      return;
++    }
++    mirrorListEl.replaceChildren(...mirrors.map(mirrorRow));
++  } catch (error) {
++    if (token !== mirrorsToken) return;
++    mirrorsLoadedFor = "";
++    if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();
++    mirrorListEl.innerHTML = `<tr><td colspan="6">Mirror health is temporarily unavailable.</td></tr>`;
++    if (mirrorsMetaEl) mirrorsMetaEl.textContent = "unavailable";
++  }
+ }
+ 
+ if (tabCodeEl) tabCodeEl.addEventListener("click", () => showRepoTab("code"));
+@@ -1167,7 +1317,7 @@ if (tabCommitsEl) tabCommitsEl.addEventListener("click", () => showRepoTab("comm
+ if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues"));
+ if (tabPullsEl) tabPullsEl.addEventListener("click", () => showRepoTab("pulls"));
+ if (tabDiscussionsEl) tabDiscussionsEl.addEventListener("click", () => showRepoTab("discussions"));
+-if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("network"));
++if (tabMirrorsEl) tabMirrorsEl.addEventListener("click", () => showRepoTab("mirrors"));
+ 
+ // ---- Routing: home (repo list) vs. a single repository page ----------------
+ 
+@@ -1478,6 +1628,7 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
+   issuesLoadedFor = null;
+   commitsLoadedFor = null;
+   pullsLoadedFor = null;
++  mirrorsLoadedFor = null;
+   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
+   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
+   if (tabPullsCountEl) tabPullsCountEl.textContent = "";
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index 20fbf53..15d21d4 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -360,7 +360,7 @@
+                 >Discussions
+               </button>
+               <button
+-                id="tab-network"
++                id="tab-mirrors"
+                 class="repo-tab"
+                 type="button"
+                 role="tab"
+@@ -370,7 +370,7 @@
+                   <circle cx="6" cy="17" r="3"></circle>
+                   <circle cx="18" cy="17" r="3"></circle>
+                   <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path></svg
+-                >Network
++                >Mirrors
+               </button>
+             </nav>
+           </div>
+@@ -517,20 +517,35 @@
+               </div>
+             </section>
+ 
+-            <section id="repo-network" class="panel" hidden>
+-              <div class="empty-state">
+-                <svg viewBox="0 0 24 24">
+-                  <circle cx="12" cy="5" r="3"></circle>
+-                  <circle cx="6" cy="17" r="3"></circle>
+-                  <circle cx="18" cy="17" r="3"></circle>
+-                  <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path>
+-                </svg>
+-                <h2>Live host tunnel</h2>
+-                <p>
+-                  This repo is browsed and cloned through connected desktop
+-                  hosts. The relay coordinates; it does not store the Git
+-                  objects.
+-                </p>
++            <section id="repo-mirrors" class="panel" hidden aria-labelledby="mirrors-title">
++              <div class="panel-header">
++                <div>
++                  <h2 id="mirrors-title">Mirrors</h2>
++                  <p>
++                    Nodes currently advertising a mirror of this repository.
++                  </p>
++                </div>
++                <span id="mirrors-meta" class="file-meta"></span>
++              </div>
++              <div id="mirror-summary" class="mirror-summary-grid" aria-label="Mirror summary"></div>
++              <div class="mirror-table-wrap">
++                <table class="mirror-health-table">
++                  <thead>
++                    <tr>
++                      <th>Node</th>
++                      <th>Status</th>
++                      <th>Last seen</th>
++                      <th>Hosted since</th>
++                      <th>Sync age</th>
++                      <th>Clone available</th>
++                    </tr>
++                  </thead>
++                  <tbody id="mirror-list">
++                    <tr>
++                      <td colspan="6">Open the tab to load mirror health.</td>
++                    </tr>
++                  </tbody>
++                </table>
+               </div>
+             </section>
+ 
+diff --git a/cloudflare_worker/public/styles.css b/cloudflare_worker/public/styles.css
+index eb35d11..61d0a53 100644
+--- a/cloudflare_worker/public/styles.css
++++ b/cloudflare_worker/public/styles.css
+@@ -1246,6 +1246,127 @@ a.repo-icon:hover {
+   color: var(--warning);
+ }
+ 
++.mirror-summary-grid {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 10px;
++  padding: 14px 14px 0;
++}
++
++.mirror-summary-item {
++  min-width: 0;
++  padding: 10px;
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--card-soft);
++}
++
++.mirror-summary-item span {
++  display: block;
++  color: var(--muted);
++  font-size: 12px;
++  font-weight: 600;
++}
++
++.mirror-summary-item strong {
++  display: block;
++  margin-top: 2px;
++  font-size: 16px;
++  overflow-wrap: anywhere;
++}
++
++.mirror-table-wrap {
++  box-sizing: border-box;
++  width: 100%;
++  max-width: 100%;
++  overflow-x: auto;
++  padding: 14px;
++}
++
++.mirror-health-table {
++  width: 100%;
++  border-collapse: collapse;
++  table-layout: fixed;
++}
++
++.mirror-health-table th,
++.mirror-health-table td {
++  padding: 10px 8px;
++  border-top: 1px solid var(--border);
++  text-align: left;
++  vertical-align: middle;
++  overflow-wrap: anywhere;
++}
++
++.mirror-health-table th {
++  color: var(--muted);
++  font-size: 12px;
++  font-weight: 700;
++}
++
++.mirror-status-stack {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px;
++}
++
++.status-pill.behind {
++  color: var(--warning);
++  border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
++}
++
++.status-pill.behind span {
++  background: var(--warning);
++}
++
++.mirror-sync-behind {
++  color: var(--warning);
++  font-weight: 700;
++}
++
++@media (max-width: 700px) {
++  .mirror-summary-grid {
++    grid-template-columns: 1fr 1fr;
++  }
++
++  .mirror-table-wrap {
++    overflow-x: hidden;
++  }
++
++  .mirror-health-table,
++  .mirror-health-table thead,
++  .mirror-health-table tbody,
++  .mirror-health-table tr,
++  .mirror-health-table th,
++  .mirror-health-table td {
++    display: block;
++  }
++
++  .mirror-health-table thead {
++    display: none;
++  }
++
++  .mirror-health-table tr {
++    padding: 10px 0;
++    border-top: 1px solid var(--border);
++  }
++
++  .mirror-health-table td {
++    display: grid;
++    grid-template-columns: 112px minmax(0, 1fr);
++    gap: 10px;
++    border-top: 0;
++    padding: 6px 0;
++  }
++
++  .mirror-health-table td::before {
++    content: attr(data-label);
++    color: var(--muted);
++    font-size: 12px;
++    font-weight: 700;
++  }
++}
++
+ .file-breadcrumb {
+   padding: 7px 14px;
+   border-bottom: 1px solid var(--border);
+@@ -1893,10 +2014,6 @@ button.issue-row {
+     grid-template-columns: 1fr;
+   }
+ 
+-  .repo-sidebar {
+-    order: -1;
+-  }
+-
+   .header-search {
+     display: none;
+   }
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 3f53b22..5db9188 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -78,6 +78,8 @@ REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
+ # Private-repo collaborator ACL (issue #9): owner-signed grant/revoke/list of the
+ # accounts a private repo is shared with.
+ REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
++# Public mirror health for a logical repo group.
++REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
+ # Live tunnel: desktop clients connect to /host; the website pulls /tree and
+ # /blob, which the worker forwards to the best-connected host.
+ REPO_HOST_RE = re.compile(
+@@ -484,6 +486,106 @@ NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderbo
+ CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
+ 
+ 
++def _mirror_ms(value):
++    try:
++        n = int(value)
++    except (TypeError, ValueError):
++        return None
++    return n if n > 0 else None
++
++
++def repo_mirror_group_key(record):
++    root = str((record or {}).get("rootCommit") or "").strip().lower()
++    if root:
++        return "root:" + root
++    name = str((record or {}).get("name") or "").strip().lower()
++    return "name:" + name
++
++
++def build_repo_mirrors_payload(
++    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
++):
++    owner_l = (owner or "").strip().lower()
++    repo_l = (repo or "").strip().lower()
++    public_rows = []
++    target = None
++    for row in rows or []:
++        rec = row.get("data") or {}
++        if row.get("is_private") or rec.get("visibility") == "private":
++            continue
++        rec_owner = str(rec.get("owner") or "").strip()
++        rec_name = str(rec.get("name") or "").strip()
++        if not rec_owner or not rec_name:
++            continue
++        item = {"key_bi": row.get("key_bi"), "data": rec}
++        public_rows.append(item)
++        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
++            target = item
++    if not target:
++        return None
++
++    group_key = repo_mirror_group_key(target["data"])
++    members = [r for r in public_rows if repo_mirror_group_key(r["data"]) == group_key]
++    freshest_sync = 0
++    for row in members:
++        freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
++
++    mirrors = []
++    for row in members:
++        rec = row["data"]
++        key = row.get("key_bi")
++        seen = _mirror_ms((presence or {}).get(key))
++        online = bool(seen and now - seen <= stale_ms)
++        hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
++        last_sync = _mirror_ms(rec.get("lastSync"))
++        try:
++            size_bytes = max(0, int(rec.get("sizeBytes") or 0))
++        except (TypeError, ValueError):
++            size_bytes = 0
++        behind = bool(
++            last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
++        )
++        mirrors.append({
++            "node": str(rec.get("owner") or "").strip(),
++            "owner": str(rec.get("owner") or "").strip(),
++            "repo": str(rec.get("name") or "").strip(),
++            "status": "online" if online else "offline",
++            "lastSeen": seen if online else None,
++            "hostedSince": hosted,
++            "syncAgeMs": max(0, now - last_sync) if last_sync else None,
++            "lastSync": last_sync,
++            "behind": behind,
++            "cloneAvailable": online,
++            "sizeBytes": size_bytes,
++            "source": str(rec.get("source") or "").strip(),
++        })
++
++    mirrors.sort(
++        key=lambda m: (
++            0 if m["status"] == "online" else 1,
++            -(m["lastSync"] or 0),
++            m["node"].lower(),
++        )
++    )
++    hosted_values = [m["hostedSince"] for m in mirrors if m["hostedSince"]]
++    return {
++        "ok": True,
++        "owner": target["data"].get("owner"),
++        "repo": target["data"].get("name"),
++        "groupKey": group_key,
++        "generatedAt": now,
++        "summary": {
++            "mirrors": len(mirrors),
++            "online": sum(1 for m in mirrors if m["status"] == "online"),
++            "cloneAvailable": sum(1 for m in mirrors if m["cloneAvailable"]),
++            "dataHostedBytes": sum(m["sizeBytes"] for m in mirrors),
++            "longestHostedSince": min(hosted_values) if hosted_values else None,
++            "freshestSync": freshest_sync or None,
++        },
++        "mirrors": mirrors,
++    }
++
++
+ async def touch_host_presence(env, repo_bi):
+     # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
+     # connects and, throttled, while it serves traffic.
+@@ -1934,6 +2036,53 @@ async def catalog_handler(env, request):
+     return json_response({"error": "method_not_allowed"}, status=405)
+ 
+ 
++async def repo_mirrors_handler(env, request, owner, repo):
++    if method_name(request) != "GET":
++        return json_response({"error": "method_not_allowed"}, status=405)
++    await ensure_schema(env)
++    rows = await d1_all(
++        env, "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0"
++    )
++    catalog_rows = []
++    for row in rows:
++        rec = await decrypt_row(env, row.get("data"))
++        if not rec:
++            continue
++        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
++            continue
++        catalog_rows.append({
++            "key_bi": row.get("key_bi"),
++            "is_private": int(row.get("is_private") or 0),
++            "data": rec,
++        })
++
++    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
++    presence = {
++        str(r.get("repo_bi")): int(r.get("ts") or 0)
++        for r in presence_rows
++        if r.get("repo_bi")
++    }
++    first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
++    first_hosted = {
++        str(r.get("repo_bi")): int(r.get("ts") or 0)
++        for r in first_rows
++        if r.get("repo_bi")
++    }
++    payload = build_repo_mirrors_payload(
++        owner,
++        repo,
++        catalog_rows,
++        presence,
++        first_hosted,
++        int(Date.now()),
++        HOST_PRESENCE_STALE_MS,
++        5 * 1000,
++    )
++    if payload is None:
++        return json_response({"error": "not_found"}, status=404)
++    return json_response(payload)
++
++
+ # --- Public waitlist (waitlist table) ---------------------------------------
+ 
+ async def waitlist_handler(env, request):
+@@ -5523,6 +5672,14 @@ class Default(WorkerEntrypoint):
+                 return json_response({"error": "not_found"}, status=404)
+             return await shares_handler(self.env, request, owner, repo)
+ 
++        mirrors_match = REPO_MIRRORS_RE.match(url.path)
++        if mirrors_match:
++            owner = safe_segment(mirrors_match.group(1))
++            repo = safe_segment(mirrors_match.group(2))
++            if not owner or not repo:
++                return json_response({"error": "not_found"}, status=404)
++            return await repo_mirrors_handler(self.env, request, owner, repo)
++
+         host_match = REPO_HOST_RE.match(url.path)
+         if host_match:
+             owner = safe_segment(host_match.group(1))
+diff --git a/cloudflare_worker/tests/test_repo_mirrors.py b/cloudflare_worker/tests/test_repo_mirrors.py
+new file mode 100644
+index 0000000..cf16656
+--- /dev/null
++++ b/cloudflare_worker/tests/test_repo_mirrors.py
+@@ -0,0 +1,253 @@
++#!/usr/bin/env python3
++"""Repo mirror-health payload contract tests."""
++
++import ast
++import asyncio
++from pathlib import Path
++
++
++ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
++
++
++def _load(*names, extra_globals=None):
++    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
++    selected = [
++        node
++        for node in tree.body
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++        and node.name in names
++    ]
++    found = {node.name for node in selected}
++    missing = set(names) - found
++    assert not missing, "missing functions: %s" % sorted(missing)
++    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
++    namespace = dict(extra_globals or {})
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return [namespace[name] for name in names]
++
++
++_mirror_ms, build_repo_mirrors_payload, repo_mirror_group_key = _load(
++    "_mirror_ms",
++    "build_repo_mirrors_payload",
++    "repo_mirror_group_key",
++)
++
++
++def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="", size=0):
++    return {
++        "key_bi": key,
++        "is_private": 1 if visibility == "private" else 0,
++        "data": {
++            "owner": owner,
++            "name": name,
++            "visibility": visibility,
++            "hostedSince": hosted,
++            "lastSync": synced,
++            "rootCommit": root,
++            "sizeBytes": size,
++            "source": "local-node",
++        },
++    }
++
++
++def test_group_key_prefers_root_commit_and_falls_back_to_name():
++    assert repo_mirror_group_key({"rootCommit": "ABC", "name": "forkmesh"}) == "root:abc"
++    assert repo_mirror_group_key({"rootCommit": "", "name": "ForkMesh"}) == "name:forkmesh"
++
++
++def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
++    now = 1_000_000
++    rows = [
++        _row("a", "mainnode", "forkmesh", root="abc", hosted="100000", synced="990000", size=10),
++        _row("b", "kaif-node", "forkmesh", root="abc", hosted="", synced="940000", size=20),
++        _row("c", "other", "forkmesh", root="def", hosted="90000", synced="999000", size=30),
++    ]
++    payload = build_repo_mirrors_payload(
++        "mainnode",
++        "forkmesh",
++        rows,
++        {"a": now - 1_000, "b": now - 30_000},
++        {"b": 80_000},
++        now,
++        600_000,
++        5_000,
++    )
++
++    assert payload["ok"] is True
++    assert payload["groupKey"] == "root:abc"
++    assert payload["summary"] == {
++        "mirrors": 2,
++        "online": 2,
++        "cloneAvailable": 2,
++        "dataHostedBytes": 30,
++        "longestHostedSince": 80_000,
++        "freshestSync": 990_000,
++    }
++    assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "kaif-node"]
++    assert payload["mirrors"][0]["status"] == "online"
++    assert payload["mirrors"][0]["lastSeen"] == now - 1_000
++    assert payload["mirrors"][0]["syncAgeMs"] == 10_000
++    assert payload["mirrors"][0]["behind"] is False
++    assert payload["mirrors"][1]["hostedSince"] == 80_000
++    assert payload["mirrors"][1]["behind"] is True
++    assert payload["mirrors"][1]["cloneAvailable"] is True
++
++
++def test_payload_falls_back_to_repo_name_when_root_commit_is_absent():
++    now = 1_000_000
++    rows = [
++        _row("a", "mainnode", "forkmesh", synced="990000"),
++        _row("b", "backup", "ForkMesh", synced="980000"),
++        _row("c", "backup", "other", synced="999000"),
++    ]
++    payload = build_repo_mirrors_payload(
++        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
++    )
++
++    assert payload["groupKey"] == "name:forkmesh"
++    assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "backup"]
++    assert payload["summary"]["online"] == 0
++    assert payload["summary"]["cloneAvailable"] == 0
++
++
++def test_payload_returns_none_for_missing_or_private_target():
++    now = 1_000_000
++    private_rows = [_row("a", "mainnode", "forkmesh", visibility="private")]
++    public_rows = [_row("a", "mainnode", "forkmesh")]
++
++    assert build_repo_mirrors_payload(
++        "mainnode", "missing", public_rows, {}, {}, now, 600_000, 5_000
++    ) is None
++    assert build_repo_mirrors_payload(
++        "mainnode", "forkmesh", private_rows, {}, {}, now, 600_000, 5_000
++    ) is None
++
++
++class _Clock:
++    @staticmethod
++    def now():
++        return 1_000_000
++
++
++class _Request:
++    def __init__(self, method):
++        self.method = method
++
++
++def _response(data, status=200, **_kwargs):
++    return {"status": status, "data": data}
++
++
++def _load_handler(*, rows, presence=None, first_hosted=None):
++    calls = []
++
++    async def ensure_schema(_env):
++        calls.append("schema")
++
++    async def d1_all(_env, sql, *args):
++        calls.append(sql)
++        if "FROM repositories" in sql:
++            return rows
++        if "FROM host_presence" in sql:
++            return presence or []
++        if "FROM repo_first_hosted" in sql:
++            return first_hosted or []
++        return []
++
++    async def decrypt_row(_env, data):
++        return data
++
++    namespace = {
++        "Date": _Clock,
++        "HOST_PRESENCE_STALE_MS": 600_000,
++        "ensure_schema": ensure_schema,
++        "d1_all": d1_all,
++        "decrypt_row": decrypt_row,
++        "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
++        "json_response": _response,
++    }
++    handler, *_ = _load(
++        "repo_mirrors_handler",
++        "method_name",
++        "_mirror_ms",
++        "repo_mirror_group_key",
++        "build_repo_mirrors_payload",
++        extra_globals=namespace,
++    )
++    return handler, calls
++
++
++def test_repo_mirrors_handler_rejects_non_get_before_reading_tables():
++    handler, calls = _load_handler(rows=[])
++
++    response = asyncio.run(handler(object(), _Request("POST"), "mainnode", "forkmesh"))
++
++    assert response == {"status": 405, "data": {"error": "method_not_allowed"}}
++    assert calls == []
++
++
++def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
++    handler, calls = _load_handler(
++        rows=[
++            {"key_bi": "a", "data": _row("a", "mainnode", "forkmesh", root="abc")["data"]},
++            {"key_bi": "b", "data": _row("b", "kaif-node", "forkmesh", root="abc")["data"]},
++        ],
++        presence=[{"repo_bi": "a", "ts": 999_000}],
++        first_hosted=[{"repo_bi": "b", "ts": 500_000}],
++    )
++
++    response = asyncio.run(handler(object(), _Request("GET"), "mainnode", "forkmesh"))
++
++    assert response["status"] == 200
++    assert response["data"]["ok"] is True
++    assert response["data"]["summary"]["mirrors"] == 2
++    assert [mirror["node"] for mirror in response["data"]["mirrors"]] == [
++        "mainnode",
++        "kaif-node",
++    ]
++    assert any("FROM repositories" in call for call in calls)
++    assert any("FROM host_presence" in call for call in calls)
++    assert any("FROM repo_first_hosted" in call for call in calls)
++
++
++def test_repo_mirrors_handler_returns_404_for_private_or_unpublished_target():
++    private_handler, _ = _load_handler(
++        rows=[
++            {
++                "key_bi": "a",
++                "data": _row("a", "mainnode", "forkmesh", visibility="private")["data"],
++                "is_private": 1,
++            }
++        ]
++    )
++    missing_handler, _ = _load_handler(
++        rows=[
++            {
++                "key_bi": "a",
++                "data": _row("a", "othernode", "forkmesh")["data"],
++                "is_private": 0,
++            }
++        ]
++    )
++
++    private_response = asyncio.run(
++        private_handler(object(), _Request("GET"), "mainnode", "forkmesh")
++    )
++    missing_response = asyncio.run(
++        missing_handler(object(), _Request("GET"), "mainnode", "forkmesh")
++    )
++
++    assert private_response == {"status": 404, "data": {"error": "not_found"}}
++    assert missing_response == {"status": 404, "data": {"error": "not_found"}}
++
++
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++
++
++def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
++    assert "REPO_MIRRORS_RE = re.compile" in ENTRY_TEXT
++    assert "repo_mirrors_handler" in ENTRY_TEXT
++    assert "build_repo_mirrors_payload(" in ENTRY_TEXT
++    assert "host_presence" in ENTRY_TEXT
++    assert "repo_first_hosted" in ENTRY_TEXT
++    assert '"/mirrors"' in ENTRY_TEXT or "mirrors_match" in ENTRY_TEXT
+diff --git a/cloudflare_worker/tests/test_repo_mirrors_frontend.py b/cloudflare_worker/tests/test_repo_mirrors_frontend.py
+new file mode 100644
+index 0000000..50e648f
+--- /dev/null
++++ b/cloudflare_worker/tests/test_repo_mirrors_frontend.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++"""Static website repo Mirrors tab contract tests."""
++
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
++CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
++STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
++
++
++def test_repo_tab_is_named_mirrors_and_has_table_shell():
++    assert 'id="tab-mirrors"' in INDEX
++    assert ">Mirrors" in INDEX
++    assert 'id="repo-mirrors"' in INDEX
++    assert 'id="mirror-summary"' in INDEX
++    assert 'id="mirror-list"' in INDEX
++    for heading in ("Node", "Status", "Last seen", "Hosted since", "Sync age", "Clone available"):
++        assert heading in INDEX
++
++
++def test_catalog_js_loads_mirrors_endpoint_lazily():
++    assert "tabMirrorsEl" in CATALOG
++    assert "loadMirrors(" in CATALOG
++    assert "/mirrors" in CATALOG
++    assert 'showRepoTab("mirrors")' in CATALOG
++    assert "mirrorsLoadedFor" in CATALOG
++
++
++def test_catalog_js_marks_mirrors_loaded_only_after_success():
++    show_tab = CATALOG[
++        CATALOG.index('if (tab === "mirrors"')
++        : CATALOG.index("function formatRelativeMs")
++    ]
++    load_mirrors = CATALOG[
++        CATALOG.index("async function loadMirrors")
++        : CATALOG.index("if (tabCodeEl)")
++    ]
++
++    assert "mirrorsLoadedFor = repoKey;" not in show_tab
++    assert "mirrorsLoadedFor = `${owner}/${name}`;" in load_mirrors
++    assert "mirrorsLoadedFor = \"\";" in load_mirrors
++
++
++def test_catalog_js_clears_mirrors_summary_before_fetching_new_repo():
++    load_mirrors = CATALOG[
++        CATALOG.index("async function loadMirrors")
++        : CATALOG.index("if (tabCodeEl)")
++    ]
++
++    assert 'mirrorListEl.innerHTML = `<tr><td colspan="6">Loading mirror health...</td></tr>`;' in load_mirrors
++    assert "if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();" in load_mirrors
++    assert load_mirrors.index("if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();") < load_mirrors.index("try {")
++
++
++def test_mirrors_css_has_responsive_table_hooks():
++    assert ".mirror-summary-grid" in STYLES
++    assert ".mirror-table-wrap" in STYLES
++    assert ".mirror-health-table" in STYLES
++    assert "@media (max-width: 700px)" in STYLES
++
++
++def test_mobile_repo_page_keeps_selected_tab_before_sidebar():
++    assert ".repo-sidebar {\n    order: -1;" not in STYLES
+diff --git a/docs/superpowers/plans/2026-06-24-repo-mirrors-health.md b/docs/superpowers/plans/2026-06-24-repo-mirrors-health.md
+new file mode 100644
+index 0000000..9db7e5f
+--- /dev/null
++++ b/docs/superpowers/plans/2026-06-24-repo-mirrors-health.md
+@@ -0,0 +1,896 @@
++# Repo Mirrors Health Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Add an API-backed repo Mirrors tab that lists mirror nodes, status, last seen, hosted since, sync age, and clone availability.
++
++**Architecture:** Keep mirror-health truth in the Worker by adding a small repo-scoped API that groups public catalog rows and joins live presence plus first-hosted data.
++The static website loads that endpoint lazily when the Mirrors tab opens and renders summary metrics plus a responsive table.
++The graph remains future work.
++
++**Tech Stack:** Python Cloudflare Worker, D1 tables already used by the Worker, vanilla HTML/CSS/JavaScript, pytest via `uvx pytest`.
++
++---
++
++## File Structure
++
++- Modify `cloudflare_worker/src/entry.py` for the route regex, pure mirror payload helper, async D1 handler, and main route dispatch.
++- Create `cloudflare_worker/tests/test_repo_mirrors.py` for helper-level Worker contract tests that do not import Workers-only JS modules.
++- Create `cloudflare_worker/tests/test_repo_mirrors_frontend.py` for static source-contract tests around the tab label, DOM ids, endpoint path, and responsive CSS hooks.
++- Modify `cloudflare_worker/public/index.html` to rename the tab and replace the placeholder panel with the Mirrors table shell.
++- Modify `cloudflare_worker/public/catalog.js` to lazy-load and render mirror health.
++- Modify `cloudflare_worker/public/styles.css` to style the summary metrics, table, state pills, and mobile row layout.
++
++## Task 1: Worker Mirror Payload Contract
++
++**Files:**
++- Create: `cloudflare_worker/tests/test_repo_mirrors.py`
++- Modify: `cloudflare_worker/src/entry.py`
++
++- [ ] **Step 1: Write the failing helper tests**
++
++Create `cloudflare_worker/tests/test_repo_mirrors.py` with this content:
++
++```python
++#!/usr/bin/env python3
++"""Repo mirror-health payload contract tests."""
++
++import ast
++from pathlib import Path
++
++
++ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
++
++
++def _load(*names):
++    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
++    selected = [
++        node
++        for node in tree.body
++        if isinstance(node, ast.FunctionDef) and node.name in names
++    ]
++    found = {node.name for node in selected}
++    missing = set(names) - found
++    assert not missing, "missing functions: %s" % sorted(missing)
++    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
++    namespace = {}
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return [namespace[name] for name in names]
++
++
++build_repo_mirrors_payload, repo_mirror_group_key = _load(
++    "build_repo_mirrors_payload",
++    "repo_mirror_group_key",
++)
++
++
++def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="", size=0):
++    return {
++        "key_bi": key,
++        "is_private": 1 if visibility == "private" else 0,
++        "data": {
++            "owner": owner,
++            "name": name,
++            "visibility": visibility,
++            "hostedSince": hosted,
++            "lastSync": synced,
++            "rootCommit": root,
++            "sizeBytes": size,
++            "source": "local-node",
++        },
++    }
++
++
++def test_group_key_prefers_root_commit_and_falls_back_to_name():
++    assert repo_mirror_group_key({"rootCommit": "ABC", "name": "forkmesh"}) == "root:abc"
++    assert repo_mirror_group_key({"rootCommit": "", "name": "ForkMesh"}) == "name:forkmesh"
++
++
++def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
++    now = 1_000_000
++    rows = [
++        _row("a", "mainnode", "forkmesh", root="abc", hosted="100000", synced="990000", size=10),
++        _row("b", "kaif-node", "forkmesh", root="abc", hosted="", synced="940000", size=20),
++        _row("c", "other", "forkmesh", root="def", hosted="90000", synced="999000", size=30),
++    ]
++    payload = build_repo_mirrors_payload(
++        "mainnode",
++        "forkmesh",
++        rows,
++        {"a": now - 1_000, "b": now - 30_000},
++        {"b": 80_000},
++        now,
++        600_000,
++        5_000,
++    )
++
++    assert payload["ok"] is True
++    assert payload["groupKey"] == "root:abc"
++    assert payload["summary"] == {
++        "mirrors": 2,
++        "online": 2,
++        "cloneAvailable": 2,
++        "dataHostedBytes": 30,
++        "longestHostedSince": 80_000,
++        "freshestSync": 990_000,
++    }
++    assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "kaif-node"]
++    assert payload["mirrors"][0]["status"] == "online"
++    assert payload["mirrors"][0]["lastSeen"] == now - 1_000
++    assert payload["mirrors"][0]["syncAgeMs"] == 10_000
++    assert payload["mirrors"][0]["behind"] is False
++    assert payload["mirrors"][1]["hostedSince"] == 80_000
++    assert payload["mirrors"][1]["behind"] is True
++    assert payload["mirrors"][1]["cloneAvailable"] is True
++
++
++def test_payload_falls_back_to_repo_name_when_root_commit_is_absent():
++    now = 1_000_000
++    rows = [
++        _row("a", "mainnode", "forkmesh", synced="990000"),
++        _row("b", "backup", "ForkMesh", synced="980000"),
++        _row("c", "backup", "other", synced="999000"),
++    ]
++    payload = build_repo_mirrors_payload(
++        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
++    )
++
++    assert payload["groupKey"] == "name:forkmesh"
++    assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "backup"]
++    assert payload["summary"]["online"] == 0
++    assert payload["summary"]["cloneAvailable"] == 0
++
++
++def test_payload_returns_none_for_missing_or_private_target():
++    now = 1_000_000
++    private_rows = [_row("a", "mainnode", "forkmesh", visibility="private")]
++    public_rows = [_row("a", "mainnode", "forkmesh")]
++
++    assert build_repo_mirrors_payload(
++        "mainnode", "missing", public_rows, {}, {}, now, 600_000, 5_000
++    ) is None
++    assert build_repo_mirrors_payload(
++        "mainnode", "forkmesh", private_rows, {}, {}, now, 600_000, 5_000
++    ) is None
++```
++
++- [ ] **Step 2: Run the helper tests to verify they fail**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors.py
++```
++
++Expected: FAIL because `build_repo_mirrors_payload` and `repo_mirror_group_key` are not defined.
++
++- [ ] **Step 3: Add the pure helper implementation**
++
++In `cloudflare_worker/src/entry.py`, add these helper functions near the existing network statistics helpers, before `touch_host_presence`:
++
++```python
++def _mirror_ms(value):
++    try:
++        n = int(value)
++    except (TypeError, ValueError):
++        return None
++    return n if n > 0 else None
++
++
++def repo_mirror_group_key(record):
++    root = str((record or {}).get("rootCommit") or "").strip().lower()
++    if root:
++        return "root:" + root
++    name = str((record or {}).get("name") or "").strip().lower()
++    return "name:" + name
++
++
++def build_repo_mirrors_payload(
++    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
++):
++    owner_l = (owner or "").strip().lower()
++    repo_l = (repo or "").strip().lower()
++    public_rows = []
++    target = None
++    for row in rows or []:
++        rec = row.get("data") or {}
++        if row.get("is_private") or rec.get("visibility") == "private":
++            continue
++        rec_owner = str(rec.get("owner") or "").strip()
++        rec_name = str(rec.get("name") or "").strip()
++        if not rec_owner or not rec_name:
++            continue
++        item = {"key_bi": row.get("key_bi"), "data": rec}
++        public_rows.append(item)
++        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
++            target = item
++    if not target:
++        return None
++
++    group_key = repo_mirror_group_key(target["data"])
++    members = [r for r in public_rows if repo_mirror_group_key(r["data"]) == group_key]
++    freshest_sync = 0
++    for row in members:
++        freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
++
++    mirrors = []
++    for row in members:
++        rec = row["data"]
++        key = row.get("key_bi")
++        seen = _mirror_ms((presence or {}).get(key))
++        online = bool(seen and now - seen <= stale_ms)
++        hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
++        last_sync = _mirror_ms(rec.get("lastSync"))
++        try:
++            size_bytes = max(0, int(rec.get("sizeBytes") or 0))
++        except (TypeError, ValueError):
++            size_bytes = 0
++        behind = bool(
++            last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
++        )
++        mirrors.append({
++            "node": str(rec.get("owner") or "").strip(),
++            "owner": str(rec.get("owner") or "").strip(),
++            "repo": str(rec.get("name") or "").strip(),
++            "status": "online" if online else "offline",
++            "lastSeen": seen if online else None,
++            "hostedSince": hosted,
++            "syncAgeMs": max(0, now - last_sync) if last_sync else None,
++            "lastSync": last_sync,
++            "behind": behind,
++            "cloneAvailable": online,
++            "sizeBytes": size_bytes,
++            "source": str(rec.get("source") or "").strip(),
++        })
++
++    mirrors.sort(
++        key=lambda m: (
++            0 if m["status"] == "online" else 1,
++            -(m["lastSync"] or 0),
++            m["node"].lower(),
++        )
++    )
++    hosted_values = [m["hostedSince"] for m in mirrors if m["hostedSince"]]
++    payload = {
++        "ok": True,
++        "owner": target["data"].get("owner"),
++        "repo": target["data"].get("name"),
++        "groupKey": group_key,
++        "generatedAt": now,
++        "summary": {
++            "mirrors": len(mirrors),
++            "online": sum(1 for m in mirrors if m["status"] == "online"),
++            "cloneAvailable": sum(1 for m in mirrors if m["cloneAvailable"]),
++            "dataHostedBytes": sum(m["sizeBytes"] for m in mirrors),
++            "longestHostedSince": min(hosted_values) if hosted_values else None,
++            "freshestSync": freshest_sync or None,
++        },
++        "mirrors": mirrors,
++    }
++    return payload
++```
++
++- [ ] **Step 4: Run the helper tests to verify they pass**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors.py
++```
++
++Expected: PASS.
++
++- [ ] **Step 5: Commit Task 1**
++
++Run:
++
++```bash
++git add cloudflare_worker/src/entry.py cloudflare_worker/tests/test_repo_mirrors.py
++git commit -m "test: cover repo mirror health payload"
++```
++
++## Task 2: Worker Mirrors Endpoint
++
++**Files:**
++- Modify: `cloudflare_worker/src/entry.py`
++- Modify: `cloudflare_worker/tests/test_repo_mirrors.py`
++
++- [ ] **Step 1: Write the failing route source-contract test**
++
++Append this test to `cloudflare_worker/tests/test_repo_mirrors.py`:
++
++```python
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++
++
++def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
++    assert "REPO_MIRRORS_RE = re.compile" in ENTRY_TEXT
++    assert "repo_mirrors_handler" in ENTRY_TEXT
++    assert "build_repo_mirrors_payload(" in ENTRY_TEXT
++    assert "host_presence" in ENTRY_TEXT
++    assert "repo_first_hosted" in ENTRY_TEXT
++    assert '"/mirrors"' in ENTRY_TEXT or "mirrors_match" in ENTRY_TEXT
++```
++
++- [ ] **Step 2: Run the route test to verify it fails**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors.py::test_worker_exposes_repo_mirrors_route_and_uses_payload_builder
++```
++
++Expected: FAIL because the route regex and handler are not wired.
++
++- [ ] **Step 3: Add the route regex**
++
++In `cloudflare_worker/src/entry.py`, add this near the other repo route regex constants:
++
++```python
++REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
++```
++
++- [ ] **Step 4: Add the async handler**
++
++In `cloudflare_worker/src/entry.py`, add this after `catalog_handler` and before waitlist handling:
++
++```python
++async def repo_mirrors_handler(env, owner, repo):
++    await ensure_schema(env)
++    rows = await d1_all(
++        env, "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0"
++    )
++    catalog_rows = []
++    for row in rows:
++        rec = await decrypt_row(env, row.get("data"))
++        if not rec:
++            continue
++        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
++            continue
++        catalog_rows.append({
++            "key_bi": row.get("key_bi"),
++            "is_private": int(row.get("is_private") or 0),
++            "data": rec,
++        })
++
++    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
++    presence = {
++        str(r.get("repo_bi")): int(r.get("ts") or 0)
++        for r in presence_rows
++        if r.get("repo_bi")
++    }
++    first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
++    first_hosted = {
++        str(r.get("repo_bi")): int(r.get("ts") or 0)
++        for r in first_rows
++        if r.get("repo_bi")
++    }
++    payload = build_repo_mirrors_payload(
++        owner,
++        repo,
++        catalog_rows,
++        presence,
++        first_hosted,
++        int(Date.now()),
++        HOST_PRESENCE_STALE_MS,
++        5 * 1000,
++    )
++    if payload is None:
++        return json_response({"error": "not_found"}, status=404)
++    return json_response(payload)
++```
++
++- [ ] **Step 5: Wire the route dispatch**
++
++In `ForkMesh.fetch`, add this before `host_match = REPO_HOST_RE.match(url.path)`:
++
++```python
++        mirrors_match = REPO_MIRRORS_RE.match(url.path)
++        if mirrors_match:
++            owner = safe_segment(mirrors_match.group(1))
++            repo = safe_segment(mirrors_match.group(2))
++            if not owner or not repo:
++                return json_response({"error": "not_found"}, status=404)
++            return await repo_mirrors_handler(self.env, owner, repo)
++```
++
++- [ ] **Step 6: Run Worker mirror tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors.py
++```
++
++Expected: PASS.
++
++- [ ] **Step 7: Commit Task 2**
++
++Run:
++
++```bash
++git add cloudflare_worker/src/entry.py cloudflare_worker/tests/test_repo_mirrors.py
++git commit -m "feat: expose repo mirror health API"
++```
++
++## Task 3: Frontend Mirrors Tab Contract
++
++**Files:**
++- Create: `cloudflare_worker/tests/test_repo_mirrors_frontend.py`
++- Modify: `cloudflare_worker/public/index.html`
++- Modify: `cloudflare_worker/public/catalog.js`
++- Modify: `cloudflare_worker/public/styles.css`
++
++- [ ] **Step 1: Write failing frontend source-contract tests**
++
++Create `cloudflare_worker/tests/test_repo_mirrors_frontend.py` with this content:
++
++```python
++#!/usr/bin/env python3
++"""Static website repo Mirrors tab contract tests."""
++
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
++CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
++STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
++
++
++def test_repo_tab_is_named_mirrors_and_has_table_shell():
++    assert 'id="tab-mirrors"' in INDEX
++    assert ">Mirrors" in INDEX
++    assert 'id="repo-mirrors"' in INDEX
++    assert 'id="mirror-summary"' in INDEX
++    assert 'id="mirror-list"' in INDEX
++    for heading in ("Node", "Status", "Last seen", "Hosted since", "Sync age", "Clone available"):
++        assert heading in INDEX
++
++
++def test_catalog_js_loads_mirrors_endpoint_lazily():
++    assert "tabMirrorsEl" in CATALOG
++    assert "loadMirrors(" in CATALOG
++    assert "/mirrors" in CATALOG
++    assert 'showRepoTab("mirrors")' in CATALOG
++    assert "mirrorsLoadedFor" in CATALOG
++
++
++def test_mirrors_css_has_responsive_table_hooks():
++    assert ".mirror-summary-grid" in STYLES
++    assert ".mirror-table-wrap" in STYLES
++    assert ".mirror-health-table" in STYLES
++    assert "@media (max-width: 700px)" in STYLES
++```
++
++- [ ] **Step 2: Run the frontend tests to verify they fail**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors_frontend.py
++```
++
++Expected: FAIL because the DOM ids, endpoint loader, and CSS hooks do not exist yet.
++
++- [ ] **Step 3: Replace the placeholder tab markup**
++
++In `cloudflare_worker/public/index.html`, change the current `tab-network` button to `tab-mirrors`, keep the existing graph-style icon, and change visible text to `Mirrors`.
++Replace the `section id="repo-network"` placeholder with:
++
++```html
++            <section id="repo-mirrors" class="panel" hidden aria-labelledby="mirrors-title">
++              <div class="panel-header">
++                <div>
++                  <h2 id="mirrors-title">Mirrors</h2>
++                  <p>
++                    Nodes currently advertising a mirror of this repository.
++                  </p>
++                </div>
++                <span id="mirrors-meta" class="file-meta"></span>
++              </div>
++              <div id="mirror-summary" class="mirror-summary-grid" aria-label="Mirror summary"></div>
++              <div class="mirror-table-wrap">
++                <table class="mirror-health-table">
++                  <thead>
++                    <tr>
++                      <th>Node</th>
++                      <th>Status</th>
++                      <th>Last seen</th>
++                      <th>Hosted since</th>
++                      <th>Sync age</th>
++                      <th>Clone available</th>
++                    </tr>
++                  </thead>
++                  <tbody id="mirror-list">
++                    <tr>
++                      <td colspan="6">Open the tab to load mirror health.</td>
++                    </tr>
++                  </tbody>
++                </table>
++              </div>
++            </section>
++```
++
++- [ ] **Step 4: Update the JavaScript tab wiring**
++
++In `cloudflare_worker/public/catalog.js`, replace the Network tab constants with Mirrors constants:
++
++```javascript
++const tabMirrorsEl = document.querySelector("#tab-mirrors");
++const mirrorsSectionEl = document.querySelector("#repo-mirrors");
++const mirrorSummaryEl = document.querySelector("#mirror-summary");
++const mirrorListEl = document.querySelector("#mirror-list");
++const mirrorsMetaEl = document.querySelector("#mirrors-meta");
++let mirrorsLoadedFor = null;
++let mirrorsToken = 0;
++```
++
++Update the `sections` and `tabs` objects inside `showRepoTab` to use `mirrors`.
++Add this lazy-load block inside `showRepoTab`:
++
++```javascript
++  if (tab === "mirrors" && mirrorsLoadedFor !== repoKey) {
++    mirrorsLoadedFor = repoKey;
++    loadMirrors(fileState.owner, fileState.name);
++  }
++```
++
++Replace the `tabNetworkEl` click listener with:
++
++```javascript
++if (tabMirrorsEl) tabMirrorsEl.addEventListener("click", () => showRepoTab("mirrors"));
++```
++
++Reset `mirrorsLoadedFor = null;` in `openRepoPage`.
++
++- [ ] **Step 5: Add mirror rendering helpers**
++
++In `cloudflare_worker/public/catalog.js`, add these helpers near the tab-loading functions:
++
++```javascript
++function formatRelativeMs(value, empty = "not recent") {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n <= 0) return empty;
++  const diff = Math.max(0, Date.now() - n);
++  const sec = Math.floor(diff / 1000);
++  if (sec < 60) return sec <= 5 ? "now" : `${sec}s ago`;
++  const min = Math.floor(sec / 60);
++  if (min < 60) return `${min}m ago`;
++  const hours = Math.floor(min / 60);
++  if (hours < 48) return `${hours}h ago`;
++  return `${Math.floor(hours / 24)}d ago`;
++}
++
++function formatDurationMs(value, empty = "not synced") {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n < 0) return empty;
++  if (n < 60 * 1000) return "<1m";
++  const min = Math.floor(n / 60000);
++  if (min < 60) return `${min}m`;
++  const hours = Math.floor(min / 60);
++  if (hours < 48) return `${hours}h`;
++  return `${Math.floor(hours / 24)}d`;
++}
++
++function timestampTitle(value) {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n <= 0) return "";
++  return new Date(n).toLocaleString();
++}
++
++function mirrorSummaryItem(label, value) {
++  const item = document.createElement("div");
++  item.className = "mirror-summary-item";
++  const labelEl = document.createElement("span");
++  labelEl.textContent = label;
++  const valueEl = document.createElement("strong");
++  valueEl.textContent = value;
++  item.append(labelEl, valueEl);
++  return item;
++}
++
++function renderMirrorSummary(summary) {
++  if (!mirrorSummaryEl) return;
++  const mirrors = Number(summary && summary.mirrors) || 0;
++  const available = Number(summary && summary.cloneAvailable) || 0;
++  const hosted = summary && summary.longestHostedSince;
++  const data = Number(summary && summary.dataHostedBytes) || 0;
++  mirrorSummaryEl.replaceChildren(
++    mirrorSummaryItem("Mirror nodes", String(mirrors)),
++    mirrorSummaryItem("Clone availability", `${available} online`),
++    mirrorSummaryItem("Longest hosted", formatRelativeMs(hosted, "unknown")),
++    mirrorSummaryItem("Data hosted", formatSize(data))
++  );
++}
++
++function td(label, text) {
++  const cell = document.createElement("td");
++  cell.dataset.label = label;
++  cell.textContent = text;
++  return cell;
++}
++
++function mirrorStatusPill(mirror) {
++  const pill = document.createElement("span");
++  pill.className = mirror.status === "online" ? "status-pill online" : "status-pill offline";
++  pill.replaceChildren(
++    document.createElement("span"),
++    document.createTextNode(mirror.status === "online" ? "online" : "offline")
++  );
++  return pill;
++}
++
++function mirrorRow(mirror) {
++  const row = document.createElement("tr");
++  const node = document.createElement("td");
++  node.dataset.label = "Node";
++  const link = document.createElement("a");
++  link.href = repoRoute(mirror.owner, mirror.repo);
++  link.textContent = mirror.node || mirror.owner || "node";
++  link.addEventListener("click", (event) => routeCatalogClick(event, mirror.owner, mirror.repo));
++  node.append(link);
++  const status = document.createElement("td");
++  status.dataset.label = "Status";
++  status.append(mirrorStatusPill(mirror));
++  const seen = td("Last seen", formatRelativeMs(mirror.lastSeen));
++  seen.title = timestampTitle(mirror.lastSeen);
++  const hosted = td("Hosted since", formatRelativeMs(mirror.hostedSince, "unknown"));
++  hosted.title = timestampTitle(mirror.hostedSince);
++  const sync = td("Sync age", formatDurationMs(mirror.syncAgeMs));
++  if (mirror.behind) {
++    sync.classList.add("mirror-sync-behind");
++    sync.textContent = `${sync.textContent} behind`;
++  }
++  const clone = td("Clone available", mirror.cloneAvailable ? "Yes" : "No");
++  row.append(node, status, seen, hosted, sync, clone);
++  return row;
++}
++
++async function loadMirrors(owner, name) {
++  if (!mirrorListEl) return;
++  const token = ++mirrorsToken;
++  mirrorListEl.innerHTML = `<tr><td colspan="6">Loading mirror health...</td></tr>`;
++  if (mirrorsMetaEl) mirrorsMetaEl.textContent = "";
++  try {
++    const response = await fetch(
++      `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/mirrors`,
++      { headers: { accept: "application/json" } }
++    );
++    const data = await response.json();
++    if (token !== mirrorsToken) return;
++    if (!response.ok || !data.ok) throw new Error((data && data.error) || `HTTP ${response.status}`);
++    renderMirrorSummary(data.summary || {});
++    const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
++    if (mirrorsMetaEl) mirrorsMetaEl.textContent = `${mirrors.length} mirror${mirrors.length === 1 ? "" : "s"}`;
++    if (!mirrors.length) {
++      mirrorListEl.innerHTML = `<tr><td colspan="6">No mirror nodes are published for this repository yet.</td></tr>`;
++      return;
++    }
++    mirrorListEl.replaceChildren(...mirrors.map(mirrorRow));
++  } catch (error) {
++    if (token !== mirrorsToken) return;
++    if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();
++    mirrorListEl.innerHTML = `<tr><td colspan="6">Mirror health is temporarily unavailable.</td></tr>`;
++    if (mirrorsMetaEl) mirrorsMetaEl.textContent = "unavailable";
++  }
++}
++```
++
++- [ ] **Step 6: Add CSS hooks**
++
++In `cloudflare_worker/public/styles.css`, add these styles near the existing repo detail styles:
++
++```css
++.mirror-summary-grid {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 10px;
++  margin-bottom: 14px;
++}
++
++.mirror-summary-item {
++  min-width: 0;
++  padding: 10px;
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--card-soft);
++}
++
++.mirror-summary-item span {
++  display: block;
++  color: var(--muted);
++  font-size: 12px;
++  font-weight: 600;
++}
++
++.mirror-summary-item strong {
++  display: block;
++  margin-top: 2px;
++  font-size: 16px;
++}
++
++.mirror-table-wrap {
++  overflow-x: auto;
++}
++
++.mirror-health-table {
++  width: 100%;
++  border-collapse: collapse;
++  table-layout: fixed;
++}
++
++.mirror-health-table th,
++.mirror-health-table td {
++  padding: 10px 8px;
++  border-top: 1px solid var(--border);
++  text-align: left;
++  vertical-align: middle;
++  overflow-wrap: anywhere;
++}
++
++.mirror-health-table th {
++  color: var(--muted);
++  font-size: 12px;
++  font-weight: 700;
++}
++
++.mirror-sync-behind {
++  color: var(--warning);
++  font-weight: 700;
++}
++
++@media (max-width: 700px) {
++  .mirror-summary-grid {
++    grid-template-columns: 1fr 1fr;
++  }
++
++  .mirror-health-table,
++  .mirror-health-table thead,
++  .mirror-health-table tbody,
++  .mirror-health-table tr,
++  .mirror-health-table th,
++  .mirror-health-table td {
++    display: block;
++  }
++
++  .mirror-health-table thead {
++    display: none;
++  }
++
++  .mirror-health-table tr {
++    padding: 10px 0;
++    border-top: 1px solid var(--border);
++  }
++
++  .mirror-health-table td {
++    display: grid;
++    grid-template-columns: 112px minmax(0, 1fr);
++    gap: 10px;
++    border-top: 0;
++    padding: 6px 0;
++  }
++
++  .mirror-health-table td::before {
++    content: attr(data-label);
++    color: var(--muted);
++    font-size: 12px;
++    font-weight: 700;
++  }
++}
++```
++
++- [ ] **Step 7: Run frontend tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors_frontend.py
++```
++
++Expected: PASS.
++
++- [ ] **Step 8: Run all Worker tests**
++
++Run:
++
++```bash
++uvx pytest cloudflare_worker/tests
++```
++
++Expected: PASS.
++
++- [ ] **Step 9: Commit Task 3**
++
++Run:
++
++```bash
++git add cloudflare_worker/public/index.html cloudflare_worker/public/catalog.js cloudflare_worker/public/styles.css cloudflare_worker/tests/test_repo_mirrors_frontend.py
++git commit -m "feat: add repo mirrors tab"
++```
++
++## Task 4: Browser Verification And Polish
++
++**Files:**
++- Modify as needed only if verification finds a bug in `cloudflare_worker/public/index.html`, `cloudflare_worker/public/catalog.js`, or `cloudflare_worker/public/styles.css`.
++
++- [ ] **Step 1: Start the local Worker static server**
++
++Run:
++
++```bash
++cd cloudflare_worker
++uvx --from workers-py pywrangler dev
++```
++
++Expected: a local server URL, usually `http://127.0.0.1:8787`.
++Leave the server running while browser checks happen.
++
++- [ ] **Step 2: Open a repo route in the browser**
++
++Use Chrome DevTools AXI or another browser tool to open:
++
++```text
++http://127.0.0.1:8787/mainnode/forkmesh
++```
++
++If there is no seeded local catalog data, use the home page to verify the tab markup and source-contract tests as the automated fallback.
++
++- [ ] **Step 3: Verify desktop layout**
++
++Check at a desktop viewport that:
++
++- The tab label is `Mirrors`.
++- The Mirrors tab opens without JavaScript errors.
++- Summary metric cards do not overflow.
++- The table columns are readable.
++- Offline and unavailable states are professional and not visually broken.
++
++- [ ] **Step 4: Verify mobile layout**
++
++Check a mobile viewport around 390 pixels wide.
++Confirm:
++
++- The repo tabs scroll horizontally if needed.
++- The Mirrors table becomes row blocks.
++- No text overlaps adjacent controls.
++- No horizontal page overflow appears.
++
++- [ ] **Step 5: Fix any visual or runtime defects**
++
++If browser verification exposes issues, make minimal scoped edits and rerun:
++
++```bash
++uvx pytest cloudflare_worker/tests/test_repo_mirrors.py cloudflare_worker/tests/test_repo_mirrors_frontend.py
++```
++
++Expected: PASS.
++
++- [ ] **Step 6: Commit verification fixes if any**
++
++If files changed, run:
++
++```bash
++git add cloudflare_worker/public/index.html cloudflare_worker/public/catalog.js cloudflare_worker/public/styles.css
++git commit -m "fix: polish repo mirrors tab"
++```
++
++## Final Verification
++
++- [ ] Run:
++
++```bash
++uvx pytest cloudflare_worker/tests
++```
++
++Expected: PASS.
++
++- [ ] Run:
++
++```bash
++git status --short
++```
++
++Expected: clean, unless intentionally leaving generated runtime files untracked.
++
++- [ ] Summarize commits and changed files for controller review.
+diff --git a/docs/superpowers/specs/2026-06-24-repo-mirrors-health-design.md b/docs/superpowers/specs/2026-06-24-repo-mirrors-health-design.md
+new file mode 100644
+index 0000000..1483b52
+--- /dev/null
++++ b/docs/superpowers/specs/2026-06-24-repo-mirrors-health-design.md
+@@ -0,0 +1,128 @@
++# Repo Mirrors Health Design
++
++## Goal
++
++Add a repo-level Mirrors tab that shows which ForkMesh nodes mirror the current repository and whether each mirror is healthy enough to browse or clone.
++The first implementation slice is API-backed and table-first.
++The network graph, durable uptime history, region, and relay metadata are follow-up work.
++
++## Current State
++
++The public website already has a repository detail page with tabs for Code, Commits, Issues, Pull requests, Discussions, and a placeholder Network tab.
++The catalog client already groups logical mirrors by `rootCommit`, falling back to the repo name when no root commit is published.
++The Worker already stores public repository catalog records in D1.
++Those records include `owner`, `name`, `hostedSince`, `lastSync`, `sizeBytes`, `rootCommit`, `visibility`, and `source`.
++The Worker also stores `host_presence` for currently live repository host tunnels and `repo_first_hosted` for the first time a repository was seen live.
++
++## Desired User Experience
++
++On a repository page, the existing Network tab becomes a Mirrors tab.
++Opening the Mirrors tab shows summary metrics and a table.
++The required table columns are Node, Status, Last seen, Hosted since, Sync age, and Clone available.
++The page must make ForkMesh's distributed nature visible without making the user understand implementation internals.
++The page must not claim a clone will pass integrity verification before Git actually receives the advertised refs from the host.
++
++## Scope
++
++The first slice includes a Worker endpoint for mirror health, the repo page Mirrors tab, summary metrics, loading and empty states, responsive layout, and automated tests.
++The first slice does not include a graphical network map.
++The first slice does not include long-term uptime percentages because current `host_presence` rows are live presence rows, not durable history.
++The first slice does not include region or relay labels because no reliable region or relay field is currently published by the catalog.
++
++## Worker API
++
++Add `GET /api/repo/{owner}/{repo}/mirrors`.
++The route returns only public repository mirrors.
++Private repository mirror health can be added later with the existing view-token model.
++The route resolves the requested repo from the catalog.
++It then finds every public catalog row with the same logical mirror key.
++The logical mirror key is `rootCommit` when present and the lowercased repository name otherwise.
++The route joins live presence from `host_presence` and first-hosted timestamps from `repo_first_hosted`.
++
++The response shape is:
++
++```json
++{
++  "ok": true,
++  "owner": "mainnode",
++  "repo": "forkmesh",
++  "groupKey": "root:abc123",
++  "generatedAt": 1782300000000,
++  "summary": {
++    "mirrors": 3,
++    "online": 2,
++    "cloneAvailable": 2,
++    "dataHostedBytes": 192308123,
++    "longestHostedSince": 1778700000000,
++    "freshestSync": 1782299940000
++  },
++  "mirrors": [
++    {
++      "node": "mainnode",
++      "owner": "mainnode",
++      "repo": "forkmesh",
++      "status": "online",
++      "lastSeen": 1782299990000,
++      "hostedSince": 1778700000000,
++      "syncAgeMs": 60000,
++      "lastSync": 1782299940000,
++      "behind": false,
++      "cloneAvailable": true,
++      "sizeBytes": 64000000,
++      "source": "local-node"
++    }
++  ]
++}
++```
++
++If the requested repository is not published or is private, the endpoint returns `404`.
++If a catalog row has malformed numeric fields, the endpoint treats that field as absent rather than failing the whole response.
++Mirrors sort by online status first, then freshest `lastSync`, then node name.
++
++## Frontend
++
++Rename the repo detail tab label from Network to Mirrors.
++Keep the existing tab style and icon language.
++Load mirror health lazily when the Mirrors tab is opened.
++Render four summary metrics above the table: Mirror nodes, Clone availability, Longest hosted, and Data hosted.
++Render a table with the requested columns.
++Use existing status-pill styling for Online, Offline, and Behind states.
++Show `not recent` when the Worker has no current `lastSeen` value for an offline mirror.
++Show `Yes` for clone availability only when a live host is present for that mirror.
++Show `No` for offline public mirrors.
++Use relative time in the cells and keep absolute timestamps available through `title` attributes.
++On small screens, the table must collapse into readable row blocks without horizontal overflow.
++
++## Data Interpretation
++
++Status is Online when `host_presence.ts` is within `HOST_PRESENCE_STALE_MS`.
++Status is Offline otherwise.
++Last seen is `host_presence.ts` when the row exists and is live enough to be useful.
++Hosted since is the catalog `hostedSince` value, falling back to `repo_first_hosted.ts`.
++Sync age is `generatedAt - lastSync`.
++A mirror is behind when its `lastSync` is more than the existing five second tolerance behind the freshest mirror in the group.
++Behind is a sync warning, not a replacement for online or offline status.
++Clone availability is true when the mirror has a live host.
++
++## Testing
++
++Worker tests must cover grouping mirrors by `rootCommit`.
++Worker tests must cover fallback grouping by repository name.
++Worker tests must cover online status, last seen, hosted since fallback, sync age, clone availability, and sorting.
++Worker tests must cover private or unpublished repositories not being returned.
++Frontend tests can be lightweight source-contract tests because the public site is plain static HTML and JavaScript.
++Browser verification must inspect desktop and mobile layouts after implementation.
++
++## Risks
++
++Current live presence does not preserve a durable last-seen history after stale rows are pruned.
++The UI should therefore describe stale mirrors as `not recent`, not as a precise offline timestamp.
++Clone availability is a reachability signal, not an integrity guarantee.
++The Git smart HTTP path still performs the authoritative state-hash check during clone.
++
++## Future Work
++
++Add a graph view after the table contract is stable.
++Add durable per-node uptime samples if the product needs uptime percentages.
++Add region and relay fields once desktop nodes or federated relays publish trustworthy metadata.
++Add authenticated private repo mirror health after the public mirrors flow is complete.
