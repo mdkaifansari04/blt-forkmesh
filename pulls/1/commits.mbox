@@ -1,4 +1,4 @@
-From a9373feba42e719725ee676153250262beb967c4 Mon Sep 17 00:00:00 2001
+From 47b149442d8e18cd758070498f59609c2230d3bc Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Wed, 24 Jun 2026 16:35:48 +0530
 Subject: [PATCH] feat: add editable repository about details
@@ -10,7 +10,7 @@ Subject: [PATCH] feat: add editable repository about details
  3 files changed, 221 insertions(+), 2 deletions(-)
 
 diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
-index 409aef8b..128fe64a 100644
+index bdba073e..a67df765 100644
 --- a/qt_client/src/MainWindow.cpp
 +++ b/qt_client/src/MainWindow.cpp
 @@ -89,6 +89,7 @@
@@ -21,7 +21,7 @@ index 409aef8b..128fe64a 100644
  #include <QScreen>
  #include <QScrollArea>
  #include <QSet>
-@@ -2644,6 +2645,24 @@ QString canonicalServerUrl(const QString &input)
+@@ -2732,6 +2733,24 @@ QString canonicalServerUrl(const QString &input)
          .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
  }
  
@@ -46,7 +46,7 @@ index 409aef8b..128fe64a 100644
  // Inverse of canonicalServerUrl for display: the host (with port when present)
  // pulled back out of a stored full URL.
  QString serverHostDisplay(const QString &fullUrl)
-@@ -3217,6 +3236,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+@@ -3305,6 +3324,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
      logStartup(QStringLiteral("MainWindow ctor begin"));
      setWindowTitle("ForkMesh v" FORKMESH_VERSION);
      setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
@@ -55,7 +55,7 @@ index 409aef8b..128fe64a 100644
      resize(1060, 700);
      // Restore the last window size/position so it reopens where it was left.
      const QByteArray savedGeometry =
-@@ -16625,8 +16646,24 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -17738,8 +17759,24 @@ QWidget *MainWindow::buildAboutSidebar()
  
      auto *aboutLabel = new QLabel("About");
      aboutLabel->setObjectName("aboutHeading");
@@ -81,7 +81,7 @@ index 409aef8b..128fe64a 100644
      m_aboutText->setWordWrap(true);
      m_aboutText->setTextFormat(Qt::RichText);
      m_aboutText->setOpenExternalLinks(true);
-@@ -16694,7 +16731,7 @@ QWidget *MainWindow::buildAboutSidebar()
+@@ -17807,7 +17844,7 @@ QWidget *MainWindow::buildAboutSidebar()
      auto *layout = new QVBoxLayout(side);
      layout->setContentsMargins(22, 6, 20, 20);
      layout->setSpacing(8);
@@ -90,7 +90,7 @@ index 409aef8b..128fe64a 100644
      layout->addWidget(m_aboutText);
      layout->addWidget(m_aboutTopics);
      layout->addWidget(m_aboutFiles);
-@@ -20056,6 +20093,141 @@ void MainWindow::loadRepoInfo()
+@@ -22761,6 +22798,141 @@ void MainWindow::loadRepoInfo()
      }
  }
  
@@ -232,7 +232,7 @@ index 409aef8b..128fe64a 100644
  void MainWindow::setRepoBranch(const QString &branch)
  {
      m_repoBranch = branch;
-@@ -21243,6 +21415,15 @@ void MainWindow::loadAboutSidebar()
+@@ -24603,6 +24775,15 @@ void MainWindow::loadAboutSidebar()
              ? &m_repositories.at(m_repoDetailIndex)
              : nullptr;
  
@@ -248,7 +248,7 @@ index 409aef8b..128fe64a 100644
      // About text + website.
      if (m_aboutText) {
          QString text = m_repoInfo.about.isEmpty()
-@@ -29897,9 +30078,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+@@ -33406,9 +33587,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
      // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
      // refs/tags/* only, sorted, joined by '\n'.
      const QString stateHash = mirrorStateHash(repo.mirrorPath);
@@ -270,10 +270,10 @@ index 409aef8b..128fe64a 100644
                           {"solana", repo.solanaAddress},
                           {"channel", repositoryChannel(repo)},
 diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
-index 759d6022..6f3acc96 100644
+index f84362f9..ab8dae64 100644
 --- a/qt_client/src/MainWindow.h
 +++ b/qt_client/src/MainWindow.h
-@@ -139,6 +139,11 @@ public:
+@@ -143,6 +143,11 @@ public:
      QString testSavedSolanaAddress() const;
      bool testAccountAuthenticated() const { return m_accountAuthenticated; }
      QString testAccountTier() const { return m_accountTier; }
@@ -285,17 +285,17 @@ index 759d6022..6f3acc96 100644
      int testAddPublishedRepository(const QString &owner, const QString &name,
                                     const QString &mirrorPath);
      void testPublishRepository(int index) { publishRepository(index, false); }
-@@ -624,6 +629,9 @@ private:
-     bool repoHasWorkingTree() const;
-     void loadFileSearchIndex();
-     void loadAboutSidebar();
+@@ -703,6 +708,9 @@ private:
+     void onSearchResultActivated(QTreeWidgetItem *item, int column);
+     void stopSearch();
+     void updateSearchStatus();
 +    void editRepoAbout();
 +    bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
 +                               QString *error = nullptr);
      void loadCommits();
-     // --- Source Control panel (working-tree changes) at the top of the Commits
-     // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
-@@ -1293,6 +1301,7 @@ private:
+     // Infinite scroll: when the list is scrolled to the bottom and more history
+     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
+@@ -1404,6 +1412,7 @@ private:
      QGridLayout *m_securitySignalsGrid = nullptr;
      QTableWidget *m_securityFindingsTable = nullptr;
      QPushButton *m_securityRefreshButton = nullptr;
@@ -304,10 +304,10 @@ index 759d6022..6f3acc96 100644
      QLabel *m_aboutTopics = nullptr;
      QLabel *m_aboutFiles = nullptr;
 diff --git a/qt_client/src/Theme.h b/qt_client/src/Theme.h
-index 3fd8ab51..9c67c96e 100644
+index d9cdb345..2543476e 100644
 --- a/qt_client/src/Theme.h
 +++ b/qt_client/src/Theme.h
-@@ -208,6 +208,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
+@@ -219,6 +219,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
  #aboutSidebar { background: transparent; }
  #aboutSidebar QLabel { background: transparent; }
  #aboutHeading { font-size: 15px; font-weight: 700; }
@@ -323,7 +323,7 @@ index 3fd8ab51..9c67c96e 100644
  #langBar { background-color: #161b22; border-radius: 5px; }
  #aboutRule { background-color: #21262d; border: none; }
  #commitsList {
-@@ -1046,6 +1055,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
+@@ -1134,6 +1143,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
  #aboutSidebar { background: transparent; }
  #aboutSidebar QLabel { background: transparent; }
  #aboutHeading { font-size: 15px; font-weight: 700; }
