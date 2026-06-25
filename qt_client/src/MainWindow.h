@@ -487,6 +487,7 @@ private:
     void reopenCurrentPull();
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
+    void setPullDeleteButtonsEnabled(bool enabled);
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
     void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
@@ -1623,6 +1624,7 @@ private:
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     bool m_pullDeleteConfirmPending = false;
+    bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
     QTextBrowser *m_pullDiff = nullptr;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side

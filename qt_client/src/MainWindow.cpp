@@ -15645,10 +15645,25 @@ void MainWindow::reopenCurrentPull()
     reloadPulls();
 }
 
+// Toggle both pull-delete buttons together so neither can launch a second
+// history rewrite while one worker thread is running.
+void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
+{
+    if (m_pullDeleteButton)
+        m_pullDeleteButton->setEnabled(enabled);
+    if (m_pullDeleteBranchButton)
+        m_pullDeleteBranchButton->setEnabled(enabled);
+}
+
 void MainWindow::deleteCurrentPull()
 {
     if (m_currentPullNumber < 0)
         return;
+    if (m_pullDeleteInProgress) {
+        setRepoDetailNotice(
+            QStringLiteral("A pull request deletion is already running."));
+        return;
+    }
     if (!m_pullDeleteConfirmPending) {
         m_pullDeleteConfirmPending = true;
         // Show a simple message box confirmation instead of inline notice
@@ -15662,15 +15677,51 @@ void MainWindow::deleteCurrentPull()
         if (ret != QMessageBox::Ok)
             return;
     }
+
+    // deletePull rewrites all of git history (filter-branch + gc + reflog expire)
+    // so the diff text the PR carried can no longer be recovered — slow enough to
+    // freeze the UI for many seconds if run inline. Shell it out to a worker thread
+    // (deletePull only touches git, no event signing, so a copied store is safe)
+    // and report back on the main thread.
+    const int deleted = m_currentPullNumber;
+    m_pullDeleteInProgress = true;
+    setPullDeleteButtonsEnabled(false);
+    setRepoDetailNotice(
+        QStringLiteral("Deleting pull request #%1 and rewriting history… this can "
+                       "take a while.")
+            .arg(deleted));
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+
     PullStore store = pullStoreForCurrentRepo();
-    QString error;
-    if (!store.deletePull(m_currentPullNumber, &error)) {
-        QMessageBox::warning(this, "Delete pull request",
-                             error.isEmpty() ? "Could not delete the pull request." : error);
-        return;
-    }
-    m_currentPullNumber = -1;
-    reloadPulls();
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    QThread *worker = QThread::create([store, deleted, ok, error]() mutable {
+        QString err;
+        *ok = store.deletePull(deleted, &err);
+        *error = err;
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, ok, error, deleted]() {
+                m_pullDeleteInProgress = false;
+                QApplication::restoreOverrideCursor();
+                setPullDeleteButtonsEnabled(true);
+                if (!*ok) {
+                    QMessageBox::warning(
+                        this, "Delete pull request",
+                        error->isEmpty()
+                            ? QStringLiteral("Could not delete the pull request.")
+                            : *error);
+                    worker->deleteLater();
+                    return;
+                }
+                if (m_currentPullNumber == deleted)
+                    m_currentPullNumber = -1;
+                reloadPulls();
+                setRepoDetailNotice(
+                    QStringLiteral("Deleted pull request #%1.").arg(deleted));
+                worker->deleteLater();
+            });
+    worker->start();
 }
 
 // Delete the pull request and the local head branch it was opened from, in one
@@ -15681,6 +15732,11 @@ void MainWindow::deleteCurrentPullAndBranch()
 {
     if (m_currentPullNumber < 0)
         return;
+    if (m_pullDeleteInProgress) {
+        setRepoDetailNotice(
+            QStringLiteral("A pull request deletion is already running."));
+        return;
+    }
     // Resolve the PR's head branch before anything is removed.
     QString head, base;
     for (const PullRequest &p : std::as_const(m_currentPulls)) {
@@ -15717,12 +15773,12 @@ void MainWindow::deleteCurrentPullAndBranch()
     const int deleted = m_currentPullNumber;
     const QString dir = repoGitDir();
     const bool haveWorkTree = repoHasWorkingTree();
+    m_pullDeleteInProgress = true;
     setRepoDetailNotice(
         QStringLiteral("Deleting pull request #%1 and rewriting history… this can "
                        "take a while.")
             .arg(deleted));
-    if (m_pullDeleteBranchButton)
-        m_pullDeleteBranchButton->setEnabled(false);
+    setPullDeleteButtonsEnabled(false);
     QApplication::setOverrideCursor(Qt::BusyCursor);
 
     PullStore store = pullStoreForCurrentRepo();
@@ -15736,9 +15792,9 @@ void MainWindow::deleteCurrentPullAndBranch()
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error, deleted, head, haveBranch, dir,
              haveWorkTree]() {
+                m_pullDeleteInProgress = false;
                 QApplication::restoreOverrideCursor();
-                if (m_pullDeleteBranchButton)
-                    m_pullDeleteBranchButton->setEnabled(true);
+                setPullDeleteButtonsEnabled(true);
                 if (!*ok) {
                     QMessageBox::warning(
                         this, "Delete pull request",
