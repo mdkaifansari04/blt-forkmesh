@@ -61,6 +61,8 @@ set(FORKMESH_APP_SOURCES
     src/MarkdownEditor.cpp
     src/TerminalWidget.h
     src/TerminalWidget.cpp
+    src/ClaudeIdeBridge.h
+    src/ClaudeIdeBridge.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
@@ -118,6 +120,18 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # A focused suite for the Claude Code IDE bridge: drives its WebSocket /
+    # JSON-RPC server the way the CLI does (no Widgets needed).
+    qt_add_executable(forkmesh-ide-tests
+        tests/test_ide_bridge.cpp
+        src/ClaudeIdeBridge.h
+        src/ClaudeIdeBridge.cpp
+    )
+    target_link_libraries(forkmesh-ide-tests PRIVATE Qt6::Core Qt6::Network)
+    if(APPLE)
+        set_target_properties(forkmesh-ide-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
     # A second suite that drives the real MainWindow (needs the full app sources).
     qt_add_executable(forkmesh-window-tests
         tests/test_window_resize.cpp
@@ -138,6 +152,7 @@ if(FORKMESH_BUILD_TESTS)
     # The headless smoke tests need an offscreen Qt platform.
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
+    add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     set_tests_properties(forkmesh-tests forkmesh-window-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -145,5 +160,5 @@ if(FORKMESH_BUILD_TESTS)
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests forkmesh-window-tests)
+    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests)
 endif()

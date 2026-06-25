@@ -28,6 +28,7 @@ struct CommitComment; // CommitCommentStore.h
 class MessageRow;
 class MarkdownEditor;
 class TerminalWidget;
+class ClaudeIdeBridge;
 class RepoHost;
 class ActionRunner;
 class QButtonGroup;
@@ -1746,6 +1747,13 @@ private:
     QStackedWidget *m_agentOutputStack = nullptr; // log (0) | embedded terminal (1)
     TerminalWidget *m_agentTerminal = nullptr;  // Claude Code runs here
     int m_terminalSessionId = -1; // session currently driving the embedded terminal
+    // Makes the app act as the IDE the `claude` CLI connects to (issue #191):
+    // a localhost WebSocket/JSON-RPC server advertised via ~/.claude/ide. Lazily
+    // created on the first Claude Code terminal launch.
+    ClaudeIdeBridge *m_ideBridge = nullptr;
+    ClaudeIdeBridge *ensureIdeBridge();
+    void onClaudeOpenDiff(const QString &tabName, const QString &oldPath,
+                          const QString &newPath, const QString &newContents);
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
