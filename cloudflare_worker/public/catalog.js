@@ -654,11 +654,16 @@ const pullListEl = document.querySelector("#pull-list");
 const pullsMetaEl = document.querySelector("#pulls-meta");
 const tabDiscussionsEl = document.querySelector("#tab-discussions");
 const discussionsSectionEl = document.querySelector("#discussions");
-const tabNetworkEl = document.querySelector("#tab-network");
-const repoNetworkSectionEl = document.querySelector("#repo-network");
+const tabMirrorsEl = document.querySelector("#tab-mirrors");
+const mirrorsSectionEl = document.querySelector("#repo-mirrors");
+const mirrorSummaryEl = document.querySelector("#mirror-summary");
+const mirrorListEl = document.querySelector("#mirror-list");
+const mirrorsMetaEl = document.querySelector("#mirrors-meta");
 let pullsLoadedFor = null;
 let pullsToken = 0;
 let pullsCountToken = 0;
+let mirrorsLoadedFor = null;
+let mirrorsToken = 0;
 
 // Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
 function parseFrontmatter(content) {
@@ -1130,7 +1135,7 @@ function showRepoTab(tab) {
     issues: issuesSectionEl,
     pulls: pullsSectionEl,
     discussions: discussionsSectionEl,
-    network: repoNetworkSectionEl,
+    mirrors: mirrorsSectionEl,
   };
   for (const [name, section] of Object.entries(sections)) {
     if (section) section.hidden = name !== tab;
@@ -1141,7 +1146,7 @@ function showRepoTab(tab) {
     issues: tabIssuesEl,
     pulls: tabPullsEl,
     discussions: tabDiscussionsEl,
-    network: tabNetworkEl,
+    mirrors: tabMirrorsEl,
   };
   for (const [name, button] of Object.entries(tabs)) {
     if (button) button.classList.toggle("is-active", name === tab);
@@ -1160,6 +1165,151 @@ function showRepoTab(tab) {
     pullsLoadedFor = repoKey;
     loadPulls(fileState.owner, fileState.name);
   }
+  if (tab === "mirrors" && mirrorsLoadedFor !== repoKey) {
+    loadMirrors(fileState.owner, fileState.name);
+  }
+}
+
+function formatRelativeMs(value, empty = "not recent") {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  const diff = Math.max(0, Date.now() - n);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return sec <= 5 ? "now" : `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hours = Math.floor(min / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function formatDurationMs(value, empty = "not synced") {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return empty;
+  if (n < 60 * 1000) return "<1m";
+  const min = Math.floor(n / 60000);
+  if (min < 60) return `${min}m`;
+  const hours = Math.floor(min / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function timestampTitle(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return new Date(n).toLocaleString();
+}
+
+function mirrorSummaryItem(label, value) {
+  const item = document.createElement("div");
+  item.className = "mirror-summary-item";
+  const labelEl = document.createElement("span");
+  labelEl.textContent = label;
+  const valueEl = document.createElement("strong");
+  valueEl.textContent = value;
+  item.append(labelEl, valueEl);
+  return item;
+}
+
+function renderMirrorSummary(summary) {
+  if (!mirrorSummaryEl) return;
+  const mirrors = Number(summary && summary.mirrors) || 0;
+  const available = Number(summary && summary.cloneAvailable) || 0;
+  const hosted = summary && summary.longestHostedSince;
+  const data = Number(summary && summary.dataHostedBytes) || 0;
+  mirrorSummaryEl.replaceChildren(
+    mirrorSummaryItem("Mirror nodes", String(mirrors)),
+    mirrorSummaryItem("Clone availability", `${available} online`),
+    mirrorSummaryItem("Longest hosted", formatRelativeMs(hosted, "unknown")),
+    mirrorSummaryItem("Data hosted", formatSize(data))
+  );
+}
+
+function td(label, text) {
+  const cell = document.createElement("td");
+  cell.dataset.label = label;
+  cell.textContent = text;
+  return cell;
+}
+
+function mirrorStatusPill(mirror) {
+  const wrap = document.createElement("span");
+  wrap.className = "mirror-status-stack";
+  const pill = document.createElement("span");
+  pill.className = mirror.status === "online" ? "status-pill online" : "status-pill offline";
+  pill.replaceChildren(
+    document.createElement("span"),
+    document.createTextNode(mirror.status === "online" ? "Online" : "Offline")
+  );
+  wrap.append(pill);
+  if (mirror.behind) {
+    const behind = document.createElement("span");
+    behind.className = "status-pill behind";
+    behind.replaceChildren(
+      document.createElement("span"),
+      document.createTextNode("Behind")
+    );
+    wrap.append(behind);
+  }
+  return wrap;
+}
+
+function mirrorRow(mirror) {
+  const row = document.createElement("tr");
+  const node = document.createElement("td");
+  node.dataset.label = "Node";
+  const link = document.createElement("a");
+  link.href = repoRoute(mirror.owner, mirror.repo);
+  link.textContent = mirror.node || mirror.owner || "node";
+  link.addEventListener("click", (event) => routeCatalogClick(event, mirror.owner, mirror.repo));
+  node.append(link);
+  const status = document.createElement("td");
+  status.dataset.label = "Status";
+  status.append(mirrorStatusPill(mirror));
+  const seen = td("Last seen", formatRelativeMs(mirror.lastSeen));
+  seen.title = timestampTitle(mirror.lastSeen);
+  const hosted = td("Hosted since", formatRelativeMs(mirror.hostedSince, "unknown"));
+  hosted.title = timestampTitle(mirror.hostedSince);
+  const sync = td("Sync age", formatDurationMs(mirror.syncAgeMs));
+  if (mirror.behind) {
+    sync.classList.add("mirror-sync-behind");
+    sync.textContent = `${sync.textContent} behind`;
+  }
+  const clone = td("Clone available", mirror.cloneAvailable ? "Yes" : "No");
+  row.append(node, status, seen, hosted, sync, clone);
+  return row;
+}
+
+async function loadMirrors(owner, name) {
+  if (!mirrorListEl) return;
+  const token = ++mirrorsToken;
+  mirrorListEl.innerHTML = `<tr><td colspan="6">Loading mirror health...</td></tr>`;
+  if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();
+  if (mirrorsMetaEl) mirrorsMetaEl.textContent = "";
+  try {
+    const response = await fetch(
+      `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/mirrors`,
+      { headers: { accept: "application/json" } }
+    );
+    const data = await response.json();
+    if (token !== mirrorsToken) return;
+    if (!response.ok || !data.ok) throw new Error((data && data.error) || `HTTP ${response.status}`);
+    renderMirrorSummary(data.summary || {});
+    mirrorsLoadedFor = `${owner}/${name}`;
+    const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
+    if (mirrorsMetaEl) mirrorsMetaEl.textContent = `${mirrors.length} mirror${mirrors.length === 1 ? "" : "s"}`;
+    if (!mirrors.length) {
+      mirrorListEl.innerHTML = `<tr><td colspan="6">No mirror nodes are published for this repository yet.</td></tr>`;
+      return;
+    }
+    mirrorListEl.replaceChildren(...mirrors.map(mirrorRow));
+  } catch (error) {
+    if (token !== mirrorsToken) return;
+    mirrorsLoadedFor = "";
+    if (mirrorSummaryEl) mirrorSummaryEl.replaceChildren();
+    mirrorListEl.innerHTML = `<tr><td colspan="6">Mirror health is temporarily unavailable.</td></tr>`;
+    if (mirrorsMetaEl) mirrorsMetaEl.textContent = "unavailable";
+  }
 }
 
 if (tabCodeEl) tabCodeEl.addEventListener("click", () => showRepoTab("code"));
@@ -1167,7 +1317,7 @@ if (tabCommitsEl) tabCommitsEl.addEventListener("click", () => showRepoTab("comm
 if (tabIssuesEl) tabIssuesEl.addEventListener("click", () => showRepoTab("issues"));
 if (tabPullsEl) tabPullsEl.addEventListener("click", () => showRepoTab("pulls"));
 if (tabDiscussionsEl) tabDiscussionsEl.addEventListener("click", () => showRepoTab("discussions"));
-if (tabNetworkEl) tabNetworkEl.addEventListener("click", () => showRepoTab("network"));
+if (tabMirrorsEl) tabMirrorsEl.addEventListener("click", () => showRepoTab("mirrors"));
 
 // ---- Routing: home (repo list) vs. a single repository page ----------------
 
@@ -1478,6 +1628,7 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   issuesLoadedFor = null;
   commitsLoadedFor = null;
   pullsLoadedFor = null;
+  mirrorsLoadedFor = null;
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
   if (tabPullsCountEl) tabPullsCountEl.textContent = "";

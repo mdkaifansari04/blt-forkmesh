@@ -359,7 +359,7 @@
                 >Discussions
               </button>
               <button
-                id="tab-network"
+                id="tab-mirrors"
                 class="repo-tab"
                 type="button"
                 role="tab"
@@ -369,7 +369,7 @@
                   <circle cx="6" cy="17" r="3"></circle>
                   <circle cx="18" cy="17" r="3"></circle>
                   <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path></svg
-                >Network
+                >Mirrors
               </button>
             </nav>
           </div>
@@ -516,20 +516,35 @@
               </div>
             </section>
 
-            <section id="repo-network" class="panel" hidden>
-              <div class="empty-state">
-                <svg viewBox="0 0 24 24">
-                  <circle cx="12" cy="5" r="3"></circle>
-                  <circle cx="6" cy="17" r="3"></circle>
-                  <circle cx="18" cy="17" r="3"></circle>
-                  <path d="m10.5 7.5-3 7M13.5 7.5l3 7"></path>
-                </svg>
-                <h2>Live host tunnel</h2>
-                <p>
-                  This repo is browsed and cloned through connected desktop
-                  hosts. The relay coordinates; it does not store the Git
-                  objects.
-                </p>
+            <section id="repo-mirrors" class="panel" hidden aria-labelledby="mirrors-title">
+              <div class="panel-header">
+                <div>
+                  <h2 id="mirrors-title">Mirrors</h2>
+                  <p>
+                    Nodes currently advertising a mirror of this repository.
+                  </p>
+                </div>
+                <span id="mirrors-meta" class="file-meta"></span>
+              </div>
+              <div id="mirror-summary" class="mirror-summary-grid" aria-label="Mirror summary"></div>
+              <div class="mirror-table-wrap">
+                <table class="mirror-health-table">
+                  <thead>
+                    <tr>
+                      <th>Node</th>
+                      <th>Status</th>
+                      <th>Last seen</th>
+                      <th>Hosted since</th>
+                      <th>Sync age</th>
+                      <th>Clone available</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mirror-list">
+                    <tr>
+                      <td colspan="6">Open the tab to load mirror health.</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </section>
 
