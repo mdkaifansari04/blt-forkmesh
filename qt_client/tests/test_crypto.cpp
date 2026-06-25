@@ -11,6 +11,7 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFile>
 #include <QJsonObject>
 #include <QProcess>
 #include <QTemporaryDir>
@@ -638,6 +639,70 @@ int main(int argc, char *argv[])
         check(snapshot.files.value("src/b.cpp").totalThreads == 1 &&
                   snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
               "review model treats legacy line-comments as unresolved threads");
+
+        // --- PullStore deletePullFile excises one file, keeps the rest -------
+        // Regression for issue #258: deleting a file used to rebuild the PR by
+        // replaying its commits onto the current base with `git am`, which drops
+        // commits already present on the base and so could wipe most of the PR.
+        // The delete now edits the stored diff/commits in place.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            git({"checkout", "-q", "-b", "feat-258"});
+            writeFile("alpha.txt", "alpha-1\n");
+            writeFile("beta.txt", "beta-1\n");
+            git({"add", "alpha.txt", "beta.txt"});
+            git({"commit", "-q", "-m", "add alpha and beta"});
+            writeFile("beta.txt", "beta-2\n"); // a commit that touches only beta
+            git({"add", "beta.txt"});
+            git({"commit", "-q", "-m", "tweak beta"});
+            writeFile("gamma.txt", "gamma-1\n");
+            git({"add", "gamma.txt"});
+            git({"commit", "-q", "-m", "add gamma"});
+            const QString delPatch =
+                QString::fromUtf8(gitOutput({"diff", baseBranch + "..feat-258"}));
+            const QString delMbox = QString::fromUtf8(
+                gitOutput({"format-patch", "--stdout", baseBranch + "..feat-258"}));
+            git({"checkout", "-q", baseBranch});
+
+            const int dn = pulls.createPull("Three files", "body", baseBranch,
+                                            "feat-258", delPatch, delMbox, &err);
+            check(dn > 0, "createPull stores a multi-file PR with a commit series");
+            check(pulls.deletePullFile(dn, "beta.txt", &err),
+                  "deletePullFile removes one file from the PR");
+
+            PullRequest afterDel;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == dn)
+                    afterDel = p;
+            check(afterDel.patch.contains("alpha.txt") &&
+                      afterDel.patch.contains("gamma.txt"),
+                  "deleting one file leaves the other files in the patch (#258)");
+            check(!afterDel.patch.contains("beta.txt"),
+                  "the deleted file is gone from the patch");
+            check(afterDel.filesChanged == 2,
+                  "stats drop by exactly the one deleted file");
+            check(afterDel.commits.contains("add alpha and beta") &&
+                      afterDel.commits.contains("add gamma"),
+                  "multi-file commits survive with their other changes intact");
+            check(!afterDel.commits.contains("tweak beta") &&
+                      !afterDel.commits.contains("beta.txt"),
+                  "a commit touching only the deleted file is dropped from the series");
+
+            // The trimmed commit series must still be a valid, appliable patch.
+            check(pulls.mergePull(dn, &err),
+                  "the PR still merges cleanly after a file was deleted from it");
+            check(QFile::exists(tmp.path() + "/alpha.txt") &&
+                      QFile::exists(tmp.path() + "/gamma.txt") &&
+                      !QFile::exists(tmp.path() + "/beta.txt"),
+                  "merging applies the kept files and not the deleted one");
+        }
 
         // --- CommitCommentStore round-trip -------------------------------
         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
