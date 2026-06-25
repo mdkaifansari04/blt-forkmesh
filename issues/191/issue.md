@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 191
 title: Native Claude Code IDE integration: have the app act as the IDE the claude CLI connects to (in-app diffs, selection, open-file context)
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 1
