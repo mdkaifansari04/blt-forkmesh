@@ -9,6 +9,7 @@ class QVBoxLayout;
 class QWidget;
 class QLabel;
 class QPropertyAnimation;
+class QPushButton;
 class QResizeEvent;
 class Collapsible;
 
@@ -46,12 +47,27 @@ protected:
     // top of the viewport (chat-style "latest pinned up").
     void resizeEvent(QResizeEvent *e) override;
 
+public:
+    // Jump the view to the start / end of the transcript (used by the floating
+    // ▲/▼ buttons in the corner).
+    void scrollToTop();
+    void scrollToBottom();
+    // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
+    void setSplitDiffs(bool on);
+
 private:
     void applyScheme();
-    void addRow(QWidget *card);
-    void scrollToNewCard(QWidget *card);
+    // Add a row to the timeline. nodeColor tints the connecting-line node dot.
+    // Returns the row wrapper so live rows (the activity ticker) can be removed.
+    QWidget *addRow(QWidget *card, const QString &nodeColor = QString());
+    // The whimsical "what it's doing" ticker shown while the agent is working.
+    void ensureActivity();
+    void clearActivity();
+    void cycleActivityWord();
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
+    void positionScrollButtons();
+    void updateScrollButtons();
     QString accentFor(const QString &toolName) const;
 
     QWidget *makeBubble(const QString &title, const QString &markdown,
@@ -59,6 +75,14 @@ private:
     Collapsible *makeCollapsible(const QString &header, QWidget *body,
                                  bool expanded);
     void addAssistantBlocks(const QJsonObject &message);
+    // Plain (un-boxed) assistant prose, like the Claude Code conversation view.
+    void addAssistantText(const QString &markdown);
+    // A "Name  subtitle" tool header line (the timeline rail supplies the dot).
+    QWidget *dotHeader(const QString &name, const QString &subtitle);
+    // One labelled row ("IN"/"OUT") inside a tool card's box.
+    QWidget *ioRow(const QString &label, QWidget *content);
+    // Monospace content with no panel background (it lives inside a card box).
+    QWidget *makeMono(const QString &text, bool collapsedIfLong);
 
     // Live "thinking" lifecycle.
     void ensureLiveThinking();
@@ -79,11 +103,21 @@ private:
     Palette m_p;
     QWidget *m_container = nullptr;
     QVBoxLayout *m_col = nullptr;
-    QWidget *m_bottomSpacer = nullptr; // grows to a viewport height (see resizeEvent)
+    QWidget *m_bottomSpacer = nullptr; // small tail so the last row isn't flush
+    // Follow mode: while the view is at the bottom, new content keeps it pinned
+    // there; scrolling up releases it until the user returns to the bottom.
+    bool m_stickBottom = true;
+    QPushButton *m_toTopBtn = nullptr;    // floating ▲ jump-to-top
+    QPushButton *m_toBottomBtn = nullptr; // floating ▼ jump-to-bottom
+    bool m_splitDiffs = false;            // side-by-side vs unified diffs
+    QWidget *m_activity = nullptr;        // live "what it's doing" ticker row
+    QLabel *m_activityLabel = nullptr;
+    QTimer *m_activityTimer = nullptr;
 
     struct ToolCard {
-        Collapsible *card = nullptr;
-        QVBoxLayout *body = nullptr; // where the tool_result gets appended
+        QFrame *box = nullptr;       // the bordered IN/OUT box
+        QVBoxLayout *io = nullptr;   // rows: IN, then OUT once the result lands
+        bool hasResult = false;      // an OUT row was appended
     };
     QHash<QString, ToolCard> m_toolCards;
 
@@ -91,6 +125,7 @@ private:
     QLabel *m_thinkingBody = nullptr;
     QString m_thinkingText;
     int m_thinkingTokens = 0;
+    qint64 m_thinkingStartMs = 0; // wall-clock start, for "Thought for Ns"
 
     QPropertyAnimation *m_scrollAnim = nullptr; // smooth scrolling
     qint64 m_totalTokens = 0;

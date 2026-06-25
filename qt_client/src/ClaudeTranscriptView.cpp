@@ -1,11 +1,17 @@
 #include "ClaudeTranscriptView.h"
 
+#include <QDateTime>
 #include <QEasingCurve>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QJsonArray>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QPen>
+#include <QRandomGenerator>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLocale>
@@ -146,6 +152,59 @@ private:
     QPropertyAnimation *m_pulse = nullptr; // live "breathing" while streaming
 };
 
+// One row on the transcript's timeline: a left rail (a vertical connecting line
+// with a coloured node dot) beside the item's content. Consecutive rows abut, so
+// their rails join into one continuous thread.
+class RailItem : public QWidget
+{
+public:
+    static constexpr int kRailW = 22;
+    static constexpr int kGap = 12;          // vertical space between items
+    static constexpr int kNodeY = kGap + 9;  // node aligned to the first text line
+
+    RailItem(QWidget *content, const QString &nodeColor, const QString &lineColor,
+             bool first, QWidget *parent = nullptr)
+        : QWidget(parent), m_node(nodeColor), m_line(lineColor), m_first(first)
+    {
+        setAttribute(Qt::WA_StyledBackground, false);
+        auto *h = new QHBoxLayout(this);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(0);
+        auto *rail = new QWidget(this);
+        rail->setFixedWidth(kRailW);
+        rail->setAttribute(Qt::WA_TransparentForMouseEvents);
+        rail->setStyleSheet(QStringLiteral("background:transparent;"));
+        h->addWidget(rail);
+        auto *holder = new QWidget(this);
+        holder->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *hv = new QVBoxLayout(holder);
+        hv->setContentsMargins(0, kGap, 0, 0); // the inter-item gap
+        hv->setSpacing(0);
+        content->setParent(holder);
+        hv->addWidget(content);
+        h->addWidget(holder, 1);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter g(this);
+        g.setRenderHint(QPainter::Antialiasing);
+        const double cx = kRailW / 2.0;
+        // The connecting line: from the node down for the first item, full height
+        // otherwise, so abutting rows form one unbroken spine.
+        g.setPen(QPen(QColor(m_line), 2));
+        g.drawLine(QPointF(cx, m_first ? kNodeY : 0), QPointF(cx, height()));
+        g.setPen(Qt::NoPen);
+        g.setBrush(QColor(m_node));
+        g.drawEllipse(QPointF(cx, kNodeY), 4.0, 4.0);
+    }
+
+private:
+    QString m_node, m_line;
+    bool m_first;
+};
+
 ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent)
 {
     setWidgetResizable(true);
@@ -153,13 +212,39 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
 
     m_container = new QWidget;
     m_col = new QVBoxLayout(m_container);
-    m_col->setContentsMargins(14, 14, 14, 14);
-    m_col->setSpacing(10);
-    // A spacer that grows to a viewport height so the newest card can scroll all
-    // the way to the top (chat-style "latest pinned up").
+    m_col->setContentsMargins(8, 14, 14, 14);
+    m_col->setSpacing(0); // RailItems supply their own inter-item gap
     m_bottomSpacer = new QWidget;
+    m_bottomSpacer->setFixedHeight(8);
     m_col->addWidget(m_bottomSpacer);
     setWidget(m_container);
+
+    // Floating jump-to-top / jump-to-bottom buttons over the viewport corner.
+    auto mkBtn = [this](const QString &glyph, const QString &tip) {
+        auto *b = new QPushButton(glyph, viewport());
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(tip);
+        b->setFixedSize(30, 30);
+        b->hide();
+        return b;
+    };
+    m_toTopBtn = mkBtn(QString::fromUtf8("\xE2\x96\xB2"), QStringLiteral("Jump to top"));
+    m_toBottomBtn = mkBtn(QString::fromUtf8("\xE2\x96\xBC"), QStringLiteral("Jump to bottom"));
+    connect(m_toTopBtn, &QPushButton::clicked, this, &ClaudeTranscriptView::scrollToTop);
+    connect(m_toBottomBtn, &QPushButton::clicked, this,
+            &ClaudeTranscriptView::scrollToBottom);
+
+    QScrollBar *sb = verticalScrollBar();
+    connect(sb, &QScrollBar::valueChanged, this, [this](int v) {
+        QScrollBar *b = verticalScrollBar();
+        m_stickBottom = v >= b->maximum() - 4;
+        updateScrollButtons();
+    });
+    connect(sb, &QScrollBar::rangeChanged, this, [this](int, int max) {
+        if (m_stickBottom)
+            verticalScrollBar()->setValue(max); // keep pinned as content grows
+        updateScrollButtons();
+    });
 
     applyScheme();
     if (QStyleHints *h = QGuiApplication::styleHints())
@@ -170,8 +255,95 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
 void ClaudeTranscriptView::resizeEvent(QResizeEvent *e)
 {
     QScrollArea::resizeEvent(e);
-    if (m_bottomSpacer)
-        m_bottomSpacer->setMinimumHeight(qMax(0, viewport()->height() - 80));
+    positionScrollButtons();
+    if (m_stickBottom)
+        verticalScrollBar()->setValue(verticalScrollBar()->maximum());
+}
+
+void ClaudeTranscriptView::positionScrollButtons()
+{
+    if (!m_toBottomBtn || !m_toTopBtn)
+        return;
+    const int m = 12, w = m_toBottomBtn->width(), h = m_toBottomBtn->height();
+    const int x = viewport()->width() - w - m;
+    m_toBottomBtn->move(x, viewport()->height() - h - m);
+    m_toTopBtn->move(x, viewport()->height() - 2 * h - m - 6);
+    m_toTopBtn->raise();
+    m_toBottomBtn->raise();
+}
+
+void ClaudeTranscriptView::updateScrollButtons()
+{
+    QScrollBar *sb = verticalScrollBar();
+    const bool scrollable = sb->maximum() > sb->minimum();
+    if (m_toBottomBtn)
+        m_toBottomBtn->setVisible(scrollable && !m_stickBottom);
+    if (m_toTopBtn)
+        m_toTopBtn->setVisible(scrollable && sb->value() > sb->minimum() + 4);
+    positionScrollButtons();
+}
+
+void ClaudeTranscriptView::scrollToTop()
+{
+    m_stickBottom = false;
+    smoothScrollTo(verticalScrollBar()->minimum());
+}
+
+void ClaudeTranscriptView::scrollToBottom()
+{
+    m_stickBottom = true;
+    smoothScrollTo(verticalScrollBar()->maximum());
+    updateScrollButtons();
+}
+
+void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
+
+// A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker.
+void ClaudeTranscriptView::cycleActivityWord()
+{
+    static const char *kWords[] = {
+        "Thinking", "Pondering", "Cogitating", "Percolating", "Noodling",
+        "Conjuring", "Ruminating", "Tinkering", "Synthesizing", "Scheming",
+        // …and the made-up fork/mesh ones:
+        "Forking", "Meshing", "Enmeshing", "Forkmeshing", "Remeshing",
+        "Reticulating meshes", "Untangling forks", "Weaving the mesh",
+        "Spinning up forks", "Meshulating", "Defragging the mesh", "Reforking",
+        "Coalescing nodes", "Threading the mesh", "Herding forks",
+        "Greasing the mesh", "Forkstrapping", "Demeshing", "Transmeshing"};
+    constexpr int n = int(sizeof(kWords) / sizeof(kWords[0]));
+    if (m_activityLabel)
+        m_activityLabel->setText(
+            QString::fromUtf8(kWords[QRandomGenerator::global()->bounded(n)])
+            + QString::fromUtf8("\xE2\x80\xA6")); // …
+}
+
+void ClaudeTranscriptView::ensureActivity()
+{
+    if (m_activity || m_liveThinking)
+        return; // the thinking card is its own live indicator
+    m_activityLabel = new QLabel;
+    m_activityLabel->setStyleSheet(
+        QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
+    cycleActivityWord();
+    m_activity = addRow(m_activityLabel, m_p.accent);
+    if (!m_activityTimer) {
+        m_activityTimer = new QTimer(this);
+        connect(m_activityTimer, &QTimer::timeout, this,
+                &ClaudeTranscriptView::cycleActivityWord);
+    }
+    m_activityTimer->start(2200);
+}
+
+void ClaudeTranscriptView::clearActivity()
+{
+    if (m_activityTimer)
+        m_activityTimer->stop();
+    if (m_activity) {
+        m_col->removeWidget(m_activity);
+        m_activity->deleteLater();
+        m_activity = nullptr;
+        m_activityLabel = nullptr;
+    }
 }
 
 void ClaudeTranscriptView::applyScheme()
@@ -188,10 +360,20 @@ void ClaudeTranscriptView::applyScheme()
     setStyleSheet(QStringLiteral("QScrollArea{background:%1;border:none;}").arg(m_p.canvas));
     if (m_container)
         m_container->setStyleSheet(QStringLiteral("background:%1;").arg(m_p.canvas));
+    const QString btnCss = QStringLiteral(
+        "QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:15px;"
+        "font-size:12px;font-weight:700;}"
+        "QPushButton:hover{background:%4;}")
+        .arg(m_p.surface, m_p.text, m_p.border, m_p.userBg);
+    if (m_toTopBtn)
+        m_toTopBtn->setStyleSheet(btnCss);
+    if (m_toBottomBtn)
+        m_toBottomBtn->setStyleSheet(btnCss);
 }
 
 void ClaudeTranscriptView::clear()
 {
+    clearActivity();
     m_toolCards.clear();
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
@@ -226,11 +408,26 @@ QString ClaudeTranscriptView::accentFor(const QString &name) const
     return m_p.accent;
 }
 
-void ClaudeTranscriptView::addRow(QWidget *card)
+QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
 {
-    m_col->insertWidget(m_col->count() - 1, card); // before the spacer
-    fadeIn(card);
-    scrollToNewCard(card);
+    const bool first = m_col->count() <= 1; // only the trailing spacer present
+    auto *item = new RailItem(card, nodeColor.isEmpty() ? m_p.muted : nodeColor,
+                              m_p.border, first);
+    // Keep the live activity ticker pinned as the last content row: new rows slot
+    // in just above it.
+    int pos = m_col->count() - 1; // before the trailing spacer
+    if (m_activity) {
+        const int ai = m_col->indexOf(m_activity);
+        if (ai >= 0)
+            pos = ai;
+    }
+    m_col->insertWidget(pos, item);
+    fadeIn(item);
+    // Follow mode does the scrolling: the scrollbar's rangeChanged handler pins
+    // the view to the bottom as the new row expands the content.
+    if (!m_stickBottom)
+        updateScrollButtons();
+    return item;
 }
 
 void ClaudeTranscriptView::fadeIn(QWidget *card)
@@ -248,15 +445,6 @@ void ClaudeTranscriptView::fadeIn(QWidget *card)
             pc->setGraphicsEffect(nullptr); // drop the effect once shown
     });
     a->start(QAbstractAnimation::DeleteWhenStopped);
-}
-
-void ClaudeTranscriptView::scrollToNewCard(QWidget *card)
-{
-    QPointer<QWidget> c = card;
-    QTimer::singleShot(0, this, [this, c] {
-        if (c)
-            smoothScrollTo(qMax(0, c->y() - 8));
-    });
 }
 
 void ClaudeTranscriptView::smoothScrollTo(int value)
@@ -329,6 +517,7 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
                               b.value(QStringLiteral("is_error")).toBool());
             }
         }
+        ensureActivity(); // a tool came back; the agent keeps going
     } else if (type == QLatin1String("rate_limit_event")) {
         const QJsonObject info = ev.value(QStringLiteral("rate_limit_info")).toObject();
         const int pct = qRound(info.value(QStringLiteral("utilization")).toDouble() * 100);
@@ -339,6 +528,7 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
                           QStringLiteral("%1%").arg(pct), pct);
     } else if (type == QLatin1String("result")) {
         finalizeThinking(QString());
+        clearActivity(); // the turn is done
         const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
         if (cost > 0) {
             m_totalCost = cost; // result carries the run's cumulative cost
@@ -363,19 +553,26 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
     else if (m_liveThinking)
         finalizeThinking(QString());
 
+    bool hadTool = false;
     for (const QJsonValue &bv : content) {
         const QJsonObject b = bv.toObject();
         const QString t = b.value(QStringLiteral("type")).toString();
         if (t == QLatin1String("text")) {
             const QString text = b.value(QStringLiteral("text")).toString();
             if (!text.trimmed().isEmpty())
-                addRow(makeBubble(QString(), text, m_p.accent));
+                addAssistantText(text);
         } else if (t == QLatin1String("tool_use")) {
+            hadTool = true;
             addToolUse(b.value(QStringLiteral("id")).toString(),
                        b.value(QStringLiteral("name")).toString(),
                        b.value(QStringLiteral("input")).toObject());
         }
     }
+    // Tools running => keep the "what it's doing" ticker; a plain reply ends it.
+    if (hadTool)
+        ensureActivity();
+    else
+        clearActivity();
 }
 
 // ---- thinking lifecycle ----------------------------------------------------
@@ -384,14 +581,17 @@ void ClaudeTranscriptView::ensureLiveThinking()
 {
     if (m_liveThinking)
         return;
+    clearActivity(); // the thinking card becomes the live indicator
     m_thinkingText.clear();
     m_thinkingTokens = 0;
+    m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
     m_thinkingBody = new QLabel(QStringLiteral("…"));
     m_thinkingBody->setWordWrap(true);
     m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
-    m_liveThinking = makeCollapsible(QStringLiteral("✦ Thinking…"), m_thinkingBody, false);
-    addRow(m_liveThinking);
+    m_liveThinking = makeCollapsible(QStringLiteral("Thinking…"), m_thinkingBody, false);
+    m_liveThinking->setPulsing(true);
+    addRow(m_liveThinking, m_p.accent);
 }
 
 void ClaudeTranscriptView::setThinkingTokens(int tokens)
@@ -399,7 +599,7 @@ void ClaudeTranscriptView::setThinkingTokens(int tokens)
     m_thinkingTokens = tokens;
     if (m_liveThinking)
         m_liveThinking->setHeaderText(
-            QStringLiteral("✦ Thinking… ~%1 tokens").arg(QLocale().toString(tokens)));
+            QStringLiteral("Thinking… ~%1 tokens").arg(QLocale().toString(tokens)));
 }
 
 void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
@@ -418,15 +618,19 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     const QString text = !fullText.isEmpty() ? fullText : m_thinkingText;
     if (m_thinkingBody)
         m_thinkingBody->setText(text.isEmpty() ? QStringLiteral("(thinking)") : text);
-    m_liveThinking->setHeaderText(
-        m_thinkingTokens > 0
-            ? QStringLiteral("✦ Thought · ~%1 tokens").arg(QLocale().toString(m_thinkingTokens))
-            : QStringLiteral("✦ Thought"));
+    m_liveThinking->setPulsing(false);
+    const qint64 secs = m_thinkingStartMs > 0
+        ? (QDateTime::currentMSecsSinceEpoch() - m_thinkingStartMs) / 1000
+        : 0;
+    m_liveThinking->setHeaderText(secs > 0
+                                      ? QStringLiteral("Thought for %1s").arg(secs)
+                                      : QStringLiteral("Thought"));
     m_liveThinking->setExpanded(false);
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
     m_thinkingTokens = 0;
+    m_thinkingStartMs = 0;
 }
 
 // ---- bubbles & cards -------------------------------------------------------
@@ -464,6 +668,21 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
     return frame;
 }
 
+// Assistant prose renders as plain, full-width text (no card), matching the
+// Claude Code conversation view where only the user's turns are boxed.
+void ClaudeTranscriptView::addAssistantText(const QString &markdown)
+{
+    auto *l = new QLabel;
+    l->setTextFormat(Qt::MarkdownText);
+    l->setText(markdown);
+    l->setWordWrap(true);
+    l->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
+    l->setOpenExternalLinks(true);
+    l->setStyleSheet(
+        QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
+    addRow(l);
+}
+
 void ClaudeTranscriptView::addUserTurn(const QString &text)
 {
     auto *frame = new QFrame;
@@ -481,19 +700,37 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
     body->setTextInteractionFlags(Qt::TextSelectableByMouse);
     body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
     v->addWidget(body);
-    addRow(frame);
+    addRow(frame, m_p.accent);
 }
 
+// A tool call: a "Name  subtitle" header over a bordered box whose first row is
+// the input (IN); the result lands later as an OUT row in the same box.
 void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
                                       const QJsonObject &input)
 {
-    const QString sub = toolSubtitle(name, input);
-    const QString header = sub.isEmpty() ? name : name + QStringLiteral(" · ") + sub;
-    auto *card = new Collapsible(header, true, m_p, accentFor(name));
-    if (QWidget *body = toolBody(name, input))
-        card->body()->addWidget(body);
-    addRow(card);
-    m_toolCards.insert(id, ToolCard{card, card->body()});
+    auto *card = new QFrame;
+    card->setStyleSheet(QStringLiteral("QFrame{background:transparent;border:none;}"));
+    auto *v = new QVBoxLayout(card);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(6);
+    v->addWidget(dotHeader(name, toolSubtitle(name, input)));
+
+    if (QWidget *inBody = toolBody(name, input)) {
+        auto *box = new QFrame;
+        box->setStyleSheet(QStringLiteral(
+            "QFrame{background:%1;border:1px solid %2;border-radius:8px;}")
+            .arg(m_p.surface, m_p.border));
+        auto *io = new QVBoxLayout(box);
+        io->setContentsMargins(0, 0, 0, 0);
+        io->setSpacing(0);
+        io->addWidget(ioRow(QStringLiteral("IN"), inBody));
+        v->addWidget(box);
+        m_toolCards.insert(id, ToolCard{box, io, false});
+    } else {
+        // Header-only tools (Read/Grep/Glob): the subtitle says it all.
+        m_toolCards.insert(id, ToolCard{nullptr, nullptr, false});
+    }
+    addRow(card, accentFor(name));
 }
 
 void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
@@ -502,10 +739,19 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     auto it = m_toolCards.find(id);
     if (it == m_toolCards.end() || text.trimmed().isEmpty())
         return;
-    Collapsible *res = makeCollapsible(
-        isError ? QStringLiteral("Result · error") : QStringLiteral("Result"),
-        makeCode(text, true), false);
-    it.value().body->addWidget(res);
+    ToolCard &tc = it.value();
+    if (!tc.box || !tc.io || tc.hasResult)
+        return; // header-only tool, or a result already attached
+    auto *divider = new QFrame;
+    divider->setFixedHeight(1);
+    divider->setStyleSheet(QStringLiteral("background:%1;border:none;").arg(m_p.border));
+    tc.io->addWidget(divider);
+    QWidget *out = makeMono(text, true);
+    if (isError)
+        out->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.del));
+    tc.io->addWidget(ioRow(isError ? QStringLiteral("ERR") : QStringLiteral("OUT"), out));
+    tc.hasResult = true;
 }
 
 void ClaudeTranscriptView::addResult(const QJsonObject &ev)
@@ -521,7 +767,7 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
                              .arg(cost, 0, 'f', 4));
     l->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;")
                          .arg(err ? m_p.del : m_p.add));
-    addRow(l);
+    addRow(l, err ? m_p.del : m_p.add);
 }
 
 // ---- per-tool rendering ----------------------------------------------------
@@ -531,9 +777,17 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
 {
     if (name == QLatin1String("Bash"))
         return input.value(QStringLiteral("description")).toString();
+    if (name == QLatin1String("Read")) {
+        const QString fp = input.value(QStringLiteral("file_path")).toString();
+        const QString base = fp.section(QLatin1Char('/'), -1);
+        const int off = input.value(QStringLiteral("offset")).toInt();
+        const int lim = input.value(QStringLiteral("limit")).toInt();
+        if (off > 0 && lim > 0)
+            return QStringLiteral("%1 (lines %2-%3)").arg(base).arg(off).arg(off + lim - 1);
+        return base.isEmpty() ? fp : base;
+    }
     if (name == QLatin1String("Edit") || name == QLatin1String("Write")
-        || name == QLatin1String("Read") || name == QLatin1String("MultiEdit")
-        || name == QLatin1String("NotebookEdit"))
+        || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit"))
         return input.value(QStringLiteral("file_path")).toString();
     if (name == QLatin1String("Task"))
         return input.value(QStringLiteral("description")).toString();
@@ -545,14 +799,15 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
 QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &input)
 {
     if (name == QLatin1String("Bash"))
-        return makeCode(QStringLiteral("$ ") + input.value(QStringLiteral("command")).toString(), false);
+        return makeMono(input.value(QStringLiteral("command")).toString(), false);
     if (name == QLatin1String("Edit"))
         return makeDiff(input.value(QStringLiteral("old_string")).toString(),
                         input.value(QStringLiteral("new_string")).toString());
     if (name == QLatin1String("Write"))
-        return makeCode(input.value(QStringLiteral("content")).toString(), true);
+        return makeMono(input.value(QStringLiteral("content")).toString(), true);
     if (name == QLatin1String("MultiEdit")) {
         auto *holder = new QWidget;
+        holder->setStyleSheet(QStringLiteral("background:transparent;"));
         auto *v = new QVBoxLayout(holder);
         v->setContentsMargins(0, 0, 0, 0);
         v->setSpacing(6);
@@ -574,14 +829,71 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
             text += mark + QLatin1Char(' ') + t.value(QStringLiteral("content")).toString()
                     + QLatin1Char('\n');
         }
-        return makeCode(text.trimmed(), false);
+        return makeMono(text.trimmed(), false);
     }
     if (name == QLatin1String("Read") || name == QLatin1String("Grep")
         || name == QLatin1String("Glob"))
         return nullptr; // the subtitle already says the file/pattern
     if (!input.isEmpty())
-        return makeCode(QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Compact)), true);
+        return makeMono(QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Compact)), true);
     return nullptr;
+}
+
+// "Name  subtitle" — the timeline rail supplies the coloured node dot.
+QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
+{
+    auto *l = new QLabel;
+    l->setTextFormat(Qt::RichText);
+    l->setWordWrap(true);
+    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QString html = QStringLiteral("<span style='color:%1;font-weight:700'>%2</span>")
+                       .arg(m_p.text, esc(name));
+    if (!subtitle.trimmed().isEmpty())
+        html += QStringLiteral("&nbsp;&nbsp;<span style='color:%1'>%2</span>")
+                    .arg(m_p.muted, esc(subtitle.trimmed()));
+    l->setText(html);
+    l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
+    return l;
+}
+
+// One labelled row inside a tool box: a small uppercase "IN"/"OUT" gutter label
+// on the left and the monospace content on the right.
+QWidget *ClaudeTranscriptView::ioRow(const QString &label, QWidget *content)
+{
+    auto *row = new QWidget;
+    row->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *h = new QHBoxLayout(row);
+    h->setContentsMargins(10, 8, 10, 8);
+    h->setSpacing(10);
+    auto *lab = new QLabel(label);
+    lab->setFixedWidth(28);
+    lab->setStyleSheet(QStringLiteral(
+        "color:%1;background:transparent;border:none;font-weight:700;font-size:10px;")
+        .arg(m_p.muted));
+    h->addWidget(lab, 0, Qt::AlignTop);
+    content->setParent(row);
+    h->addWidget(content, 1);
+    return row;
+}
+
+// Monospace content with no panel background — it sits inside a tool card box.
+QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLong)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    const bool longText = collapsedIfLong && lines.size() > 16;
+    const QString shown = longText
+        ? lines.mid(0, 16).join(QLatin1Char('\n'))
+          + QStringLiteral("\n… (%1 more lines)").arg(lines.size() - 16)
+        : text;
+    auto *l = new QLabel;
+    l->setTextFormat(Qt::PlainText);
+    l->setText(shown);
+    l->setWordWrap(true);
+    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    l->setStyleSheet(
+        QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
+    return l;
 }
 
 // A monospace code/output block. Renders as PLAIN text (no HTML escaping) so
@@ -617,21 +929,53 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
            && oldL[oldL.size() - 1 - suf] == newL[newL.size() - 1 - suf])
         ++suf;
 
-    QString html = QStringLiteral("<div style='font-family:monospace;white-space:pre'>");
-    auto context = [&](const QString &s) {
-        html += QStringLiteral("<div style='color:%1'>  %2</div>").arg(m_p.muted, esc(s));
-    };
-    for (int i = 0; i < pre; ++i)
-        context(oldL[i]);
-    for (int i = pre; i < oldL.size() - suf; ++i)
-        html += QStringLiteral("<div style='color:%1;background:%2'>- %3</div>")
-                    .arg(m_p.del, m_p.delBg, esc(oldL[i]));
-    for (int i = pre; i < newL.size() - suf; ++i)
-        html += QStringLiteral("<div style='color:%1;background:%2'>+ %3</div>")
-                    .arg(m_p.add, m_p.addBg, esc(newL[i]));
-    for (int i = oldL.size() - suf; i < oldL.size(); ++i)
-        context(oldL[i]);
-    html += QStringLiteral("</div>");
+    QString html;
+    if (m_splitDiffs) {
+        // Side-by-side: old on the left, new on the right, aligned row-for-row.
+        html = QStringLiteral("<table style='border-collapse:collapse;"
+                              "font-family:monospace;white-space:pre;width:100%'>");
+        auto cell = [&](const QString &s, const QString &color, const QString &bg) {
+            return QStringLiteral("<td style='width:50%;color:%1;background:%2;"
+                                  "padding:0 6px;vertical-align:top'>%3</td>")
+                .arg(color, bg, s.isEmpty() ? QStringLiteral("&nbsp;") : esc(s));
+        };
+        auto pair = [&](const QString &l, const QString &lc, const QString &lbg,
+                        const QString &r, const QString &rc, const QString &rbg) {
+            html += QStringLiteral("<tr>") + cell(l, lc, lbg) + cell(r, rc, rbg)
+                    + QStringLiteral("</tr>");
+        };
+        for (int i = 0; i < pre; ++i)
+            pair(QStringLiteral("  ") + oldL[i], m_p.muted, m_p.canvas,
+                 QStringLiteral("  ") + oldL[i], m_p.muted, m_p.canvas);
+        const int delN = oldL.size() - suf - pre, addN = newL.size() - suf - pre;
+        for (int i = 0; i < qMax(delN, addN); ++i) {
+            const bool hasDel = i < delN, hasAdd = i < addN;
+            pair(hasDel ? QStringLiteral("- ") + oldL[pre + i] : QString(),
+                 m_p.del, hasDel ? m_p.delBg : m_p.canvas,
+                 hasAdd ? QStringLiteral("+ ") + newL[pre + i] : QString(),
+                 m_p.add, hasAdd ? m_p.addBg : m_p.canvas);
+        }
+        for (int i = oldL.size() - suf; i < oldL.size(); ++i)
+            pair(QStringLiteral("  ") + oldL[i], m_p.muted, m_p.canvas,
+                 QStringLiteral("  ") + oldL[i], m_p.muted, m_p.canvas);
+        html += QStringLiteral("</table>");
+    } else {
+        html = QStringLiteral("<div style='font-family:monospace;white-space:pre'>");
+        auto context = [&](const QString &s) {
+            html += QStringLiteral("<div style='color:%1'>  %2</div>").arg(m_p.muted, esc(s));
+        };
+        for (int i = 0; i < pre; ++i)
+            context(oldL[i]);
+        for (int i = pre; i < oldL.size() - suf; ++i)
+            html += QStringLiteral("<div style='color:%1;background:%2'>- %3</div>")
+                        .arg(m_p.del, m_p.delBg, esc(oldL[i]));
+        for (int i = pre; i < newL.size() - suf; ++i)
+            html += QStringLiteral("<div style='color:%1;background:%2'>+ %3</div>")
+                        .arg(m_p.add, m_p.addBg, esc(newL[i]));
+        for (int i = oldL.size() - suf; i < oldL.size(); ++i)
+            context(oldL[i]);
+        html += QStringLiteral("</div>");
+    }
 
     auto *l = new QLabel(html);
     l->setTextFormat(Qt::RichText);
