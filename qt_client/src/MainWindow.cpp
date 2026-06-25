@@ -3953,6 +3953,33 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
+int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
+                                       const QString &localPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.localPath = localPath;
+    repo.publishToNetwork = false;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+
+bool MainWindow::testOpenRepository(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    openRepoDetail(index);
+    updateRepoSwitcher();
+    return m_repoDetailIndex == index;
+}
+
+bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
+                                           const QString &website)
+{
+    return saveRepoAboutMetadata(about, website);
+}
+
 int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
                                            const QString &mirrorPath)
 {
@@ -13016,10 +13043,38 @@ QWidget *MainWindow::buildPullsTab()
             });
 
     // ---- Files changed page: file explorer | diff viewer.
+    // Prev/Next walk every change in the PR: hunk-by-hunk within the open file,
+    // then on to the next/previous file, so the reviewer can scroll through all
+    // of the files without hunting in the list.
+    m_pullPrevButton = new QPushButton;
+    m_pullPrevButton->setToolTip("Previous change");
+    setOcticon(m_pullPrevButton, "chevron-up", 14);
+    connect(m_pullPrevButton, &QPushButton::clicked, this,
+            [this] { pullSelectAdjacentChange(-1); });
+    m_pullNextButton = new QPushButton;
+    m_pullNextButton->setToolTip("Next change");
+    setOcticon(m_pullNextButton, "chevron-down", 14);
+    connect(m_pullNextButton, &QPushButton::clicked, this,
+            [this] { pullSelectAdjacentChange(1); });
+    for (QPushButton *b : {m_pullPrevButton, m_pullNextButton}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    auto *filesHeader = new QHBoxLayout;
+    filesHeader->setContentsMargins(0, 0, 0, 0);
+    auto *filesHeaderLabel = new QLabel("FILES");
+    filesHeaderLabel->setObjectName("sectionLabel");
+    filesHeader->addWidget(filesHeaderLabel);
+    filesHeader->addStretch();
+    filesHeader->addWidget(m_pullPrevButton);
+    filesHeader->addWidget(m_pullNextButton);
+
     auto *filesPane = new QWidget;
     auto *filesPaneLayout = new QVBoxLayout(filesPane);
     filesPaneLayout->setContentsMargins(0, 0, 0, 0);
     filesPaneLayout->setSpacing(6);
+    filesPaneLayout->addLayout(filesHeader);
     filesPaneLayout->addWidget(m_pullFiles, 1);
 
     m_pullDiff = new QTextBrowser;
@@ -13785,6 +13840,60 @@ void MainWindow::renderPullDiff(const QString &filePath)
     m_pullDiff->setHtml(html.isEmpty()
                             ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
                             : html);
+}
+
+void MainWindow::pullSelectAdjacentChange(int delta)
+{
+    if (!m_pullFiles)
+        return;
+
+    // Step through the open file's hunks first; only move to the next/previous
+    // file once we're already past its last/first hunk.
+    QListWidgetItem *current = m_pullFiles->currentItem();
+    const bool fileOpen =
+        m_pullDiff && current &&
+        !current->data(Qt::UserRole).toString().isEmpty();
+    if (fileOpen && pullScrollToAdjacentHunk(delta))
+        return;
+
+    if (m_pullFiles->count() == 0)
+        return;
+    const int cur = m_pullFiles->currentRow();
+    int next = cur < 0 ? (delta > 0 ? 0 : m_pullFiles->count() - 1) : cur + delta;
+    if (next < 0 || next >= m_pullFiles->count())
+        return; // clamp at the ends rather than wrapping
+    QListWidgetItem *target = m_pullFiles->item(next);
+    m_pullFiles->setCurrentItem(target); // fires currentItemChanged -> renderPullDiff
+    m_pullFiles->scrollToItem(target);
+    // Entering the previous file from below: land on its last hunk so prev keeps
+    // walking changes upward. The next file opens scrolled to the top already, so
+    // its first hunk is in view.
+    if (delta < 0)
+        pullScrollToAdjacentHunk(-1, /*fromEnd=*/true);
+}
+
+bool MainWindow::pullScrollToAdjacentHunk(int delta, bool fromEnd)
+{
+    if (!m_pullDiff)
+        return false;
+    if (fromEnd)
+        m_pullDiff->moveCursor(QTextCursor::End);
+    // Each hunk header renders as "@@ -old +new @@ ..."; the "@@ -" prefix occurs
+    // exactly once per hunk, so searching for it walks the diff hunk-by-hunk.
+    const QTextDocument::FindFlags flags =
+        delta < 0 ? QTextDocument::FindBackward : QTextDocument::FindFlags();
+    if (!m_pullDiff->find(QStringLiteral("@@ -"), flags))
+        return false;
+    // Keep the find's selection as the cursor (so a further step advances past
+    // it), but scroll the matched hunk header up near the top of the view.
+    const QTextCursor found = m_pullDiff->textCursor();
+    QTextCursor lineCur(found);
+    lineCur.setPosition(found.selectionStart());
+    lineCur.movePosition(QTextCursor::StartOfLine);
+    const QRect r = m_pullDiff->cursorRect(lineCur);
+    if (QScrollBar *vbar = m_pullDiff->verticalScrollBar())
+        vbar->setValue(vbar->value() + r.top() - 4);
+    return true;
 }
 
 void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
