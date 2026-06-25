@@ -10212,6 +10212,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 5 Actions
     m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 6 Security and quality
+    m_insightsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 7
     m_branchesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildBranchesTab());                    // 8 Branches
@@ -20217,6 +20218,13 @@ void MainWindow::loadCommits()
     m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
     updateRepoCommitCount();
+    // The Insights "Contributors & activity" counts are derived from the same
+    // history; keep them in step when it moves underneath an open Insights tab
+    // (a background sync, agent commit, revert or commit can advance it). A tab
+    // click reloads them anyway, so only refresh when that page is on screen.
+    if (m_repoDetailStack && m_insightsTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_insightsTabIndex)
+        loadRepoInsights();
     const QString dir = repoGitDir();
     if (dir.isEmpty()) {
         m_commitsTable->setSortingEnabled(true);
@@ -22990,7 +22998,7 @@ void MainWindow::loadRepoInsights()
     m_insightsSummary->setText(
         "<b>Repository summary</b>" +
         insightMetricsTable({
-            insightMetricCell("Contributors", QStringLiteral("0"), "all branches"),
+            insightMetricCell("Contributors", QStringLiteral("0"), "current branch"),
             insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
             insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
             insightMetricCell("Issues", QString::number(totalIssues),
@@ -23053,6 +23061,10 @@ void MainWindow::loadRepoInsights()
     // a commit count and a bucketed timeline. The window comes from
     // m_insightsRangeCombo (0 = all time). The count, share and the embedded
     // bar chart all reflect that same window so the table reads as one unit.
+    // The log is scoped to the selected ref (currentRef) — the same history the
+    // "Commits (N)" badge, the file tree and the Files/Code-size figures above
+    // count — rather than --all, so the totals match the branch being viewed and
+    // don't fold in every stale/unmerged ref in the repo.
     const int windowDays =
         m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
     constexpr int kBuckets = 32;
@@ -23069,10 +23081,11 @@ void MainWindow::loadRepoInsights()
     int sharedMax = 1;
 
     if (!dir.isEmpty()) {
-        QStringList logArgs{"log", "--all", "--no-merges",
+        QStringList logArgs{"log", "--no-merges",
                             "--format=%an%x1f%ct", "-n", "50000"};
         if (windowDays > 0)
             logArgs << QStringLiteral("--since=%1.days.ago").arg(windowDays);
+        logArgs << ref;
         QByteArray logOut;
         QString logErr;
         if (runGitCapture(dir, logArgs, &logOut, &logErr)) {
@@ -23199,7 +23212,7 @@ void MainWindow::loadRepoInsights()
         insightMetricsTable({
             insightMetricCell("Contributors", QString::number(contributors.size()),
                               windowDays > 0 ? QStringLiteral("in selected range")
-                                             : QStringLiteral("all branches")),
+                                             : QStringLiteral("current branch")),
             insightMetricCell("Files", QString::number(fileCount), "tracked blobs"),
             insightMetricCell("Code size", formatInsightBytes(totalBytes), "tracked bytes"),
             insightMetricCell("Issues", QString::number(totalIssues),
@@ -23474,7 +23487,9 @@ void MainWindow::reassignContributorIdentity(const QString &oldName)
                        "peers pick up the rewrite.")
             .arg(oldName, newName, newEmail));
 
-    loadRepoInsights();
+    // Reassign is launched from the Insights table, so that page is on screen;
+    // loadCommits() refreshes the commit list and, while Insights is visible, its
+    // contributor counts too — picking up the re-attributed authorship.
     loadCommits();
 }
 
@@ -23659,9 +23674,7 @@ void MainWindow::setRepoBranch(const QString &branch)
         m_branchButton->setText(branch);
     loadRepoOverview(QString());
     loadAboutSidebar();
-    loadCommits();
-    if (m_insightsSummary)
-        loadRepoInsights();
+    loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
 
 QStringList MainWindow::repoBranches() const
@@ -35650,8 +35663,8 @@ void MainWindow::refreshOpenRepoDetail()
     // or removed workflows a sync may have brought in.
     refreshRepoActions();
     loadAboutSidebar();
-    if (m_insightsSummary)
-        loadRepoInsights();
+    // loadCommits() above already refreshed the Insights counts if that tab is on
+    // screen; off-screen it reloads when next opened, so no extra pass here.
     updateRepoDetailStatus();
     updateRepoActionMenus();
     updateRepoCodeSize();
