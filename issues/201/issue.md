@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 201
 title: show the claude and open ai remaining credits for the api usage in agents
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
