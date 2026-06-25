@@ -76,6 +76,8 @@ REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
 # Private-repo collaborator ACL (issue #9): owner-signed grant/revoke/list of the
 # accounts a private repo is shared with.
 REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
+# Public mirror health for a logical repo group.
+REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
@@ -479,6 +481,106 @@ CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
+
+
+def _mirror_ms(value):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def repo_mirror_group_key(record):
+    root = str((record or {}).get("rootCommit") or "").strip().lower()
+    if root:
+        return "root:" + root
+    name = str((record or {}).get("name") or "").strip().lower()
+    return "name:" + name
+
+
+def build_repo_mirrors_payload(
+    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
+):
+    owner_l = (owner or "").strip().lower()
+    repo_l = (repo or "").strip().lower()
+    public_rows = []
+    target = None
+    for row in rows or []:
+        rec = row.get("data") or {}
+        if row.get("is_private") or rec.get("visibility") == "private":
+            continue
+        rec_owner = str(rec.get("owner") or "").strip()
+        rec_name = str(rec.get("name") or "").strip()
+        if not rec_owner or not rec_name:
+            continue
+        item = {"key_bi": row.get("key_bi"), "data": rec}
+        public_rows.append(item)
+        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
+            target = item
+    if not target:
+        return None
+
+    group_key = repo_mirror_group_key(target["data"])
+    members = [r for r in public_rows if repo_mirror_group_key(r["data"]) == group_key]
+    freshest_sync = 0
+    for row in members:
+        freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
+
+    mirrors = []
+    for row in members:
+        rec = row["data"]
+        key = row.get("key_bi")
+        seen = _mirror_ms((presence or {}).get(key))
+        online = bool(seen and now - seen <= stale_ms)
+        hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
+        last_sync = _mirror_ms(rec.get("lastSync"))
+        try:
+            size_bytes = max(0, int(rec.get("sizeBytes") or 0))
+        except (TypeError, ValueError):
+            size_bytes = 0
+        behind = bool(
+            last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
+        )
+        mirrors.append({
+            "node": str(rec.get("owner") or "").strip(),
+            "owner": str(rec.get("owner") or "").strip(),
+            "repo": str(rec.get("name") or "").strip(),
+            "status": "online" if online else "offline",
+            "lastSeen": seen if online else None,
+            "hostedSince": hosted,
+            "syncAgeMs": max(0, now - last_sync) if last_sync else None,
+            "lastSync": last_sync,
+            "behind": behind,
+            "cloneAvailable": online,
+            "sizeBytes": size_bytes,
+            "source": str(rec.get("source") or "").strip(),
+        })
+
+    mirrors.sort(
+        key=lambda m: (
+            0 if m["status"] == "online" else 1,
+            -(m["lastSync"] or 0),
+            m["node"].lower(),
+        )
+    )
+    hosted_values = [m["hostedSince"] for m in mirrors if m["hostedSince"]]
+    return {
+        "ok": True,
+        "owner": target["data"].get("owner"),
+        "repo": target["data"].get("name"),
+        "groupKey": group_key,
+        "generatedAt": now,
+        "summary": {
+            "mirrors": len(mirrors),
+            "online": sum(1 for m in mirrors if m["status"] == "online"),
+            "cloneAvailable": sum(1 for m in mirrors if m["cloneAvailable"]),
+            "dataHostedBytes": sum(m["sizeBytes"] for m in mirrors),
+            "longestHostedSince": min(hosted_values) if hosted_values else None,
+            "freshestSync": freshest_sync or None,
+        },
+        "mirrors": mirrors,
+    }
 
 
 async def touch_host_presence(env, repo_bi):
@@ -1932,6 +2034,81 @@ async def catalog_handler(env, request):
         return json_response({"ok": True, "deleted": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def repo_mirrors_handler(env, request, owner, repo):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    rows = await d1_all(
+        env, "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0"
+    )
+    catalog_rows = []
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+            continue
+        catalog_rows.append({
+            "key_bi": row.get("key_bi"),
+            "is_private": int(row.get("is_private") or 0),
+            "data": rec,
+        })
+
+    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
+    presence = {
+        str(r.get("repo_bi")): int(r.get("ts") or 0)
+        for r in presence_rows
+        if r.get("repo_bi")
+    }
+    first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
+    first_hosted = {
+        str(r.get("repo_bi")): int(r.get("ts") or 0)
+        for r in first_rows
+        if r.get("repo_bi")
+    }
+    payload = build_repo_mirrors_payload(
+        owner,
+        repo,
+        catalog_rows,
+        presence,
+        first_hosted,
+        int(Date.now()),
+        HOST_PRESENCE_STALE_MS,
+        5 * 1000,
+    )
+    if payload is None:
+        return json_response({"error": "not_found"}, status=404)
+    return json_response(payload)
+
+
+# --- Public waitlist (waitlist table) ---------------------------------------
+
+async def waitlist_handler(env, request):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        return json_response({"error": "invalid_json"}, status=400)
+    email = normalize_email(data.get("email", ""))
+    if not email:
+        return json_response({"error": "valid_email_required"}, status=400)
+    source = clean_string(data.get("source", "features"), MAX_WAITLIST_FIELD)
+    path = clean_string(data.get("path", ""), MAX_WAITLIST_FIELD)
+    user_agent = clean_string(request.headers.get("user-agent") or "", 512)
+    await d1_run(
+        env,
+        """INSERT OR IGNORE INTO waitlist
+           (email, created_at, source, path, user_agent)
+           VALUES (?,?,?,?,?)""",
+        email, int(Date.now()), source, path, user_agent,
+    )
+    return json_response({"ok": True}, status=201)
 
 
 # --- Accounts (accounts table) — name + solana + password + TOTP ------------
@@ -5476,6 +5653,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await shares_handler(self.env, request, owner, repo)
+
+        mirrors_match = REPO_MIRRORS_RE.match(url.path)
+        if mirrors_match:
+            owner = safe_segment(mirrors_match.group(1))
+            repo = safe_segment(mirrors_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_mirrors_handler(self.env, request, owner, repo)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
