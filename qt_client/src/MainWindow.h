@@ -1694,6 +1694,7 @@ private:
     QWidget *m_pullThreadContainer = nullptr;
     QVBoxLayout *m_pullThreadLayout = nullptr;
     QLabel *m_pullChecksSummary = nullptr; // compact pass/fail/running card in thread
+    QLabel *m_pullConflictDetails = nullptr; // conflicting-files card above the composer
     MarkdownEditor *m_pullComposer = nullptr;
     QPushButton *m_pullCommentButton = nullptr;
     QPushButton *m_pullApproveButton = nullptr;
@@ -1710,6 +1711,10 @@ private:
     QPushButton *m_pullRunChecksButton = nullptr;
     QList<PullRequest> m_currentPulls;
     QHash<QString, QString> m_pullFileDiffs; // current PR: file path -> diff text
+    // Per-PR conflict flag (open PRs whose patch no longer applies cleanly to the
+    // base), computed in reloadPulls() and read by refreshPullList() to badge the
+    // list rows without re-running the dry-run apply on every search keystroke.
+    QHash<int, bool> m_pullConflictByNumber;
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
