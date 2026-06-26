@@ -4104,6 +4104,43 @@ QString MainWindow::testSavedSolanaAddress() const
     return QSettings().value(kSolanaSetting).toString().trimmed();
 }
 
+bool MainWindow::testColumnsBecomeResizable()
+{
+    // Mirror a real data table's header: a Stretch flex column, two
+    // content-fitted columns, and a Fixed button column.
+    QTableWidget table(0, 4);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionResizeMode(0, QHeaderView::Stretch);
+    header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(3, QHeaderView::Fixed);
+    makeColumnsResizable(&table);
+
+    // Nothing changes until real rows populate the table.
+    if (header->sectionResizeMode(1) != QHeaderView::ResizeToContents ||
+        header->sectionResizeMode(2) != QHeaderView::ResizeToContents)
+        return false;
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("flex")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("short")));
+    table.setItem(0, 2,
+                  new QTableWidgetItem(QStringLiteral("a much wider cell value")));
+    table.setItem(0, 3, new QTableWidgetItem(QStringLiteral("x")));
+    // The snapshot/switch is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    const bool flexUntouched = header->sectionResizeMode(0) == QHeaderView::Stretch;
+    const bool fixedUntouched = header->sectionResizeMode(3) == QHeaderView::Fixed;
+    const bool col1Draggable = header->sectionResizeMode(1) == QHeaderView::Interactive;
+    const bool col2Draggable = header->sectionResizeMode(2) == QHeaderView::Interactive;
+    // The fitted widths survive the switch, so the wider column stays wider.
+    const bool widthsPreserved = header->sectionSize(2) > header->sectionSize(1);
+    return flexUntouched && fixedUntouched && col1Draggable && col2Draggable &&
+           widthsPreserved;
+}
+
 QString MainWindow::testQuickAddAgentProvider() const
 {
     return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
