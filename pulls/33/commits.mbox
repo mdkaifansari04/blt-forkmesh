@@ -1,3 +1,17 @@
+From 589ff11bd7f913301a23a89423b747f56c9dc305 Mon Sep 17 00:00:00 2001
+From: ForkMesh contributor
+ <F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM@forkmesh>
+Date: Fri, 26 Jun 2026 10:54:05 -0400
+Subject: [PATCH] feat: add features landing page
+
+---
+ cloudflare_worker/public/features.html       | 3497 ++++++++++++++++++
+ cloudflare_worker/public/features/index.html | 3497 ++++++++++++++++++
+ cloudflare_worker/src/entry.py               |    4 +
+ 3 files changed, 6998 insertions(+)
+ create mode 100644 cloudflare_worker/public/features.html
+ create mode 100644 cloudflare_worker/public/features/index.html
+
 diff --git a/cloudflare_worker/public/features.html b/cloudflare_worker/public/features.html
 new file mode 100644
 index 00000000..f5c17fa2
@@ -7022,3 +7036,6 @@ index 351a66fa..0a5b5066 100644
          if url.path in ("/health", "/api/mainnode"):
              return json_response(
                  {
+-- 
+2.47.3
+
