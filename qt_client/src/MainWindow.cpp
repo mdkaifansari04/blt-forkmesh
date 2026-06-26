@@ -11070,8 +11070,17 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitsGenerateButton, &QPushButton::clicked, this,
             &MainWindow::generatePostFromSelectedCommits);
 
+    // Current-branch indicator + switcher: shows the checked-out branch and opens
+    // a dropdown to check out another branch (or create one), like a git client.
+    m_commitsBranchButton = new QPushButton("main");
+    m_commitsBranchButton->setObjectName("ghostButton");
+    m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
+    m_commitsBranchButton->setToolTip("Current branch — click to switch or create one");
+    setOcticon(m_commitsBranchButton, "git-branch", 16);
+
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
+    searchRow->addWidget(m_commitsBranchButton);
     searchRow->addWidget(m_commitSearch, 1);
     searchRow->addWidget(m_commitsGenerateButton);
     searchRow->addWidget(m_commitsRefreshButton);
@@ -24001,6 +24010,7 @@ void MainWindow::loadCommits()
     m_commitsLoadedRef = currentRef();
     m_commitsLoadedTip = loadedTip;
     m_commitsLoadedMirrorTip = currentMirrorTip();
+    refreshCommitsBranchButton(); // keep the branch indicator + switcher in sync
 
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent). This does its
@@ -27197,6 +27207,114 @@ void MainWindow::setRepoBranch(const QString &branch)
     loadRepoOverview(QString());
     loadAboutSidebar();
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
+}
+
+// The checked-out branch (HEAD), or empty if detached / no working tree.
+QString MainWindow::repoHeadBranch() const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &out, nullptr))
+        return QString();
+    const QString b = QString::fromUtf8(out).trimmed();
+    return b == QLatin1String("HEAD") ? QString() : b; // "HEAD" => detached
+}
+
+// Refresh the commits-page branch button: its label (the checked-out branch) and
+// its checkout dropdown (every branch, plus "Create new branch…").
+void MainWindow::refreshCommitsBranchButton()
+{
+    if (!m_commitsBranchButton)
+        return;
+    const QString cur = repoHeadBranch();
+    m_commitsBranchButton->setText(cur.isEmpty() ? QStringLiteral("(detached)") : cur);
+
+    auto *menu = new QMenu(m_commitsBranchButton);
+    QAction *create =
+        menu->addAction(QString::fromUtf8("\xEF\xBC\x8B  Create new branch\xE2\x80\xA6"));
+    connect(create, &QAction::triggered, this, [this] { createAndCheckoutBranch(); });
+    menu->addSeparator();
+    const QStringList branches = repoBranches();
+    for (const QString &b : branches) {
+        QAction *a = menu->addAction(b);
+        a->setCheckable(true);
+        a->setChecked(b == cur);
+        connect(a, &QAction::triggered, this, [this, b] { checkoutRepoBranch(b); });
+    }
+    if (branches.isEmpty())
+        menu->addAction(QStringLiteral("No branches"))->setEnabled(false);
+    // Replacing the menu frees the previous one (parented to the button) lazily.
+    QMenu *old = m_commitsBranchButton->menu();
+    m_commitsBranchButton->setMenu(menu);
+    if (old)
+        old->deleteLater();
+}
+
+// Real checkout of a branch (changes HEAD), guarded so it never clobbers local
+// changes — the commits page then follows the newly checked-out branch.
+void MainWindow::checkoutRepoBranch(const QString &branch)
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || branch.isEmpty())
+        return;
+    if (branch == repoHeadBranch()) {
+        setRepoBranch(branch); // already on it; just make sure we're browsing it
+        return;
+    }
+    QByteArray st;
+    if (runGitCapture(dir, {"status", "--porcelain"}, &st, nullptr) &&
+        !st.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Commit or stash your changes before switching branches."),
+            true);
+        return;
+    }
+    QString err;
+    if (!runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not switch to %1: %2").arg(branch, err.left(200)), true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: checked out %1.").arg(branch));
+    setRepoDetailNotice(QStringLiteral("Switched to %1.").arg(branch));
+    setRepoBranch(branch); // browse + reload the commit list for the new branch
+    refreshCommitsBranchButton();
+}
+
+// "Create new branch…" — make a branch off HEAD and switch to it.
+void MainWindow::createAndCheckoutBranch()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+                             this, QStringLiteral("Create new branch"),
+                             QStringLiteral("New branch name:"), QLineEdit::Normal,
+                             QString(), &ok)
+                             .trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    QByteArray st;
+    if (runGitCapture(dir, {"status", "--porcelain"}, &st, nullptr) &&
+        !st.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Commit or stash your changes before creating a branch."),
+            true);
+        return;
+    }
+    QString err;
+    if (!runGitCapture(dir, {"checkout", "-b", name}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not create %1: %2").arg(name, err.left(200)), true);
+        return;
+    }
+    logSystem(QStringLiteral("Git: created and checked out %1.").arg(name));
+    setRepoDetailNotice(QStringLiteral("Created and switched to %1.").arg(name));
+    setRepoBranch(name);
+    refreshCommitsBranchButton();
 }
 
 QStringList MainWindow::repoBranches() const
