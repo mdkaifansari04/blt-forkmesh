@@ -18822,6 +18822,95 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
             : QString());
 }
 
+// "Night rider" scanner light shown in the agents list. Each session gets a
+// small Larson-scanner bar that sweeps left<->right while its raw output is
+// streaming, so the list shows real-time activity at a glance. The sweep is
+// gated on recent raw output: after this many ms with no new output the light
+// drops back to a dim resting state and the driving timer stops.
+static constexpr qint64 kScannerIdleMs = 1500;
+// Far-right "Activity" column the scanner is painted into.
+static constexpr int kAgentActivityColumn = 8;
+
+// Paints a session's Larson-scanner light from MainWindow's per-session state,
+// looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
+// side table keyed by sessionId — rather than per-row child widgets — keeps the
+// animation alive across the agents table's frequent full rebuilds.
+class AgentScannerDelegate : public QStyledItemDelegate
+{
+public:
+    AgentScannerDelegate(const QHash<int, AgentScannerState> *states, QObject *parent)
+        : QStyledItemDelegate(parent), m_states(states)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        const QSize s = QStyledItemDelegate::sizeHint(opt, idx);
+        return QSize(qMax(s.width(), 96), s.height());
+    }
+
+    void paint(QPainter *p, const QStyleOptionViewItem &opt,
+               const QModelIndex &idx) const override
+    {
+        // Let the style draw the row background (selection/hover) but no text.
+        QStyleOptionViewItem o(opt);
+        initStyleOption(&o, idx);
+        o.text.clear();
+        const QWidget *w = o.widget;
+        QStyle *style = w ? w->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
+
+        const int sessionId = idx.data(Qt::UserRole).toInt();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        double phase = 0.0;
+        bool active = false;
+        if (m_states) {
+            const auto it = m_states->constFind(sessionId);
+            if (it != m_states->constEnd()) {
+                phase = it->phase;
+                active = (now - it->lastActivityMs) < kScannerIdleMs;
+            }
+        }
+
+        const QRect r = opt.rect.adjusted(8, 0, -8, 0);
+        if (r.width() <= 0)
+            return;
+        const int n = qBound(6, r.width() / 7, 16);
+        const double gap = double(r.width()) / n;
+        const int dotW = qMax(2, int(gap) - 3);
+        const int dotH = qBound(3, r.height() - 10, 7);
+        const double cy = r.center().y() + 0.5;
+
+        // Triangle wave: 0 -> (n-1) -> 0, the back-and-forth night-rider sweep.
+        const double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
+        const double pos = tri * (n - 1);
+        const double trail = 2.4; // how many LEDs the comet's glow spans
+
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        p->setPen(Qt::NoPen);
+        const QColor base(248, 81, 73); // #f85149 — KITT red
+        const double restAlpha = active ? 0.12 : 0.06;
+        for (int i = 0; i < n; ++i) {
+            double glow = 0.0;
+            if (active) {
+                const double d = qAbs(i - pos);
+                glow = qMax(0.0, 1.0 - d / trail);
+                glow *= glow; // sharpen the comet head
+            }
+            QColor c = base;
+            c.setAlphaF(restAlpha + (1.0 - restAlpha) * glow);
+            const double x = r.left() + i * gap + (gap - dotW) / 2.0;
+            p->setBrush(c);
+            p->drawRoundedRect(QRectF(x, cy - dotH / 2.0, dotW, dotH), 1.5, 1.5);
+        }
+        p->restore();
+    }
+
+private:
+    const QHash<int, AgentScannerState> *m_states;
+};
+
 QString openAiAuthHeader(const QString &apiKey)
 {
     return QStringLiteral("Bearer ") + apiKey.trimmed();
@@ -18971,11 +19060,11 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 8);
+    m_agentTable = new QTableWidget(0, 9);
     m_agentTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_agentTable);
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "When"});
+        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "When", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -18987,8 +19076,18 @@ QWidget *MainWindow::buildAgentsTab()
     agentHeader->setHighlightSections(false);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 8; ++c)
+    for (int c = 2; c < kAgentActivityColumn; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+    // The night-rider light column is a fixed-width, custom-painted scanner.
+    agentHeader->setSectionResizeMode(kAgentActivityColumn, QHeaderView::Fixed);
+    m_agentTable->setColumnWidth(kAgentActivityColumn, 104);
+    m_agentTable->setItemDelegateForColumn(
+        kAgentActivityColumn, new AgentScannerDelegate(&m_scannerStates, m_agentTable));
+    // ~22fps timer that advances + repaints the active scanner lights. It is
+    // started on demand by noteAgentActivity and self-stops once all lights idle.
+    m_scannerTimer = new QTimer(this);
+    m_scannerTimer->setInterval(45);
+    connect(m_scannerTimer, &QTimer::timeout, this, &MainWindow::onScannerTick);
     makeColumnsResizable(m_agentTable);
 
     auto *listLayout = new QVBoxLayout(listPane);
@@ -20249,6 +20348,14 @@ void MainWindow::refreshAgentTable()
             new QTableWidgetItem(
                 QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
                     .toString(QStringLiteral("MMM d  hh:mm"))));
+        // Night-rider light: a custom-painted scanner that sweeps while this
+        // session streams raw output. AgentScannerDelegate looks the animation
+        // state up by the sessionId stashed here in Qt::UserRole.
+        auto *activity = new QTableWidgetItem;
+        activity->setData(Qt::UserRole, session.id);
+        activity->setToolTip(QStringLiteral(
+            "Live activity — sweeps while the agent is streaming output"));
+        m_agentTable->setItem(row, kAgentActivityColumn, activity);
     }
     m_agentTable->setSortingEnabled(true);
     block.unblock();
@@ -21399,6 +21506,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     connect(stream, &ClaudeStreamSession::event, this,
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
+        noteAgentActivity(sid); // pulse the list's night-rider light
         QString &buf = m_streamRaw[sid];
         // Separate each JSON object with a blank line so the raw view is readable.
         buf += line + QStringLiteral("\n\n");
@@ -21768,6 +21876,8 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
     const QList<QJsonObject> events =
         ClaudeSessionScan::readEvents(ext.path, offset, &newOffset);
     m_externalReadOffset[sessionId] = newOffset;
+    if (!events.isEmpty())
+        noteAgentActivity(sessionId); // pulse the list's night-rider light
 
     if (full)
         m_sessionTokens[sessionId] = 0; // recount from the rendered tail
@@ -21955,6 +22065,49 @@ void MainWindow::updateAgentTokenCell(int sessionId)
     }
 }
 
+// Pulse a session's night-rider light so its activity column sweeps while raw
+// output is streaming. Called from every raw-output path (headless AgentRunner
+// logs, live Claude stream lines, surfaced external transcripts). The driving
+// timer is started on demand and self-stops once every light has gone idle.
+void MainWindow::noteAgentActivity(int sessionId)
+{
+    if (sessionId <= 0)
+        return;
+    m_scannerStates[sessionId].lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_scannerTimer && !m_scannerTimer->isActive())
+        m_scannerTimer->start();
+}
+
+// Advance every active scanner's sweep, repaint the Activity cells, and stop the
+// timer once no session has produced output recently — so idle agents cost
+// nothing while running ones wave left<->right in real time.
+void MainWindow::onScannerTick()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // One full back-and-forth bounce per ~1.1s, stepped per timer interval.
+    const double step = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1100.0;
+    bool anyActive = false;
+    for (auto it = m_scannerStates.begin(); it != m_scannerStates.end(); ++it) {
+        if (now - it->lastActivityMs >= kScannerIdleMs)
+            continue;
+        it->phase += step;
+        if (it->phase >= 1.0)
+            it->phase -= 1.0;
+        anyActive = true;
+    }
+    // Repaint the visible Activity cells (cheap for these per-repo tables). The
+    // final, just-went-idle tick still repaints, so lights settle to rest.
+    if (m_agentTable) {
+        for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+            if (m_agentTable->item(r, kAgentActivityColumn))
+                m_agentTable->update(
+                    m_agentTable->model()->index(r, kAgentActivityColumn));
+        }
+    }
+    if (!anyActive && m_scannerTimer)
+        m_scannerTimer->stop();
+}
+
 // Repaint the transcript view from a session's buffered events (on selection).
 void MainWindow::renderTranscriptForSession(int sessionId)
 {
@@ -22067,6 +22220,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
 {
+    noteAgentActivity(sessionId); // pulse the list's night-rider light
     if (sessionId != m_selectedAgentSessionId || !m_agentLog)
         return;
     m_agentLog->moveCursor(QTextCursor::End);
