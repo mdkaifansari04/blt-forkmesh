@@ -26144,7 +26144,11 @@ void MainWindow::loadRepoInsights()
     // The log is scoped to the selected ref (currentRef) — the same history the
     // "Commits (N)" badge, the file tree and the Files/Code-size figures above
     // count — rather than --all, so the totals match the branch being viewed and
-    // don't fold in every stale/unmerged ref in the repo.
+    // don't fold in every stale/unmerged ref in the repo. Merge commits are
+    // included (no --no-merges) so the per-author commit counts sum to exactly
+    // the same total `git rev-list --count` reports in that badge; excluding them
+    // here previously left the table short by every merge (each attributed to
+    // whoever performed it), which read as an inaccurate count.
     const int windowDays =
         m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
     constexpr int kBuckets = 32;
@@ -26161,8 +26165,7 @@ void MainWindow::loadRepoInsights()
     int sharedMax = 1;
 
     if (!dir.isEmpty()) {
-        QStringList logArgs{"log", "--no-merges",
-                            "--format=%an%x1f%ct", "-n", "50000"};
+        QStringList logArgs{"log", "--format=%an%x1f%ct", "-n", "50000"};
         if (windowDays > 0)
             logArgs << QStringLiteral("--since=%1.days.ago").arg(windowDays);
         logArgs << ref;
@@ -29399,8 +29402,12 @@ void MainWindow::loadAboutSidebar()
         QList<Contrib> contribs;
         QByteArray out;
         // -e includes the email; lines look like "  12\tName <email>".
+        // Merge commits are counted (no --no-merges) so each tooltip's
+        // "N commits" is that author's true commit total — matching what
+        // `git shortlog -sne` / `git log --author` report — rather than
+        // silently dropping every merge they performed.
         if (!dir.isEmpty() &&
-            runGitCapture(dir, {"shortlog", "-sne", "--all", "--no-merges"}, &out,
+            runGitCapture(dir, {"shortlog", "-sne", "--all"}, &out,
                           nullptr)) {
             for (const QString &line : QString::fromUtf8(out).split('\n')) {
                 const QString t = line.trimmed();
