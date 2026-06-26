@@ -630,20 +630,28 @@ QString AgentRunner::buildPrompt() const
     prompt << preamble;
     prompt << QStringLiteral("");
     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
-    prompt << QStringLiteral("Issue #%1: %2")
-                  .arg(m_session.issueNumber)
-                  .arg(m_session.issueTitle);
-    prompt << QStringLiteral("");
-    prompt << QStringLiteral("Issue thread:");
-    for (const IssueEvent &ev : m_issue.events) {
-        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
-        if (ev.type == QLatin1String("open") || ev.type == QLatin1String("comment")) {
-            prompt << QStringLiteral("--- %1 by %2 ---").arg(ev.type, who);
-            prompt << ev.body.left(6000);
-        } else if (ev.type == QLatin1String("labels")) {
-            prompt << QStringLiteral("--- labels: %1 ---").arg(ev.labels.join(", "));
-        } else if (ev.type == QLatin1String("assignees")) {
-            prompt << QStringLiteral("--- assignees: %1 ---").arg(ev.assignees.join(", "));
+    const QString task = m_config.taskOverride.trimmed();
+    if (!task.isEmpty()) {
+        // Ad-hoc composer run: no issue thread, just the typed task.
+        prompt << QStringLiteral("Task: %1").arg(m_session.issueTitle);
+        prompt << QStringLiteral("");
+        prompt << task;
+    } else {
+        prompt << QStringLiteral("Issue #%1: %2")
+                      .arg(m_session.issueNumber)
+                      .arg(m_session.issueTitle);
+        prompt << QStringLiteral("");
+        prompt << QStringLiteral("Issue thread:");
+        for (const IssueEvent &ev : m_issue.events) {
+            const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+            if (ev.type == QLatin1String("open") || ev.type == QLatin1String("comment")) {
+                prompt << QStringLiteral("--- %1 by %2 ---").arg(ev.type, who);
+                prompt << ev.body.left(6000);
+            } else if (ev.type == QLatin1String("labels")) {
+                prompt << QStringLiteral("--- labels: %1 ---").arg(ev.labels.join(", "));
+            } else if (ev.type == QLatin1String("assignees")) {
+                prompt << QStringLiteral("--- assignees: %1 ---").arg(ev.assignees.join(", "));
+            }
         }
     }
     if (m_store && m_session.startedAtMs > 0) {
