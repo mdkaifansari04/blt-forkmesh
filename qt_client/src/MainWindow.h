@@ -667,6 +667,17 @@ private:
     void assignIssueToAgent(const QString &provider);
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
+    // Stop and remove one stored agent session (clear its issue assignment, drop
+    // it from the run queue, delete it from the store). Returns true once it's
+    // gone; false (after flashing why) when it can't go yet — a running agent
+    // still stopping, or no host write access to clear the issue. External
+    // (watch-only) sessions aren't handled here.
+    bool deleteStoredAgentSession(int sessionId);
+    // Delete everything an agent left behind in one action: its worktree folder,
+    // its branch, and the stored agent session(s) that ran on it. Used by the
+    // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    void deleteWorktreeBranchAndAgent(const QString &worktreePath,
+                                      const QString &branch);
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
@@ -848,6 +859,11 @@ private:
     // the post-merge cleanup passes false so the just-merged branch stays visible.
     void removeWorktree(const QString &worktreePath, const QString &branch,
                         bool confirm, bool alsoDeleteBranch = true);
+    // Filesystem path of the worktree currently checked out to `branch` (other
+    // than the main checkout), or empty if none. Lets the agent detail resolve a
+    // session's worktree folder from its branch.
+    QString worktreePathForBranch(const QString &repoPath,
+                                  const QString &branch) const;
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -2200,6 +2216,7 @@ private:
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
+    QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
