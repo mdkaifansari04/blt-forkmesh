@@ -35128,6 +35128,20 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     if (!m_settingsLog)
         return;
 
+    // The badge accents below read on either canvas, but the timestamp, day
+    // divider and message body need per-theme greys/text so the log isn't grey
+    // text washed out on the light (#ffffff) background. Dark keeps its lighter
+    // ink on the near-black canvas; light uses GitHub's near-black body text.
+    const bool dark = currentThemeIsDark();
+    const QString messageColor =
+        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
+    const QString timeColor =
+        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
+    const QString dividerLabelColor =
+        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    const QString dividerDashColor =
+        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
+
     // Stored format: "yyyy-MM-dd HH:mm:ss  message". Parse leniently so any
     // legacy/odd line still renders (as a plain message with no timestamp).
     QString date, time, message = storedLine;
@@ -35145,24 +35159,27 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
                 .toString(QStringLiteral("dddd, d MMMM yyyy"));
         m_settingsLog->appendHtml(
             QString::fromUtf8(
-                "<span style='color:#484f58'>"
+                "<span style='color:%1'>"
                 "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
-                "<span style='color:#8b949e; font-weight:600'>%1</span>"
-                "<span style='color:#484f58'>&nbsp;"
+                "<span style='color:%2; font-weight:600'>%3</span>"
+                "<span style='color:%4'>&nbsp;"
                 "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
-                .arg((pretty.isEmpty() ? date : pretty).toHtmlEscaped()));
+                .arg(dividerDashColor, dividerLabelColor,
+                     (pretty.isEmpty() ? date : pretty).toHtmlEscaped(),
+                     dividerDashColor));
     }
 
     const NetworkLogStyle style = networkLogStyleFor(message);
     QString html;
     if (!time.isEmpty())
-        html += QStringLiteral("<span style='color:#6e7681'>%1</span>&nbsp;&nbsp;")
-                    .arg(time);
+        html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
+                    .arg(timeColor, time);
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
-                "<span style='color:#adbac7'>%3</span>")
+                "<span style='color:%3'>%4</span>")
                 .arg(style.accent,
                      style.badge.leftJustified(7).toHtmlEscaped(),
+                     messageColor,
                      message.toHtmlEscaped());
     m_settingsLog->appendHtml(html);
 }
