@@ -602,6 +602,17 @@ private:
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
     void showAgentSession(int sessionId);
+    // Authoritative cumulative token total for a session: the live running
+    // counter (m_sessionTokens) clamped to never fall below the value persisted
+    // on the session. Reloading sessions from disk mid-run would otherwise reset
+    // the detail panel's "Session token usage" back to a stale/zero figure before
+    // climbing again, so both the table cell and the detail line read this.
+    qint64 sessionTokenTotal(const AgentSession &session) const;
+    // Seed m_sessionTokens from the persisted totals (taking the max) so the live
+    // counter survives reloads and continues from the saved base, not from zero.
+    void seedSessionTokens();
+    // Repaint the detail panel's "Session token usage" line for one session.
+    void setAgentUsageLabel(const AgentSession &session);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
     AgentSession *findAgentSession(int sessionId);
@@ -2081,9 +2092,10 @@ private:
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
-    // Bottom-left composer on the Agents tab: type a prompt and start a brand-new
-    // Claude Code agent in the open repo, not tied to any issue (issue #273).
+    // Bottom-left composer on the Agents tab: type a prompt, pick which agent and
+    // start a brand-new agent in the open repo, not tied to any issue (issue #273).
     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
+    QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
     QPushButton *m_agentStartButton = nullptr;
     void startAdHocAgent();
     QPushButton *m_agentStopButton = nullptr;
