@@ -22,6 +22,7 @@ struct CommitComment; // CommitCommentStore.h
 #include <QList>
 #include <QMainWindow>
 #include <QMap>
+#include <QMetaType>
 #include <QPixmap>
 #include <QSet>
 #include <QUrl>
@@ -119,6 +120,20 @@ struct RepositoryRecord {
     qint64 lastSyncMs = 0;
     qint64 publishedAtMs = 0;
 };
+
+// A clickable navigation target attached to a notification so its row opens the
+// related screen/item when double-clicked (issue #292). An empty kind means the
+// notification carries no destination and the row is inert.
+struct NotificationLink {
+    QString kind;    // "issue" | "pull" | "discussion" | "commit"
+    QString owner;   // repo owner
+    QString name;    // repo name
+    int number = -1; // issue / PR / discussion number
+    QString ref;     // commit hash, when kind == "commit"
+
+    bool isValid() const { return !kind.isEmpty(); }
+};
+Q_DECLARE_METATYPE(NotificationLink)
 
 class MainWindow : public QMainWindow
 {
@@ -697,6 +712,12 @@ private:
                            bool warning); // tray alert gated by the run-alert setting
     void addNotification(const QString &title, const QString &body,
                          bool warning = false, int runId = -1);
+    // Overload that records where a notification's row should jump to when its
+    // row is double-clicked on the Notifications page (issue #292).
+    void addNotification(const QString &title, const QString &body, bool warning,
+                         const NotificationLink &link);
+    // Open the screen/item a notification points at (issue/PR/discussion/commit).
+    void openNotificationLink(const NotificationLink &link);
     void showNotifications();
     // Notifications live in their own top-level section: a sortable table
     // (buildNotificationsSection is declared with the other section builders).
@@ -1892,6 +1913,7 @@ private:
         qint64 timestampMs = 0;
         bool warning = false;
         int runId = -1;
+        NotificationLink link; // double-click destination (issue #292)
     };
     ActionStore *m_actionStore = nullptr;
     ActionRunner *m_actionRunner = nullptr;

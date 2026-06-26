@@ -14232,7 +14232,15 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
             }
             if (!body.isEmpty()) {
                 flashMessage(body);
-                addNotification(QStringLiteral("Discussion update"), body);
+                // Link a single update to its discussion; a batch lands on the
+                // repo's Discussions tab (issue #292).
+                NotificationLink link;
+                link.kind = QStringLiteral("discussion");
+                link.owner = repo.owner;
+                link.name = repo.name;
+                link.number = merged == 1 ? lastNumber : -1;
+                addNotification(QStringLiteral("Discussion update"), body, false,
+                                link);
             }
         }
     });
@@ -34998,6 +35006,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         QString lastCommentBody;
         QString lastIssueAuthor;
         QString lastIssueTitle;
+        int lastIssueNumber = 0;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
@@ -35026,6 +35035,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                     ++newIssues;
                     lastIssueAuthor = who;
                     lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
+                    lastIssueNumber = number;
                 }
             }
         }
@@ -35063,7 +35073,14 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                 notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new issue"),
                                  body);
             // Log it on the Notifications page so it persists past the toast.
-            addNotification(QStringLiteral("New issue"), body);
+            // A single new issue links straight to it; a batch lands on the
+            // repo's Issues tab (issue #292).
+            NotificationLink link;
+            link.kind = QStringLiteral("issue");
+            link.owner = repo.owner;
+            link.name = repo.name;
+            link.number = newIssues == 1 ? lastIssueNumber : -1;
+            addNotification(QStringLiteral("New issue"), body, false, link);
             if (notifyEnabled(kIssueAlertSetting) && m_trayIcon &&
                 QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new issue", body,
@@ -35090,7 +35107,14 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                 notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new comment"),
                                  body);
             // Log it on the Notifications page so it persists past the toast.
-            addNotification(QStringLiteral("New comment"), body);
+            // A single comment links to its issue; a batch lands on the Issues
+            // tab (issue #292).
+            NotificationLink link;
+            link.kind = QStringLiteral("issue");
+            link.owner = repo.owner;
+            link.name = repo.name;
+            link.number = comments == 1 ? lastCommentNumber : -1;
+            addNotification(QStringLiteral("New comment"), body, false, link);
             if (notifyEnabled(kCommentAlertSetting) && m_trayIcon &&
                 QSystemTrayIcon::supportsMessages())
                 m_trayIcon->showMessage("ForkMesh — new comment", body,
@@ -39861,7 +39885,8 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
     // humanLocator is the "issue #12" / "PR #4" / "commit abc1234" phrase shown.
     auto notifyMention = [&](const QString &stableKey, const QString &authorKey,
                              const QString &authorName, const QString &text,
-                             const QString &humanLocator) {
+                             const QString &humanLocator,
+                             const NotificationLink &link) {
         if (text.isEmpty() || !textMentionsNodeName(text, m_userName))
             return;
         if (!authorKey.isEmpty() && authorKey == myKey)
@@ -39885,7 +39910,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
             QApplication::alert(this, 0);
             postNotification(who + QStringLiteral(" mentioned you"), body);
         }
-        addNotification(QStringLiteral("Mention"), body);
+        addNotification(QStringLiteral("Mention"), body, false, link);
     };
     // Issues/PRs: preserve the existing "<repo>#<kind><number>:<eventId>" dedup
     // key (so upgrades don't re-fire historical mentions) and "<kind> #<n>"
@@ -39897,8 +39922,14 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                                 .arg(repoKey, kind)
                                 .arg(number)
                                 .arg(eventId);
+        NotificationLink link;
+        link.kind = kind; // "issue" | "pull" — matches openNotificationLink
+        link.owner = repo.owner;
+        link.name = repo.name;
+        link.number = number;
         notifyMention(key, authorKey, authorName, text,
-                      context + QStringLiteral("#") + QString::number(number));
+                      context + QStringLiteral("#") + QString::number(number),
+                      link);
     };
 
     IssueStore issues(repo.localPath, repo.mirrorPath, &m_profileIdentity,
@@ -39932,10 +39963,16 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                                       &m_profileIdentity, m_userName);
     for (const auto &thread : commitComments.loadAll()) {
         const QString &sha = thread.first;
-        for (const CommitComment &c : thread.second)
+        for (const CommitComment &c : thread.second) {
+            NotificationLink link;
+            link.kind = QStringLiteral("commit");
+            link.owner = repo.owner;
+            link.name = repo.name;
+            link.ref = sha;
             notifyMention(QStringLiteral("%1#commit%2:%3").arg(repoKey, sha, c.id),
                           c.author, c.authorName, c.body,
-                          QStringLiteral("commit %1").arg(sha.left(8)));
+                          QStringLiteral("commit %1").arg(sha.left(8)), link);
+        }
     }
 
     if (dirty) {
@@ -40924,6 +40961,63 @@ void MainWindow::addNotification(const QString &title, const QString &body,
         refreshNotificationsTable();
 }
 
+void MainWindow::addNotification(const QString &title, const QString &body,
+                                 bool warning, const NotificationLink &link)
+{
+    AppNotification item;
+    item.title = title;
+    item.body = body;
+    item.warning = warning;
+    item.link = link;
+    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    m_notifications.prepend(item);
+    while (m_notifications.size() > 100)
+        m_notifications.removeLast();
+    updateNotificationButton();
+    if (m_notificationsTable && m_sectionStack &&
+        m_sectionStack->currentIndex() == 3)
+        refreshNotificationsTable();
+}
+
+// Jump to the screen/item a notification points at: open the owning repo, switch
+// to the right tab and select the issue / PR / discussion / commit (issue #292).
+void MainWindow::openNotificationLink(const NotificationLink &link)
+{
+    if (!link.isValid())
+        return;
+    const int index = repoIndexFor(link.owner, link.name);
+    if (index < 0) {
+        flashMessage(QStringLiteral("That repository isn't on this node anymore."),
+                     true);
+        return;
+    }
+    openRepoDetail(index);
+    auto selectTab = [this](int tab) {
+        if (m_repoDetailTabs && m_repoDetailTabs->button(tab))
+            m_repoDetailTabs->button(tab)->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(tab);
+    };
+    if (link.kind == QLatin1String("issue")) {
+        selectTab(2); // Issues
+        if (link.number > 0)
+            showIssue(link.number);
+    } else if (link.kind == QLatin1String("pull")) {
+        if (link.number > 0)
+            showPull(link.number); // selects the Pull requests tab itself
+        else
+            selectTab(4);
+    } else if (link.kind == QLatin1String("discussion")) {
+        selectTab(5); // Discussions
+        if (link.number > 0)
+            showDiscussion(link.number);
+    } else if (link.kind == QLatin1String("commit")) {
+        selectTab(1); // Commits
+        if (!link.ref.isEmpty())
+            showCommit(link.ref);
+    }
+}
+
 int MainWindow::pendingActionCount() const
 {
     int count = 0;
@@ -41076,14 +41170,26 @@ QWidget *MainWindow::buildNotificationsSection()
     makeColumnsResizable(m_notificationsTable);
     m_notificationsTable->horizontalHeader()->setSortIndicator(
         3, Qt::DescendingOrder); // newest first by default
+    m_notificationsTable->setToolTip(
+        QStringLiteral("Double-click a row to open the related issue, pull "
+                       "request, discussion, commit or action."));
     connect(m_notificationsTable, &QTableWidget::itemDoubleClicked, this,
             [this](QTableWidgetItem *item) {
                 if (!item)
                     return;
-                const int runId =
-                    m_notificationsTable->item(item->row(), 0)->data(Qt::UserRole).toInt();
-                if (runId > 0)
+                QTableWidgetItem *first = m_notificationsTable->item(item->row(), 0);
+                if (!first)
+                    return;
+                // Approval rows route to their run; everything else carries a
+                // NotificationLink to the screen/item it's about (issue #292).
+                const int runId = first->data(Qt::UserRole).toInt();
+                if (runId > 0) {
                     openActionRunFromNotification(runId);
+                    return;
+                }
+                const QVariant nav = first->data(Qt::UserRole + 1);
+                if (nav.canConvert<NotificationLink>())
+                    openNotificationLink(qvariant_cast<NotificationLink>(nav));
             });
 
     auto *layout = new QVBoxLayout(page);
@@ -41106,12 +41212,16 @@ void MainWindow::refreshNotificationsTable()
 
     auto addRow = [this](const QString &type, const QString &titleText,
                          const QString &detail, qint64 whenMs, int runId,
-                         bool warning) {
+                         bool warning, const NotificationLink &link) {
         const int row = m_notificationsTable->rowCount();
         m_notificationsTable->insertRow(row);
 
         auto *typeItem = new QTableWidgetItem(type);
         typeItem->setData(Qt::UserRole, runId);
+        // Carry the double-click destination (issue #292) on the row's first
+        // cell; the handler reads it back to open the related screen/item.
+        if (link.isValid())
+            typeItem->setData(Qt::UserRole + 1, QVariant::fromValue(link));
         auto *titleItem = new QTableWidgetItem(titleText);
         auto *detailItem = new QTableWidgetItem(detail);
         // Sorts chronologically (by epoch millis) while showing a friendly date.
@@ -41136,12 +41246,12 @@ void MainWindow::refreshNotificationsTable()
         addRow(QStringLiteral("Approval"), run.workflowName,
                QStringLiteral("%1/%2 at %3")
                    .arg(run.owner, run.name, run.commit.left(8)),
-               run.createdAtMs, run.id, false);
+               run.createdAtMs, run.id, false, NotificationLink());
     }
     for (const AppNotification &notice : std::as_const(m_notifications)) {
         addRow(notice.warning ? QStringLiteral("Alert") : QStringLiteral("Info"),
                notice.title, notice.body, notice.timestampMs, notice.runId,
-               notice.warning);
+               notice.warning, notice.link);
     }
 
     m_notificationsTable->setSortingEnabled(true);
