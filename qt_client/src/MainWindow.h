@@ -34,6 +34,7 @@ class MarkdownEditor;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
+class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
 class ActionRunner;
@@ -193,6 +194,29 @@ public:
     QString testIssueAgentProvider() const;
     void testSetDefaultAgentProvider(const QString &provider);
 #endif
+
+    // --- Headless / CLI support (HeadlessConsole) ------------------------------
+    // Always compiled (unlike the FORKMESH_WINDOW_TESTS hooks above): read-only
+    // views and a few control entry points so a no-display node started with
+    // --headless can be driven from a stdin REPL. Each reuses the exact path the
+    // GUI uses, so headless behaviour stays in lock-step with the desktop app.
+    ChatBackend *currentBackend() const { return m_backend; }
+    bool headlessConnected() const;
+    QString headlessNodeName() const;
+    // First-run / connect: equivalent to typing a name and pressing the GUI
+    // connect button (drives startSession via the offscreen setup widgets).
+    void headlessStart(const QString &name, const QString &solana = QString());
+    // Kick the periodic mirror sync + owned-inbox poll right now.
+    void headlessSyncNow();
+    QStringList headlessStatusLines() const;
+    QStringList headlessRosterLines() const;
+    QStringList headlessRepoLines() const;
+    QStringList headlessMirrorLines() const;
+
+signals:
+    // Emitted whenever a backend is (re)created and wired up, so a headless
+    // console can attach its live event feed to the new ChatBackend.
+    void backendAttached(ChatBackend *backend);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -358,6 +382,11 @@ private:
     QWidget *buildNetworkLogDock();
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
+    // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
+    void startDiagnostics();
+    void updateFooterDiagnostics();
+    void onUiStall(qint64 peakMs, const QString &backtrace);
+    void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
 
@@ -1477,6 +1506,15 @@ private:
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
+    QPushButton *m_footerDiagnostics = nullptr;
+    StallWatchdog *m_stallWatchdog = nullptr;
+    QTimer *m_diagTimer = nullptr;
+    int m_stallCount = 0;
+    QStringList m_stallLog;          // recent stalls, each with its backtrace
+    QString m_stallLogPath;          // durable on-disk stall log
+    qulonglong m_diagLastCpuTicks = 0;
+    qint64 m_diagLastCpuMs = 0;
 
     // Repo detail view
     int m_repoDetailIndex = -1;

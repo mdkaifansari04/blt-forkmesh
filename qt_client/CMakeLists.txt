@@ -71,9 +71,13 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/StallWatchdog.h
+    src/StallWatchdog.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
+    src/HeadlessConsole.h
+    src/HeadlessConsole.cpp
 )
 
 qt_add_executable(forkmesh
@@ -86,6 +90,9 @@ target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSS
 # libutil (macOS provides it in libSystem, so no extra link there).
 if(UNIX AND NOT APPLE)
     target_link_libraries(forkmesh PRIVATE util)
+    # Export symbols so the StallWatchdog's backtrace_symbols() resolves function
+    # names (not just addresses) when it samples a frozen UI thread.
+    target_link_options(forkmesh PRIVATE -rdynamic)
 endif()
 
 if(APPLE)

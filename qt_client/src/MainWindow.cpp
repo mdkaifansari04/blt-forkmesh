@@ -8,6 +8,7 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "CommitCommentStore.h"
+#include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
 
@@ -3734,6 +3735,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             &MainWindow::refreshRepositoryList);
     m_homeStatsTimer->start(60000);
 
+    // Footer diagnostics + UI-stall watchdog. Deferred one event-loop turn so the
+    // heartbeat starts measuring a real, interactive loop (not constructor work).
+    QTimer::singleShot(0, this, [this] { startDiagnostics(); });
+
     // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
     // owner's repo as it updates. A first pass runs shortly after startup.
     m_mirrorSyncTimer = new QTimer(this);
@@ -6465,6 +6470,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
 
+    // Live diagnostics just right of the identity: CPU / memory of this process,
+    // plus a count of detected UI stalls. Click to see the stall details.
+    m_footerDiagnostics = new QPushButton;
+    m_footerDiagnostics->setObjectName("footerDiagnostics");
+    m_footerDiagnostics->setFlat(true);
+    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
+    m_footerDiagnostics->setToolTip(
+        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
+        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+    m_footerDiagnostics->setStyleSheet(
+        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    connect(m_footerDiagnostics, &QPushButton::clicked, this,
+            &MainWindow::showDiagnosticsDialog);
+
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
@@ -6477,6 +6498,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls and the donate/social cluster pinned to the far right.
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(m_footerGitIdentity);
+    quickAddRow->addWidget(m_footerDiagnostics);
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(donateButton);
     quickAddRow->addWidget(redditButton);
@@ -6534,6 +6556,138 @@ void MainWindow::updateFooterGitIdentity()
     else
         text = QStringLiteral("git identity not set");
     m_footerGitIdentity->setText(text);
+}
+
+// Start the UI-stall watchdog + the live CPU/memory readout. Called once the
+// window is up so the heartbeat reflects a real, interactive event loop.
+void MainWindow::startDiagnostics()
+{
+    if (!m_stallWatchdog) {
+        m_stallWatchdog = new StallWatchdog(this);
+        connect(m_stallWatchdog, &StallWatchdog::stalled, this, &MainWindow::onUiStall);
+        const QString logPath =
+            QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
+        m_stallLogPath = logPath;
+        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath);
+    }
+    if (!m_diagTimer) {
+        m_diagTimer = new QTimer(this);
+        m_diagTimer->setInterval(1500);
+        connect(m_diagTimer, &QTimer::timeout, this,
+                &MainWindow::updateFooterDiagnostics);
+        m_diagTimer->start();
+    }
+    updateFooterDiagnostics();
+}
+
+// Refresh the footer readout: this process's CPU% (since the last tick) and its
+// resident memory, read from /proc, plus any UI-stall count.
+void MainWindow::updateFooterDiagnostics()
+{
+    if (!m_footerDiagnostics)
+        return;
+    double cpuPct = -1.0;
+    long rssMb = -1;
+#if defined(__linux__)
+    QFile stat(QStringLiteral("/proc/self/stat"));
+    if (stat.open(QIODevice::ReadOnly)) {
+        const QByteArray s = stat.readAll();
+        const int rp = s.lastIndexOf(')'); // comm field may hold spaces/parens
+        const QList<QByteArray> f = s.mid(rp + 2).split(' ');
+        if (f.size() > 12) { // utime=14th, stime=15th field overall
+            const qulonglong ticks = f.at(11).toULongLong() + f.at(12).toULongLong();
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            if (m_diagLastCpuTicks > 0 && nowMs > m_diagLastCpuMs) {
+                const double dTicks = double(ticks) - double(m_diagLastCpuTicks);
+                const double dSec = (nowMs - m_diagLastCpuMs) / 1000.0;
+                const long hz = sysconf(_SC_CLK_TCK);
+                if (hz > 0 && dSec > 0)
+                    cpuPct = qMax(0.0, (dTicks / hz) / dSec * 100.0);
+            }
+            m_diagLastCpuTicks = ticks;
+            m_diagLastCpuMs = nowMs;
+        }
+    }
+    QFile statm(QStringLiteral("/proc/self/statm"));
+    if (statm.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> p = statm.readAll().split(' ');
+        if (p.size() > 1)
+            rssMb = static_cast<long>((p.at(1).toULongLong() * sysconf(_SC_PAGESIZE)) /
+                                      (1024 * 1024));
+    }
+#endif
+    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5 "); // 🖥
+    if (cpuPct >= 0)
+        txt += QStringLiteral("CPU %1%%  ").arg(cpuPct, 0, 'f', 0);
+    if (rssMb >= 0)
+        txt += QStringLiteral("MEM %1\xE2\x80\xAFMB").arg(rssMb);
+    if (m_stallCount > 0)
+        txt += QString::fromUtf8("  \xE2\x9A\xA0 %1 stall%2")
+                   .arg(m_stallCount)
+                   .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"));
+    m_footerDiagnostics->setText(txt.trimmed());
+}
+
+// A UI stall ended: record it, surface it in the system log, and reflect the
+// running count in the footer. The full backtrace is kept for the detail dialog.
+void MainWindow::onUiStall(qint64 peakMs, const QString &backtrace)
+{
+    ++m_stallCount;
+    const QString when = QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss"));
+    const QString head =
+        QStringLiteral("[%1] UI stalled ~%2 ms (event loop blocked)").arg(when).arg(peakMs);
+    logSystem(head); // shows up in the app's Log view
+    QString entry = head;
+    if (!backtrace.isEmpty())
+        entry += QLatin1Char('\n') + backtrace;
+    m_stallLog.append(entry);
+    while (m_stallLog.size() > 100)
+        m_stallLog.removeFirst();
+    if (m_footerDiagnostics)
+        m_footerDiagnostics->setToolTip(
+            QStringLiteral("Last UI stall: ~%1 ms at %2. Click for details (%3 logged).")
+                .arg(peakMs)
+                .arg(when)
+                .arg(m_stallCount));
+    updateFooterDiagnostics();
+}
+
+// Detail view for the diagnostics readout: the recorded UI stalls (with the
+// captured backtraces) plus where the durable log lives.
+void MainWindow::showDiagnosticsDialog()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("UI stall diagnostics"));
+    dlg.resize(720, 480);
+    auto *v = new QVBoxLayout(&dlg);
+    auto *summary = new QLabel(
+        m_stallCount == 0
+            ? QStringLiteral("No UI stalls detected this session. The app watches the "
+                             "GUI thread and records any freeze longer than 1.5s here.")
+            : QStringLiteral("%1 UI stall(s) detected this session. Each entry below "
+                             "is where the GUI thread was blocked.")
+                  .arg(m_stallCount));
+    summary->setWordWrap(true);
+    v->addWidget(summary);
+    auto *view = new QPlainTextEdit;
+    view->setReadOnly(true);
+    applyLogFont(view);
+    view->setPlainText(m_stallLog.isEmpty() ? QStringLiteral("(nothing recorded yet)")
+                                            : m_stallLog.join(QStringLiteral("\n\n")));
+    v->addWidget(view, 1);
+    if (!m_stallLogPath.isEmpty()) {
+        auto *path = new QLabel(QStringLiteral("Durable log: %1").arg(m_stallLogPath));
+        path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        path->setStyleSheet(QStringLiteral("color:#8b949e;font-size:11px;"));
+        v->addWidget(path);
+    }
+    auto *close = new QPushButton(QStringLiteral("Close"));
+    connect(close, &QPushButton::clicked, &dlg, &QDialog::accept);
+    auto *row = new QHBoxLayout;
+    row->addStretch(1);
+    row->addWidget(close);
+    v->addLayout(row);
+    dlg.exec();
 }
 
 void MainWindow::showTreasuryDonateDialog()
@@ -35713,6 +35867,149 @@ void MainWindow::attachBackend(ChatBackend *backend)
         m_setupError->setText(message);
         m_setupError->show();
     });
+    // Let a headless console attach its live event feed to this backend.
+    emit backendAttached(backend);
+}
+
+// --- Headless / CLI support -------------------------------------------------
+// Read-only views and control entry points used by HeadlessConsole when the app
+// runs with no display. Everything routes through the same logic the GUI uses.
+
+bool MainWindow::headlessConnected() const
+{
+    return m_backend != nullptr && m_connectedAtMs > 0;
+}
+
+QString MainWindow::headlessNodeName() const
+{
+    if (!m_userName.isEmpty())
+        return m_userName;
+    return QSettings().value(kAccountNameSetting).toString().trimmed();
+}
+
+void MainWindow::headlessStart(const QString &name, const QString &solana)
+{
+    // Equivalent to typing a name and pressing the GUI connect button: fill the
+    // (offscreen) setup widgets and run the normal startSession path. The Ed25519
+    // identity auto-generates on first load, so a fresh VM needs only a name.
+    const QString trimmed = name.trimmed().toLower();
+    if (m_nameEdit)
+        m_nameEdit->setText(trimmed);
+    if (m_solanaEdit && !solana.trimmed().isEmpty())
+        m_solanaEdit->setText(solana.trimmed());
+    if (m_serverUrlEdit && m_serverUrlEdit->text().trimmed().isEmpty())
+        m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
+    startSession();
+}
+
+void MainWindow::headlessSyncNow()
+{
+    autoSyncMirrors();
+    pollOwnedInboxes();
+}
+
+QStringList MainWindow::headlessStatusLines() const
+{
+    QStringList lines;
+    lines << QStringLiteral("ForkMesh v" FORKMESH_VERSION "  (headless)");
+    const QString node = headlessNodeName();
+    lines << QStringLiteral("Node:      %1")
+                 .arg(node.isEmpty()
+                          ? QStringLiteral("(not set — run: setup <name>)")
+                          : node);
+    if (!m_accountName.isEmpty())
+        lines << QStringLiteral("Account:   %1 (%2, %3)")
+                     .arg(m_accountName,
+                          m_accountAuthenticated
+                              ? QStringLiteral("authenticated")
+                              : QStringLiteral("unauthenticated"),
+                          m_accountTier.isEmpty() ? QStringLiteral("free")
+                                                  : m_accountTier);
+    if (headlessConnected()) {
+        const qint64 secs =
+            (QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs) / 1000;
+        lines << QStringLiteral("Connected: yes  (uptime %1s)").arg(secs);
+        if (m_statusLine && !m_statusLine->text().isEmpty())
+            lines << QStringLiteral("Status:    %1").arg(m_statusLine->text());
+    } else {
+        lines << QStringLiteral("Connected: no  (run: setup <name>)");
+    }
+    int online = 0;
+    for (const MemberInfo &m : m_homeRoster)
+        if (m.online)
+            ++online;
+    lines << QStringLiteral("Peers:     %1 online / %2 known")
+                 .arg(online)
+                 .arg(m_homeRoster.size());
+    lines << QStringLiteral("Repos:     %1").arg(m_repositories.size());
+    lines << QStringLiteral("Serving:   %1 live host(s)").arg(m_repoHosts.size());
+    return lines;
+}
+
+QStringList MainWindow::headlessRosterLines() const
+{
+    QStringList lines;
+    if (m_homeRoster.isEmpty()) {
+        lines << QStringLiteral("(no peers)");
+        return lines;
+    }
+    for (const MemberInfo &m : m_homeRoster) {
+        QString line =
+            QStringLiteral("%1 %2").arg(m.online ? QStringLiteral("●")
+                                                 : QStringLiteral("○"),
+                                        m.name.isEmpty() ? m.id : m.name);
+        if (m.self)
+            line += QStringLiteral(" (you)");
+        if (!m.platform.isEmpty())
+            line += QStringLiteral("  [%1 %2]").arg(m.platform, m.version);
+        if (!m.mirrors.isEmpty())
+            line += QStringLiteral("  mirrors:%1").arg(m.mirrors.size());
+        lines << line;
+    }
+    return lines;
+}
+
+QStringList MainWindow::headlessRepoLines() const
+{
+    QStringList lines;
+    if (m_repositories.isEmpty()) {
+        lines << QStringLiteral("(no repositories)");
+        return lines;
+    }
+    for (const RepositoryRecord &r : m_repositories) {
+        QString line = QStringLiteral("%1/%2").arg(r.owner, r.name);
+        QStringList flags;
+        if (r.publishToNetwork)
+            flags << QStringLiteral("published");
+        if (r.isPrivate)
+            flags << QStringLiteral("private");
+        if (r.previewOnly)
+            flags << QStringLiteral("preview");
+        if (!r.mirrorPath.isEmpty())
+            flags << QStringLiteral("mirror");
+        if (!flags.isEmpty())
+            line += QStringLiteral("  [%1]").arg(flags.join(QStringLiteral(", ")));
+        lines << line;
+    }
+    return lines;
+}
+
+QStringList MainWindow::headlessMirrorLines() const
+{
+    QStringList lines;
+    for (const RepositoryRecord &r : m_repositories) {
+        if (r.previewOnly || r.mirrorPath.isEmpty())
+            continue;
+        QString line = QStringLiteral("%1/%2").arg(r.owner, r.name);
+        if (r.lastSyncMs > 0)
+            line += QStringLiteral("  synced %1")
+                        .arg(QDateTime::fromMSecsSinceEpoch(r.lastSyncMs)
+                                 .toString(Qt::ISODate));
+        lines << line;
+    }
+    if (lines.isEmpty())
+        lines << QStringLiteral("(no mirrors)");
+    return lines;
 }
 
 void MainWindow::leaveSession(const QString &)
