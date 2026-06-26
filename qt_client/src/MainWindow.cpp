@@ -28979,10 +28979,9 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
                 .arg(branch, base),
             true);
     }
-    // Rebuilding the table drops the selection, blanking the diff/buttons; keep
-    // the focus on the worktree we just updated so it doesn't go blank (#272).
+    // loadWorktreesPanel() preserves the current selection across the rebuild, so
+    // focus stays on the worktree we just updated instead of going blank (#272).
     loadWorktreesPanel();
-    selectWorktreeRow(branch);
 }
 
 QWidget *MainWindow::buildBranchesTab()
