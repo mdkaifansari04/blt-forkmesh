@@ -1681,6 +1681,16 @@ bool PullStore::checkMergeable(int number, bool *clean,
     return true;
 }
 
+QString PullStore::baseTip() const
+{
+    if (!canWrite())
+        return QString();
+    QByteArray out;
+    if (!runGit(m_workTree, {"rev-parse", "HEAD"}, &out, nullptr))
+        return QString();
+    return QString::fromUtf8(out).trimmed();
+}
+
 bool PullStore::applyRemotePull(const PullRequest &incoming, QString *error)
 {
     if (!canWrite())

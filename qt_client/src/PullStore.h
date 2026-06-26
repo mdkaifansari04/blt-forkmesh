@@ -105,6 +105,11 @@ public:
     bool checkMergeable(int number, bool *clean,
                         QStringList *conflictFiles = nullptr,
                         QString *error = nullptr) const;
+    // The working tree's current HEAD commit, or empty when unavailable. Cheap
+    // (one `git rev-parse`); used to fingerprint the base a checkMergeable()
+    // result was computed against so callers can cache the dry-run apply and skip
+    // re-spawning it for every open PR when neither the base nor the patch moved.
+    QString baseTip() const;
 
     // Interactive conflict resolution that isolates the fix on the PR's own
     // branch instead of merging into the checked-out (base) branch.
