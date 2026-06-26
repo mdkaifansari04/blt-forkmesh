@@ -258,6 +258,14 @@ int main(int argc, char *argv[])
     check(window.testMarginResize(),
           QStringLiteral("column drag trades width with its neighbour"));
 
+    // Issue #33: the agents list lets the user drag column headers into a new
+    // order, and resizing afterwards still trades width with the visual
+    // neighbour so the divider keeps tracking the cursor.
+    check(window.testAgentColumnsMovable(),
+          QStringLiteral("agents list column headers are draggable/reorderable"));
+    check(window.testMarginResizeAfterMove(),
+          QStringLiteral("column drag trades with visual neighbour after a move"));
+
     window.testEnableSessionStartBypass(true);
 
     // No wallet, no signup: starting a node needs only a valid name. The core
