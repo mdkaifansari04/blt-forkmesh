@@ -15,6 +15,15 @@
 
 struct CommitComment; // CommitCommentStore.h
 
+// Per-session "night rider" scanner-light state, animated in the agents list
+// while raw output is streaming. phase is the Larson-sweep parameter advanced on
+// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep only
+// runs while the agent is actively producing output.
+struct AgentScannerState {
+    double phase = 0.0;        // 0..1 sweep parameter (bounced into a triangle)
+    qint64 lastActivityMs = 0; // wall-clock of the last raw-output chunk
+};
+
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -616,6 +625,10 @@ private:
     void refreshAgentTable();
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+    // Pulse a session's night-rider light so the agents-list activity column
+    // sweeps while its raw output is streaming; onScannerTick drives the frames.
+    void noteAgentActivity(int sessionId);
+    void onScannerTick();
     void showAgentSession(int sessionId);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
@@ -2069,6 +2082,10 @@ private:
     QHash<int, QList<QJsonObject>> m_streamEvents;
     QHash<int, QString> m_streamRaw;
     QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
+    // Night-rider scanner lights: per-session sweep state keyed by sessionId (so
+    // it survives full table rebuilds) and the timer that animates the active ones.
+    QHash<int, AgentScannerState> m_scannerStates;
+    QTimer *m_scannerTimer = nullptr;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
