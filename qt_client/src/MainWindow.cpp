@@ -518,18 +518,23 @@ void installMarginResize(QHeaderView *header)
             const int delta = newSize - oldSize;
             if (delta == 0)
                 return;
-            // Trade the change with the next visible Interactive column. If a
-            // Stretch column comes first, leave it — it already absorbs the change
-            // and the divider still tracks the cursor.
+            // Trade the change with the next visible Interactive column to the
+            // right. We walk in *visual* order (not logical) so the divider keeps
+            // tracking the cursor even after the user has dragged columns into a
+            // new order. If a Stretch column comes first, leave it — it already
+            // absorbs the change and the divider still tracks the cursor.
             int neighbor = -1;
-            for (int i = logicalIndex + 1; i < header->count(); ++i) {
-                if (header->isSectionHidden(i))
+            for (int v = header->visualIndex(logicalIndex) + 1; v < header->count();
+                 ++v) {
+                const int logical = header->logicalIndex(v);
+                if (header->isSectionHidden(logical))
                     continue;
-                const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
+                const QHeaderView::ResizeMode mode =
+                    header->sectionResizeMode(logical);
                 if (mode == QHeaderView::Stretch)
                     return;
                 if (mode == QHeaderView::Interactive) {
-                    neighbor = i;
+                    neighbor = logical;
                     break;
                 }
             }
@@ -4382,6 +4387,48 @@ bool MainWindow::testMarginResize()
     const bool stretchUntouched =
         header->sectionResizeMode(1) == QHeaderView::Stretch;
     return neighborGaveWidth && tailUntouched && stretchUntouched;
+}
+
+bool MainWindow::testMarginResizeAfterMove()
+{
+    // Three draggable content columns. Once the user reorders them, resizing
+    // one must still trade with whatever column now sits to its right visually.
+    QTableWidget table(0, 3);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionsMovable(true);
+    for (int i = 0; i < 3; ++i)
+        header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(&table);
+    table.resize(600, 200);
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("alpha value")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("beta value")));
+    table.setItem(0, 2, new QTableWidgetItem(QStringLiteral("gamma value")));
+    // The snapshot/switch to Interactive is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    // Move logical column 0 to the far right: visual order becomes 1, 2, 0.
+    header->moveSection(header->visualIndex(0), 2);
+
+    // Dragging logical column 1 (now leftmost) wider must pull width from
+    // logical column 2 — its new visual right-hand neighbour — not from the
+    // logical-next column 2 by accident or from the far-right moved column.
+    const int before2 = header->sectionSize(2);
+    const int before0 = header->sectionSize(0);
+    const int delta = 20;
+    header->resizeSection(1, header->sectionSize(1) + delta);
+    QApplication::processEvents();
+
+    const bool visualNeighborGaveWidth = header->sectionSize(2) == before2 - delta;
+    const bool movedColumnUntouched = header->sectionSize(0) == before0;
+    return visualNeighborGaveWidth && movedColumnUntouched;
+}
+
+bool MainWindow::testAgentColumnsMovable() const
+{
+    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
 }
 
 QString MainWindow::testQuickAddAgentProvider() const
@@ -19177,6 +19224,10 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
+    // Let the user drag column headers into a new order (resizing is wired up
+    // by makeColumnsResizable() below). The custom-painted Activity delegate is
+    // bound to its logical column, so it follows the header wherever it lands.
+    agentHeader->setSectionsMovable(true);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
     for (int c = 2; c < kAgentActivityColumn; ++c)
