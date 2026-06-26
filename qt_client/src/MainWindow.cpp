@@ -29010,9 +29010,18 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchPullAllButton, "download", 16);
     connect(m_branchPullAllButton, &QPushButton::clicked, this,
             &MainWindow::pullBaseIntoAllBranches);
+    // Tidy up branches that are fully merged into the default branch (0 behind and
+    // 0 ahead of it); enabled in loadBranchesPanel() once those counts are known.
+    m_branchDeleteMergedButton = new QPushButton("Delete merged");
+    m_branchDeleteMergedButton->setObjectName("ghostButton");
+    m_branchDeleteMergedButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchDeleteMergedButton, "trash", 16);
+    connect(m_branchDeleteMergedButton, &QPushButton::clicked, this,
+            &MainWindow::deleteMergedBranches);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
+    headerRow->addWidget(m_branchDeleteMergedButton);
     headerRow->addWidget(m_branchPullAllButton);
     headerRow->addWidget(refreshButton);
     headerRow->addWidget(newBranchButton);
@@ -29139,6 +29148,7 @@ void MainWindow::loadBranchesPanel()
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
     bool anyBehind = false;
+    bool anyMerged = false; // fully-merged branches the "Delete merged" action can remove
     for (const QString &branch : branches) {
         const int row = m_branchesTable->rowCount();
         m_branchesTable->insertRow(row);
@@ -29285,6 +29295,10 @@ void MainWindow::loadBranchesPanel()
         del->setToolTip(QStringLiteral("Delete branch %1").arg(branch));
         const bool canDelete = writable && branch != base && branch != selected;
         del->setEnabled(canDelete);
+        // A deletable branch sitting at the base tip (0 behind, 0 ahead) is fully
+        // merged and a candidate for the header's one-click "Delete merged".
+        if (canDelete && behind == 0 && ahead == 0)
+            anyMerged = true;
         if (!canDelete)
             del->setToolTip(writable
                                 ? "Can't delete the default or current branch"
@@ -29328,6 +29342,21 @@ void MainWindow::loadBranchesPanel()
                       ? QStringLiteral("Merge %1 into every branch that's behind it")
                             .arg(base)
                       : QStringLiteral("All branches are up to date with %1")
+                            .arg(base));
+    }
+
+    // Header "Delete merged" is enabled only when at least one branch is fully
+    // merged into the base (0 behind, 0 ahead) and therefore safe to prune.
+    if (m_branchDeleteMergedButton) {
+        m_branchDeleteMergedButton->setEnabled(writable && anyMerged);
+        m_branchDeleteMergedButton->setToolTip(
+            !writable
+                ? QStringLiteral("Read-only mirror \xE2\x80\x94 nothing to delete")
+                : anyMerged
+                      ? QStringLiteral("Delete every branch fully merged into %1 "
+                                       "(0 behind, 0 ahead)")
+                            .arg(base)
+                      : QStringLiteral("No branches are fully merged into %1")
                             .arg(base));
     }
 
@@ -29402,6 +29431,88 @@ void MainWindow::deleteBranch(const QString &branch)
     }
     logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
     setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+    loadBranchesAndTags();
+}
+
+// Prune every branch that's fully merged into the default branch (0 behind and
+// 0 ahead of it), in one confirmed pass. The default and checked-out branches
+// are always skipped — they're never redundant and can't be force-deleted.
+void MainWindow::deleteMergedBranches()
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "This is a read-only mirror; branches can't be deleted here.", true);
+        return;
+    }
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (base.isEmpty())
+        return;
+
+    // The checked-out branch can't be force-deleted; skip it (it's usually base).
+    QByteArray headOut;
+    QString currentBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+        currentBranch = QString::fromUtf8(headOut).trimmed();
+
+    // A branch with 0 behind and 0 ahead of base points at the same tip — fully
+    // merged and redundant.
+    QStringList merged;
+    for (const QString &branch : branches) {
+        if (branch == base || branch == currentBranch)
+            continue;
+        QByteArray counts;
+        if (!runGitCapture(dir,
+                           {"rev-list", "--left-right", "--count",
+                            base + "..." + branch},
+                           &counts, nullptr))
+            continue;
+        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+            QRegularExpression(QStringLiteral("\\s+")));
+        if (parts.size() >= 2 && parts.at(0).toInt() == 0 && parts.at(1).toInt() == 0)
+            merged << branch;
+    }
+
+    if (merged.isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("No branches are fully merged into %1.").arg(base));
+        return;
+    }
+    if (QMessageBox::question(
+            this, "Delete merged branches",
+            QStringLiteral("Delete the %1 branch(es) fully merged into %2 "
+                           "(0 behind, 0 ahead)? This cannot be undone.\n\n%3")
+                .arg(merged.size())
+                .arg(base, merged.join(QStringLiteral("\n"))),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    QStringList deleted, failed;
+    for (const QString &branch : merged) {
+        // -D rather than -d: identical-tip branches are merged, but -D keeps the
+        // pass from stalling on any edge case git counts differently.
+        if (runGitCapture(dir, {"branch", "-D", branch}, nullptr, nullptr))
+            deleted << branch;
+        else
+            failed << branch;
+    }
+    if (!deleted.isEmpty())
+        logSystem(QStringLiteral("Git: deleted %1 merged branch(es): %2.")
+                      .arg(deleted.size())
+                      .arg(deleted.join(QStringLiteral(", "))));
+    if (failed.isEmpty())
+        setRepoDetailNotice(
+            QStringLiteral("Deleted %1 merged branch(es).").arg(deleted.size()));
+    else
+        setRepoDetailNotice(
+            QStringLiteral("Deleted %1 merged branch(es); %2 could not be deleted (%3).")
+                .arg(deleted.size())
+                .arg(failed.size())
+                .arg(failed.join(QStringLiteral(", "))),
+            true);
     loadBranchesAndTags();
 }
 
