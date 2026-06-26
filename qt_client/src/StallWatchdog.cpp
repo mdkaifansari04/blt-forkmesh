@@ -1,0 +1,158 @@
+#include "StallWatchdog.h"
+
+#include <QDateTime>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QTimer>
+
+#include <chrono>
+#include <cstring>
+
+#if defined(__linux__) && defined(__GLIBC__)
+#include <execinfo.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
+#define STALL_BACKTRACE 1
+#endif
+
+namespace {
+// One process-wide monotonic clock shared by the heartbeat and the watcher.
+QElapsedTimer &monoClock()
+{
+    static QElapsedTimer c;
+    if (!c.isValid())
+        c.start();
+    return c;
+}
+
+#ifdef STALL_BACKTRACE
+pthread_t g_mainThread;
+void *g_btBuf[64];
+std::atomic<int> g_btCount{-1};
+
+// Async-signal context: just sample the stack and stash the count. Symbolising
+// (backtrace_symbols, which mallocs) is done later on the watcher thread.
+void btHandler(int)
+{
+    const int n = backtrace(g_btBuf, 64);
+    g_btCount.store(n, std::memory_order_release);
+}
+
+// Ask the (stalled) main thread for its current stack. Returns symbolised frames.
+QString captureBacktrace()
+{
+    g_btCount.store(-1, std::memory_order_release);
+    if (pthread_kill(g_mainThread, SIGUSR2) != 0)
+        return QString();
+    for (int i = 0; i < 250 && g_btCount.load(std::memory_order_acquire) < 0; ++i)
+        usleep(1000); // up to ~250ms for the handler to run
+    const int n = g_btCount.load(std::memory_order_acquire);
+    if (n <= 0)
+        return QString();
+    char **syms = backtrace_symbols(g_btBuf, n);
+    if (!syms)
+        return QString();
+    QString out;
+    // Skip the first couple of frames (the signal handler / libc trampoline).
+    for (int i = 2; i < n; ++i) {
+        out += QString::fromUtf8(syms[i]);
+        out += QLatin1Char('\n');
+    }
+    free(syms);
+    return out;
+}
+#else
+QString captureBacktrace() { return QString(); }
+#endif
+} // namespace
+
+StallWatchdog::StallWatchdog(QObject *parent) : QObject(parent)
+{
+    monoClock();
+}
+
+StallWatchdog::~StallWatchdog()
+{
+    m_running.store(false);
+    if (m_worker.joinable())
+        m_worker.join();
+}
+
+void StallWatchdog::start(int stallThresholdMs, const QString &logPath)
+{
+    if (m_running.load())
+        return;
+    m_thresholdMs = stallThresholdMs;
+    m_logPath = logPath;
+    m_lastBeatMs.store(monoClock().elapsed());
+
+#ifdef STALL_BACKTRACE
+    g_mainThread = pthread_self();
+    void *warm[4];
+    backtrace(warm, 4); // page in libgcc so the in-handler call can't dlopen
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = btHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART; // let interrupted syscalls resume
+    sigaction(SIGUSR2, &sa, nullptr);
+#endif
+
+    // Heartbeat on the main thread: while the event loop is healthy this fires
+    // every 200ms; while it's blocked, it can't, and the gap is the stall.
+    m_beatTimer = new QTimer(this);
+    m_beatTimer->setInterval(200);
+    connect(m_beatTimer, &QTimer::timeout, this, [this] { beat(); });
+    m_beatTimer->start();
+
+    m_running.store(true);
+    m_worker = std::thread([this] { watchLoop(); });
+}
+
+void StallWatchdog::beat()
+{
+    m_lastBeatMs.store(monoClock().elapsed(), std::memory_order_relaxed);
+}
+
+void StallWatchdog::watchLoop()
+{
+    bool inStall = false;
+    qint64 peak = 0;
+    QString bt;
+    while (m_running.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const qint64 now = monoClock().elapsed();
+        const qint64 age = now - m_lastBeatMs.load(std::memory_order_relaxed);
+        if (age > m_thresholdMs) {
+            if (!inStall) {
+                inStall = true;
+                peak = age;
+                bt = captureBacktrace(); // sample the stack at first detection
+            } else {
+                peak = qMax(peak, age);
+            }
+        } else if (inStall) {
+            inStall = false; // the event loop resumed
+            // Durable record first, so it survives a later hang/crash.
+            if (!m_logPath.isEmpty()) {
+                QDir().mkpath(QFileInfo(m_logPath).absolutePath());
+                QFile f(m_logPath);
+                if (f.open(QIODevice::Append | QIODevice::Text)) {
+                    QTextStream ts(&f);
+                    ts << QDateTime::currentDateTime().toString(Qt::ISODate)
+                       << "  UI stalled ~" << peak << " ms\n";
+                    if (!bt.isEmpty())
+                        ts << bt;
+                    ts << "----\n";
+                }
+            }
+            emit stalled(peak, bt); // queued to the main thread for live display
+            peak = 0;
+            bt.clear();
+        }
+    }
+}

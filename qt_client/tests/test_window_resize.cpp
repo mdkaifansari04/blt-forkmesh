@@ -1,10 +1,12 @@
 #include "../src/MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QMenu>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
@@ -227,11 +229,42 @@ int main(int argc, char *argv[])
     check(window.testColumnsBecomeResizable(),
           QStringLiteral("data-table content columns become drag-resizable"));
 
+    // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
+    // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
+    // button instead of separate per-provider buttons.
+    if (QPushButton *fixButton =
+            findButtonStartingWith(window, QStringLiteral("Fix with agent"))) {
+        QMenu *fixMenu = fixButton->menu();
+        check(fixMenu != nullptr,
+              QStringLiteral("PR 'Fix with agent' button carries a dropdown menu"));
+        if (fixMenu) {
+            QStringList labels;
+            for (QAction *action : fixMenu->actions())
+                labels << action->text();
+            check(labels ==
+                      QStringList({QStringLiteral("Claude API"),
+                                   QStringLiteral("OpenAI API"),
+                                   QStringLiteral("Claude Code")}),
+                  QStringLiteral("Fix-with-agent menu offers Claude API, OpenAI API "
+                                 "and Claude Code"));
+        }
+    } else {
+        check(false, QStringLiteral("PR 'Fix with agent' dropdown button exists"));
+    }
+
     // Issue #268: dragging a column divider resizes like moving a margin — the
     // width comes from the immediate neighbour, not a far-off Stretch column, so
     // the divider tracks the cursor instead of snapping back.
     check(window.testMarginResize(),
           QStringLiteral("column drag trades width with its neighbour"));
+
+    // Issue #33: the agents list lets the user drag column headers into a new
+    // order, and resizing afterwards still trades width with the visual
+    // neighbour so the divider keeps tracking the cursor.
+    check(window.testAgentColumnsMovable(),
+          QStringLiteral("agents list column headers are draggable/reorderable"));
+    check(window.testMarginResizeAfterMove(),
+          QStringLiteral("column drag trades with visual neighbour after a move"));
 
     window.testEnableSessionStartBypass(true);
 
@@ -364,6 +397,30 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // Issue #286: the "Prioritize from README" button must actually be on the
+    // open issues view (not hidden, not pushed off the right edge of the panel).
+    {
+        window.resize(1100, 800);
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+        QPushButton *pb =
+            findButtonStartingWith(window, "Prioritize from README");
+        const bool realized = pb && pb->isVisibleTo(&window);
+        bool onScreen = false;
+        if (realized) {
+            const QPoint tl = pb->mapTo(&window, QPoint(0, 0));
+            onScreen = tl.x() >= 0 && tl.x() + pb->width() <= window.width();
+        }
+        check(shown && realized && onScreen,
+              QString("issue #286 prioritize button is visible on the issues "
+                      "view (shown=%1 realized=%2 onScreen=%3)")
+                  .arg(shown)
+                  .arg(realized)
+                  .arg(onScreen));
+    }
+
     window.resize(480, 420);
     QApplication::processEvents();
     window.testShowPublishBar(false);
@@ -434,6 +491,30 @@ int main(int argc, char *argv[])
                   .arg(seeded.testQuickAddAgentProvider(),
                        seeded.testIssueAgentProvider()));
         stopChildProcesses(seeded);
+    }
+
+    // Issue #287: the headless "mirrors" view leads with this node's own CPU and
+    // memory so an operator watching a durable daemon can see its load, and the
+    // "status" view carries the same Load line.
+    {
+        const QStringList mirrorLines = window.headlessMirrorLines();
+        check(!mirrorLines.isEmpty() &&
+                  mirrorLines.first().startsWith(QStringLiteral("node load:")) &&
+                  mirrorLines.first().contains(QStringLiteral("cpu")) &&
+                  mirrorLines.first().contains(QStringLiteral("mem")),
+              QStringLiteral("headless mirrors view leads with a cpu/memory load line"));
+
+        bool statusHasLoad = false;
+        for (const QString &line : window.headlessStatusLines()) {
+            if (line.startsWith(QStringLiteral("Load:")) &&
+                line.contains(QStringLiteral("cpu")) &&
+                line.contains(QStringLiteral("mem"))) {
+                statusHasLoad = true;
+                break;
+            }
+        }
+        check(statusHasLoad,
+              QStringLiteral("headless status view includes a cpu/memory load line"));
     }
 
     stopChildProcesses(window);
