@@ -14054,8 +14054,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
-    m_pullFixClaudeButton = new QPushButton("Fix with Claude");
-    m_pullFixOpenAiButton = new QPushButton("Fix with OpenAI");
+    m_pullFixButton = new QPushButton("Fix with agent");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
@@ -14066,7 +14065,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullFixClaudeButton, m_pullFixOpenAiButton,
+                           m_pullFixButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
                            m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
@@ -14116,22 +14115,28 @@ QWidget *MainWindow::buildPullsTab()
     m_pullResolveButton->hide(); // only shown when the PR has conflicts
     connect(m_pullResolveButton, &QPushButton::clicked, this,
             &MainWindow::resolveCurrentPullConflicts);
-    // One-click AI conflict resolution: a low-cost model rewrites the conflicting
-    // files and the fix is committed straight to the PR's branch (no new PR).
-    setOcticon(m_pullFixClaudeButton, "rocket", 16);
-    setOcticon(m_pullFixOpenAiButton, "rocket", 16);
-    m_pullFixClaudeButton->setToolTip(
-        "Let Claude (low-cost model) resolve these conflicts and commit the fix to "
-        "this pull request's branch \xE2\x80\x94 watch it run on the Agents tab");
-    m_pullFixOpenAiButton->setToolTip(
-        "Let OpenAI (low-cost model) resolve these conflicts and commit the fix to "
-        "this pull request's branch \xE2\x80\x94 watch it run on the Agents tab");
-    m_pullFixClaudeButton->hide(); // only shown when the PR has conflicts
-    m_pullFixOpenAiButton->hide();
-    connect(m_pullFixClaudeButton, &QPushButton::clicked, this,
+    // One-click AI conflict resolution: an agent rewrites the conflicting files
+    // and the fix is committed straight to the PR's branch (no new PR). The three
+    // providers (Claude API, OpenAI API, Claude Code) live in a single dropdown
+    // so the PR header stays compact (issue #150).
+    setOcticon(m_pullFixButton, "rocket", 16);
+    m_pullFixButton->setToolTip(
+        "Let an agent resolve these conflicts and commit the fix to this pull "
+        "request's branch \xE2\x80\x94 watch it run on the Agents tab");
+    m_pullFixButton->hide(); // only shown when the PR has conflicts
+    m_pullFixMenu = new QMenu(m_pullFixButton);
+    m_pullFixMenu->setToolTipsVisible(true);
+    m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
+    m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
+    m_pullFixClaudeCodeAction =
+        m_pullFixMenu->addAction(QStringLiteral("Claude Code"));
+    connect(m_pullFixClaudeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
-    connect(m_pullFixOpenAiButton, &QPushButton::clicked, this,
+    connect(m_pullFixOpenAiAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("openai")); });
+    connect(m_pullFixClaudeCodeAction, &QAction::triggered, this,
+            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude-code")); });
+    m_pullFixButton->setMenu(m_pullFixMenu);
     setOcticon(m_pullEditFileButton, "pencil", 16);
     m_pullEditFileButton->setToolTip(
         "Edit the selected file and commit the change to this pull request's "
@@ -14150,8 +14155,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
-    pullHeaderRow->addWidget(m_pullFixClaudeButton, 0, Qt::AlignTop);
-    pullHeaderRow->addWidget(m_pullFixOpenAiButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullFixButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
@@ -15953,25 +15957,35 @@ void MainWindow::updatePullActionState()
         m_pullResolveButton->setVisible(conflicted);
         m_pullResolveButton->setEnabled(conflicted && !aiFixBusy);
     }
-    if (m_pullFixClaudeButton || m_pullFixOpenAiButton) {
+    if (m_pullFixButton) {
+        // The button shows whenever the PR conflicts; each dropdown entry then
+        // enables only when its provider is usable. The API providers need a key
+        // in Settings; Claude Code authenticates through the local `claude` CLI
+        // login, so it stays available without one.
         const bool haveClaudeKey =
             !QSettings().value(kClaudeApiKeySetting).toString().trimmed().isEmpty();
         const bool haveOpenAiKey =
             !QSettings().value(kCodexApiKeySetting).toString().trimmed().isEmpty();
-        if (m_pullFixClaudeButton) {
-            m_pullFixClaudeButton->setVisible(conflicted);
-            m_pullFixClaudeButton->setEnabled(conflicted && !aiFixBusy && haveClaudeKey);
-            if (conflicted && !haveClaudeKey)
-                m_pullFixClaudeButton->setToolTip(
-                    "Add a Claude API key in Settings to auto-resolve conflicts.");
+        m_pullFixButton->setVisible(conflicted);
+        m_pullFixButton->setEnabled(conflicted && !aiFixBusy);
+        if (m_pullFixClaudeAction) {
+            m_pullFixClaudeAction->setEnabled(haveClaudeKey);
+            m_pullFixClaudeAction->setToolTip(
+                haveClaudeKey ? QStringLiteral("Resolve with the Claude API")
+                              : QStringLiteral("Add a Claude API key in Settings "
+                                               "to auto-resolve conflicts."));
         }
-        if (m_pullFixOpenAiButton) {
-            m_pullFixOpenAiButton->setVisible(conflicted);
-            m_pullFixOpenAiButton->setEnabled(conflicted && !aiFixBusy && haveOpenAiKey);
-            if (conflicted && !haveOpenAiKey)
-                m_pullFixOpenAiButton->setToolTip(
-                    "Add an OpenAI API key in Settings to auto-resolve conflicts.");
+        if (m_pullFixOpenAiAction) {
+            m_pullFixOpenAiAction->setEnabled(haveOpenAiKey);
+            m_pullFixOpenAiAction->setToolTip(
+                haveOpenAiKey ? QStringLiteral("Resolve with the OpenAI API")
+                              : QStringLiteral("Add an OpenAI API key in Settings "
+                                               "to auto-resolve conflicts."));
         }
+        if (m_pullFixClaudeCodeAction)
+            m_pullFixClaudeCodeAction->setToolTip(
+                QStringLiteral("Resolve with the Claude Code CLI (uses your local "
+                               "`claude` login)"));
     }
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
@@ -16644,19 +16658,26 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         return;
     const int number = m_currentPullNumber;
 
+    // "claude-code" drives the real `claude` CLI (no API key, authenticates via the
+    // local login); the two API providers POST each file to their endpoint.
+    const bool claudeCode = provider == QLatin1String("claude-code");
     const bool claude = provider == QLatin1String("claude");
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
-    const QString apiKey =
-        (claude ? QSettings().value(kClaudeApiKeySetting)
-                : QSettings().value(kCodexApiKeySetting))
-            .toString()
-            .trimmed();
-    if (apiKey.isEmpty()) {
-        flashMessage(claude ? "Add a Claude API key in Settings first."
-                            : "Add an OpenAI API key in Settings first.",
-                     true);
-        return;
+        claudeCode ? QString()
+                   : claude ? QStringLiteral("claude-haiku-4-5")
+                            : QStringLiteral("gpt-4.1-nano");
+    QString apiKey;
+    if (!claudeCode) {
+        apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                         : QSettings().value(kCodexApiKeySetting))
+                     .toString()
+                     .trimmed();
+        if (apiKey.isEmpty()) {
+            flashMessage(claude ? "Add a Claude API key in Settings first."
+                                : "Add an OpenAI API key in Settings first.",
+                         true);
+            return;
+        }
     }
 
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -16687,7 +16708,7 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     session.name = repo.name;
     session.issueNumber = 0; // PR-scoped, not issue-scoped
     session.issueTitle = QStringLiteral("Resolve conflicts on PR #%1").arg(number);
-    session.provider = provider; // "claude" | "openai"
+    session.provider = provider; // "claude" | "openai" | "claude-code"
     session.prNumber = number;
     session.branchName = QStringLiteral("pull/%1").arg(number);
     session.status = AgentStatus::Running;
@@ -16696,9 +16717,14 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> %1 (%2) resolving merge conflicts on pull request #%3.\n")
-            .arg(agentProviderName(provider), model)
-            .arg(number));
+        claudeCode
+            ? QStringLiteral("==> %1 resolving merge conflicts on pull request #%2.\n")
+                  .arg(agentProviderName(provider))
+                  .arg(number)
+            : QStringLiteral(
+                  "==> %1 (%2) resolving merge conflicts on pull request #%3.\n")
+                  .arg(agentProviderName(provider), model)
+                  .arg(number));
 
     m_aiFix = new AiConflictFix;
     m_aiFix->store = store;
@@ -16710,6 +16736,7 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     m_aiFix->apiKey = apiKey;
     m_aiFix->workTree = workTree;
     m_aiFix->files = conflicted;
+    m_aiFix->claudeCode = claudeCode;
 
     // Immediate "being worked on" indicator on the PR banner, plus jump to the
     // Agents tab so the user can watch it run.
@@ -16734,7 +16761,10 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
                  .arg(conflicted.size())
                  .arg(conflicted.join(QStringLiteral(", "))));
-    aiFixResolveNextFile();
+    if (m_aiFix->claudeCode)
+        aiFixRunClaudeCode();
+    else
+        aiFixResolveNextFile();
 }
 
 void MainWindow::aiFixResolveNextFile()
@@ -16848,6 +16878,143 @@ void MainWindow::aiFixResolveNextFile()
         }
         aiFixApplyResolved(text);
     });
+}
+
+// Claude Code path: rather than POST each file to an API, run the real `claude`
+// CLI once over the whole conflict-marked tree. The same git-am session is open,
+// so the agent edits files in place and finishConflictMerge commits the result.
+void MainWindow::aiFixRunClaudeCode()
+{
+    if (!m_aiFix)
+        return;
+
+    // A focused prompt: resolve the listed files' conflict markers and nothing
+    // else. The git-am session is open in this very tree, so the agent must not
+    // run git or commit — finishConflictMerge stages and commits afterwards.
+    const QString promptPath =
+        m_aiFix->workTree + QStringLiteral("/.forkmesh-conflict-prompt.md");
+    QStringList prompt;
+    prompt << QStringLiteral(
+        "You are resolving Git merge conflicts in this repository checkout.");
+    prompt << QStringLiteral("These files contain conflict markers "
+                             "(<<<<<<<, =======, >>>>>>>):");
+    for (const QString &rel : std::as_const(m_aiFix->files))
+        prompt << QStringLiteral("  - %1").arg(rel);
+    prompt << QString();
+    prompt << QStringLiteral(
+        "Edit each of those files so every conflict is resolved by combining both "
+        "sides into one correct, coherent result. Remove every conflict marker and "
+        "keep all non-conflicting content exactly as it is.");
+    prompt << QStringLiteral(
+        "Do NOT run any git command, do NOT commit, and do NOT touch any other "
+        "file \xE2\x80\x94 ForkMesh commits the result for you once you are done.");
+    QFile pf(promptPath);
+    if (!pf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        aiFixFail(QStringLiteral("Could not write the agent prompt file."));
+        return;
+    }
+    pf.write(prompt.join(QLatin1Char('\n')).toUtf8());
+    pf.close();
+
+    // Expand the configured Claude Code command, substituting the prompt file.
+    QString promptQuoted = promptPath;
+    promptQuoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    promptQuoted = QLatin1Char('\'') + promptQuoted + QLatin1Char('\'');
+    QString command = claudeCodeCommandSetting();
+    if (command.contains(QStringLiteral("{promptFile}")))
+        command.replace(QStringLiteral("{promptFile}"), promptQuoted);
+    else
+        command += QStringLiteral(" < ") + promptQuoted;
+
+    auto *process = new QProcess(this);
+    m_aiFix->process = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setWorkingDirectory(m_aiFix->workTree);
+
+    // Claude Code authenticates through its own login; strip any inherited API key
+    // so it never silently uses a stale/foreign one, and widen PATH to the usual
+    // user install dirs (matches AgentRunner).
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    const QString home = QDir::homePath();
+    const QString extraPath = home + QStringLiteral("/.local/bin:") + home +
+                              QStringLiteral("/.cargo/bin:") + home +
+                              QStringLiteral("/.npm-global/bin");
+    env.insert(QStringLiteral("PATH"),
+               extraPath + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
+    process->setProcessEnvironment(env);
+
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
+        if (!m_aiFix || m_aiFix->process != process)
+            return;
+        aiFixLog(QString::fromUtf8(process->readAllStandardOutput()));
+    });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process](QProcess::ProcessError err) {
+                if (!m_aiFix || m_aiFix->process != process)
+                    return;
+                if (err == QProcess::FailedToStart) {
+                    m_aiFix->process = nullptr;
+                    process->deleteLater();
+                    QFile::remove(m_aiFix->workTree +
+                                  QStringLiteral("/.forkmesh-conflict-prompt.md"));
+                    aiFixFail(QStringLiteral(
+                        "Could not start the `claude` CLI \xE2\x80\x94 install Claude "
+                        "Code or set its command in Settings."));
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus) {
+                if (!m_aiFix || m_aiFix->process != process)
+                    return;
+                const QByteArray tail = process->readAllStandardOutput();
+                if (!tail.isEmpty())
+                    aiFixLog(QString::fromUtf8(tail));
+                const QString workTree = m_aiFix->workTree;
+                const QStringList files = m_aiFix->files;
+                m_aiFix->process = nullptr;
+                process->deleteLater();
+                QFile::remove(workTree +
+                              QStringLiteral("/.forkmesh-conflict-prompt.md"));
+                if (exitCode != 0) {
+                    aiFixFail(QStringLiteral(
+                                  "Claude Code exited with code %1 before resolving "
+                                  "the conflicts.").arg(exitCode));
+                    return;
+                }
+                // The CLI claims success — make sure no marker survived before
+                // finishConflictMerge commits (it rejects markers too, but a clear
+                // message here is friendlier).
+                for (const QString &rel : files) {
+                    QFile f(workTree + QLatin1Char('/') + rel);
+                    if (!f.open(QIODevice::ReadOnly))
+                        continue;
+                    const QString text = QString::fromUtf8(f.readAll());
+                    if (text.contains(QStringLiteral("\n<<<<<<< ")) ||
+                        text.startsWith(QStringLiteral("<<<<<<< ")) ||
+                        text.contains(QStringLiteral("\n>>>>>>> "))) {
+                        aiFixFail(QStringLiteral(
+                                      "Claude Code left conflict markers in %1 "
+                                      "\xE2\x80\x94 resolve it manually instead.")
+                                      .arg(rel));
+                        return;
+                    }
+                }
+                aiFixLog(QStringLiteral(
+                    "==> Claude Code finished; committing the resolution.\n"));
+                aiFixFinish();
+            });
+
+    aiFixLog(
+        QStringLiteral("==> Running Claude Code over the conflict tree\xE2\x80\xA6\n"));
+#ifdef Q_OS_WIN
+    process->start(QStringLiteral("cmd"), {QStringLiteral("/c"), command});
+#else
+    const QString shell = QFile::exists(QStringLiteral("/bin/bash"))
+                              ? QStringLiteral("/bin/bash")
+                              : QStringLiteral("/bin/sh");
+    process->start(shell, {QStringLiteral("-lc"), command});
+#endif
 }
 
 void MainWindow::aiFixApplyResolved(const QString &resolvedIn)
