@@ -28566,9 +28566,12 @@ void MainWindow::loadWorktreesPanel()
     if (!m_worktreesTable)
         return;
     m_worktreesTable->setRowCount(0);
-    QString repoPath;
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+    QString repoPath, repoOwner, repoName;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         repoPath = m_repositories.at(m_repoDetailIndex).localPath;
+        repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        repoName = m_repositories.at(m_repoDetailIndex).name;
+    }
     if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
         if (m_worktreesSummary)
             m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
@@ -28644,6 +28647,53 @@ void MainWindow::loadWorktreesPanel()
         connect(openBtn, &QPushButton::clicked, this,
                 [p] { QDesktopServices::openUrl(QUrl::fromLocalFile(p)); });
         h->addWidget(openBtn);
+        // Issue #295: surface the agent working in this worktree's branch — show
+        // its status in the list and let you jump straight to its session.
+        const AgentSession *agent = nullptr;
+        if (!wt.branch.isEmpty()) {
+            for (const AgentSession &s : std::as_const(m_agentSessions)) {
+                if (s.owner != repoOwner || s.name != repoName
+                    || s.branchName != wt.branch)
+                    continue;
+                if (!agent) {
+                    agent = &s;
+                    continue;
+                }
+                // Prefer a live (non-cleared) session, then the most recent run.
+                const bool sLive = s.status != AgentStatus::Cleared;
+                const bool curLive = agent->status != AgentStatus::Cleared;
+                if ((sLive && !curLive) || (sLive == curLive && s.id > agent->id))
+                    agent = &s;
+            }
+        }
+        if (agent) {
+            const int agentId = agent->id;
+            auto *agentBtn = new QPushButton(
+                QString::fromUtf8("Agent \xC2\xB7 %1")
+                    .arg(agentStatusText(agent->status)));
+            agentBtn->setObjectName("ghostButton");
+            agentBtn->setCursor(Qt::PointingHandCursor);
+            agentBtn->setIcon(themedOcticon(
+                "rocket",
+                agent->merged ? QColor("#a371f7") : agentStatusColor(agent->status),
+                14));
+            agentBtn->setIconSize(QSize(14, 14));
+            QString tip = agent->issueNumber > 0
+                              ? QString::fromUtf8("Agent #%1 \xC2\xB7 issue #%2 %3")
+                                    .arg(agent->id)
+                                    .arg(agent->issueNumber)
+                                    .arg(agent->issueTitle)
+                              : QString::fromUtf8("Agent #%1 \xC2\xB7 %2")
+                                    .arg(agent->id)
+                                    .arg(agent->issueTitle);
+            tip += QString::fromUtf8(" \xC2\xB7 %1").arg(agentStatusText(agent->status));
+            if (agent->merged)
+                tip += QString::fromUtf8(" \xC2\xB7 merged");
+            agentBtn->setToolTip(tip);
+            connect(agentBtn, &QPushButton::clicked, this,
+                    [this, agentId] { switchToAgentsTab(agentId); });
+            h->addWidget(agentBtn);
+        }
         if (!isMain && !wt.branch.isEmpty()) {
             const QString branch = wt.branch;
             // Merge this worktree's branch straight into the default branch.
