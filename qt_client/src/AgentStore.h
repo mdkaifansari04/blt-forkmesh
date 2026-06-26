@@ -65,6 +65,11 @@ public:
     bool deleteSession(const AgentSession &session) const;
     void appendLog(const AgentSession &session, const QString &text) const;
     QString readLog(const AgentSession &session) const;
+    // Claude Code stream-json transcript events, persisted one JSON object per
+    // line so the rich transcript survives an app restart (issue #41).
+    void appendEvent(const AgentSession &session, const QJsonObject &ev) const;
+    QList<QJsonObject> loadEvents(const AgentSession &session) const;
+    void clearEvents(const AgentSession &session) const;
     void writePatch(const AgentSession &session, const QString &patch) const;
     QString readPatch(const AgentSession &session) const;
 
