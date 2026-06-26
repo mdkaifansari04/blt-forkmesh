@@ -981,6 +981,10 @@ const QString kCodexCommandSetting = QStringLiteral("agents/codexCommand");
 const QString kClaudeCommandSetting = QStringLiteral("agents/claudeCommand");
 const QString kAgentContextSetting = QStringLiteral("agents/contextWindow");
 const QString kAgentMaxOutputSetting = QStringLiteral("agents/maxOutputTokens");
+// User-editable instruction preamble prepended to every agent prompt (the
+// prompt that drives Claude and the other providers). Blank => built-in default.
+const QString kAgentPromptPreambleSetting =
+    QStringLiteral("agents/promptPreamble");
 // Cached month-to-date spend labels (issue #115) so the figures persist and are
 // shown immediately on restart instead of "not yet refreshed".
 const QString kOpenAiSpendTextSetting = QStringLiteral("agents/openAiSpendText");
@@ -1149,6 +1153,16 @@ QString claudeCodeCommandSetting()
     if (command.isEmpty())
         command = kDefaultClaudeCodeCommand;
     return command;
+}
+
+// The instruction preamble prepended to every agent prompt. Editable in
+// Settings → Agents; an empty/whitespace value falls back to the built-in
+// default so clearing the field restores the original behaviour.
+QString agentPromptPreamble()
+{
+    const QString stored =
+        QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
+    return stored.isEmpty() ? AgentRunner::defaultPromptPreamble() : stored;
 }
 
 QString codexCommandSetting()
@@ -20102,6 +20116,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
+    config.promptPreamble = agentPromptPreamble();
     if (provider == QLatin1String("claude-code")) {
         // Claude Code: the real `claude` CLI, run headlessly in the worktree.
         // Authenticate via the CLI's own claude.ai login, never an API key:
@@ -34807,6 +34822,23 @@ QWidget *MainWindow::buildSettingsSection()
                              qMax(256, m_agentMaxOutputEdit->text().toInt()));
     });
 
+    // Instruction preamble prepended to every agent prompt (the prompt that
+    // drives Claude and the other providers). Stored verbatim; clearing the box
+    // restores the built-in default on the next run.
+    m_agentPromptPreambleEdit = new QPlainTextEdit;
+    m_agentPromptPreambleEdit->setPlainText(agentPromptPreamble());
+    m_agentPromptPreambleEdit->setMaximumHeight(140);
+    m_agentPromptPreambleEdit->setPlaceholderText(
+        "Instructions prepended to the agent prompt. Leave empty to use the "
+        "built-in default.");
+    m_agentPromptPreambleEdit->setToolTip(
+        "Editable instruction preamble sent ahead of each issue's prompt to the "
+        "Claude (and other) coding agents. Clear it to fall back to the default.");
+    connect(m_agentPromptPreambleEdit, &QPlainTextEdit::textChanged, this, [this] {
+        QSettings().setValue(kAgentPromptPreambleSetting,
+                             m_agentPromptPreambleEdit->toPlainText());
+    });
+
     auto *agentForm = new QFormLayout;
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
@@ -34820,6 +34852,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Claude command", m_claudeCommandEdit);
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
+    agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
 
     // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
     // as the local "remote" a fork pushes to (see issue: fork from the client).
