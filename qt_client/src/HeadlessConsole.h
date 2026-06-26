@@ -15,6 +15,12 @@ class QSocketNotifier;
 // only observes and drives it. Created by main() when launched with --headless (or
 // when no display is detected). Unix-only stdin handling; on other platforms it
 // degrades to a live event-streaming daemon with no command input.
+//
+// It is a durable daemon: it keeps running until explicitly stopped — by the
+// `quit`/`exit` command or a SIGINT/SIGTERM (e.g. `kill`, `systemctl stop`,
+// Ctrl-C). Losing stdin (EOF / `</dev/null` when launched by a service manager)
+// does NOT stop the node; it just detaches the command prompt and the backend
+// runs on (issue #287).
 class HeadlessConsole : public QObject
 {
     Q_OBJECT
@@ -24,6 +30,7 @@ public:
 
 private slots:
     void onStdinActivated();
+    void onSignal();
 
 private:
     void printBanner();
@@ -33,11 +40,20 @@ private:
     void printLines(const QStringList &lines);
     void logEvent(const QString &text);
     void attachFeed(ChatBackend *backend);
+    void detachStdin();          // stop reading stdin but keep the node running
+    void shutdown(const QString &reason); // explicit stop: close + quit the loop
+    void installSignalHandlers();
 
     MainWindow *m_window;
     QCoreApplication *m_app;
     QTextStream m_out;
     QSocketNotifier *m_stdin = nullptr;
+    QSocketNotifier *m_signalNotifier = nullptr;
     QByteArray m_inBuf;
     bool m_echoEvents = true;
+
+    // Self-pipe so an async SIGINT/SIGTERM handler can hand off to the event loop
+    // (only async-signal-safe ::write happens in the handler).
+    static int s_signalFd[2];
+    static void unixSignalHandler(int sig);
 };
