@@ -27,6 +27,10 @@ struct AgentSession {
     QString branchName;
     QString baseRef;    // base commit SHA captured at run start (worktree/diff)
     QString baseBranch; // base branch the PR targets (e.g. main)
+    // Set once this session's worktree/PR has landed in the base branch (issue
+    // #291), so the status and detail page can flag it.
+    bool merged = false;
+    qint64 mergedAtMs = 0;
     qint64 createdAtMs = 0;
     qint64 startedAtMs = 0;
     qint64 finishedAtMs = 0;
