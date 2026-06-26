@@ -73,6 +73,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeSessionScan.cpp
     src/StallWatchdog.h
     src/StallWatchdog.cpp
+    src/SystemStats.h
+    src/SystemStats.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp

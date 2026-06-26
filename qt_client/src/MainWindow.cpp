@@ -18,6 +18,7 @@
 #include "RepoHost.h"
 #include "RepoSecurity.h"
 #include "ServerNode.h"
+#include "SystemStats.h"
 #include "Theme.h"
 
 #include <QAction>
@@ -35943,6 +35944,7 @@ QStringList MainWindow::headlessStatusLines() const
                  .arg(m_homeRoster.size());
     lines << QStringLiteral("Repos:     %1").arg(m_repositories.size());
     lines << QStringLiteral("Serving:   %1 live host(s)").arg(m_repoHosts.size());
+    lines << QStringLiteral("Load:      %1").arg(headlessResourceLine());
     return lines;
 }
 
@@ -35994,9 +35996,29 @@ QStringList MainWindow::headlessRepoLines() const
     return lines;
 }
 
+QString MainWindow::headlessResourceLine() const
+{
+    const double cpu = SystemStats::cpuPercent();
+    const QString cpuText = cpu < 0.0
+                                ? QStringLiteral("cpu n/a")
+                                : QStringLiteral("cpu %1%").arg(cpu, 0, 'f', 1);
+    const qint64 rss = SystemStats::residentBytes();
+    QString memText = QStringLiteral("mem %1").arg(SystemStats::formatBytes(rss));
+    const qint64 total = SystemStats::totalMemoryBytes();
+    if (rss > 0 && total > 0)
+        memText += QStringLiteral(" (%1% of %2)")
+                       .arg(100.0 * double(rss) / double(total), 0, 'f', 1)
+                       .arg(SystemStats::formatBytes(total));
+    return QStringLiteral("%1  %2").arg(cpuText, memText);
+}
+
 QStringList MainWindow::headlessMirrorLines() const
 {
     QStringList lines;
+    // Lead with this node's CPU / memory so an operator watching a durable
+    // headless daemon can see how much the node is consuming while it serves its
+    // mirrors (issue #287).
+    lines << QStringLiteral("node load: %1").arg(headlessResourceLine());
     for (const RepositoryRecord &r : m_repositories) {
         if (r.previewOnly || r.mirrorPath.isEmpty())
             continue;
@@ -36007,7 +36029,7 @@ QStringList MainWindow::headlessMirrorLines() const
                                  .toString(Qt::ISODate));
         lines << line;
     }
-    if (lines.isEmpty())
+    if (lines.size() == 1)
         lines << QStringLiteral("(no mirrors)");
     return lines;
 }
