@@ -1,7 +1,7 @@
 ---
 schema: forkmesh-issue-v1
 number: 150
-title: show if there are conflicts on the PR - have a button to assign to an agent to fix them
+title: on prs that have conflicts have a "fix with agent button" (roll the claude api and oppenai api in the dropdown and include claude code)
 status: open
 labels: [Phase 2]
 milestone: Phase 2
