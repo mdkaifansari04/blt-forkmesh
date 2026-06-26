@@ -16637,6 +16637,9 @@ void MainWindow::mergeCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     reloadPulls();
+    // Issue #291: flag the agent session behind this PR as landed in main (after
+    // reloadPulls so the agent table's PR column also reflects the merge).
+    markAgentSessionsMerged(current.number, current.head);
     // Push the merge (closed PR + any linked issue closes) to the mirror and
     // notify peers.
     propagateRepoUpdate(m_repoDetailIndex);
@@ -18349,6 +18352,9 @@ void MainWindow::mergeAndDeleteCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
+    // Issue #291: flag the agent session behind this PR before its branch/record
+    // are deleted below (after which it can no longer be detected on reload).
+    markAgentSessionsMerged(m_currentPullNumber, head);
 
     // Now delete the merged PR and its branch. propagate=true so the merge (and
     // the PR's removal) reaches peers via the mirror.
@@ -18784,6 +18790,36 @@ QColor agentStatusColor(const QString &status)
     if (status == AgentStatus::Stopped) return QColor("#8b949e");
     if (status == AgentStatus::Cleared) return QColor("#8b949e");
     return QColor("#8b949e");
+}
+
+// The base branch an agent session landed in, defaulting to "main" when the
+// session never recorded one (issue #291).
+QString agentMergeBase(const AgentSession &s)
+{
+    return s.baseBranch.isEmpty() ? QStringLiteral("main") : s.baseBranch;
+}
+
+// Fill the agent table's Status cell for a session. A session whose worktree/PR
+// has landed in the base branch (issue #291) gets a "· merged" suffix, the
+// merged-purple foreground used across the app, and a tooltip spelling out the
+// branch and time so the note is visible straight from the list.
+void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
+{
+    QString text = agentStatusText(s.status);
+    if (s.merged)
+        text += QString::fromUtf8(" \xC2\xB7 merged");
+    cell->setText(text);
+    cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
+    cell->setToolTip(
+        s.merged
+            ? QStringLiteral("Worktree/PR merged into %1%2")
+                  .arg(agentMergeBase(s),
+                       s.mergedAtMs > 0
+                           ? QStringLiteral(" on %1").arg(
+                                 QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
+                                     .toString(QStringLiteral("MMM d  hh:mm")))
+                           : QString())
+            : QString());
 }
 
 QString openAiAuthHeader(const QString &apiKey)
@@ -20080,6 +20116,7 @@ void MainWindow::reloadAgents()
         return;
     m_agentSessions = m_agentStore->loadAllSessions();
     injectExternalSessions(); // append any surfaced external (watch-only) sessions
+    refreshAgentMergeState();  // issue #291: note sessions landed in the base branch
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -20121,8 +20158,8 @@ void MainWindow::refreshAgentTable()
                     : session.issueTitle));
         m_agentTable->setItem(row, 2,
                               new QTableWidgetItem(agentProviderName(session.provider)));
-        auto *status = new QTableWidgetItem(agentStatusText(session.status));
-        status->setForeground(agentStatusColor(session.status));
+        auto *status = new QTableWidgetItem;
+        applyAgentStatusCell(status, session);
         m_agentTable->setItem(row, 3, status);
         // PR column: number plus the PR's current status (open/merged/closed),
         // looked up from the loaded pulls and colored to match the Pulls tab.
@@ -20244,6 +20281,115 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
     return nullptr;
 }
 
+// Issue #291: has this session's worktree/PR landed in the repo's base branch?
+// PR-backed sessions defer to the loaded pull's status (so a PR merged here, or
+// synced from a peer as merged, both count). Branch-only sessions check that the
+// branch still exists and that every commit the run added since its fork point
+// is now contained in the base branch — i.e. the work merged, not merely that an
+// empty branch trivially shares history.
+bool MainWindow::agentSessionLandedInBase(const AgentSession &session) const
+{
+    if (session.prNumber > 0) {
+        for (const PullRequest &pr : m_currentPulls)
+            if (pr.number == session.prNumber)
+                return pr.status == QLatin1String("merged");
+    }
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || session.branchName.isEmpty())
+        return false;
+    const QString base = repoDefaultBranch(repoBranches());
+    if (base.isEmpty() || session.branchName == base)
+        return false;
+    // The branch must still exist locally to reason about it.
+    if (!runGitCapture(dir,
+                       {"rev-parse", "--verify", "--quiet",
+                        QStringLiteral("refs/heads/%1").arg(session.branchName)},
+                       nullptr, nullptr))
+        return false;
+    // Without a recorded fork point we can't distinguish a merged branch from an
+    // un-started one that shares the base's history, so don't guess.
+    if (session.baseRef.isEmpty())
+        return false;
+    auto count = [&](const QString &range) -> int {
+        QByteArray out;
+        if (!runGitCapture(dir, {"rev-list", "--count", range}, &out, nullptr))
+            return -1;
+        return QString::fromUtf8(out).trimmed().toInt();
+    };
+    // The run must have produced commits since it forked …
+    if (count(QStringLiteral("%1..%2").arg(session.baseRef, session.branchName)) <= 0)
+        return false;
+    // … and all of them must now be reachable from base (nothing left outside).
+    return count(QStringLiteral("%1..%2").arg(base, session.branchName)) == 0;
+}
+
+// Eagerly flag the agent session(s) tied to a just-merged PR or worktree branch
+// (issue #291): records the merge time, notes it in the transcript, and refreshes
+// the status cell / detail page. Called from the in-app merge flows so the note
+// appears even when the PR/branch is about to be deleted. Returns whether any
+// session was newly marked.
+bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
+{
+    if (!m_agentStore)
+        return false;
+    bool changed = false;
+    for (AgentSession &s : m_agentSessions) {
+        if (s.merged)
+            continue;
+        const bool byPr = prNumber > 0 && s.prNumber == prNumber;
+        const bool byBranch =
+            !branch.isEmpty() && !s.branchName.isEmpty() && s.branchName == branch;
+        if (!byPr && !byBranch)
+            continue;
+        s.merged = true;
+        s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
+        m_agentStore->saveSession(s);
+        m_agentStore->appendLog(
+            s, QStringLiteral("\n==> %1 merged into %2.")
+                   .arg(byPr ? QStringLiteral("PR #%1").arg(prNumber)
+                             : QStringLiteral("Branch %1").arg(branch),
+                        agentMergeBase(s)));
+        changed = true;
+    }
+    if (changed) {
+        refreshAgentTable();
+        if (m_selectedAgentSessionId > 0)
+            showAgentSession(m_selectedAgentSessionId);
+    }
+    return changed;
+}
+
+// Issue #291 catch-all, run on every agent reload: pick up sessions whose
+// worktree/PR has landed in the base branch through any path (an in-app merge, a
+// peer's merge synced in, or a manual git merge) and record it once. The
+// in-app merge flows mark eagerly via markAgentSessionsMerged(); this backs them
+// up and covers everything else.
+void MainWindow::refreshAgentMergeState()
+{
+    if (!m_agentStore)
+        return;
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+    for (AgentSession &s : m_agentSessions) {
+        if (s.merged || s.owner != owner || s.name != name)
+            continue;
+        // Nothing has landed while a run is still queued or working; skip the git
+        // checks until it has produced something.
+        if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
+            continue;
+        if (!agentSessionLandedInBase(s))
+            continue;
+        s.merged = true;
+        s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
+        m_agentStore->saveSession(s);
+        m_agentStore->appendLog(
+            s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
+    }
+}
+
 // HTML for a branch name that, when clicked in the agent session header, opens
 // the branch's worktree in the Worktrees tab (handled by m_agentMeta's
 // linkActivated -> switchToWorktree). Plain (un-escaped) when there's no branch.
@@ -20304,6 +20450,14 @@ void MainWindow::showAgentSession(int sessionId)
                           .arg(session->prNumber));
         }
     }
+    // Issue #291: a "· merged into <base>" note appended to the meta line once
+    // the session's worktree/PR has landed in the base branch.
+    const QString mergedMeta =
+        session->merged
+            ? QStringLiteral(
+                  " · <span style='color:#a371f7'>merged into %1</span>")
+                  .arg(agentMergeBase(*session).toHtmlEscaped())
+            : QString();
     if (m_agentMeta && isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Worktrees-tab row (issue
         // #265); every other part is HTML-escaped to stay literal.
@@ -20316,6 +20470,7 @@ void MainWindow::showAgentSession(int sessionId)
         if (!session->branchName.isEmpty())
             meta += sep + worktreeLinkHtml(session->branchName);
         meta += sep + QStringLiteral("watch-only");
+        meta += mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible.
@@ -20338,6 +20493,7 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
+        meta += mergedMeta;
         m_agentMeta->setText(meta);
     }
     if (m_agentUsage) {
@@ -20376,10 +20532,17 @@ void MainWindow::showAgentSession(int sessionId)
             label = "Failed";
         else
             label = agentStatusText(s);
-        m_agentStatusPill->setText(
+        QString pill =
             QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
                               "<span style='color:#8b949e'>%2</span>")
-                .arg(dotColor, label.toHtmlEscaped()));
+                .arg(dotColor, label.toHtmlEscaped());
+        // Issue #291: once the worktree/PR has landed in the base branch, flag
+        // it right on the status pill in the merged-purple used elsewhere.
+        if (session->merged)
+            pill += QString::fromUtf8(
+                        " <span style='color:#a371f7'>\xE2\x97\x8F merged into %1</span>")
+                        .arg(agentMergeBase(*session).toHtmlEscaped());
+        m_agentStatusPill->setText(pill);
     }
 
     // View PR button appears once a pull request exists for this session.
@@ -21642,8 +21805,7 @@ void MainWindow::updateAgentStatusCell(int sessionId)
             cell = new QTableWidgetItem;
             m_agentTable->setItem(r, 3, cell);
         }
-        cell->setText(agentStatusText(s->status));
-        cell->setForeground(agentStatusColor(s->status));
+        applyAgentStatusCell(cell, *s);
         break;
     }
     if (sessionId == m_selectedAgentSessionId)
@@ -28118,6 +28280,8 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
                           .arg(branch, base)
                     : QStringLiteral("Merged %1 into %2.").arg(branch, base),
             false);
+        // Issue #291: flag any agent session that produced this branch.
+        markAgentSessionsMerged(0, branch);
     } else {
         runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
         setRepoDetailNotice(
