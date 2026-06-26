@@ -1027,6 +1027,10 @@ const QString kLegacyClaudeCommand =
 // input) so it edits the worktree until done; ForkMesh then turns the diff into a
 // PR. Distinct from "Claude API" (the bundled python script) above.
 const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
+// Default model for new Claude Code sessions (a `claude` CLI alias: opus |
+// sonnet | haiku). Empty leaves the CLI's own default in place. Per-session
+// overrides live on AgentSession::model; this is the seed for new sessions.
+const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
@@ -1088,6 +1092,20 @@ void selectDefaultAgentProvider(QComboBox *combo)
         return;
     const int index = combo->findData(defaultAgentProvider());
     combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+// Fill a combo with the Claude Code model choices (issue #32). The data values
+// are `claude` CLI aliases; the empty default leaves the CLI's own default model
+// in place. Used by both the per-session composer and the new-agent composer.
+void populateClaudeModelCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->addItem(QStringLiteral("Default model"), QString());
+    combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+    combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+    combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
 }
 
 // Materialize the bundled Claude agent script into the app data dir and return
@@ -19255,6 +19273,27 @@ QWidget *MainWindow::buildAgentsTab()
                                 QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_agentNewProvider);
     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
+    // Model picker for a new Claude Code agent (issue #32). Seeds from the saved
+    // default and only applies to Claude Code; the runner-based providers keep
+    // their own configured models. Disabled when a non-Claude-Code agent is picked.
+    m_agentNewModel = new QComboBox;
+    m_agentNewModel->setObjectName("agentNewModel");
+    m_agentNewModel->setCursor(Qt::PointingHandCursor);
+    populateClaudeModelCombo(m_agentNewModel);
+    m_agentNewModel->setToolTip("Model for the new Claude Code agent");
+    {
+        const int idx = m_agentNewModel->findData(
+            QSettings().value(kClaudeCodeModelSetting).toString());
+        m_agentNewModel->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    auto syncNewModelEnabled = [this] {
+        if (m_agentNewModel && m_agentNewProvider)
+            m_agentNewModel->setEnabled(m_agentNewProvider->currentData().toString() ==
+                                        QLatin1String("claude-code"));
+    };
+    syncNewModelEnabled();
+    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [syncNewModelEnabled](int) { syncNewModelEnabled(); });
     m_agentStartButton = new QPushButton("Start agent");
     m_agentStartButton->setObjectName("primaryButton");
     m_agentStartButton->setCursor(Qt::PointingHandCursor);
@@ -19276,6 +19315,7 @@ QWidget *MainWindow::buildAgentsTab()
     newAgentBtns->setContentsMargins(0, 0, 0, 0);
     newAgentBtns->setSpacing(6);
     newAgentBtns->addWidget(m_agentNewProvider);
+    newAgentBtns->addWidget(m_agentNewModel);
     newAgentBtns->addStretch(1);
     newAgentBtns->addWidget(m_agentStartButton);
     newAgentCol->addLayout(newAgentBtns);
@@ -19583,11 +19623,42 @@ QWidget *MainWindow::buildAgentsTab()
         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
-            m_agentStore->appendLog(
-                *session,
-                QStringLiteral("\n==> User prompt saved while session was not running\n%1")
-                    .arg(prompt));
-            showAgentSession(session->id);
+            const int sid = session->id;
+            if (session->provider == QLatin1String("claude-code")) {
+                // No live CLI for this Claude Code session (the task finished, or
+                // it's mid-resume after a ForkMesh restart). Queue the message and
+                // show it in the transcript now; it's delivered as a follow-up turn
+                // the next time the session's stream starts.
+                applyTranscriptEvent(
+                    sid,
+                    QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                                {QStringLiteral("text"), prompt}});
+                m_streamPending[sid].append(prompt);
+                if (m_agentStore)
+                    m_agentStore->appendLog(
+                        *session,
+                        QStringLiteral("\n==> Queued message; will be sent when the "
+                                       "agent next runs:\n%1")
+                            .arg(prompt));
+                // If the task is already finished/idle, start a continuation now so
+                // the queued message is acted on. Queued/Running sessions flush
+                // their pending messages when the stream comes up.
+                const QString st = session->status;
+                const bool idle =
+                    st != AgentStatus::Running && st != AgentStatus::Queued;
+                if (idle && session->issueNumber > 0 && !runnerForSession(sid))
+                    continueSelectedAgentSession();
+                else
+                    showAgentSession(sid);
+            } else if (m_agentStore) {
+                // Runner-based providers can't resume from a queued message.
+                m_agentStore->appendLog(
+                    *session,
+                    QStringLiteral(
+                        "\n==> User prompt saved while session was not running\n%1")
+                        .arg(prompt));
+                showAgentSession(sid);
+            }
         }
         m_agentPromptEdit->clear();
     });
@@ -19626,6 +19697,31 @@ QWidget *MainWindow::buildAgentsTab()
                                      m_agentAutoModeCombo->currentData().toBool());
             });
 
+    // Per-session model selector (issue #32): pick which Claude model drives the
+    // selected session. The choice is stored on the session and takes effect on
+    // its next launch/continuation; it's also shown in the agent header. Values
+    // are `claude` CLI aliases; empty leaves the CLI's default model in place.
+    m_agentModelCombo = new QComboBox;
+    m_agentModelCombo->setObjectName("agentModel");
+    m_agentModelCombo->setCursor(Qt::PointingHandCursor);
+    populateClaudeModelCombo(m_agentModelCombo);
+    m_agentModelCombo->setToolTip(
+        "Model for this session. Applies the next time it runs; shown in the header.");
+    connect(m_agentModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!m_agentModelCombo || m_selectedAgentSessionId <= 0 || !m_agentStore)
+                    return;
+                AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+                if (!s)
+                    return;
+                const QString picked = m_agentModelCombo->currentData().toString();
+                if (s->model == picked)
+                    return;
+                s->model = picked;
+                m_agentStore->saveSession(*s);
+                showAgentSession(s->id); // refresh the header's model note
+            });
+
     // Composer styled like the Claude Code conversation input: a rounded panel
     // with the message field above an accessory + send button row.
     auto *composer = new QFrame;
@@ -19642,6 +19738,7 @@ QWidget *MainWindow::buildAgentsTab()
     composerBtns->addWidget(m_agentAddFilesButton);
     composerBtns->addWidget(m_agentSlashButton);
     composerBtns->addWidget(m_agentAutoModeCombo);
+    composerBtns->addWidget(m_agentModelCombo);
     composerBtns->addStretch(1);
     composerBtns->addWidget(m_agentSendPromptButton);
     composerCol->addLayout(composerBtns);
@@ -20633,6 +20730,18 @@ void MainWindow::showAgentSession(int sessionId)
 
     if (m_agentDetail)
         m_agentDetail->show();
+    // Reflect this session's chosen model in the composer's model selector. Block
+    // signals so syncing the UI doesn't re-trigger the change handler (which would
+    // re-enter showAgentSession). The selector is meaningful only for Claude Code
+    // sessions; disable it for the others (and watch-only externals).
+    if (m_agentModelCombo) {
+        QSignalBlocker block(m_agentModelCombo);
+        int idx = m_agentModelCombo->findData(session->model);
+        m_agentModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        m_agentModelCombo->setEnabled(!isExternalSession(sessionId) &&
+                                      session->provider ==
+                                          QLatin1String("claude-code"));
+    }
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
@@ -20694,6 +20803,17 @@ void MainWindow::showAgentSession(int sessionId)
                             ? QStringLiteral("(no branch)")
                             : worktreeLinkHtml(session->branchName)) +
                        sep + pr.toHtmlEscaped();
+        // Show which model drove the run (issue #32). Claude Code falls back to
+        // the CLI's default when none was chosen; other providers only show a
+        // model when one is explicitly set on the session.
+        const QString modelLabel =
+            !session->model.isEmpty()
+                ? session->model
+                : (session->provider == QLatin1String("claude-code")
+                       ? QStringLiteral("default")
+                       : QString());
+        if (!modelLabel.isEmpty())
+            meta += sep + QStringLiteral("model: %1").arg(modelLabel.toHtmlEscaped());
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -20923,6 +21043,10 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     session.issueNumber = issue->number;
     session.issueTitle = issue->title;
     session.provider = provider;
+    // Seed Claude Code sessions with the configured default model (issue #32); the
+    // per-session composer can override it later.
+    if (provider == QLatin1String("claude-code"))
+        session.model = QSettings().value(kClaudeCodeModelSetting).toString();
     session.createPr = m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
@@ -21000,11 +21124,20 @@ void MainWindow::startAdHocAgent()
                                  ? m_agentNewProvider->currentData().toString()
                                  : QStringLiteral("claude-code");
 
+    // Model chosen in the composer applies to Claude Code only; persist it as the
+    // new default so the next agent starts from the same choice (issue #32).
+    QString chosenModel;
+    if (provider == QLatin1String("claude-code") && m_agentNewModel) {
+        chosenModel = m_agentNewModel->currentData().toString();
+        QSettings().setValue(kClaudeCodeModelSetting, chosenModel);
+    }
+
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
     session.issueNumber = 0; // ad-hoc: not tied to any issue
     session.provider = provider;
+    session.model = chosenModel;
     session.createPr = true;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
@@ -21163,6 +21296,7 @@ void MainWindow::deleteSelectedAgentSession()
         }
     }
     m_agentQueue.removeAll(snapshot.id);
+    m_streamPending.remove(snapshot.id); // drop any queued-but-undelivered messages
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
@@ -21606,6 +21740,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     const QString branchName = session.branchName;
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
+    const QString model = session.model;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -21628,7 +21763,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -21641,9 +21776,22 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         if (AgentSession *as = findAgentSession(sid))
             m_agentStore->appendLog(
                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
-                                    "on branch %1 in %2\n")
-                         .arg(branchName, workdir));
-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+                                    "on branch %1 in %2%3\n")
+                         .arg(branchName, workdir,
+                              model.isEmpty()
+                                  ? QString()
+                                  : QStringLiteral(" (model %1)").arg(model)));
+        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
+        // Deliver any messages the user queued while this session wasn't live
+        // (e.g. typed after the task finished, or while it was resuming after a
+        // ForkMesh restart). Each becomes a follow-up user turn once the CLI is up.
+        const QStringList pending = m_streamPending.take(sid);
+        for (const QString &text : pending) {
+            applyTranscriptEvent(
+                sid, QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                                 {QStringLiteral("text"), text}});
+            live->sendUserText(text);
+        }
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -22492,10 +22640,15 @@ void MainWindow::updateAgentActionState()
             issueBacked && !running && session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled(selected && !aiFixBusy);
+    // Always let the user type into a selected session's composer — even when the
+    // task is complete or the session is resuming after a ForkMesh restart. The
+    // Send handler steers a live run, or queues the message for the next run when
+    // none is live. Watch-only external sessions can't be steered, so stay off.
+    const bool canCompose = selected && !isExternalSession(m_selectedAgentSessionId);
     if (m_agentSendPromptButton)
-        m_agentSendPromptButton->setEnabled(issueBacked);
+        m_agentSendPromptButton->setEnabled(canCompose);
     if (m_agentPromptEdit)
-        m_agentPromptEdit->setEnabled(issueBacked);
+        m_agentPromptEdit->setEnabled(canCompose);
 }
 
 // ---- IDE extension integration --------------------------------------------

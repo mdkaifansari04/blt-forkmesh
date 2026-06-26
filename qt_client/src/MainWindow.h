@@ -2101,6 +2101,10 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // User messages queued while a session has no live CLI (typed after the task
+    // finished, or while it resumes after a ForkMesh restart). Flushed as
+    // follow-up turns the next time the session's stream starts.
+    QHash<int, QStringList> m_streamPending;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.
@@ -2149,12 +2153,14 @@ private:
     QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
     QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
+    QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
     // Bottom-left composer on the Agents tab: type a prompt, pick which agent and
     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
+    QComboBox *m_agentNewModel = nullptr;    // model for a new Claude Code agent
     QPushButton *m_agentStartButton = nullptr;
     void startAdHocAgent();
     QPushButton *m_agentStopButton = nullptr;
