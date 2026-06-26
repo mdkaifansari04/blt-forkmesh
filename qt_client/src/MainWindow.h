@@ -191,6 +191,12 @@ public:
     QString testQuickAddAgentProvider() const;
     QString testIssueAgentProvider() const;
     void testSetDefaultAgentProvider(const QString &provider);
+    // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
+    // "Update from main" merge does), and read back which worktree stays selected
+    // so a test can prove the detail pane doesn't go blank after a refresh.
+    void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
+    void testReloadWorktreesPanel() { loadWorktreesPanel(); }
+    QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
 #endif
 
 protected:
