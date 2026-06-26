@@ -156,6 +156,10 @@ public:
     // flip to draggable Interactive (keeping their fitted widths) while Stretch
     // and Fixed columns are left untouched.
     Q_INVOKABLE bool testColumnsBecomeResizable();
+    // Verifies installMarginResize(): dragging a draggable column's divider
+    // trades width with its immediate neighbour (like moving a margin) instead
+    // of letting a far-off Stretch column absorb the change.
+    Q_INVOKABLE bool testMarginResize();
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
