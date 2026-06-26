@@ -667,6 +667,40 @@ main {
   height: 14px;
 }
 
+/* Open/Closed/All segmented filter in the Issues panel header (issue #270). */
+.panel-header-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.issue-filter {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  padding: 2px;
+}
+
+.issue-filter button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.issue-filter button.is-active {
+  background: var(--card);
+  color: var(--foreground);
+}
+
 .catalog-list {
   display: grid;
 }

@@ -666,8 +666,14 @@ const codeSectionEl = document.querySelector("#code");
 const issuesSectionEl = document.querySelector("#issues");
 const issueListEl = document.querySelector("#issue-list");
 const issuesMetaEl = document.querySelector("#issues-meta");
+const issueFilterButtons = Array.from(
+  document.querySelectorAll(".issue-filter button")
+);
 let issuesLoadedFor = null;
 let issuesToken = 0;
+// Issues default to the "open" view; "closed" and "all" are opt-in (issue #270).
+let issueFilter = "open";
+let loadedIssues = [];
 
 const tabPullsEl = document.querySelector("#tab-pulls");
 const tabPullsCountEl = document.querySelector("#tab-pulls-count");
@@ -730,9 +736,52 @@ function issueRow(number, title, status) {
   return row;
 }
 
+// Render the loaded issues filtered by the active state toggle. Anything that
+// isn't explicitly "open" counts as closed, so a later -status.md that sets,
+// say, "resolved" still falls under the Closed view.
+function renderIssueList() {
+  if (!issueListEl) return;
+  const visible = loadedIssues.filter((i) => {
+    if (issueFilter === "all") return true;
+    if (issueFilter === "open") return i.status === "open";
+    return i.status !== "open";
+  });
+  if (!visible.length) {
+    issueListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent =
+      issueFilter === "open"
+        ? "No open issues. Switch to All to see closed ones."
+        : issueFilter === "closed"
+          ? "No closed issues."
+          : "No issues have been filed for this repository yet.";
+    issueListEl.append(note);
+    return;
+  }
+  issueListEl.replaceChildren(
+    ...visible.map((i) => issueRow(i.number, i.title, i.status))
+  );
+}
+
+for (const btn of issueFilterButtons) {
+  btn.addEventListener("click", () => {
+    const state = btn.dataset.state || "open";
+    if (state === issueFilter) return;
+    issueFilter = state;
+    for (const b of issueFilterButtons) {
+      const active = b === btn;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    renderIssueList();
+  });
+}
+
 async function loadIssues(owner, name) {
   if (!issueListEl) return;
   const token = ++issuesToken;
+  loadedIssues = [];
   issueListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
   if (issuesMetaEl) issuesMetaEl.textContent = "";
 
@@ -801,10 +850,11 @@ async function loadIssues(owner, name) {
   );
   if (token !== issuesToken) return;
 
-  if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(issues.length);
-  issueListEl.replaceChildren(
-    ...issues.map((i) => issueRow(i.number, i.title, i.status))
-  );
+  loadedIssues = issues;
+  // The tab badge tracks open issues, matching the default Open view (issue #270).
+  const openCount = issues.filter((i) => i.status === "open").length;
+  if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(openCount);
+  renderIssueList();
 }
 
 
