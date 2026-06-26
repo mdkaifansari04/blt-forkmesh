@@ -493,14 +493,63 @@ void enableHoverRowHighlight(QAbstractItemView *view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
 
+// Makes a draggable column's divider behave like dragging a boundary/margin: the
+// width it gains (or loses) is taken from (or handed to) its immediate right-hand
+// neighbour, so the divider tracks the cursor and the rest of the table holds
+// still. Without this, a header that has a Stretch (flex) column sitting to the
+// LEFT of the dragged divider keeps the total width constant by shrinking that
+// far-off Stretch column instead — so the divider snaps back and distant columns
+// jump, which feels broken. A re-entrancy guard stops our own compensating resize
+// from recursing; a Stretch column to the right is left to absorb naturally.
+void installMarginResize(QHeaderView *header)
+{
+    auto busy = std::make_shared<bool>(false);
+    QObject::connect(
+        header, &QHeaderView::sectionResized, header,
+        [header, busy](int logicalIndex, int oldSize, int newSize) {
+            if (*busy)
+                return; // our own neighbour resize, below
+            // Only react to user-draggable columns; ignore the Stretch column's
+            // automatic recompute on window resize.
+            if (header->sectionResizeMode(logicalIndex) != QHeaderView::Interactive)
+                return;
+            const int delta = newSize - oldSize;
+            if (delta == 0)
+                return;
+            // Trade the change with the next visible Interactive column. If a
+            // Stretch column comes first, leave it — it already absorbs the change
+            // and the divider still tracks the cursor.
+            int neighbor = -1;
+            for (int i = logicalIndex + 1; i < header->count(); ++i) {
+                if (header->isSectionHidden(i))
+                    continue;
+                const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
+                if (mode == QHeaderView::Stretch)
+                    return;
+                if (mode == QHeaderView::Interactive) {
+                    neighbor = i;
+                    break;
+                }
+            }
+            if (neighbor < 0)
+                return; // nothing to the right to trade with
+            const int minW = qMax(1, header->minimumSectionSize());
+            const int neighborNew = qMax(minW, header->sectionSize(neighbor) - delta);
+            *busy = true;
+            header->resizeSection(neighbor, neighborNew);
+            *busy = false;
+        });
+}
+
 // Lets the user drag-resize a table's columns while keeping their content-fitted
 // starting widths. Qt's ResizeToContents header mode auto-sizes a column but
 // locks the divider so it can't be dragged; this leaves the existing per-column
 // modes in place for the initial layout, then — once real rows have populated —
 // snapshots each ResizeToContents column's fitted width and switches it to
 // Interactive so it becomes draggable. Stretch and Fixed columns are left as the
-// caller configured them (Stretch keeps absorbing slack; Fixed button columns
-// stay put). Call once after the header has been configured.
+// caller configured them (Stretch keeps absorbing window-resize slack; Fixed
+// button columns stay put). Drags then move the divider like a margin via
+// installMarginResize(). Call once after the header has been configured.
 void makeColumnsResizable(QTableWidget *table)
 {
     if (!table || !table->model())
@@ -524,6 +573,9 @@ void makeColumnsResizable(QTableWidget *table)
                     if (w > 0)
                         header->resizeSection(i, w);
                 }
+                // Wire up margin-style dragging only after the snapshot resizes
+                // above, so they don't trip the neighbour-compensation handler.
+                installMarginResize(header);
             });
         });
 }
@@ -4241,6 +4293,46 @@ bool MainWindow::testColumnsBecomeResizable()
     const bool widthsPreserved = header->sectionSize(2) > header->sectionSize(1);
     return flexUntouched && fixedUntouched && col1Draggable && col2Draggable &&
            widthsPreserved;
+}
+
+bool MainWindow::testMarginResize()
+{
+    // Mirror the issue table: a leading content column, a Stretch flex column
+    // (Title), then several content-fitted columns that become draggable.
+    QTableWidget table(0, 5);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
+    header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title (flex)
+    for (int i = 2; i < 5; ++i)
+        header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(&table);
+    table.resize(900, 200);
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("1")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("a flexible title")));
+    table.setItem(0, 2, new QTableWidgetItem(QStringLiteral("status value")));
+    table.setItem(0, 3,
+                  new QTableWidgetItem(QStringLiteral("a wider neighbour cell")));
+    table.setItem(0, 4, new QTableWidgetItem(QStringLiteral("tail value")));
+    // The snapshot/switch is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    // Drag column 2's divider wider. Like moving a margin, the width comes
+    // straight out of its right-hand neighbour (column 3) — column 4 and the
+    // far-off Stretch column 1 are left alone, so the divider tracks the cursor.
+    const int before3 = header->sectionSize(3);
+    const int before4 = header->sectionSize(4);
+    const int delta = 24;
+    header->resizeSection(2, header->sectionSize(2) + delta);
+    QApplication::processEvents();
+
+    const bool neighborGaveWidth = header->sectionSize(3) == before3 - delta;
+    const bool tailUntouched = header->sectionSize(4) == before4;
+    const bool stretchUntouched =
+        header->sectionResizeMode(1) == QHeaderView::Stretch;
+    return neighborGaveWidth && tailUntouched && stretchUntouched;
 }
 
 QString MainWindow::testQuickAddAgentProvider() const
