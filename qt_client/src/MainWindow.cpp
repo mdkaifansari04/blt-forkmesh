@@ -37682,21 +37682,30 @@ void MainWindow::flashMessage(const QString &text, bool error)
                   + QString::fromUtf8("\xE2\x80\xA6"); // …
     m_topMessage->setCursor(m_topMessageElided ? Qt::PointingHandCursor
                                                : Qt::ArrowCursor);
-    m_topMessage->setText(
-        QStringLiteral("<span style='color:%1'>%2 %3</span>")
-            .arg(fg, glyph, display.toHtmlEscaped()));
+    // The base HTML carries the message; auto-dismissing successes append a
+    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                               .arg(fg, glyph, display.toHtmlEscaped());
+    m_topMessage->setText(m_topMessageBaseHtml);
     m_topMessage->show();
 
     if (!m_topMessageTimer) {
+        // Ticks once a second so the countdown is visible; it hides the toast
+        // when the count runs out rather than firing a single timeout.
         m_topMessageTimer = new QTimer(this);
-        m_topMessageTimer->setSingleShot(true);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
-            if (m_topMessage)
+            if (!m_topMessage)
+                return;
+            if (--m_topMessageSecondsLeft <= 0) {
+                m_topMessageTimer->stop();
                 m_topMessage->hide();
+                return;
+            }
+            renderTopMessageCountdown();
         });
     }
     // Errors persist with Copy / dismiss buttons until the user acts on them;
-    // successes fade on their own and need no affordance.
+    // successes count down for ~5 seconds and then fade on their own.
     if (error) {
         m_topMessageTimer->stop();
         if (m_topMessageCopy)
@@ -37708,8 +37717,24 @@ void MainWindow::flashMessage(const QString &text, bool error)
             m_topMessageCopy->hide();
         if (m_topMessageClose)
             m_topMessageClose->hide();
-        m_topMessageTimer->start(4000);
+        m_topMessageSecondsLeft = 5;
+        renderTopMessageCountdown();
+        m_topMessageTimer->start(1000);
     }
+}
+
+// Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
+// reflecting how many seconds remain before an auto-dismissing toast fades.
+void MainWindow::renderTopMessageCountdown()
+{
+    if (!m_topMessage)
+        return;
+    // "·" is a byte-escaped glyph, so it must go through fromUtf8 (QStringLiteral
+    // would mangle the multibyte sequence).
+    const QString suffix =
+        QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
+            .arg(m_topMessageSecondsLeft);
+    m_topMessage->setText(m_topMessageBaseHtml + suffix);
 }
 
 // Hide the top toast and its error affordances (Copy / dismiss).
@@ -37717,6 +37742,8 @@ void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageCopy)
