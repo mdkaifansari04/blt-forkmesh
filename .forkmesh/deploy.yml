@@ -5,7 +5,20 @@ jobs:
     steps:
       - name: Skip unless worker files changed
         run: |
-          changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
+          # Determine which files this push changed. HEAD is normally a MERGE
+          # commit (agent branches land on main via merge), and a plain
+          # `git diff-tree HEAD` emits NOTHING for a merge — its default is the
+          # combined diff, which suppresses paths that match either parent. That
+          # made every merge-to-main skip this deploy even when the merged
+          # branch changed cloudflare_worker/ (issue #267). Diff against the
+          # first parent (the old main tip) instead, so a merge that brings in
+          # worker changes is detected; fall back to the empty tree for a root
+          # commit with no parent.
+          if parent="$(git rev-parse --verify --quiet HEAD^1)"; then
+            changed_files="$(git diff-tree --no-commit-id --name-only -r "$parent" HEAD)"
+          else
+            changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
+          fi
           worker_changes="$(printf '%s\n' "$changed_files" | sed -n '/^cloudflare_worker\//p')"
           if [ -z "$worker_changes" ]; then
             echo "Skipping deploy; no cloudflare_worker/ changes in this commit."
