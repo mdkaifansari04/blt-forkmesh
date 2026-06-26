@@ -607,6 +607,14 @@ private:
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
     const AgentSession *agentSessionForPull(int prNumber) const;
+    // Issue #291: flag agent sessions whose worktree/PR has landed in the base
+    // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
+    // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
+    // also picks up merges synced from peers or done by hand);
+    // agentSessionLandedInBase() answers the question for one session.
+    bool markAgentSessionsMerged(int prNumber, const QString &branch);
+    void refreshAgentMergeState();
+    bool agentSessionLandedInBase(const AgentSession &session) const;
     void assignIssueToAgent(const QString &provider);
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
