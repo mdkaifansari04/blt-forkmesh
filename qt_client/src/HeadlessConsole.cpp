@@ -10,8 +10,12 @@
 #include <QStringList>
 
 #if defined(Q_OS_UNIX)
+#include <csignal>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
+
+int HeadlessConsole::s_signalFd[2] = {-1, -1};
 
 HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
                                  QObject *parent)
@@ -26,6 +30,10 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
     if (ChatBackend *backend = window->currentBackend())
         attachFeed(backend);
 
+    // A durable daemon must stop only on an explicit signal, never on a stray
+    // terminal hang-up. Catch SIGINT/SIGTERM for a clean shutdown.
+    installSignalHandlers();
+
 #if defined(Q_OS_UNIX)
     m_stdin = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
     connect(m_stdin, &QSocketNotifier::activated, this,
@@ -33,9 +41,40 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
     prompt();
 #else
     m_out << "Interactive input is unavailable on this platform; running as a "
-             "log-streaming daemon."
+             "log-streaming daemon (stop with SIGINT/SIGTERM)."
           << Qt::endl;
     m_out.flush();
+#endif
+}
+
+void HeadlessConsole::unixSignalHandler(int sig)
+{
+#if defined(Q_OS_UNIX)
+    // Async-signal-safe: only poke the self-pipe; the real work runs in onSignal.
+    const char byte = static_cast<char>(sig);
+    const ssize_t n = ::write(s_signalFd[0], &byte, 1);
+    (void)n;
+#else
+    (void)sig;
+#endif
+}
+
+void HeadlessConsole::installSignalHandlers()
+{
+#if defined(Q_OS_UNIX)
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, s_signalFd) != 0)
+        return;
+    m_signalNotifier =
+        new QSocketNotifier(s_signalFd[1], QSocketNotifier::Read, this);
+    connect(m_signalNotifier, &QSocketNotifier::activated, this,
+            &HeadlessConsole::onSignal);
+
+    struct sigaction sa = {};
+    sa.sa_handler = &HeadlessConsole::unixSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
 #endif
 }
 
@@ -49,16 +88,21 @@ void HeadlessConsole::printBanner()
 void HeadlessConsole::printHelp()
 {
     m_out << "Commands:\n"
-             "  status              node, account, connection, peers, repos\n"
+             "  status              node, account, connection, peers, repos, load\n"
              "  peers               list known nodes in the mesh\n"
              "  repos               list local repositories\n"
-             "  mirrors             list repos this node mirrors / serves\n"
+             "  mirrors             repos this node mirrors / serves + cpu & memory\n"
              "  sync                sync mirrors + poll owned inboxes now\n"
              "  setup <name> [sol]  pick a node name and connect (first run)\n"
              "  connect <name>      alias for setup\n"
              "  log on|off          toggle the live event feed\n"
              "  help                this help\n"
-             "  quit | exit         shut down the node\n";
+             "  quit | exit         shut down the node\n"
+             "\n"
+             "Durable daemon: the node keeps running until you `quit`/`exit` or send\n"
+             "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop). Closing stdin does NOT\n"
+             "stop it — run it detached with `forkmesh --headless </dev/null &`, nohup\n"
+             "or a systemd service and it stays up.\n";
     m_out.flush();
 }
 
@@ -157,10 +201,7 @@ void HeadlessConsole::dispatch(const QString &raw)
                   << (m_echoEvents ? "on" : "off") << ")" << Qt::endl;
         }
     } else if (cmd == QLatin1String("quit") || cmd == QLatin1String("exit")) {
-        m_out << "shutting down…" << Qt::endl;
-        m_out.flush();
-        m_window->close();
-        m_app->quit();
+        shutdown(QStringLiteral("shutting down…"));
         return;
     } else {
         m_out << "unknown command: " << cmd << "  (type 'help')" << Qt::endl;
@@ -174,13 +215,16 @@ void HeadlessConsole::onStdinActivated()
     char buf[4096];
     const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
     if (n <= 0) {
-        // EOF (Ctrl-D) or read error: shut the node down cleanly.
-        if (m_stdin)
-            m_stdin->setEnabled(false);
-        m_out << Qt::endl << "stdin closed; shutting down…" << Qt::endl;
+        // EOF (Ctrl-D) or a closed input pipe — e.g. launched with `</dev/null`
+        // by a service manager. A durable daemon must NOT die just because its
+        // controlling input went away: detach the prompt and keep serving. The
+        // node still stops on `quit`, SIGINT or SIGTERM.
+        detachStdin();
+        m_out << Qt::endl
+              << "stdin closed; continuing to run as a background daemon "
+                 "(stop with Ctrl-C / kill / systemctl stop)."
+              << Qt::endl;
         m_out.flush();
-        m_window->close();
-        m_app->quit();
         return;
     }
     m_inBuf.append(buf, int(n));
@@ -191,4 +235,39 @@ void HeadlessConsole::onStdinActivated()
         dispatch(cmdLine);
     }
 #endif
+}
+
+void HeadlessConsole::detachStdin()
+{
+    // A closed fd is permanently "ready", so leaving the notifier enabled would
+    // spin the event loop. Disable and drop it; the daemon runs on without it.
+    if (m_stdin) {
+        m_stdin->setEnabled(false);
+        m_stdin->deleteLater();
+        m_stdin = nullptr;
+    }
+}
+
+void HeadlessConsole::onSignal()
+{
+#if defined(Q_OS_UNIX)
+    if (m_signalNotifier)
+        m_signalNotifier->setEnabled(false);
+    char sig = 0;
+    const ssize_t n = ::read(s_signalFd[1], &sig, 1);
+    (void)n;
+    if (m_signalNotifier)
+        m_signalNotifier->setEnabled(true);
+    shutdown(QStringLiteral("received signal %1; shutting down…")
+                 .arg(int(static_cast<unsigned char>(sig))));
+#endif
+}
+
+void HeadlessConsole::shutdown(const QString &reason)
+{
+    detachStdin();
+    m_out << Qt::endl << reason << Qt::endl;
+    m_out.flush();
+    m_window->close();
+    m_app->quit();
 }

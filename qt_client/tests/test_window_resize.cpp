@@ -437,6 +437,30 @@ int main(int argc, char *argv[])
         stopChildProcesses(seeded);
     }
 
+    // Issue #287: the headless "mirrors" view leads with this node's own CPU and
+    // memory so an operator watching a durable daemon can see its load, and the
+    // "status" view carries the same Load line.
+    {
+        const QStringList mirrorLines = window.headlessMirrorLines();
+        check(!mirrorLines.isEmpty() &&
+                  mirrorLines.first().startsWith(QStringLiteral("node load:")) &&
+                  mirrorLines.first().contains(QStringLiteral("cpu")) &&
+                  mirrorLines.first().contains(QStringLiteral("mem")),
+              QStringLiteral("headless mirrors view leads with a cpu/memory load line"));
+
+        bool statusHasLoad = false;
+        for (const QString &line : window.headlessStatusLines()) {
+            if (line.startsWith(QStringLiteral("Load:")) &&
+                line.contains(QStringLiteral("cpu")) &&
+                line.contains(QStringLiteral("mem"))) {
+                statusHasLoad = true;
+                break;
+            }
+        }
+        check(statusHasLoad,
+              QStringLiteral("headless status view includes a cpu/memory load line"));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }

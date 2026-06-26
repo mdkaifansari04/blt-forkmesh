@@ -212,6 +212,10 @@ public:
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
     QStringList headlessMirrorLines() const;
+    // One-line "cpu N%  ·  mem N MB" snapshot of this node's own resource use,
+    // shown in the headless mirrors/status views so a durable daemon's load is
+    // visible (issue #287).
+    QString headlessResourceLine() const;
 
 signals:
     // Emitted whenever a backend is (re)created and wired up, so a headless
