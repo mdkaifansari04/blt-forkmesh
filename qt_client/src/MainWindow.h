@@ -659,6 +659,11 @@ private:
     // True while any pooled runner is executing a session.
     bool anyAgentRunning() const;
     void onAgentLog(int sessionId, const QString &text);
+    // Live-append a line to the raw-output edit, but only while it's the visible
+    // surface (the buffer carries it otherwise); avoids per-line text-layout stalls.
+    void appendAgentRawLog(const QString &text);
+    // Show the raw-output edit, rebuilding it from the live buffer first.
+    void showAgentRawOutput();
     void onAgentStatusChanged(int sessionId, const QString &status);
     void onAgentFinished(int sessionId, bool ok);
     // The agent CLI needs the user to act (e.g. a bad API key); surface it.
@@ -744,6 +749,9 @@ private:
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
+    // Debounced refreshOpenRepoDetail(): coalesces a burst of push events into a
+    // single refresh so the heavyweight reload doesn't run once per event.
+    void scheduleOpenRepoDetailRefresh();
     void updateRepoCodeSize();
     void updateRepoCommitCount();
     void updateRepoIssueCount();
@@ -1879,6 +1887,13 @@ private:
     // base), computed in reloadPulls() and read by refreshPullList() to badge the
     // list rows without re-running the dry-run apply on every search keystroke.
     QHash<int, bool> m_pullConflictByNumber;
+    // Cache backing m_pullConflictByNumber so reloadPulls() doesn't re-spawn the
+    // `git apply --check` dry-run for every open PR on each call (a push, a
+    // search, merging another PR all trigger reloadPulls and otherwise block the
+    // UI for seconds). Invalidated when the base tip moves; each per-PR entry
+    // carries the patch fingerprint that produced it so an edited patch re-checks.
+    QString m_pullConflictCacheBaseTip;
+    QHash<int, QPair<QString, bool>> m_pullConflictCache;
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
@@ -1903,6 +1918,11 @@ private:
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
     QTimer *m_repoPushTimer = nullptr;           // keeps "Sync changes" pinned over Commits
+    // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
+    // (a sync, an agent committing) otherwise re-runs the whole heavyweight
+    // refresh — git log, per-PR apply checks, branch reload — once per event,
+    // serially blocking the UI. The timer collapses a burst into one refresh.
+    QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
