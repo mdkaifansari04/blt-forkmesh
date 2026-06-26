@@ -28572,15 +28572,21 @@ void MainWindow::switchToWorktree(const QString &branch)
     if (m_repoDetailStack && m_worktreesTabIndex >= 0)
         m_repoDetailStack->setCurrentIndex(m_worktreesTabIndex);
     loadWorktreesPanel();
+    selectWorktreeRow(branch);
+}
+
+bool MainWindow::selectWorktreeRow(const QString &branch)
+{
     if (!m_worktreesTable || branch.isEmpty())
-        return;
+        return false;
     for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
         QTableWidgetItem *b = m_worktreesTable->item(row, 0);
         if (b && b->data(Qt::UserRole).toString() == branch) {
             m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 // Show a worktree's changes vs the default branch: everything in the worktree
@@ -28830,7 +28836,10 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
                 .arg(branch, base),
             true);
     }
+    // Rebuilding the table drops the selection, blanking the diff/buttons; keep
+    // the focus on the worktree we just updated so it doesn't go blank (#272).
     loadWorktreesPanel();
+    selectWorktreeRow(branch);
 }
 
 QWidget *MainWindow::buildBranchesTab()
