@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
 ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
-                                const QString &initialPrompt, bool skipPermissions)
+                                const QString &initialPrompt, bool skipPermissions,
+                                const QString &model)
 {
     stop();
     m_buf.clear();
@@ -43,6 +44,15 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
         "--verbose --include-partial-messages");
     if (skipPermissions)
         cmd += QStringLiteral(" --dangerously-skip-permissions");
+    // Pin the model when one was chosen (e.g. opus | sonnet | haiku); single-quote
+    // it and escape any embedded quotes so the value can't break out of the shell
+    // command. Empty leaves the CLI's default model in place.
+    const QString trimmedModel = model.trimmed();
+    if (!trimmedModel.isEmpty()) {
+        QString quoted = trimmedModel;
+        quoted.replace(QLatin1String("'"), QLatin1String("'\\''"));
+        cmd += QStringLiteral(" --model '%1'").arg(quoted);
+    }
     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
 
     if (!initialPrompt.isEmpty())

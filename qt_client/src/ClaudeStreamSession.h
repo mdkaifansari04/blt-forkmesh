@@ -21,9 +21,12 @@ public:
 
     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
     // '=' unsets that variable in the child (matches TerminalWidget semantics).
-    // The initial prompt is sent as the first user turn.
+    // The initial prompt is sent as the first user turn. `model`, when non-empty,
+    // is passed to the CLI as `--model <model>` (e.g. opus | sonnet | haiku);
+    // empty leaves the CLI's own default model in place.
     void start(const QString &cwd, const QStringList &extraEnv,
-               const QString &initialPrompt, bool skipPermissions = true);
+               const QString &initialPrompt, bool skipPermissions = true,
+               const QString &model = QString());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
     void stop();

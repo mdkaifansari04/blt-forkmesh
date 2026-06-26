@@ -21,6 +21,11 @@ struct AgentSession {
     int issueNumber = 0;
     QString issueTitle;
     QString provider; // openai | claude-api (legacy: codex, claude-code)
+    // Preferred model for this session. Empty falls back to the provider's
+    // default (the `claude` CLI's own default for Claude Code). For Claude Code
+    // this is a CLI alias: opus | sonnet | haiku. Applied on the next launch or
+    // continuation, and shown in the agent header.
+    QString model;
     bool createPr = false;
     int prNumber = 0;
     QString status = AgentStatus::Queued;
