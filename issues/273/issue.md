@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 273
 title: on the agents page have a place on the bottom left to enter a prompt and start a new agent
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
