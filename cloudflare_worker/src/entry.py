@@ -5780,8 +5780,12 @@ class Default(WorkerEntrypoint):
             return Response("", status=308, headers={"location": "/network/"})
         if url.path == "/docs":
             return Response("", status=308, headers={"location": "/docs/"})
+
         if url.path == "/blog":
             return Response("", status=308, headers={"location": "/blog/"})
+
+        if url.path == "/features":
+            return Response("", status=308, headers={"location": "/features/"})
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
