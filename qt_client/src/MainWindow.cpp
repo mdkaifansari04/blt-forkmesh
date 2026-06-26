@@ -19238,16 +19238,28 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentNewPromptEdit = new QPlainTextEdit;
     m_agentNewPromptEdit->setObjectName("agentComposerEdit");
     m_agentNewPromptEdit->setPlaceholderText(QString::fromUtf8(
-        "Describe a task and start a Claude Code agent in this repo\xE2\x80\xA6"));
+        "Describe a task and start an agent in this repo\xE2\x80\xA6"));
     m_agentNewPromptEdit->setMaximumHeight(92);
     m_agentNewPromptEdit->setFrameShape(QFrame::NoFrame);
     m_agentNewPromptEdit->setStyleSheet(QStringLiteral(
         "#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+    // Agent picker: the same three providers offered when assigning an issue.
+    m_agentNewProvider = new QComboBox;
+    m_agentNewProvider->setObjectName("agentNewProvider");
+    m_agentNewProvider->setCursor(Qt::PointingHandCursor);
+    m_agentNewProvider->addItem(QStringLiteral("OpenAI API"),
+                                QStringLiteral("openai"));
+    m_agentNewProvider->addItem(QStringLiteral("Claude API"),
+                                QStringLiteral("claude-api"));
+    m_agentNewProvider->addItem(QStringLiteral("Claude Code"),
+                                QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(m_agentNewProvider);
+    m_agentNewProvider->setToolTip("Which agent to run on this prompt");
     m_agentStartButton = new QPushButton("Start agent");
     m_agentStartButton->setObjectName("primaryButton");
     m_agentStartButton->setCursor(Qt::PointingHandCursor);
     m_agentStartButton->setToolTip(
-        "Start a Claude Code agent on this prompt in the open repository");
+        "Start the selected agent on this prompt in the open repository");
     setOcticon(m_agentStartButton, "rocket", 16);
     connect(m_agentStartButton, &QPushButton::clicked, this,
             &MainWindow::startAdHocAgent);
@@ -19263,6 +19275,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *newAgentBtns = new QHBoxLayout;
     newAgentBtns->setContentsMargins(0, 0, 0, 0);
     newAgentBtns->setSpacing(6);
+    newAgentBtns->addWidget(m_agentNewProvider);
     newAgentBtns->addStretch(1);
     newAgentBtns->addWidget(m_agentStartButton);
     newAgentCol->addLayout(newAgentBtns);
@@ -20288,6 +20301,7 @@ void MainWindow::initAgents()
         }
     }
     m_agentSessions = m_agentStore->loadAllSessions();
+    seedSessionTokens();
     processAgentQueue();
 }
 
@@ -20296,6 +20310,7 @@ void MainWindow::reloadAgents()
     if (!m_agentStore)
         return;
     m_agentSessions = m_agentStore->loadAllSessions();
+    seedSessionTokens(); // keep the live token counter from regressing on reload
     injectExternalSessions(); // append any surfaced external (watch-only) sessions
     refreshAgentMergeState();  // issue #291: note sessions landed in the base branch
     refreshAgentTable();
@@ -20380,7 +20395,7 @@ void MainWindow::refreshAgentTable()
         // Live token usage, refreshed in place as the session streams (see
         // updateAgentTokenCell). Sort by the raw number, not the formatted text.
         auto *tokens = new QTableWidgetItem;
-        const qint64 toks = m_sessionTokens.value(session.id, session.totalTokens);
+        const qint64 toks = sessionTokenTotal(session);
         tokens->setData(Qt::DisplayRole,
                         toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
@@ -20685,25 +20700,7 @@ void MainWindow::showAgentSession(int sessionId)
         meta += mergedMeta;
         m_agentMeta->setText(meta);
     }
-    if (m_agentUsage) {
-        const int window = session->contextWindow > 0 ? session->contextWindow : 32000;
-        const int maxOutput =
-            session->maxOutputTokens > 0
-                ? session->maxOutputTokens
-                : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
-        const int pct = window > 0 ? qMin(100, session->contextTokens * 100 / window) : 0;
-        m_agentUsage->setText(
-            QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
-                .arg(formatCount(session->totalTokens))
-                .arg(formatCount(session->promptTokens))
-                .arg(formatCount(session->completionTokens))
-                .arg(formatCount(session->contextTokens))
-                .arg(formatCount(window))
-                .arg(pct)
-                .arg(formatCount(maxOutput))
-                .arg(formatCount(session->estimatedCredits))
-                .arg(agentCostText(session->costUsd)));
-    }
+    setAgentUsageLabel(*session);
     // Connected / working status pill.
     if (m_agentStatusPill) {
         const QString s = session->status;
@@ -20997,11 +20994,17 @@ void MainWindow::startAdHocAgent()
         return;
     }
 
+    // The agent picked in the composer; "claude-code" unless the user chose an
+    // API-key provider.
+    const QString provider = m_agentNewProvider
+                                 ? m_agentNewProvider->currentData().toString()
+                                 : QStringLiteral("claude-code");
+
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
     session.issueNumber = 0; // ad-hoc: not tied to any issue
-    session.provider = QStringLiteral("claude-code");
+    session.provider = provider;
     session.createPr = true;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
@@ -21031,10 +21034,24 @@ void MainWindow::startAdHocAgent()
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Started from a prompt on the Agents tab.\n"));
+        QStringLiteral("==> Started from a prompt on the Agents tab (%1).\n")
+            .arg(agentProviderName(provider)));
 
     m_agentNewPromptEdit->clear();
-    startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
+    if (provider == QLatin1String("claude-code")) {
+        // Claude Code renders as a native stream-json transcript; the typed
+        // prompt is its task verbatim.
+        startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
+    } else {
+        // API-key agents run headlessly through a runner. There's no issue to
+        // anchor to, so the task rides through the config as an override prompt.
+        AgentRunner::Config config = agentConfigForProvider(provider);
+        config.taskOverride = task;
+        markAgentLimitWindow(provider);
+        acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
+        reloadAgents();
+        switchToAgentsTab(session.id);
+    }
 }
 
 // Composer "+" : pick files and insert them as @path references (resolved
@@ -21927,8 +21944,6 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
     if (!events.isEmpty())
         noteAgentActivity(sessionId); // pulse the list's night-rider light
 
-    if (full)
-        m_sessionTokens[sessionId] = 0; // recount from the rendered tail
     qint64 addedTokens = 0;
     for (const QJsonObject &ev : events) {
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant"))
@@ -21958,10 +21973,17 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         }
         m_agentTranscript->handleEvent(ev);
     }
-    if (addedTokens > 0) {
+    // A full re-render recounts from the rendered tail; an incremental tail adds
+    // to what's already there. Either way clamp to the prior figure so surfacing
+    // a long external session (whose 400 KB tail under-counts its real total)
+    // never makes the token cell jump backwards.
+    if (full)
+        m_sessionTokens[sessionId] =
+            qMax(m_sessionTokens.value(sessionId), addedTokens);
+    else if (addedTokens > 0)
         m_sessionTokens[sessionId] += addedTokens;
+    if (full || addedTokens > 0)
         updateAgentTokenCell(sessionId);
-    }
 
     if (full && m_agentLog) {
         QFile f(ext.path);
@@ -22090,6 +22112,47 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         updateAgentActionState();
 }
 
+qint64 MainWindow::sessionTokenTotal(const AgentSession &session) const
+{
+    // The live counter is the source of truth while a session streams; the
+    // persisted field covers sessions that finished in a previous run (and API
+    // agents, which set totalTokens wholesale on completion). Taking the max of
+    // the two guarantees the displayed figure only ever grows — it can't jump
+    // back to zero when m_agentSessions is reloaded from disk mid-run.
+    return qMax(m_sessionTokens.value(session.id, 0),
+                static_cast<qint64>(session.totalTokens));
+}
+
+void MainWindow::seedSessionTokens()
+{
+    for (const AgentSession &s : std::as_const(m_agentSessions))
+        m_sessionTokens[s.id] =
+            qMax(m_sessionTokens.value(s.id, 0), static_cast<qint64>(s.totalTokens));
+}
+
+void MainWindow::setAgentUsageLabel(const AgentSession &session)
+{
+    if (!m_agentUsage)
+        return;
+    const int window = session.contextWindow > 0 ? session.contextWindow : 32000;
+    const int maxOutput =
+        session.maxOutputTokens > 0
+            ? session.maxOutputTokens
+            : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
+    const int pct = window > 0 ? qMin(100, session.contextTokens * 100 / window) : 0;
+    m_agentUsage->setText(
+        QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
+            .arg(formatCount(sessionTokenTotal(session)))
+            .arg(formatCount(session.promptTokens))
+            .arg(formatCount(session.completionTokens))
+            .arg(formatCount(session.contextTokens))
+            .arg(formatCount(window))
+            .arg(pct)
+            .arg(formatCount(maxOutput))
+            .arg(formatCount(session.estimatedCredits))
+            .arg(agentCostText(session.costUsd)));
+}
+
 // Refresh just the Tokens cell for a session's row, in place — cheap enough to
 // call on every assistant message without rebuilding the whole table.
 void MainWindow::updateAgentTokenCell(int sessionId)
@@ -22111,6 +22174,11 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         break;
     }
+    // Keep the open detail panel's "Session token usage" line in step with the
+    // live counter so it climbs in real time instead of only on the next reload.
+    if (sessionId == m_selectedAgentSessionId)
+        if (const AgentSession *s = findAgentSession(sessionId))
+            setAgentUsageLabel(*s);
 }
 
 // Pulse a session's night-rider light so its activity column sweeps while raw
