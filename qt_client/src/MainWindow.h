@@ -1439,6 +1439,7 @@ private:
     QLineEdit *m_claudeCommandEdit = nullptr;
     QLineEdit *m_agentContextEdit = nullptr;
     QLineEdit *m_agentMaxOutputEdit = nullptr;
+    QPlainTextEdit *m_agentPromptPreambleEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
     QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
 
