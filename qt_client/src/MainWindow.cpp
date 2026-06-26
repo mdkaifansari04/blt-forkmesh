@@ -195,6 +195,11 @@ constexpr int kCommitGraphCol = 8;
 constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
 
+// URL scheme for the clickable branch link in the agent session header; the
+// percent-encoded branch name follows. Clicking it opens that branch's row in
+// the Worktrees tab (issue #265). Shared by the link builder and its handler.
+const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -327,6 +332,98 @@ private:
     QVector<int> m_counts;
     int m_max;
     QColor m_color;
+};
+
+// A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
+// node's earnings/avatar (issue #266). The top row is the rolling 5-hour window,
+// the bottom row the weekly window; each draws a horizontal track that fills
+// 0..100% of that window's utilisation and is tinted green/amber/red as it nears
+// the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
+// a value of -1 means "unknown" and leaves an empty track. Stored as a plain
+// QWidget* on MainWindow and poked via static_cast, like ProgressSlider.
+class TokenUsageMiniChart : public QWidget
+{
+public:
+    explicit TokenUsageMiniChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(60, 30);
+        refreshTooltip();
+    }
+
+    // Update one window's utilisation (0..100); pass -1 to mark it unknown.
+    void setUsage(bool weekly, int percent)
+    {
+        int &slot = weekly ? m_weekly : m_fiveHour;
+        const int clamped = percent < 0 ? -1 : qBound(0, percent, 100);
+        if (slot == clamped)
+            return;
+        slot = clamped;
+        refreshTooltip();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f = font();
+        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.0));
+        p.setFont(f);
+        const QFontMetrics fm(f);
+
+        const char *labels[2] = {"5h", "wk"};
+        const int vals[2] = {m_fiveHour, m_weekly};
+        const int labelW = fm.horizontalAdvance(QStringLiteral("wk")) + 4;
+        const int barH = 5;
+        const int rowH = height() / 2;
+        for (int i = 0; i < 2; ++i) {
+            const QRect rowRect(0, i * rowH, width(), rowH);
+            p.setPen(textColor(170));
+            p.drawText(QRect(rowRect.left(), rowRect.top(), labelW, rowRect.height()),
+                       Qt::AlignVCenter | Qt::AlignLeft, QString::fromLatin1(labels[i]));
+            const qreal top = rowRect.center().y() - barH / 2.0;
+            const QRectF track(labelW, top, width() - labelW, barH);
+            p.setPen(Qt::NoPen);
+            p.setBrush(textColor(38));
+            p.drawRoundedRect(track, barH / 2.0, barH / 2.0);
+            if (vals[i] > 0) {
+                QRectF fill(track);
+                fill.setWidth(track.width() * vals[i] / 100.0);
+                p.setBrush(barColor(vals[i]));
+                p.drawRoundedRect(fill, barH / 2.0, barH / 2.0);
+            }
+        }
+    }
+
+private:
+    QColor textColor(int alpha) const
+    {
+        QColor c = palette().color(QPalette::WindowText);
+        c.setAlpha(alpha);
+        return c;
+    }
+    static QColor barColor(int pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: near the cap
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting close
+        return QColor("#3fb950");     // green: plenty left
+    }
+    void refreshTooltip()
+    {
+        auto fmt = [](int v) {
+            return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
+                         : QStringLiteral("%1%").arg(v);
+        };
+        setToolTip(QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
+                       .arg(fmt(m_fiveHour), fmt(m_weekly)));
+    }
+
+    int m_fiveHour = -1;
+    int m_weekly = -1;
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -849,6 +946,11 @@ const QString kCodexLimit5hStartSetting = QStringLiteral("agents/codexLimit5hSta
 const QString kCodexLimitWeekStartSetting = QStringLiteral("agents/codexLimitWeekStart");
 const QString kClaudeLimit5hStartSetting = QStringLiteral("agents/claudeLimit5hStart");
 const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitWeekStart");
+// Last-seen utilisation (0..100) of each Claude Code rolling window, cached so
+// the top-bar mini usage chart (issue #266) can render the last known figures on
+// the very first frame, before any agent has streamed a fresh rate-limit event.
+const QString kClaudeUsage5hPctSetting = QStringLiteral("agents/claudeUsage5hPct");
+const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWeekPct");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 const QString kDefaultCodexCommand =
@@ -6489,6 +6591,21 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
+    // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
+    // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
+    // utilisation so it renders immediately; live rate-limit events refresh it.
+    auto *tokenUsage = new TokenUsageMiniChart;
+    m_navTokenUsage = tokenUsage;
+    {
+        QSettings settings;
+        auto restore = [&](bool weekly, const QString &key) {
+            if (settings.contains(key))
+                tokenUsage->setUsage(weekly, settings.value(key).toInt());
+        };
+        restore(false, kClaudeUsage5hPctSetting);
+        restore(true, kClaudeUsageWeekPctSetting);
+    }
+
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
     m_repoMenuButton->setObjectName("repoMenuButton");
@@ -6739,6 +6856,10 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
+    // The tiny token-usage chart tucks between the earnings and the avatar.
+    mainRow->addSpacing(6);
+    mainRow->addWidget(m_navTokenUsage);
+    mainRow->addSpacing(4);
     mainRow->addWidget(m_avatarNavButton);
     layout->addLayout(mainRow);
 
@@ -18498,8 +18619,18 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle->setWordWrap(true);
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
-    m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Selectable text plus clickable links: the branch name links to its row in
+    // the Worktrees tab (issue #265). The meta string is HTML-escaped and built as
+    // rich text, so pin the format rather than relying on auto-detection.
+    m_agentMeta->setTextFormat(Qt::RichText);
+    m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                         Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
+    connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href.startsWith(kWorktreeLinkScheme))
+            switchToWorktree(QUrl::fromPercentEncoding(
+                href.mid(kWorktreeLinkScheme.size()).toUtf8()));
+    });
     m_agentUsage = new QLabel;
     m_agentUsage->setObjectName("statusLine");
     m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -18593,15 +18724,23 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
-                QProgressBar *bar = kind == QLatin1String("5h") ? m_agentUsage5hBar
-                                                                : m_agentUsageBar;
+                const bool weekly = kind != QLatin1String("5h");
+                const int pct = qBound(0, percent, 100);
+                QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
                 if (bar) {
-                    bar->setValue(qBound(0, percent, 100));
-                    bar->setFormat((kind == QLatin1String("5h")
-                                        ? QStringLiteral("5h: %1")
-                                        : QStringLiteral("Weekly: %1")).arg(text));
+                    bar->setValue(pct);
+                    bar->setFormat((weekly ? QStringLiteral("Weekly: %1")
+                                           : QStringLiteral("5h: %1")).arg(text));
                     bar->show();
                 }
+                // Mirror the same figure into the top-bar mini chart (issue #266)
+                // and cache it so it survives a restart.
+                if (m_navTokenUsage)
+                    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+                        ->setUsage(weekly, pct);
+                QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
+                                            : kClaudeUsage5hPctSetting,
+                                     pct);
             });
     connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
             [this](qint64 tokens, double cost) {
@@ -19598,6 +19737,20 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
     return nullptr;
 }
 
+// HTML for a branch name that, when clicked in the agent session header, opens
+// the branch's worktree in the Worktrees tab (handled by m_agentMeta's
+// linkActivated -> switchToWorktree). Plain (un-escaped) when there's no branch.
+static QString worktreeLinkHtml(const QString &branch)
+{
+    if (branch.isEmpty())
+        return QString();
+    const QString href = kWorktreeLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, branch.toHtmlEscaped());
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -19645,12 +19798,17 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     if (m_agentMeta && isExternalSession(sessionId)) {
-        QString meta = QStringLiteral("External Claude Code · %1/%2 · %3")
-                           .arg(session->owner, session->name,
-                                agentStatusText(session->status));
+        // Rich text so the branch name links to its Worktrees-tab row (issue
+        // #265); every other part is HTML-escaped to stay literal.
+        const QString sep = QStringLiteral(" · ");
+        QString meta = QStringLiteral("External Claude Code") + sep +
+                       QStringLiteral("%1/%2")
+                           .arg(session->owner.toHtmlEscaped(),
+                                session->name.toHtmlEscaped()) +
+                       sep + agentStatusText(session->status).toHtmlEscaped();
         if (!session->branchName.isEmpty())
-            meta += QStringLiteral(" · %1").arg(session->branchName);
-        meta += QStringLiteral(" · watch-only");
+            meta += sep + worktreeLinkHtml(session->branchName);
+        meta += sep + QStringLiteral("watch-only");
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible.
@@ -19658,14 +19816,21 @@ void MainWindow::showAgentSession(int sessionId)
                          ? QStringLiteral("PR #%1 open").arg(session->prNumber)
                          : (session->createPr ? QStringLiteral("PR opens on finish")
                                               : QStringLiteral("no PR"));
-        QString meta = QStringLiteral("%1 · %2/%3 · %4 · %5 · %6")
-                           .arg(agentProviderName(session->provider),
-                                session->owner, session->name,
-                                agentStatusText(session->status),
-                                session->branchName, pr);
+        // Rich text so the branch name is a link to its Worktrees-tab row
+        // (issue #265); every other part is HTML-escaped to stay literal.
+        const QString sep = QStringLiteral(" · ");
+        QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
+                       QStringLiteral("%1/%2")
+                           .arg(session->owner.toHtmlEscaped(),
+                                session->name.toHtmlEscaped()) +
+                       sep + agentStatusText(session->status).toHtmlEscaped() + sep +
+                       (session->branchName.isEmpty()
+                            ? QStringLiteral("(no branch)")
+                            : worktreeLinkHtml(session->branchName)) +
+                       sep + pr.toHtmlEscaped();
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
-            meta += QStringLiteral(" · %1s")
-                        .arg((session->finishedAtMs - session->startedAtMs) / 1000);
+            meta += sep + QStringLiteral("%1s")
+                              .arg((session->finishedAtMs - session->startedAtMs) / 1000);
         m_agentMeta->setText(meta);
     }
     if (m_agentUsage) {
@@ -26144,7 +26309,11 @@ void MainWindow::loadRepoInsights()
     // The log is scoped to the selected ref (currentRef) — the same history the
     // "Commits (N)" badge, the file tree and the Files/Code-size figures above
     // count — rather than --all, so the totals match the branch being viewed and
-    // don't fold in every stale/unmerged ref in the repo.
+    // don't fold in every stale/unmerged ref in the repo. Merge commits are
+    // included (no --no-merges) so the per-author commit counts sum to exactly
+    // the same total `git rev-list --count` reports in that badge; excluding them
+    // here previously left the table short by every merge (each attributed to
+    // whoever performed it), which read as an inaccurate count.
     const int windowDays =
         m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
     constexpr int kBuckets = 32;
@@ -26161,8 +26330,7 @@ void MainWindow::loadRepoInsights()
     int sharedMax = 1;
 
     if (!dir.isEmpty()) {
-        QStringList logArgs{"log", "--no-merges",
-                            "--format=%an%x1f%ct", "-n", "50000"};
+        QStringList logArgs{"log", "--format=%an%x1f%ct", "-n", "50000"};
         if (windowDays > 0)
             logArgs << QStringLiteral("--since=%1.days.ago").arg(windowDays);
         logArgs << ref;
@@ -27179,6 +27347,26 @@ void MainWindow::loadWorktreesPanel()
         m_repoWorktreesTab->setText(wts.size() > 1
                                         ? QStringLiteral("Worktrees (%1)").arg(wts.size())
                                         : QStringLiteral("Worktrees"));
+}
+
+// Open the Worktrees tab and select the row whose branch matches, so clicking a
+// branch in the agent session header lands on that worktree's changes (#265).
+void MainWindow::switchToWorktree(const QString &branch)
+{
+    if (m_repoDetailTabs && m_repoDetailTabs->button(m_worktreesTabIndex))
+        m_repoDetailTabs->button(m_worktreesTabIndex)->setChecked(true);
+    if (m_repoDetailStack && m_worktreesTabIndex >= 0)
+        m_repoDetailStack->setCurrentIndex(m_worktreesTabIndex);
+    loadWorktreesPanel();
+    if (!m_worktreesTable || branch.isEmpty())
+        return;
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+        if (b && b->data(Qt::UserRole).toString() == branch) {
+            m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
+            return;
+        }
+    }
 }
 
 // Show a worktree's changes vs the default branch: everything in the worktree
@@ -29399,8 +29587,12 @@ void MainWindow::loadAboutSidebar()
         QList<Contrib> contribs;
         QByteArray out;
         // -e includes the email; lines look like "  12\tName <email>".
+        // Merge commits are counted (no --no-merges) so each tooltip's
+        // "N commits" is that author's true commit total — matching what
+        // `git shortlog -sne` / `git log --author` report — rather than
+        // silently dropping every merge they performed.
         if (!dir.isEmpty() &&
-            runGitCapture(dir, {"shortlog", "-sne", "--all", "--no-merges"}, &out,
+            runGitCapture(dir, {"shortlog", "-sne", "--all"}, &out,
                           nullptr)) {
             for (const QString &line : QString::fromUtf8(out).split('\n')) {
                 const QString t = line.trimmed();
@@ -31006,6 +31198,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
         avatar->setObjectName("issueAvatar");
         avatar->setAlignment(Qt::AlignCenter);
         avatar->setFixedSize(36, 36);
+        // Show the author's real avatar instead of the initials tile when we
+        // have a picture. Peer avatars are broadcast over chat and cached in
+        // m_avatars keyed by node id, which is the same Ed25519 pubkey that
+        // signs issue events (ev.author), so the keys line up. Our own avatar
+        // may not be in that cache yet (it only lands there once the backend
+        // has broadcast it this run), so fall back to effectiveAvatar() for our
+        // own events — that keeps an author's description card consistent with
+        // the composer below, which always shows effectiveAvatar(). Peers we've
+        // never seen a picture from keep the initials tile (set above).
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(ev.author);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (ev.author == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
         rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
         auto *card = new QWidget;
@@ -35213,6 +35424,20 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     if (!m_settingsLog)
         return;
 
+    // The badge accents below read on either canvas, but the timestamp, day
+    // divider and message body need per-theme greys/text so the log isn't grey
+    // text washed out on the light (#ffffff) background. Dark keeps its lighter
+    // ink on the near-black canvas; light uses GitHub's near-black body text.
+    const bool dark = currentThemeIsDark();
+    const QString messageColor =
+        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
+    const QString timeColor =
+        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
+    const QString dividerLabelColor =
+        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    const QString dividerDashColor =
+        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
+
     // Stored format: "yyyy-MM-dd HH:mm:ss  message". Parse leniently so any
     // legacy/odd line still renders (as a plain message with no timestamp).
     QString date, time, message = storedLine;
@@ -35230,24 +35455,27 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
                 .toString(QStringLiteral("dddd, d MMMM yyyy"));
         m_settingsLog->appendHtml(
             QString::fromUtf8(
-                "<span style='color:#484f58'>"
+                "<span style='color:%1'>"
                 "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
-                "<span style='color:#8b949e; font-weight:600'>%1</span>"
-                "<span style='color:#484f58'>&nbsp;"
+                "<span style='color:%2; font-weight:600'>%3</span>"
+                "<span style='color:%4'>&nbsp;"
                 "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
-                .arg((pretty.isEmpty() ? date : pretty).toHtmlEscaped()));
+                .arg(dividerDashColor, dividerLabelColor,
+                     (pretty.isEmpty() ? date : pretty).toHtmlEscaped(),
+                     dividerDashColor));
     }
 
     const NetworkLogStyle style = networkLogStyleFor(message);
     QString html;
     if (!time.isEmpty())
-        html += QStringLiteral("<span style='color:#6e7681'>%1</span>&nbsp;&nbsp;")
-                    .arg(time);
+        html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
+                    .arg(timeColor, time);
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
-                "<span style='color:#adbac7'>%3</span>")
+                "<span style='color:%3'>%4</span>")
                 .arg(style.accent,
                      style.badge.leftJustified(7).toHtmlEscaped(),
+                     messageColor,
                      message.toHtmlEscaped());
     m_settingsLog->appendHtml(html);
 }
