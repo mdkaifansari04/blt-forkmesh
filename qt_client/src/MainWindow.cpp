@@ -10023,8 +10023,25 @@ QWidget *MainWindow::buildIssuesSection()
     setOcticon(m_issuePrioritizeButton, "rocket", 16);
     connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
             &MainWindow::prioritizeIssuesFromReadme);
+
+    // Agent picker next to the button so a run can target any provider, not just
+    // the saved default. Seeded from the default agent (Settings -> Agents).
+    m_issuePrioritizeAgentCombo = new QComboBox;
+    m_issuePrioritizeAgentCombo->setObjectName("issueControlSm");
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("OpenAI API"),
+                                         QStringLiteral("openai"));
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude API"),
+                                         QStringLiteral("claude-api"));
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude Code"),
+                                         QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
+    m_issuePrioritizeAgentCombo->setToolTip(
+        "Agent that ranks the issues. Defaults to your default agent "
+        "(Settings \xE2\x86\x92 Agents).");
+
     // Place it right after the "Issues" heading, ahead of the view-tab toggles.
     headingRow->insertWidget(1, m_issuePrioritizeButton);
+    headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
 
     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
     // are pledged only (funded on merge), so this never moves money.
@@ -35088,7 +35105,12 @@ void MainWindow::prioritizeIssuesFromReadme()
     if (readme.size() > 8000)
         readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
 
-    const QString provider = defaultAgentProvider();
+    // Use the agent picked in the dropdown next to the button; fall back to the
+    // saved default agent when the picker isn't built yet.
+    const QString provider = m_issuePrioritizeAgentCombo
+                                 ? m_issuePrioritizeAgentCombo->currentData()
+                                       .toString()
+                                 : defaultAgentProvider();
     const bool claude = agentIsClaudeProvider(provider);
     const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
                                    : QSettings().value(kCodexApiKeySetting))
@@ -36724,6 +36746,7 @@ QWidget *MainWindow::buildSettingsSection()
                 // Keep the live pickers in step with the new default.
                 selectDefaultAgentProvider(m_quickAddAgentProvider);
                 selectDefaultAgentProvider(m_issueAgentProvider);
+                selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
             });
 
     m_codexApiKeyEdit = new QLineEdit;
