@@ -14883,12 +14883,48 @@ void MainWindow::reloadPulls()
     // we have a working tree to test the patch against.
     m_pullConflictByNumber.clear();
     if (store.canWrite()) {
+        // The dry-run apply only changes when the base tip or a PR's patch moves,
+        // so cache it: otherwise every reloadPulls() (each push, search keystroke
+        // path, or merge of a different PR) re-spawns `git apply --check` for every
+        // open PR and blocks the event loop for seconds. Invalidate wholesale when
+        // the repo or the base tip changes; per-PR entries re-check when the patch
+        // fingerprint differs.
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        const QString cacheKey = repo.owner + QLatin1Char('/') + repo.name +
+                                 QLatin1Char('@') + store.baseTip();
+        if (cacheKey != m_pullConflictCacheBaseTip) {
+            m_pullConflictCacheBaseTip = cacheKey;
+            m_pullConflictCache.clear();
+        }
+        QSet<int> openNumbers;
         for (const PullRequest &pr : std::as_const(m_currentPulls)) {
             if (pr.status != QLatin1String("open"))
                 continue;
-            bool clean = false;
-            if (store.checkMergeable(pr.number, &clean, nullptr) && !clean)
+            openNumbers.insert(pr.number);
+            const QString fingerprint = QString::number(pr.patch.size()) +
+                                        QLatin1Char(':') +
+                                        QString::number(qHash(pr.patch));
+            const auto cached = m_pullConflictCache.constFind(pr.number);
+            bool conflict;
+            if (cached != m_pullConflictCache.constEnd() &&
+                cached->first == fingerprint) {
+                conflict = cached->second;
+            } else {
+                bool clean = false;
+                conflict = store.checkMergeable(pr.number, &clean, nullptr) && !clean;
+                m_pullConflictCache.insert(pr.number, qMakePair(fingerprint, conflict));
+            }
+            if (conflict)
                 m_pullConflictByNumber.insert(pr.number, true);
+        }
+        // Drop cache entries for PRs that have since closed/merged or been deleted
+        // so the map can't grow without bound across a long session.
+        for (auto it = m_pullConflictCache.begin();
+             it != m_pullConflictCache.end();) {
+            if (openNumbers.contains(it.key()))
+                ++it;
+            else
+                it = m_pullConflictCache.erase(it);
         }
     }
     updateRepoPullCount();
@@ -19286,8 +19322,7 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_terminalModeButton, &QPushButton::clicked, this, [this] {
         m_terminalModeButton->setChecked(true);
         m_transcriptModeButton->setChecked(false);
-        if (m_agentOutputStack)
-            m_agentOutputStack->setCurrentWidget(m_agentLog);
+        showAgentRawOutput();
     });
     // Diff-style selector, sitting at the top of the output area (next to the
     // Transcript|Raw toggle): pick unified or side-by-side diffs.
@@ -21384,7 +21419,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                   .arg(customPrompt.trimmed())
                   .arg(session.branchName)
                   .arg(baseName);
-    const QString prompt =
+    const QString body =
         QStringLiteral(
             "%1 Work end to end:\n"
             "1. Implement the change, consistent with the surrounding code.\n"
@@ -21397,6 +21432,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             .arg(lead)
             .arg(baseName)
             .arg(session.branchName);
+    // Honor the user-editable instruction preamble from Settings → Agents. The
+    // headless AgentRunner path already prepends it via buildPrompt(), but the
+    // Claude Code transcript path (issue-assigned and ad-hoc composer sessions)
+    // used to hardcode its own prompt and ignore the configured one. Prepend it
+    // here too so the prompt set in settings actually drives these runs; a blank
+    // setting falls back to the built-in default, same as everywhere else.
+    const QString preamble = agentPromptPreamble().trimmed();
+    const QString prompt =
+        preamble.isEmpty() ? body : preamble + QStringLiteral("\n\n") + body;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -21421,10 +21465,8 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         buf += line + QStringLiteral("\n\n");
         if (buf.size() > 400000)
             buf = buf.right(300000);
-        if (sid == m_selectedAgentSessionId && m_agentLog) {
-            m_agentLog->moveCursor(QTextCursor::End);
-            m_agentLog->insertPlainText(line + QStringLiteral("\n\n"));
-        }
+        if (sid == m_selectedAgentSessionId)
+            appendAgentRawLog(line + QStringLiteral("\n\n"));
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
         if (AgentSession *as = findAgentSession(sid)) {
@@ -21552,10 +21594,8 @@ void MainWindow::stopStreamSession(int sessionId)
 
     QString &raw = m_streamRaw[sessionId];
     raw += QStringLiteral("\n==> Stop requested by user.\n");
-    if (sessionId == m_selectedAgentSessionId && m_agentLog) {
-        m_agentLog->moveCursor(QTextCursor::End);
-        m_agentLog->insertPlainText(QStringLiteral("\n==> Stop requested by user.\n"));
-    }
+    if (sessionId == m_selectedAgentSessionId)
+        appendAgentRawLog(QStringLiteral("\n==> Stop requested by user.\n"));
 
     if (AgentSession *as = findAgentSession(sessionId);
         as && as->status == AgentStatus::Running) {
@@ -22131,6 +22171,42 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         m_agentStore->appendLog(
             *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
     }
+}
+
+// Append to the raw-output edit only when it's the surface actually on screen.
+// While the rich transcript is shown the m_streamRaw buffer already captures the
+// text, and showAgentRawOutput() rebuilds the edit from it on demand — streaming
+// line-by-line into a hidden QPlainTextEdit still forces a full text layout per
+// line, and shaping large JSON lines stalled the UI for seconds during bursts.
+void MainWindow::appendAgentRawLog(const QString &text)
+{
+    if (!m_agentLog || !m_agentOutputStack ||
+        m_agentOutputStack->currentWidget() != m_agentLog)
+        return;
+    QScrollBar *sb = m_agentLog->verticalScrollBar();
+    const bool atBottom = !sb || sb->value() >= sb->maximum() - 4;
+    // Insert through a local cursor (not moveCursor) so we skip the per-line
+    // ensureCursorVisible → cursorRect layout the widget API forces.
+    QTextCursor cursor(m_agentLog->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text);
+    if (atBottom && sb)
+        sb->setValue(sb->maximum()); // keep following the tail only if already pinned
+}
+
+// Switch the agent output to the raw log, rebuilding it from the live buffer
+// first: while the transcript is shown appendAgentRawLog() skips the edit, so it
+// can be behind. setPlainText() lays out lazily (one pass), unlike the per-line
+// inserts that caused the stalls.
+void MainWindow::showAgentRawOutput()
+{
+    if (!m_agentOutputStack || !m_agentLog)
+        return;
+    if (m_streamRaw.contains(m_selectedAgentSessionId)) {
+        m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
+        m_agentLog->moveCursor(QTextCursor::End);
+    }
+    m_agentOutputStack->setCurrentWidget(m_agentLog);
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
@@ -40610,10 +40686,12 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
                          false, QStringLiteral("emblem-synchronizing"));
     }
 
-    // Live refresh: if this repo's detail view is open, reflect the new commit
-    // immediately (works for every mirror, whether or not actions are enabled).
+    // Live refresh: if this repo's detail view is open, reflect the new commit.
+    // Debounced — a single push often arrives as several ref updates, and a sync
+    // or an agent commit can fire a burst; coalescing avoids running the whole
+    // heavyweight refresh (git log, per-PR apply checks) once per event.
     if (repoIndex == m_repoDetailIndex)
-        refreshOpenRepoDetail();
+        scheduleOpenRepoDetailRefresh();
 
     if (!repo.actionsEnabled)
         return; // push detection only; no workflow execution for this repo
@@ -40731,8 +40809,22 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
     }
 }
 
+void MainWindow::scheduleOpenRepoDetailRefresh()
+{
+    if (!m_openRepoRefreshTimer) {
+        m_openRepoRefreshTimer = new QTimer(this);
+        m_openRepoRefreshTimer->setSingleShot(true);
+        m_openRepoRefreshTimer->setInterval(300);
+        connect(m_openRepoRefreshTimer, &QTimer::timeout, this,
+                &MainWindow::refreshOpenRepoDetail);
+    }
+    m_openRepoRefreshTimer->start(); // restart: collapses a burst into one refresh
+}
+
 void MainWindow::refreshOpenRepoDetail()
 {
+    if (m_openRepoRefreshTimer)
+        m_openRepoRefreshTimer->stop(); // a direct refresh subsumes any pending one
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
     // Re-read the branch tip, commit list, About sidebar and the current file
