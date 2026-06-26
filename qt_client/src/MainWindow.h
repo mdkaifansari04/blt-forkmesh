@@ -186,6 +186,13 @@ public:
     // trades width with its immediate neighbour (like moving a margin) instead
     // of letting a far-off Stretch column absorb the change.
     Q_INVOKABLE bool testMarginResize();
+    // Verifies installMarginResize() trades with the *visual* neighbour after a
+    // column has been dragged into a new order, so the divider keeps tracking
+    // the cursor for movable-header tables like the agents list.
+    Q_INVOKABLE bool testMarginResizeAfterMove();
+    // Verifies the agents list lets the user drag its column headers into a new
+    // order (in addition to resizing them).
+    Q_INVOKABLE bool testAgentColumnsMovable() const;
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
