@@ -725,9 +725,11 @@ private:
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
-    // first; the post-merge cleanup calls it silently.
+    // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
+    // now-orphaned branch too (the default for the Worktrees-tab "Remove" action);
+    // the post-merge cleanup passes false so the just-merged branch stays visible.
     void removeWorktree(const QString &worktreePath, const QString &branch,
-                        bool confirm);
+                        bool confirm, bool alsoDeleteBranch = true);
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
