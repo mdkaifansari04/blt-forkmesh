@@ -609,14 +609,25 @@ void AgentRunner::cleanupWorktree()
     m_worktree.clear();
 }
 
+QString AgentRunner::defaultPromptPreamble()
+{
+    return QStringLiteral(
+        "You are running inside ForkMesh as a coding agent.\n"
+        "Use the minimum context and output needed. Inspect only files relevant to the issue.\n"
+        "Do not spend extra tokens on broad refactors or unrelated cleanup.\n"
+        "When possible, make the smallest patch that satisfies the issue.\n"
+        "Do not commit, push, or open network resources unless the issue explicitly requires it.");
+}
+
 QString AgentRunner::buildPrompt() const
 {
     QStringList prompt;
-    prompt << QStringLiteral("You are running inside ForkMesh as a coding agent.");
-    prompt << QStringLiteral("Use the minimum context and output needed. Inspect only files relevant to the issue.");
-    prompt << QStringLiteral("Do not spend extra tokens on broad refactors or unrelated cleanup.");
-    prompt << QStringLiteral("When possible, make the smallest patch that satisfies the issue.");
-    prompt << QStringLiteral("Do not commit, push, or open network resources unless the issue explicitly requires it.");
+    // Instruction preamble: the user-editable prompt saved in Settings → Agents,
+    // falling back to the built-in default when left blank.
+    QString preamble = m_config.promptPreamble.trimmed();
+    if (preamble.isEmpty())
+        preamble = defaultPromptPreamble();
+    prompt << preamble;
     prompt << QStringLiteral("");
     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
     prompt << QStringLiteral("Issue #%1: %2")
