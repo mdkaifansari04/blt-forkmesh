@@ -1,10 +1,12 @@
 #include "../src/MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QMenu>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
@@ -226,6 +228,29 @@ int main(int argc, char *argv[])
     // fitted widths, while Stretch and Fixed columns are left as configured.
     check(window.testColumnsBecomeResizable(),
           QStringLiteral("data-table content columns become drag-resizable"));
+
+    // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
+    // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
+    // button instead of separate per-provider buttons.
+    if (QPushButton *fixButton =
+            findButtonStartingWith(window, QStringLiteral("Fix with agent"))) {
+        QMenu *fixMenu = fixButton->menu();
+        check(fixMenu != nullptr,
+              QStringLiteral("PR 'Fix with agent' button carries a dropdown menu"));
+        if (fixMenu) {
+            QStringList labels;
+            for (QAction *action : fixMenu->actions())
+                labels << action->text();
+            check(labels ==
+                      QStringList({QStringLiteral("Claude API"),
+                                   QStringLiteral("OpenAI API"),
+                                   QStringLiteral("Claude Code")}),
+                  QStringLiteral("Fix-with-agent menu offers Claude API, OpenAI API "
+                                 "and Claude Code"));
+        }
+    } else {
+        check(false, QStringLiteral("PR 'Fix with agent' dropdown button exists"));
+    }
 
     // Issue #268: dragging a column divider resizes like moving a margin — the
     // width comes from the immediate neighbour, not a far-off Stretch column, so
