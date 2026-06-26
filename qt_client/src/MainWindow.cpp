@@ -28673,6 +28673,10 @@ void MainWindow::loadWorktreesPanel()
 {
     if (!m_worktreesTable)
         return;
+    // Remember the selected worktree so a rebuild (Refresh, or after an
+    // "Update from main"/merge) lands back on it instead of going blank — clearing
+    // the table fires currentCellChanged(-1) which wipes the diff + selection (#272).
+    const QString keepPath = m_worktreeSelectedPath;
     m_worktreesTable->setRowCount(0);
     QString repoPath, repoOwner, repoName;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -28848,6 +28852,20 @@ void MainWindow::loadWorktreesPanel()
         m_repoWorktreesTab->setText(wts.size() > 1
                                         ? QStringLiteral("Worktrees (%1)").arg(wts.size())
                                         : QStringLiteral("Worktrees"));
+
+    // Re-select the worktree that was selected before the rebuild so its diff and
+    // the detail buttons stay visible (e.g. right after "Update from main"). If it
+    // was removed, no row matches and the pane stays blank, which is correct (#272).
+    if (!keepPath.isEmpty()) {
+        const QString keep = QDir(keepPath).absolutePath();
+        for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+            QTableWidgetItem *p = m_worktreesTable->item(row, 1);
+            if (p && QDir(p->text()).absolutePath() == keep) {
+                m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
+                break;
+            }
+        }
+    }
 }
 
 // Open the Worktrees tab and select the row whose branch matches, so clicking a
@@ -29245,10 +29263,9 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
                 .arg(branch, base),
             true);
     }
-    // Rebuilding the table drops the selection, blanking the diff/buttons; keep
-    // the focus on the worktree we just updated so it doesn't go blank (#272).
+    // loadWorktreesPanel() preserves the current selection across the rebuild, so
+    // focus stays on the worktree we just updated instead of going blank (#272).
     loadWorktreesPanel();
-    selectWorktreeRow(branch);
 }
 
 QWidget *MainWindow::buildBranchesTab()
