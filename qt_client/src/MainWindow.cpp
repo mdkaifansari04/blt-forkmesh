@@ -329,6 +329,98 @@ private:
     QColor m_color;
 };
 
+// A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
+// node's earnings/avatar (issue #266). The top row is the rolling 5-hour window,
+// the bottom row the weekly window; each draws a horizontal track that fills
+// 0..100% of that window's utilisation and is tinted green/amber/red as it nears
+// the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
+// a value of -1 means "unknown" and leaves an empty track. Stored as a plain
+// QWidget* on MainWindow and poked via static_cast, like ProgressSlider.
+class TokenUsageMiniChart : public QWidget
+{
+public:
+    explicit TokenUsageMiniChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(60, 30);
+        refreshTooltip();
+    }
+
+    // Update one window's utilisation (0..100); pass -1 to mark it unknown.
+    void setUsage(bool weekly, int percent)
+    {
+        int &slot = weekly ? m_weekly : m_fiveHour;
+        const int clamped = percent < 0 ? -1 : qBound(0, percent, 100);
+        if (slot == clamped)
+            return;
+        slot = clamped;
+        refreshTooltip();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f = font();
+        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.0));
+        p.setFont(f);
+        const QFontMetrics fm(f);
+
+        const char *labels[2] = {"5h", "wk"};
+        const int vals[2] = {m_fiveHour, m_weekly};
+        const int labelW = fm.horizontalAdvance(QStringLiteral("wk")) + 4;
+        const int barH = 5;
+        const int rowH = height() / 2;
+        for (int i = 0; i < 2; ++i) {
+            const QRect rowRect(0, i * rowH, width(), rowH);
+            p.setPen(textColor(170));
+            p.drawText(QRect(rowRect.left(), rowRect.top(), labelW, rowRect.height()),
+                       Qt::AlignVCenter | Qt::AlignLeft, QString::fromLatin1(labels[i]));
+            const qreal top = rowRect.center().y() - barH / 2.0;
+            const QRectF track(labelW, top, width() - labelW, barH);
+            p.setPen(Qt::NoPen);
+            p.setBrush(textColor(38));
+            p.drawRoundedRect(track, barH / 2.0, barH / 2.0);
+            if (vals[i] > 0) {
+                QRectF fill(track);
+                fill.setWidth(track.width() * vals[i] / 100.0);
+                p.setBrush(barColor(vals[i]));
+                p.drawRoundedRect(fill, barH / 2.0, barH / 2.0);
+            }
+        }
+    }
+
+private:
+    QColor textColor(int alpha) const
+    {
+        QColor c = palette().color(QPalette::WindowText);
+        c.setAlpha(alpha);
+        return c;
+    }
+    static QColor barColor(int pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: near the cap
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting close
+        return QColor("#3fb950");     // green: plenty left
+    }
+    void refreshTooltip()
+    {
+        auto fmt = [](int v) {
+            return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
+                         : QStringLiteral("%1%").arg(v);
+        };
+        setToolTip(QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
+                       .arg(fmt(m_fiveHour), fmt(m_weekly)));
+    }
+
+    int m_fiveHour = -1;
+    int m_weekly = -1;
+};
+
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
 // `::item:hover` stylesheet only covers the single hovered cell, so we track the
 // hovered row ourselves and fill every cell in it. The per-cell grey hover is
@@ -814,6 +906,11 @@ const QString kCodexLimit5hStartSetting = QStringLiteral("agents/codexLimit5hSta
 const QString kCodexLimitWeekStartSetting = QStringLiteral("agents/codexLimitWeekStart");
 const QString kClaudeLimit5hStartSetting = QStringLiteral("agents/claudeLimit5hStart");
 const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitWeekStart");
+// Last-seen utilisation (0..100) of each Claude Code rolling window, cached so
+// the top-bar mini usage chart (issue #266) can render the last known figures on
+// the very first frame, before any agent has streamed a fresh rate-limit event.
+const QString kClaudeUsage5hPctSetting = QStringLiteral("agents/claudeUsage5hPct");
+const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWeekPct");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 const QString kDefaultCodexCommand =
@@ -6417,6 +6514,21 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
+    // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
+    // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
+    // utilisation so it renders immediately; live rate-limit events refresh it.
+    auto *tokenUsage = new TokenUsageMiniChart;
+    m_navTokenUsage = tokenUsage;
+    {
+        QSettings settings;
+        auto restore = [&](bool weekly, const QString &key) {
+            if (settings.contains(key))
+                tokenUsage->setUsage(weekly, settings.value(key).toInt());
+        };
+        restore(false, kClaudeUsage5hPctSetting);
+        restore(true, kClaudeUsageWeekPctSetting);
+    }
+
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
     m_repoMenuButton->setObjectName("repoMenuButton");
@@ -6667,6 +6779,10 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
+    // The tiny token-usage chart tucks between the earnings and the avatar.
+    mainRow->addSpacing(6);
+    mainRow->addWidget(m_navTokenUsage);
+    mainRow->addSpacing(4);
     mainRow->addWidget(m_avatarNavButton);
     layout->addLayout(mainRow);
 
@@ -18512,15 +18628,23 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
-                QProgressBar *bar = kind == QLatin1String("5h") ? m_agentUsage5hBar
-                                                                : m_agentUsageBar;
+                const bool weekly = kind != QLatin1String("5h");
+                const int pct = qBound(0, percent, 100);
+                QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
                 if (bar) {
-                    bar->setValue(qBound(0, percent, 100));
-                    bar->setFormat((kind == QLatin1String("5h")
-                                        ? QStringLiteral("5h: %1")
-                                        : QStringLiteral("Weekly: %1")).arg(text));
+                    bar->setValue(pct);
+                    bar->setFormat((weekly ? QStringLiteral("Weekly: %1")
+                                           : QStringLiteral("5h: %1")).arg(text));
                     bar->show();
                 }
+                // Mirror the same figure into the top-bar mini chart (issue #266)
+                // and cache it so it survives a restart.
+                if (m_navTokenUsage)
+                    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+                        ->setUsage(weekly, pct);
+                QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
+                                            : kClaudeUsage5hPctSetting,
+                                     pct);
             });
     connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
             [this](qint64 tokens, double cost) {
