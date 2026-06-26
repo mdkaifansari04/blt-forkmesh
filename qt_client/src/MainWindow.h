@@ -2125,6 +2125,10 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // Snapshot of each live stream session, captured at launch so transcript
+    // events can be persisted to disk without depending on m_agentSessions
+    // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
+    QHash<int, AgentSession> m_streamSessionInfo;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.
@@ -2136,6 +2140,11 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;
+    // Lazily restore a session's persisted transcript events from disk (issue
+    // #41) so the rich transcript survives an app restart even after the live
+    // stream object is gone. No-op for sessions already in memory or with no
+    // persisted events.
+    void ensureStreamEventsLoaded(int sessionId);
     // Stop a live Claude Code stream session (the Stop button). stop() emits no
     // `finished`, so transition the session to Stopped and refresh here.
     void stopStreamSession(int sessionId);
