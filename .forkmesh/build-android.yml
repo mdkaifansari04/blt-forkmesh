@@ -8,7 +8,17 @@ jobs:
       # here is checked by the build step so it no-ops on unrelated commits.
       - name: Skip unless flutter_app/ changed
         run: |
-          changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
+          # HEAD is normally a MERGE commit (agent branches land on main via
+          # merge), and a plain `git diff-tree HEAD` emits NOTHING for a merge
+          # (combined-diff default), so every merge-to-main skipped this build.
+          # Diff against the first parent (old main tip) so a merge that brings
+          # in flutter_app/ changes is detected; fall back to the empty tree for
+          # a root commit. Mirrors the deploy workflow's fix for issue #267.
+          if parent="$(git rev-parse --verify --quiet HEAD^1)"; then
+            changed_files="$(git diff-tree --no-commit-id --name-only -r "$parent" HEAD)"
+          else
+            changed_files="$(git diff-tree --no-commit-id --name-only -r --root HEAD)"
+          fi
           app_changes="$(printf '%s\n' "$changed_files" | sed -n '/^flutter_app\//p')"
           if [ -z "$app_changes" ]; then
             echo "Skipping Android build; no flutter_app/ changes in this commit."
