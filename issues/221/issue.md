@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 221
 title: the commit counts are not correct on contributors and activity (insights) make sure they get updated and are accurate
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 9
