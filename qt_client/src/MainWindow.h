@@ -704,6 +704,9 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+    // Open the Worktrees tab and select the row for a branch (used by the
+    // clickable branch link in the agent session header — issue #265).
+    void switchToWorktree(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree is removed (its work is in main); pass its folder so it can be.
