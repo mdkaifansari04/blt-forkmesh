@@ -227,6 +227,12 @@ public:
     QString testQuickAddAgentProvider() const;
     QString testIssueAgentProvider() const;
     void testSetDefaultAgentProvider(const QString &provider);
+    // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
+    // "Update from main" merge does), and read back which worktree stays selected
+    // so a test can prove the detail pane doesn't go blank after a refresh.
+    void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
+    void testReloadWorktreesPanel() { loadWorktreesPanel(); }
+    QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -667,6 +673,17 @@ private:
     void assignIssueToAgent(const QString &provider);
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
+    // Stop and remove one stored agent session (clear its issue assignment, drop
+    // it from the run queue, delete it from the store). Returns true once it's
+    // gone; false (after flashing why) when it can't go yet — a running agent
+    // still stopping, or no host write access to clear the issue. External
+    // (watch-only) sessions aren't handled here.
+    bool deleteStoredAgentSession(int sessionId);
+    // Delete everything an agent left behind in one action: its worktree folder,
+    // its branch, and the stored agent session(s) that ran on it. Used by the
+    // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    void deleteWorktreeBranchAndAgent(const QString &worktreePath,
+                                      const QString &branch);
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
@@ -848,6 +865,11 @@ private:
     // the post-merge cleanup passes false so the just-merged branch stays visible.
     void removeWorktree(const QString &worktreePath, const QString &branch,
                         bool confirm, bool alsoDeleteBranch = true);
+    // Filesystem path of the worktree currently checked out to `branch` (other
+    // than the main checkout), or empty if none. Lets the agent detail resolve a
+    // session's worktree folder from its branch.
+    QString worktreePathForBranch(const QString &repoPath,
+                                  const QString &branch) const;
     void showBranchDiff(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -866,6 +888,9 @@ private:
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
+    // Delete every branch that is fully merged into the default branch (0 behind
+    // and 0 ahead of it), skipping the default and the checked-out branch.
+    void deleteMergedBranches();
     void deleteSelectedBranches();
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
@@ -1284,6 +1309,7 @@ private:
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     void flashMessage(const QString &text, bool error = false);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
+    void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
@@ -1463,6 +1489,8 @@ private:
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QString m_topMessageRaw;              // plain text of the current toast, for copy
+    QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
+    int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
     bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
     bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
@@ -1665,6 +1693,7 @@ private:
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
+    QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
     QTextBrowser *m_branchDiffView = nullptr;
@@ -2125,6 +2154,10 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // Snapshot of each live stream session, captured at launch so transcript
+    // events can be persisted to disk without depending on m_agentSessions
+    // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
+    QHash<int, AgentSession> m_streamSessionInfo;
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.
@@ -2136,6 +2169,11 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;
+    // Lazily restore a session's persisted transcript events from disk (issue
+    // #41) so the rich transcript survives an app restart even after the live
+    // stream object is gone. No-op for sessions already in memory or with no
+    // persisted events.
+    void ensureStreamEventsLoaded(int sessionId);
     // Stop a live Claude Code stream session (the Stop button). stop() emits no
     // `finished`, so transition the session to Stopped and refresh here.
     void stopStreamSession(int sessionId);
@@ -2184,6 +2222,7 @@ private:
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
+    QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;

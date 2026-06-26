@@ -172,6 +172,38 @@ QString AgentStore::readLog(const AgentSession &session) const
     return QString::fromUtf8(file.readAll());
 }
 
+void AgentStore::appendEvent(const AgentSession &session, const QJsonObject &ev) const
+{
+    QDir().mkpath(sessionDir(session));
+    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+    if (!file.open(QIODevice::Append))
+        return;
+    file.write(QJsonDocument(ev).toJson(QJsonDocument::Compact));
+    file.write("\n");
+}
+
+QList<QJsonObject> AgentStore::loadEvents(const AgentSession &session) const
+{
+    QList<QJsonObject> events;
+    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+    if (!file.open(QIODevice::ReadOnly))
+        return events;
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(line);
+        if (doc.isObject())
+            events.append(doc.object());
+    }
+    return events;
+}
+
+void AgentStore::clearEvents(const AgentSession &session) const
+{
+    QFile::remove(sessionDir(session) + QStringLiteral("/events.jsonl"));
+}
+
 void AgentStore::writePatch(const AgentSession &session, const QString &patch) const
 {
     QDir().mkpath(sessionDir(session));
