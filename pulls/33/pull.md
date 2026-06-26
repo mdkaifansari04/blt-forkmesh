@@ -4,7 +4,7 @@ number: 33
 title: feat: add features landing page
 base: main
 head: feature/landing-page-waitlist
-status: open
+status: merged
 ts: 1782485645984
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: 
