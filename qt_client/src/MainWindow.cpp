@@ -1100,6 +1100,30 @@ void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// Live claude.ai OAuth access token the Claude Code CLI stores in
+// ~/.claude/.credentials.json. Empty when the user logged in with an API key
+// (or isn't signed in). Read fresh each call so a token the CLI has rotated is
+// picked up automatically.
+QString claudeCodeOAuthToken()
+{
+    QFile credFile(QDir::homePath() +
+                   QStringLiteral("/.claude/.credentials.json"));
+    if (!credFile.open(QIODevice::ReadOnly))
+        return QString();
+    return QJsonDocument::fromJson(credFile.readAll())
+        .object()
+        .value(QStringLiteral("claudeAiOauth"))
+        .toObject()
+        .value(QStringLiteral("accessToken"))
+        .toString();
+}
+
+// System identity Anthropic requires on /v1/messages when authenticating with a
+// claude.ai subscription OAuth token (as the Claude Code CLI does) instead of an
+// API key.
+const QString kClaudeCodeOAuthSystem =
+    QStringLiteral("You are Claude Code, Anthropic's official CLI for Claude.");
+
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
 // ANTHROPIC_API_KEY, so no `claude` binary is required.
@@ -20202,19 +20226,10 @@ void MainWindow::refreshClaudeCodeUsage()
         return;
     // Claude Code authenticates with a claude.ai OAuth token, kept in
     // ~/.claude/.credentials.json. Read the access token fresh every poll so a
-    // token the CLI has since rotated is picked up automatically; if the file is
+    // token the CLI has since rotated is picked up automatically; if it is
     // absent (API-key login, or not signed in) there is nothing to query and the
     // rate-limit-event path remains the only feed.
-    QFile credFile(QDir::homePath() +
-                   QStringLiteral("/.claude/.credentials.json"));
-    if (!credFile.open(QIODevice::ReadOnly))
-        return;
-    const QJsonObject oauth =
-        QJsonDocument::fromJson(credFile.readAll())
-            .object()
-            .value(QStringLiteral("claudeAiOauth"))
-            .toObject();
-    const QString token = oauth.value(QStringLiteral("accessToken")).toString();
+    const QString token = claudeCodeOAuthToken();
     if (token.isEmpty())
         return;
 
@@ -34656,10 +34671,19 @@ void MainWindow::prioritizeIssuesFromReadme()
                                    : QSettings().value(kCodexApiKeySetting))
                                .toString()
                                .trimmed();
-    if (apiKey.isEmpty()) {
-        setIssueInlineNotice(claude ? "Add a Claude API key in Settings first."
-                                    : "Add an OpenAI API key in Settings first.",
-                             true);
+    // When the default agent is Claude Code (issue #294) the user signs in with
+    // a claude.ai subscription OAuth token rather than an API key, so fall back
+    // to that token when no Claude API key is configured.
+    const QString oauthToken =
+        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
+            ? claudeCodeOAuthToken()
+            : QString();
+    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+        setIssueInlineNotice(
+            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
+                     "first."
+                   : "Add an OpenAI API key in Settings first.",
+            true);
         return;
     }
 
@@ -34705,7 +34729,15 @@ void MainWindow::prioritizeIssuesFromReadme()
         payload.insert("messages", messages);
         QNetworkRequest req(
             QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
-        req.setRawHeader("x-api-key", apiKey.toUtf8());
+        if (!oauthToken.isEmpty()) {
+            // Claude Code's subscription OAuth token authenticates with a Bearer
+            // header and requires the Claude Code system identity.
+            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
+            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+            payload.insert("system", kClaudeCodeOAuthSystem);
+        } else {
+            req.setRawHeader("x-api-key", apiKey.toUtf8());
+        }
         req.setRawHeader("anthropic-version", "2023-06-01");
         req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         reply = m_networkAccess->post(
