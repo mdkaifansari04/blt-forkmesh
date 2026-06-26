@@ -31013,6 +31013,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
         avatar->setObjectName("issueAvatar");
         avatar->setAlignment(Qt::AlignCenter);
         avatar->setFixedSize(36, 36);
+        // Show the author's real avatar instead of the initials tile when we
+        // have a picture. Peer avatars are broadcast over chat and cached in
+        // m_avatars keyed by node id, which is the same Ed25519 pubkey that
+        // signs issue events (ev.author), so the keys line up. Our own avatar
+        // may not be in that cache yet (it only lands there once the backend
+        // has broadcast it this run), so fall back to effectiveAvatar() for our
+        // own events — that keeps an author's description card consistent with
+        // the composer below, which always shows effectiveAvatar(). Peers we've
+        // never seen a picture from keep the initials tile (set above).
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(ev.author);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (ev.author == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
         rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
         auto *card = new QWidget;
