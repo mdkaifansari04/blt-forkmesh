@@ -20936,7 +20936,13 @@ void MainWindow::showAgentSession(int sessionId)
     if (external) {
         renderExternalTranscript(sessionId, /*full=*/true);
     } else if (isStreamTranscriptSession(sessionId)) {
-        renderTranscriptForSession(sessionId);
+        // Only rebuild the transcript widget tree when it's actually stale: a
+        // different session was shown, or events were added since the last render.
+        // Re-showing the same unchanged session (the common reloadAgents() case)
+        // now skips the expensive teardown/rebuild that was freezing the UI.
+        if (m_renderedTranscriptSession != sessionId
+            || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
+            renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
         if (m_agentLog)
             m_agentLog->setPlainText(m_streamRaw.value(sessionId));
@@ -21757,6 +21763,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     m_streamEvents[sid].clear();
     m_streamRaw[sid].clear();
     m_streamFiles[sid].clear();
+    // This session's transcript is being reset; force the next show to rebuild.
+    if (m_renderedTranscriptSession == sid)
+        m_renderedTranscriptSession = -1;
     // Capture the session so applyTranscriptEvent can persist each turn to disk
     // (issue #41) — m_agentSessions doesn't yet hold a freshly created ad-hoc
     // session — and start this run's transcript file from a clean slate.
@@ -22131,6 +22140,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
     qint64 offset;
     if (full) {
         m_agentTranscript->clear();
+        // The shared transcript view now holds an external session, so the stream
+        // render guard must not believe its session is still on screen.
+        m_renderedTranscriptSession = -1;
         offset = ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024);
     } else {
         offset = m_externalReadOffset.value(sessionId, 0);
@@ -22254,6 +22266,11 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         else
             m_agentTranscript->handleEvent(ev);
         refreshAgentFilesPanel(sessionId);
+        // The view was just kept in sync incrementally, so the render guard's
+        // count must track the append — otherwise the next reload would force a
+        // full rebuild of a transcript that's already up to date.
+        if (m_renderedTranscriptSession == sessionId)
+            m_renderedTranscriptCount = m_streamEvents.value(sessionId).size();
     }
 }
 
@@ -22484,6 +22501,10 @@ void MainWindow::renderTranscriptForSession(int sessionId)
         else
             m_agentTranscript->handleEvent(ev);
     }
+    // Remember what's now built into the shared view so showAgentSession() can
+    // skip a redundant rebuild on the next reload (see its stream branch).
+    m_renderedTranscriptSession = sessionId;
+    m_renderedTranscriptCount = events.size();
 }
 
 // Fill the edited-files panel: the union of files seen in tool calls and the

@@ -2144,6 +2144,13 @@ private:
     // repainted from the selected session's buffer.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
     QHash<int, QList<QJsonObject>> m_streamEvents;
+    // Which stream session's transcript is currently built into m_agentTranscript,
+    // and how many events were rendered. showAgentSession() is hit on every
+    // reloadAgents()/detail refresh; without this guard each one tore down and
+    // rebuilt the whole transcript widget tree, freezing the UI for seconds. Set
+    // to -1 whenever the shared view is repurposed (external render / re-run).
+    int m_renderedTranscriptSession = -1;
+    int m_renderedTranscriptCount = -1;
     QHash<int, QString> m_streamRaw;
     QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
     // Night-rider scanner lights: per-session sweep state keyed by sessionId (so

@@ -388,7 +388,10 @@ void ClaudeTranscriptView::clear()
             w->deleteLater();
         delete it;
     }
-    applyScheme();
+    // The colour scheme is applied at construction and on the OS scheme-change
+    // signal; it never changes during a clear. Re-running applyScheme() here just
+    // forced a full Qt stylesheet repolish of the (still-undeleted) widget tree,
+    // which is what showed up as multi-second event-loop stalls.
 }
 
 QString ClaudeTranscriptView::accentFor(const QString &name) const
