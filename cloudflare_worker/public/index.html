@@ -462,7 +462,40 @@
                     <code>issues/</code> folder.
                   </p>
                 </div>
-                <span id="issues-meta" class="file-meta"></span>
+                <div class="panel-header-aside">
+                  <div
+                    class="issue-filter"
+                    role="group"
+                    aria-label="Filter issues by state"
+                  >
+                    <button
+                      id="issue-filter-open"
+                      class="is-active"
+                      type="button"
+                      data-state="open"
+                      aria-pressed="true"
+                    >
+                      Open
+                    </button>
+                    <button
+                      id="issue-filter-closed"
+                      type="button"
+                      data-state="closed"
+                      aria-pressed="false"
+                    >
+                      Closed
+                    </button>
+                    <button
+                      id="issue-filter-all"
+                      type="button"
+                      data-state="all"
+                      aria-pressed="false"
+                    >
+                      All
+                    </button>
+                  </div>
+                  <span id="issues-meta" class="file-meta"></span>
+                </div>
               </div>
               <div
                 id="issue-list"
