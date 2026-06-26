@@ -221,6 +221,12 @@ int main(int argc, char *argv[])
               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
     }
 
+    // Issue #263: data-table columns are user-resizable — ResizeToContents
+    // columns flip to draggable Interactive once rows arrive, keeping their
+    // fitted widths, while Stretch and Fixed columns are left as configured.
+    check(window.testColumnsBecomeResizable(),
+          QStringLiteral("data-table content columns become drag-resizable"));
+
     window.testEnableSessionStartBypass(true);
 
     // No wallet, no signup: starting a node needs only a valid name. The core
