@@ -926,6 +926,10 @@ private:
     void showInsightsContributorMenu(const QPoint &pos);
     void reassignContributorIdentity(const QString &oldName);
     void setRepoBranch(const QString &branch);
+    QString repoHeadBranch() const;          // the checked-out branch (HEAD)
+    void refreshCommitsBranchButton();       // commits-page branch indicator/menu
+    void checkoutRepoBranch(const QString &branch); // guarded real checkout
+    void createAndCheckoutBranch();          // "Create new branch…"
     QString currentRef() const;
     QString repoGitDir() const;
     QString iconsDir() const;
@@ -2039,6 +2043,8 @@ private:
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
     int m_refreshAngle = 0;
+    // Commits-page branch indicator + checkout switcher.
+    QPushButton *m_commitsBranchButton = nullptr;
     // Commits-page Refresh button + its spin animation state.
     QPushButton *m_commitsRefreshButton = nullptr;
     QPushButton *m_commitsGenerateButton = nullptr; // "Generate post" (multi-select)
