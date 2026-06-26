@@ -196,6 +196,9 @@ public:
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
+    // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
+    // the issues toolbar gets real geometry. Returns false if not built yet.
+    Q_INVOKABLE bool testShowRepoIssuesTab();
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
     {
@@ -1162,6 +1165,14 @@ private:
     // label and an initial priority (votes/age heuristic), and estimate each
     // issue's progress from whether the work landed (closed / merged PR / agent).
     void reprioritizeBacklog();
+    // Issue #286: ask the default agent to reorder the open backlog from the
+    // project's README. Reads the README, sends it plus the open issues to the
+    // configured provider with the editable Settings prompt, and rewrites each
+    // issue's priority from the returned ranking.
+    void prioritizeIssuesFromReadme();
+    // README markdown for the currently selected issues repo (work tree first,
+    // then a `git show HEAD:README*` fallback). Empty when none is found.
+    QString currentRepoReadme() const;
     // Estimate how done an issue is from repo state (0..100): closed or covered
     // by a merged PR -> 100; an agent produced/started work -> partial.
     int estimateIssueProgress(const Issue &issue,
@@ -1561,6 +1572,7 @@ private:
     QLineEdit *m_agentContextEdit = nullptr;
     QLineEdit *m_agentMaxOutputEdit = nullptr;
     QPlainTextEdit *m_agentPromptPreambleEdit = nullptr;
+    QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
     QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
 
@@ -2263,6 +2275,8 @@ private:
     MarkdownEditor *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
+    QPushButton *m_issuePrioritizeButton = nullptr;
+    bool m_prioritizeInFlight = false;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;

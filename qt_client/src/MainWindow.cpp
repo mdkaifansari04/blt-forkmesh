@@ -992,6 +992,11 @@ const QString kAgentMaxOutputSetting = QStringLiteral("agents/maxOutputTokens");
 // prompt that drives Claude and the other providers). Blank => built-in default.
 const QString kAgentPromptPreambleSetting =
     QStringLiteral("agents/promptPreamble");
+// User-editable instruction for the "Prioritize from README" issues button
+// (issue #286): the default agent reads the README and reorders the open issue
+// backlog. Blank => built-in default below.
+const QString kPrioritizePromptSetting =
+    QStringLiteral("agents/prioritizePrompt");
 // Cached month-to-date spend labels (issue #115) so the figures persist and are
 // shown immediately on restart instead of "not yet refreshed".
 const QString kOpenAiSpendTextSetting = QStringLiteral("agents/openAiSpendText");
@@ -1170,6 +1175,30 @@ QString agentPromptPreamble()
     const QString stored =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
     return stored.isEmpty() ? AgentRunner::defaultPromptPreamble() : stored;
+}
+
+// Built-in instruction for the "Prioritize from README" button. The README and
+// the open-issue list are appended after this text before the request is sent,
+// so the editable prompt only governs how the model is told to rank them.
+QString defaultPrioritizePrompt()
+{
+    return QStringLiteral(
+        "You are triaging a software project's open issue backlog. Use the "
+        "project's README as the guide to its goals, scope and priorities, then "
+        "order the open issues from most to least important to the project's "
+        "success. Favour issues that unblock core functionality or match the "
+        "README's stated direction. Respond with ONLY a JSON array of the issue "
+        "numbers in priority order, highest priority first, for example "
+        "[12, 5, 8]. Do not include any other text.");
+}
+
+// The editable prioritization instruction (Settings -> Agents). Blank restores
+// the built-in default so clearing the box is always safe.
+QString prioritizePromptSetting()
+{
+    const QString stored =
+        QSettings().value(kPrioritizePromptSetting).toString().trimmed();
+    return stored.isEmpty() ? defaultPrioritizePrompt() : stored;
 }
 
 QString codexCommandSetting()
@@ -4452,6 +4481,18 @@ bool MainWindow::testOpenRepository(int index)
     if (index < 0 || index >= m_repositories.size())
         return false;
     openRepoDetail(index);
+    return true;
+}
+
+bool MainWindow::testShowRepoIssuesTab()
+{
+    if (!m_repoDetailStack || m_repoDetailStack->count() <= 2)
+        return false;
+    m_repoDetailStack->setCurrentIndex(2); // Issues
+    if (m_repoDetailTabs) {
+        if (QAbstractButton *b = m_repoDetailTabs->button(2))
+            b->setChecked(true);
+    }
     return true;
 }
 
@@ -9942,6 +9983,24 @@ QWidget *MainWindow::buildIssuesSection()
     setOcticon(reprioritizeButton, "sort-desc", 16);
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
+
+    // Issue #286: hand the README and the open backlog to the default agent and
+    // let it rank the issues. The instruction is editable in Settings -> Agents.
+    // Sits at the top of the panel next to the title (a primary action, not lost
+    // among the ghost buttons of the crowded filter/bulk row below).
+    m_issuePrioritizeButton = new QPushButton("Prioritize from README");
+    m_issuePrioritizeButton->setObjectName("primaryButton");
+    m_issuePrioritizeButton->setProperty("buttonSize", "sm");
+    m_issuePrioritizeButton->setCursor(Qt::PointingHandCursor);
+    m_issuePrioritizeButton->setToolTip(
+        "Ask the default agent to rank the open issues against the project's "
+        "README and rewrite each issue's priority. The prompt is editable in "
+        "Settings \xE2\x86\x92 Agents.");
+    setOcticon(m_issuePrioritizeButton, "rocket", 16);
+    connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
+            &MainWindow::prioritizeIssuesFromReadme);
+    // Place it right after the "Issues" heading, ahead of the view-tab toggles.
+    headingRow->insertWidget(1, m_issuePrioritizeButton);
 
     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
     // are pledged only (funded on merge), so this never moves money.
@@ -34504,6 +34563,255 @@ void MainWindow::reprioritizeBacklog()
     reloadIssues();
 }
 
+QString MainWindow::currentRepoReadme() const
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return QString();
+    const RepositoryRecord repo = writableRecordFor(m_repositories.at(idx));
+
+    // Prefer the working tree (the same copy issue edits land in): find a
+    // README* file, preferring README.md, matching openRepoReadme()'s rule.
+    const QString workTree = repo.localPath.trimmed();
+    if (!workTree.isEmpty()) {
+        QDir dir(workTree);
+        QString chosen;
+        for (const QString &name : dir.entryList(QDir::Files)) {
+            if (!name.startsWith(QStringLiteral("README"), Qt::CaseInsensitive))
+                continue;
+            if (name.compare(QStringLiteral("README.md"), Qt::CaseInsensitive) ==
+                0) {
+                chosen = name;
+                break;
+            }
+            if (chosen.isEmpty())
+                chosen = name;
+        }
+        if (!chosen.isEmpty()) {
+            QFile file(dir.filePath(chosen));
+            if (file.open(QIODevice::ReadOnly))
+                return QString::fromUtf8(file.readAll());
+        }
+    }
+
+    // Fall back to the bare mirror's HEAD tree for repos with no work tree.
+    const QString mirror = repo.mirrorPath.trimmed();
+    if (!mirror.isEmpty() && QDir(mirror).exists()) {
+        for (const QString &name :
+             {QStringLiteral("README.md"), QStringLiteral("README"),
+              QStringLiteral("readme.md")}) {
+            QByteArray out;
+            if (runGitCapture(mirror, {"show", "HEAD:" + name}, &out, nullptr) &&
+                !out.isEmpty() && !out.contains('\0'))
+                return QString::fromUtf8(out);
+        }
+    }
+    return QString();
+}
+
+void MainWindow::prioritizeIssuesFromReadme()
+{
+    if (m_prioritizeInFlight || !m_networkAccess)
+        return;
+
+    IssueStore store = issueStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        setIssueInlineNotice("This repo is read-only here; can't reprioritize.",
+                             true);
+        return;
+    }
+
+    // Rank only the open issues; closed ones don't need a priority.
+    QList<Issue> open;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.status != QLatin1String("closed"))
+            open.append(issue);
+    if (open.size() < 2) {
+        setIssueInlineNotice("Need at least two open issues to prioritize.");
+        return;
+    }
+
+    QString readme = currentRepoReadme().trimmed();
+    if (readme.isEmpty()) {
+        setIssueInlineNotice(
+            "No README found for this repo to prioritize against.", true);
+        return;
+    }
+    // Keep a large README from blowing the request budget.
+    if (readme.size() > 8000)
+        readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
+
+    const QString provider = defaultAgentProvider();
+    const bool claude = agentIsClaudeProvider(provider);
+    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                                   : QSettings().value(kCodexApiKeySetting))
+                               .toString()
+                               .trimmed();
+    if (apiKey.isEmpty()) {
+        setIssueInlineNotice(claude ? "Add a Claude API key in Settings first."
+                                    : "Add an OpenAI API key in Settings first.",
+                             true);
+        return;
+    }
+
+    // One line per open issue: "#N: title - opening snippet".
+    QStringList lines;
+    for (const Issue &issue : std::as_const(open)) {
+        QString line =
+            QStringLiteral("#%1: %2").arg(issue.number).arg(issue.title.trimmed());
+        QString body;
+        for (const IssueEvent &ev : issue.events)
+            if (ev.type == QLatin1String("open")) {
+                body = ev.body.trimmed();
+                break;
+            }
+        if (!body.isEmpty()) {
+            body = body.simplified();
+            if (body.size() > 200)
+                body = body.left(200) + QString::fromUtf8("\xE2\x80\xA6");
+            line += QString::fromUtf8(" \xE2\x80\x94 ") + body;
+        }
+        lines << line;
+    }
+
+    const QString task =
+        QStringLiteral(
+            "%1\n\n----- README -----\n%2\n\n----- OPEN ISSUES -----\n%3")
+            .arg(prioritizePromptSetting(), readme, lines.join('\n'));
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
+    // Budget enough output to list every issue number, with headroom.
+    const int outTok = qBound(256, open.size() * 8 + 256, 4000);
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("max_tokens", outTok);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(
+            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        req.setRawHeader("x-api-key", apiKey.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", outTok);
+        QNetworkRequest req = openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    m_prioritizeInFlight = true;
+    if (m_issuePrioritizeButton) {
+        m_issuePrioritizeButton->setEnabled(false);
+        m_issuePrioritizeButton->setText(
+            QString::fromUtf8("Prioritizing\xE2\x80\xA6"));
+    }
+    setIssueInlineNotice(
+        QString::fromUtf8(claude ? "Asking Claude to prioritize\xE2\x80\xA6"
+                                 : "Asking OpenAI to prioritize\xE2\x80\xA6"));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        m_prioritizeInFlight = false;
+        if (m_issuePrioritizeButton) {
+            m_issuePrioritizeButton->setEnabled(true);
+            m_issuePrioritizeButton->setText("Prioritize from README");
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            setIssueInlineNotice(
+                "Prioritize request failed: " + apiErrorSummary(reply, body),
+                true);
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        QString text;
+        if (claude) {
+            for (const QJsonValue &v : obj.value("content").toArray()) {
+                const QJsonObject o = v.toObject();
+                if (o.value("type").toString() == QLatin1String("text"))
+                    text += o.value("text").toString();
+            }
+        } else {
+            text = openAiResponseText(obj);
+        }
+
+        // The reply should be a JSON array of issue numbers, highest priority
+        // first. Slice out the first [...] so stray prose or code fences don't
+        // break parsing.
+        const int lb = text.indexOf('[');
+        const int rb = text.lastIndexOf(']');
+        const QJsonArray order =
+            (lb >= 0 && rb > lb)
+                ? QJsonDocument::fromJson(text.mid(lb, rb - lb + 1).toUtf8())
+                      .array()
+                : QJsonArray();
+        if (order.isEmpty()) {
+            setIssueInlineNotice(
+                "Could not read a priority list from the agent's response.",
+                true);
+            return;
+        }
+
+        IssueStore writeStore = issueStoreForCurrentRepo();
+        if (!writeStore.canWrite()) {
+            setIssueInlineNotice(
+                "This repo is read-only here; can't reprioritize.", true);
+            return;
+        }
+        // Only touch numbers that are still open, and dedupe a repeated number.
+        QSet<int> openNow;
+        for (const Issue &issue : std::as_const(m_currentIssues))
+            if (issue.status != QLatin1String("closed"))
+                openNow.insert(issue.number);
+
+        int prio = 1, applied = 0, failed = 0;
+        QSet<int> seen;
+        for (const QJsonValue &v : order) {
+            const int number = v.toInt(-1);
+            if (number < 0 || seen.contains(number) || !openNow.contains(number))
+                continue;
+            seen.insert(number);
+            QString error;
+            if (writeStore.setPriority(number, qMin(99, prio), &error))
+                ++applied;
+            else
+                ++failed;
+            ++prio;
+        }
+
+        if (applied == 0) {
+            setIssueInlineNotice("No open issues matched the agent's ranking.",
+                                 true);
+            return;
+        }
+        setIssueInlineNotice(
+            failed == 0
+                ? QStringLiteral("Prioritized %1 issue(s) from the README.")
+                      .arg(applied)
+                : QStringLiteral(
+                      "Prioritized %1 issue(s) from the README (%2 failed).")
+                      .arg(applied)
+                      .arg(failed),
+            failed != 0);
+        reloadIssues();
+    });
+}
+
 void MainWindow::pickIssueAssignees()
 {
     if (m_currentIssueNumber < 0 || !m_issueAssigneesButton)
@@ -36052,6 +36360,25 @@ QWidget *MainWindow::buildSettingsSection()
                              m_agentPromptPreambleEdit->toPlainText());
     });
 
+    // Instruction used by the Issues "Prioritize from README" button (issue
+    // #286). The README and the open-issue list are appended after this text, so
+    // it only governs how the default agent is asked to rank the backlog.
+    // Clearing the box restores the built-in default on the next run.
+    m_prioritizePromptEdit = new QPlainTextEdit;
+    m_prioritizePromptEdit->setPlainText(prioritizePromptSetting());
+    m_prioritizePromptEdit->setMaximumHeight(140);
+    m_prioritizePromptEdit->setPlaceholderText(
+        "Instruction for the issues 'Prioritize from README' button. Leave empty "
+        "to use the built-in default.");
+    m_prioritizePromptEdit->setToolTip(
+        "Sent to the default agent (with the README and open issues appended) "
+        "when you click 'Prioritize from README' on the Issues page. Clear it to "
+        "fall back to the default.");
+    connect(m_prioritizePromptEdit, &QPlainTextEdit::textChanged, this, [this] {
+        QSettings().setValue(kPrioritizePromptSetting,
+                             m_prioritizePromptEdit->toPlainText());
+    });
+
     auto *agentForm = new QFormLayout;
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
@@ -36066,6 +36393,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
+    agentForm->addRow("Prioritize prompt", m_prioritizePromptEdit);
 
     // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
     // as the local "remote" a fork pushes to (see issue: fork from the client).
