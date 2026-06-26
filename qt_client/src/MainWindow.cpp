@@ -21735,15 +21735,20 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             .arg(lead)
             .arg(baseName)
             .arg(session.branchName);
-    // Honor the user-editable instruction preamble from Settings → Agents. The
-    // headless AgentRunner path already prepends it via buildPrompt(), but the
-    // Claude Code transcript path (issue-assigned and ad-hoc composer sessions)
-    // used to hardcode its own prompt and ignore the configured one. Prepend it
-    // here too so the prompt set in settings actually drives these runs; a blank
-    // setting falls back to the built-in default, same as everywhere else.
-    const QString preamble = agentPromptPreamble().trimmed();
+    // Honor the user-editable instruction preamble from Settings → Agents, and let
+    // it GOVERN the run when set. `body` above bundles the task/branch context
+    // (`lead`) with a built-in "Work end to end" workflow; if we also prepended a
+    // custom preamble the agent would receive two competing instruction sets
+    // ("its sending both prompts — just send the one we have in settings"). So
+    // when a custom preamble is configured we send it plus only the task/branch
+    // context and drop the built-in workflow. A blank setting falls back to the
+    // built-in default preamble followed by the full workflow body, as before.
+    const QString customPreamble =
+        QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
     const QString prompt =
-        preamble.isEmpty() ? body : preamble + QStringLiteral("\n\n") + body;
+        customPreamble.isEmpty()
+            ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
+            : customPreamble + QStringLiteral("\n\n") + lead;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
