@@ -19238,7 +19238,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_agentTable);
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "When", "Activity"});
+        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -20526,11 +20526,21 @@ void MainWindow::refreshAgentTable()
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
         m_agentTable->setItem(row, 6, tokens);
-        m_agentTable->setItem(
-            row, 7,
-            new QTableWidgetItem(
-                QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
-                    .toString(QStringLiteral("MMM d  hh:mm"))));
+        // "Updated" column: when the session was last touched — created,
+        // started, finished or merged, whichever is most recent — shown as a
+        // friendly "x ago" string. The tooltip carries the full timestamp, and
+        // the raw millisecond value drives chronological sorting.
+        const qint64 updatedMs =
+            qMax(qMax(session.createdAtMs, session.startedAtMs),
+                 qMax(session.finishedAtMs, session.mergedAtMs));
+        auto *updated = new SortTableWidgetItem(
+            updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
+                          : QStringLiteral("-"));
+        updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
+        if (updatedMs > 0)
+            updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
+                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+        m_agentTable->setItem(row, 7, updated);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
