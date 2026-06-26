@@ -866,6 +866,9 @@ private:
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
+    // Delete every branch that is fully merged into the default branch (0 behind
+    // and 0 ahead of it), skipping the default and the checked-out branch.
+    void deleteMergedBranches();
     void deleteSelectedBranches();
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
@@ -1665,6 +1668,7 @@ private:
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
+    QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
     QTextBrowser *m_branchDiffView = nullptr;
