@@ -169,9 +169,31 @@ function repoCloneUrl(owner, name) {
   return `${origin}/${owner}/${name}`;
 }
 
+// The last-known counts are cached so the header/catalog pills render instantly
+// on a cold load instead of sitting at "Loading"/"Checking…" until the first
+// fetch returns (stale-while-revalidate). Values are plain non-negative numbers.
+function readCachedStat(key) {
+  try {
+    const raw = localStorage.getItem(`forkmesh.stats.${key}`);
+    if (raw === null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch (error) {
+    return null;
+  }
+}
+function writeCachedStat(key, value) {
+  try {
+    localStorage.setItem(`forkmesh.stats.${key}`, String(value));
+  } catch (error) {
+    /* storage disabled or quota exceeded — caching is best-effort */
+  }
+}
+
 function updateCatalogStats(repos) {
   const logical = groupRepositories(repos).length; // distinct repos, not mirrors
   if (count) count.textContent = `${logical} mirrored`;
+  writeCachedStat("catalogRepos", logical);
   if (statRepos) statRepos.textContent = String(logical);
   if (statIssues) statIssues.textContent = "Git";
   if (statPulls) statPulls.textContent = "Patch";
@@ -1993,6 +2015,7 @@ function renderClients(online) {
   clientsCount.textContent =
     online === 1 ? "1 client online" : `${online} clients online`;
   if (clientsDot) clientsDot.classList.toggle("online", online > 0);
+  writeCachedStat("clients", online);
 }
 
 async function pollClients() {
@@ -2029,6 +2052,16 @@ document.addEventListener("visibilitychange", () => {
     startPacmanTicker();
   }
 });
+
+// Render the last-known counts immediately (stale-while-revalidate) so the
+// catalog and client pills aren't blank "Loading"/"Checking…" placeholders on a
+// cold load; loadCatalog() and the stats poll below refresh them with live data.
+const cachedCatalogRepos = readCachedStat("catalogRepos");
+if (count && cachedCatalogRepos !== null) {
+  count.textContent = `${cachedCatalogRepos} mirrored`;
+}
+const cachedClients = readCachedStat("clients");
+if (cachedClients !== null) renderClients(cachedClients);
 
 loadCatalog();
 startClients();
