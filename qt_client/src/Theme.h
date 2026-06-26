@@ -1494,8 +1494,8 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     color: #8c959f; font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa; border: none;
-    color: #656d76; font-family: monospace; font-size: 12px;
+    background-color: #ffffff; border: none;
+    color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
@@ -1606,9 +1606,9 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa;
+    background-color: #ffffff;
     border: none;
-    color: #656d76;
+    color: #1f2328;
     font-family: monospace;
     font-size: 12px;
 }
