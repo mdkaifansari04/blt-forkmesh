@@ -195,6 +195,11 @@ constexpr int kCommitGraphCol = 8;
 constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
 
+// URL scheme for the clickable branch link in the agent session header; the
+// percent-encoded branch name follows. Clicking it opens that branch's row in
+// the Worktrees tab (issue #265). Shared by the link builder and its handler.
+const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -18614,8 +18619,18 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle->setWordWrap(true);
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
-    m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Selectable text plus clickable links: the branch name links to its row in
+    // the Worktrees tab (issue #265). The meta string is HTML-escaped and built as
+    // rich text, so pin the format rather than relying on auto-detection.
+    m_agentMeta->setTextFormat(Qt::RichText);
+    m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                         Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
+    connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href.startsWith(kWorktreeLinkScheme))
+            switchToWorktree(QUrl::fromPercentEncoding(
+                href.mid(kWorktreeLinkScheme.size()).toUtf8()));
+    });
     m_agentUsage = new QLabel;
     m_agentUsage->setObjectName("statusLine");
     m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -19722,6 +19737,20 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
     return nullptr;
 }
 
+// HTML for a branch name that, when clicked in the agent session header, opens
+// the branch's worktree in the Worktrees tab (handled by m_agentMeta's
+// linkActivated -> switchToWorktree). Plain (un-escaped) when there's no branch.
+static QString worktreeLinkHtml(const QString &branch)
+{
+    if (branch.isEmpty())
+        return QString();
+    const QString href = kWorktreeLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, branch.toHtmlEscaped());
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -19769,12 +19798,17 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     if (m_agentMeta && isExternalSession(sessionId)) {
-        QString meta = QStringLiteral("External Claude Code · %1/%2 · %3")
-                           .arg(session->owner, session->name,
-                                agentStatusText(session->status));
+        // Rich text so the branch name links to its Worktrees-tab row (issue
+        // #265); every other part is HTML-escaped to stay literal.
+        const QString sep = QStringLiteral(" · ");
+        QString meta = QStringLiteral("External Claude Code") + sep +
+                       QStringLiteral("%1/%2")
+                           .arg(session->owner.toHtmlEscaped(),
+                                session->name.toHtmlEscaped()) +
+                       sep + agentStatusText(session->status).toHtmlEscaped();
         if (!session->branchName.isEmpty())
-            meta += QStringLiteral(" · %1").arg(session->branchName);
-        meta += QStringLiteral(" · watch-only");
+            meta += sep + worktreeLinkHtml(session->branchName);
+        meta += sep + QStringLiteral("watch-only");
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible.
@@ -19782,14 +19816,21 @@ void MainWindow::showAgentSession(int sessionId)
                          ? QStringLiteral("PR #%1 open").arg(session->prNumber)
                          : (session->createPr ? QStringLiteral("PR opens on finish")
                                               : QStringLiteral("no PR"));
-        QString meta = QStringLiteral("%1 · %2/%3 · %4 · %5 · %6")
-                           .arg(agentProviderName(session->provider),
-                                session->owner, session->name,
-                                agentStatusText(session->status),
-                                session->branchName, pr);
+        // Rich text so the branch name is a link to its Worktrees-tab row
+        // (issue #265); every other part is HTML-escaped to stay literal.
+        const QString sep = QStringLiteral(" · ");
+        QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
+                       QStringLiteral("%1/%2")
+                           .arg(session->owner.toHtmlEscaped(),
+                                session->name.toHtmlEscaped()) +
+                       sep + agentStatusText(session->status).toHtmlEscaped() + sep +
+                       (session->branchName.isEmpty()
+                            ? QStringLiteral("(no branch)")
+                            : worktreeLinkHtml(session->branchName)) +
+                       sep + pr.toHtmlEscaped();
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
-            meta += QStringLiteral(" · %1s")
-                        .arg((session->finishedAtMs - session->startedAtMs) / 1000);
+            meta += sep + QStringLiteral("%1s")
+                              .arg((session->finishedAtMs - session->startedAtMs) / 1000);
         m_agentMeta->setText(meta);
     }
     if (m_agentUsage) {
@@ -27308,6 +27349,26 @@ void MainWindow::loadWorktreesPanel()
                                         : QStringLiteral("Worktrees"));
 }
 
+// Open the Worktrees tab and select the row whose branch matches, so clicking a
+// branch in the agent session header lands on that worktree's changes (#265).
+void MainWindow::switchToWorktree(const QString &branch)
+{
+    if (m_repoDetailTabs && m_repoDetailTabs->button(m_worktreesTabIndex))
+        m_repoDetailTabs->button(m_worktreesTabIndex)->setChecked(true);
+    if (m_repoDetailStack && m_worktreesTabIndex >= 0)
+        m_repoDetailStack->setCurrentIndex(m_worktreesTabIndex);
+    loadWorktreesPanel();
+    if (!m_worktreesTable || branch.isEmpty())
+        return;
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+        if (b && b->data(Qt::UserRole).toString() == branch) {
+            m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
+            return;
+        }
+    }
+}
+
 // Show a worktree's changes vs the default branch: everything in the worktree
 // (committed + uncommitted) when its folder is present, else the branch's commits.
 void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktreePath)
@@ -31137,6 +31198,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
         avatar->setObjectName("issueAvatar");
         avatar->setAlignment(Qt::AlignCenter);
         avatar->setFixedSize(36, 36);
+        // Show the author's real avatar instead of the initials tile when we
+        // have a picture. Peer avatars are broadcast over chat and cached in
+        // m_avatars keyed by node id, which is the same Ed25519 pubkey that
+        // signs issue events (ev.author), so the keys line up. Our own avatar
+        // may not be in that cache yet (it only lands there once the backend
+        // has broadcast it this run), so fall back to effectiveAvatar() for our
+        // own events — that keeps an author's description card consistent with
+        // the composer below, which always shows effectiveAvatar(). Peers we've
+        // never seen a picture from keep the initials tile (set above).
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(ev.author);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (ev.author == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
         rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
         auto *card = new QWidget;
