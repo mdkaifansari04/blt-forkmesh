@@ -252,6 +252,12 @@ int main(int argc, char *argv[])
         check(false, QStringLiteral("PR 'Fix with agent' dropdown button exists"));
     }
 
+    // Issue #268: dragging a column divider resizes like moving a margin — the
+    // width comes from the immediate neighbour, not a far-off Stretch column, so
+    // the divider tracks the cursor instead of snapping back.
+    check(window.testMarginResize(),
+          QStringLiteral("column drag trades width with its neighbour"));
+
     window.testEnableSessionStartBypass(true);
 
     // No wallet, no signup: starting a node needs only a valid name. The core
