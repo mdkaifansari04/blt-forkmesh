@@ -21375,7 +21375,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                   .arg(customPrompt.trimmed())
                   .arg(session.branchName)
                   .arg(baseName);
-    const QString prompt =
+    const QString body =
         QStringLiteral(
             "%1 Work end to end:\n"
             "1. Implement the change, consistent with the surrounding code.\n"
@@ -21388,6 +21388,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             .arg(lead)
             .arg(baseName)
             .arg(session.branchName);
+    // Honor the user-editable instruction preamble from Settings → Agents. The
+    // headless AgentRunner path already prepends it via buildPrompt(), but the
+    // Claude Code transcript path (issue-assigned and ad-hoc composer sessions)
+    // used to hardcode its own prompt and ignore the configured one. Prepend it
+    // here too so the prompt set in settings actually drives these runs; a blank
+    // setting falls back to the built-in default, same as everywhere else.
+    const QString preamble = agentPromptPreamble().trimmed();
+    const QString prompt =
+        preamble.isEmpty() ? body : preamble + QStringLiteral("\n\n") + body;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
