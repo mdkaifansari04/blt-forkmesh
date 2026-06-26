@@ -612,6 +612,15 @@ private:
     void deleteSelectedAgentSession();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
+    // Issue #290: pull the live Claude Code rolling-window utilisation (the same
+    // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
+    // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
+    // accurate even when no agent is streaming rate-limit events.
+    void refreshClaudeCodeUsage();
+    // Push one rolling-window utilisation figure (0..100) into every place that
+    // shows it: the per-session usage bar, the top-bar mini chart and the
+    // persisted cache. `weekly` picks the window.
+    void applyClaudeUsage(bool weekly, int percent);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -2001,7 +2010,8 @@ private:
     QProgressBar *m_agentUsageBar = nullptr;     // weekly usage graph
     QProgressBar *m_agentUsage5hBar = nullptr;   // 5-hour usage graph
     QLabel *m_agentStatsLabel = nullptr;         // live tokens + cost counter
-    QTimer *m_agentHourlyTimer = nullptr;        // refreshes usage + files hourly
+    QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
+    QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.

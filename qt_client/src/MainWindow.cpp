@@ -6854,7 +6854,8 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
-    // utilisation so it renders immediately; live rate-limit events refresh it.
+    // utilisation so it renders immediately; a one-minute poll of the OAuth usage
+    // endpoint and live rate-limit events keep it current (issue #290).
     auto *tokenUsage = new TokenUsageMiniChart;
     m_navTokenUsage = tokenUsage;
     {
@@ -19161,23 +19162,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
-                const bool weekly = kind != QLatin1String("5h");
-                const int pct = qBound(0, percent, 100);
-                QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
-                if (bar) {
-                    bar->setValue(pct);
-                    bar->setFormat((weekly ? QStringLiteral("Weekly: %1")
-                                           : QStringLiteral("5h: %1")).arg(text));
-                    bar->show();
-                }
-                // Mirror the same figure into the top-bar mini chart (issue #266)
-                // and cache it so it survives a restart.
-                if (m_navTokenUsage)
-                    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
-                        ->setUsage(weekly, pct);
-                QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
-                                            : kClaudeUsage5hPctSetting,
-                                     pct);
+                Q_UNUSED(text);
+                applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
     connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
             [this](qint64 tokens, double cost) {
@@ -19281,8 +19267,9 @@ QWidget *MainWindow::buildAgentsTab()
     outputContainer->setLayout(outputRow);
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // 5-hour + weekly usage graphs, fed live by rate_limit events and refreshed
-    // hourly, plus a live token/cost counter.
+    // 5-hour + weekly usage graphs, fed live by rate_limit events and re-polled
+    // every minute from the OAuth usage endpoint (issue #290), plus a live
+    // token/cost counter.
     auto makeUsageBar = [](const QString &name) {
         auto *b = new QProgressBar;
         b->setObjectName(name);
@@ -19306,7 +19293,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *usageRowWidget = new QWidget;
     usageRowWidget->setLayout(usageRow);
 
-    // Refresh usage + the edited-files list once an hour while the app runs.
+    // Refresh spend + the edited-files list once an hour while the app runs.
     m_agentHourlyTimer = new QTimer(this);
     m_agentHourlyTimer->setInterval(60 * 60 * 1000);
     connect(m_agentHourlyTimer, &QTimer::timeout, this, [this] {
@@ -19315,6 +19302,18 @@ QWidget *MainWindow::buildAgentsTab()
             refreshAgentFilesPanel(m_selectedAgentSessionId);
     });
     m_agentHourlyTimer->start();
+
+    // Issue #290: the rolling 5-hour/weekly windows drift continuously (old
+    // usage ages out, other machines on the same plan add to it), so a value
+    // captured from the last rate-limit event goes stale fast. Re-pull the live
+    // figures from the OAuth usage endpoint every minute, and once right now, so
+    // the top-bar gauge is always current even with no agent running.
+    m_claudeUsageTimer = new QTimer(this);
+    m_claudeUsageTimer->setInterval(60 * 1000);
+    connect(m_claudeUsageTimer, &QTimer::timeout, this,
+            &MainWindow::refreshClaudeCodeUsage);
+    m_claudeUsageTimer->start();
+    refreshClaudeCodeUsage();
 
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText(
@@ -19836,6 +19835,77 @@ void MainWindow::updateAgentTotalSpend()
     m_agentTotalSpend->setText(
         QStringLiteral("Total Agent API spend, month to date: $%1 USD%2")
             .arg(QString::number(total, 'f', 2), note));
+}
+
+void MainWindow::applyClaudeUsage(bool weekly, int percent)
+{
+    const int pct = qBound(0, percent, 100);
+    QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
+    if (bar) {
+        bar->setValue(pct);
+        bar->setFormat((weekly ? QStringLiteral("Weekly: %1%")
+                               : QStringLiteral("5h: %1%")).arg(pct));
+        bar->show();
+    }
+    // Mirror the same figure into the top-bar mini chart (issue #266) and cache
+    // it so it survives a restart and renders on the very first frame.
+    if (m_navTokenUsage)
+        static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
+    QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
+                                : kClaudeUsage5hPctSetting,
+                         pct);
+}
+
+void MainWindow::refreshClaudeCodeUsage()
+{
+    if (!m_networkAccess)
+        return;
+    // Claude Code authenticates with a claude.ai OAuth token, kept in
+    // ~/.claude/.credentials.json. Read the access token fresh every poll so a
+    // token the CLI has since rotated is picked up automatically; if the file is
+    // absent (API-key login, or not signed in) there is nothing to query and the
+    // rate-limit-event path remains the only feed.
+    QFile credFile(QDir::homePath() +
+                   QStringLiteral("/.claude/.credentials.json"));
+    if (!credFile.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject oauth =
+        QJsonDocument::fromJson(credFile.readAll())
+            .object()
+            .value(QStringLiteral("claudeAiOauth"))
+            .toObject();
+    const QString token = oauth.value(QStringLiteral("accessToken")).toString();
+    if (token.isEmpty())
+        return;
+
+    QNetworkRequest req(
+        QUrl(QStringLiteral("https://api.anthropic.com/api/oauth/usage")));
+    req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
+    req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+    req.setRawHeader("Accept", "application/json");
+
+    QNetworkReply *reply = m_networkAccess->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        // On any error (expired token, offline) keep the last-known figures
+        // rather than blanking the gauge; the next poll retries.
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject root = QJsonDocument::fromJson(body).object();
+        auto pctOf = [&root](const QString &key) {
+            return qRound(root.value(key)
+                              .toObject()
+                              .value(QStringLiteral("utilization"))
+                              .toDouble());
+        };
+        // five_hour = rolling session window; seven_day = the plan-wide weekly
+        // window (matches the "weekly" rate-limit event and the CLI's /usage).
+        if (root.contains(QStringLiteral("five_hour")))
+            applyClaudeUsage(false, pctOf(QStringLiteral("five_hour")));
+        if (root.contains(QStringLiteral("seven_day")))
+            applyClaudeUsage(true, pctOf(QStringLiteral("seven_day")));
+    });
 }
 
 void MainWindow::refreshClaudeSpend()
