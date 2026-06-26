@@ -1,3 +1,4 @@
+#include "../src/AgentStore.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -846,6 +847,46 @@ int main(int argc, char *argv[])
         const QList<Cove> listed = coves.listCoves();
         check(listed.size() == 1 && listed.first().name == "Launch plans",
               "listCoves enumerates the repo's cove envelopes");
+    }
+
+    // AgentStore persists a Claude Code session's stream-json transcript so it
+    // survives an app restart (issue #41): events append one per line, reload in
+    // order, and clearEvents starts a fresh run.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "agent store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.loadEvents(session).isEmpty(),
+              "a fresh agent session has no persisted transcript events");
+
+        store.appendEvent(session, QJsonObject{{"type", "_local_user"},
+                                               {"text", "do the thing"}});
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"}, {"seq", 2}});
+        const QList<QJsonObject> events = store.loadEvents(session);
+        check(events.size() == 2, "appended transcript events reload from disk");
+        check(!events.isEmpty() &&
+                  events.first().value("type").toString() == "_local_user" &&
+                  events.first().value("text").toString() == "do the thing",
+              "the first reloaded event is the initial user prompt, intact");
+        check(events.size() == 2 && events.at(1).value("seq").toInt() == 2,
+              "transcript events reload in append order");
+
+        // Reopening the store mimics an app restart: the transcript is still there.
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 &&
+                  reopened.loadEvents(sessions.first()).size() == 2,
+              "transcript events survive reopening the store (app restart)");
+
+        store.clearEvents(session);
+        check(store.loadEvents(session).isEmpty(),
+              "clearEvents starts the next run with a clean transcript");
     }
 
     if (failures) {

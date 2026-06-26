@@ -19687,6 +19687,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentPromptEdit->setObjectName("agentComposerEdit");
     m_agentPromptEdit->setStyleSheet(
         QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+    // Enter sends the message, Shift+Enter inserts a newline (see eventFilter),
+    // matching the Claude Code conversation input.
+    m_agentPromptEdit->installEventFilter(this);
     m_agentSendPromptButton = new QPushButton("Send");
     m_agentSendPromptButton->setObjectName("primaryButton");
     m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
@@ -20766,6 +20769,10 @@ void MainWindow::showAgentSession(int sessionId)
         return;
     }
 
+    // Restore a finished/idle Claude Code session's transcript from disk before
+    // deciding which output surface to show, so it survives an app restart.
+    ensureStreamEventsLoaded(sessionId);
+
     if (m_agentDetail)
         m_agentDetail->show();
     if (m_agentTitle) {
@@ -21699,6 +21706,11 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     m_streamEvents[sid].clear();
     m_streamRaw[sid].clear();
     m_streamFiles[sid].clear();
+    // Capture the session so applyTranscriptEvent can persist each turn to disk
+    // (issue #41) — m_agentSessions doesn't yet hold a freshly created ad-hoc
+    // session — and start this run's transcript file from a clean slate.
+    m_streamSessionInfo[sid] = session;
+    m_agentStore->clearEvents(session);
     if (ClaudeStreamSession *old = m_streamSessions.take(sid))
         old->deleteLater();
     auto *stream = new ClaudeStreamSession(this);
@@ -22138,6 +22150,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
 {
     m_streamEvents[sessionId].append(ev);
+    // Persist the turn so the transcript survives an app restart (issue #41).
+    if (m_agentStore && m_streamSessionInfo.contains(sessionId))
+        m_agentStore->appendEvent(m_streamSessionInfo.value(sessionId), ev);
 
     if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant")) {
         // Accumulate token usage so the agents list shows it live (see
@@ -22357,6 +22372,52 @@ void MainWindow::onScannerTick()
     }
     if (!anyActive && m_scannerTimer)
         m_scannerTimer->stop();
+}
+
+// Restore a Claude Code session's transcript from disk (issue #41). The events
+// were persisted as the run streamed, so the rich transcript survives an app
+// restart even though the live stream object is gone. Only populates when the
+// session actually has persisted events, so non-transcript sessions keep
+// showing their plain log instead of an empty transcript surface.
+void MainWindow::ensureStreamEventsLoaded(int sessionId)
+{
+    if (!m_agentStore || m_streamEvents.contains(sessionId)
+        || isExternalSession(sessionId))
+        return; // already loaded/live, or a watch-only external session
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    const QList<QJsonObject> events = m_agentStore->loadEvents(*s);
+    if (events.isEmpty())
+        return;
+    m_streamEvents[sessionId] = events;
+    // Rebuild the side buffers the raw view and edited-files panel read from.
+    QString &raw = m_streamRaw[sessionId];
+    QStringList &files = m_streamFiles[sessionId];
+    for (const QJsonObject &ev : events) {
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+            continue; // synthetic user turn, never part of the raw CLI stream
+        raw += QString::fromUtf8(QJsonDocument(ev).toJson(QJsonDocument::Compact))
+               + QStringLiteral("\n\n");
+        if (ev.value(QStringLiteral("type")).toString() != QLatin1String("assistant"))
+            continue;
+        // Collect edited files for the side panel (mirrors applyTranscriptEvent).
+        const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+                                       .value(QStringLiteral("content")).toArray();
+        for (const QJsonValue &bv : content) {
+            const QJsonObject b = bv.toObject();
+            if (b.value(QStringLiteral("type")).toString() != QLatin1String("tool_use"))
+                continue;
+            const QString name = b.value(QStringLiteral("name")).toString();
+            if (name == QLatin1String("Edit") || name == QLatin1String("Write")
+                || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
+                const QString p = b.value(QStringLiteral("input")).toObject()
+                                      .value(QStringLiteral("file_path")).toString();
+                if (!p.isEmpty() && !files.contains(p))
+                    files.append(p);
+            }
+        }
+    }
 }
 
 // Repaint the transcript view from a session's buffered events (on selection).
@@ -34145,6 +34206,17 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
             return true;
+    }
+    // Agents composer: Enter sends the queued message; Shift+Enter inserts a
+    // newline (issue #41). Mirrors the Claude Code conversation input.
+    if (obj == m_agentPromptEdit && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && !(ke->modifiers() & Qt::ShiftModifier)) {
+            if (m_agentSendPromptButton)
+                m_agentSendPromptButton->click();
+            return true;
+        }
     }
     // Drag along the issue list's Progress column to set a row's percent.
     if (m_issueTable && obj == m_issueTable->viewport() &&
