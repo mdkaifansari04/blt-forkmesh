@@ -4437,6 +4437,18 @@ bool MainWindow::testOpenRepository(int index)
     return true;
 }
 
+bool MainWindow::testShowRepoIssuesTab()
+{
+    if (!m_repoDetailStack || m_repoDetailStack->count() <= 2)
+        return false;
+    m_repoDetailStack->setCurrentIndex(2); // Issues
+    if (m_repoDetailTabs) {
+        if (QAbstractButton *b = m_repoDetailTabs->button(2))
+            b->setChecked(true);
+    }
+    return true;
+}
+
 void MainWindow::testShowPublishBar(bool on)
 {
     if (m_repoPushButton) {
@@ -9927,8 +9939,10 @@ QWidget *MainWindow::buildIssuesSection()
 
     // Issue #286: hand the README and the open backlog to the default agent and
     // let it rank the issues. The instruction is editable in Settings -> Agents.
+    // Sits at the top of the panel next to the title (a primary action, not lost
+    // among the ghost buttons of the crowded filter/bulk row below).
     m_issuePrioritizeButton = new QPushButton("Prioritize from README");
-    m_issuePrioritizeButton->setObjectName("ghostButton");
+    m_issuePrioritizeButton->setObjectName("primaryButton");
     m_issuePrioritizeButton->setProperty("buttonSize", "sm");
     m_issuePrioritizeButton->setCursor(Qt::PointingHandCursor);
     m_issuePrioritizeButton->setToolTip(
@@ -9938,6 +9952,8 @@ QWidget *MainWindow::buildIssuesSection()
     setOcticon(m_issuePrioritizeButton, "rocket", 16);
     connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
             &MainWindow::prioritizeIssuesFromReadme);
+    // Place it right after the "Issues" heading, ahead of the view-tab toggles.
+    headingRow->insertWidget(1, m_issuePrioritizeButton);
 
     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
     // are pledged only (funded on merge), so this never moves money.
@@ -9973,7 +9989,6 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
     actionRow->addWidget(reprioritizeButton);
-    actionRow->addWidget(m_issuePrioritizeButton);
     actionRow->addWidget(bountyAllAmount);
     actionRow->addWidget(bountyAllButton);
     actionRow->addWidget(m_issueStatusFilter);

@@ -189,6 +189,9 @@ public:
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
+    // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
+    // the issues toolbar gets real geometry. Returns false if not built yet.
+    Q_INVOKABLE bool testShowRepoIssuesTab();
     Q_INVOKABLE bool testSaveRepoAboutMetadata(const QString &about,
                                                const QString &website)
     {
