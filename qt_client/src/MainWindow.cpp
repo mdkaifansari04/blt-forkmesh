@@ -27599,7 +27599,8 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
         bool removed = false;
         if (!worktreePath.isEmpty() &&
             QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
-            removeWorktree(worktreePath, branch, /*confirm=*/false);
+            removeWorktree(worktreePath, branch, /*confirm=*/false,
+                           /*alsoDeleteBranch=*/false);
             removed = !QDir(worktreePath).exists();
         }
         setRepoDetailNotice(
@@ -27619,7 +27620,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
-                                bool confirm)
+                                bool confirm, bool alsoDeleteBranch)
 {
     if (worktreePath.isEmpty())
         return;
@@ -27633,18 +27634,54 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                             true);
         return;
     }
+    // Removing a worktree leaves its branch behind; the Worktrees tab wants that
+    // branch gone too (issue #271). Never delete the default branch (it lives in the
+    // main checkout) or a detached HEAD (no branch to delete).
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool deleteBranch =
+        alsoDeleteBranch && !branch.isEmpty() && branch != base;
     if (confirm &&
         QMessageBox::question(
             this, QStringLiteral("Remove worktree"),
-            QStringLiteral("Remove the worktree at\n%1\n(branch %2)?\n\n"
-                           "Uncommitted changes there will be lost.")
+            (deleteBranch
+                 ? QStringLiteral("Remove the worktree at\n%1\nand delete its branch "
+                                  "%2?\n\nUncommitted changes there will be lost.")
+                 : QStringLiteral("Remove the worktree at\n%1\n(branch %2)?\n\n"
+                                  "Uncommitted changes there will be lost."))
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    QProcess::execute(QStringLiteral("git"),
-                      {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                       QStringLiteral("remove"), QStringLiteral("--force"), worktreePath});
+    if (QProcess::execute(
+            QStringLiteral("git"),
+            {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+             QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
+            true);
+        loadWorktreesPanel();
+        return;
+    }
+    // With the worktree gone the branch is no longer checked out anywhere, so it can
+    // be force-deleted. -D matches the "uncommitted changes will be lost" warning the
+    // user just accepted: they asked for the whole worktree — branch and all — to go.
+    if (deleteBranch) {
+        QString err;
+        if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
+            logSystem(QStringLiteral("Git: removed worktree %1 and deleted branch %2.")
+                          .arg(worktreePath, branch));
+            setRepoDetailNotice(
+                QStringLiteral("Removed worktree and deleted branch %1.").arg(branch));
+        } else {
+            setRepoDetailNotice(
+                QStringLiteral(
+                    "Removed the worktree, but could not delete branch %1: %2")
+                    .arg(branch, err.isEmpty() ? QStringLiteral("unknown error") : err),
+                true);
+        }
+    }
     loadWorktreesPanel();
+    if (m_branchesTable)
+        loadBranchesPanel();
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
