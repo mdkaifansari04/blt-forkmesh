@@ -19460,9 +19460,30 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDeleteButton = new QPushButton("Delete");
     m_agentDeleteButton->setObjectName("dangerButton");
     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
+    m_agentDeleteButton->setToolTip("Delete just this agent session");
     setOcticon(m_agentDeleteButton, "trash", 16);
     connect(m_agentDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteSelectedAgentSession);
+
+    // Delete the agent together with its worktree folder and branch in one action.
+    m_agentDeleteAllButton = new QPushButton("Delete all");
+    m_agentDeleteAllButton->setObjectName("dangerButton");
+    m_agentDeleteAllButton->setCursor(Qt::PointingHandCursor);
+    m_agentDeleteAllButton->setToolTip(
+        "Delete this agent session, its worktree folder and its branch");
+    setOcticon(m_agentDeleteAllButton, "trash", 16);
+    connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int repoIndex = repoIndexFor(s->owner, s->name);
+        if (repoIndex < 0)
+            return;
+        const QString branch = s->branchName;
+        const QString wt =
+            worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
+        deleteWorktreeBranchAndAgent(wt, branch);
+    });
 
     // "View PR" — appears once the session produced a pull request.
     m_agentViewPrButton = new QPushButton("View PR");
@@ -19495,6 +19516,7 @@ QWidget *MainWindow::buildAgentsTab()
     topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
+    topRow->addWidget(m_agentDeleteAllButton, 0, Qt::AlignTop);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -21290,18 +21312,29 @@ void MainWindow::deleteSelectedAgentSession()
         unsurfaceExternalSession(m_selectedAgentSessionId);
         return;
     }
-    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+    if (!deleteStoredAgentSession(m_selectedAgentSessionId))
         return;
-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    reloadAgents();
+    reloadIssues();
+    refreshIssueList();
+    updateIssueActionState();
+    flashMessage("Agent session deleted.");
+}
+
+bool MainWindow::deleteStoredAgentSession(int sessionId)
+{
+    if (!m_agentStore || sessionId <= 0)
+        return false;
+    AgentSession *session = findAgentSession(sessionId);
     if (!session)
-        return;
+        return true; // already gone — nothing to delete
 
     const AgentSession snapshot = *session;
     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
         runner->stop();
         if (runner->busy()) {
             flashMessage("Stopping agent session. Delete it again once it exits.");
-            return;
+            return false;
         }
     }
     m_agentQueue.removeAll(snapshot.id);
@@ -21316,7 +21349,7 @@ void MainWindow::deleteSelectedAgentSession()
         if (!issueStore.canWrite()) {
             flashMessage("Only the host can delete an agent session from the issue.",
                          true);
-            return;
+            return false;
         }
         QString error;
         if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
@@ -21325,21 +21358,17 @@ void MainWindow::deleteSelectedAgentSession()
                              ? QStringLiteral("Could not clear the issue agent.")
                              : error,
                          true);
-            return;
+            return false;
         }
     }
 
     if (!m_agentStore->deleteSession(snapshot)) {
         flashMessage("Could not delete the agent session.", true);
-        return;
+        return false;
     }
-
-    m_selectedAgentSessionId = -1;
-    reloadAgents();
-    reloadIssues();
-    refreshIssueList();
-    updateIssueActionState();
-    flashMessage("Agent session deleted.");
+    if (m_selectedAgentSessionId == sessionId)
+        m_selectedAgentSessionId = -1;
+    return true;
 }
 
 void MainWindow::openAgentSessionFromIssue()
@@ -22688,6 +22717,12 @@ void MainWindow::updateAgentActionState()
             issueBacked && !running && session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled(selected && !aiFixBusy);
+    // "Delete all" also nukes the worktree + branch, so it only applies to a real
+    // stored session that has a branch (not external watch-only rows).
+    if (m_agentDeleteAllButton)
+        m_agentDeleteAllButton->setEnabled(
+            selected && !aiFixBusy && session && !session->branchName.isEmpty()
+            && !isExternalSession(m_selectedAgentSessionId));
     if (m_agentSendPromptButton)
         m_agentSendPromptButton->setEnabled(issueBacked);
     if (m_agentPromptEdit)
@@ -28595,16 +28630,18 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
     });
-    m_worktreeRemoveButton = new QPushButton("Remove");
+    m_worktreeRemoveButton = new QPushButton("Delete");
     m_worktreeRemoveButton->setObjectName("ghostButton");
     m_worktreeRemoveButton->setProperty("buttonSize", "sm");
     m_worktreeRemoveButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_worktreeRemoveButton, "trash", 14);
-    m_worktreeRemoveButton->setToolTip("Remove the selected worktree's folder");
+    m_worktreeRemoveButton->setToolTip(
+        "Remove the selected worktree, delete its branch and its agent session");
     m_worktreeRemoveButton->setEnabled(false);
     connect(m_worktreeRemoveButton, &QPushButton::clicked, this, [this] {
         if (!m_worktreeSelectedPath.isEmpty())
-            removeWorktree(m_worktreeSelectedPath, m_worktreeSelectedBranch, true);
+            deleteWorktreeBranchAndAgent(m_worktreeSelectedPath,
+                                         m_worktreeSelectedBranch);
     });
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
@@ -28785,13 +28822,17 @@ void MainWindow::loadWorktreesPanel()
             h->addWidget(prBtn);
         }
         if (!isMain) {
-            auto *rmBtn = new QPushButton("Remove");
+            // Wipe the worktree, its branch, and the agent that ran on it in one go.
+            auto *rmBtn = new QPushButton("Delete");
             rmBtn->setObjectName("ghostButton");
             rmBtn->setCursor(Qt::PointingHandCursor);
             setOcticon(rmBtn, "trash", 14);
+            rmBtn->setToolTip(
+                agent ? "Remove this worktree, delete its branch and its agent session"
+                      : "Remove this worktree and delete its branch");
             const QString branch = wt.branch;
             connect(rmBtn, &QPushButton::clicked, this,
-                    [this, p, branch] { removeWorktree(p, branch, true); });
+                    [this, p, branch] { deleteWorktreeBranchAndAgent(p, branch); });
             h->addWidget(rmBtn);
         }
         h->addStretch();
@@ -29043,6 +29084,128 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
     loadWorktreesPanel();
     if (m_branchesTable)
         loadBranchesPanel();
+}
+
+QString MainWindow::worktreePathForBranch(const QString &repoPath,
+                                          const QString &branch) const
+{
+    if (repoPath.isEmpty() || branch.trimmed().isEmpty())
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(repoPath, {QStringLiteral("worktree"), QStringLiteral("list"),
+                                  QStringLiteral("--porcelain")},
+                       &out, nullptr))
+        return QString();
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    const QString mainPath = QDir(repoPath).absolutePath();
+    QString currentPath;
+    for (const QString &raw : QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(9).trimmed();
+        else if (line.startsWith(QLatin1String("branch "))
+                 && line.mid(7).trimmed() == want && !currentPath.isEmpty()
+                 && QDir(currentPath).absolutePath() != mainPath)
+            return currentPath;
+    }
+    return QString();
+}
+
+// One action to wipe everything an agent left behind: its worktree folder, its
+// branch, and the stored agent session(s) that ran on it. Resolves the repo from
+// the open detail view; agent sessions are matched by branch.
+void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
+                                              const QString &branch)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoPath = repo.localPath;
+    if (repoPath.isEmpty())
+        return;
+    if (!worktreePath.isEmpty()
+        && QDir(worktreePath).absolutePath() == QDir(repoPath).absolutePath()) {
+        setRepoDetailNotice("That's the main checkout — it can't be removed here.",
+                            true);
+        return;
+    }
+
+    // Every stored (non-external) agent session that ran on this branch.
+    QList<int> agentIds;
+    if (!branch.isEmpty()) {
+        for (const AgentSession &s : std::as_const(m_agentSessions)) {
+            if (s.owner == repo.owner && s.name == repo.name
+                && s.branchName == branch && !isExternalSession(s.id))
+                agentIds.append(s.id);
+        }
+    }
+
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool willDeleteBranch = !branch.isEmpty() && branch != base;
+
+    // One confirmation covering all three pieces.
+    QStringList parts;
+    if (!worktreePath.isEmpty())
+        parts << QStringLiteral("the worktree at\n%1").arg(worktreePath);
+    if (willDeleteBranch)
+        parts << QStringLiteral("branch %1").arg(branch);
+    if (!agentIds.isEmpty())
+        parts << (agentIds.size() == 1
+                      ? QStringLiteral("its agent session")
+                      : QStringLiteral("its %1 agent sessions").arg(agentIds.size()));
+    if (parts.isEmpty())
+        return;
+    const QString what =
+        parts.size() == 1
+            ? parts.first()
+            : QStringLiteral("%1 and %2").arg(
+                  QStringList(parts.mid(0, parts.size() - 1)).join(QStringLiteral(", ")),
+                  parts.last());
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete worktree, branch & agent"),
+            QStringLiteral("Delete %1?\n\nUncommitted changes there will be lost. "
+                           "This cannot be undone.")
+                .arg(what))
+        != QMessageBox::Yes)
+        return;
+
+    // Delete the agent session(s) first — that stops any runner still holding the
+    // worktree open. If one is mid-stop or we lack permission, bail (it flashed
+    // why) before touching the worktree so nothing is half-deleted.
+    for (int id : std::as_const(agentIds)) {
+        if (!deleteStoredAgentSession(id)) {
+            reloadAgents();
+            return;
+        }
+    }
+
+    if (!worktreePath.isEmpty()) {
+        // removeWorktree handles the folder + branch and refreshes the panels.
+        removeWorktree(worktreePath, branch, /*confirm=*/false,
+                       /*alsoDeleteBranch=*/willDeleteBranch);
+    } else if (willDeleteBranch) {
+        // No worktree left (the agent already cleaned it up) — just drop the branch.
+        QString err;
+        if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
+            logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
+            setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+        } else {
+            setRepoDetailNotice(
+                err.isEmpty() ? QStringLiteral("Could not delete branch %1.").arg(branch)
+                              : err,
+                true);
+        }
+        loadWorktreesPanel();
+        if (m_branchesTable)
+            loadBranchesPanel();
+    }
+
+    if (!agentIds.isEmpty()) {
+        reloadAgents();
+        reloadIssues();
+        refreshIssueList();
+        updateIssueActionState();
+    }
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
