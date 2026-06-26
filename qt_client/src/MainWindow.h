@@ -152,6 +152,10 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
+    // Verifies makeColumnsResizable(): once rows arrive, ResizeToContents columns
+    // flip to draggable Interactive (keeping their fitted widths) while Stretch
+    // and Fixed columns are left untouched.
+    Q_INVOKABLE bool testColumnsBecomeResizable();
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);

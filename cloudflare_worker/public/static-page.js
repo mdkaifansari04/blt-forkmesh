@@ -31,6 +31,27 @@
     if (el) el.textContent = value;
   }
 
+  // The last-known counts are cached so the header pill and stat cards render
+  // instantly on a cold load instead of sitting at "Checking…"/"—" until the
+  // first poll returns (stale-while-revalidate). Values are non-negative numbers.
+  function readCachedStat(key) {
+    try {
+      const raw = localStorage.getItem(`forkmesh.stats.${key}`);
+      if (raw === null || raw === "") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch (error) {
+      return null;
+    }
+  }
+  function writeCachedStat(key, value) {
+    try {
+      localStorage.setItem(`forkmesh.stats.${key}`, String(value));
+    } catch (error) {
+      /* storage disabled or quota exceeded — caching is best-effort */
+    }
+  }
+
   function shortWallet(address) {
     if (!address) return "No payout wallet";
     return address.length > 16 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
@@ -146,10 +167,14 @@
       const data = await response.json();
       const clients = Number(data.clients) || 0;
       const hosts = Number(data.hosts) || 0;
+      const repos = Number(data.repos) || 0;
       renderOnline(clients + hosts);
       setText("#network-clients", String(clients));
-      if (reposEl) reposEl.textContent = String(Number(data.repos) || 0);
+      if (reposEl) reposEl.textContent = String(repos);
       if (hostsEl) hostsEl.textContent = String(hosts);
+      writeCachedStat("clients", clients);
+      writeCachedStat("hosts", hosts);
+      writeCachedStat("repos", repos);
       renderPayoutNodes(data.payoutNodes);
     } catch (error) {
       if (clientsCount) clientsCount.textContent = "Reconnecting…";
@@ -169,11 +194,26 @@
     statsTimer = null;
   }
 
+  // Render the last-known counts immediately (stale-while-revalidate) so the
+  // header pill and stat cards aren't blank "Checking…"/"—" placeholders on a
+  // cold load; the poll below refreshes them as soon as live data arrives.
+  function primeCachedStats() {
+    if (location.protocol === "file:") return;
+    const clients = readCachedStat("clients");
+    const hosts = readCachedStat("hosts");
+    const repos = readCachedStat("repos");
+    if (clients !== null && hosts !== null) renderOnline(clients + hosts);
+    if (clients !== null) setText("#network-clients", String(clients));
+    if (hosts !== null) setText("#network-hosts", String(hosts));
+    if (repos !== null) setText("#network-repos", String(repos));
+  }
+
   // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopStats();
     else startStats();
   });
 
+  primeCachedStats();
   startStats();
 })();
