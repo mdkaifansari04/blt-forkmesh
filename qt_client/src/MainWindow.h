@@ -2320,6 +2320,9 @@ private:
     QPushButton *m_issueNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issuePrioritizeButton = nullptr;
+    // Agent picker sitting next to "Prioritize from README" so the run can use
+    // any provider, not just the saved default. Seeded from the default agent.
+    QComboBox *m_issuePrioritizeAgentCombo = nullptr;
     bool m_prioritizeInFlight = false;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
