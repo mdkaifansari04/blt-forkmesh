@@ -386,6 +386,30 @@ int main(int argc, char *argv[])
     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
         dumpTallMinimums(window);
 
+    // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
+    // rebuild must keep the same worktree selected so its diff/detail pane stays
+    // on screen instead of going blank.
+    QTemporaryDir wtRepo;
+    if (initGitRepo(wtRepo)) {
+        runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+        const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", wtPath, "feature/keep-selected"});
+        const int wtIdx =
+            window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
+        window.testOpenRepository(wtIdx);
+        QApplication::processEvents();
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("selecting a worktree records it as the selection"));
+        window.testReloadWorktreesPanel(); // what "Update from main" does after merging
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("reloading the worktrees panel keeps the selected "
+                             "worktree instead of going blank (#272)"));
+    }
+
     // issue #251: the Settings "Default agent" choice should seed the agent
     // pickers. A window built while the default is Claude Code must start both
     // the quick-add and issue-detail pickers there (not the OpenAI fallback),
