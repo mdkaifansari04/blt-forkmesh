@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 256
 title: on worktree after creating the pr then delete the worktree
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
