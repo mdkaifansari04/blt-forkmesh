@@ -397,6 +397,30 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // Issue #286: the "Prioritize from README" button must actually be on the
+    // open issues view (not hidden, not pushed off the right edge of the panel).
+    {
+        window.resize(1100, 800);
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+        QPushButton *pb =
+            findButtonStartingWith(window, "Prioritize from README");
+        const bool realized = pb && pb->isVisibleTo(&window);
+        bool onScreen = false;
+        if (realized) {
+            const QPoint tl = pb->mapTo(&window, QPoint(0, 0));
+            onScreen = tl.x() >= 0 && tl.x() + pb->width() <= window.width();
+        }
+        check(shown && realized && onScreen,
+              QString("issue #286 prioritize button is visible on the issues "
+                      "view (shown=%1 realized=%2 onScreen=%3)")
+                  .arg(shown)
+                  .arg(realized)
+                  .arg(onScreen));
+    }
+
     window.resize(480, 420);
     QApplication::processEvents();
     window.testShowPublishBar(false);
