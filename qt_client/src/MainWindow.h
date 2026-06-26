@@ -49,6 +49,7 @@ class QStringListModel;
 class QGraphicsOpacityEffect;
 class QLabel;
 class QMouseEvent;
+class QAction;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
@@ -1741,8 +1742,13 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
-    QPushButton *m_pullFixClaudeButton = nullptr; // AI-resolve conflicts via Claude
-    QPushButton *m_pullFixOpenAiButton = nullptr; // AI-resolve conflicts via OpenAI
+    // "Fix with agent" split button: a dropdown that rolls the Claude API,
+    // OpenAI API and Claude Code conflict resolvers into one control (issue #150).
+    QPushButton *m_pullFixButton = nullptr;
+    QMenu *m_pullFixMenu = nullptr;
+    QAction *m_pullFixClaudeAction = nullptr;   // resolve via the Claude API
+    QAction *m_pullFixOpenAiAction = nullptr;   // resolve via the OpenAI API
+    QAction *m_pullFixClaudeCodeAction = nullptr; // resolve via the Claude Code CLI
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
@@ -1879,7 +1885,7 @@ private:
         int number = 0;       // PR number (PR mode)
         int repoIndex = -1;
         int sessionId = 0;    // backing agent session
-        QString provider;     // "claude" | "openai"
+        QString provider;     // "claude" | "openai" | "claude-code"
         QString model;
         QString apiKey;
         QString workTree;
@@ -1888,6 +1894,11 @@ private:
         double costUsd = 0.0;
         qint64 inTokens = 0;
         qint64 outTokens = 0;
+        // Claude Code mode: instead of POSTing each file to an API, the real
+        // `claude` CLI runs once over the whole conflict-marked tree. The process
+        // streams into the session log and finish/fail commit-or-abort as usual.
+        bool claudeCode = false;
+        QProcess *process = nullptr; // running CLI (claudeCode mode), else null
         // Branch-merge mode: resolving a `branch <- baseBranch` merge already laid
         // down (with conflict markers) in the working tree, instead of a PR patch
         // apply. finish/fail commit-or-abort the merge directly.
@@ -1898,6 +1909,7 @@ private:
     };
     AiConflictFix *m_aiFix = nullptr;
     void aiFixResolveNextFile();           // send the next conflicted file to the model
+    void aiFixRunClaudeCode();             // run the `claude` CLI over the conflict tree
     void aiFixApplyResolved(const QString &resolved); // write back + advance
     void aiFixFinish();                    // commit to branch, mark session success
     void aiFixFail(const QString &message); // abort the merge, mark session failed
