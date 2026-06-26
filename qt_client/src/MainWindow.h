@@ -712,6 +712,9 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+    // Open the Worktrees tab and select the row for a branch (used by the
+    // clickable branch link in the agent session header — issue #265).
+    void switchToWorktree(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree is removed (its work is in main); pass its folder so it can be.
@@ -1306,6 +1309,11 @@ private:
     QLabel *m_repoLabel = nullptr;
     QLabel *m_navNodeName = nullptr;     // node name shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
+    // Super-tiny Claude Code usage chart in the top-right cluster (issue #266):
+    // two horizontal bars (5-hour + weekly) sitting beside the earnings/avatar,
+    // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
+    // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
+    QWidget *m_navTokenUsage = nullptr;
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).
