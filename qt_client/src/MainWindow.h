@@ -2031,8 +2031,12 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // customPrompt, when non-empty, is used as the agent's task verbatim (the
+    // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
+    // derived from `issue`.
     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
-                                   const QString &repoPath);
+                                   const QString &repoPath,
+                                   const QString &customPrompt = QString());
     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
     void renderTranscriptForSession(int sessionId);
     void refreshAgentFilesPanel(int sessionId);
@@ -2077,6 +2081,11 @@ private:
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
+    // Bottom-left composer on the Agents tab: type a prompt and start a brand-new
+    // Claude Code agent in the open repo, not tied to any issue (issue #273).
+    QPlainTextEdit *m_agentNewPromptEdit = nullptr;
+    QPushButton *m_agentStartButton = nullptr;
+    void startAdHocAgent();
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
