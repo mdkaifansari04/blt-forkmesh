@@ -5,7 +5,7 @@ title: show the source of truth node as the name in the website repo list
 status: open
 labels: []
 milestone: 
-priority: 45
+priority: 91
 progress: 0
 assignees: []
 createdAt: 1782353825811
