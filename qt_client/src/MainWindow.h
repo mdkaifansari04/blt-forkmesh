@@ -1675,7 +1675,7 @@ private:
     QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
-    QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 160)
+    QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent

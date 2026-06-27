@@ -6622,11 +6622,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
-    m_issueQuickAdd->setMaxLength(160);
+    // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
+    // field is sized to the same cap as the Claude prompt / message input
+    // (kMaxTextChars) rather than a short-title length.
+    m_issueQuickAdd->setMaxLength(16000);
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
 
-    // Characters-remaining counter: counts down from the 160-char limit as you
+    // Characters-remaining counter: counts down from the field's limit as you
     // type, so it's clear how much room is left before the field stops accepting
     // input. Greys out when empty, turns amber as the limit approaches.
     m_quickAddCharCount = new QLabel;
