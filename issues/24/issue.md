@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 24
 title: make it so the issue comments are in the json file and not separate md
-status: open
+status: closed
 labels: [issues]
 milestone: Phase 2
 priority: 8

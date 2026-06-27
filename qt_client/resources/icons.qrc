@@ -22,8 +22,10 @@
         <file alias="file-directory.svg">icons/octicons/file-directory.svg</file>
         <file alias="gear.svg">icons/octicons/gear.svg</file>
         <file alias="git-branch.svg">icons/octicons/git-branch.svg</file>
+        <file alias="git-merge.svg">icons/octicons/git-merge.svg</file>
         <file alias="git-pull-request.svg">icons/octicons/git-pull-request.svg</file>
         <file alias="graph.svg">icons/octicons/graph.svg</file>
+        <file alias="hand.svg">icons/octicons/hand.svg</file>
         <file alias="history.svg">icons/octicons/history.svg</file>
         <file alias="home.svg">icons/octicons/home.svg</file>
         <file alias="issue-opened.svg">icons/octicons/issue-opened.svg</file>
@@ -48,6 +50,7 @@
         <file alias="sign-out.svg">icons/octicons/sign-out.svg</file>
         <file alias="sort-desc.svg">icons/octicons/sort-desc.svg</file>
         <file alias="star.svg">icons/octicons/star.svg</file>
+        <file alias="stop.svg">icons/octicons/stop.svg</file>
         <file alias="sun.svg">icons/octicons/sun.svg</file>
         <file alias="sync.svg">icons/octicons/sync.svg</file>
         <file alias="tag.svg">icons/octicons/tag.svg</file>
