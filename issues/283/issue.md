@@ -5,7 +5,7 @@ title: make the security and quality page load faster
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 69
 progress: 0
 assignees: []
 createdAt: 1782487457315
