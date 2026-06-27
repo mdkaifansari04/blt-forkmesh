@@ -10113,7 +10113,11 @@ QWidget *MainWindow::buildIssuesSection()
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
-    header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title
+    // Title is user-expandable: a draggable Interactive column with a generous
+    // default width rather than a locked Stretch flex column, so long titles can
+    // be widened (or narrowed) to taste instead of being elided with no recourse.
+    header->setSectionResizeMode(1, QHeaderView::Interactive);      // Title
+    m_issueTable->setColumnWidth(1, 360);
     header->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Priority
     header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Status
     header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Votes
@@ -19550,7 +19554,11 @@ QWidget *MainWindow::buildAgentsTab()
     // bound to its logical column, so it follows the header wherever it lands.
     agentHeader->setSectionsMovable(true);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+    // The Issue (title) column is user-expandable: a draggable Interactive column
+    // with a generous default width rather than a locked Stretch flex column, so a
+    // long issue title can be widened to read in full.
+    agentHeader->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_agentTable->setColumnWidth(1, 320);
     for (int c = 2; c < kAgentActivityColumn; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     // The night-rider light column is a fixed-width, custom-painted scanner.
@@ -29571,9 +29579,14 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branch,
-                                       const QString &worktreePath)
+void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+                                       const QString &worktreePathArg)
 {
+    // Copy by value: the keep-alive pump below services queued slots between git
+    // reads, and a refresh could reassign the m_worktreeSelected* members passed
+    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    const QString branch = branchArg;
+    const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
@@ -29603,6 +29616,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
         != QMessageBox::Yes)
         return;
 
+    // The merge checks out files, then removeWorktree recursively deletes the
+    // worktree folder (slow when it holds build artifacts), then two panels reload
+    // — all blocking git on the UI thread. Pump the event loop across the lot so
+    // the window stays responsive instead of freezing ("Not Responding").
+    GitKeepAlive keepAlive;
     QString err;
     if (runGitCapture(dir,
                       {"merge", "--no-ff", branch,
@@ -29668,10 +29686,13 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    if (QProcess::execute(
-            QStringLiteral("git"),
-            {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-             QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+    // runGitCapture (not QProcess::execute) so this honors GitKeepAlive: when the
+    // post-merge cleanup calls in, the event loop keeps pumping while git deletes
+    // the worktree folder recursively, instead of freezing the window.
+    if (!runGitCapture(repoPath,
+                       {QStringLiteral("worktree"), QStringLiteral("remove"),
+                        QStringLiteral("--force"), worktreePath},
+                       nullptr, nullptr)) {
         setRepoDetailNotice(
             QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
             true);
