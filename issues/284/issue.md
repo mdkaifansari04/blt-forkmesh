@@ -5,7 +5,7 @@ title: show the time on releases list and allow to click to see detail notes of 
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 70
 progress: 0
 assignees: []
 createdAt: 1782487517730
