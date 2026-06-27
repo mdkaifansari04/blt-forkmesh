@@ -5,7 +5,7 @@ title: the deploy to cloudflare didnt work when we merged to main please mkae su
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 1
 progress: 0
 assignees: []
 createdAt: 1782432623914
