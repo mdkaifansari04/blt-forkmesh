@@ -15,9 +15,12 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLocale>
+#include <QMouseEvent>
+#include <QPixmap>
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QStyleHints>
@@ -205,6 +208,41 @@ private:
     bool m_first;
 };
 
+// An image attached to a user turn, shown as a small thumbnail; clicking it
+// toggles between a thumbnail and a larger preview (issue #56).
+class ThumbImage : public QLabel
+{
+public:
+    ThumbImage(const QPixmap &full, const QString &border, QWidget *parent = nullptr)
+        : QLabel(parent), m_full(full)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(QStringLiteral("Click to expand"));
+        setStyleSheet(
+            QStringLiteral("border:1px solid %1;border-radius:6px;").arg(border));
+        applyScale();
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *) override
+    {
+        m_expanded = !m_expanded;
+        setToolTip(m_expanded ? QStringLiteral("Click to shrink")
+                              : QStringLiteral("Click to expand"));
+        applyScale();
+    }
+
+private:
+    void applyScale()
+    {
+        const int cap = m_expanded ? 560 : 160;
+        const int w = qMin(m_full.width(), cap);
+        setPixmap(m_full.scaledToWidth(w, Qt::SmoothTransformation));
+    }
+    QPixmap m_full;
+    bool m_expanded = false;
+};
+
 ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent)
 {
     setWidgetResizable(true);
@@ -215,7 +253,12 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     m_col->setContentsMargins(8, 14, 14, 14);
     m_col->setSpacing(0); // RailItems supply their own inter-item gap
     m_bottomSpacer = new QWidget;
-    m_bottomSpacer->setFixedHeight(8);
+    // Expanding (not fixed) so that when the transcript is shorter than the
+    // viewport the leftover height collects here instead of stretching the rows
+    // — otherwise a just-started session's lone "you" bubble blows up into a tall
+    // box with a big empty gap in it (issue #56).
+    m_bottomSpacer->setMinimumHeight(8);
+    m_bottomSpacer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     m_col->addWidget(m_bottomSpacer);
     setWidget(m_container);
 
@@ -698,11 +741,32 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
     auto *h = new QLabel(QStringLiteral("you"));
     h->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.accent));
     v->addWidget(h);
-    auto *body = new QLabel(text);
-    body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
-    v->addWidget(body);
+
+    // Lift any "Attached image: <path>" lines out of the prose and show each as a
+    // small clickable thumbnail (issue #56); the rest renders as plain text.
+    static const QRegularExpression imgLine(
+        QStringLiteral("^Attached image:\\s*(.+?)\\s*$"));
+    QStringList prose;
+    QStringList images;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QRegularExpressionMatch m = imgLine.match(line);
+        if (m.hasMatch() && !QPixmap(m.captured(1)).isNull())
+            images << m.captured(1);
+        else
+            prose << line;
+    }
+
+    const QString bodyText = prose.join(QLatin1Char('\n')).trimmed();
+    if (!bodyText.isEmpty()) {
+        auto *body = new QLabel(bodyText);
+        body->setWordWrap(true);
+        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
+        v->addWidget(body);
+    }
+    for (const QString &path : images)
+        v->addWidget(new ThumbImage(QPixmap(path), m_p.border), 0, Qt::AlignLeft);
     addRow(frame, m_p.accent);
 }
 

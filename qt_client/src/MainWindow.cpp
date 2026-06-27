@@ -204,6 +204,11 @@ constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit
 // the Worktrees tab (issue #265). Shared by the link builder and its handler.
 const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 
+// "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
+// has a pull request, its "PR #N" reference links to that PR's tab. Shared by
+// the link builder and its linkActivated handler.
+const QLatin1String kPullLinkScheme("forkmesh-pull:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -19499,6 +19504,31 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setMinimumWidth(380);
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
+    // "Hide detail" toggle (issue #54): collapse the detail panel so the session
+    // list spans the full tab width. Re-checking restores it for the open row.
+    m_agentHideDetailButton = new QPushButton("Hide detail");
+    m_agentHideDetailButton->setObjectName("ghostButton");
+    m_agentHideDetailButton->setCursor(Qt::PointingHandCursor);
+    m_agentHideDetailButton->setCheckable(true);
+    m_agentHideDetailButton->setToolTip(
+        "Hide the detail panel and show the session list full width");
+    setOcticon(m_agentHideDetailButton, "chevron-right", 16);
+    connect(m_agentHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
+        m_agentDetailHidden = hidden;
+        m_agentHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
+        setOcticon(m_agentHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
+        if (hidden) {
+            if (m_agentDetail)
+                m_agentDetail->hide();
+        } else if (m_agentDetail && findAgentSession(m_selectedAgentSessionId)) {
+            m_agentDetail->show(); // reopen for the still-selected row
+        }
+    });
+    auto *headingRow = new QHBoxLayout;
+    headingRow->setContentsMargins(0, 0, 0, 0);
+    headingRow->setSpacing(8);
+    headingRow->addWidget(heading, 1);
+    headingRow->addWidget(m_agentHideDetailButton, 0, Qt::AlignTop);
     auto *hint = new QLabel(
         "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
         "from prompt and transcript size.");
@@ -19546,7 +19576,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(headingRow);
     listLayout->addWidget(hint);
     m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
     m_agentOpenAiSpend->setObjectName("channelTitle");
@@ -19724,6 +19754,8 @@ QWidget *MainWindow::buildAgentsTab()
         if (href.startsWith(kWorktreeLinkScheme))
             switchToWorktree(QUrl::fromPercentEncoding(
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
+        else if (href.startsWith(kPullLinkScheme))
+            switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
     m_agentUsage = new QLabel;
     m_agentUsage->setObjectName("statusLine");
@@ -21059,6 +21091,19 @@ static QString worktreeLinkHtml(const QString &branch)
         .arg(href, branch.toHtmlEscaped());
 }
 
+// "PR #N open" for the agent-detail meta line, as a link to that pull request's
+// tab (forkmesh-pull:N, handled by m_agentMeta's linkActivated). Lets a session
+// with a PR jump straight to it from the detail header.
+static QString pullLinkHtml(int prNumber)
+{
+    const QString href = kPullLinkScheme + QString::number(prNumber);
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">"
+               "PR #%2 open</a>")
+        .arg(href)
+        .arg(prNumber);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -21086,7 +21131,9 @@ void MainWindow::showAgentSession(int sessionId)
     // deciding which output surface to show, so it survives an app restart.
     ensureStreamEventsLoaded(sessionId);
 
-    if (m_agentDetail)
+    // Keep the detail panel collapsed while "Hide detail" is engaged (issue #54);
+    // its contents below still update for when the user reopens it.
+    if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
@@ -21132,13 +21179,16 @@ void MainWindow::showAgentSession(int sessionId)
         meta += mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
-        // PR status, spelled out so it's always visible.
-        QString pr = session->prNumber > 0
-                         ? QStringLiteral("PR #%1 open").arg(session->prNumber)
-                         : (session->createPr ? QStringLiteral("PR opens on finish")
-                                              : QStringLiteral("no PR"));
-        // Rich text so the branch name is a link to its Worktrees-tab row
-        // (issue #265); every other part is HTML-escaped to stay literal.
+        // PR status, spelled out so it's always visible. When a PR exists it
+        // links straight to that pull request's tab from the header (adhoc #53).
+        QString pr =
+            session->prNumber > 0
+                ? pullLinkHtml(session->prNumber)
+                : (session->createPr ? QStringLiteral("PR opens on finish")
+                                     : QStringLiteral("no PR"))
+                      .toHtmlEscaped();
+        // Rich text so the branch name and PR are links (issues #265, adhoc #53);
+        // every other part is HTML-escaped to stay literal.
         const QString sep = QStringLiteral(" · ");
         QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
                        QStringLiteral("%1/%2")
@@ -21148,7 +21198,7 @@ void MainWindow::showAgentSession(int sessionId)
                        (session->branchName.isEmpty()
                             ? QStringLiteral("(no branch)")
                             : worktreeLinkHtml(session->branchName)) +
-                       sep + pr.toHtmlEscaped();
+                       sep + pr;
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -29529,9 +29579,14 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branch,
-                                       const QString &worktreePath)
+void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+                                       const QString &worktreePathArg)
 {
+    // Copy by value: the keep-alive pump below services queued slots between git
+    // reads, and a refresh could reassign the m_worktreeSelected* members passed
+    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    const QString branch = branchArg;
+    const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
@@ -29561,6 +29616,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
         != QMessageBox::Yes)
         return;
 
+    // The merge checks out files, then removeWorktree recursively deletes the
+    // worktree folder (slow when it holds build artifacts), then two panels reload
+    // — all blocking git on the UI thread. Pump the event loop across the lot so
+    // the window stays responsive instead of freezing ("Not Responding").
+    GitKeepAlive keepAlive;
     QString err;
     if (runGitCapture(dir,
                       {"merge", "--no-ff", branch,
@@ -29626,10 +29686,13 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    if (QProcess::execute(
-            QStringLiteral("git"),
-            {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-             QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+    // runGitCapture (not QProcess::execute) so this honors GitKeepAlive: when the
+    // post-merge cleanup calls in, the event loop keeps pumping while git deletes
+    // the worktree folder recursively, instead of freezing the window.
+    if (!runGitCapture(repoPath,
+                       {QStringLiteral("worktree"), QStringLiteral("remove"),
+                        QStringLiteral("--force"), worktreePath},
+                       nullptr, nullptr)) {
         setRepoDetailNotice(
             QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
             true);
@@ -34998,6 +35061,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoNewAgentPrompt())
             return true;
+        // Enter starts a brand-new agent on the typed prompt; Shift+Enter inserts a
+        // newline (issue #54). Mirrors the per-session steering composer above.
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && !(ke->modifiers() & Qt::ShiftModifier)) {
+            if (m_agentStartButton)
+                m_agentStartButton->click();
+            return true;
+        }
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
     // newline (issue #41). Mirrors the Claude Code conversation input.
