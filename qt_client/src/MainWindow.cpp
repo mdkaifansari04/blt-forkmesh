@@ -21273,7 +21273,15 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_claudeUsageTimer, &QTimer::timeout, this,
             &MainWindow::refreshClaudeCodeUsage);
     m_claudeUsageTimer->start();
+    // Populate the gauge promptly on launch. The very first request often misses
+    // on a restart: the network stack may not be up yet this early, and the
+    // top-bar chart widget itself is only created later in buildBreadcrumb. Either
+    // would otherwise leave the bars on their stale cached value until the next
+    // minute tick (which reads as "didn't update on restart"). Poll now and again
+    // a few seconds in so a restart refreshes the chart within seconds.
     refreshClaudeCodeUsage();
+    for (int delayMs : {2000, 10000, 30000})
+        QTimer::singleShot(delayMs, this, &MainWindow::refreshClaudeCodeUsage);
 
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText(
