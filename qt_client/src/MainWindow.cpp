@@ -21772,6 +21772,12 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
             return false;
         }
     }
+    // A live Claude Code stream session (no runner) is killed by its own Stop
+    // path; deleting it from the list must stop it too, then release its worktree
+    // so the branch is freed (issue #74).
+    if (m_streamSessions.contains(snapshot.id))
+        stopStreamSession(snapshot.id);
+    cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
@@ -22245,6 +22251,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             }
         }
         maybeCreatePullForStreamSession(sid);
+        // The PR captured the diff as a patch, so the worktree is no longer
+        // needed; drop it to free the branch for checkout (issue #74).
+        cleanupStreamWorktree(sid);
         if (ClaudeStreamSession *done = m_streamSessions.take(sid))
             done->deleteLater();
         reloadAgents();
@@ -23151,6 +23160,35 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     } else {
         m_agentStore->appendLog(
             *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+    }
+}
+
+// Release the temp worktree a stream session ran in once the run is over. The
+// worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
+// so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
+// PR locally) fail with "already used by worktree at …". Removing the worktree
+// frees the branch while keeping the branch ref, so the PR still resolves.
+void MainWindow::cleanupStreamWorktree(int sessionId)
+{
+    const QString wtPath = m_streamWorktree.take(sessionId);
+    if (wtPath.isEmpty())
+        return;
+    QString repoPath;
+    if (const AgentSession *s = findAgentSession(sessionId)) {
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri >= 0)
+            repoPath = m_repositories.at(ri).localPath;
+    }
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+    }
+    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("prune")});
     }
 }
 
