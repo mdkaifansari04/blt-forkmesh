@@ -624,6 +624,11 @@ private:
     // owns the repo and falling back to the maintainer's relay inbox otherwise.
     void postIssueLinkComment(int issueNumber, const QString &body);
     void postPullLinkComment(int pullNumber, const QString &body);
+    // Issue #156: after an agent opens a PR for the issue it was working, record an
+    // explicit "Linked pull request #M" note on that issue so the link is durable
+    // in the Development section, the same way a manual link is. Repo-aware: the
+    // agent's repo may differ from the one currently on screen.
+    void linkAgentPullToIssue(const AgentSession &session, int prNumber);
     void closeCurrentPull();
     void reopenCurrentPull();
     void deleteCurrentPull();
@@ -731,6 +736,12 @@ private:
     // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
     // accurate even when no agent is streaming rate-limit events.
     void refreshClaudeCodeUsage();
+    // Poll usage now and again a few seconds later. Use this the moment a new
+    // agent starts or a prompt is sent: at that instant no tokens have been
+    // consumed yet, so an immediate poll still shows the pre-start figure — the
+    // delayed follow-up catches the first turn's usage without waiting for the
+    // next one-minute tick.
+    void bumpClaudeCodeUsage();
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
@@ -928,6 +939,9 @@ private:
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
     void showBranchDiff(const QString &branch);
+    // Refresh the detail-pane action bar (Pull / Fix with agent / Create PR /
+    // Merge to main) for the currently selected branch.
+    void updateBranchDetailActions(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
     void updateBranchDiffSticky();
@@ -1781,6 +1795,14 @@ private:
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
+    // Detail-pane action bar above the branch diff: acts on the selected branch
+    // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
+    // state is refreshed in updateBranchDetailActions() as the selection changes.
+    QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
+    QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
+    QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
+    QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
