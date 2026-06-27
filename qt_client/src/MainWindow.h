@@ -62,6 +62,7 @@ class QComboBox;
 class QCompleter;
 class QStringListModel;
 class QGraphicsOpacityEffect;
+class QFrame;
 class QLabel;
 class QMouseEvent;
 class QAction;
@@ -289,6 +290,8 @@ protected:
     void showEvent(QShowEvent *event) override;
     // Image drag-and-drop onto the inline issue comment composer.
     bool eventFilter(QObject *obj, QEvent *event) override;
+    // Keep the floating expanded-toast overlay anchored to the toast on resize.
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     // Setup page
@@ -1411,6 +1414,7 @@ private:
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
+    void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1594,6 +1598,8 @@ private:
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
+    QFrame *m_topMessageOverlay = nullptr; // floats the expanded full text on top of the layout
+    QLabel *m_topMessageOverlayText = nullptr; // wrapped full-message label inside the overlay
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
