@@ -672,7 +672,9 @@ private:
     // Seed m_sessionTokens from the persisted totals (taking the max) so the live
     // counter survives reloads and continues from the saved base, not from zero.
     void seedSessionTokens();
-    // Repaint the detail panel's "Session token usage" line for one session.
+    // Refresh the "Session token usage" line for one session. Since issue #84
+    // this no longer paints a detail-panel label — it feeds the figures into the
+    // top-bar usage chart's hover tooltip (TokenUsageMiniChart::setStats).
     void setAgentUsageLabel(const AgentSession &session);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
@@ -2158,6 +2160,9 @@ private:
     void aiFixLog(const QString &text);    // stream a line into the agent session log
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
+    // Free-text filter over the session list: matches issue number/title,
+    // provider, status and PR. Empty shows everything (issue #82).
+    QLineEdit *m_agentSearch = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).
@@ -2166,7 +2171,6 @@ private:
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
-    QLabel *m_agentUsage = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
@@ -2191,9 +2195,6 @@ private:
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
-    QProgressBar *m_agentUsageBar = nullptr;     // weekly usage graph
-    QProgressBar *m_agentUsage5hBar = nullptr;   // 5-hour usage graph
-    QLabel *m_agentStatsLabel = nullptr;         // live tokens + cost counter
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
     QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
