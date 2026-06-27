@@ -30820,9 +30820,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                        const QString &worktreePathArg,
                                        bool deleteAgent)
 {
-    // Copy by value: the keep-alive pump below services queued slots between git
-    // reads, and a refresh could reassign the m_worktreeSelected* members passed
-    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    // Copy by value: the detached merge below runs the event loop before its
+    // callback fires, and a refresh could reassign the m_worktreeSelected* members
+    // passed here by reference meanwhile — leaving these refs pointing at a new
+    // worktree. The callback captures these stable copies instead.
     const QString branch = branchArg;
     const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
@@ -30858,77 +30859,111 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         != QMessageBox::Yes)
         return;
 
-    // The merge checks out files, then removeWorktree recursively deletes the
-    // worktree folder (slow when it holds build artifacts), then two panels reload
-    // — all blocking git on the UI thread. Pump the event loop across the lot so
-    // the window stays responsive instead of freezing ("Not Responding").
-    GitKeepAlive keepAlive;
-    QString err;
-    if (runGitCapture(dir,
-                      {"merge", "--no-ff", branch,
-                       "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
-                      nullptr, &err)) {
-        // The branch is now in main, so the worktree has served its purpose — clean
-        // it up (silently; the merge was already confirmed). Delete the branch too:
-        // its work is preserved in the merge commit, so leaving it behind only
-        // clutters the Worktrees/Branches tabs.
-        QList<int> deletedAgents;
-        if (deleteAgent && !branch.isEmpty()
-            && m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-            // Tear down any agent session(s) that produced this branch first, so no
-            // runner is left holding the worktree open while we remove it.
-            const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-            for (const AgentSession &s : std::as_const(m_agentSessions)) {
-                if (s.owner == repo.owner && s.name == repo.name
-                    && s.branchName == branch && !isExternalSession(s.id))
-                    deletedAgents.append(s.id);
-            }
-            for (int id : std::as_const(deletedAgents))
-                deleteStoredAgentSession(id);
-        }
-        bool removed = false;
-        if (!worktreePath.isEmpty() &&
-            QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
-            removeWorktree(worktreePath, branch, /*confirm=*/false,
-                           /*alsoDeleteBranch=*/true);
-            removed = !QDir(worktreePath).exists();
-        }
-        const QString agentNote =
-            deletedAgents.isEmpty()
-                ? QString()
-                : (deletedAgents.size() == 1
-                       ? QStringLiteral(" and deleted its agent session")
-                       : QStringLiteral(" and deleted its %1 agent sessions")
-                             .arg(deletedAgents.size()));
-        setRepoDetailNotice(
-            (removed ? QStringLiteral("Merged %1 into %2, removed its worktree and "
-                                      "deleted its branch")
-                           .arg(branch, base)
-                     : QStringLiteral("Merged %1 into %2").arg(branch, base))
-                + agentNote + QStringLiteral("."),
-            false);
-        if (deletedAgents.isEmpty()) {
-            // Issue #291: flag any agent session that produced this branch.
-            markAgentSessionsMerged(0, branch);
-        } else {
-            reloadAgents();
-            reloadIssues();
-            refreshIssueList();
-            updateIssueActionState();
-        }
-    } else {
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
-        setRepoDetailNotice(
-            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR and use "
-                           "\"Fix with agent\" on the Branches tab.").arg(branch), true);
+    // The merge checks out files and removeWorktree recursively deletes the worktree
+    // folder (slow when it holds build artifacts) — both ran git on the UI thread, and
+    // even pumped via GitKeepAlive the window stopped registering clicks for the whole
+    // run (waitForGit pumps with ExcludeUserInputEvents). Run the merge as a detached
+    // process and finish the cleanup in its callback, then let removeWorktree's async
+    // path delete the folder off the UI thread, so the window stays interactive
+    // throughout (issue #127).
+    //
+    // Snapshot the repo identity now: the callback below fires after the event loop has
+    // run, by which point m_repoDetailIndex may point elsewhere if the user navigated.
+    QString repoOwner, repoName;
+    if (deleteAgent && m_repoDetailIndex >= 0
+        && m_repoDetailIndex < m_repositories.size()) {
+        repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        repoName = m_repositories.at(m_repoDetailIndex).name;
     }
-    loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    setRepoDetailNotice(
+        QStringLiteral("Merging %1 into %2…").arg(branch, base), false);
+    runGitDetached(
+        dir,
+        {"merge", "--no-ff", branch,
+         "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
+        [this, branch, base, worktreePath, deleteAgent, repoOwner, repoName,
+         dir](bool ok, const QByteArray &) {
+            if (!ok) {
+                runGitDetached(dir, {"merge", "--abort"}, nullptr);
+                setRepoDetailNotice(
+                    QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR "
+                                   "and use \"Fix with agent\" on the Branches tab.")
+                        .arg(branch),
+                    true);
+                loadWorktreesPanel();
+                if (m_branchesTable)
+                    loadBranchesPanel();
+                return;
+            }
+            // The branch is now in main, so the worktree has served its purpose — clean
+            // it up (silently; the merge was already confirmed). Delete the branch too:
+            // its work is preserved in the merge commit, so leaving it behind only
+            // clutters the Worktrees/Branches tabs.
+            QList<int> deletedAgents;
+            if (deleteAgent && !branch.isEmpty() && !repoOwner.isEmpty()) {
+                // Tear down any agent session(s) that produced this branch first, so no
+                // runner is left holding the worktree open while we remove it.
+                for (const AgentSession &s : std::as_const(m_agentSessions)) {
+                    if (s.owner == repoOwner && s.name == repoName
+                        && s.branchName == branch && !isExternalSession(s.id))
+                        deletedAgents.append(s.id);
+                }
+                for (int id : std::as_const(deletedAgents))
+                    deleteStoredAgentSession(id);
+            }
+            const QString agentNote =
+                deletedAgents.isEmpty()
+                    ? QString()
+                    : (deletedAgents.size() == 1
+                           ? QStringLiteral(" and deleted its agent session")
+                           : QStringLiteral(" and deleted its %1 agent sessions")
+                                 .arg(deletedAgents.size()));
+            auto afterAgents = [this, deletedAgents, branch] {
+                if (deletedAgents.isEmpty()) {
+                    // Issue #291: flag any agent session that produced this branch.
+                    markAgentSessionsMerged(0, branch);
+                } else {
+                    reloadAgents();
+                    reloadIssues();
+                    refreshIssueList();
+                    updateIssueActionState();
+                }
+            };
+            if (!worktreePath.isEmpty()
+                && QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
+                setRepoDetailNotice(
+                    QStringLiteral("Merged %1 into %2 — removing its worktree…")
+                        .arg(branch, base),
+                    false);
+                // async: the folder delete + branch delete + panel refresh run off the
+                // UI thread; onDone sets the final notice once it's gone.
+                removeWorktree(worktreePath, branch, /*confirm=*/false,
+                               /*alsoDeleteBranch=*/true, /*async=*/true,
+                               [this, branch, base, agentNote, afterAgents] {
+                                   setRepoDetailNotice(
+                                       QStringLiteral("Merged %1 into %2, removed its "
+                                                      "worktree and deleted its branch")
+                                               .arg(branch, base)
+                                           + agentNote + QStringLiteral("."),
+                                       false);
+                                   afterAgents();
+                               });
+            } else {
+                setRepoDetailNotice(
+                    QStringLiteral("Merged %1 into %2").arg(branch, base) + agentNote
+                        + QStringLiteral("."),
+                    false);
+                afterAgents();
+                loadWorktreesPanel();
+                if (m_branchesTable)
+                    loadBranchesPanel();
+            }
+        });
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
-                                bool confirm, bool alsoDeleteBranch, bool async)
+                                bool confirm, bool alsoDeleteBranch, bool async,
+                                std::function<void()> onDone)
 {
     if (worktreePath.isEmpty())
         return;
@@ -30963,7 +30998,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
     // branch can be force-deleted. -D matches the "uncommitted changes will be lost"
     // warning the user just accepted: they asked for the whole worktree — branch and
     // all — to go. Then refresh the panels that listed it.
-    auto finish = [this, repoPath, worktreePath, branch, deleteBranch] {
+    auto finish = [this, repoPath, worktreePath, branch, deleteBranch,
+                   onDone = std::move(onDone)] {
         if (deleteBranch) {
             QString err;
             if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
@@ -30984,6 +31020,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
         loadWorktreesPanel();
         if (m_branchesTable)
             loadBranchesPanel();
+        if (onDone)
+            onDone();
     };
 
     const QStringList removeArgs{QStringLiteral("-C"), repoPath,
