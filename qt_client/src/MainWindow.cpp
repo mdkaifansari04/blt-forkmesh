@@ -31231,6 +31231,19 @@ QWidget *MainWindow::buildMirrorNodesTab()
     heading->setObjectName("channelTitle");
     m_mirrorNodesSummary = new QLabel;
     m_mirrorNodesSummary->setObjectName("statusLine");
+    // Re-attest the relay's integrity pin to the refs we currently serve. Only the
+    // source of truth (the owner holding the working copy) can do this, so the
+    // button stays hidden until loadMirrorNodesPanel() finds we are that node.
+    m_mirrorResetPinButton = new QPushButton("Reset integrity pin");
+    m_mirrorResetPinButton->setObjectName("ghostButton");
+    m_mirrorResetPinButton->setCursor(Qt::PointingHandCursor);
+    m_mirrorResetPinButton->setToolTip(QStringLiteral(
+        "Re-sign the refs this node serves and overwrite the relay's integrity "
+        "pin, so clones work again after the served refs have moved on."));
+    setOcticon(m_mirrorResetPinButton, "shield-check", 16);
+    m_mirrorResetPinButton->hide();
+    connect(m_mirrorResetPinButton, &QPushButton::clicked, this,
+            &MainWindow::resetRepoPin);
     auto *refreshButton = new QPushButton("Refresh");
     refreshButton->setObjectName("ghostButton");
     refreshButton->setCursor(Qt::PointingHandCursor);
@@ -31241,6 +31254,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     headerRow->addWidget(heading);
     headerRow->addWidget(m_mirrorNodesSummary);
     headerRow->addStretch();
+    headerRow->addWidget(m_mirrorResetPinButton);
     headerRow->addWidget(refreshButton);
     layout->addLayout(headerRow);
 
@@ -31311,6 +31325,8 @@ void MainWindow::loadMirrorNodesPanel()
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         if (m_mirrorNodesSummary)
             m_mirrorNodesSummary->clear();
+        if (m_mirrorResetPinButton)
+            m_mirrorResetPinButton->hide();
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -31639,6 +31655,13 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesSummary->setTextFormat(Qt::RichText);
         m_mirrorNodesSummary->setText(text);
     }
+    // "Reset integrity pin" is the source of truth's concern alone: only the
+    // node holding the working copy can re-attest the relay's pin. Mirror nodes
+    // (even on the owner's own account) never get the button — a stale pin there
+    // is the source of truth's problem to fix (see refreshRepoPinBanner).
+    if (m_mirrorResetPinButton)
+        m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
+
     if (m_repoMirrorsTab)
         m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
     if (count == 0) {

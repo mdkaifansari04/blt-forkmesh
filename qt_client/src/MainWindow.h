@@ -1720,6 +1720,9 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
+    // "Reset integrity pin" action, shown in the Mirror nodes header only when
+    // this node is the source of truth (the owner holding the working copy).
+    QPushButton *m_mirrorResetPinButton = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
