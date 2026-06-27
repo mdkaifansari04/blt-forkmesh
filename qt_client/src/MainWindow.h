@@ -1021,8 +1021,11 @@ private:
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
     void showBranchDiff(const QString &branch);
-    // Refresh the detail-pane action bar (Pull / Fix with agent / Create PR /
-    // Merge to main) for the currently selected branch.
+    // Open the selected branch's working directory in VSCodium: its dedicated
+    // worktree if it has one, otherwise the repo's main checkout.
+    void openBranchInCodium(const QString &branch);
+    // Refresh the detail-pane action bar (Open in Codium / Pull / Fix with agent /
+    // Create PR / Merge to main) for the currently selected branch.
     void updateBranchDetailActions(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1915,6 +1918,7 @@ private:
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
     QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QPushButton *m_branchOpenCodiumButton = nullptr; // "Open in Codium" (VSCodium)
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
