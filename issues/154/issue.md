@@ -5,7 +5,7 @@ title: make sure to link to other issues if the #123 is mentioned in a PR or com
 status: open
 labels: [Phase 2]
 milestone: Phase 2
-priority: 16
+priority: 6
 progress: 0
 assignees: []
 createdAt: 1782178940552
