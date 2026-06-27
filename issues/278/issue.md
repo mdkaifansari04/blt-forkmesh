@@ -5,7 +5,7 @@ title: keep the log on disk and rename it to just log - show a note in log entri
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 64
 progress: 0
 assignees: []
 createdAt: 1782486408411
