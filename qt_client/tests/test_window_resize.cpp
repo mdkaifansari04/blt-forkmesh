@@ -541,6 +541,39 @@ int main(int argc, char *argv[])
               QStringLiteral("headless status view includes a cpu/memory load line"));
     }
 
+    // issue #154: references inside an issue/PR comment body become in-app links.
+    {
+        check(MainWindow::autolinkReferences(QStringLiteral("see #123 please")) ==
+                  QStringLiteral("see [#123](forkmesh-ref:123) please"),
+              QStringLiteral("autolink turns #123 into a ref link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("fixed in a1b2c3d.")) ==
+                  QStringLiteral("fixed in [a1b2c3d](forkmesh-commit:a1b2c3d)."),
+              QStringLiteral("autolink turns a pasted commit SHA into a commit link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("build 1234567 ok")) ==
+                  QStringLiteral("build 1234567 ok"),
+              QStringLiteral("autolink leaves a plain number (no a-f) untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("use `#5` token")) ==
+                  QStringLiteral("use `#5` token"),
+              QStringLiteral("autolink leaves references in inline code untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("```\n#5\n```")) ==
+                  QStringLiteral("```\n#5\n```"),
+              QStringLiteral("autolink leaves references in a fenced block untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("[#5](http://x)")) ==
+                  QStringLiteral("[#5](http://x)"),
+              QStringLiteral("autolink never nests inside an existing markdown link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("at http://x/#5 only")) ==
+                  QStringLiteral("at http://x/#5 only"),
+              QStringLiteral("autolink leaves a #fragment inside a URL untouched"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("ref forkmesh://issue/o/r/12#e3 here")) ==
+                  QStringLiteral("ref <forkmesh://issue/o/r/12#e3> here"),
+              QStringLiteral("autolink wraps a pasted forkmesh:// permalink as a link"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("see forkmesh://pull/o/r/7.")) ==
+                  QStringLiteral("see <forkmesh://pull/o/r/7>."),
+              QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }
