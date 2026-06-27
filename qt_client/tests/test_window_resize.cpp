@@ -452,6 +452,9 @@ int main(int argc, char *argv[])
         const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", wtPath, "feature/keep-selected"});
+        // Put the worktree's branch one commit ahead of main so the ahead/behind
+        // column has something non-trivial to report.
+        runGitChecked(wtPath, {"commit", "--allow-empty", "-m", "ahead by one"});
         const int wtIdx =
             window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
         window.testOpenRepository(wtIdx);
@@ -465,6 +468,21 @@ int main(int argc, char *argv[])
                   QStringLiteral("feature/keep-selected"),
               QStringLiteral("reloading the worktrees panel keeps the selected "
                              "worktree instead of going blank (#272)"));
+        // The ahead/behind column is filled by an async `git rev-list`; pump the
+        // event loop until it lands, then check it reports "1 ahead" (↑1).
+        QString abText;
+        QElapsedTimer abTimer;
+        abTimer.start();
+        while (abTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            abText = window.testWorktreeAheadBehindText(
+                QStringLiteral("feature/keep-selected"));
+            if (!abText.isEmpty() && !abText.contains(QStringLiteral("checking")))
+                break;
+        }
+        check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
+              QString("worktrees list shows the branch one commit ahead of main "
+                      "(ahead/behind cell = %1)").arg(abText));
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
