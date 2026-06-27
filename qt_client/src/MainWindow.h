@@ -238,6 +238,10 @@ public:
     void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
     void testReloadWorktreesPanel() { loadWorktreesPanel(); }
     QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
+    // Detail-pane branch label text, so a test can prove the worktree detail
+    // shows which branch the selected worktree is on. Defined in MainWindow.cpp
+    // because QLabel is only forward-declared here.
+    QString testWorktreeBranchLabel() const;
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
@@ -1752,6 +1756,7 @@ private:
     QTextBrowser *m_worktreeDiffView = nullptr;
     QListWidget *m_worktreeFileList = nullptr;
     QLabel *m_worktreeFilesSummary = nullptr;
+    QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
