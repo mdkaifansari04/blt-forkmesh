@@ -3828,6 +3828,76 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
     return true;
 }
 
+// Drop any other worktree currently holding `branch` checked out so this working
+// tree can switch to it. Agent sessions run in a temp worktree under
+// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// keeps the branch reserved, so `git checkout <branch>` here fails with "is
+// already used by worktree at …". Removing the worktree frees the branch while
+// keeping its ref intact. Returns true if it released something so the caller
+// can retry the checkout. (Mirrors releaseWorktreeHoldingBranch in PullStore.)
+bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGitCapture(dir, {"worktree", "list", "--porcelain"}, &out, nullptr))
+        return false;
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    QString currentPath;
+    QString held;
+    const QList<QByteArray> lines = out.split('\n');
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(QStringLiteral("worktree ").size()).trimmed();
+        else if (line.startsWith(QLatin1String("branch ")) &&
+                 line.mid(QStringLiteral("branch ").size()).trimmed() == want &&
+                 !currentPath.isEmpty() &&
+                 QDir(currentPath).absolutePath() != QDir(dir).absolutePath()) {
+            held = currentPath;
+            break;
+        }
+    }
+    if (held.isEmpty())
+        return false;
+    runGitCapture(dir, {"worktree", "remove", "--force", held}, nullptr, nullptr);
+    QDir(held).removeRecursively();
+    runGitCapture(dir, {"worktree", "prune"}, nullptr, nullptr);
+    return true;
+}
+
+// Check out `branch` in `dir`, first clearing any leftover agent worktree that
+// has it reserved (see releaseWorktreeHoldingBranch). On failure returns false
+// with stderr in `err`; for the "already used by worktree" case that the auto
+// release could not resolve, `err` is rewritten into a short why/how-to-fix the
+// caller can show, instead of leaking git's raw "fatal: …" line.
+bool checkoutReleasingWorktree(const QString &dir, const QString &branch,
+                               QString *err)
+{
+    if (runGitCapture(dir, {"checkout", branch}, nullptr, err))
+        return true;
+    if (err && err->contains(QLatin1String("already used by worktree"))) {
+        if (releaseWorktreeHoldingBranch(dir, branch) &&
+            runGitCapture(dir, {"checkout", branch}, nullptr, err))
+            return true;
+        // Still held — name the offending worktree (git puts its path after
+        // "worktree at ") and how to clear it.
+        static const QString marker = QStringLiteral("worktree at ");
+        const int at = err->indexOf(marker);
+        const QString where =
+            at >= 0 ? err->mid(at + marker.size()).trimmed() : QString();
+        *err = where.isEmpty()
+                   ? QStringLiteral("it is checked out in another worktree. Close "
+                                    "that agent session (or remove that worktree), "
+                                    "then try again.")
+                   : QStringLiteral("it is checked out in the worktree at %1. Close "
+                                    "that agent session (or run `git worktree "
+                                    "remove --force` on it), then try again.")
+                         .arg(where);
+    }
+    return false;
+}
+
 // Capture git's stdout regardless of exit code. Some diff commands exit non-zero
 // when differences exist (`diff --no-index` returns 1), which runGitCapture
 // treats as failure and discards the output we actually want.
@@ -4983,6 +5053,20 @@ QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
 QString MainWindow::testWorktreeBranchLabel() const
 {
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
+}
+
+QString MainWindow::testBranchWorktreePath(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+                return wt->text();
+        }
+    }
+    return QString();
 }
 
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
@@ -32681,11 +32765,11 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
 
-    m_branchesTable = new QTableWidget(0, 4);
+    m_branchesTable = new QTableWidget(0, 5);
     m_branchesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
-        {"Branch", "Status", "Updated", ""});
+        {"Branch", "Status", "Updated", "Worktree", ""});
     m_branchesTable->verticalHeader()->setVisible(false);
     // Give each row enough height for the sm action buttons (max 28px tall) plus
     // breathing room, so the buttons don't crowd the row above/below.
@@ -32701,11 +32785,15 @@ QWidget *MainWindow::buildBranchesTab()
     bh->setSectionResizeMode(0, QHeaderView::Stretch);
     bh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     bh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    // Worktree column: shows the on-disk path of the worktree (if any) a branch
+    // is checked out in, so the list surfaces an agent's isolated working tree
+    // without a trip to the Worktrees tab. Sized to its content.
+    bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     // The action column holds cell widgets (Pull / Create PR / delete
     // buttons). ResizeToContents only measures item delegates and ignores
     // cell widgets, so it would collapse this column and clip the buttons.
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
-    bh->setSectionResizeMode(3, QHeaderView::Fixed);
+    bh->setSectionResizeMode(4, QHeaderView::Fixed);
     makeColumnsResizable(m_branchesTable);
     connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -32931,6 +33019,32 @@ void MainWindow::loadBranchesPanel()
         }
     }
 
+    // Map each branch to the worktree (other than the main checkout) it's checked
+    // out in, in a single `git worktree list --porcelain` call so the per-row
+    // Worktree column below doesn't spawn a git process each (issue #172).
+    QHash<QString, QString> branchWorktrees;
+    if (!dir.isEmpty()) {
+        QByteArray wtOut;
+        if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
+            const QString mainPath = QDir(dir).absolutePath();
+            QString currentPath;
+            for (const QString &raw :
+                 QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
+                const QString line = raw.trimmed();
+                if (line.startsWith(QLatin1String("worktree ")))
+                    currentPath = line.mid(9).trimmed();
+                else if (line.startsWith(QLatin1String("branch "))) {
+                    const QString br =
+                        line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
+                                                      QString());
+                    if (!br.isEmpty() && !currentPath.isEmpty()
+                        && QDir(currentPath).absolutePath() != mainPath)
+                        branchWorktrees.insert(br, currentPath);
+                }
+            }
+        }
+    }
+
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
@@ -32989,6 +33103,18 @@ void MainWindow::loadBranchesPanel()
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         m_branchesTable->setItem(row, 2, updated);
 
+        // Worktree this branch is checked out in (an agent's isolated tree), if
+        // any. Shown so the list reveals where the branch lives on disk; the full
+        // path is also the cell tooltip for the long /tmp agent-worktree paths.
+        const QString worktreePath = branchWorktrees.value(branch);
+        auto *worktree = new QTableWidgetItem(worktreePath);
+        if (!worktreePath.isEmpty()) {
+            worktree->setIcon(themedOcticon("file-directory", QColor("#8b949e"), 13));
+            worktree->setToolTip(worktreePath);
+            worktree->setForeground(QColor("#8b949e"));
+        }
+        m_branchesTable->setItem(row, 3, worktree);
+
         // Row actions: just delete here — the Pull / Fix with agent / Create PR /
         // Merge to main actions live in the detail-pane toolbar and act on the
         // selected branch (issue #116). The ahead/behind/conflict counts above
@@ -33027,7 +33153,7 @@ void MainWindow::loadBranchesPanel()
                 [this, branch] { deleteBranch(branch); });
         actionRow->addWidget(del);
 
-        m_branchesTable->setCellWidget(row, 3, actions);
+        m_branchesTable->setCellWidget(row, 4, actions);
         // Measure the true width the delete button needs:
         //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
         //    which sizeHint() ignores until the style is in effect;
@@ -33046,7 +33172,7 @@ void MainWindow::loadBranchesPanel()
     if (actionWidth > 0)
         // A little slack so the rightmost button never sits flush against the
         // column edge (the action row already carries an 8px right margin).
-        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 8);
+        m_branchesTable->horizontalHeader()->resizeSection(4, actionWidth + 8);
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
@@ -33611,7 +33737,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
             QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
             true);
@@ -33746,7 +33872,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
             runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
     };
 
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
             QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
             true);
@@ -34042,9 +34168,9 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     const bool isCurrent = restoreBranch == branch;
 
     QString err;
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
-            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(160)),
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
             true);
         return;
     }
