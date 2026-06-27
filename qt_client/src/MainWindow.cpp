@@ -7837,6 +7837,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
     // bar (see buildRepoDetail), not in the top navigation row.
     mainRow->addSpacing(12);
+    // Browser-style Back / Forward buttons, sat just left of the search box.
+    mainRow->addWidget(createNavHistoryButtons());
     // One box that searches everything (sections, relays, nodes, repos, and the
     // open repo's issues/PRs/branches/files/commits) and jumps to the result.
     mainRow->addWidget(createGlobalSearchBox());
@@ -9537,6 +9539,10 @@ void MainWindow::showSection(int index)
         m_navGroup->button(index)->setChecked(true);
     if (m_sectionStack)
         m_sectionStack->setCurrentIndex(index);
+    // Capture this landing onto the Back / Forward trail. Debounced, so opening a
+    // repo (which ends in showSection(0) after m_repoDetailIndex is set) records the
+    // settled {section, repo} place once, not the intermediate steps.
+    scheduleNavRecord();
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
@@ -28293,6 +28299,119 @@ void MainWindow::hideGlobalSearchPopup()
 {
     if (m_globalSearchPopup)
         m_globalSearchPopup->hide();
+}
+
+// ---------------------------------------------------------------------------
+// Back / forward navigation trail (sits just left of the search box).
+//
+// As you move between sections and repositories, scheduleNavRecord() captures
+// where you landed onto a browser-style history. Back and Forward replay it
+// without recording new entries, so the trail behaves like a web browser's.
+// ---------------------------------------------------------------------------
+QWidget *MainWindow::createNavHistoryButtons()
+{
+    auto *holder = new QWidget;
+    auto *row = new QHBoxLayout(holder);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(2);
+
+    auto makeButton = [this](const QString &icon, const QString &tip,
+                             void (MainWindow::*slot)()) {
+        auto *b = new QPushButton;
+        b->setObjectName("relayOpenButton"); // transparent icon-button styling
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(30, 30);
+        setOcticon(b, icon, 16);
+        b->setToolTip(tip);
+        b->setEnabled(false);
+        connect(b, &QPushButton::clicked, this, slot);
+        return b;
+    };
+    m_navBackButton = makeButton("chevron-left", QStringLiteral("Back"),
+                                 &MainWindow::navigateBack);
+    m_navForwardButton = makeButton("chevron-right", QStringLiteral("Forward"),
+                                    &MainWindow::navigateForward);
+    row->addWidget(m_navBackButton);
+    row->addWidget(m_navForwardButton);
+    return holder;
+}
+
+void MainWindow::scheduleNavRecord()
+{
+    // A single user action (e.g. picking a search result) can fan out into several
+    // showSection()/openRepoDetail() calls; coalesce them into one capture of the
+    // settled location once the call stack unwinds.
+    if (m_navRestoring || m_navRecordPending)
+        return;
+    m_navRecordPending = true;
+    QTimer::singleShot(0, this, &MainWindow::recordNavLocation);
+}
+
+void MainWindow::recordNavLocation()
+{
+    m_navRecordPending = false;
+    if (m_navRestoring)
+        return;
+    NavPlace here;
+    here.section = m_sectionStack ? m_sectionStack->currentIndex() : 0;
+    // The repo only distinguishes a place inside the Code section; elsewhere the
+    // detail panel isn't shown, so normalise it out to avoid phantom entries.
+    here.repoIndex = (here.section == 0) ? m_repoDetailIndex : -1;
+
+    if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() &&
+        m_navHistory.at(m_navHistoryIndex) == here)
+        return; // already standing here — nothing moved
+
+    // Branching off mid-trail drops everything ahead of the cursor.
+    while (m_navHistory.size() > m_navHistoryIndex + 1)
+        m_navHistory.removeLast();
+    m_navHistory.append(here);
+    constexpr int kMaxNavHistory = 50;
+    while (m_navHistory.size() > kMaxNavHistory)
+        m_navHistory.removeFirst();
+    m_navHistoryIndex = m_navHistory.size() - 1;
+    updateNavHistoryButtons();
+}
+
+void MainWindow::restoreNavEntry(int index)
+{
+    if (index < 0 || index >= m_navHistory.size())
+        return;
+    const NavPlace place = m_navHistory.at(index);
+    m_navHistoryIndex = index;
+    // Replay without recording: the location we land on already equals this entry,
+    // and recording would truncate the forward trail we're walking through.
+    m_navRestoring = true;
+    if (place.section == 0 && place.repoIndex >= 0 &&
+        place.repoIndex < m_repositories.size() &&
+        place.repoIndex != m_repoDetailIndex) {
+        openRepoDetailDeferred(place.repoIndex); // lands on the Code section itself
+    } else {
+        showSection(place.section);
+    }
+    m_navRestoring = false;
+    updateNavHistoryButtons();
+}
+
+void MainWindow::navigateBack()
+{
+    if (m_navHistoryIndex > 0)
+        restoreNavEntry(m_navHistoryIndex - 1);
+}
+
+void MainWindow::navigateForward()
+{
+    if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() - 1)
+        restoreNavEntry(m_navHistoryIndex + 1);
+}
+
+void MainWindow::updateNavHistoryButtons()
+{
+    if (m_navBackButton)
+        m_navBackButton->setEnabled(m_navHistoryIndex > 0);
+    if (m_navForwardButton)
+        m_navForwardButton->setEnabled(m_navHistoryIndex >= 0 &&
+                                       m_navHistoryIndex < m_navHistory.size() - 1);
 }
 
 namespace {
