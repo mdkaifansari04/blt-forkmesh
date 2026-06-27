@@ -38191,6 +38191,15 @@ void MainWindow::headlessSyncNow()
     pollOwnedInboxes();
 }
 
+void MainWindow::headlessUpdateRestart()
+{
+    // Same code path as the GUI "Update, rebuild & restart" button. The update log
+    // dialog it opens is invisible under the offscreen platform, but every phase is
+    // also echoed to the terminal by logRestart()/qInfo(), so a headless operator
+    // sees the full progress. On success the process relaunches itself and quits.
+    updateRebuildRestart();
+}
+
 QStringList MainWindow::headlessStatusLines() const
 {
     QStringList lines;
