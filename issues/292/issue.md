@@ -5,7 +5,7 @@ title: in notifications when you click on a row go to the related scren / item
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 77
 progress: 0
 assignees: []
 createdAt: 1782504463382
