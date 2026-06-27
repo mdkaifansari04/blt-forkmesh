@@ -33395,11 +33395,26 @@ void MainWindow::showBranchDiff(const QString &branch)
     const QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, base,
                                         branch, QString(), QHash<QString, QString>(),
                                         viewed);
-    m_branchDiffView->setHtml(
-        html.isEmpty()
-            ? QStringLiteral("<p style='color:#8b949e'>No changes between %1 and %2.</p>")
-                  .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
-            : html);
+    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays
+    // it all out on the UI thread, freezing it for many seconds (issue #187).
+    // Past a sane size, show the changed-files list with a notice instead.
+    constexpr int kMaxDiffHtmlChars = 1'000'000;
+    if (html.size() > kMaxDiffHtmlChars) {
+        m_branchDiffView->setHtml(
+            QStringLiteral(
+                "<p style='color:#d29922'>This diff is too large to render here "
+                "(%1 file%2). Use the changed-files list, or view the branch in "
+                "your editor.</p>")
+                .arg(files.size())
+                .arg(files.size() == 1 ? "" : "s"));
+    } else {
+        m_branchDiffView->setHtml(
+            html.isEmpty()
+                ? QStringLiteral(
+                      "<p style='color:#8b949e'>No changes between %1 and %2.</p>")
+                      .arg(branch.toHtmlEscaped(), base.toHtmlEscaped())
+                : html);
+    }
 
     // Changed-files list: a status-coloured row per file; click to scroll the
     // diff to it (mirrors the commit/PR diff viewers).
@@ -33435,14 +33450,19 @@ void MainWindow::showBranchDiff(const QString &branch)
     }
 
     // Record each file header's position so the sticky bar can name the file
-    // currently scrolled into view.
+    // currently scrolled into view. Walk the document's blocks (cheap and
+    // layout-free) rather than QTextDocument::find(), whose cursor positioning
+    // forces a full synchronous layout of the entire diff — that alone froze the
+    // UI for seconds on large branch diffs (issue #187).
     QTextDocument *spanDoc = m_branchDiffView->document();
-    int spanFrom = 0;
-    for (const DiffFileEntry &f : files) {
-        const QTextCursor c = spanDoc->find(f.path, spanFrom);
-        if (!c.isNull()) {
-            m_branchDiffFileSpans.append(qMakePair(c.selectionStart(), f.path));
-            spanFrom = c.position();
+    int fileIdx = 0;
+    for (QTextBlock block = spanDoc->begin();
+         block.isValid() && fileIdx < files.size(); block = block.next()) {
+        const int at = block.text().indexOf(files.at(fileIdx).path);
+        if (at >= 0) {
+            m_branchDiffFileSpans.append(
+                qMakePair(block.position() + at, files.at(fileIdx).path));
+            ++fileIdx;
         }
     }
     updateBranchDiffSticky();
