@@ -5,7 +5,7 @@ title: still not seeing teh nodes show up in the mirror nodes section i see 2 on
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 16
 progress: 0
 assignees: []
 createdAt: 1782361704980
