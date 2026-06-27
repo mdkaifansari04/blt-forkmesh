@@ -43450,10 +43450,6 @@ void MainWindow::syncRepository(int index, bool quiet)
         return;
     }
 
-    const QString beforeDigest = mirrorRefsDigest(repo.mirrorPath);
-    const QString beforeHeadBranch = mirrorHeadBranch(repo.mirrorPath);
-    const QString beforeHeadCommit =
-        mirrorBranchCommit(repo.mirrorPath, beforeHeadBranch);
     // Mirror only the stable namespaces (branches + tags). Tool-managed refs
     // like refs/codex/* churn constantly on active repos: a client that wants a
     // ref which vanished between the advertisement and the pack negotiation gets
@@ -43474,16 +43470,12 @@ void MainWindow::syncRepository(int index, bool quiet)
                                 "origin"} +
                         kStableRefspecs
                   : QStringList{"clone", "--bare", source, repo.mirrorPath});
+    const QString mirrorPath = repo.mirrorPath;
 
-    // Track the live source: an owned repo with a local working copy should
-    // fetch from that copy, not from a stale relay URL baked into origin at
-    // clone time (which can return HTTP 5xx through the host tunnel).
-    if (hasMirror && !source.isEmpty())
-        runGitCapture(repo.mirrorPath,
-                      {QStringLiteral("remote"), QStringLiteral("set-url"),
-                       QStringLiteral("origin"), source},
-                      nullptr, nullptr);
-
+    // Flag the repo "syncing" and reflect it in the UI right away — before any git
+    // subprocess runs — so clicking "Sync changes" flips the button to "Syncing
+    // changes" instantly and never blocks the GUI thread. The insert also guards
+    // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
     m_syncingRepos.insert(index);
     refreshRepositoryList();
     if (!quiet) {
@@ -43495,6 +43487,51 @@ void MainWindow::syncRepository(int index, bool quiet)
                   repo.owner + "/" + repo.name + " from " + source + ".");
     }
 
+    // Read the mirror's pre-fetch refs digest + HEAD and re-point origin at the
+    // live source off the GUI thread. Each is a git subprocess that blocks for up
+    // to 5s on a busy mirror (the for-each-ref digest over hundreds of issue/PR
+    // refs is the slow one), and running them here froze the window every time a
+    // sync *started* — the mirror image of the post-fetch housekeeping below,
+    // which already runs on a worker for exactly this reason. The worker only
+    // touches the mirror through path strings (never m_repositories or a widget);
+    // the async fetch is kicked off back on the main thread once it finishes.
+    auto beforeDigest = std::make_shared<QString>();
+    auto beforeHeadCommit = std::make_shared<QString>();
+    QThread *prep = QThread::create(
+        [mirrorPath, source, hasMirror, beforeDigest, beforeHeadCommit] {
+            *beforeDigest = mirrorRefsDigest(mirrorPath);
+            *beforeHeadCommit =
+                mirrorBranchCommit(mirrorPath, mirrorHeadBranch(mirrorPath));
+            // Track the live source: an owned repo with a local working copy
+            // should fetch from that copy, not from a stale relay URL baked into
+            // origin at clone time (which can return HTTP 5xx through the host
+            // tunnel).
+            if (hasMirror && !source.isEmpty())
+                runGitCapture(mirrorPath,
+                              {QStringLiteral("remote"), QStringLiteral("set-url"),
+                               QStringLiteral("origin"), source},
+                              nullptr, nullptr);
+        });
+    connect(prep, &QThread::finished, this,
+            [this, prep, index, quiet, hasMirror, args, beforeDigest,
+             beforeHeadCommit] {
+                prep->deleteLater();
+                if (index < 0 || index >= m_repositories.size()) {
+                    m_syncingRepos.remove(index);
+                    refreshRepositoryList();
+                    return;
+                }
+                startSyncFetch(index, quiet, hasMirror, args, *beforeDigest,
+                               *beforeHeadCommit);
+            });
+    prep->start();
+}
+
+void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
+                                const QStringList &args,
+                                const QString &beforeDigest,
+                                const QString &beforeHeadCommit)
+{
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
             [this, process, index, quiet, beforeDigest, beforeHeadCommit,
