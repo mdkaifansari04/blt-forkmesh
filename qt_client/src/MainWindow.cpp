@@ -30757,9 +30757,12 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(heading);
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
-    headerRow->addWidget(m_branchDeleteMergedButton);
     headerRow->addWidget(m_branchPullAllButton);
     headerRow->addWidget(refreshButton);
+    // "Delete merged" prunes every branch that's 0 behind / 0 ahead of the
+    // default branch; keep it right beside "New branch" so the create/cleanup
+    // pair sits together at the end of the toolbar (issue #122).
+    headerRow->addWidget(m_branchDeleteMergedButton);
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
 
