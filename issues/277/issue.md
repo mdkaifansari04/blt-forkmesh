@@ -5,7 +5,7 @@ title: on actions runs have a button to clear the run history
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 63
 progress: 0
 assignees: []
 createdAt: 1782485959696
