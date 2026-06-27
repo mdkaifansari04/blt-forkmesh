@@ -48,6 +48,43 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
+// Drop any other worktree currently holding `branch` checked out so the main
+// worktree can check it out. An agent session runs in a temp worktree at
+// /tmp/forkmesh-worktrees/…; if one is left behind it keeps the branch reserved
+// and `git checkout <branch>` here fails with "is already used by worktree at …".
+// Removing the worktree frees the branch while keeping its ref intact. Returns
+// true if it released something (so the caller should retry the checkout).
+bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGit(dir, {"worktree", "list", "--porcelain"}, &out, nullptr))
+        return false;
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    QString currentPath;
+    QString held;
+    const QList<QByteArray> lines = out.split('\n');
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(QStringLiteral("worktree ").size()).trimmed();
+        else if (line.startsWith(QLatin1String("branch ")) &&
+                 line.mid(QStringLiteral("branch ").size()).trimmed() == want &&
+                 !currentPath.isEmpty() &&
+                 QDir(currentPath).absolutePath() != QDir(dir).absolutePath()) {
+            held = currentPath;
+            break;
+        }
+    }
+    if (held.isEmpty())
+        return false;
+    runGit(dir, {"worktree", "remove", "--force", held}, nullptr, nullptr);
+    QDir(held).removeRecursively();
+    runGit(dir, {"worktree", "prune"}, nullptr, nullptr);
+    return true;
+}
+
 // Pull the conflicting file paths out of `git apply --check --3way` output,
 // which names the offending file in a few shapes depending on whether the
 // 3-way fallback ran:
@@ -1071,9 +1108,15 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
             : current;
 
     if (!runGit(m_workTree, {"checkout", pr.head}, nullptr, &err)) {
-        if (error)
-            *error = QStringLiteral("Could not check out %1: %2").arg(pr.head, err);
-        return false;
+        // A leftover agent worktree may still hold this branch ("is already used
+        // by worktree at …"). Release it and retry once before giving up.
+        const bool recovered = releaseWorktreeHoldingBranch(m_workTree, pr.head) &&
+                               runGit(m_workTree, {"checkout", pr.head}, nullptr, &err);
+        if (!recovered) {
+            if (error)
+                *error = QStringLiteral("Could not check out %1: %2").arg(pr.head, err);
+            return false;
+        }
     }
     if (!runGit(m_workTree, {"merge", "--no-edit", pr.base}, nullptr, &err)) {
         runGit(m_workTree, {"merge", "--abort"}, nullptr, nullptr);
