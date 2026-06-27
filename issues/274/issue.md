@@ -5,7 +5,7 @@ title: show sortable date modified and created  on PRs list allow for hiding the
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 60
 progress: 0
 assignees: []
 createdAt: 1782485711055
