@@ -19529,12 +19529,20 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 // active run time (durationMs, the same value the Time column shows), and fall
 // back to the start→finish wall-clock span for sessions that don't report it
 // (e.g. the API agents) so the Speed field is populated for every finished task.
+// While a session is still running, measure against the wall clock from its
+// start so the Speed figure ticks up live as tokens stream in, rather than
+// staying blank until the final result lands.
 qint64 agentEffectiveDurationMs(const AgentSession &s)
 {
     if (s.durationMs > 0)
         return s.durationMs;
     if (s.finishedAtMs > s.startedAtMs && s.startedAtMs > 0)
         return s.finishedAtMs - s.startedAtMs;
+    if (s.startedAtMs > 0 && s.status == AgentStatus::Running) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now > s.startedAtMs)
+            return now - s.startedAtMs;
+    }
     return 0;
 }
 
@@ -23202,6 +23210,13 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         }
         cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+        // Refresh the Speed cell in the same pass so the tok/s figure climbs in
+        // real time while the agent streams — agentEffectiveDurationMs measures
+        // a running session against the wall clock, so this recomputes the live
+        // rate from the freshly-bumped token total.
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+            if (const AgentSession *s = findAgentSession(sessionId))
+                applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
     // Keep the open detail panel's "Session token usage" line in step with the
