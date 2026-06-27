@@ -3828,6 +3828,76 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
     return true;
 }
 
+// Drop any other worktree currently holding `branch` checked out so this working
+// tree can switch to it. Agent sessions run in a temp worktree under
+// /tmp/forkmesh-worktrees/…; one left behind (an app restart skips its cleanup)
+// keeps the branch reserved, so `git checkout <branch>` here fails with "is
+// already used by worktree at …". Removing the worktree frees the branch while
+// keeping its ref intact. Returns true if it released something so the caller
+// can retry the checkout. (Mirrors releaseWorktreeHoldingBranch in PullStore.)
+bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGitCapture(dir, {"worktree", "list", "--porcelain"}, &out, nullptr))
+        return false;
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    QString currentPath;
+    QString held;
+    const QList<QByteArray> lines = out.split('\n');
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(QStringLiteral("worktree ").size()).trimmed();
+        else if (line.startsWith(QLatin1String("branch ")) &&
+                 line.mid(QStringLiteral("branch ").size()).trimmed() == want &&
+                 !currentPath.isEmpty() &&
+                 QDir(currentPath).absolutePath() != QDir(dir).absolutePath()) {
+            held = currentPath;
+            break;
+        }
+    }
+    if (held.isEmpty())
+        return false;
+    runGitCapture(dir, {"worktree", "remove", "--force", held}, nullptr, nullptr);
+    QDir(held).removeRecursively();
+    runGitCapture(dir, {"worktree", "prune"}, nullptr, nullptr);
+    return true;
+}
+
+// Check out `branch` in `dir`, first clearing any leftover agent worktree that
+// has it reserved (see releaseWorktreeHoldingBranch). On failure returns false
+// with stderr in `err`; for the "already used by worktree" case that the auto
+// release could not resolve, `err` is rewritten into a short why/how-to-fix the
+// caller can show, instead of leaking git's raw "fatal: …" line.
+bool checkoutReleasingWorktree(const QString &dir, const QString &branch,
+                               QString *err)
+{
+    if (runGitCapture(dir, {"checkout", branch}, nullptr, err))
+        return true;
+    if (err && err->contains(QLatin1String("already used by worktree"))) {
+        if (releaseWorktreeHoldingBranch(dir, branch) &&
+            runGitCapture(dir, {"checkout", branch}, nullptr, err))
+            return true;
+        // Still held — name the offending worktree (git puts its path after
+        // "worktree at ") and how to clear it.
+        static const QString marker = QStringLiteral("worktree at ");
+        const int at = err->indexOf(marker);
+        const QString where =
+            at >= 0 ? err->mid(at + marker.size()).trimmed() : QString();
+        *err = where.isEmpty()
+                   ? QStringLiteral("it is checked out in another worktree. Close "
+                                    "that agent session (or remove that worktree), "
+                                    "then try again.")
+                   : QStringLiteral("it is checked out in the worktree at %1. Close "
+                                    "that agent session (or run `git worktree "
+                                    "remove --force` on it), then try again.")
+                         .arg(where);
+    }
+    return false;
+}
+
 // Capture git's stdout regardless of exit code. Some diff commands exit non-zero
 // when differences exist (`diff --no-index` returns 1), which runGitCapture
 // treats as failure and discards the output we actually want.
@@ -33732,7 +33802,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
             QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
             true);
@@ -33867,7 +33937,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
             runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
     };
 
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
             QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
             true);
@@ -34163,9 +34233,9 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     const bool isCurrent = restoreBranch == branch;
 
     QString err;
-    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
         setRepoDetailNotice(
-            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(160)),
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
             true);
         return;
     }
