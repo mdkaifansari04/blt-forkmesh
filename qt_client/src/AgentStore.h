@@ -47,6 +47,11 @@ struct AgentSession {
     double costUsd = 0.0;
     double spendBeforeUsd = 0.0;
     double spendAfterUsd = 0.0;
+    // Claude Code run summary, captured from the CLI's final `result` event
+    // ("done · N turns · Ms · $X"): the number of turns and total wall-clock
+    // duration the run took, persisted so the list shows it after a restart.
+    int numTurns = 0;
+    qint64 durationMs = 0;
     QString lastError;
 
     QString repoKey() const;
