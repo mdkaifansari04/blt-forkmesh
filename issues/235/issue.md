@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 235
 title: Branch port/issue-175-auto-publish — needs merge into main
-status: open
+status: closed
 labels: [feature]
 milestone: 
 priority: 10
