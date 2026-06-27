@@ -22922,8 +22922,24 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
 {
     if (!m_agentFilesList)
         return;
-    const QString repoPath = sessionWorkdir(sessionId); // the worktree, if any
+    // Render the files we already know about from the session's tool calls right
+    // away — that's in-memory and cheap, so an edit shows up the instant the agent
+    // makes it. The working-tree `git diff` augmentation used to run here with a
+    // blocking waitForFinished(), which fired on *every* transcript event and
+    // froze the UI in ~1.5-2s bursts while an agent streamed. It's now coalesced
+    // and run off the event loop instead (scheduleAgentFilesDiff).
+    populateAgentFilesPanel(sessionId, QStringList());
+    scheduleAgentFilesDiff(sessionId);
+}
 
+// Rebuild the edited-files list from the session's in-memory tool-call files plus
+// any working-tree diff paths handed in. A no-op when the session is no longer the
+// one on screen, so a late async diff callback can't clobber another session's list.
+void MainWindow::populateAgentFilesPanel(int sessionId, const QStringList &diffFiles)
+{
+    if (!m_agentFilesList || sessionId != m_selectedAgentSessionId)
+        return;
+    const QString repoPath = sessionWorkdir(sessionId); // the worktree, if any
     QStringList absPaths;
     auto addAbs = [&](const QString &p) {
         QString abs = QDir::isAbsolutePath(p) || repoPath.isEmpty()
@@ -22933,15 +22949,8 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
     };
     for (const QString &p : m_streamFiles.value(sessionId))
         addAbs(p);
-    if (!repoPath.isEmpty()) {
-        QProcess git;
-        git.setWorkingDirectory(repoPath);
-        git.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only")});
-        if (git.waitForFinished(3000) && git.exitCode() == 0)
-            for (const QString &f : QString::fromUtf8(git.readAllStandardOutput())
-                                        .split(QLatin1Char('\n'), Qt::SkipEmptyParts))
-                addAbs(f);
-    }
+    for (const QString &p : diffFiles)
+        addAbs(p);
 
     m_agentFilesList->clear();
     for (const QString &abs : absPaths) {
@@ -22952,6 +22961,39 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
         it->setData(Qt::UserRole, abs);
         m_agentFilesList->addItem(it);
     }
+}
+
+// Coalesce the working-tree `git diff --name-only` that augments the edited-files
+// panel: a burst of transcript events restarts a short single-shot timer, so the
+// (async) diff runs once after the burst rather than once per event.
+void MainWindow::scheduleAgentFilesDiff(int sessionId)
+{
+    if (sessionId != m_selectedAgentSessionId)
+        return;
+    const QString repoPath = sessionWorkdir(sessionId);
+    if (repoPath.isEmpty())
+        return;
+    if (!m_agentFilesDiffTimer) {
+        m_agentFilesDiffTimer = new QTimer(this);
+        m_agentFilesDiffTimer->setSingleShot(true);
+        m_agentFilesDiffTimer->setInterval(400);
+        connect(m_agentFilesDiffTimer, &QTimer::timeout, this, [this] {
+            const int sid = m_selectedAgentSessionId;
+            const QString dir = sessionWorkdir(sid);
+            if (sid <= 0 || dir.isEmpty())
+                return;
+            runGitDetached(
+                dir, {QStringLiteral("diff"), QStringLiteral("--name-only")},
+                [this, sid](bool ok, const QByteArray &out) {
+                    if (!ok || sid != m_selectedAgentSessionId)
+                        return;
+                    populateAgentFilesPanel(
+                        sid, QString::fromUtf8(out).split(QLatin1Char('\n'),
+                                                          Qt::SkipEmptyParts));
+                });
+        });
+    }
+    m_agentFilesDiffTimer->start();
 }
 
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
@@ -29121,6 +29163,32 @@ QWidget *MainWindow::buildWorktreesTab()
     return page;
 }
 
+void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
+                                std::function<void(bool, const QByteArray &)> onDone)
+{
+    auto *git = new QProcess(this);
+    if (!dir.isEmpty())
+        git->setWorkingDirectory(dir);
+    // FailedToStart fires errorOccurred but not finished, and a crash fires both,
+    // so guard the callback so it runs exactly once whichever way the process ends.
+    auto done = std::make_shared<bool>(false);
+    auto finish = [git, done, onDone = std::move(onDone)](bool ok) {
+        if (*done)
+            return;
+        *done = true;
+        if (onDone)
+            onDone(ok, git->readAllStandardOutput());
+        git->deleteLater();
+    };
+    connect(git, &QProcess::finished, this,
+            [finish](int code, QProcess::ExitStatus st) {
+                finish(st == QProcess::NormalExit && code == 0);
+            });
+    connect(git, &QProcess::errorOccurred, this,
+            [finish](QProcess::ProcessError) { finish(false); });
+    git->start(QStringLiteral("git"), args);
+}
+
 void MainWindow::loadWorktreesPanel()
 {
     if (!m_worktreesTable)
@@ -29173,6 +29241,12 @@ void MainWindow::loadWorktreesPanel()
     }
 
     const QString mainPath = QDir(repoPath).absolutePath();
+    // Each worktree's dirty/clean status needs its own `git status`, which was run
+    // synchronously per row and froze the UI for seconds on repos with many
+    // worktrees (a 21s stall was reported). Fill the column asynchronously instead
+    // (see runGitDetached); this generation tag lets a stale callback bail if the
+    // table is rebuilt before it returns.
+    const int statusGen = ++m_worktreeStatusGen;
     int actionWidth = 0;
     for (const WT &wt : wts) {
         const int row = m_worktreesTable->rowCount();
@@ -29189,16 +29263,37 @@ void MainWindow::loadWorktreesPanel()
         m_worktreesTable->setItem(row, 0, bItem);
         m_worktreesTable->setItem(row, 1, new QTableWidgetItem(wt.path));
 
-        QString status = isMain ? QStringLiteral("main checkout") : QString();
-        QByteArray st;
-        if (runGitCapture(wt.path, {QStringLiteral("status"), QStringLiteral("--porcelain")},
-                          &st, nullptr)
-            && !QString::fromUtf8(st).trimmed().isEmpty())
-            status = status.isEmpty() ? QStringLiteral("uncommitted changes")
-                                      : status + QStringLiteral(" · dirty");
-        if (status.isEmpty())
-            status = QStringLiteral("clean");
-        m_worktreesTable->setItem(row, 2, new QTableWidgetItem(status));
+        // Show a placeholder now; the real dirty/clean state is filled in by the
+        // async `git status` below so the panel appears instantly.
+        m_worktreesTable->setItem(
+            row, 2,
+            new QTableWidgetItem(isMain ? QStringLiteral("main checkout")
+                                        : QString::fromUtf8("checking\xE2\x80\xA6")));
+        const QString wtPath = wt.path;
+        const bool mainRow = isMain;
+        runGitDetached(
+            wt.path, {QStringLiteral("status"), QStringLiteral("--porcelain")},
+            [this, statusGen, wtPath, mainRow](bool ok, const QByteArray &st) {
+                if (statusGen != m_worktreeStatusGen || !m_worktreesTable)
+                    return; // the table was rebuilt while git ran — drop this result
+                const bool dirty =
+                    ok && !QString::fromUtf8(st).trimmed().isEmpty();
+                QString status = mainRow ? QStringLiteral("main checkout") : QString();
+                if (dirty)
+                    status = status.isEmpty() ? QStringLiteral("uncommitted changes")
+                                              : status + QStringLiteral(" · dirty");
+                if (status.isEmpty())
+                    status = QStringLiteral("clean");
+                const QString want = QDir(wtPath).absolutePath();
+                for (int r = 0; r < m_worktreesTable->rowCount(); ++r) {
+                    QTableWidgetItem *p = m_worktreesTable->item(r, 1);
+                    if (p && QDir(p->text()).absolutePath() == want) {
+                        if (QTableWidgetItem *c = m_worktreesTable->item(r, 2))
+                            c->setText(status);
+                        break;
+                    }
+                }
+            });
 
         auto *cell = new QWidget;
         auto *h = new QHBoxLayout(cell);

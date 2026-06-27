@@ -849,6 +849,15 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+    // Run `git <args>` in `dir` without blocking the event loop: the QProcess is
+    // parented to this window and self-deletes, and onDone(ok, stdout) runs on the
+    // main thread once it finishes. Used for UI-thread git calls that were
+    // freezing the window via waitForFinished() (see StallWatchdog reports).
+    void runGitDetached(const QString &dir, const QStringList &args,
+                        std::function<void(bool, const QByteArray &)> onDone);
+    // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
+    // status` callbacks can drop their result if the table was rebuilt meanwhile.
+    int m_worktreeStatusGen = 0;
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable branch link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
@@ -2181,7 +2190,14 @@ private:
                                    const QString &customPrompt = QString());
     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
     void renderTranscriptForSession(int sessionId);
+    // Refresh the edited-files panel. The in-memory tool-call files render
+    // immediately; the working-tree `git diff` augmentation is coalesced and run
+    // off the event loop (see scheduleAgentFilesDiff) so a streaming agent can't
+    // freeze the UI by re-spawning `git diff` on every transcript event.
     void refreshAgentFilesPanel(int sessionId);
+    void populateAgentFilesPanel(int sessionId, const QStringList &diffFiles);
+    void scheduleAgentFilesDiff(int sessionId);
+    QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;
     // Lazily restore a session's persisted transcript events from disk (issue
