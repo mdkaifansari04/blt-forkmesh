@@ -29944,7 +29944,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
-                                bool confirm, bool alsoDeleteBranch)
+                                bool confirm, bool alsoDeleteBranch, bool async)
 {
     if (worktreePath.isEmpty())
         return;
@@ -29975,40 +29975,82 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    // runGitCapture (not QProcess::execute) so this honors GitKeepAlive: when the
-    // post-merge cleanup calls in, the event loop keeps pumping while git deletes
-    // the worktree folder recursively, instead of freezing the window.
-    if (!runGitCapture(repoPath,
-                       {QStringLiteral("worktree"), QStringLiteral("remove"),
-                        QStringLiteral("--force"), worktreePath},
-                       nullptr, nullptr)) {
+    // Once the worktree folder is gone: with it no longer checked out anywhere the
+    // branch can be force-deleted. -D matches the "uncommitted changes will be lost"
+    // warning the user just accepted: they asked for the whole worktree — branch and
+    // all — to go. Then refresh the panels that listed it.
+    auto finish = [this, repoPath, worktreePath, branch, deleteBranch] {
+        if (deleteBranch) {
+            QString err;
+            if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
+                logSystem(
+                    QStringLiteral("Git: removed worktree %1 and deleted branch %2.")
+                        .arg(worktreePath, branch));
+                setRepoDetailNotice(
+                    QStringLiteral("Removed worktree and deleted branch %1.").arg(branch));
+            } else {
+                setRepoDetailNotice(
+                    QStringLiteral(
+                        "Removed the worktree, but could not delete branch %1: %2")
+                        .arg(branch,
+                             err.isEmpty() ? QStringLiteral("unknown error") : err),
+                    true);
+            }
+        }
+        loadWorktreesPanel();
+        if (m_branchesTable)
+            loadBranchesPanel();
+    };
+
+    const QStringList removeArgs{QStringLiteral("-C"), repoPath,
+                                 QStringLiteral("worktree"), QStringLiteral("remove"),
+                                 QStringLiteral("--force"), worktreePath};
+
+    // async: recursively deleting the worktree folder is slow when it holds build
+    // artifacts (node_modules, target/…), and blocking git on the UI thread froze
+    // the window for that whole stretch — no clicks registered until it returned
+    // (issue #95). Run it as a detached QProcess and continue in finished() so the
+    // window stays responsive; the branch delete + refresh follow once it's gone.
+    if (async) {
+        QProcess *git = new QProcess(this);
+        auto failed = [this, worktreePath] {
+            setRepoDetailNotice(
+                QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
+                true);
+            loadWorktreesPanel();
+        };
+        connect(git, &QProcess::errorOccurred, this,
+                [git, failed](QProcess::ProcessError e) {
+                    // Only FailedToStart skips finished(); other errors still emit it.
+                    if (e != QProcess::FailedToStart)
+                        return;
+                    git->deleteLater();
+                    failed();
+                });
+        connect(git, &QProcess::finished, this,
+                [git, finish, failed](int code, QProcess::ExitStatus status) {
+                    git->deleteLater();
+                    if (status != QProcess::NormalExit || code != 0) {
+                        failed();
+                        return;
+                    }
+                    finish();
+                });
+        git->start(QStringLiteral("git"), removeArgs);
+        return;
+    }
+
+    // Synchronous path: the post-merge cleanup inspects the result inline. It runs
+    // under GitKeepAlive so the event loop keeps pumping (window stays painted)
+    // while git deletes the folder.
+    if (!runGitCapture(repoPath, removeArgs.mid(2), nullptr, nullptr)) {
         setRepoDetailNotice(
             QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
             true);
         loadWorktreesPanel();
         return;
     }
-    // With the worktree gone the branch is no longer checked out anywhere, so it can
-    // be force-deleted. -D matches the "uncommitted changes will be lost" warning the
-    // user just accepted: they asked for the whole worktree — branch and all — to go.
-    if (deleteBranch) {
-        QString err;
-        if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
-            logSystem(QStringLiteral("Git: removed worktree %1 and deleted branch %2.")
-                          .arg(worktreePath, branch));
-            setRepoDetailNotice(
-                QStringLiteral("Removed worktree and deleted branch %1.").arg(branch));
-        } else {
-            setRepoDetailNotice(
-                QStringLiteral(
-                    "Removed the worktree, but could not delete branch %1: %2")
-                    .arg(branch, err.isEmpty() ? QStringLiteral("unknown error") : err),
-                true);
-        }
-    }
-    loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    finish();
 }
 
 QString MainWindow::worktreePathForBranch(const QString &repoPath,
@@ -30106,8 +30148,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
 
     if (!worktreePath.isEmpty()) {
         // removeWorktree handles the folder + branch and refreshes the panels.
+        // async=true so the recursive folder delete runs off the UI thread and the
+        // window stays clickable while it works (issue #95).
         removeWorktree(worktreePath, branch, /*confirm=*/false,
-                       /*alsoDeleteBranch=*/willDeleteBranch);
+                       /*alsoDeleteBranch=*/willDeleteBranch, /*async=*/true);
     } else if (willDeleteBranch) {
         // No worktree left (the agent already cleaned it up) — just drop the branch.
         QString err;
