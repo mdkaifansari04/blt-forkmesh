@@ -5,7 +5,7 @@ title: show in the worktree list time ago column
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 78
 progress: 0
 assignees: []
 createdAt: 1782506564142
