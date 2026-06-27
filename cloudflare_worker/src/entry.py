@@ -701,6 +701,59 @@ def build_repo_mirrors_payload(
     }
 
 
+def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online):
+    # Pick a healthy, online mirror to serve a clone of owner/repo from when the
+    # named owner's own host is offline. This is what keeps a repo cloneable when
+    # the source of truth goes down: a clone of /owner/repo is redirected to a peer
+    # that mirrors the SAME logical repo (grouped by root commit, name fallback) and
+    # is online right now. Returns the fallback owner's name, or None to fall
+    # through to the normal named-owner host route.
+    #
+    # Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload; the
+    # caller gathers the catalog rows + host_presence map and whether the named
+    # owner is currently online. We never redirect away from an online source.
+    owner_l = (owner or "").strip().lower()
+    repo_l = (repo or "").strip().lower()
+    if not owner_l or not repo_l or source_online:
+        return None
+    public = []
+    target = None
+    for row in rows or []:
+        rec = row.get("data") or {}
+        if row.get("is_private") or rec.get("visibility") == "private":
+            continue
+        rec_owner = str(rec.get("owner") or "").strip()
+        rec_name = str(rec.get("name") or "").strip()
+        if not rec_owner or not rec_name:
+            continue
+        item = {"key_bi": row.get("key_bi"), "data": rec}
+        public.append(item)
+        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
+            target = item
+    # When the source itself never published a record we can still group by name so
+    # an offline-but-unpublished source can fall back to a name-matching mirror.
+    target_data = target["data"] if target else {
+        "owner": owner, "name": repo, "rootCommit": ""}
+    candidates = []
+    for item in public:
+        rec = item["data"]
+        rec_owner = str(rec.get("owner") or "").strip()
+        if not rec_owner or rec_owner.lower() == owner_l:
+            continue  # never redirect to the (offline) source owner itself
+        if not repo_mirror_same_group(target_data, rec):
+            continue
+        seen = _mirror_ms(presence.get(item.get("key_bi")))
+        if not (seen and now - seen <= stale_ms):
+            continue  # only redirect to a mirror that is actually online
+        sync = _mirror_ms(rec.get("lastSync")) or 0
+        candidates.append((sync, seen, rec_owner))
+    if not candidates:
+        return None
+    # Freshest-synced wins, then most-recently-seen, then name for a stable order.
+    candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
+    return candidates[0][2]
+
+
 async def touch_host_presence(env, repo_bi):
     # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
     # connects and, throttled, while it serves traffic.
@@ -5961,6 +6014,50 @@ class Default(WorkerEntrypoint):
 
         return json_response({"error": "not_found"}, status=404)
 
+    async def _select_clone_fallback(self, owner, repo):
+        # When owner/repo's own host is offline, find a healthy online mirror of the
+        # same logical repo to redirect a clone to. Best-effort: any failure returns
+        # None so the request just falls through to the normal named-owner route.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            presence_rows = await d1_all(
+                self.env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {
+                str(r.get("repo_bi")): int(r.get("ts") or 0)
+                for r in presence_rows
+                if r.get("repo_bi")
+            }
+            source_ts = presence.get(repo_bi) or 0
+            source_online = bool(
+                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS)
+            # Fast path: the named host is live, so serve it directly (and skip the
+            # catalog decrypt entirely) — never redirect away from an online source.
+            if source_online:
+                return None
+            rows = await d1_all(
+                self.env,
+                "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
+            catalog_rows = []
+            for row in rows:
+                rec = await decrypt_row(self.env, row.get("data"))
+                if not rec:
+                    continue
+                if _is_blocked_catalog_identity(
+                        self.env, rec.get("owner"), rec.get("name")):
+                    continue
+                catalog_rows.append({
+                    "key_bi": row.get("key_bi"),
+                    "is_private": int(row.get("is_private") or 0),
+                    "data": rec,
+                })
+            return select_clone_fallback(
+                owner, repo, catalog_rows, presence, now,
+                HOST_PRESENCE_STALE_MS, source_online)
+        except Exception:
+            return None
+
     async def _git_host(self, request, owner_raw, repo_raw):
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
@@ -5972,6 +6069,21 @@ class Default(WorkerEntrypoint):
         if await _repo_is_private(self.env, owner, repo):
             if not await _basic_auth_view_ok(self.env, owner, repo, request):
                 return _basic_auth_challenge()
+        else:
+            # Public repo whose named host is offline: redirect the clone to a
+            # healthy mirror of the same logical repo so the code survives the
+            # source of truth going down (forkmesh's core promise). Only the
+            # initial info/refs probe is redirected; git then rebases on the
+            # mirror's URL and talks to it directly for the upload-pack POST.
+            url = urlparse(request.url)
+            if url.path.endswith("/info/refs"):
+                fallback = await self._select_clone_fallback(owner, repo)
+                if fallback and fallback.lower() != owner.lower():
+                    query = url.query or "service=git-upload-pack"
+                    location = "/%s/%s/info/refs?%s" % (fallback, repo, query)
+                    return Response(
+                        "", status=302,
+                        headers={"location": location, "cache-control": "no-store"})
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
