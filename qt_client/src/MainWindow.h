@@ -2534,6 +2534,12 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // Raw-log surface (m_agentLog) guard: which session's log is loaded and how
+    // many source characters it held. Re-setting the log re-parses and
+    // re-highlights the whole document (up to 30k blocks), so this skips the
+    // no-op refresh reloadAgents() would otherwise do on every tick (adhoc #169).
+    int m_agentLogSession = -1;
+    int m_agentLogChars = -1;
     QHash<int, QString> m_streamRaw;
     QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
     // Night-rider scanner lights: per-session sweep state keyed by sessionId (so

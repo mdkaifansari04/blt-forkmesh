@@ -22632,6 +22632,7 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentViewPrButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
+        m_agentLogSession = -1; // log surface cleared; force a refill next time
         updateAgentActionState();
         return;
     }
@@ -22783,9 +22784,25 @@ void MainWindow::showAgentSession(int sessionId)
 
     const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
     updateAgentNetworkPanel(log, session->status);
+    // The raw-log surface shows the buffered CLI stream for live transcript
+    // sessions and the on-disk log otherwise. Setting it re-parses and
+    // re-highlights the whole document, which froze the UI when reloadAgents()
+    // re-showed the selected session on every tick (adhoc #169). Stream sessions
+    // keep the edit current via appendAgentRawLog() (while it's the visible
+    // surface) and showAgentRawOutput() (on toggle), so they only need a refill
+    // on a session switch. Plain-log sessions have no other updater, so they also
+    // refill when the on-disk log length changed. Either way the no-op refresh is
+    // skipped.
     if (m_agentLog) {
-        m_agentLog->setPlainText(log);
-        m_agentLog->moveCursor(QTextCursor::End);
+        const bool streamLog = isStreamTranscriptSession(sessionId);
+        const int rawLen = streamLog ? -1 : log.size();
+        if (m_agentLogSession != sessionId ||
+            (!streamLog && m_agentLogChars != rawLen)) {
+            m_agentLog->setPlainText(streamLog ? m_streamRaw.value(sessionId) : log);
+            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
+            m_agentLogSession = sessionId;
+            m_agentLogChars = rawLen;
+        }
     }
     // Pick the right output surface. A Claude Code session renders its OWN
     // buffered transcript (so output never leaks between sessions); legacy
@@ -22805,10 +22822,8 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        if (m_agentLog) {
-            m_agentLog->setPlainText(m_streamRaw.value(sessionId));
-            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
-        }
+        // The raw log (m_streamRaw) was already loaded into m_agentLog above,
+        // guarded so an unchanged stream isn't re-laid-out every reload.
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -30146,11 +30161,35 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QHash<QString, QString> &lineNotes,
                        const QSet<QString> &viewedFiles)
 {
-    return diffSplitPref()
-               ? renderSplitDiffHtml(patch, files, dir, base, head, anchorFile,
+    // Guard against pathological diffs (vendored deps, lockfiles, generated or
+    // minified code) freezing the UI: QTextEdit::setHtml parses *and* lays out
+    // the whole document synchronously on the GUI thread, so an unbounded diff
+    // blocks the event loop for seconds (adhoc #169). Cap the patch at a line
+    // budget well above any human-reviewable change, then note the truncation.
+    constexpr int kMaxDiffLines = 6000;
+    QString trimmedPatch;
+    bool truncated = false;
+    for (int nl = 0, idx = -1; (idx = patch.indexOf(QLatin1Char('\n'), idx + 1)) >= 0;)
+        if (++nl >= kMaxDiffLines) {
+            if (patch.indexOf(QLatin1Char('\n'), idx + 1) >= 0) {
+                trimmedPatch = patch.left(idx);
+                truncated = true;
+            }
+            break;
+        }
+    const QString &src = truncated ? trimmedPatch : patch;
+    QString html = diffSplitPref()
+               ? renderSplitDiffHtml(src, files, dir, base, head, anchorFile,
                                      lineNotes, viewedFiles)
-               : renderUnifiedDiffHtml(patch, files, dir, base, head, anchorFile,
+               : renderUnifiedDiffHtml(src, files, dir, base, head, anchorFile,
                                        lineNotes, viewedFiles);
+    if (truncated)
+        html += QString::fromUtf8(
+                    "<p style='color:#8b949e; padding:8px 12px'>Diff truncated at "
+                    "%1 lines \xE2\x80\x94 too large to render in full here. Open "
+                    "the files directly to see the rest.</p>")
+                    .arg(kMaxDiffLines);
+    return html;
 }
 
 // Theme-aware stylesheet for the diff HTML produced by the renderers above,
