@@ -715,7 +715,13 @@ private:
     void toggleIssueLooper();
     void looperStartNext();
     void looperOnSessionFinished(int sessionId);
+    // Funnel for every looper state change: refresh the floating toggle above
+    // the Issues tab and persist the running state so the loop resumes after a
+    // restart (adhoc #130, #125).
     void updateIssueLooperButton();
+    void positionLooperToggle();
+    void persistLooperState();
+    void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
     // Stop and remove one stored agent session (clear its issue assignment, drop
@@ -1283,6 +1289,10 @@ private:
     // configured provider with the editable Settings prompt, and rewrites each
     // issue's priority from the returned ranking.
     void prioritizeIssuesFromReadme();
+    // Adhoc #139: ask the picked agent to judge how complete/actionable each open
+    // issue is (clear problem, enough detail, acceptance criteria) using the
+    // README for context, then show the verdict per issue in a report dialog.
+    void analyzeIssueCompleteness();
     // README markdown for the currently selected issues repo (work tree first,
     // then a `git show HEAD:README*` fallback). Empty when none is found.
     QString currentRepoReadme() const;
@@ -1466,6 +1476,11 @@ private:
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
+    // Second half of syncRepository: spawn the async fetch/clone once the
+    // off-thread pre-fetch prep (refs digest + origin set-url) has finished.
+    void startSyncFetch(int index, bool quiet, bool hasMirror,
+                        const QStringList &args, const QString &beforeDigest,
+                        const QString &beforeHeadCommit);
     void autoSyncMirrors();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
@@ -2263,6 +2278,17 @@ private:
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
+    // Issue #131: the output area is split into two tabs — "Agent" (the
+    // transcript/terminal/log) and "Files changed (N)" (the edited-files list, a
+    // diff viewer and the per-session worktree actions). The files-tab header
+    // carries the changed-file count.
+    QTabWidget *m_agentDetailTabs = nullptr;
+    int m_agentFilesTabIndex = -1;               // tab index of "Files changed"
+    QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
+    QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
+    QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
+    QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
+    QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
     QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
@@ -2306,6 +2332,12 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void populateAgentFilesPanel(int sessionId, const QStringList &diffFiles);
     void scheduleAgentFilesDiff(int sessionId);
+    // Render the session's full diff (vs its base ref) into the Files-changed tab's
+    // viewer, rebuild the file list with per-file +/- counts and anchors, and stamp
+    // the changed-file count onto the tab header. Runs off the event loop.
+    void renderAgentDiff(int sessionId, const QByteArray &patch);
+    void updateAgentFilesTabState(int sessionId);
+    QString sessionBaseRef(int sessionId);
     QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;
@@ -2471,24 +2503,28 @@ private:
     // any provider, not just the saved default. Seeded from the default agent.
     QComboBox *m_issuePrioritizeAgentCombo = nullptr;
     bool m_prioritizeInFlight = false;
-    // Issue looper (adhoc #92): a checkable button that runs the default agent on
-    // every open issue in turn. m_looperSessionId is the session currently being
-    // watched; when it finishes the looper starts the next open issue.
-    QPushButton *m_issueLooperButton = nullptr;
+    // Adhoc #139: "Analyze completeness" button next to "Prioritize from README".
+    // Shares the agent picker above; guarded by its own in-flight flag.
+    QPushButton *m_issueCompletenessButton = nullptr;
+    bool m_completenessInFlight = false;
+    // Issue looper (adhoc #92): runs the default agent on every open issue in
+    // turn. m_looperSessionId is the session currently being watched; when it
+    // finishes the looper starts the next open issue.
     bool m_looperActive = false;
     int m_looperSessionId = 0;
     QString m_looperProvider;
-    // "Looper running" banner pinned to the top of the issues pane (adhoc #109): a
-    // turning gear + busy bar so it reads as actively working. m_issueLooperSpinner
-    // is an AgentSpinner (only the concrete type lives in the .cpp, so it is held
-    // as a QWidget* and downcast there). The current-issue fields drive the banner
-    // subtitle.
-    QWidget *m_issueLooperBanner = nullptr;
-    QLabel *m_issueLooperBannerTitle = nullptr;
-    QLabel *m_issueLooperBannerDetail = nullptr;
-    QWidget *m_issueLooperSpinner = nullptr;
     int m_looperCurrentIssue = 0;
     QString m_looperCurrentTitle;
+    // Compact looper toggle floating just above the Issues tab (adhoc #130): a
+    // switch + "looper #N" label that both shows and controls the loop, with a
+    // neon-green segment circling its border while on. Held as a QWidget* because
+    // the concrete LooperToggle type lives in the .cpp; downcast there.
+    // m_looperToggleTimer keeps it anchored over the tab as the window reflows.
+    // m_looperRepoSlug ("owner/name") records which repo the loop is bound to so
+    // a restart resumes it on the same repo.
+    QWidget *m_looperToggle = nullptr;
+    QTimer *m_looperToggleTimer = nullptr;
+    QString m_looperRepoSlug;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;
