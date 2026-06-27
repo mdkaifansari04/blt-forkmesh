@@ -512,9 +512,12 @@ private:
     // it, or fade it out (collapsing its row) when everything has synced.
     void showCommitsBanner(const QString &html);
     void hideCommitsBanner();
-    // Open the issue or pull request referenced by "#<number>" in a commit
-    // message (a PR if one matches, otherwise an issue).
+    // Open the issue referenced by "#<number>" in a commit message.
     void openCommitReference(int number);
+    void openIssueReference(int number);
+    void openPullReference(int number);
+    void openCommitHashReference(const QString &hash);
+    void openReferenceLink(const QString &href);
     // Resolve a reference link clicked inside an issue/PR comment body. Handles
     // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
@@ -536,7 +539,8 @@ private:
     // already-escaped "<b>name</b> verb when" line; an accent colors the card edge.
     void addConversationCard(QVBoxLayout *layout, const QString &author,
                              const QString &headerHtml, const QString &body,
-                             const QString &accent = QString());
+                             const QString &accent = QString(),
+                             const QString &copyLink = QString());
     QWidget *buildAboutSidebar();
     QWidget *buildRepoSecurityTab();
     QWidget *buildInsightsTab();

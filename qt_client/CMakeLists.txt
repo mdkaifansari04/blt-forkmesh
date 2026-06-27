@@ -46,6 +46,7 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
+    src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
     src/ActionStore.h
@@ -137,6 +138,7 @@ if(FORKMESH_BUILD_TESTS)
         src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
