@@ -5,7 +5,7 @@ title: make it so that when you click on the worktree in the agent session heade
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 54
 progress: 0
 assignees: []
 createdAt: 1782431634646
