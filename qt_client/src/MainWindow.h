@@ -2163,6 +2163,13 @@ private:
         QStringList conflictFiles;
     };
     QHash<int, PullConflictEntry> m_pullConflictCache;
+    // Generation counter: each reloadPulls() bumps it so any in-flight async
+    // conflict pass aborts once the repo/list it was started for has changed.
+    quint64 m_pullConflictGen = 0;
+    // (PR number, patch fingerprint) pairs whose dry-run apply is still pending,
+    // drained one per event-loop turn by processPendingPullConflicts() so a cold
+    // cache never blocks the GUI in a single sweep.
+    QList<QPair<int, QString>> m_pendingPullConflictChecks;
     // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
     // the patch changes. Shared by reloadPulls() and updatePullActionState().
     static QString pullPatchFingerprint(const QString &patch);
