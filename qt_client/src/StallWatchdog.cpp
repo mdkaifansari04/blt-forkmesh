@@ -68,6 +68,14 @@ QString captureBacktrace()
 #else
 QString captureBacktrace() { return QString(); }
 #endif
+
+// The innermost (deepest) symbol line of a backtrace, used to tell whether a
+// dragging stall has moved on to a different blocking spot between samples.
+QString firstFrame(const QString &bt)
+{
+    const int nl = bt.indexOf(QLatin1Char('\n'));
+    return nl < 0 ? bt : bt.left(nl);
+}
 } // namespace
 
 StallWatchdog::StallWatchdog(QObject *parent) : QObject(parent)
@@ -122,7 +130,17 @@ void StallWatchdog::watchLoop()
 {
     bool inStall = false;
     qint64 peak = 0;
-    QString bt;
+    qint64 lastSampleMs = 0;
+    int sampleCount = 0;
+    QString bt;       // first sample (also handed to the stalled() signal)
+    QString extra;    // later samples taken while a long stall keeps dragging on
+    QString lastTop;  // deepest frame of the last sample, to skip duplicate spots
+    // A single sample taken at the 1.5s mark mislabels multi-phase stalls — e.g. a
+    // panel rebuild that runs a dozen back-to-back git calls, or layout thrash,
+    // gets blamed on whatever frame the one sample happened to catch. Re-sampling a
+    // dragging stall captures each distinct blocking spot so it's actually fixable.
+    constexpr int kMaxSamples = 6;
+    constexpr qint64 kResampleMs = 1500;
     while (m_running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         const qint64 now = monoClock().elapsed();
@@ -132,11 +150,26 @@ void StallWatchdog::watchLoop()
                 inStall = true;
                 peak = age;
                 bt = captureBacktrace(); // sample the stack at first detection
+                lastTop = firstFrame(bt);
+                lastSampleMs = now;
+                sampleCount = 1;
             } else {
                 peak = qMax(peak, age);
+                if (sampleCount < kMaxSamples && now - lastSampleMs >= kResampleMs) {
+                    lastSampleMs = now;
+                    const QString s = captureBacktrace();
+                    const QString top = firstFrame(s);
+                    if (!s.isEmpty() && top != lastTop) {
+                        extra += QStringLiteral("-- still blocked ~%1 ms in --\n").arg(age);
+                        extra += s;
+                        lastTop = top;
+                        ++sampleCount;
+                    }
+                }
             }
         } else if (inStall) {
             inStall = false; // the event loop resumed
+            const QString full = bt + extra;
             // Durable record first, so it survives a later hang/crash.
             if (!m_logPath.isEmpty()) {
                 QDir().mkpath(QFileInfo(m_logPath).absolutePath());
@@ -145,14 +178,17 @@ void StallWatchdog::watchLoop()
                     QTextStream ts(&f);
                     ts << QDateTime::currentDateTime().toString(Qt::ISODate)
                        << "  UI stalled ~" << peak << " ms\n";
-                    if (!bt.isEmpty())
-                        ts << bt;
+                    if (!full.isEmpty())
+                        ts << full;
                     ts << "----\n";
                 }
             }
-            emit stalled(peak, bt); // queued to the main thread for live display
+            emit stalled(peak, full); // queued to the main thread for live display
             peak = 0;
+            sampleCount = 0;
             bt.clear();
+            extra.clear();
+            lastTop.clear();
         }
     }
 }
