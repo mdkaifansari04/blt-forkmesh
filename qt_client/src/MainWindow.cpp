@@ -15057,14 +15057,19 @@ void MainWindow::reloadPulls()
     // badge their rows. Done here (not per refresh) so typing in the search box
     // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
     // we have a working tree to test the patch against.
+    //
+    // Bump the generation so any in-flight async conflict pass aborts, and reset
+    // the pending queue: a fresh reload rebuilds both the badges and the work to do.
+    const quint64 gen = ++m_pullConflictGen;
+    m_pendingPullConflictChecks.clear();
     m_pullConflictByNumber.clear();
     if (store.canWrite()) {
         // The dry-run apply only changes when the base tip or a PR's patch moves,
         // so cache it: otherwise every reloadPulls() (each push, search keystroke
-        // path, or merge of a different PR) re-spawns `git apply --check` for every
-        // open PR and blocks the event loop for seconds. Invalidate wholesale when
-        // the repo or the base tip changes; per-PR entries re-check when the patch
-        // fingerprint differs.
+        // path, or merge of a different PR) re-queues `git apply --check` for every
+        // open PR. Invalidate wholesale when the repo or the base tip changes;
+        // per-PR entries re-check when the patch fingerprint differs. Cache misses
+        // are resolved asynchronously below rather than inline.
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         const QString cacheKey = repo.owner + QLatin1Char('/') + repo.name +
                                  QLatin1Char('@') + store.baseTip();
@@ -15081,17 +15086,19 @@ void MainWindow::reloadPulls()
                                         QLatin1Char(':') +
                                         QString::number(qHash(pr.patch));
             const auto cached = m_pullConflictCache.constFind(pr.number);
-            bool conflict;
             if (cached != m_pullConflictCache.constEnd() &&
                 cached->first == fingerprint) {
-                conflict = cached->second;
+                if (cached->second)
+                    m_pullConflictByNumber.insert(pr.number, true);
             } else {
-                bool clean = false;
-                conflict = store.checkMergeable(pr.number, &clean, nullptr) && !clean;
-                m_pullConflictCache.insert(pr.number, qMakePair(fingerprint, conflict));
+                // Cache miss: defer the slow `git apply --check` dry-run instead of
+                // running it inline. Doing the whole batch here blocked the GUI
+                // thread for seconds every time the base tip moved and invalidated
+                // the cache (StallWatchdog: reloadPulls -> checkMergeable ->
+                // QProcess::waitForFinished). processPendingPullConflicts() drains
+                // these one per event-loop turn so the list renders immediately.
+                m_pendingPullConflictChecks.append(qMakePair(pr.number, fingerprint));
             }
-            if (conflict)
-                m_pullConflictByNumber.insert(pr.number, true);
         }
         // Drop cache entries for PRs that have since closed/merged or been deleted
         // so the map can't grow without bound across a long session.
@@ -15106,6 +15113,61 @@ void MainWindow::reloadPulls()
     updateRepoPullCount();
     refreshPullList();
     updatePullActionState();
+    // Fill in any uncached conflict badges off the critical path, one PR per
+    // event-loop turn, so a cold cache never freezes the UI (the list above is
+    // already on screen; the badges drop in as each dry-run finishes).
+    if (!m_pendingPullConflictChecks.isEmpty())
+        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+}
+
+void MainWindow::processPendingPullConflicts(quint64 gen)
+{
+    // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
+    if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
+        return;
+    const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
+    const int number = item.first;
+    const PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        bool clean = false;
+        const bool conflict =
+            store.checkMergeable(number, &clean, nullptr) && !clean;
+        // The gen check at entry already gates this turn; re-check defensively in
+        // case checkMergeable() ever pumps the event loop and lets a fresh
+        // reloadPulls() supersede this pass while git ran.
+        if (gen == m_pullConflictGen) {
+            m_pullConflictCache.insert(number, qMakePair(item.second, conflict));
+            if (conflict)
+                m_pullConflictByNumber.insert(number, true);
+            else
+                m_pullConflictByNumber.remove(number);
+            setPullConflictBadge(number, conflict);
+        }
+    }
+    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+}
+
+void MainWindow::setPullConflictBadge(int number, bool conflict)
+{
+    if (!m_pullTable)
+        return;
+    for (int row = 0; row < m_pullTable->rowCount(); ++row) {
+        const QTableWidgetItem *num = m_pullTable->item(row, 0);
+        if (!num || num->data(Qt::UserRole).toInt() != number)
+            continue;
+        QTableWidgetItem *st = m_pullTable->item(row, 3);
+        if (!st)
+            return;
+        if (conflict) {
+            st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
+            st->setToolTip(QStringLiteral("This pull request has merge conflicts"));
+        } else {
+            st->setIcon(QIcon());
+            st->setToolTip(QString());
+        }
+        return;
+    }
 }
 
 void MainWindow::refreshPullList()

@@ -527,6 +527,12 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
+    // `git apply --check` dry-runs never block the GUI thread in a single sweep.
+    void processPendingPullConflicts(quint64 gen);
+    // Set/clear the conflict badge on a single pull-list row, in place, so async
+    // badge updates don't rebuild (and flicker) the whole table.
+    void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
@@ -2001,6 +2007,13 @@ private:
     // carries the patch fingerprint that produced it so an edited patch re-checks.
     QString m_pullConflictCacheBaseTip;
     QHash<int, QPair<QString, bool>> m_pullConflictCache;
+    // Open PRs (number + patch fingerprint) whose conflict state isn't cached yet;
+    // drained asynchronously by processPendingPullConflicts() so a cold cache
+    // doesn't freeze the GUI thread running `git apply --check` for every PR.
+    QList<QPair<int, QString>> m_pendingPullConflictChecks;
+    // Bumped on every reloadPulls(); a queued async conflict pass carrying an
+    // older value aborts (the repo switched or the list reloaded under it).
+    quint64 m_pullConflictGen = 0;
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
