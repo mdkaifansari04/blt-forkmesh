@@ -234,6 +234,9 @@ public:
     void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
     void testReloadWorktreesPanel() { loadWorktreesPanel(); }
     QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
+    // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
+    // test can prove the list shows how far each worktree diverges from main.
+    QString testWorktreeAheadBehindText(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
