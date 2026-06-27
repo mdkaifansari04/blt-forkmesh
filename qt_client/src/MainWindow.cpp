@@ -10170,6 +10170,23 @@ QWidget *MainWindow::buildIssuesSection()
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
 
+    // Issue looper (adhoc #92): a one-click "work through the backlog" toggle.
+    // Starts the default agent on the highest-priority open issue, watches it to
+    // completion, then automatically moves on to the next — looping until the
+    // backlog is exhausted or the user clicks again to stop.
+    m_issueLooperButton = new QPushButton("Loop open issues");
+    m_issueLooperButton->setObjectName("ghostButton");
+    m_issueLooperButton->setProperty("buttonSize", "sm");
+    m_issueLooperButton->setCheckable(true);
+    m_issueLooperButton->setCursor(Qt::PointingHandCursor);
+    m_issueLooperButton->setToolTip(
+        "Run the default agent on each open issue in turn: start one, wait for it "
+        "to finish, then automatically start the next. Click again to stop after "
+        "the current issue.");
+    setOcticon(m_issueLooperButton, "sync", 16);
+    connect(m_issueLooperButton, &QPushButton::clicked, this,
+            &MainWindow::toggleIssueLooper);
+
     // Issue #286: hand the README and the open backlog to the default agent and
     // let it rank the issues. The instruction is editable in Settings -> Agents.
     // Sits at the top of the panel next to the title (a primary action, not lost
@@ -10239,6 +10256,7 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
     actionRow->addWidget(reprioritizeButton);
+    actionRow->addWidget(m_issueLooperButton);
     actionRow->addWidget(bountyAllAmount);
     actionRow->addWidget(bountyAllButton);
     actionRow->addWidget(m_issueStatusFilter);
@@ -21645,31 +21663,42 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
 
 void MainWindow::assignIssueToAgent(const QString &provider)
 {
-    if (!m_agentStore || m_currentIssueNumber < 0)
+    if (m_currentIssueNumber < 0)
         return;
-    const int idx = issuesRepoIndex();
-    if (idx < 0 || idx >= m_repositories.size())
-        return;
-    IssueStore issueStore = issueStoreForCurrentRepo();
-    if (!issueStore.canWrite()) {
-        setIssueInlineNotice("Only the host can assign coding agents.", true);
-        return;
-    }
     const Issue *issue = nullptr;
     for (const Issue &candidate : std::as_const(m_currentIssues))
         if (candidate.number == m_currentIssueNumber)
             issue = &candidate;
     if (!issue)
         return;
+    const bool createPr =
+        m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+    startAgentForIssue(*issue, provider, createPr);
+}
+
+int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
+                                   bool createPr, bool quiet)
+{
+    if (!m_agentStore || issue.number <= 0)
+        return 0;
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size())
+        return 0;
+    IssueStore issueStore = issueStoreForCurrentRepo();
+    if (!issueStore.canWrite()) {
+        if (!quiet)
+            setIssueInlineNotice("Only the host can assign coding agents.", true);
+        return 0;
+    }
 
     const RepositoryRecord &repo = m_repositories.at(idx);
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
-    session.issueNumber = issue->number;
-    session.issueTitle = issue->title;
+    session.issueNumber = issue.number;
+    session.issueTitle = issue.title;
     session.provider = provider;
-    session.createPr = m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+    session.createPr = createPr;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
@@ -21692,29 +21721,139 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue->number));
+        QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue.number));
 
     QString error;
-    if (!issueStore.assignAgent(issue->number, provider, session.id, session.createPr,
+    if (!issueStore.assignAgent(issue.number, provider, session.id, session.createPr,
                                 AgentStatus::Queued, &error)) {
         session.status = AgentStatus::Failed;
         session.lastError = error.isEmpty() ? QStringLiteral("Could not write issue event.")
                                             : error;
         m_agentStore->saveSession(session);
-        setIssueInlineNotice(session.lastError, true);
+        if (!quiet)
+            setIssueInlineNotice(session.lastError, true);
         reloadAgents();
-        return;
+        return 0;
     }
 
-    m_agentQueue.append(session.id);
+    const int sessionId = session.id;
+    m_agentQueue.append(sessionId);
     reloadAgents();
     reloadIssues();
-    setIssueInlineNotice(
-        QStringLiteral("Assigned %1 session #%2.")
-            .arg(agentProviderName(provider))
-            .arg(session.id));
-    switchToAgentsTab(session.id);
+    if (!quiet) {
+        setIssueInlineNotice(
+            QStringLiteral("Assigned %1 session #%2.")
+                .arg(agentProviderName(provider))
+                .arg(sessionId));
+        switchToAgentsTab(sessionId);
+    }
     processAgentQueue();
+    return sessionId;
+}
+
+// Toggle the issue looper (adhoc #92). On: capture the default agent and start
+// the first open issue. Off: leave any in-flight session running but don't start
+// any more once it finishes.
+void MainWindow::toggleIssueLooper()
+{
+    if (m_looperActive) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice(
+            "Issue looper stopped. The current agent (if any) will finish; no more "
+            "issues will be started.");
+        return;
+    }
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size()) {
+        updateIssueLooperButton();
+        return;
+    }
+    if (!issueStoreForCurrentRepo().canWrite()) {
+        setIssueInlineNotice("Only the host can run the issue looper.", true);
+        updateIssueLooperButton();
+        return;
+    }
+    m_looperActive = true;
+    m_looperProvider = defaultAgentProvider();
+    updateIssueLooperButton();
+    setIssueInlineNotice(
+        QString::fromUtf8("Issue looper started with %1. Working through the open "
+                          "backlog one issue at a time\xE2\x80\xA6")
+            .arg(agentProviderName(m_looperProvider)));
+    looperStartNext();
+}
+
+// Pick the highest-priority open issue that has no agent session yet and start
+// the looper's agent on it. Stops the looper when nothing is left to do. Each
+// issue is attempted at most once (any existing session — queued, running, done,
+// or failed — disqualifies it), so the loop always makes forward progress.
+void MainWindow::looperStartNext()
+{
+    if (!m_looperActive)
+        return;
+    const Issue *next = nullptr;
+    int bestPriority = 1 << 30;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.isDeleted() || issue.status != QLatin1String("open"))
+            continue;
+        if (latestAgentSessionForIssue(issue.number))
+            continue; // already attempted by an agent
+        const int p = issue.priority > 0 ? issue.priority : 100000;
+        if (p < bestPriority ||
+            (p == bestPriority && (!next || issue.number < next->number))) {
+            bestPriority = p;
+            next = &issue;
+        }
+    }
+    if (!next) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice(
+            "Issue looper finished: every open issue has an agent.");
+        return;
+    }
+    // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
+    const int issueNumber = next->number;
+    const QString issueTitle = next->title;
+    const int sessionId =
+        startAgentForIssue(*next, m_looperProvider, /*createPr=*/true, /*quiet=*/true);
+    if (sessionId <= 0) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice("Issue looper stopped: could not start the next agent.",
+                             true);
+        return;
+    }
+    m_looperSessionId = sessionId;
+    setIssueInlineNotice(
+        QString::fromUtf8("Issue looper: started %1 on issue #%2 \xE2\x80\x94 %3")
+            .arg(agentProviderName(m_looperProvider))
+            .arg(issueNumber)
+            .arg(issueTitle));
+}
+
+// Called from both agent-completion paths. When the finished session is the one
+// the looper is watching, advance to the next open issue.
+void MainWindow::looperOnSessionFinished(int sessionId)
+{
+    if (!m_looperActive || sessionId <= 0 || sessionId != m_looperSessionId)
+        return;
+    m_looperSessionId = 0;
+    looperStartNext();
+}
+
+void MainWindow::updateIssueLooperButton()
+{
+    if (!m_issueLooperButton)
+        return;
+    QSignalBlocker block(m_issueLooperButton);
+    m_issueLooperButton->setChecked(m_looperActive);
+    m_issueLooperButton->setText(m_looperActive ? QStringLiteral("Stop looping")
+                                                : QStringLiteral("Loop open issues"));
 }
 
 // Bottom-left composer (issue #273): start a brand-new Claude Code agent from a
@@ -22490,6 +22629,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         reloadAgents();
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
+        looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
     });
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()
@@ -23580,6 +23720,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             testOpenAiAgentKey();
     }
     processAgentQueue();
+    looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
 }
 
 void MainWindow::updateAgentActionState()
