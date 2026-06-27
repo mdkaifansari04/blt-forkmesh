@@ -62,6 +62,7 @@ class QComboBox;
 class QCompleter;
 class QStringListModel;
 class QGraphicsOpacityEffect;
+class QFrame;
 class QLabel;
 class QMouseEvent;
 class QAction;
@@ -289,6 +290,8 @@ protected:
     void showEvent(QShowEvent *event) override;
     // Image drag-and-drop onto the inline issue comment composer.
     bool eventFilter(QObject *obj, QEvent *event) override;
+    // Keep the floating expanded-toast overlay anchored to the toast on resize.
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     // Setup page
@@ -391,6 +394,7 @@ private:
     void updateBreadcrumb();
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
+    void probeRelayLatency();      // measure round-trip to the active relay (radar)
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
@@ -782,6 +786,12 @@ private:
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
     void updateIssueAgentUi(const Issue &issue);
+    // Issue #145: populate the issue detail's "Files changed" tab from a linked
+    // pull request's patch or a linked agent session's branch diff, and show or
+    // hide the tab depending on whether such a source exists.
+    void refreshIssueFilesPanel(const Issue &issue);
+    void renderIssueDiff(int issueNumber, const QByteArray &patch,
+                         const QString &dir, const QString &base);
     // IDE extension integration (see ide_extension/). Detection polls the
     // extension's heartbeat file; startIssueInIde drops it a task request.
     bool ideExtensionActive(QString *ideName = nullptr) const;
@@ -937,12 +947,12 @@ private:
     // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
     // the post-merge cleanup, whose work is already preserved in the merge commit).
     // async=true runs the (slow, recursive) folder delete off the UI thread so the
-    // window stays clickable; the branch delete + panel refresh follow in a
-    // callback. The post-merge cleanup leaves it false because it inspects the
-    // result inline.
+    // window stays clickable; the branch delete + panel refresh follow in a callback.
+    // onDone, if set, runs after that cleanup succeeds (lets the post-merge flow set
+    // its own final notice once the worktree is actually gone).
     void removeWorktree(const QString &worktreePath, const QString &branch,
                         bool confirm, bool alsoDeleteBranch = true,
-                        bool async = false);
+                        bool async = false, std::function<void()> onDone = {});
     // Filesystem path of the worktree currently checked out to `branch` (other
     // than the main checkout), or empty if none. Lets the agent detail resolve a
     // session's worktree folder from its branch.
@@ -1411,6 +1421,7 @@ private:
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
+    void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1567,6 +1578,14 @@ private:
     QPushButton *m_relayIconButton = nullptr;
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
+    // Tiny spinning-radar + latency readout sitting just left of the relay name:
+    // probes the active relay once a minute and shows the round-trip time (e.g.
+    // "33ms"), turning into a red alert when the relay doesn't answer. Held as a
+    // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
+    // MainWindow.cpp).
+    QWidget *m_relayRadar = nullptr;
+    QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
+    bool m_relayProbeInFlight = false;     // guard against overlapping probes
     // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
@@ -1594,6 +1613,8 @@ private:
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
     QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
+    QFrame *m_topMessageOverlay = nullptr; // floats the expanded full text on top of the layout
+    QLabel *m_topMessageOverlayText = nullptr; // wrapped full-message label inside the overlay
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
@@ -2545,6 +2566,14 @@ private:
     QPushButton *m_issueAssigneesButton = nullptr;
     QLabel *m_issueDevelopmentValue = nullptr;    // linked pull requests list
     QPushButton *m_issueLinkPullButton = nullptr; // "Link pull request"
+    // Issue #145: top tabs (Issue | Files changed) on the issue detail, mirroring
+    // the agent detail. The Files changed tab appears only when the issue has a
+    // linked branch (agent session) or pull request, and shows that diff.
+    QTabWidget *m_issueDetailTabs = nullptr;
+    int m_issueFilesTabIndex = -1;                // tab index of "Files changed"
+    QListWidget *m_issueFilesList = nullptr;      // changed files in the linked diff
+    QTextBrowser *m_issueDiffView = nullptr;      // diff viewer in the files tab
+    QLabel *m_issueFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
