@@ -5,7 +5,7 @@ title: on the worktree list show a status for the attached agent and let us clic
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 80
 progress: 0
 assignees: []
 createdAt: 1782514763682
