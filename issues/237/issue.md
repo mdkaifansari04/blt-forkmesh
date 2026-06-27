@@ -5,7 +5,7 @@ title: Branch port/polish-repo-actions-tab — needs merge into main
 status: open
 labels: [enhancement]
 milestone: 
-priority: 36
+priority: 12
 progress: 0
 assignees: []
 createdAt: 1782356524976
