@@ -5,7 +5,7 @@ title: the claude code usage is not updating correctly have it update every minu
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 75
 progress: 0
 assignees: []
 createdAt: 1782502896983
