@@ -2916,8 +2916,9 @@ private:
 };
 
 // Compact "issue looper" toggle that floats just above the Issues tab (adhoc
-// #130). It is both the control and the indicator: a small on/off switch, the
-// word "looper", and the open issue currently being worked ("#124"). While on,
+// #130). It is both the control and the indicator: a small on/off switch and
+// the open issue currently being worked ("#124") — clicking that "#N" jumps to
+// its agent (adhoc #134), while clicking elsewhere toggles the loop. While on,
 // a single neon-green segment travels slowly around the rounded-rect border — a
 // bright loop circling "the whole thing" so the running loop reads from any
 // tab. Replaces the old in-page "working the backlog" banner and the tiny
@@ -2966,6 +2967,11 @@ public:
         update();
     }
     void setOnClick(std::function<void()> cb) { m_onClick = std::move(cb); }
+    // Invoked when the "#N" itself is clicked (jump to that issue's agent).
+    void setOnNumberClick(std::function<void()> cb)
+    {
+        m_onNumberClick = std::move(cb);
+    }
 
     QSize sizeHint() const override
     {
@@ -2982,10 +2988,19 @@ public:
 protected:
     void mousePressEvent(QMouseEvent *e) override
     {
-        if (e->button() == Qt::LeftButton && m_onClick)
-            m_onClick();
-        else
-            QWidget::mousePressEvent(e);
+        if (e->button() == Qt::LeftButton) {
+            // Clicking the "#N" jumps to that agent; clicking elsewhere toggles.
+            if (m_onNumberClick && m_issue > 0
+                && m_labelRect.contains(e->position())) {
+                m_onNumberClick();
+                return;
+            }
+            if (m_onClick) {
+                m_onClick();
+                return;
+            }
+        }
+        QWidget::mousePressEvent(e);
     }
     void enterEvent(QEnterEvent *) override
     {
@@ -3029,21 +3044,30 @@ protected:
         g.setBrush(QColor("#f0f6fc"));
         g.drawEllipse(QPointF(knobCx, track.center().y()), knobR, knobR);
 
-        // Label "looper" (+ "#N").
+        // Label: the "#N" of the issue being worked. Record its hit rect so a
+        // click on the number jumps to that agent (mousePressEvent), while a
+        // click anywhere else on the pill toggles the loop.
         QFont f = font();
         f.setBold(m_active);
         g.setFont(f);
         g.setPen(m_active ? neon : QColor("#8b949e"));
         const qreal tx = sx + kSwitchW + kGap;
+        const QString label = labelText();
         g.drawText(QRectF(tx, box.top(), box.right() - tx - 4, box.height()),
-                   Qt::AlignVCenter | Qt::AlignLeft, labelText());
+                   Qt::AlignVCenter | Qt::AlignLeft, label);
+        m_labelRect = label.isEmpty()
+                          ? QRectF()
+                          : QRectF(tx, box.top(),
+                                   QFontMetricsF(f).horizontalAdvance(label),
+                                   box.height());
     }
 
 private:
     QString labelText() const
     {
-        return m_issue > 0 ? QStringLiteral("looper #%1").arg(m_issue)
-                           : QStringLiteral("looper");
+        // The open issue currently being worked, e.g. "#124". No word "looper" —
+        // the switch and travelling loop already say what this control is.
+        return m_issue > 0 ? QStringLiteral("#%1").arg(m_issue) : QString();
     }
     // A single bright neon segment travelling around the pill's border, with a
     // soft wider pass underneath for the "glow tube" look.
@@ -3083,7 +3107,9 @@ private:
     int m_issue = 0;
     qreal m_loopPos = 0.0;
     QTimer *m_loopTimer = nullptr;
+    QRectF m_labelRect; // hit rect of the "#N" text, set in paintEvent
     std::function<void()> m_onClick;
+    std::function<void()> m_onNumberClick;
 };
 
 class CodePreviewEditor;
@@ -11454,6 +11480,17 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *looperToggle = new LooperToggle(this);
     looperToggle->hide();
     looperToggle->setOnClick([this] { toggleIssueLooper(); });
+    // Clicking the "#N" itself jumps to the agent currently working that issue
+    // instead of toggling the loop (adhoc #134).
+    looperToggle->setOnNumberClick([this] {
+        int sessionId = m_looperSessionId;
+        if (sessionId <= 0 && m_looperCurrentIssue > 0)
+            if (const AgentSession *s =
+                    latestAgentSessionForIssue(m_looperCurrentIssue))
+                sessionId = s->id;
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+    });
     m_looperToggle = looperToggle;
 
     // --- Inner stack: one page per tab.
