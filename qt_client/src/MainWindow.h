@@ -394,6 +394,7 @@ private:
     void updateBreadcrumb();
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
+    void probeRelayLatency();      // measure round-trip to the active relay (radar)
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
@@ -1571,6 +1572,14 @@ private:
     QPushButton *m_relayIconButton = nullptr;
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
+    // Tiny spinning-radar + latency readout sitting just left of the relay name:
+    // probes the active relay once a minute and shows the round-trip time (e.g.
+    // "33ms"), turning into a red alert when the relay doesn't answer. Held as a
+    // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
+    // MainWindow.cpp).
+    QWidget *m_relayRadar = nullptr;
+    QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
+    bool m_relayProbeInFlight = false;     // guard against overlapping probes
     // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
