@@ -21708,6 +21708,23 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
 
     const QString baseName =
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
+    // Comment thread: issues/<n>/issue.md holds only the original description, so
+    // fold the issue's signed comment events into the prompt — otherwise the agent
+    // never sees the follow-up discussion that often refines or redirects the task.
+    QString commentThread;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type != QLatin1String("comment"))
+            continue;
+        const QString text = ev.body.trimmed();
+        if (text.isEmpty())
+            continue;
+        const QString who = ev.authorName.isEmpty() ? ev.author : ev.authorName;
+        commentThread += QStringLiteral("\n\n--- comment by %1 ---\n%2")
+                             .arg(who, text.left(6000));
+    }
+    if (!commentThread.isEmpty())
+        commentThread = QStringLiteral("\n\nComments on the issue (newest last):")
+                        + commentThread;
     // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
     // issue-assigned sessions point the agent at issues/<n>/issue.md. Both share
     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
@@ -21716,11 +21733,12 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             ? QStringLiteral(
                   "Resolve ForkMesh issue #%1: %2\n\n"
                   "You are working in a dedicated git worktree on branch `%3` "
-                  "(forked from `%4`). The full issue is in issues/%1/issue.md.")
+                  "(forked from `%4`). The full issue is in issues/%1/issue.md.%5")
                   .arg(session.issueNumber)
                   .arg(issue.title)
                   .arg(session.branchName)
                   .arg(baseName)
+                  .arg(commentThread)
             : QStringLiteral(
                   "%1\n\n"
                   "You are working in a dedicated git worktree on branch `%2` "
