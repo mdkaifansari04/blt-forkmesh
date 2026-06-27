@@ -17884,7 +17884,7 @@ void MainWindow::importPatchAsPull()
     QString error;
     const int number = store.createPull(
         title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
-        base, head, patch, QString(), &error);
+        base, head, patch, QString(), /*branchBacked=*/false, &error);
     if (number < 0) {
         setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                             : error,
@@ -18084,7 +18084,8 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     if (store.canWrite() && targetOwner == currentRepo.owner) {
         QString error;
         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
-                                             pr.patch, pr.commits, &error);
+                                             pr.patch, pr.commits,
+                                             /*branchBacked=*/fromRange, &error);
         if (number < 0) {
             QMessageBox::warning(this, "New pull request", error);
             return;
@@ -24772,7 +24773,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     const int pr = store.createPull(
         prTitle, prBody,
         s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
-        QString(), &error);
+        QString(), /*branchBacked=*/true, &error);
     if (pr > 0) {
         s->prNumber = pr;
         m_agentStore->saveSession(*s);
@@ -24922,7 +24923,8 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                         .arg(session->issueNumber),
                     session->baseBranch.isEmpty() ? session->baseRef
                                                   : session->baseBranch,
-                    session->branchName, patch, QString(), &error);
+                    session->branchName, patch, QString(), /*branchBacked=*/true,
+                    &error);
                 if (pr > 0) {
                     session->prNumber = pr;
                     m_agentStore->saveSession(*session);
@@ -26617,7 +26619,8 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
         QString error;
         const int number = store.createPull(title, description, base, branch,
                                             QString::fromUtf8(diff),
-                                            QString::fromUtf8(mbox), &error);
+                                            QString::fromUtf8(mbox),
+                                            /*branchBacked=*/true, &error);
         if (number < 0) {
             setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                                 : error,
@@ -33174,7 +33177,8 @@ void MainWindow::createPullFromBranch(const QString &branch)
     QString error;
     const int number = store.createPull(title, description, base, branch,
                                         QString::fromUtf8(diff),
-                                        QString::fromUtf8(mbox), &error);
+                                        QString::fromUtf8(mbox),
+                                        /*branchBacked=*/true, &error);
     if (number < 0) {
         setRepoDetailNotice(
             error.isEmpty() ? "Could not create the pull request." : error, true);
