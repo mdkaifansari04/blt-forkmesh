@@ -22898,7 +22898,7 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
     // path; deleting it from the list must stop it too, then release its worktree
     // so the branch is freed (issue #74).
     if (m_streamSessions.contains(snapshot.id))
-        stopStreamSession(snapshot.id);
+        stopStreamSession(snapshot.id, /*refreshUi=*/false);
     cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
 
@@ -23502,7 +23502,7 @@ bool MainWindow::isStreamTranscriptSession(int sessionId) const
 // natural-finish path runs in ClaudeStreamSession::finished, but stop() kills
 // the process without emitting `finished`, so the session would otherwise hang
 // on "Running" with a dangling map entry. Do that teardown here instead.
-void MainWindow::stopStreamSession(int sessionId)
+void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
 {
     ClaudeStreamSession *stream = m_streamSessions.take(sessionId);
     if (!stream)
@@ -23523,10 +23523,16 @@ void MainWindow::stopStreamSession(int sessionId)
             m_agentStore->saveSession(*as);
     }
 
-    reloadAgents();
-    if (sessionId == m_selectedAgentSessionId)
-        showAgentSession(sessionId);
-    updateAgentActionState();
+    // A delete path passes refreshUi=false: it removes the session next and
+    // reloads itself, so re-rendering the (possibly large) transcript and
+    // re-running the per-session merge checks here is wasted work that stalls
+    // the UI during "Delete all".
+    if (refreshUi) {
+        reloadAgents();
+        if (sessionId == m_selectedAgentSessionId)
+            showAgentSession(sessionId);
+        updateAgentActionState();
+    }
 }
 
 // ---- External Claude Code sessions ----------------------------------------
@@ -31559,6 +31565,13 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                               prompt)
         != QMessageBox::Yes)
         return;
+
+    // The recursive worktree folder delete is already off the UI thread (async
+    // removeWorktree below). The bookkeeping that follows still runs synchronous
+    // git here — closing issues and, via the reloads, the per-session merge
+    // checks. Keep that pumping the event loop so the window stays painted instead
+    // of freezing for the whole "Delete all".
+    GitKeepAlive keepAlive;
 
     // Delete the agent session(s) first — that stops any runner still holding the
     // worktree open. If one is mid-stop or we lack permission, bail (it flashed
