@@ -18579,6 +18579,36 @@ void MainWindow::postPullLinkComment(int pullNumber, const QString &body)
     submitPullEventToInbox(pullNumber, ev);
 }
 
+void MainWindow::linkAgentPullToIssue(const AgentSession &session, int prNumber)
+{
+    if (session.issueNumber <= 0 || prNumber <= 0)
+        return;
+    const int ri = repoIndexFor(session.owner, session.name);
+    if (ri < 0)
+        return;
+    // The agent's PR already lives in this repo, so its issue store is writable on
+    // this node too; write the link note straight into the issue's thread.
+    const RepositoryRecord &repo = writableRecordFor(m_repositories.at(ri));
+    IssueStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+    if (!store.canWrite())
+        return;
+    QString error;
+    if (!store.addComment(session.issueNumber,
+                          QStringLiteral("Linked pull request #%1.").arg(prNumber),
+                          {}, &error)) {
+        if (m_agentStore)
+            m_agentStore->appendLog(
+                session,
+                QStringLiteral("!! Could not link PR #%1 to issue #%2: %3\n")
+                    .arg(prNumber)
+                    .arg(session.issueNumber)
+                    .arg(error));
+        return;
+    }
+    if (ri == m_repoDetailIndex)
+        reloadIssues();
+}
+
 void MainWindow::linkPullToIssueFromIssuePage()
 {
     if (m_currentIssueNumber <= 0) {
@@ -23609,6 +23639,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         s->prNumber = pr;
         m_agentStore->saveSession(*s);
         m_agentStore->appendLog(*s, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
+        linkAgentPullToIssue(*s, pr); // record it in the issue's Development section
         if (ri == m_repoDetailIndex)
             reloadPulls();
     } else {
@@ -23760,6 +23791,8 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                     m_agentStore->appendLog(
                         *session,
                         QStringLiteral("==> Created pull request #%1.").arg(pr));
+                    // Record it in the issue's Development section (issue #156).
+                    linkAgentPullToIssue(*session, pr);
                     if (repoIndex == m_repoDetailIndex)
                         reloadPulls();
                 } else {
