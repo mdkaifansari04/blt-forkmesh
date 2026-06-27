@@ -5,7 +5,7 @@ title: when the agent takes and completes an issue make sure to link the PR back
 status: open
 labels: [Phase 2]
 milestone: Phase 2
-priority: 15
+priority: 5
 progress: 0
 assignees: []
 createdAt: 1782179543375
