@@ -5,7 +5,7 @@ title: Branch port/durable-discussions — needs merge into main
 status: open
 labels: [feature]
 milestone: 
-priority: 38
+priority: 4
 progress: 0
 assignees: []
 createdAt: 1782356525227
