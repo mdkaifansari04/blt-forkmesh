@@ -20341,9 +20341,9 @@ QWidget *MainWindow::buildAgentsTab()
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
             // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
-            // it now to keep the top-bar chart + hover stats current rather than
-            // waiting for the next minute tick.
-            refreshClaudeCodeUsage();
+            // it now (and once more shortly after) to keep the top-bar chart +
+            // hover stats current rather than waiting for the next minute tick.
+            bumpClaudeCodeUsage();
             // Replying clears the "Waiting" state — the agent is working again.
             if (AgentSession *as = findAgentSession(sid);
                 as && as->status == AgentStatus::Waiting) {
@@ -20849,6 +20849,18 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
                                 : kClaudeUsage5hPctSetting,
                          pct);
+}
+
+void MainWindow::bumpClaudeCodeUsage()
+{
+    // A just-started agent (or a freshly sent prompt) hasn't consumed anything
+    // yet, so polling only at that instant leaves the top-bar gauge showing the
+    // pre-start figure — which reads as "not updating". Poll now for any usage
+    // already on the clock, then once more after the first turn has had time to
+    // land, so the gauge moves promptly rather than on the next minute boundary.
+    // The steady one-minute m_claudeUsageTimer keeps it current after that.
+    refreshClaudeCodeUsage();
+    QTimer::singleShot(10 * 1000, this, &MainWindow::refreshClaudeCodeUsage);
 }
 
 void MainWindow::refreshClaudeCodeUsage()
@@ -22710,8 +22722,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                          .arg(branchName, workdir));
         live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
         // Issue #84: launching with an initial prompt is a send too — refresh the
-        // top-bar usage chart + hover stats right away.
-        refreshClaudeCodeUsage();
+        // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
+        // first turn's usage shows without waiting for the next minute tick.
+        bumpClaudeCodeUsage();
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
