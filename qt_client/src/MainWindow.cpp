@@ -209,6 +209,11 @@ const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 // the link builder and its linkActivated handler.
 const QLatin1String kPullLinkScheme("forkmesh-pull:");
 
+// "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
+// session produced a pull request, the header links back to that session on the
+// Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
+const QLatin1String kAgentLinkScheme("forkmesh-agent:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -7134,10 +7139,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
     // Hard cap on the pill's width so a long toast can never widen the window; the
-    // text itself is elided to one line in flashMessage. Hovering an elided toast
-    // opens a scrollable modal with the full message (see eventFilter).
+    // text itself is elided to one line in flashMessage. A long message reveals its
+    // full text inline via the Expand button beside the toast (see renderTopMessage)
+    // rather than popping up a modal.
     m_topMessage->setMaximumWidth(620);
-    m_topMessage->installEventFilter(this);
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -14716,6 +14721,13 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
     m_pullMeta->setWordWrap(true);
+    m_pullMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                        Qt::LinksAccessibleByMouse);
+    // The "agent" reference (adhoc #78) jumps to the producing session's detail.
+    connect(m_pullMeta, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href.startsWith(kAgentLinkScheme))
+            switchToAgentsTab(href.mid(kAgentLinkScheme.size()).toInt());
+    });
     // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
     // it applies cleanly (or which files conflict) before they hit Merge.
     m_pullMergeStatus = new QLabel;
@@ -15468,11 +15480,19 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(m_pullMeta->text() +
                             QString::fromUtf8(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
-    // If an agent task produced this PR, surface its estimated cost.
-    if (const AgentSession *agent = agentSessionForPull(found->number))
+    // If an agent task produced this PR, link the header back to that session on
+    // the Agents tab (adhoc #78) and surface its estimated cost.
+    if (const AgentSession *agent = agentSessionForPull(found->number)) {
+        const QString href = kAgentLinkScheme + QString::number(agent->id);
+        const QString link =
+            QStringLiteral("<a href=\"%1\" style=\"color:#58a6ff;"
+                           "text-decoration:none\">agent</a>")
+                .arg(href);
         m_pullMeta->setText(
             m_pullMeta->text() +
-            QString::fromUtf8(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
+            QString::fromUtf8(" \xC2\xB7 %1 cost ~%2")
+                .arg(link, agentCostText(agent->costUsd)));
+    }
     // The description is shown as the Conversation's opening card (renderPullThread),
     // so it is not repeated in the header.
 
