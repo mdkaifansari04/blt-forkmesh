@@ -23328,17 +23328,26 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
         if (ri >= 0)
             repoPath = m_repositories.at(ri).localPath;
     }
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
-    }
-    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("prune")});
-    }
+    // Removing a worktree shells out to `git worktree remove`/`prune` and then
+    // recursively deletes a full source checkout — slow enough to freeze the UI for
+    // a moment when a session is deleted. The paths are captured above on the UI
+    // thread; the filesystem/git work touches nothing shared, so hand it to a
+    // detached worker that cleans itself up.
+    QThread *worker = QThread::create([wtPath, repoPath]() {
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+        }
+        QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("prune")});
+        }
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
