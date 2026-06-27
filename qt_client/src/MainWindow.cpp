@@ -16042,14 +16042,13 @@ void MainWindow::reloadPulls()
             const auto cached = m_pullConflictCache.constFind(pr.number);
             if (cached != m_pullConflictCache.constEnd() &&
                 cached->fingerprint == fingerprint) {
-                conflict = cached->conflict;
+                // Cache hit: badge straight from the stored result.
+                if (cached->conflict)
+                    m_pullConflictByNumber.insert(pr.number, true);
             } else {
-                bool clean = false;
-                QStringList conflictFiles;
-                conflict =
-                    store.checkMergeable(pr.number, &clean, &conflictFiles) && !clean;
-                m_pullConflictCache.insert(
-                    pr.number, {fingerprint, conflict, conflictFiles});
+                // Cold/stale entry: defer the (slow) `git apply --check` dry-run to
+                // the async pass below so a full reload never blocks the GUI thread.
+                m_pendingPullConflictChecks.append(qMakePair(pr.number, fingerprint));
             }
         }
         // Drop cache entries for PRs that have since closed/merged or been deleted
@@ -16082,13 +16081,14 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     const PullStore store = pullStoreForCurrentRepo();
     if (store.canWrite()) {
         bool clean = false;
+        QStringList conflictFiles;
         const bool conflict =
-            store.checkMergeable(number, &clean, nullptr) && !clean;
+            store.checkMergeable(number, &clean, &conflictFiles) && !clean;
         // The gen check at entry already gates this turn; re-check defensively in
         // case checkMergeable() ever pumps the event loop and lets a fresh
         // reloadPulls() supersede this pass while git ran.
         if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, qMakePair(item.second, conflict));
+            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
             if (conflict)
                 m_pullConflictByNumber.insert(number, true);
             else
@@ -31734,90 +31734,9 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 .arg(branch),
             true);
     }
-    setRepoDetailNotice(
-        QStringLiteral("Merging %1 into %2…").arg(branch, base), false);
-    runGitDetached(
-        dir,
-        {"merge", "--no-ff", branch,
-         "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
-        [this, branch, base, worktreePath, deleteAgent, repoOwner, repoName,
-         dir](bool ok, const QByteArray &) {
-            if (!ok) {
-                runGitDetached(dir, {"merge", "--abort"}, nullptr);
-                setRepoDetailNotice(
-                    QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR "
-                                   "and use \"Fix with agent\" on the Branches tab.")
-                        .arg(branch),
-                    true);
-                loadWorktreesPanel();
-                if (m_branchesTable)
-                    loadBranchesPanel();
-                return;
-            }
-            // The branch is now in main, so the worktree has served its purpose — clean
-            // it up (silently; the merge was already confirmed). Delete the branch too:
-            // its work is preserved in the merge commit, so leaving it behind only
-            // clutters the Worktrees/Branches tabs.
-            QList<int> deletedAgents;
-            if (deleteAgent && !branch.isEmpty() && !repoOwner.isEmpty()) {
-                // Tear down any agent session(s) that produced this branch first, so no
-                // runner is left holding the worktree open while we remove it.
-                for (const AgentSession &s : std::as_const(m_agentSessions)) {
-                    if (s.owner == repoOwner && s.name == repoName
-                        && s.branchName == branch && !isExternalSession(s.id))
-                        deletedAgents.append(s.id);
-                }
-                for (int id : std::as_const(deletedAgents))
-                    deleteStoredAgentSession(id);
-            }
-            const QString agentNote =
-                deletedAgents.isEmpty()
-                    ? QString()
-                    : (deletedAgents.size() == 1
-                           ? QStringLiteral(" and deleted its agent session")
-                           : QStringLiteral(" and deleted its %1 agent sessions")
-                                 .arg(deletedAgents.size()));
-            auto afterAgents = [this, deletedAgents, branch] {
-                if (deletedAgents.isEmpty()) {
-                    // Issue #291: flag any agent session that produced this branch.
-                    markAgentSessionsMerged(0, branch);
-                } else {
-                    reloadAgents();
-                    reloadIssues();
-                    refreshIssueList();
-                    updateIssueActionState();
-                }
-            };
-            if (!worktreePath.isEmpty()
-                && QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
-                setRepoDetailNotice(
-                    QStringLiteral("Merged %1 into %2 — removing its worktree…")
-                        .arg(branch, base),
-                    false);
-                // async: the folder delete + branch delete + panel refresh run off the
-                // UI thread; onDone sets the final notice once it's gone.
-                removeWorktree(worktreePath, branch, /*confirm=*/false,
-                               /*alsoDeleteBranch=*/true, /*async=*/true,
-                               [this, branch, base, agentNote, afterAgents] {
-                                   setRepoDetailNotice(
-                                       QStringLiteral("Merged %1 into %2, removed its "
-                                                      "worktree and deleted its branch")
-                                               .arg(branch, base)
-                                           + agentNote + QStringLiteral("."),
-                                       false);
-                                   afterAgents();
-                               });
-            } else {
-                setRepoDetailNotice(
-                    QStringLiteral("Merged %1 into %2").arg(branch, base) + agentNote
-                        + QStringLiteral("."),
-                    false);
-                afterAgents();
-                loadWorktreesPanel();
-                if (m_branchesTable)
-                    loadBranchesPanel();
-            }
-        });
+    loadWorktreesPanel();
+    if (m_branchesTable)
+        loadBranchesPanel();
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
