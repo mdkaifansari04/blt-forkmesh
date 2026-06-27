@@ -716,6 +716,12 @@ private:
     void looperStartNext();
     void looperOnSessionFinished(int sessionId);
     void updateIssueLooperButton();
+    // Tiny "looper running" indicator overlaid on the Issues tab (adhoc #125),
+    // plus persistence so the loop resumes after a restart.
+    void updateIssueLooperTabIndicator();
+    void positionLooperSnake();
+    void persistLooperState();
+    void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
     // Stop and remove one stored agent session (clear its issue assignment, drop
@@ -2489,6 +2495,15 @@ private:
     QWidget *m_issueLooperSpinner = nullptr;
     int m_looperCurrentIssue = 0;
     QString m_looperCurrentTitle;
+    // Tiny braille "snake" overlaid on the Issues tab while the looper runs
+    // (adhoc #125), mirroring m_agentSnake on the Agents tab so the loop stays
+    // visible from any tab. Blue to match the looper banner; animated by
+    // m_looperSpinTimer. m_looperRepoSlug ("owner/name") records which repo the
+    // loop is bound to so a restart resumes it on the same repo.
+    QLabel *m_looperSnake = nullptr;
+    QTimer *m_looperSpinTimer = nullptr;
+    int m_looperSpinFrame = 0;
+    QString m_looperRepoSlug;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;
