@@ -6529,6 +6529,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
     m_issueQuickAdd->setMaxLength(160);
+    // Ctrl+V with an image on the clipboard attaches it (issue #79).
+    m_issueQuickAdd->installEventFilter(this);
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -6551,6 +6553,19 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddNoIssue->setToolTip(
         "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
         "typed text as its prompt.");
+    // Attach an image to the quick-add (issue #79): pick a file or paste with
+    // Ctrl+V. In "No issue" mode the image path rides along in the agent's prompt;
+    // otherwise it's attached to the created issue.
+    m_quickAddImageButton = new QPushButton;
+    m_quickAddImageButton->setObjectName("ghostButton");
+    m_quickAddImageButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddImageButton, "paperclip", 16);
+    connect(m_quickAddImageButton, &QPushButton::clicked, this,
+            &MainWindow::attachQuickAddImage);
+    updateQuickAddImageButton();
+    // "No issue" on by default (issue #79): the common quick-add path is firing a
+    // coding agent straight from the typed prompt, not filing an issue.
+    m_quickAddNoIssue->setChecked(true);
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
@@ -6625,6 +6640,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
+    quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
@@ -34641,8 +34657,17 @@ void MainWindow::quickAddIssue()
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("claude-code");
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
-        if (startAdHocAgentForRepo(issuesRepoIndex(), title, provider, createPr) > 0) {
+        // Hand any attached images to the agent the same way the new-agent
+        // composer does: an "Attached image: <path>" line per file (issue #79).
+        QString prompt = title;
+        for (const QString &img : m_quickAddImages) {
+            if (!prompt.endsWith(QLatin1Char('\n')))
+                prompt += QLatin1Char('\n');
+            prompt += QStringLiteral("Attached image: %1").arg(img);
+        }
+        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr) > 0) {
             m_issueQuickAdd->clear();
+            clearQuickAddImages();
             setIssueInlineNotice(
                 QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
                                "issue created.")
@@ -34667,14 +34692,16 @@ void MainWindow::quickAddIssue()
         return;
     }
     QString error;
-    const int number = store.createIssue(title, QString(), {}, QString(), 0, {}, {},
-                                         &error);
+    // Any queued images ride along as the new issue's attachments (issue #79).
+    const int number = store.createIssue(title, QString(), {}, QString(), 0, {},
+                                         m_quickAddImages, &error);
     if (number < 0) {
         setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
                              true);
         return;
     }
     m_issueQuickAdd->clear();
+    clearQuickAddImages();
     m_currentIssueNumber = number;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
@@ -34699,6 +34726,83 @@ void MainWindow::quickAddIssue()
             assignIssueToAgent(provider);
         }
     }
+}
+
+// Footer quick-add "paperclip": pick one or more images to attach to the next
+// send (issue #79). They're queued, not sent now — the actual hand-off happens
+// in quickAddIssue() when the user hits Enter / Send.
+void MainWindow::attachQuickAddImage()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Attach image"), QString(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)"));
+    for (const QString &f : files)
+        queueQuickAddImage(f);
+    if (m_issueQuickAdd)
+        m_issueQuickAdd->setFocus();
+}
+
+// Ctrl+V into the quick-add bar: if the clipboard holds an image, save it to a
+// temp PNG and queue it. Returns true only when an image was queued, so a normal
+// text paste still falls through to the line edit.
+bool MainWindow::tryPasteImageIntoQuickAdd()
+{
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasImage())
+        return false;
+    // Reuse the new-agent-prompt image temp store: it saves to a stable file that
+    // outlives this call (the agent / issue write reads it later).
+    const QString path =
+        saveNewAgentPromptImage(qvariant_cast<QImage>(mime->imageData()));
+    if (path.isEmpty())
+        return false;
+    queueQuickAddImage(path);
+    return true;
+}
+
+// Queue an image path for the next quick-add send, ignoring blanks and dupes.
+void MainWindow::queueQuickAddImage(const QString &path)
+{
+    if (path.isEmpty() || m_quickAddImages.contains(path))
+        return;
+    m_quickAddImages.append(path);
+    updateQuickAddImageButton();
+    setIssueInlineNotice(
+        QStringLiteral("Image attached (%1) \xE2\x80\x94 it'll go with your next "
+                       "send.")
+            .arg(m_quickAddImages.size()));
+}
+
+void MainWindow::clearQuickAddImages()
+{
+    if (m_quickAddImages.isEmpty())
+        return;
+    m_quickAddImages.clear();
+    updateQuickAddImageButton();
+}
+
+// Reflect how many images are queued: a count badge on the button text and a
+// tooltip naming the files, so the paperclip stands out once something's attached.
+void MainWindow::updateQuickAddImageButton()
+{
+    if (!m_quickAddImageButton)
+        return;
+    const int n = m_quickAddImages.size();
+    m_quickAddImageButton->setText(n > 0 ? QString::number(n) : QString());
+    if (n == 0) {
+        m_quickAddImageButton->setToolTip(
+            QStringLiteral("Attach an image \xE2\x80\x94 pick a file or paste with "
+                           "Ctrl+V. Sent to the agent in \"No issue\" mode, or "
+                           "attached to the created issue."));
+        return;
+    }
+    QStringList names;
+    for (const QString &p : m_quickAddImages)
+        names << QFileInfo(p).fileName();
+    m_quickAddImageButton->setToolTip(
+        QStringLiteral("%1 image%2 attached:\n%3\n\nClick to add more.")
+            .arg(n)
+            .arg(n == 1 ? QString() : QStringLiteral("s"), names.join(QLatin1Char('\n'))));
 }
 
 void MainWindow::copyIssueToClipboard()
@@ -35222,6 +35326,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_messageInput && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+            return true;
+    }
+    // Ctrl+V into the footer quick-add bar: if the clipboard holds an image,
+    // queue it as an attachment instead of pasting its (usually empty) text
+    // (issue #79). A normal text paste falls through.
+    if (obj == m_issueQuickAdd && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
             return true;
     }
     // Pasting an image into the "Start a new agent" prompt attaches it (issue #56).
