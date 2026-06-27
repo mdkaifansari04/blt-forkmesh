@@ -624,6 +624,11 @@ private:
     // owns the repo and falling back to the maintainer's relay inbox otherwise.
     void postIssueLinkComment(int issueNumber, const QString &body);
     void postPullLinkComment(int pullNumber, const QString &body);
+    // Issue #156: after an agent opens a PR for the issue it was working, record an
+    // explicit "Linked pull request #M" note on that issue so the link is durable
+    // in the Development section, the same way a manual link is. Repo-aware: the
+    // agent's repo may differ from the one currently on screen.
+    void linkAgentPullToIssue(const AgentSession &session, int prNumber);
     void closeCurrentPull();
     void reopenCurrentPull();
     void deleteCurrentPull();
