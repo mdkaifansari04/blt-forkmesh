@@ -21515,6 +21515,7 @@ void MainWindow::startAdHocAgent()
     session.owner = repo.owner;
     session.name = repo.name;
     session.issueNumber = 0; // ad-hoc: not tied to any issue
+    session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = true;
     session.contextWindow =
@@ -21877,36 +21878,46 @@ void MainWindow::processAgentQueue()
             m_agentStore->saveSession(*session);
             continue;
         }
+        // Ad-hoc sessions (issueNumber == 0) carry no issue; their task lives in
+        // session->prompt. Only issue-assigned sessions need the issue resolved —
+        // requiring one for ad-hoc runs is what failed every resumed ad-hoc agent
+        // on restart with "Issue not found".
         Issue issue;
-        const QList<Issue> issues =
-            IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
-                .loadAll();
-        bool found = false;
-        for (const Issue &candidate : issues)
-            if (candidate.number == session->issueNumber) {
-                issue = candidate;
-                found = true;
-                break;
+        if (session->issueNumber > 0) {
+            const QList<Issue> issues =
+                IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
+                    .loadAll();
+            bool found = false;
+            for (const Issue &candidate : issues)
+                if (candidate.number == session->issueNumber) {
+                    issue = candidate;
+                    found = true;
+                    break;
+                }
+            if (!found) {
+                session->status = AgentStatus::Failed;
+                session->lastError = QStringLiteral("Issue not found.");
+                m_agentStore->saveSession(*session);
+                continue;
             }
-        if (!found) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("Issue not found.");
-            m_agentStore->saveSession(*session);
-            continue;
         }
         // Claude Code renders as a native stream-json transcript on the agent
         // detail screen (with a Raw-output toggle), not headlessly through a
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTranscript(*session, issue, repo.localPath);
+            startClaudeCodeTranscript(*session, issue, repo.localPath, session->prompt);
             continue;
         }
         const AgentSession snapshot = *session;
         // A launched run consumes from this provider's rolling usage windows;
         // anchor them so the agent sessions screen can count down the time left.
         markAgentLimitWindow(snapshot.provider);
-        acquireAgentRunner()->start(snapshot, issue, repo.localPath,
-                                    agentConfigForProvider(session->provider));
+        AgentRunner::Config config = agentConfigForProvider(session->provider);
+        // Ad-hoc API-key runs ride their saved task through the config override,
+        // mirroring startAdHocAgent so they resume the same way after a restart.
+        if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
+            config.taskOverride = snapshot.prompt;
+        acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
     }
     reloadAgents();
 }
@@ -22104,6 +22115,10 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     if (session.baseBranch.isEmpty())
         session.baseBranch = session.baseRef;
     session.createPr = true; // always open a PR for a finished transcript session
+    // Persist an ad-hoc task so it can be replayed after an app restart (the
+    // composer's free-form prompt has no issue to re-read it from).
+    if (session.prompt.isEmpty() && !customPrompt.trimmed().isEmpty())
+        session.prompt = customPrompt.trimmed();
 
     const QString baseName =
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
