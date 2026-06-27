@@ -731,6 +731,12 @@ private:
     // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
     // accurate even when no agent is streaming rate-limit events.
     void refreshClaudeCodeUsage();
+    // Poll usage now and again a few seconds later. Use this the moment a new
+    // agent starts or a prompt is sent: at that instant no tokens have been
+    // consumed yet, so an immediate poll still shows the pre-start figure — the
+    // delayed follow-up catches the first turn's usage without waiting for the
+    // next one-minute tick.
+    void bumpClaudeCodeUsage();
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
