@@ -5,7 +5,7 @@ title: come up with a better way fo storing issues
 status: open
 labels: []
 milestone: 
-priority: 51
+priority: 93
 progress: 0
 assignees: []
 createdAt: 1782356323867
