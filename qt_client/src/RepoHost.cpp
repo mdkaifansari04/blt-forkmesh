@@ -67,6 +67,32 @@ bool runGit(const QString &mirrorPath, const QStringList &args, QByteArray &outp
     return true;
 }
 
+// Count the numbered sub-directories (1/, 2/, …) under a top-level folder such
+// as issues/, pulls/ or discussions/. Each maps to one filed item, so this is
+// the tally the website shows in its tab badges. A missing folder counts as 0.
+int countNumberedDirs(const QString &mirrorPath, const QString &ref,
+                      const QString &dir)
+{
+    QByteArray output;
+    if (!runGit(mirrorPath, {"ls-tree", "-z", ref + ":" + dir}, output))
+        return 0; // folder absent -> nothing filed yet
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    int count = 0;
+    for (const QByteArray &record : output.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 2 || meta.at(1) != "tree")
+            continue;
+        if (numericName.match(QString::fromUtf8(record.mid(tab + 1))).hasMatch())
+            ++count;
+    }
+    return count;
+}
+
 QString imageMimeForPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -512,7 +538,26 @@ QJsonObject RepoHost::buildTreeReply(const QString &path) const
             {"type", QString::fromUtf8(type)},
             {"size", double(ok ? size : 0)}});
     }
-    return {{"ok", true}, {"entries", entries}};
+    QJsonObject reply{{"ok", true}, {"entries", entries}};
+    // The root listing carries the repo's issue/pull/discussion/commit tallies so
+    // the website updates every tab badge from this one reply (issue #93).
+    if (path.isEmpty())
+        reply.insert("counts", buildRootCounts(ref));
+    return reply;
+}
+
+QJsonObject RepoHost::buildRootCounts(const QString &ref) const
+{
+    int commits = 0;
+    QByteArray output;
+    if (runGit(m_mirrorPath, {"rev-list", "--count", ref}, output))
+        commits = QString::fromUtf8(output).trimmed().toInt();
+    return QJsonObject{
+        {"issues", countNumberedDirs(m_mirrorPath, ref, QStringLiteral("issues"))},
+        {"pulls", countNumberedDirs(m_mirrorPath, ref, QStringLiteral("pulls"))},
+        {"discussions",
+         countNumberedDirs(m_mirrorPath, ref, QStringLiteral("discussions"))},
+        {"commits", commits}};
 }
 
 QJsonObject RepoHost::buildBlobReply(const QString &path) const
