@@ -29634,11 +29634,15 @@ QWidget *MainWindow::buildWorktreesTab()
             deleteWorktreeBranchAndAgent(m_worktreeSelectedPath,
                                          m_worktreeSelectedBranch);
     });
-    // Show which branch the selected worktree is on, beside its action buttons.
+    // Show which branch the selected worktree is on and where it lives on disk,
+    // beside its action buttons. The branch name and the path are links that open
+    // the worktree's folder in the system file manager.
     m_worktreeBranchLabel = new QLabel;
     m_worktreeBranchLabel->setObjectName("sectionLabel");
     m_worktreeBranchLabel->setTextFormat(Qt::RichText);
-    m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                   Qt::LinksAccessibleByMouse);
+    m_worktreeBranchLabel->setOpenExternalLinks(true);
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
@@ -30021,11 +30025,27 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     // "Update from main" also needs the worktree's folder on disk to merge into.
     m_worktreeSelectedBranch = branch;
     m_worktreeSelectedPath = worktreePath;
-    if (m_worktreeBranchLabel)
-        m_worktreeBranchLabel->setText(
-            branch.isEmpty()
-                ? QString()
-                : QStringLiteral("On branch <b>%1</b>").arg(branch.toHtmlEscaped()));
+    if (m_worktreeBranchLabel) {
+        if (branch.isEmpty()) {
+            m_worktreeBranchLabel->setText(QString());
+        } else {
+            // Only link to a folder that actually exists on disk; the merged-away
+            // main branch has no separate worktree dir to open.
+            const bool onDisk = !worktreePath.isEmpty() && QDir(worktreePath).exists();
+            const QString url =
+                onDisk ? QUrl::fromLocalFile(worktreePath).toString() : QString();
+            const auto link = [&url, onDisk](const QString &html) {
+                return onDisk ? QStringLiteral("<a href=\"%1\">%2</a>").arg(url, html)
+                              : html;
+            };
+            QString text = QStringLiteral("On branch %1")
+                               .arg(link(QStringLiteral("<b>%1</b>")
+                                             .arg(branch.toHtmlEscaped())));
+            if (!worktreePath.isEmpty())
+                text += QStringLiteral(" · %1").arg(link(worktreePath.toHtmlEscaped()));
+            m_worktreeBranchLabel->setText(text);
+        }
+    }
     const bool feature = !branch.isEmpty() && branch != base;
     QString repoLocal;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
