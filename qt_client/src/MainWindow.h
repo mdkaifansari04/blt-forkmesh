@@ -2021,7 +2021,19 @@ private:
     // UI for seconds). Invalidated when the base tip moves; each per-PR entry
     // carries the patch fingerprint that produced it so an edited patch re-checks.
     QString m_pullConflictCacheBaseTip;
-    QHash<int, QPair<QString, bool>> m_pullConflictCache;
+    // Per-PR dry-run apply result. fingerprint pins it to the patch that produced
+    // it; conflictFiles is carried so updatePullActionState() can reuse this entry
+    // for the current PR instead of re-spawning `git apply --check` (which blocked
+    // the UI for ~1.6s on every pull selection).
+    struct PullConflictEntry {
+        QString fingerprint;
+        bool conflict = false;
+        QStringList conflictFiles;
+    };
+    QHash<int, PullConflictEntry> m_pullConflictCache;
+    // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
+    // the patch changes. Shared by reloadPulls() and updatePullActionState().
+    static QString pullPatchFingerprint(const QString &patch);
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
@@ -2146,6 +2158,9 @@ private:
     void aiFixLog(const QString &text);    // stream a line into the agent session log
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
+    // Free-text filter over the session list: matches issue number/title,
+    // provider, status and PR. Empty shows everything (issue #82).
+    QLineEdit *m_agentSearch = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).
