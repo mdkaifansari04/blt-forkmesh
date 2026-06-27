@@ -489,6 +489,32 @@ int main(int argc, char *argv[])
         check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
               QString("worktrees list shows the branch one commit ahead of main "
                       "(ahead/behind cell = %1)").arg(abText));
+
+        // Opening the Worktrees tab the way a user does (clicking its nav button)
+        // should hand keyboard focus to the table, so arrow keys work right away
+        // without first clicking a row.
+        window.testClickRepoDetailTab(window.testWorktreesTabIndex());
+        QApplication::processEvents();
+        check(window.testWorktreesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Worktrees tab focuses the table so the "
+                             "arrow keys can move through its rows"));
+
+        // With feature/keep-selected (the bottom row) selected, an Up arrow on the
+        // table should move the selection to the *other* worktree row; Down stays
+        // put because it's already the last row.
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterUp = window.testArrowOnWorktrees(false);
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterDown = window.testArrowOnWorktrees(true);
+        qInfo("arrow nav: up->%s down->%s",
+              qPrintable(afterUp), qPrintable(afterDown));
+        check(!afterUp.isEmpty() &&
+                  afterUp != QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow up moves the worktree selection to the row above"));
+        check(afterDown == QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow down on the last worktree row stays put"));
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
