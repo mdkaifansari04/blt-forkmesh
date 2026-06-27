@@ -2158,6 +2158,9 @@ private:
     void aiFixLog(const QString &text);    // stream a line into the agent session log
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
+    // Free-text filter over the session list: matches issue number/title,
+    // provider, status and PR. Empty shows everything (issue #82).
+    QLineEdit *m_agentSearch = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).

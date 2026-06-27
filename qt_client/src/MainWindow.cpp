@@ -19831,6 +19831,18 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::onExternalClaudeTick);
     m_externalClaudeTimer->start();
     listLayout->addLayout(usageText);
+
+    // Free-text filter over the session list (issue #82): type to narrow the
+    // table to sessions whose issue number/title, agent, status or PR match.
+    m_agentSearch = new QLineEdit;
+    m_agentSearch->setObjectName("issueSearch");
+    m_agentSearch->setPlaceholderText(
+        QString::fromUtf8("Search agents by issue, agent, status or PR\xE2\x80\xA6"));
+    m_agentSearch->setClearButtonEnabled(true);
+    connect(m_agentSearch, &QLineEdit::textChanged, this,
+            [this] { refreshAgentTable(); });
+    listLayout->addWidget(m_agentSearch);
+
     listLayout->addWidget(m_agentTable, 1);
 
     // Bottom-left composer (issue #273): type a prompt and start a brand-new
@@ -20967,12 +20979,28 @@ void MainWindow::refreshAgentTable()
     }
 
     const int keep = m_selectedAgentSessionId;
+    // Free-text filter (issue #82): substring-match the query against each
+    // session's issue number/title, agent, status and PR number.
+    const QString query =
+        m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         if (session.owner != owner || session.name != name)
             continue;
+        if (!query.isEmpty()) {
+            QStringList haystack{session.issueTitle,
+                                 agentProviderName(session.provider),
+                                 agentStatusText(session.status)};
+            if (session.issueNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.issueNumber);
+            if (session.prNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.prNumber);
+            if (!haystack.join(QLatin1Char(' '))
+                     .contains(query, Qt::CaseInsensitive))
+                continue;
+        }
         const int row = m_agentTable->rowCount();
         m_agentTable->insertRow(row);
 
