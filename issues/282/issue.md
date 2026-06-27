@@ -5,7 +5,7 @@ title: make the runs table expanded more on first load
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 68
 progress: 0
 assignees: []
 createdAt: 1782487440599
