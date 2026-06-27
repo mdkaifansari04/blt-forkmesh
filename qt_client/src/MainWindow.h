@@ -1657,6 +1657,7 @@ private:
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
+    QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
@@ -2271,6 +2272,11 @@ private:
     QPushButton *m_agentStartButton = nullptr;
     QPushButton *m_agentNewImageButton = nullptr; // attach an image to the prompt
     void startAdHocAgent();
+    // Core of startAdHocAgent, reusable from the quick-add bar (issue #299): start
+    // an issue-less coding agent in repoIndex's checkout with `task` as its prompt.
+    // Returns the new session id (>0) or 0 if it could not start.
+    int startAdHocAgentForRepo(int repoIndex, const QString &task,
+                               const QString &provider, bool createPr);
     // Image attachments on the "Start a new agent" prompt (issue #56): paste from
     // the clipboard or pick a file; the image is referenced by path so the
     // launched agent can read it.
