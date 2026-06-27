@@ -377,6 +377,17 @@ public:
         update();
     }
 
+    // The per-session token/cost detail that used to live on the agent detail
+    // page (issue #84): shown in the hover tooltip below the 5h/weekly figures.
+    // Pass an empty string to drop it (e.g. when no session is selected).
+    void setStats(const QString &stats)
+    {
+        if (m_stats == stats)
+            return;
+        m_stats = stats;
+        refreshTooltip();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -432,12 +443,16 @@ private:
             return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
                          : QStringLiteral("%1%").arg(v);
         };
-        setToolTip(QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
-                       .arg(fmt(m_fiveHour), fmt(m_weekly)));
+        QString tip = QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
+                          .arg(fmt(m_fiveHour), fmt(m_weekly));
+        if (!m_stats.isEmpty())
+            tip += QStringLiteral("\n\n") + m_stats;
+        setToolTip(tip);
     }
 
     int m_fiveHour = -1;
     int m_weekly = -1;
+    QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -4539,6 +4554,20 @@ QString MainWindow::testIssueAgentProvider() const
                                 : QString();
 }
 
+QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
+{
+    if (!m_worktreesTable)
+        return QString();
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+        if (b && b->data(Qt::UserRole).toString() == branch) {
+            if (QTableWidgetItem *ab = m_worktreesTable->item(row, 3))
+                return ab->text();
+        }
+    }
+    return QString();
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -6594,6 +6623,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
     m_issueQuickAdd->setMaxLength(160);
+    // Ctrl+V with an image on the clipboard attaches it (issue #79).
+    m_issueQuickAdd->installEventFilter(this);
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -6616,6 +6647,19 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddNoIssue->setToolTip(
         "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
         "typed text as its prompt.");
+    // Attach an image to the quick-add (issue #79): pick a file or paste with
+    // Ctrl+V. In "No issue" mode the image path rides along in the agent's prompt;
+    // otherwise it's attached to the created issue.
+    m_quickAddImageButton = new QPushButton;
+    m_quickAddImageButton->setObjectName("ghostButton");
+    m_quickAddImageButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddImageButton, "paperclip", 16);
+    connect(m_quickAddImageButton, &QPushButton::clicked, this,
+            &MainWindow::attachQuickAddImage);
+    updateQuickAddImageButton();
+    // "No issue" on by default (issue #79): the common quick-add path is firing a
+    // coding agent straight from the typed prompt, not filing an issue.
+    m_quickAddNoIssue->setChecked(true);
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
@@ -6690,6 +6734,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
+    quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
@@ -6769,7 +6814,12 @@ void MainWindow::startDiagnostics()
         const QString logPath =
             QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
         m_stallLogPath = logPath;
-        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath);
+        // Recorded with each stall so a report sent to an agent identifies the
+        // exact build and where its source lives (FORKMESH_SOURCE_DIR is the
+        // build-time qt_client path).
+        const QString buildInfo =
+            QStringLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
+        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath, buildInfo);
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
@@ -19952,11 +20002,6 @@ QWidget *MainWindow::buildAgentsTab()
         else if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
-    m_agentUsage = new QLabel;
-    m_agentUsage->setObjectName("statusLine");
-    m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentUsage->setWordWrap(true);
-
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
@@ -20070,15 +20115,9 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
-    connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
-            [this](qint64 tokens, double cost) {
-                if (m_agentStatsLabel) {
-                    m_agentStatsLabel->setText(
-                        QStringLiteral("⛁ %1 tokens · $%2")
-                            .arg(QLocale().toString(tokens)).arg(cost, 0, 'f', 4));
-                    m_agentStatsLabel->show();
-                }
-            });
+    // Issue #84: the live token/cost counter (statsChanged) is now folded into
+    // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
+    // the same totals plus the budget breakdown, so there's no separate label.
 
     m_agentOutputStack = new QStackedWidget;
     m_agentOutputStack->addWidget(m_agentLog);        // page 0: raw / piped log
@@ -20171,31 +20210,10 @@ QWidget *MainWindow::buildAgentsTab()
     outputContainer->setLayout(outputRow);
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // 5-hour + weekly usage graphs, fed live by rate_limit events and re-polled
-    // every minute from the OAuth usage endpoint (issue #290), plus a live
-    // token/cost counter.
-    auto makeUsageBar = [](const QString &name) {
-        auto *b = new QProgressBar;
-        b->setObjectName(name);
-        b->setRange(0, 100);
-        b->setTextVisible(true);
-        b->setMaximumHeight(16);
-        b->hide();
-        return b;
-    };
-    m_agentUsage5hBar = makeUsageBar(QStringLiteral("agentUsage5hBar"));
-    m_agentUsageBar = makeUsageBar(QStringLiteral("agentUsageBar"));
-    m_agentStatsLabel = new QLabel;
-    m_agentStatsLabel->setObjectName("agentStatsLabel");
-    m_agentStatsLabel->hide();
-    auto *usageRow = new QHBoxLayout;
-    usageRow->setContentsMargins(0, 0, 0, 0);
-    usageRow->setSpacing(10);
-    usageRow->addWidget(m_agentUsage5hBar, 1);
-    usageRow->addWidget(m_agentUsageBar, 1);
-    usageRow->addWidget(m_agentStatsLabel);
-    auto *usageRowWidget = new QWidget;
-    usageRowWidget->setLayout(usageRow);
+    // Issue #84: the 5-hour/weekly usage gauges and the live token/cost counter
+    // no longer live here — they were moved into the top-bar mini chart and its
+    // hover tooltip so the detail page stays focused on the transcript. The OAuth
+    // poll (issue #290) feeds that chart directly via applyClaudeUsage().
 
     // Refresh spend + the edited-files list once an hour while the app runs.
     m_agentHourlyTimer = new QTimer(this);
@@ -20249,6 +20267,10 @@ QWidget *MainWindow::buildAgentsTab()
                              {QStringLiteral("text"), prompt}};
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
+            // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
+            // it now to keep the top-bar chart + hover stats current rather than
+            // waiting for the next minute tick.
+            refreshClaudeCodeUsage();
             // Replying clears the "Waiting" state — the agent is working again.
             if (AgentSession *as = findAgentSession(sid);
                 as && as->status == AgentStatus::Waiting) {
@@ -20334,8 +20356,6 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
-    detailLayout->addWidget(m_agentUsage);
-    detailLayout->addWidget(usageRowWidget);
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentOutputToggle);
     detailLayout->addWidget(outputContainer, 1);
@@ -20352,7 +20372,8 @@ QWidget *MainWindow::buildAgentsTab()
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({430, 680});
+    // Equal split so the divider sits in the middle of the screen (issue #85).
+    splitter->setSizes({600, 600});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -20747,15 +20768,9 @@ void MainWindow::updateAgentTotalSpend()
 void MainWindow::applyClaudeUsage(bool weekly, int percent)
 {
     const int pct = qBound(0, percent, 100);
-    QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
-    if (bar) {
-        bar->setValue(pct);
-        bar->setFormat((weekly ? QStringLiteral("Weekly: %1%")
-                               : QStringLiteral("5h: %1%")).arg(pct));
-        bar->show();
-    }
-    // Mirror the same figure into the top-bar mini chart (issue #266) and cache
-    // it so it survives a restart and renders on the very first frame.
+    // Feed the figure into the top-bar mini chart (issue #266) and cache it so it
+    // survives a restart and renders on the very first frame. The detail-page
+    // gauges were retired in issue #84 in favour of this single chart.
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
     QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
@@ -21334,8 +21349,9 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentStatusPill->clear();
         if (m_agentMeta)
             m_agentMeta->clear();
-        if (m_agentUsage)
-            m_agentUsage->clear();
+        // Drop the per-session token line from the top-bar chart's hover tooltip.
+        if (m_navTokenUsage)
+            static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
@@ -22519,6 +22535,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
         live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+        // Issue #84: launching with an initial prompt is a send too — refresh the
+        // top-bar usage chart + hover stats right away.
+        refreshClaudeCodeUsage();
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -23044,7 +23063,7 @@ void MainWindow::seedSessionTokens()
 
 void MainWindow::setAgentUsageLabel(const AgentSession &session)
 {
-    if (!m_agentUsage)
+    if (!m_navTokenUsage)
         return;
     const int window = session.contextWindow > 0 ? session.contextWindow : 32000;
     const int maxOutput =
@@ -23052,7 +23071,7 @@ void MainWindow::setAgentUsageLabel(const AgentSession &session)
             ? session.maxOutputTokens
             : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     const int pct = window > 0 ? qMin(100, session.contextTokens * 100 / window) : 0;
-    m_agentUsage->setText(
+    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(
         QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
             .arg(formatCount(sessionTokenTotal(session)))
             .arg(formatCount(session.promptTokens))
@@ -29417,10 +29436,11 @@ QWidget *MainWindow::buildWorktreesTab()
     info->setWordWrap(true);
     layout->addWidget(info);
 
-    m_worktreesTable = new QTableWidget(0, 4);
+    m_worktreesTable = new QTableWidget(0, 5);
     m_worktreesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_worktreesTable);
-    m_worktreesTable->setHorizontalHeaderLabels({"Branch", "Path", "Status", ""});
+    m_worktreesTable->setHorizontalHeaderLabels(
+        {"Branch", "Path", "Status", "Ahead/Behind", ""});
     m_worktreesTable->verticalHeader()->setVisible(false);
     m_worktreesTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_worktreesTable->verticalHeader()->setDefaultSectionSize(36);
@@ -29434,7 +29454,8 @@ QWidget *MainWindow::buildWorktreesTab()
     wh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     wh->setSectionResizeMode(1, QHeaderView::Stretch);
     wh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    wh->setSectionResizeMode(3, QHeaderView::Fixed);
+    wh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    wh->setSectionResizeMode(4, QHeaderView::Fixed);
     makeColumnsResizable(m_worktreesTable);
     connect(m_worktreesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -29620,6 +29641,9 @@ void MainWindow::loadWorktreesPanel()
     }
 
     const QString mainPath = QDir(repoPath).absolutePath();
+    // Base branch each worktree's ahead/behind count is measured against (#272
+    // follow-up: show how far each worktree has diverged from main in the list).
+    const QString baseBranch = repoDefaultBranch(repoBranches());
     // Each worktree's dirty/clean status needs its own `git status`, which was run
     // synchronously per row and froze the UI for seconds on repos with many
     // worktrees (a 21s stall was reported). Fill the column asynchronously instead
@@ -29673,6 +29697,60 @@ void MainWindow::loadWorktreesPanel()
                     }
                 }
             });
+
+        // Ahead/behind vs the default branch, also filled async per row so a repo
+        // with many worktrees still paints instantly. `rev-list --left-right` on
+        // base...HEAD reports "<behind>\t<ahead>" (left = base, right = worktree).
+        auto *abItem = new QTableWidgetItem(
+            baseBranch.isEmpty() ? QStringLiteral("—")
+                                 : QString::fromUtf8("checking\xE2\x80\xA6"));
+        abItem->setTextAlignment(Qt::AlignCenter);
+        m_worktreesTable->setItem(row, 3, abItem);
+        if (!baseBranch.isEmpty()) {
+            runGitDetached(
+                wt.path,
+                {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
+                 QStringLiteral("--count"),
+                 baseBranch + QStringLiteral("...HEAD")},
+                [this, statusGen, wtPath, baseBranch](bool ok, const QByteArray &c) {
+                    if (statusGen != m_worktreeStatusGen || !m_worktreesTable)
+                        return; // table rebuilt while git ran — drop this result
+                    const QStringList n =
+                        QString::fromUtf8(c).trimmed().split(QRegularExpression(
+                            QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                    const int behind = ok && n.size() > 0 ? n.at(0).toInt() : 0;
+                    const int ahead = ok && n.size() > 1 ? n.at(1).toInt() : 0;
+                    QString text, tip;
+                    if (ahead > 0 && behind > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
+                                   .arg(ahead).arg(behind);
+                        tip = QStringLiteral("%1 commit(s) ahead of and %2 behind %3")
+                                  .arg(ahead).arg(behind).arg(baseBranch);
+                    } else if (ahead > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x91%1").arg(ahead);
+                        tip = QStringLiteral("%1 commit(s) ahead of %2")
+                                  .arg(ahead).arg(baseBranch);
+                    } else if (behind > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x93%1").arg(behind);
+                        tip = QStringLiteral("%1 commit(s) behind %2")
+                                  .arg(behind).arg(baseBranch);
+                    } else {
+                        text = QStringLiteral("—");
+                        tip = QStringLiteral("Up to date with %1").arg(baseBranch);
+                    }
+                    const QString want = QDir(wtPath).absolutePath();
+                    for (int r = 0; r < m_worktreesTable->rowCount(); ++r) {
+                        QTableWidgetItem *p = m_worktreesTable->item(r, 1);
+                        if (p && QDir(p->text()).absolutePath() == want) {
+                            if (QTableWidgetItem *cc = m_worktreesTable->item(r, 3)) {
+                                cc->setText(text);
+                                cc->setToolTip(tip);
+                            }
+                            break;
+                        }
+                    }
+                });
+        }
 
         auto *cell = new QWidget;
         auto *h = new QHBoxLayout(cell);
@@ -29766,11 +29844,11 @@ void MainWindow::loadWorktreesPanel()
             h->addWidget(rmBtn);
         }
         h->addStretch();
-        m_worktreesTable->setCellWidget(row, 3, cell);
+        m_worktreesTable->setCellWidget(row, 4, cell);
         actionWidth = qMax(actionWidth, cell->sizeHint().width());
     }
     if (actionWidth > 0)
-        m_worktreesTable->setColumnWidth(3, actionWidth + 12);
+        m_worktreesTable->setColumnWidth(4, actionWidth + 12);
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
@@ -34833,8 +34911,17 @@ void MainWindow::quickAddIssue()
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("claude-code");
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
-        if (startAdHocAgentForRepo(issuesRepoIndex(), title, provider, createPr) > 0) {
+        // Hand any attached images to the agent the same way the new-agent
+        // composer does: an "Attached image: <path>" line per file (issue #79).
+        QString prompt = title;
+        for (const QString &img : m_quickAddImages) {
+            if (!prompt.endsWith(QLatin1Char('\n')))
+                prompt += QLatin1Char('\n');
+            prompt += QStringLiteral("Attached image: %1").arg(img);
+        }
+        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr) > 0) {
             m_issueQuickAdd->clear();
+            clearQuickAddImages();
             setIssueInlineNotice(
                 QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
                                "issue created.")
@@ -34859,14 +34946,16 @@ void MainWindow::quickAddIssue()
         return;
     }
     QString error;
-    const int number = store.createIssue(title, QString(), {}, QString(), 0, {}, {},
-                                         &error);
+    // Any queued images ride along as the new issue's attachments (issue #79).
+    const int number = store.createIssue(title, QString(), {}, QString(), 0, {},
+                                         m_quickAddImages, &error);
     if (number < 0) {
         setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
                              true);
         return;
     }
     m_issueQuickAdd->clear();
+    clearQuickAddImages();
     m_currentIssueNumber = number;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
@@ -34891,6 +34980,83 @@ void MainWindow::quickAddIssue()
             assignIssueToAgent(provider);
         }
     }
+}
+
+// Footer quick-add "paperclip": pick one or more images to attach to the next
+// send (issue #79). They're queued, not sent now — the actual hand-off happens
+// in quickAddIssue() when the user hits Enter / Send.
+void MainWindow::attachQuickAddImage()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Attach image"), QString(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)"));
+    for (const QString &f : files)
+        queueQuickAddImage(f);
+    if (m_issueQuickAdd)
+        m_issueQuickAdd->setFocus();
+}
+
+// Ctrl+V into the quick-add bar: if the clipboard holds an image, save it to a
+// temp PNG and queue it. Returns true only when an image was queued, so a normal
+// text paste still falls through to the line edit.
+bool MainWindow::tryPasteImageIntoQuickAdd()
+{
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasImage())
+        return false;
+    // Reuse the new-agent-prompt image temp store: it saves to a stable file that
+    // outlives this call (the agent / issue write reads it later).
+    const QString path =
+        saveNewAgentPromptImage(qvariant_cast<QImage>(mime->imageData()));
+    if (path.isEmpty())
+        return false;
+    queueQuickAddImage(path);
+    return true;
+}
+
+// Queue an image path for the next quick-add send, ignoring blanks and dupes.
+void MainWindow::queueQuickAddImage(const QString &path)
+{
+    if (path.isEmpty() || m_quickAddImages.contains(path))
+        return;
+    m_quickAddImages.append(path);
+    updateQuickAddImageButton();
+    setIssueInlineNotice(
+        QStringLiteral("Image attached (%1) \xE2\x80\x94 it'll go with your next "
+                       "send.")
+            .arg(m_quickAddImages.size()));
+}
+
+void MainWindow::clearQuickAddImages()
+{
+    if (m_quickAddImages.isEmpty())
+        return;
+    m_quickAddImages.clear();
+    updateQuickAddImageButton();
+}
+
+// Reflect how many images are queued: a count badge on the button text and a
+// tooltip naming the files, so the paperclip stands out once something's attached.
+void MainWindow::updateQuickAddImageButton()
+{
+    if (!m_quickAddImageButton)
+        return;
+    const int n = m_quickAddImages.size();
+    m_quickAddImageButton->setText(n > 0 ? QString::number(n) : QString());
+    if (n == 0) {
+        m_quickAddImageButton->setToolTip(
+            QStringLiteral("Attach an image \xE2\x80\x94 pick a file or paste with "
+                           "Ctrl+V. Sent to the agent in \"No issue\" mode, or "
+                           "attached to the created issue."));
+        return;
+    }
+    QStringList names;
+    for (const QString &p : m_quickAddImages)
+        names << QFileInfo(p).fileName();
+    m_quickAddImageButton->setToolTip(
+        QStringLiteral("%1 image%2 attached:\n%3\n\nClick to add more.")
+            .arg(n)
+            .arg(n == 1 ? QString() : QStringLiteral("s"), names.join(QLatin1Char('\n'))));
 }
 
 void MainWindow::copyIssueToClipboard()
@@ -35414,6 +35580,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_messageInput && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+            return true;
+    }
+    // Ctrl+V into the footer quick-add bar: if the clipboard holds an image,
+    // queue it as an attachment instead of pasting its (usually empty) text
+    // (issue #79). A normal text paste falls through.
+    if (obj == m_issueQuickAdd && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
             return true;
     }
     // Pasting an image into the "Start a new agent" prompt attaches it (issue #56).
