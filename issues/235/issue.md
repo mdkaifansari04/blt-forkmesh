@@ -5,7 +5,7 @@ title: Branch port/issue-175-auto-publish — needs merge into main
 status: open
 labels: [feature]
 milestone: 
-priority: 21
+priority: 10
 progress: 0
 assignees: []
 createdAt: 1782356524736
