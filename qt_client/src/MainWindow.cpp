@@ -1340,6 +1340,21 @@ void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// User's preferred tab a repository opens on (Settings → General). Stored as
+// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
+// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
+// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
+// without a manual click. Defaults to the Agents tab.
+const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
+constexpr int kFallbackRepoTab = 3; // Agents
+
+int defaultRepoTabIndex()
+{
+    const int value =
+        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
+    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
+}
+
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
 // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
@@ -25636,11 +25651,18 @@ void MainWindow::openRepoDetail(int repoIndex)
     updateRepoPullCount();
     logStartup(QStringLiteral("  openRepo: pulls loaded"));
 
-    // Default to the Code tab; reset the editor tabs/tree for the new repo.
-    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-        m_repoDetailTabs->button(0)->setChecked(true);
+    // Land on the user's preferred default tab (Settings → General; Agents by
+    // default). Each candidate tab's data was eagerly loaded above, so we only
+    // need to select it. Reset the editor tabs/tree for the new repo.
+    const int defaultTab = defaultRepoTabIndex();
+    if (m_repoDetailTabs && m_repoDetailTabs->button(defaultTab))
+        m_repoDetailTabs->button(defaultTab)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(0);
+        m_repoDetailStack->setCurrentIndex(defaultTab);
+    // The Agents list annotates each session with its PR status from the pulls
+    // loaded just above; reloadAgents() ran before them, so refresh on landing.
+    if (defaultTab == 3)
+        reloadAgents();
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -31827,18 +31849,32 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
     auto *fixMenu = new QMenu(m_branchFixButton);
-    connect(fixMenu->addAction(QStringLiteral("Fix with Claude")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("claude"));
-            });
-    connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("openai"));
-            });
+    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
+    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
+    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
+    connect(fixClaude, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
+    });
+    connect(fixOpenAi, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
+    });
+    connect(fixClaudeCode, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                        QStringLiteral("claude-code"));
+    });
+    // Bold the user's configured default agent (Settings -> Agents) so the dropdown
+    // makes the default choice obvious; refresh on open in case it changed.
+    auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
+        const QString def = defaultAgentProvider();
+        fixMenu->setDefaultAction(def == QLatin1String("claude-code") ? fixClaudeCode
+                                  : def == QLatin1String("claude-api") ? fixClaude
+                                                                       : fixOpenAi);
+    };
+    highlightDefaultFix();
+    connect(fixMenu, &QMenu::aboutToShow, fixMenu, highlightDefaultFix);
     m_branchFixButton->setMenu(fixMenu);
 
     m_branchPrButton = new QPushButton("Create PR");
@@ -31915,6 +31951,27 @@ void MainWindow::loadBranchesPanel()
                 .arg(branches.size())
                 .arg(base.isEmpty() ? "none" : base));
 
+    // Branch commit timestamps in one batch: spawning a `git log -1` per branch
+    // (below) blocked the UI thread for ~2s on repos with many branches because
+    // each row started its own git process serially (issue #152). for-each-ref
+    // returns every branch tip's committer date in a single call.
+    QHash<QString, qint64> branchTimes;
+    if (!dir.isEmpty()) {
+        QByteArray times;
+        if (runGitCapture(dir,
+                          {"for-each-ref",
+                           "--format=%(refname:short) %(committerdate:unix)",
+                           "refs/heads/"},
+                          &times, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
+                const qsizetype sp = line.lastIndexOf(u' ');
+                if (sp > 0)
+                    branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
+            }
+        }
+    }
+
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
@@ -31962,10 +32019,7 @@ void MainWindow::loadBranchesPanel()
                 if (hasConflict)
                     status += QString::fromUtf8(" \xC2\xB7 conflicts");
             }
-            QByteArray when;
-            if (runGitCapture(dir,
-                              {"log", "-1", "--format=%ct", branch}, &when, nullptr))
-                ts = QString::fromUtf8(when).trimmed().toLongLong();
+            ts = branchTimes.value(branch, 0);
         }
         auto *statusItem = new QTableWidgetItem(status);
         if (hasConflict) {
@@ -32799,18 +32853,26 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     if (branch.isEmpty() || branch == base || base.isEmpty())
         return;
 
-    const bool claude = provider == QLatin1String("claude");
+    // "claude-code" drives the real `claude` CLI (no API key, authenticates via the
+    // local login); the two API providers POST each conflicted file to their endpoint.
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    const bool claude = !claudeCode && agentIsClaudeProvider(provider);
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
-    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
-                                   : QSettings().value(kCodexApiKeySetting))
-                               .toString()
-                               .trimmed();
-    if (apiKey.isEmpty()) {
-        flashMessage(claude ? "Add a Claude API key in Settings first."
-                            : "Add an OpenAI API key in Settings first.",
-                     true);
-        return;
+        claudeCode ? QString()
+                   : claude ? QStringLiteral("claude-haiku-4-5")
+                            : QStringLiteral("gpt-4.1-nano");
+    QString apiKey;
+    if (!claudeCode) {
+        apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                         : QSettings().value(kCodexApiKeySetting))
+                     .toString()
+                     .trimmed();
+        if (apiKey.isEmpty()) {
+            flashMessage(claude ? "Add a Claude API key in Settings first."
+                                : "Add an OpenAI API key in Settings first.",
+                         true);
+            return;
+        }
     }
 
     // Nothing to do if it's already current.
@@ -32898,8 +32960,11 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
-            .arg(agentProviderName(provider), model, base, branch));
+        claudeCode
+            ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
+                  .arg(agentProviderName(provider), base, branch)
+            : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
+                  .arg(agentProviderName(provider), model, base, branch));
 
     m_aiFix = new AiConflictFix;
     m_aiFix->branchMerge = true;
@@ -32913,12 +32978,16 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_aiFix->branch = branch;
     m_aiFix->baseBranch = base;
     m_aiFix->restoreBranch = restoreBranch;
+    m_aiFix->claudeCode = claudeCode;
 
     switchToAgentsTab(session.id);
     aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
                  .arg(conflicted.size())
                  .arg(conflicted.join(QStringLiteral(", "))));
-    aiFixResolveNextFile();
+    if (m_aiFix->claudeCode)
+        aiFixRunClaudeCode();
+    else
+        aiFixResolveNextFile();
 }
 
 void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
@@ -39352,6 +39421,28 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
+    // Default tab a repository opens on. Stored as the repo-detail tab index;
+    // defaults to Agents (see defaultRepoTabIndex()).
+    auto *defaultTabLabel = new QLabel("Open repositories on tab");
+    auto *defaultTabCombo = new QComboBox;
+    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
+    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
+    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
+    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
+    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
+    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
+    defaultTabCombo->setToolTip(
+        "Which tab to show when you open a repository. Defaults to Agents.");
+    {
+        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
+        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
+            [defaultTabCombo](int) {
+                QSettings().setValue(kDefaultRepoTabSetting,
+                                     defaultTabCombo->currentData().toInt());
+            });
+
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
@@ -39988,6 +40079,8 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(defaultTabLabel);
+    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 
