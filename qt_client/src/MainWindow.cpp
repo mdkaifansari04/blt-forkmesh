@@ -6622,9 +6622,31 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
-    m_issueQuickAdd->setMaxLength(160);
+    // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
+    // field is sized to the same cap as the Claude prompt / message input
+    // (kMaxTextChars) rather than a short-title length.
+    m_issueQuickAdd->setMaxLength(16000);
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
+
+    // Characters-remaining counter: counts down from the field's limit as you
+    // type, so it's clear how much room is left before the field stops accepting
+    // input. Greys out when empty, turns amber as the limit approaches.
+    m_quickAddCharCount = new QLabel;
+    m_quickAddCharCount->setObjectName("quickAddCharCount");
+    m_quickAddCharCount->setToolTip("Characters remaining in the quick-add title");
+    auto updateQuickAddCharCount = [this]() {
+        const int remaining =
+            m_issueQuickAdd->maxLength() - m_issueQuickAdd->text().length();
+        m_quickAddCharCount->setText(QString::number(remaining));
+        m_quickAddCharCount->setStyleSheet(QStringLiteral(
+            "QLabel#quickAddCharCount{color:%1;font-size:11px;}")
+                .arg(remaining <= 20 ? QStringLiteral("#d29922")
+                                     : QStringLiteral("#8b949e")));
+    };
+    connect(m_issueQuickAdd, &QLineEdit::textChanged, this,
+            [updateQuickAddCharCount](const QString &) { updateQuickAddCharCount(); });
+    updateQuickAddCharCount();
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -6734,6 +6756,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
+    quickAddRow->addWidget(m_quickAddCharCount);
     quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
@@ -19496,6 +19519,38 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
 }
 
+// Effective run duration for the throughput figure: prefer the CLI-reported
+// active run time (durationMs, the same value the Time column shows), and fall
+// back to the start→finish wall-clock span for sessions that don't report it
+// (e.g. the API agents) so the Speed field is populated for every finished task.
+qint64 agentEffectiveDurationMs(const AgentSession &s)
+{
+    if (s.durationMs > 0)
+        return s.durationMs;
+    if (s.finishedAtMs > s.startedAtMs && s.startedAtMs > 0)
+        return s.finishedAtMs - s.startedAtMs;
+    return 0;
+}
+
+// Fill the Speed cell — the throughput at which this agent exchanged tokens with
+// the service over the task, in tokens/second (total tokens ÷ run time). A rough
+// gauge of how fast the model and network served the task; shows "-" until both a
+// token total and a run duration are known. Sorts on the raw rate via
+// kTableSortRole.
+void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+{
+    const qint64 durationMs = agentEffectiveDurationMs(s);
+    const double rate = (tokens > 0 && durationMs > 0)
+                            ? tokens * 1000.0 / static_cast<double>(durationMs)
+                            : 0.0;
+    cell->setData(Qt::DisplayRole,
+                  rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                           : QStringLiteral("-"));
+    cell->setData(kTableSortRole, rate);
+    cell->setToolTip(
+        QStringLiteral("Communication speed with the service (tokens/second)"));
+}
+
 // "Night rider" scanner light shown in the agents list. Each session gets a
 // small Larson-scanner bar that sweeps left<->right while its raw output is
 // streaming, so the list shows real-time activity at a glance. The sweep is
@@ -19503,7 +19558,7 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 10;
+static constexpr int kAgentActivityColumn = 11;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -19775,17 +19830,25 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 11);
+    m_agentTable = new QTableWidget(0, 12);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
+    // Stripping State_Selected in the delegate stops the delegate from filling
+    // the row, but the view still paints the selection band itself from the
+    // app-wide #issueTable stylesheet (selection-background-color, plus the
+    // ::item:selected background rule) — that's the green bar that survived. Blank
+    // both for this table only, so the delegate's green outline is all that shows.
+    m_agentTable->setStyleSheet(
+        "#issueTable { selection-background-color: transparent; }"
+        "#issueTable::item:selected { background: transparent; }");
     // Turns/Time are the run-summary figures the Claude CLI reports on finish;
     // they used to be crammed into the Status text and now get their own columns.
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
-         "Updated", "Activity"});
+         "Speed", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -19931,74 +19994,6 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->addWidget(m_agentSearch);
 
     listLayout->addWidget(m_agentTable, 1);
-
-    // Bottom-left composer (issue #273): type a prompt and start a brand-new
-    // Claude Code agent in the open repo — no issue required. Mirrors the look of
-    // the per-session steering composer on the detail pane.
-    auto *newAgentHeading = new QLabel(QStringLiteral("Start a new agent"));
-    newAgentHeading->setObjectName("agentFilesHeading");
-    m_agentNewPromptEdit = new QPlainTextEdit;
-    m_agentNewPromptEdit->setObjectName("agentComposerEdit");
-    m_agentNewPromptEdit->setPlaceholderText(QString::fromUtf8(
-        "Describe a task and start an agent in this repo\xE2\x80\xA6"));
-    m_agentNewPromptEdit->setMaximumHeight(92);
-    m_agentNewPromptEdit->setFrameShape(QFrame::NoFrame);
-    m_agentNewPromptEdit->setStyleSheet(QStringLiteral(
-        "#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
-    // Agent picker: the same three providers offered when assigning an issue.
-    m_agentNewProvider = new QComboBox;
-    m_agentNewProvider->setObjectName("agentNewProvider");
-    m_agentNewProvider->setCursor(Qt::PointingHandCursor);
-    m_agentNewProvider->addItem(QStringLiteral("OpenAI API"),
-                                QStringLiteral("openai"));
-    m_agentNewProvider->addItem(QStringLiteral("Claude API"),
-                                QStringLiteral("claude-api"));
-    m_agentNewProvider->addItem(QStringLiteral("Claude Code"),
-                                QStringLiteral("claude-code"));
-    selectDefaultAgentProvider(m_agentNewProvider);
-    m_agentNewProvider->setToolTip("Which agent to run on this prompt");
-    // Attach an image to the prompt (issue #56): paste from the clipboard (Ctrl+V
-    // is also handled below) or pick a file. The image is referenced by path so
-    // the launched agent can read it.
-    m_agentNewImageButton = new QPushButton;
-    m_agentNewImageButton->setObjectName("ghostButton");
-    m_agentNewImageButton->setCursor(Qt::PointingHandCursor);
-    m_agentNewImageButton->setFixedWidth(32);
-    m_agentNewImageButton->setToolTip(
-        "Attach an image to the prompt (or paste one with Ctrl+V)");
-    setOcticon(m_agentNewImageButton, "paperclip", 16);
-    connect(m_agentNewImageButton, &QPushButton::clicked, this,
-            &MainWindow::attachImageToNewAgentPrompt);
-    // Intercept Ctrl+V to turn a clipboard image into an attachment.
-    m_agentNewPromptEdit->installEventFilter(this);
-
-    m_agentStartButton = new QPushButton("Start agent");
-    m_agentStartButton->setObjectName("primaryButton");
-    m_agentStartButton->setCursor(Qt::PointingHandCursor);
-    m_agentStartButton->setToolTip(
-        "Start the selected agent on this prompt in the open repository");
-    setOcticon(m_agentStartButton, "rocket", 16);
-    connect(m_agentStartButton, &QPushButton::clicked, this,
-            &MainWindow::startAdHocAgent);
-
-    auto *newAgentComposer = new QFrame;
-    newAgentComposer->setObjectName("agentNewComposer");
-    newAgentComposer->setStyleSheet(QStringLiteral(
-        "#agentNewComposer{background:#161b22;border:1px solid #30363d;border-radius:12px;}"));
-    auto *newAgentCol = new QVBoxLayout(newAgentComposer);
-    newAgentCol->setContentsMargins(12, 10, 10, 8);
-    newAgentCol->setSpacing(6);
-    newAgentCol->addWidget(m_agentNewPromptEdit);
-    auto *newAgentBtns = new QHBoxLayout;
-    newAgentBtns->setContentsMargins(0, 0, 0, 0);
-    newAgentBtns->setSpacing(6);
-    newAgentBtns->addWidget(m_agentNewImageButton);
-    newAgentBtns->addWidget(m_agentNewProvider);
-    newAgentBtns->addStretch(1);
-    newAgentBtns->addWidget(m_agentStartButton);
-    newAgentCol->addLayout(newAgentBtns);
-    listLayout->addWidget(newAgentHeading);
-    listLayout->addWidget(newAgentComposer);
 
     auto *detailPane = new QWidget;
     m_agentTitle = new QLabel("Select a session");
@@ -21126,6 +21121,12 @@ void MainWindow::refreshAgentTable()
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
         m_agentTable->setItem(row, 8, tokens);
+        // Speed column: the token throughput with the service over the task,
+        // derived from the token total and the run duration (see
+        // applyAgentSpeedCell). Sorts on the raw rate via SortTableWidgetItem.
+        auto *speed = new SortTableWidgetItem;
+        applyAgentSpeedCell(speed, session, toks);
+        m_agentTable->setItem(row, 9, speed);
         // "Updated" column: when the session was last touched — created,
         // started, finished or merged, whichever is most recent — shown as a
         // friendly "x ago" string. The tooltip carries the full timestamp, and
@@ -21140,7 +21141,7 @@ void MainWindow::refreshAgentTable()
         if (updatedMs > 0)
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 9, updated);
+        m_agentTable->setItem(row, 10, updated);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -21404,9 +21405,14 @@ void MainWindow::showAgentSession(int sessionId)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
                                    : session->issueTitle)
-                    : QStringLiteral("%1 · pull #%2")
+                    // Ad-hoc sessions (no issue) lead with the prompt-derived
+                    // title rather than "pull #0" — before a PR exists prNumber
+                    // is 0, and the prompt is what identifies the run anyway.
+                    : QStringLiteral("%1 · %2")
                           .arg(agentProviderName(session->provider))
-                          .arg(session->prNumber));
+                          .arg(session->issueTitle.isEmpty()
+                                   ? QStringLiteral("pull #%1").arg(session->prNumber)
+                                   : session->issueTitle));
         }
     }
     // Issue #291: a "· merged into <base>" note appended to the meta line once
@@ -21856,27 +21862,11 @@ void MainWindow::updateIssueLooperButton()
                                                 : QStringLiteral("Loop open issues"));
 }
 
-// Bottom-left composer (issue #273): start a brand-new Claude Code agent from a
+// Quick-add bar "No issue" mode (issue #299): start a brand-new agent from a
 // free-form prompt in the open repository. Unlike the issue-assigned path this
 // has no issue to anchor to, so the session is issue-less (issueNumber 0) and
 // the typed prompt becomes the agent's task verbatim. It still runs in its own
 // worktree/branch and opens a pull request on finish, like every transcript run.
-void MainWindow::startAdHocAgent()
-{
-    if (!m_agentNewPromptEdit)
-        return;
-    const QString task = m_agentNewPromptEdit->toPlainText().trimmed();
-    if (task.isEmpty())
-        return;
-    // The agent picked in the composer; "claude-code" unless the user chose an
-    // API-key provider.
-    const QString provider = m_agentNewProvider
-                                 ? m_agentNewProvider->currentData().toString()
-                                 : QStringLiteral("claude-code");
-    if (startAdHocAgentForRepo(m_repoDetailIndex, task, provider, true) > 0)
-        m_agentNewPromptEdit->clear();
-}
-
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr)
 {
@@ -21948,38 +21938,6 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     return session.id;
 }
 
-// "Start a new agent" image button (issue #56): pick one or more image files and
-// reference each by absolute path in the prompt. The path survives into the
-// agent's worktree run, where Claude Code's Read tool can open the image.
-void MainWindow::attachImageToNewAgentPrompt()
-{
-    if (!m_agentNewPromptEdit)
-        return;
-    const QStringList files = QFileDialog::getOpenFileNames(
-        this, QStringLiteral("Attach image to the prompt"), QString(),
-        QStringLiteral("Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)"));
-    for (const QString &f : files)
-        referenceImageInNewAgentPrompt(f);
-    if (!files.isEmpty())
-        m_agentNewPromptEdit->setFocus();
-}
-
-// Ctrl+V into the new-agent prompt: if the clipboard holds an image, save it to a
-// temp PNG and reference it. Returns true only when an image was attached, so a
-// normal text paste still falls through to the editor.
-bool MainWindow::tryPasteImageIntoNewAgentPrompt()
-{
-    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
-    if (!mime || !mime->hasImage())
-        return false;
-    const QString path =
-        saveNewAgentPromptImage(qvariant_cast<QImage>(mime->imageData()));
-    if (path.isEmpty())
-        return false;
-    referenceImageInNewAgentPrompt(path);
-    return true;
-}
-
 // Save a pasted image to a stable temp file (not auto-removed: it must outlive
 // this call and be readable once the agent starts). Returns the path, or empty.
 QString MainWindow::saveNewAgentPromptImage(const QImage &image)
@@ -22002,25 +21960,6 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
         return QString();
     }
     return path;
-}
-
-// Append an "Attached image: <path>" line to the prompt. A plain absolute path is
-// enough for Claude Code to read the image; it also reads naturally for the
-// API-key providers, which see the same prompt text.
-void MainWindow::referenceImageInNewAgentPrompt(const QString &path)
-{
-    if (path.isEmpty() || !m_agentNewPromptEdit)
-        return;
-    const QString existing = m_agentNewPromptEdit->toPlainText();
-    QString ins;
-    if (!existing.isEmpty() && !existing.endsWith(QLatin1Char('\n')))
-        ins += QLatin1Char('\n');
-    ins += QStringLiteral("Attached image: %1\n").arg(path);
-    QTextCursor cursor = m_agentNewPromptEdit->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertText(ins);
-    m_agentNewPromptEdit->setTextCursor(cursor);
-    m_agentNewPromptEdit->setFocus();
 }
 
 // Composer "+" : pick files and insert them as @path references (resolved
@@ -22302,7 +22241,7 @@ void MainWindow::processAgentQueue()
         markAgentLimitWindow(snapshot.provider);
         AgentRunner::Config config = agentConfigForProvider(session->provider);
         // Ad-hoc API-key runs ride their saved task through the config override,
-        // mirroring startAdHocAgent so they resume the same way after a restart.
+        // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
             config.taskOverride = snapshot.prompt;
         acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
@@ -23299,6 +23238,9 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
             applyAgentTurnsCell(turns, *s);
         if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
             applyAgentTimeCell(runTime, *s);
+        // Speed needs both the token total and the now-known run duration.
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
 }
@@ -23578,17 +23520,26 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
         if (ri >= 0)
             repoPath = m_repositories.at(ri).localPath;
     }
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
-    }
-    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("prune")});
-    }
+    // Removing a worktree shells out to `git worktree remove`/`prune` and then
+    // recursively deletes a full source checkout — slow enough to freeze the UI for
+    // a moment when a session is deleted. The paths are captured above on the UI
+    // thread; the filesystem/git work touches nothing shared, so hand it to a
+    // detached worker that cleans itself up.
+    QThread *worker = QThread::create([wtPath, repoPath]() {
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+        }
+        QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("prune")});
+        }
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
@@ -35730,21 +35681,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
             return true;
-    }
-    // Pasting an image into the "Start a new agent" prompt attaches it (issue #56).
-    // Let a normal text paste fall through when the clipboard has no image.
-    if (obj == m_agentNewPromptEdit && event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoNewAgentPrompt())
-            return true;
-        // Enter starts a brand-new agent on the typed prompt; Shift+Enter inserts a
-        // newline (issue #54). Mirrors the per-session steering composer above.
-        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
-            && !(ke->modifiers() & Qt::ShiftModifier)) {
-            if (m_agentStartButton)
-                m_agentStartButton->click();
-            return true;
-        }
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
     // newline (issue #41). Mirrors the Claude Code conversation input.

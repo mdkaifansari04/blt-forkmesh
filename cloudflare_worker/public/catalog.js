@@ -667,6 +667,10 @@ async function openDir(path) {
     return;
   }
 
+  // The root listing carries the repo's tab tallies; apply them so every badge
+  // updates from this one reply rather than a request per counter (issue #93).
+  if (!path) applyServedCounts(data.counts, `${fileState.owner}/${fileState.name}`);
+
   const entries = data.entries.slice();
   entries.sort((a, b) => {
     if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
@@ -978,6 +982,22 @@ async function loadDiscussionCount() {
   }
   const count = data.entries.filter((e) => e.type === "tree" && /^\d+$/.test(e.name)).length;
   tabDiscussionsCountEl.textContent = String(count);
+}
+
+// Fill the tab badges from the issue/pull/discussion/commit tallies the host
+// bundles with the root tree reply (issue #93), so opening a repo updates every
+// counter from that single response instead of one request per badge. The Issues
+// badge tracks *open* issues (needs each issue's status), so the served total
+// only seeds it until the Issues tab computes the exact open count.
+function applyServedCounts(counts, repoKey) {
+  if (!counts || typeof counts !== "object") return;
+  const set = (el, value) => {
+    if (el && Number.isFinite(value)) el.textContent = String(value);
+  };
+  set(tabPullsCountEl, counts.pulls);
+  set(tabDiscussionsCountEl, counts.discussions);
+  set(tabCommitsCountEl, counts.commits);
+  if (issuesLoadedFor !== repoKey) set(tabIssuesCountEl, counts.issues);
 }
 
 async function loadPulls(owner, name) {
@@ -1897,8 +1917,14 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
   if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
   renderRepoPath(owner, name, mode, filePath);
-  loadPullCount();
-  loadDiscussionCount();
+  // Browsing the repo root fetches the root tree, whose reply now bundles the
+  // pull/discussion/issue/commit tallies (issue #93) — only fall back to the
+  // per-counter requests when we enter on a blob or a sub-directory instead.
+  const entersAtRoot = mode !== "blob" && !(mode === "tree" && filePath);
+  if (!entersAtRoot) {
+    loadPullCount();
+    loadDiscussionCount();
+  }
   loadLatestCommit(owner, name);
 }
 

@@ -1688,6 +1688,7 @@ private:
     QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
+    QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
@@ -2317,24 +2318,13 @@ private:
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
-    // Bottom-left composer on the Agents tab: type a prompt, pick which agent and
-    // start a brand-new agent in the open repo, not tied to any issue (issue #273).
-    QPlainTextEdit *m_agentNewPromptEdit = nullptr;
-    QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
-    QPushButton *m_agentStartButton = nullptr;
-    QPushButton *m_agentNewImageButton = nullptr; // attach an image to the prompt
-    void startAdHocAgent();
-    // Core of startAdHocAgent, reusable from the quick-add bar (issue #299): start
-    // an issue-less coding agent in repoIndex's checkout with `task` as its prompt.
-    // Returns the new session id (>0) or 0 if it could not start.
+    // Start an issue-less coding agent from the quick-add bar (issue #299) in
+    // repoIndex's checkout with `task` as its prompt. Returns the new session id
+    // (>0) or 0 if it could not start.
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
                                const QString &provider, bool createPr);
-    // Image attachments on the "Start a new agent" prompt (issue #56): paste from
-    // the clipboard or pick a file; the image is referenced by path so the
-    // launched agent can read it.
-    void attachImageToNewAgentPrompt();
-    bool tryPasteImageIntoNewAgentPrompt();
-    void referenceImageInNewAgentPrompt(const QString &path);
+    // Save a clipboard image to a stable temp file so a launched agent can read it
+    // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
