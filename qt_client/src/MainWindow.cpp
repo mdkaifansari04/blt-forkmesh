@@ -4568,6 +4568,11 @@ QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
     return QString();
 }
 
+QString MainWindow::testWorktreeBranchLabel() const
+{
+    return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -29629,8 +29634,14 @@ QWidget *MainWindow::buildWorktreesTab()
             deleteWorktreeBranchAndAgent(m_worktreeSelectedPath,
                                          m_worktreeSelectedBranch);
     });
+    // Show which branch the selected worktree is on, beside its action buttons.
+    m_worktreeBranchLabel = new QLabel;
+    m_worktreeBranchLabel->setObjectName("sectionLabel");
+    m_worktreeBranchLabel->setTextFormat(Qt::RichText);
+    m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
+    detailBar->addWidget(m_worktreeBranchLabel);
     detailBar->addStretch();
     detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
@@ -30010,6 +30021,11 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     // "Update from main" also needs the worktree's folder on disk to merge into.
     m_worktreeSelectedBranch = branch;
     m_worktreeSelectedPath = worktreePath;
+    if (m_worktreeBranchLabel)
+        m_worktreeBranchLabel->setText(
+            branch.isEmpty()
+                ? QString()
+                : QStringLiteral("On branch <b>%1</b>").arg(branch.toHtmlEscaped()));
     const bool feature = !branch.isEmpty() && branch != base;
     QString repoLocal;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
