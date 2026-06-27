@@ -902,16 +902,19 @@ private:
     bool selectWorktreeRow(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
-    // worktree is removed (its work is in main); pass its folder so it can be.
+    // worktree and its branch are removed (the work is preserved in the merge
+    // commit); pass its folder so it can be. deleteAgent=true additionally tears
+    // down the agent session(s) that produced the branch.
     void mergeWorktreeIntoMain(const QString &branch,
-                               const QString &worktreePath = QString());
+                               const QString &worktreePath = QString(),
+                               bool deleteAgent = false);
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
     // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
-    // now-orphaned branch too (the default for the Worktrees-tab "Remove" action);
-    // the post-merge cleanup passes false so the just-merged branch stays visible.
+    // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
+    // the post-merge cleanup, whose work is already preserved in the merge commit).
     // async=true runs the (slow, recursive) folder delete off the UI thread so the
     // window stays clickable; the branch delete + panel refresh follow in a
     // callback. The post-merge cleanup leaves it false because it inspects the
@@ -1758,6 +1761,7 @@ private:
     QLabel *m_worktreeFilesSummary = nullptr;
     QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
+    QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
