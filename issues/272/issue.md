@@ -5,7 +5,7 @@ title: when I click update from main on the worktree it goes blank, make sure it
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 21
 progress: 0
 assignees: []
 createdAt: 1782484098253
