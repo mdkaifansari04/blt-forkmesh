@@ -5,7 +5,7 @@ title: make sure when we restart forkmesh the agents keep running and default qu
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 18
 progress: 0
 assignees: []
 createdAt: 1782363243466
