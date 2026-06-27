@@ -19598,6 +19598,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_agentTable->setShowGrid(false);
     m_agentTable->setWordWrap(false);
+    // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
+    // carry a full-sentence, prompt-derived title that overruns the Issue column,
+    // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
+    // the cell edge instead — the column is user-widenable to read a title in full.
+    m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
