@@ -10776,13 +10776,13 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 15);
+    m_issueTable = new QTableWidget(0, 16);
     m_issueTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
          "Created", "Updated", "Agent", "Author", "Progress", "Est. cost",
-         "Bounty", "Comments"});
+         "Bounty", "Comments", "Files"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -10816,6 +10816,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Est. cost
     header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Bounty
     header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
+    header->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Files
     makeColumnsResizable(m_issueTable);
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
     m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
@@ -25208,6 +25209,111 @@ void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
             QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
 }
 
+// Defined further down (used by the status/agent code); declared here so the
+// "Files" cell can gate its background refresh on whether the session is live.
+// In the same anonymous namespace as its definition to avoid an overload clash.
+namespace {
+bool agentSessionActive(const AgentSession *s);
+}
+
+// adhoc #151: fill the issue list's "Files" cell. Mirrors refreshIssueFilesPanel's
+// source preference — a linked agent session's live worktree diff (counted async
+// against the session base, cached per issue so a re-sort/rebuild shows it at
+// once), else the newest linked PR's stored file count. No source -> a blank cell.
+void MainWindow::populateIssueFilesCell(int row, const Issue &issue)
+{
+    auto *item = new SortTableWidgetItem(QString());
+    item->setTextAlignment(Qt::AlignCenter);
+    item->setData(kTableSortRole, -1); // no changes sorts before any real count
+    m_issueTable->setItem(row, 15, item);
+
+    // A linked agent session's worktree gives a live count (committed +
+    // uncommitted) against the same base its PR is built from.
+    if (const AgentSession *s = latestAgentSessionForIssue(issue.number)) {
+        const QString dir = sessionWorkdir(s->id);
+        if (!dir.isEmpty()) {
+            // Show any cached count immediately so a rebuild/re-sort doesn't blank
+            // the cell; refresh it in the background.
+            const bool cached = m_issueFilesChangedCounts.contains(issue.number);
+            if (cached)
+                setIssueFilesCell(item, m_issueFilesChangedCounts.value(issue.number),
+                                  QStringLiteral("worktree branch"));
+            // Re-run only while the agent is active (the tree is changing) or when
+            // the count isn't cached yet, to avoid spawning git on every rebuild.
+            if (agentSessionActive(s) || !cached) {
+                const QString base = sessionBaseRef(s->id);
+                QStringList args{QStringLiteral("diff"), QStringLiteral("--name-only")};
+                if (!base.isEmpty())
+                    args << base;
+                const int issueNo = issue.number;
+                runGitDetached(dir, args,
+                               [this, issueNo](bool ok, const QByteArray &out) {
+                                   if (!ok)
+                                       return;
+                                   const QByteArray trimmed = out.trimmed();
+                                   const int n =
+                                       trimmed.isEmpty() ? 0 : trimmed.count('\n') + 1;
+                                   m_issueFilesChangedCounts.insert(issueNo, n);
+                                   applyIssueFilesCount(
+                                       issueNo, n, QStringLiteral("worktree branch"));
+                               });
+            }
+            return;
+        }
+    }
+
+    // Otherwise fall back to the newest linked PR's stored file count.
+    const QList<int> pulls = pullsLinkedToIssue(issue.number);
+    for (auto it = pulls.crbegin(); it != pulls.crend(); ++it) {
+        for (const PullRequest &pr : m_currentPulls) {
+            if (pr.number == *it && pr.filesChanged > 0) {
+                setIssueFilesCell(
+                    item, pr.filesChanged,
+                    QStringLiteral("pull request #%1").arg(pr.number));
+                return;
+            }
+        }
+    }
+}
+
+// Stamp a files-changed count onto an existing "Files" cell: an octicon + count
+// when there are changes, a blank cell otherwise. Numeric sort via kTableSortRole.
+void MainWindow::setIssueFilesCell(QTableWidgetItem *item, int count,
+                                   const QString &source)
+{
+    if (!item)
+        return;
+    if (count > 0) {
+        item->setText(QString::number(count));
+        item->setIcon(themedOcticon("file-diff", QColor("#d29922"), 14));
+        item->setToolTip(QStringLiteral("%1 file%2 changed via %3")
+                             .arg(count)
+                             .arg(count == 1 ? "" : "s", source));
+    } else {
+        item->setText(QString());
+        item->setIcon(QIcon());
+        item->setToolTip(QString());
+    }
+    item->setData(kTableSortRole, count);
+}
+
+// Apply an async files-changed count to whatever row currently holds the issue:
+// the table may have re-sorted/rebuilt since the git diff was kicked off, so look
+// the row up by issue number rather than trusting a stale row index.
+void MainWindow::applyIssueFilesCount(int issueNumber, int count,
+                                      const QString &source)
+{
+    if (!m_issueTable)
+        return;
+    for (int r = 0; r < m_issueTable->rowCount(); ++r) {
+        QTableWidgetItem *numItem = m_issueTable->item(r, 0);
+        if (numItem && numItem->data(Qt::UserRole).toInt() == issueNumber) {
+            setIssueFilesCell(m_issueTable->item(r, 15), count, source);
+            return;
+        }
+    }
+}
+
 QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Two modes: a GitHub-style overview, and an explorer+editor view shown only
@@ -35569,6 +35675,10 @@ void MainWindow::refreshIssueList()
         commentsItem->setData(Qt::DisplayRole, commentCount); // numeric sort
         commentsItem->setTextAlignment(Qt::AlignCenter);
         m_issueTable->setItem(row, 14, commentsItem);
+
+        // Files: an indicator + changed-file count for issues whose work lives in
+        // a linked agent worktree branch or pull request (adhoc #151).
+        populateIssueFilesCell(row, issue);
     }
     m_issueTable->setSortingEnabled(true);
     m_issueTable->blockSignals(false);
