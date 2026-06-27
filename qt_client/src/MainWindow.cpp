@@ -30697,6 +30697,21 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
     });
+    // Commit the worktree's uncommitted changes in place, so you can snapshot
+    // in-progress work without dropping to a terminal (sits beside "Update from
+    // main" since you typically commit before pulling main in).
+    m_worktreeCommitButton = new QPushButton("Commit changes");
+    m_worktreeCommitButton->setObjectName("ghostButton");
+    m_worktreeCommitButton->setProperty("buttonSize", "sm");
+    m_worktreeCommitButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeCommitButton, "git-branch", 14);
+    m_worktreeCommitButton->setToolTip(
+        "Stage and commit the selected worktree's uncommitted changes");
+    m_worktreeCommitButton->setEnabled(false);
+    connect(m_worktreeCommitButton, &QPushButton::clicked, this, [this] {
+        if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
+            commitWorktreeChanges(m_worktreeSelectedPath, m_worktreeSelectedBranch);
+    });
     m_worktreeRemoveButton = new QPushButton("Delete");
     m_worktreeRemoveButton->setObjectName("ghostButton");
     m_worktreeRemoveButton->setProperty("buttonSize", "sm");
@@ -30723,6 +30738,7 @@ QWidget *MainWindow::buildWorktreesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_worktreeCommitButton);
     detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
     detailBar->addWidget(m_worktreeMergeDeleteAgentButton);
@@ -31156,6 +31172,11 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
         m_worktreeMergeDeleteAgentButton->setEnabled(feature && repoHasWorkingTree());
     if (m_worktreeUpdateButton)
         m_worktreeUpdateButton->setEnabled(feature && !worktreePath.isEmpty() &&
+                                           QDir(worktreePath).exists());
+    // Committing only makes sense when the worktree is on disk; whether it
+    // actually has anything to commit is re-checked when the button is clicked.
+    if (m_worktreeCommitButton)
+        m_worktreeCommitButton->setEnabled(!worktreePath.isEmpty() &&
                                            QDir(worktreePath).exists());
     if (m_worktreeRemoveButton)
         m_worktreeRemoveButton->setEnabled(!isMain && !worktreePath.isEmpty());
@@ -31677,6 +31698,53 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
     }
     // loadWorktreesPanel() preserves the current selection across the rebuild, so
     // focus stays on the worktree we just updated instead of going blank (#272).
+    loadWorktreesPanel();
+}
+
+void MainWindow::commitWorktreeChanges(const QString &worktreePath,
+                                       const QString &branch)
+{
+    if (worktreePath.isEmpty() || branch.isEmpty())
+        return;
+    if (!QDir(worktreePath).exists()) {
+        setRepoDetailNotice("That worktree's folder is gone.", true);
+        loadWorktreesPanel();
+        return;
+    }
+    // Nothing staged or unstaged means there's nothing to commit — say so rather
+    // than popping a dialog that would only produce an empty-commit error.
+    QByteArray st;
+    if (runGitCapture(worktreePath, {"status", "--porcelain"}, &st, nullptr) &&
+        QString::fromUtf8(st).trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Worktree %1 has no changes to commit.").arg(branch),
+            false);
+        return;
+    }
+    bool ok = false;
+    const QString message =
+        QInputDialog::getMultiLineText(this, "Commit changes", "Commit message:",
+                                       QString(), &ok)
+            .trimmed();
+    if (!ok)
+        return;
+    if (message.isEmpty()) {
+        setRepoDetailNotice("A commit message is required.", true);
+        return;
+    }
+    QString err;
+    if (runGitCapture(worktreePath, {"add", "-A"}, nullptr, &err) &&
+        runGitCapture(worktreePath, {"commit", "-m", message}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Committed changes in %1.").arg(branch), false);
+    } else {
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't commit changes in %1: %2")
+                .arg(branch, err.trimmed()),
+            true);
+    }
+    // Preserves the current selection across the rebuild (#272) and refreshes the
+    // diff so the just-committed changes show against the default branch.
     loadWorktreesPanel();
 }
 
