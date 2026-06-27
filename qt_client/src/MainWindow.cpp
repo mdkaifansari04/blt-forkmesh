@@ -32653,6 +32653,21 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDetailLabel->setObjectName("sectionLabel");
     m_branchDetailLabel->setTextFormat(Qt::RichText);
 
+    // Merge editor: the hands-on path to bring the branch up to date with base,
+    // opening the interactive conflict editor so conflicts can be resolved by
+    // hand (the manual counterpart to "Fix with agent"). Sits left of "Pull
+    // main", which one-clicks the merge and only surfaces the editor on conflict.
+    m_branchMergeEditorButton = new QPushButton("Merge editor");
+    m_branchMergeEditorButton->setObjectName("ghostButton");
+    m_branchMergeEditorButton->setProperty("buttonSize", "sm");
+    m_branchMergeEditorButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchMergeEditorButton, "git-merge", 14);
+    m_branchMergeEditorButton->setEnabled(false);
+    connect(m_branchMergeEditorButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            openBranchMergeEditor(m_branchDiffBranch);
+    });
+
     m_branchPullButton = new QPushButton("Pull main");
     m_branchPullButton->setObjectName("ghostButton");
     m_branchPullButton->setProperty("buttonSize", "sm");
@@ -32729,6 +32744,7 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_branchDetailLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_branchMergeEditorButton);
     detailBar->addWidget(m_branchPullButton);
     detailBar->addWidget(m_branchFixButton);
     detailBar->addWidget(m_branchPrButton);
@@ -33172,6 +33188,28 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                 .arg(base, branch)
                 .arg(behind));
 
+    // Merge editor: bring the branch up to date with base, resolving conflicts
+    // by hand. Available whenever the branch is behind (same as Pull main); the
+    // editor only opens when git reports conflicts.
+    if (m_branchMergeEditorButton) {
+        const bool canMergeEditor = writable && !isBase && behind > 0;
+        m_branchMergeEditorButton->setEnabled(canMergeEditor);
+        if (isBase)
+            m_branchMergeEditorButton->setToolTip(
+                QStringLiteral("Select a branch other than %1").arg(base));
+        else if (!writable)
+            m_branchMergeEditorButton->setToolTip(
+                "Read-only mirror \xE2\x80\x94 no working tree to update");
+        else if (behind == 0)
+            m_branchMergeEditorButton->setToolTip(
+                QStringLiteral("%1 is already up to date with %2").arg(branch, base));
+        else
+            m_branchMergeEditorButton->setToolTip(
+                QStringLiteral("Merge %1 into %2 and resolve any conflicts in an "
+                               "editor")
+                    .arg(base, branch));
+    }
+
     // Fix with agent: shown only when the selected branch conflicts with base.
     m_branchFixButton->setVisible(hasConflict);
     m_branchFixButton->setEnabled(hasConflict && writable);
@@ -33500,6 +33538,138 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
 
     logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
+    setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+    const QString browsed = m_repoBranch;
+    loadBranchesAndTags();
+    if (!browsed.isEmpty() && repoBranches().contains(browsed))
+        setRepoBranch(browsed);
+}
+
+// Bring `branch` up to date with base via the interactive merge editor — the
+// hands-on counterpart to updateBranchFromBase ("Pull main"). It stages the
+// merge without committing (--no-commit --no-ff, so the editor owns the final
+// commit and there's always a reviewable merge commit) and, when git reports
+// conflicts, opens runMergeConflictEditor so the user resolves them by hand. A
+// clean merge is committed straight away. Reached from the "Merge editor" button.
+void MainWindow::openBranchMergeEditor(const QString &branch)
+{
+    const QString dir = repoGitDir();
+    const QStringList branches = repoBranches();
+    const QString base = repoDefaultBranch(branches);
+    if (branch.isEmpty() || branch == base || dir.isEmpty())
+        return;
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "This is a read-only mirror; branches can't be updated here.", true);
+        return;
+    }
+
+    // Nothing to merge if the branch is already current with base.
+    int behind = 0, ahead = 0;
+    QByteArray counts;
+    if (runGitCapture(dir,
+                      {"rev-list", "--left-right", "--count", base + "..." + branch},
+                      &counts, nullptr)) {
+        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+            QRegularExpression(QStringLiteral("\\s+")));
+        if (parts.size() >= 2) {
+            behind = parts.at(0).toInt();
+            ahead = parts.at(1).toInt();
+        }
+    }
+    Q_UNUSED(ahead);
+    if (behind == 0) {
+        setRepoDetailNotice(
+            QStringLiteral("%1 is already up to date with %2.").arg(branch, base));
+        return;
+    }
+
+    // The merge runs on a checkout, so the working tree must be clean first.
+    QByteArray status;
+    QString err;
+    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
+        !status.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            err.isEmpty()
+                ? "Commit or stash local changes before merging into this branch."
+                : err.left(240),
+            true);
+        return;
+    }
+
+    QByteArray headOut;
+    QString currentBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+        currentBranch = QString::fromUtf8(headOut).trimmed();
+    const bool isCurrent = !currentBranch.isEmpty() && branch == currentBranch;
+    const auto restoreBranch = [&] {
+        if (!isCurrent && !currentBranch.isEmpty())
+            runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+    };
+
+    if (!isCurrent && !runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
+            true);
+        return;
+    }
+
+    // Stage the merge but leave the commit to us/the editor. --no-ff guarantees
+    // the merge stops even when base could fast-forward, so the clean path below
+    // can record a single merge commit consistently.
+    runGitCapture(dir, {"merge", "--no-commit", "--no-ff", base}, nullptr, &err);
+
+    QByteArray unmerged;
+    runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged, nullptr);
+    const QStringList conflicted =
+        QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
+
+    if (conflicted.isEmpty()) {
+        // Clean merge — nothing to resolve; record it and report.
+        if (!runGitCapture(dir, {"commit", "--no-edit"}, nullptr, &err)) {
+            runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+            restoreBranch();
+            setRepoDetailNotice(
+                QStringLiteral("Could not merge %1 into %2: %3")
+                    .arg(base, branch, err.left(200)),
+                true);
+            return;
+        }
+        restoreBranch();
+        logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
+        setRepoDetailNotice(
+            QString::fromUtf8("Updated %1 with %2 \xE2\x80\x94 no conflicts.")
+                .arg(branch, base));
+        const QString browsed = m_repoBranch;
+        loadBranchesAndTags();
+        if (!browsed.isEmpty() && repoBranches().contains(browsed))
+            setRepoBranch(browsed);
+        return;
+    }
+
+    const QString intro =
+        QString::fromUtf8(
+            "Resolve each conflict, then commit the merge into <b>%1</b>. "
+            "<b>Ours</b> is %1; <b>theirs</b> is %2. You can also edit the "
+            "text directly.")
+            .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
+    const bool committed = runMergeConflictEditor(
+        QString::fromUtf8("Merge editor \xE2\x80\x94 %1").arg(branch), intro, dir,
+        conflicted, QStringLiteral("Commit merge"), [this, dir](QString *e) {
+            return runGitCapture(dir, {"add", "-A"}, nullptr, e) &&
+                   runGitCapture(dir, {"commit", "--no-edit"}, nullptr, e);
+        });
+    if (!committed) {
+        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        restoreBranch();
+        setRepoDetailNotice(
+            QStringLiteral("Cancelled the merge of %1 into %2; %2 was left unchanged.")
+                .arg(base, branch));
+        return;
+    }
+    restoreBranch();
+    logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
+                  .arg(base, branch));
     setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
     const QString browsed = m_repoBranch;
     loadBranchesAndTags();
