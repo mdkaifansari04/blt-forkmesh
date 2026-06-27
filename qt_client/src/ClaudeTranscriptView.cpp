@@ -1,5 +1,7 @@
 #include "ClaudeTranscriptView.h"
 
+#include "ScrollJumpButtons.h"
+
 #include <QDateTime>
 #include <QEasingCurve>
 #include <QFontDatabase>
@@ -263,30 +265,21 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     setWidget(m_container);
 
     // Floating jump-to-top / jump-to-bottom buttons over the viewport corner.
-    auto mkBtn = [this](const QString &glyph, const QString &tip) {
-        auto *b = new QPushButton(glyph, viewport());
-        b->setCursor(Qt::PointingHandCursor);
-        b->setToolTip(tip);
-        b->setFixedSize(30, 30);
-        b->hide();
-        return b;
-    };
-    m_toTopBtn = mkBtn(QString::fromUtf8("\xE2\x96\xB2"), QStringLiteral("Jump to top"));
-    m_toBottomBtn = mkBtn(QString::fromUtf8("\xE2\x96\xBC"), QStringLiteral("Jump to bottom"));
-    connect(m_toTopBtn, &QPushButton::clicked, this, &ClaudeTranscriptView::scrollToTop);
-    connect(m_toBottomBtn, &QPushButton::clicked, this,
+    // The shared ScrollJumpButtons helper owns their placement and show/hide.
+    m_jumpButtons = new ScrollJumpButtons(this);
+    connect(m_jumpButtons, &ScrollJumpButtons::topClicked, this,
+            &ClaudeTranscriptView::scrollToTop);
+    connect(m_jumpButtons, &ScrollJumpButtons::bottomClicked, this,
             &ClaudeTranscriptView::scrollToBottom);
 
     QScrollBar *sb = verticalScrollBar();
     connect(sb, &QScrollBar::valueChanged, this, [this](int v) {
         QScrollBar *b = verticalScrollBar();
         m_stickBottom = v >= b->maximum() - 4;
-        updateScrollButtons();
     });
     connect(sb, &QScrollBar::rangeChanged, this, [this](int, int max) {
         if (m_stickBottom)
             verticalScrollBar()->setValue(max); // keep pinned as content grows
-        updateScrollButtons();
     });
 
     applyScheme();
@@ -298,32 +291,8 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
 void ClaudeTranscriptView::resizeEvent(QResizeEvent *e)
 {
     QScrollArea::resizeEvent(e);
-    positionScrollButtons();
     if (m_stickBottom)
         verticalScrollBar()->setValue(verticalScrollBar()->maximum());
-}
-
-void ClaudeTranscriptView::positionScrollButtons()
-{
-    if (!m_toBottomBtn || !m_toTopBtn)
-        return;
-    const int m = 12, w = m_toBottomBtn->width(), h = m_toBottomBtn->height();
-    const int x = viewport()->width() - w - m;
-    m_toBottomBtn->move(x, viewport()->height() - h - m);
-    m_toTopBtn->move(x, viewport()->height() - 2 * h - m - 6);
-    m_toTopBtn->raise();
-    m_toBottomBtn->raise();
-}
-
-void ClaudeTranscriptView::updateScrollButtons()
-{
-    QScrollBar *sb = verticalScrollBar();
-    const bool scrollable = sb->maximum() > sb->minimum();
-    if (m_toBottomBtn)
-        m_toBottomBtn->setVisible(scrollable && !m_stickBottom);
-    if (m_toTopBtn)
-        m_toTopBtn->setVisible(scrollable && sb->value() > sb->minimum() + 4);
-    positionScrollButtons();
 }
 
 void ClaudeTranscriptView::scrollToTop()
@@ -336,7 +305,18 @@ void ClaudeTranscriptView::scrollToBottom()
 {
     m_stickBottom = true;
     smoothScrollTo(verticalScrollBar()->maximum());
-    updateScrollButtons();
+}
+
+void ClaudeTranscriptView::jumpToBottom()
+{
+    m_stickBottom = true;
+    if (m_scrollAnim)
+        m_scrollAnim->stop(); // don't let an in-flight smooth scroll pull us back
+    QScrollBar *sb = verticalScrollBar();
+    sb->setValue(sb->maximum());
+    // After a rebuild the rows haven't laid out yet, so maximum() is still stale;
+    // m_stickBottom keeps us pinned when the deferred rangeChanged lands the real
+    // range (see the rangeChanged handler in the constructor).
 }
 
 void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
@@ -408,10 +388,8 @@ void ClaudeTranscriptView::applyScheme()
         "font-size:12px;font-weight:700;}"
         "QPushButton:hover{background:%4;}")
         .arg(m_p.surface, m_p.text, m_p.border, m_p.userBg);
-    if (m_toTopBtn)
-        m_toTopBtn->setStyleSheet(btnCss);
-    if (m_toBottomBtn)
-        m_toBottomBtn->setStyleSheet(btnCss);
+    if (m_jumpButtons)
+        m_jumpButtons->setButtonStyle(btnCss);
 }
 
 void ClaudeTranscriptView::clear()
@@ -470,9 +448,8 @@ QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
     m_col->insertWidget(pos, item);
     fadeIn(item);
     // Follow mode does the scrolling: the scrollbar's rangeChanged handler pins
-    // the view to the bottom as the new row expands the content.
-    if (!m_stickBottom)
-        updateScrollButtons();
+    // the view to the bottom as the new row expands the content; ScrollJumpButtons
+    // tracks the scrollbar itself to show/hide its arrows.
     return item;
 }
 

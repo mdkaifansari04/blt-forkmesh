@@ -22,7 +22,10 @@ public:
 
     // Begin watching. A gap longer than stallThresholdMs between heartbeats counts
     // as a stall. logPath, if set, receives one appended record per stall.
-    void start(int stallThresholdMs = 1500, const QString &logPath = QString());
+    // buildInfo (e.g. "ForkMesh v0.5.1 (src /path/to/qt_client)") is recorded with
+    // each stall so a report handed to an agent points at the exact code to fix.
+    void start(int stallThresholdMs = 1500, const QString &logPath = QString(),
+               const QString &buildInfo = QString());
 
 signals:
     // Fired once a stall ends: how long the UI was unresponsive (peak observed)
@@ -37,6 +40,9 @@ private:
     std::atomic<bool> m_running{false};
     int m_thresholdMs = 1500;
     QString m_logPath;
+    QString m_buildInfo;  // version + source dir, recorded with each stall
+    QString m_exePath;    // running binary, for the addr2line symbolize hint
+    qint64 m_pid = 0;
     QTimer *m_beatTimer = nullptr;
     std::thread m_worker;
 };

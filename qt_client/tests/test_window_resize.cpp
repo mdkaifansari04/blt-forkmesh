@@ -231,26 +231,27 @@ int main(int argc, char *argv[])
 
     // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
     // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
-    // button instead of separate per-provider buttons.
-    if (QPushButton *fixButton =
-            findButtonStartingWith(window, QStringLiteral("Fix with agent"))) {
-        QMenu *fixMenu = fixButton->menu();
-        check(fixMenu != nullptr,
-              QStringLiteral("PR 'Fix with agent' button carries a dropdown menu"));
-        if (fixMenu) {
-            QStringList labels;
-            for (QAction *action : fixMenu->actions())
-                labels << action->text();
-            check(labels ==
-                      QStringList({QStringLiteral("Claude API"),
+    // button instead of separate per-provider buttons. The Branches tab carries
+    // its own "Fix with agent" button too (issue #116), so identify the PR one by
+    // its distinctive three-resolver menu rather than by label alone.
+    bool prFixMenuFound = false;
+    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
+        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
+            !fixButton->menu())
+            continue;
+        QStringList labels;
+        for (QAction *action : fixButton->menu()->actions())
+            labels << action->text();
+        if (labels == QStringList({QStringLiteral("Claude API"),
                                    QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")}),
-                  QStringLiteral("Fix-with-agent menu offers Claude API, OpenAI API "
-                                 "and Claude Code"));
+                                   QStringLiteral("Claude Code")})) {
+            prFixMenuFound = true;
+            break;
         }
-    } else {
-        check(false, QStringLiteral("PR 'Fix with agent' dropdown button exists"));
     }
+    check(prFixMenuFound,
+          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
+                         "and Claude Code"));
 
     // Issue #268: dragging a column divider resizes like moving a margin — the
     // width comes from the immediate neighbour, not a far-off Stretch column, so
@@ -452,6 +453,9 @@ int main(int argc, char *argv[])
         const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", wtPath, "feature/keep-selected"});
+        // Put the worktree's branch one commit ahead of main so the ahead/behind
+        // column has something non-trivial to report.
+        runGitChecked(wtPath, {"commit", "--allow-empty", "-m", "ahead by one"});
         const int wtIdx =
             window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
         window.testOpenRepository(wtIdx);
@@ -460,11 +464,31 @@ int main(int argc, char *argv[])
         check(window.testSelectedWorktreeBranch() ==
                   QStringLiteral("feature/keep-selected"),
               QStringLiteral("selecting a worktree records it as the selection"));
+        check(window.testWorktreeBranchLabel().contains(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("the worktree detail shows which branch it's on"));
+        check(window.testWorktreeBranchLabel().contains(QStringLiteral("wt-keep")),
+              QStringLiteral("the worktree detail shows the worktree's location"));
         window.testReloadWorktreesPanel(); // what "Update from main" does after merging
         check(window.testSelectedWorktreeBranch() ==
                   QStringLiteral("feature/keep-selected"),
               QStringLiteral("reloading the worktrees panel keeps the selected "
                              "worktree instead of going blank (#272)"));
+        // The ahead/behind column is filled by an async `git rev-list`; pump the
+        // event loop until it lands, then check it reports "1 ahead" (↑1).
+        QString abText;
+        QElapsedTimer abTimer;
+        abTimer.start();
+        while (abTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            abText = window.testWorktreeAheadBehindText(
+                QStringLiteral("feature/keep-selected"));
+            if (!abText.isEmpty() && !abText.contains(QStringLiteral("checking")))
+                break;
+        }
+        check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
+              QString("worktrees list shows the branch one commit ahead of main "
+                      "(ahead/behind cell = %1)").arg(abText));
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent

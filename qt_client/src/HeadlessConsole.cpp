@@ -95,6 +95,8 @@ void HeadlessConsole::printHelp()
              "  sync                sync mirrors + poll owned inboxes now\n"
              "  setup <name> [sol]  pick a node name and connect (first run)\n"
              "  connect <name>      alias for setup\n"
+             "  update              update to the latest version, rebuild & restart\n"
+             "  daemon              detach this prompt and keep running in background\n"
              "  log on|off          toggle the live event feed\n"
              "  help                this help\n"
              "  quit | exit         shut down the node\n"
@@ -102,7 +104,9 @@ void HeadlessConsole::printHelp()
              "Durable daemon: the node keeps running until you `quit`/`exit` or send\n"
              "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop). Closing stdin does NOT\n"
              "stop it — run it detached with `forkmesh --headless </dev/null &`, nohup\n"
-             "or a systemd service and it stays up.\n";
+             "or a systemd service and it stays up. The `daemon` command does the same\n"
+             "on demand: it releases the prompt so you can exit the shell while the\n"
+             "node keeps serving.\n";
     m_out.flush();
 }
 
@@ -188,6 +192,25 @@ void HeadlessConsole::dispatch(const QString &raw)
             m_out << "connecting as '" << args.value(0).toLower() << "'…"
                   << Qt::endl;
         }
+    } else if (cmd == QLatin1String("update")) {
+        m_out << "Updating ForkMesh from the live install mirror, then rebuilding\n"
+                 "and restarting. Progress is logged below; the node relaunches\n"
+                 "itself (headless) once the rebuild finishes."
+              << Qt::endl;
+        m_out.flush();
+        m_window->headlessUpdateRestart();
+    } else if (cmd == QLatin1String("daemon")) {
+        // Go into daemon mode on demand: release the interactive prompt so the
+        // operator can exit the shell (or close the SSH session) while the backend
+        // keeps serving. Same end state as losing stdin, but explicit. The node
+        // still stops on `quit` (no longer reachable from here), SIGINT or SIGTERM.
+        detachStdin();
+        m_out << "Entering daemon mode: the node keeps running in the background.\n"
+                 "You can exit this shell now (Ctrl-D / close the terminal) without\n"
+                 "stopping it. Stop it later with SIGINT/SIGTERM (kill, systemctl stop)."
+              << Qt::endl;
+        m_out.flush();
+        return;
     } else if (cmd == QLatin1String("log")) {
         const QString v = args.value(0).toLower();
         if (v == QLatin1String("on")) {
