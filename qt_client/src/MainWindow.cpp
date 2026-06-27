@@ -216,6 +216,11 @@ const QLatin1String kBranchLinkScheme("forkmesh-branch:");
 // the link builder and its linkActivated handler.
 const QLatin1String kPullLinkScheme("forkmesh-pull:");
 
+// "forkmesh-issue:<number>" link in the agent-detail meta line: when a session
+// was started from an issue, its "#N" reference links to that issue's tab in the
+// session's repo (adhoc #138). Shared by the link builder and its handler.
+const QLatin1String kIssueLinkScheme("forkmesh-issue:");
+
 // "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
 // session produced a pull request, the header links back to that session on the
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
@@ -1322,6 +1327,23 @@ QString prioritizePromptSetting()
     const QString stored =
         QSettings().value(kPrioritizePromptSetting).toString().trimmed();
     return stored.isEmpty() ? defaultPrioritizePrompt() : stored;
+}
+
+// Instruction for the "Analyze completeness" button (adhoc #139). The README and
+// the open-issue list are appended after this text before the request is sent.
+QString completenessPrompt()
+{
+    // \xE2\x80\x94 is an em-dash; keep this QString::fromUtf8 (not QStringLiteral)
+    // so the multi-byte UTF-8 escape decodes to one code point, not mojibake.
+    return QString::fromUtf8(
+        "You are reviewing a software project's open issues for completeness. An "
+        "issue is complete when it clearly states the problem or goal, gives "
+        "enough detail for someone to start work, and implies how to tell it is "
+        "done. Use the project's README for context. For EACH open issue, rate it "
+        "Complete, Partial or Incomplete and give one short sentence on what is "
+        "missing (or why it is ready). Respond in GitHub-flavoured markdown as a "
+        "list, one issue per line, e.g. \"- #12 **Partial** \xE2\x80\x94 no "
+        "acceptance criteria.\" Do not add any other commentary.");
 }
 
 QString codexCommandSetting()
@@ -10442,12 +10464,28 @@ QWidget *MainWindow::buildIssuesSection()
                                          QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
     m_issuePrioritizeAgentCombo->setToolTip(
-        "Agent that ranks the issues. Defaults to your default agent "
+        "Agent that ranks/reviews the issues. Defaults to your default agent "
         "(Settings \xE2\x86\x92 Agents).");
 
-    // Place it right after the "Issues" heading, ahead of the view-tab toggles.
+    // Adhoc #139: sibling of "Prioritize from README" that, instead of ranking,
+    // asks the same picked agent to judge how complete/actionable each open issue
+    // is and shows the verdict in a report dialog. Reuses the agent picker above.
+    m_issueCompletenessButton = new QPushButton("Analyze completeness");
+    m_issueCompletenessButton->setObjectName("ghostButton");
+    m_issueCompletenessButton->setProperty("buttonSize", "sm");
+    m_issueCompletenessButton->setCursor(Qt::PointingHandCursor);
+    m_issueCompletenessButton->setToolTip(
+        "Ask the picked agent to rate how complete each open issue is (clear "
+        "problem, enough detail, acceptance criteria) and show a report.");
+    setOcticon(m_issueCompletenessButton, "list-unordered", 16);
+    connect(m_issueCompletenessButton, &QPushButton::clicked, this,
+            &MainWindow::analyzeIssueCompleteness);
+
+    // Place them right after the "Issues" heading, ahead of the view-tab toggles:
+    // prioritize, then completeness, then the shared agent picker.
     headingRow->insertWidget(1, m_issuePrioritizeButton);
     headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
+    headingRow->insertWidget(2, m_issueCompletenessButton);
 
     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
     // are pledged only (funded on merge), so this never moves money.
@@ -20464,6 +20502,19 @@ QWidget *MainWindow::buildAgentsTab()
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
         else if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
+        else if (href.startsWith(kIssueLinkScheme)) {
+            // Open the issue in its own repo's Issues tab (the session may belong to
+            // a repo other than the one currently shown), reusing the notification
+            // navigation that handles the section + repo switch (adhoc #138).
+            if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId)) {
+                NotificationLink link;
+                link.kind = QStringLiteral("issue");
+                link.owner = s->owner;
+                link.name = s->name;
+                link.number = href.mid(kIssueLinkScheme.size()).toInt();
+                openNotificationLink(link);
+            }
+        }
     });
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
@@ -21947,6 +21998,21 @@ static QString pullLinkHtml(int prNumber)
         .arg(prNumber);
 }
 
+// "#N <title>" for the agent-detail meta line, as a link to that issue's tab in
+// the session's repo (forkmesh-issue:N, handled by m_agentMeta's linkActivated).
+// Shown only when the session was started from an issue (adhoc #138).
+static QString issueLinkHtml(int issueNumber, const QString &title)
+{
+    const QString href = kIssueLinkScheme + QString::number(issueNumber);
+    const QString label =
+        title.isEmpty()
+            ? QStringLiteral("issue #%1").arg(issueNumber)
+            : QStringLiteral("issue #%1 %2").arg(issueNumber).arg(title.toHtmlEscaped());
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, label);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -22064,6 +22130,10 @@ void MainWindow::showAgentSession(int sessionId)
                                 session->name.toHtmlEscaped()) +
                        sep + agentStatusText(session->status).toHtmlEscaped() + sep +
                        branchPart + sep + pr;
+        // Started from an issue? Surface it at the top with a link straight to that
+        // issue's tab in the session's repo (adhoc #138).
+        if (session->issueNumber > 0)
+            meta += sep + issueLinkHtml(session->issueNumber, session->issueTitle);
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -23148,25 +23218,40 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // stream object and the UI hand-off below are set up *before* the worktree is
     // created so assigning an agent feels instant — the slow checkout then runs
     // asynchronously and the CLI starts from its continuation (issue #262).
-    m_streamEvents[sid].clear();
-    m_streamRaw[sid].clear();
-    m_streamFiles[sid].clear();
-    // This session's transcript is being reset; force the next show to rebuild.
+    //
+    // Resuming a session that already streamed a transcript — an app-restart resume
+    // of a still-Running agent (issue #242), or a user-driven Continue/Revision —
+    // must KEEP that transcript: wiping events.jsonl here is what made a
+    // recently-started agent look like it lost its history after a restart. Load any
+    // persisted events back into memory and only start from a clean slate for a
+    // genuinely fresh run (a brand-new ad-hoc or issue assignment has none). The
+    // resumed CLI emits its own "session started" event, marking the boundary.
+    ensureStreamEventsLoaded(sid);
+    const bool resuming = !m_streamEvents.value(sid).isEmpty();
+    if (!resuming) {
+        m_streamEvents[sid].clear();
+        m_streamRaw[sid].clear();
+        m_streamFiles[sid].clear();
+        m_agentStore->clearEvents(session);
+    }
+    // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
         m_renderedTranscriptSession = -1;
     // Capture the session so applyTranscriptEvent can persist each turn to disk
     // (issue #41) — m_agentSessions doesn't yet hold a freshly created ad-hoc
-    // session — and start this run's transcript file from a clean slate.
+    // session.
     m_streamSessionInfo[sid] = session;
-    m_agentStore->clearEvents(session);
     if (ClaudeStreamSession *old = m_streamSessions.take(sid))
         old->deleteLater();
     auto *stream = new ClaudeStreamSession(this);
     m_streamSessions.insert(sid, stream);
     // Record the initial user turn so it replays when switching back to this view.
-    applyTranscriptEvent(sid, QJsonObject{
-                                  {QStringLiteral("type"), QStringLiteral("_local_user")},
-                                  {QStringLiteral("text"), prompt}});
+    // On a resume the preserved transcript already holds the original prompt, so
+    // only a fresh run logs it here.
+    if (!resuming)
+        applyTranscriptEvent(sid, QJsonObject{
+                                      {QStringLiteral("type"), QStringLiteral("_local_user")},
+                                      {QStringLiteral("text"), prompt}});
     connect(stream, &ClaudeStreamSession::event, this,
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
@@ -23687,7 +23772,14 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
         else
             m_agentTranscript->handleEvent(ev);
-        refreshAgentFilesPanel(sessionId);
+        // Refresh the Files-changed panel on real turns only, never on the
+        // high-frequency `stream_event` partials. With --include-partial-messages
+        // those deltas arrive far faster than the diff debounce's 400ms interval, so
+        // refreshing on every one perpetually restarted (starved) the timer and the
+        // `git diff` never fired while the agent streamed — the panel only caught up
+        // once output paused. Partial deltas can't change the file set anyway.
+        if (type != QLatin1String("stream_event"))
+            refreshAgentFilesPanel(sessionId);
         // The view was just kept in sync incrementally, so the render guard's
         // count must track the append — otherwise the next reload would force a
         // full rebuild of a transcript that's already up to date.
@@ -31235,13 +31327,19 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
         return;
     }
 
-    // Every stored (non-external) agent session that ran on this branch.
+    // Every stored (non-external) agent session that ran on this branch, plus the
+    // issues those sessions were started from: deleting the work means that issue is
+    // done, so close it along with the worktree/branch (adhoc #138).
     QList<int> agentIds;
+    QSet<int> issueNumbers;
     if (!branch.isEmpty()) {
         for (const AgentSession &s : std::as_const(m_agentSessions)) {
             if (s.owner == repo.owner && s.name == repo.name
-                && s.branchName == branch && !isExternalSession(s.id))
+                && s.branchName == branch && !isExternalSession(s.id)) {
                 agentIds.append(s.id);
+                if (s.issueNumber > 0)
+                    issueNumbers.insert(s.issueNumber);
+            }
         }
     }
 
@@ -31266,11 +31364,17 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
             : QStringLiteral("%1 and %2").arg(
                   QStringList(parts.mid(0, parts.size() - 1)).join(QStringLiteral(", ")),
                   parts.last());
-    if (QMessageBox::question(
-            this, QStringLiteral("Delete worktree, branch & agent"),
-            QStringLiteral("Delete %1?\n\nUncommitted changes there will be lost. "
-                           "This cannot be undone.")
-                .arg(what))
+    QString prompt = QStringLiteral("Delete %1?\n\nUncommitted changes there will be "
+                                    "lost. This cannot be undone.")
+                         .arg(what);
+    if (!issueNumbers.isEmpty())
+        prompt += issueNumbers.size() == 1
+                      ? QStringLiteral("\n\nThe linked issue #%1 will be closed.")
+                            .arg(*issueNumbers.cbegin())
+                      : QStringLiteral("\n\nThe %1 linked issues will be closed.")
+                            .arg(issueNumbers.size());
+    if (QMessageBox::question(this, QStringLiteral("Delete worktree, branch & agent"),
+                              prompt)
         != QMessageBox::Yes)
         return;
 
@@ -31307,11 +31411,48 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
             loadBranchesPanel();
     }
 
+    // Close the issue(s) those agent sessions were started from — the worktree and
+    // branch holding that work are gone, so the issue's work is done (adhoc #138).
+    int closedIssues = 0;
+    if (!issueNumbers.isEmpty()) {
+        const RepositoryRecord &writable = writableRecordFor(repo);
+        IssueStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (store.canWrite()) {
+            QHash<int, QString> statusByNumber;
+            for (const Issue &issue : store.loadAll())
+                statusByNumber.insert(issue.number, issue.status);
+            for (const int number : std::as_const(issueNumbers)) {
+                // Skip issues that are gone or already closed (no spurious event).
+                if (!statusByNumber.contains(number)
+                    || statusByNumber.value(number) == QLatin1String("closed"))
+                    continue;
+                QString err;
+                if (store.setStatus(number, QStringLiteral("closed"), &err)) {
+                    logSystem(
+                        QStringLiteral("Closed issue #%1 (agent worktree deleted).")
+                            .arg(number));
+                    ++closedIssues;
+                } else {
+                    logSystem(QStringLiteral("Issue #%1: could not close on delete: %2")
+                                  .arg(number)
+                                  .arg(err));
+                }
+            }
+        }
+    }
+
     if (!agentIds.isEmpty()) {
         reloadAgents();
         reloadIssues();
         refreshIssueList();
         updateIssueActionState();
+    }
+    if (closedIssues > 0) {
+        updateRepoIssueCount();
+        flashMessage(closedIssues == 1
+                         ? QStringLiteral("Closed the linked issue.")
+                         : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
     }
 }
 
@@ -37633,6 +37774,188 @@ void MainWindow::prioritizeIssuesFromReadme()
     });
 }
 
+void MainWindow::analyzeIssueCompleteness()
+{
+    if (m_completenessInFlight || !m_networkAccess)
+        return;
+
+    // Read-only review: we never write to the issue store, only report. Look at
+    // the open issues, since closed ones don't need completeness judged.
+    QList<Issue> open;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.status != QLatin1String("closed"))
+            open.append(issue);
+    if (open.isEmpty()) {
+        setIssueInlineNotice("No open issues to analyze.");
+        return;
+    }
+
+    // README is context only here, so it's optional: include it when present,
+    // otherwise judge the issues on their own.
+    QString readme = currentRepoReadme().trimmed();
+    if (readme.size() > 8000)
+        readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
+
+    // Use the agent picked in the dropdown shared with "Prioritize from README";
+    // fall back to the saved default agent when the picker isn't built yet.
+    const QString provider = m_issuePrioritizeAgentCombo
+                                 ? m_issuePrioritizeAgentCombo->currentData()
+                                       .toString()
+                                 : defaultAgentProvider();
+    const bool claude = agentIsClaudeProvider(provider);
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    // "Claude Code" authenticates with the claude.ai subscription OAuth token,
+    // never a metered API key (see prioritizeIssuesFromReadme for the rationale).
+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
+    const QString apiKey =
+        claudeCode ? QString()
+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
+                             : QSettings().value(kCodexApiKeySetting))
+                         .toString()
+                         .trimmed();
+    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+        setIssueInlineNotice(
+            claudeCode
+                ? "Sign in to Claude Code first (run `claude` and log in)."
+                : claude ? "Add a Claude API key in Settings first."
+                         : "Add an OpenAI API key in Settings first.",
+            true);
+        return;
+    }
+
+    // One line per open issue: "#N: title - opening snippet".
+    QStringList lines;
+    for (const Issue &issue : std::as_const(open)) {
+        QString line =
+            QStringLiteral("#%1: %2").arg(issue.number).arg(issue.title.trimmed());
+        QString body;
+        for (const IssueEvent &ev : issue.events)
+            if (ev.type == QLatin1String("open")) {
+                body = ev.body.trimmed();
+                break;
+            }
+        if (!body.isEmpty()) {
+            body = body.simplified();
+            if (body.size() > 400)
+                body = body.left(400) + QString::fromUtf8("\xE2\x80\xA6");
+            line += QString::fromUtf8(" \xE2\x80\x94 ") + body;
+        }
+        lines << line;
+    }
+
+    const QString readmeSection =
+        readme.isEmpty()
+            ? QStringLiteral("(no README found)")
+            : readme;
+    const QString task =
+        QStringLiteral(
+            "%1\n\n----- README -----\n%2\n\n----- OPEN ISSUES -----\n%3")
+            .arg(completenessPrompt(), readmeSection, lines.join('\n'));
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
+    // Budget enough output for a sentence per issue, with headroom.
+    const int outTok = qBound(512, open.size() * 64 + 256, 4000);
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("max_tokens", outTok);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(
+            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        if (!oauthToken.isEmpty()) {
+            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
+            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+            payload.insert("system", kClaudeCodeOAuthSystem);
+        } else {
+            req.setRawHeader("x-api-key", apiKey.toUtf8());
+        }
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", outTok);
+        QNetworkRequest req = openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    m_completenessInFlight = true;
+    if (m_issueCompletenessButton) {
+        m_issueCompletenessButton->setEnabled(false);
+        m_issueCompletenessButton->setText(
+            QString::fromUtf8("Analyzing\xE2\x80\xA6"));
+    }
+    setIssueInlineNotice(QString::fromUtf8(
+        claude ? "Asking Claude to analyze completeness\xE2\x80\xA6"
+               : "Asking OpenAI to analyze completeness\xE2\x80\xA6"));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        m_completenessInFlight = false;
+        if (m_issueCompletenessButton) {
+            m_issueCompletenessButton->setEnabled(true);
+            m_issueCompletenessButton->setText("Analyze completeness");
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            setIssueInlineNotice(
+                "Completeness request failed: " + apiErrorSummary(reply, body),
+                true);
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        QString text;
+        if (claude) {
+            for (const QJsonValue &v : obj.value("content").toArray()) {
+                const QJsonObject o = v.toObject();
+                if (o.value("type").toString() == QLatin1String("text"))
+                    text += o.value("text").toString();
+            }
+        } else {
+            text = openAiResponseText(obj);
+        }
+        text = text.trimmed();
+        if (text.isEmpty()) {
+            setIssueInlineNotice(
+                "The agent returned an empty completeness report.", true);
+            return;
+        }
+
+        // Show the agent's markdown verdict in a read-only report dialog.
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("Issue completeness"));
+        dialog.resize(560, 480);
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *view = new QTextBrowser(&dialog);
+        view->setOpenExternalLinks(true);
+        view->setMarkdown(text);
+        layout->addWidget(view);
+        auto *buttons =
+            new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                &QDialog::accept);
+        layout->addWidget(buttons);
+        setIssueInlineNotice(QString());
+        dialog.exec();
+    });
+}
+
 void MainWindow::pickIssueAssignees()
 {
     if (m_currentIssueNumber < 0 || !m_issueAssigneesButton)
@@ -43511,10 +43834,6 @@ void MainWindow::syncRepository(int index, bool quiet)
         return;
     }
 
-    const QString beforeDigest = mirrorRefsDigest(repo.mirrorPath);
-    const QString beforeHeadBranch = mirrorHeadBranch(repo.mirrorPath);
-    const QString beforeHeadCommit =
-        mirrorBranchCommit(repo.mirrorPath, beforeHeadBranch);
     // Mirror only the stable namespaces (branches + tags). Tool-managed refs
     // like refs/codex/* churn constantly on active repos: a client that wants a
     // ref which vanished between the advertisement and the pack negotiation gets
@@ -43535,16 +43854,12 @@ void MainWindow::syncRepository(int index, bool quiet)
                                 "origin"} +
                         kStableRefspecs
                   : QStringList{"clone", "--bare", source, repo.mirrorPath});
+    const QString mirrorPath = repo.mirrorPath;
 
-    // Track the live source: an owned repo with a local working copy should
-    // fetch from that copy, not from a stale relay URL baked into origin at
-    // clone time (which can return HTTP 5xx through the host tunnel).
-    if (hasMirror && !source.isEmpty())
-        runGitCapture(repo.mirrorPath,
-                      {QStringLiteral("remote"), QStringLiteral("set-url"),
-                       QStringLiteral("origin"), source},
-                      nullptr, nullptr);
-
+    // Flag the repo "syncing" and reflect it in the UI right away — before any git
+    // subprocess runs — so clicking "Sync changes" flips the button to "Syncing
+    // changes" instantly and never blocks the GUI thread. The insert also guards
+    // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
     m_syncingRepos.insert(index);
     refreshRepositoryList();
     if (!quiet) {
@@ -43556,6 +43871,51 @@ void MainWindow::syncRepository(int index, bool quiet)
                   repo.owner + "/" + repo.name + " from " + source + ".");
     }
 
+    // Read the mirror's pre-fetch refs digest + HEAD and re-point origin at the
+    // live source off the GUI thread. Each is a git subprocess that blocks for up
+    // to 5s on a busy mirror (the for-each-ref digest over hundreds of issue/PR
+    // refs is the slow one), and running them here froze the window every time a
+    // sync *started* — the mirror image of the post-fetch housekeeping below,
+    // which already runs on a worker for exactly this reason. The worker only
+    // touches the mirror through path strings (never m_repositories or a widget);
+    // the async fetch is kicked off back on the main thread once it finishes.
+    auto beforeDigest = std::make_shared<QString>();
+    auto beforeHeadCommit = std::make_shared<QString>();
+    QThread *prep = QThread::create(
+        [mirrorPath, source, hasMirror, beforeDigest, beforeHeadCommit] {
+            *beforeDigest = mirrorRefsDigest(mirrorPath);
+            *beforeHeadCommit =
+                mirrorBranchCommit(mirrorPath, mirrorHeadBranch(mirrorPath));
+            // Track the live source: an owned repo with a local working copy
+            // should fetch from that copy, not from a stale relay URL baked into
+            // origin at clone time (which can return HTTP 5xx through the host
+            // tunnel).
+            if (hasMirror && !source.isEmpty())
+                runGitCapture(mirrorPath,
+                              {QStringLiteral("remote"), QStringLiteral("set-url"),
+                               QStringLiteral("origin"), source},
+                              nullptr, nullptr);
+        });
+    connect(prep, &QThread::finished, this,
+            [this, prep, index, quiet, hasMirror, args, beforeDigest,
+             beforeHeadCommit] {
+                prep->deleteLater();
+                if (index < 0 || index >= m_repositories.size()) {
+                    m_syncingRepos.remove(index);
+                    refreshRepositoryList();
+                    return;
+                }
+                startSyncFetch(index, quiet, hasMirror, args, *beforeDigest,
+                               *beforeHeadCommit);
+            });
+    prep->start();
+}
+
+void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
+                                const QStringList &args,
+                                const QString &beforeDigest,
+                                const QString &beforeHeadCommit)
+{
     auto *process = new QProcess(this);
     connect(process, &QProcess::finished, this,
             [this, process, index, quiet, beforeDigest, beforeHeadCommit,
