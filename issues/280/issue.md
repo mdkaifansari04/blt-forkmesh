@@ -5,7 +5,7 @@ title: give more info when we stall 11:18:08  INFO   [11:18:08] UI stalled ~5485
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 66
 progress: 0
 assignees: []
 createdAt: 1782487143729
