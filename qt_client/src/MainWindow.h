@@ -715,11 +715,11 @@ private:
     void toggleIssueLooper();
     void looperStartNext();
     void looperOnSessionFinished(int sessionId);
+    // Funnel for every looper state change: refresh the floating toggle above
+    // the Issues tab and persist the running state so the loop resumes after a
+    // restart (adhoc #130, #125).
     void updateIssueLooperButton();
-    // Tiny "looper running" indicator overlaid on the Issues tab (adhoc #125),
-    // plus persistence so the loop resumes after a restart.
-    void updateIssueLooperTabIndicator();
-    void positionLooperSnake();
+    void positionLooperToggle();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -2477,32 +2477,23 @@ private:
     // any provider, not just the saved default. Seeded from the default agent.
     QComboBox *m_issuePrioritizeAgentCombo = nullptr;
     bool m_prioritizeInFlight = false;
-    // Issue looper (adhoc #92): a checkable button that runs the default agent on
-    // every open issue in turn. m_looperSessionId is the session currently being
-    // watched; when it finishes the looper starts the next open issue.
-    QPushButton *m_issueLooperButton = nullptr;
+    // Issue looper (adhoc #92): runs the default agent on every open issue in
+    // turn. m_looperSessionId is the session currently being watched; when it
+    // finishes the looper starts the next open issue.
     bool m_looperActive = false;
     int m_looperSessionId = 0;
     QString m_looperProvider;
-    // "Looper running" banner pinned to the top of the issues pane (adhoc #109): a
-    // turning gear + busy bar so it reads as actively working. m_issueLooperSpinner
-    // is an AgentSpinner (only the concrete type lives in the .cpp, so it is held
-    // as a QWidget* and downcast there). The current-issue fields drive the banner
-    // subtitle.
-    QWidget *m_issueLooperBanner = nullptr;
-    QLabel *m_issueLooperBannerTitle = nullptr;
-    QLabel *m_issueLooperBannerDetail = nullptr;
-    QWidget *m_issueLooperSpinner = nullptr;
     int m_looperCurrentIssue = 0;
     QString m_looperCurrentTitle;
-    // Tiny braille "snake" overlaid on the Issues tab while the looper runs
-    // (adhoc #125), mirroring m_agentSnake on the Agents tab so the loop stays
-    // visible from any tab. Blue to match the looper banner; animated by
-    // m_looperSpinTimer. m_looperRepoSlug ("owner/name") records which repo the
-    // loop is bound to so a restart resumes it on the same repo.
-    QLabel *m_looperSnake = nullptr;
-    QTimer *m_looperSpinTimer = nullptr;
-    int m_looperSpinFrame = 0;
+    // Compact looper toggle floating just above the Issues tab (adhoc #130): a
+    // switch + "looper #N" label that both shows and controls the loop, with a
+    // neon-green segment circling its border while on. Held as a QWidget* because
+    // the concrete LooperToggle type lives in the .cpp; downcast there.
+    // m_looperToggleTimer keeps it anchored over the tab as the window reflows.
+    // m_looperRepoSlug ("owner/name") records which repo the loop is bound to so
+    // a restart resumes it on the same repo.
+    QWidget *m_looperToggle = nullptr;
+    QTimer *m_looperToggleTimer = nullptr;
     QString m_looperRepoSlug;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
