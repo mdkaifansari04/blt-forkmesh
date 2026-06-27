@@ -80,6 +80,7 @@ class QScrollArea;
 class QStackedWidget;
 class QSystemTrayIcon;
 class QTableWidget;
+class QTableWidgetItem;
 class QTabWidget;
 class QTextBrowser;
 class QTextEdit;
@@ -792,6 +793,17 @@ private:
     void refreshIssueFilesPanel(const Issue &issue);
     void renderIssueDiff(int issueNumber, const QByteArray &patch,
                          const QString &dir, const QString &base);
+    // adhoc #151: stamp the issue list's "Files" column for issues whose work
+    // lives in a linked agent worktree branch or pull request. Mirrors
+    // refreshIssueFilesPanel's source preference. The worktree count is computed
+    // async (git diff --name-only against the session base) and cached per issue,
+    // so a re-sort/rebuild can show it immediately; applyIssueFilesCount relocates
+    // the row by issue number when the async result lands.
+    void populateIssueFilesCell(int row, const Issue &issue);
+    void setIssueFilesCell(QTableWidgetItem *item, int count,
+                           const QString &source);
+    void applyIssueFilesCount(int issueNumber, int count, const QString &source);
+    QHash<int, int> m_issueFilesChangedCounts; // issue number -> files changed
     // IDE extension integration (see ide_extension/). Detection polls the
     // extension's heartbeat file; startIssueInIde drops it a task request.
     bool ideExtensionActive(QString *ideName = nullptr) const;
