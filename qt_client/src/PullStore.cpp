@@ -48,6 +48,43 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
+// Drop any other worktree currently holding `branch` checked out so the main
+// worktree can check it out. An agent session runs in a temp worktree at
+// /tmp/forkmesh-worktrees/…; if one is left behind it keeps the branch reserved
+// and `git checkout <branch>` here fails with "is already used by worktree at …".
+// Removing the worktree frees the branch while keeping its ref intact. Returns
+// true if it released something (so the caller should retry the checkout).
+bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return false;
+    QByteArray out;
+    if (!runGit(dir, {"worktree", "list", "--porcelain"}, &out, nullptr))
+        return false;
+    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+    QString currentPath;
+    QString held;
+    const QList<QByteArray> lines = out.split('\n');
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree ")))
+            currentPath = line.mid(QStringLiteral("worktree ").size()).trimmed();
+        else if (line.startsWith(QLatin1String("branch ")) &&
+                 line.mid(QStringLiteral("branch ").size()).trimmed() == want &&
+                 !currentPath.isEmpty() &&
+                 QDir(currentPath).absolutePath() != QDir(dir).absolutePath()) {
+            held = currentPath;
+            break;
+        }
+    }
+    if (held.isEmpty())
+        return false;
+    runGit(dir, {"worktree", "remove", "--force", held}, nullptr, nullptr);
+    QDir(held).removeRecursively();
+    runGit(dir, {"worktree", "prune"}, nullptr, nullptr);
+    return true;
+}
+
 // Pull the conflicting file paths out of `git apply --check --3way` output,
 // which names the offending file in a few shapes depending on whether the
 // 3-way fallback ran:
@@ -244,6 +281,157 @@ bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
     return false;
 }
 
+// The file a "diff --git a/<path> b/<path>" header names, taken from the b-side
+// exactly the way the Files-changed list does (so the path we match against is
+// the same one the UI hands back when a row is selected).
+QString diffHeaderPath(const QString &diffLine)
+{
+    return diffLine.section(QStringLiteral(" b/"), 1);
+}
+
+// True when any line in a diff body opens a file section.
+bool bodyHasFileDiff(const QString &body)
+{
+    const QStringList lines = body.split('\n');
+    for (const QString &line : lines)
+        if (line.startsWith(QLatin1String("diff --git ")))
+            return true;
+    return false;
+}
+
+// Drop the unified-diff section(s) for `relPath` from a single diff body (one
+// with no email framing — a raw `git diff`, or an mbox message with its trailing
+// signature already split off). A section runs from its "diff --git" header up to
+// the next header or the end. Sets *removed when at least one section matched.
+QString removeFileSectionsFromDiff(const QString &body, const QString &relPath,
+                                   bool *removed)
+{
+    const QStringList lines = body.split('\n');
+    QStringList kept;
+    kept.reserve(lines.size());
+    bool skipping = false;
+    bool any = false;
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git "))) {
+            skipping = (diffHeaderPath(line) == relPath);
+            if (skipping)
+                any = true;
+        }
+        if (!skipping)
+            kept << line;
+    }
+    if (removed)
+        *removed = any;
+    return kept.join('\n');
+}
+
+// Split a format-patch message at its "-- \n<version>" signature, which is always
+// the final such marker (a removed line whose content is "- " would render as
+// "-- " inside a hunk, so we match from the end to land on the real one). Returns
+// the body before it and the trailer from it onward, so reassembling as
+// body + "\n" + trailer reproduces the message verbatim.
+void splitMboxSignature(const QString &message, QString *body, QString *trailer)
+{
+    const QStringList lines = message.split('\n');
+    int sig = -1;
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        if (lines.at(i) == QLatin1String("-- ")) {
+            sig = i;
+            break;
+        }
+    }
+    if (sig < 0) {
+        *body = message;
+        trailer->clear();
+        return;
+    }
+    *body = QStringList(lines.mid(0, sig)).join('\n');
+    *trailer = QStringList(lines.mid(sig)).join('\n');
+}
+
+// Drop the diffstat git format-patch wrote between the "---" cut and the diff.
+// Once a file is excised the stat is stale (and would still name the removed
+// file), git am ignores it, and the applied commit never includes it anyway — so
+// for a message we have already edited we simply remove it. Messages we don't
+// touch are left byte-for-byte intact by the caller.
+QString stripDiffstat(const QString &message)
+{
+    const QStringList lines = message.split('\n');
+    int firstDiff = -1;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (lines.at(i).startsWith(QLatin1String("diff --git "))) {
+            firstDiff = i;
+            break;
+        }
+    }
+    if (firstDiff < 0)
+        return message;
+    int cut = -1;
+    for (int i = firstDiff - 1; i >= 0; --i) {
+        if (lines.at(i) == QLatin1String("---")) {
+            cut = i;
+            break;
+        }
+    }
+    if (cut < 0)
+        return message; // no format-patch cut; nothing recognizable to drop
+    QStringList kept = lines.mid(0, cut + 1);
+    // Skip the diffstat: its lines (and the trailing blank) are space-prefixed or
+    // empty. Stop at the first line that is neither — i.e. the diff itself.
+    int i = cut + 1;
+    while (i < firstDiff && (lines.at(i).isEmpty() || lines.at(i).startsWith(' ')))
+        ++i;
+    kept << QString(); // one blank line between the message and the diff
+    for (; i < lines.size(); ++i)
+        kept << lines.at(i);
+    return kept.join('\n');
+}
+
+// Excise the diff for `relPath` from every commit in a format-patch mbox. A
+// commit left with no remaining file diffs (it only touched that file) is dropped
+// whole so `git am` is never handed an empty patch. Survivors keep their headers
+// and signatures untouched. Returns an empty string when nothing is left.
+QString removeFileFromMbox(const QString &mbox, const QString &relPath)
+{
+    // Each commit message begins at a "From <sha> Mon Sep 17 00:00:00 2001" line.
+    // Diff content never starts a line that way, so it is a safe message delimiter.
+    static const QRegularExpression boundary(
+        QStringLiteral("^From [0-9a-f]+ Mon Sep 17 00:00:00 2001$"));
+    const QStringList lines = mbox.split('\n');
+    QList<QStringList> messages;
+    for (const QString &line : lines) {
+        if (messages.isEmpty() || boundary.match(line).hasMatch())
+            messages.append(QStringList{});
+        messages.last() << line;
+    }
+
+    QStringList out;
+    for (const QStringList &msgLines : messages) {
+        const QString message = msgLines.join('\n');
+        // Anything before the first real header (none, in practice) is passed
+        // through so we never silently corrupt an unexpected shape.
+        if (msgLines.isEmpty() || !boundary.match(msgLines.first()).hasMatch()) {
+            out << message;
+            continue;
+        }
+        QString body, trailer;
+        splitMboxSignature(message, &body, &trailer);
+        bool removed = false;
+        const QString newBody = removeFileSectionsFromDiff(body, relPath, &removed);
+        if (!removed) {
+            out << message; // this commit doesn't touch the file
+            continue;
+        }
+        if (!bodyHasFileDiff(newBody))
+            continue; // the commit only touched the file — drop it entirely
+        const QString trimmedBody = stripDiffstat(newBody);
+        out << (trailer.isEmpty() ? trimmedBody : trimmedBody + "\n" + trailer);
+    }
+
+    const QString result = out.join('\n');
+    return result.trimmed().isEmpty() ? QString() : result;
+}
+
 } // namespace
 
 // ---- PullEvent -------------------------------------------------------------
@@ -362,15 +550,27 @@ QString PullStore::pullDir(int number) const
 void PullStore::computeStats(PullRequest &pr)
 {
     int files = 0, add = 0, del = 0;
-    for (const QString &line : pr.patch.split('\n')) {
-        if (line.startsWith("diff --git "))
+    // Walk the patch line-by-line over a view instead of pr.patch.split('\n'):
+    // a large patch otherwise materialises a QStringList holding one heap-allocated
+    // QString per line, and building + destroying that list blocked the UI thread
+    // for ~1.6s (the QString destructor was the stall hot spot, issue #152).
+    const QStringView patch(pr.patch);
+    for (qsizetype start = 0; start <= patch.size();) {
+        const qsizetype nl = patch.indexOf(u'\n', start);
+        const QStringView line =
+            patch.sliced(start, (nl < 0 ? patch.size() : nl) - start);
+        if (line.startsWith(QLatin1String("diff --git ")))
             ++files;
-        else if (line.startsWith("+++") || line.startsWith("---"))
-            continue;
-        else if (line.startsWith('+'))
+        else if (line.startsWith(QLatin1String("+++")) ||
+                 line.startsWith(QLatin1String("---"))) {
+            // file-header line, not a +/- content line
+        } else if (line.startsWith(u'+'))
             ++add;
-        else if (line.startsWith('-'))
+        else if (line.startsWith(u'-'))
             ++del;
+        if (nl < 0)
+            break;
+        start = nl + 1;
     }
     pr.filesChanged = files;
     pr.additions = add;
@@ -920,9 +1120,15 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
             : current;
 
     if (!runGit(m_workTree, {"checkout", pr.head}, nullptr, &err)) {
-        if (error)
-            *error = QStringLiteral("Could not check out %1: %2").arg(pr.head, err);
-        return false;
+        // A leftover agent worktree may still hold this branch ("is already used
+        // by worktree at …"). Release it and retry once before giving up.
+        const bool recovered = releaseWorktreeHoldingBranch(m_workTree, pr.head) &&
+                               runGit(m_workTree, {"checkout", pr.head}, nullptr, &err);
+        if (!recovered) {
+            if (error)
+                *error = QStringLiteral("Could not check out %1: %2").arg(pr.head, err);
+            return false;
+        }
     }
     if (!runGit(m_workTree, {"merge", "--no-edit", pr.base}, nullptr, &err)) {
         runGit(m_workTree, {"merge", "--abort"}, nullptr, nullptr);
@@ -1315,39 +1521,54 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
             *error = QStringLiteral("Editing needs a local working tree.");
         return false;
     }
-    QStringList conflicted;
-    bool clean = false;
-    if (!beginPullBranch(number, &conflicted, &clean, error))
-        return false;
-    if (!clean) {
-        abortConflictMerge();
+    PullRequest pr;
+    if (!readPull(number, pr)) {
         if (error)
-            *error = QStringLiteral("This pull request has conflicts - use "
-                                    "\"Resolve conflicts\" first, then delete.");
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
         return false;
     }
-    if (!QFileInfo::exists(m_workTree + "/" + relPath)) {
-        abortConflictMerge();
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+
+    // Edit the stored diff directly rather than rebuilding the PR's branch
+    // (issue #258). The old path checked the PR's commits out onto the current
+    // base with `git am` and regenerated the patch — but `git am` silently skips
+    // commits whose content already exists on the base ("patch already applied"),
+    // so deleting a single file could drop most of the PR. Excising just this
+    // file's section keeps every other change exactly as the author wrote it.
+    bool removed = false;
+    const QString newPatch = removeFileSectionsFromDiff(pr.patch, relPath, &removed);
+    if (!removed) {
         if (error)
             *error = QStringLiteral("'%1' is not a file in this pull request.")
                          .arg(relPath);
         return false;
     }
-    QString err;
-    if (!runGit(m_workTree, {"rm", "-f", "--", relPath}, nullptr, &err)) {
-        abortConflictMerge();
+    if (!bodyHasFileDiff(newPatch)) {
         if (error)
-            *error = "git rm failed: " + err;
+            *error = QStringLiteral("'%1' is the only file changed by this pull "
+                                    "request; close the pull request instead of "
+                                    "deleting its last file.")
+                         .arg(relPath);
         return false;
     }
-    const QString msg = QStringLiteral("pull #%1: delete %2").arg(number).arg(relPath);
-    if (!runGit(m_workTree, {"commit", "-m", msg}, nullptr, &err)) {
-        abortConflictMerge();
-        if (error)
-            *error = "git commit failed: " + err;
+    pr.patch = newPatch;
+    if (!pr.commits.isEmpty())
+        pr.commits = removeFileFromMbox(pr.commits, relPath);
+    computeStats(pr); // refresh files/additions/deletions from the trimmed patch
+
+    if (!writePull(pr, error))
         return false;
-    }
-    return finalizeOnPullBranch(number, msg, error);
+    // writePull only (re)writes commits.mbox when it's non-empty; if every
+    // authored commit collapsed away, drop the stale file so merge falls back to
+    // the patch instead of replaying an out-of-date series.
+    if (pr.commits.isEmpty())
+        QFile::remove(pullDir(number) + "/commits.mbox");
+    return commit(QStringLiteral("pull #%1: delete %2").arg(number).arg(relPath),
+                  error);
 }
 
 // Shared tail for the on-branch PR operations (resolve, edit): leave the work
@@ -1513,6 +1734,16 @@ bool PullStore::checkMergeable(int number, bool *clean,
     if (conflictFiles)
         *conflictFiles = parseApplyConflicts(output);
     return true;
+}
+
+QString PullStore::baseTip() const
+{
+    if (!canWrite())
+        return QString();
+    QByteArray out;
+    if (!runGit(m_workTree, {"rev-parse", "HEAD"}, &out, nullptr))
+        return QString();
+    return QString::fromUtf8(out).trimmed();
 }
 
 bool PullStore::applyRemotePull(const PullRequest &incoming, QString *error)

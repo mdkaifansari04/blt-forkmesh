@@ -319,6 +319,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -976,6 +979,15 @@ QAbstractItemView::item { border: 0px; }
 #sidebar QListWidget::item:selected { background-color: #238636; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #238636; }
 
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #1f2630; }
+
 )";
 
 // GitHub (Primer) light:
@@ -1271,6 +1283,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
@@ -1494,8 +1509,8 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     color: #8c959f; font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa; border: none;
-    color: #656d76; font-family: monospace; font-size: 12px;
+    background-color: #ffffff; border: none;
+    color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
@@ -1606,9 +1621,9 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa;
+    background-color: #ffffff;
     border: none;
-    color: #656d76;
+    color: #1f2328;
     font-family: monospace;
     font-size: 12px;
 }
@@ -1907,6 +1922,15 @@ QAbstractItemView::item { border: 0px; }
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #1f883d; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #1f883d; }
+
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #f6f8fa; color: #1f2328;
+    border: 1px solid #d0d7de; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #eef1f5; }
 
 )";
 

@@ -1,23 +1,34 @@
 #include "MarkdownEditor.h"
 
+#include <QClipboard>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QListWidget>
 #include <QMimeData>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QTemporaryFile>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QToolButton>
 #include <QUrl>
+#include <QVariant>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 const QStringList kImageSuffixes = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"};
@@ -25,6 +36,11 @@ const QStringList kImageSuffixes = {"png", "jpg", "jpeg", "gif", "webp", "bmp", 
 bool isImagePath(const QString &path)
 {
     return kImageSuffixes.contains(QFileInfo(path).suffix().toLower());
+}
+
+QString pendingImagePlaceholder(int index)
+{
+    return QStringLiteral("forkmesh-pending-image:%1").arg(index);
 }
 }  // namespace
 
@@ -138,17 +154,23 @@ void MarkdownEditor::addImageFile(const QString &path)
 {
     if (path.isEmpty() || !isImagePath(path))
         return;
-    if (!m_attachments.contains(path))
+    int index = m_attachments.indexOf(path);
+    if (index < 0) {
+        index = m_attachments.size();
         m_attachments.append(path);
+        m_attachmentPlaceholders.append(pendingImagePlaceholder(index));
+    }
+    const QString placeholder = m_attachmentPlaceholders.value(index);
     const QString name = QFileInfo(path).fileName();
     QTextCursor cursor = m_source->textCursor();
-    cursor.insertText(QStringLiteral("\n![%1](attachments/%1)\n").arg(name));
+    cursor.insertText(QStringLiteral("\n![%1](%2)\n").arg(name, placeholder));
     m_source->setFocus();
 }
 
 void MarkdownEditor::clearPendingAttachments()
 {
     m_attachments.clear();
+    m_attachmentPlaceholders.clear();
 }
 
 void MarkdownEditor::showWrite()
@@ -313,7 +335,21 @@ bool MarkdownEditor::handleMentionKey(QKeyEvent *event)
 
 void MarkdownEditor::updatePreview()
 {
-    m_preview->setMarkdown(m_source->toPlainText());
+    QString previewMarkdown = m_source->toPlainText();
+    const int count = std::min(m_attachments.size(), m_attachmentPlaceholders.size());
+    QList<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i)
+        order.append(i);
+    std::sort(order.begin(), order.end(), [this](int a, int b) {
+        return m_attachmentPlaceholders.at(a).size() >
+               m_attachmentPlaceholders.at(b).size();
+    });
+    for (int i : order) {
+        previewMarkdown.replace(m_attachmentPlaceholders.at(i),
+                                QUrl::fromLocalFile(m_attachments.at(i)).toString());
+    }
+    m_preview->setMarkdown(previewMarkdown);
 }
 
 void MarkdownEditor::wrapSelection(const QString &left, const QString &right)
@@ -333,12 +369,52 @@ void MarkdownEditor::chooseImage()
         addImageFile(f);
 }
 
+bool MarkdownEditor::pasteImageFromClipboard()
+{
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    if (!clipboard)
+        return false;
+    const QMimeData *mime = clipboard->mimeData();
+    if (!mime || !mime->hasImage())
+        return false;
+
+    const QVariant data = mime->imageData();
+    QImage image = qvariant_cast<QImage>(data);
+    if (image.isNull()) {
+        const QPixmap pixmap = qvariant_cast<QPixmap>(data);
+        if (!pixmap.isNull())
+            image = pixmap.toImage();
+    }
+    if (image.isNull())
+        return false;
+
+    QTemporaryFile file(QDir::tempPath() + "/forkmesh-paste-XXXXXX.png");
+    file.setAutoRemove(false);
+    if (!file.open())
+        return false;
+    const QString path = file.fileName();
+    if (!image.save(&file, "PNG")) {
+        file.close();
+        QFile::remove(path);
+        return false;
+    }
+    file.close();
+    addImageFile(path);
+    return true;
+}
+
 bool MarkdownEditor::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == m_source) {
-        if (event->type() == QEvent::KeyPress &&
-            handleMentionKey(static_cast<QKeyEvent *>(event)))
-            return true;
+        if (event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if (key->matches(QKeySequence::Paste) && pasteImageFromClipboard()) {
+                key->accept();
+                return true;
+            }
+            if (handleMentionKey(key))
+                return true;
+        }
         if (event->type() == QEvent::FocusOut)
             hideMentionPopup();
     }

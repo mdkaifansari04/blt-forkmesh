@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 128
 title: update issue storage to not have seprate files for lables, milestone or priority - have these all just in the issue.md header like we have
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
-priority: 51
+priority: 99
 progress: 0
 assignees: []
 createdAt: 1782141634338

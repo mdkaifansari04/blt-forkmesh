@@ -5,7 +5,7 @@ title: have the ability to send images in the agent prompt area
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 40
 progress: 0
 assignees: []
 createdAt: 1782362633929

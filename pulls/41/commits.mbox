@@ -1,0 +1,575 @@
+From 60ab7848ae79cdcf5479bc7d4690d9a07e278a5d Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 20:02:43 -0400
+Subject: [PATCH 1/2] Make an agent session always deletable
+
+Deleting an agent session could fail in three ways: a runner that
+wouldn't exit within stop()'s 1.5s window forced a "delete it again
+once it exits" retry, and clearing the issue's agent assignment hard-
+failed deletion for non-hosts or on any write error.
+
+Now deletion always removes the local session: a runner that won't stop
+promptly is abandoned (killed, signals dropped so a late finish can't
+re-save the row, worktree cleaned, reset to idle for reuse), and the
+issue-event clear is best-effort with a warning instead of a bail.
+
+Also make removeWorktree tolerant of an already-removed worktree so the
+combined "delete worktree, branch & agent" action still deletes the
+branch after a runner has cleaned up its own worktree.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/AgentRunner.cpp | 20 +++++++++++
+ qt_client/src/AgentRunner.h   |  5 +++
+ qt_client/src/MainWindow.cpp  | 63 ++++++++++++++++++++++-------------
+ 3 files changed, 64 insertions(+), 24 deletions(-)
+
+diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
+index fa4bf197..9d3cadfc 100644
+--- a/qt_client/src/AgentRunner.cpp
++++ b/qt_client/src/AgentRunner.cpp
+@@ -313,6 +313,26 @@ void AgentRunner::stop()
+     complete(false, AgentStatus::Stopped, QStringLiteral("Stopped."));
+ }
+ 
++void AgentRunner::abandon()
++{
++    // Forcefully forget the current session without finishing it: kill the
++    // process now (no wait), disconnect it so a late finish can't re-save the
++    // session the caller is about to delete, clean up the worktree, and reset to
++    // idle so this pooled runner can be reused.
++    if (m_noOutputTimer)
++        m_noOutputTimer->stop();
++    if (m_process) {
++        m_process->disconnect(this);
++        m_process->kill();
++        m_process->deleteLater();
++        m_process = nullptr;
++    }
++    cleanupWorktree();
++    m_stopping = false;
++    m_phase = Phase::Idle;
++    m_busy = false;
++}
++
+ void AgentRunner::steer(const QString &prompt)
+ {
+     const QString trimmed = prompt.trimmed();
+diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
+index 6faca0b1..cb2fba78 100644
+--- a/qt_client/src/AgentRunner.h
++++ b/qt_client/src/AgentRunner.h
+@@ -42,6 +42,11 @@ public:
+     void start(const AgentSession &session, const Issue &issue,
+                const QString &repoPath, const Config &config);
+     void stop();
++    // Forget the current session without finishing it: kill the process now,
++    // drop its signals so a late finish can't re-save a deleted session, clean
++    // up the worktree and reset to idle. Used when a session must be deleted
++    // even though its runner won't exit promptly.
++    void abandon();
+     void steer(const QString &prompt);
+ 
+ signals:
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2bb94197..93003969 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -21353,35 +21353,40 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
+         return true; // already gone — nothing to delete
+ 
+     const AgentSession snapshot = *session;
++    // A session can always be deleted. Stop a running runner, and if it won't
++    // exit promptly, abandon it so a late finish can't re-save the row we're
++    // about to remove. Either way we proceed to delete.
+     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
+         runner->stop();
+-        if (runner->busy()) {
+-            flashMessage("Stopping agent session. Delete it again once it exits.");
+-            return false;
+-        }
++        if (runner->busy())
++            runner->abandon();
+     }
+     m_agentQueue.removeAll(snapshot.id);
+ 
+     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
+     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
+-    // issue event to clear — skip straight to removing the session.
++    // issue event to clear — skip straight to removing the session. Clearing the
++    // issue's agent assignment is best-effort: if we can't write the issue (not
++    // the host) or the update fails, warn but still remove the local session so
++    // it never gets stuck undeletable.
+     if (repoIndex >= 0 && snapshot.issueNumber > 0) {
+         const RepositoryRecord repo = m_repositories.at(repoIndex);
+         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                               m_userName);
+         if (!issueStore.canWrite()) {
+-            flashMessage("Only the host can delete an agent session from the issue.",
++            flashMessage("Deleted locally; only the host can clear the agent on the "
++                         "issue itself.",
+                          true);
+-            return false;
+-        }
+-        QString error;
+-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+-                                    AgentStatus::Cleared, &error)) {
+-            flashMessage(error.isEmpty()
+-                             ? QStringLiteral("Could not clear the issue agent.")
+-                             : error,
+-                         true);
+-            return false;
++        } else {
++            QString error;
++            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
++                                        AgentStatus::Cleared, &error)) {
++                flashMessage(error.isEmpty()
++                                 ? QStringLiteral("Deleted locally, but could not "
++                                                  "clear the issue agent.")
++                                 : error,
++                             true);
++            }
+         }
+     }
+ 
+@@ -29118,11 +29123,20 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
+             QStringLiteral("git"),
+             {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+              QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+-        setRepoDetailNotice(
+-            QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
+-            true);
+-        loadWorktreesPanel();
+-        return;
++        // It may already be gone — e.g. an agent runner cleaned up its worktree
++        // when its session was stopped/deleted. If the folder no longer exists,
++        // treat removal as done and prune git's stale bookkeeping; only a
++        // still-present worktree is a real failure.
++        if (QDir(worktreePath).exists()) {
++            setRepoDetailNotice(
++                QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
++                true);
++            loadWorktreesPanel();
++            return;
++        }
++        QProcess::execute(QStringLiteral("git"),
++                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
++                           QStringLiteral("prune")});
+     }
+     // With the worktree gone the branch is no longer checked out anywhere, so it can
+     // be force-deleted. -D matches the "uncommitted changes will be lost" warning the
+@@ -29230,9 +29244,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
+         != QMessageBox::Yes)
+         return;
+ 
+-    // Delete the agent session(s) first — that stops any runner still holding the
+-    // worktree open. If one is mid-stop or we lack permission, bail (it flashed
+-    // why) before touching the worktree so nothing is half-deleted.
++    // Delete the agent session(s) first — that stops (or abandons) any runner
++    // still holding the worktree open so it's free to remove. A session is
++    // always deletable now; only an unexpected filesystem failure bails here,
++    // before touching the worktree, so nothing is half-deleted.
+     for (int id : std::as_const(agentIds)) {
+         if (!deleteStoredAgentSession(id)) {
+             reloadAgents();
+-- 
+2.47.3
+
+
+From 5767dcad8ed825063aaf4503cf002bd446ca9179 Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 20:07:21 -0400
+Subject: [PATCH 2/2] pull #37: open
+
+---
+ pulls/37/changes.patch | 148 ++++++++++++++++++++++++++++++++++
+ pulls/37/commits.mbox  | 177 +++++++++++++++++++++++++++++++++++++++++
+ pulls/37/pull.md       |  37 +++++++++
+ 3 files changed, 362 insertions(+)
+ create mode 100644 pulls/37/changes.patch
+ create mode 100644 pulls/37/commits.mbox
+ create mode 100644 pulls/37/pull.md
+
+diff --git a/pulls/37/changes.patch b/pulls/37/changes.patch
+new file mode 100644
+index 00000000..407a44d4
+--- /dev/null
++++ b/pulls/37/changes.patch
+@@ -0,0 +1,148 @@
++diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
++index fa4bf197..9d3cadfc 100644
++--- a/qt_client/src/AgentRunner.cpp
+++++ b/qt_client/src/AgentRunner.cpp
++@@ -313,6 +313,26 @@ void AgentRunner::stop()
++     complete(false, AgentStatus::Stopped, QStringLiteral("Stopped."));
++ }
++ 
+++void AgentRunner::abandon()
+++{
+++    // Forcefully forget the current session without finishing it: kill the
+++    // process now (no wait), disconnect it so a late finish can't re-save the
+++    // session the caller is about to delete, clean up the worktree, and reset to
+++    // idle so this pooled runner can be reused.
+++    if (m_noOutputTimer)
+++        m_noOutputTimer->stop();
+++    if (m_process) {
+++        m_process->disconnect(this);
+++        m_process->kill();
+++        m_process->deleteLater();
+++        m_process = nullptr;
+++    }
+++    cleanupWorktree();
+++    m_stopping = false;
+++    m_phase = Phase::Idle;
+++    m_busy = false;
+++}
+++
++ void AgentRunner::steer(const QString &prompt)
++ {
++     const QString trimmed = prompt.trimmed();
++diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
++index 6faca0b1..cb2fba78 100644
++--- a/qt_client/src/AgentRunner.h
+++++ b/qt_client/src/AgentRunner.h
++@@ -42,6 +42,11 @@ public:
++     void start(const AgentSession &session, const Issue &issue,
++                const QString &repoPath, const Config &config);
++     void stop();
+++    // Forget the current session without finishing it: kill the process now,
+++    // drop its signals so a late finish can't re-save a deleted session, clean
+++    // up the worktree and reset to idle. Used when a session must be deleted
+++    // even though its runner won't exit promptly.
+++    void abandon();
++     void steer(const QString &prompt);
++ 
++ signals:
++diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++index 2bb94197..93003969 100644
++--- a/qt_client/src/MainWindow.cpp
+++++ b/qt_client/src/MainWindow.cpp
++@@ -21353,35 +21353,40 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
++         return true; // already gone — nothing to delete
++ 
++     const AgentSession snapshot = *session;
+++    // A session can always be deleted. Stop a running runner, and if it won't
+++    // exit promptly, abandon it so a late finish can't re-save the row we're
+++    // about to remove. Either way we proceed to delete.
++     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
++         runner->stop();
++-        if (runner->busy()) {
++-            flashMessage("Stopping agent session. Delete it again once it exits.");
++-            return false;
++-        }
+++        if (runner->busy())
+++            runner->abandon();
++     }
++     m_agentQueue.removeAll(snapshot.id);
++ 
++     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
++     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
++-    // issue event to clear — skip straight to removing the session.
+++    // issue event to clear — skip straight to removing the session. Clearing the
+++    // issue's agent assignment is best-effort: if we can't write the issue (not
+++    // the host) or the update fails, warn but still remove the local session so
+++    // it never gets stuck undeletable.
++     if (repoIndex >= 0 && snapshot.issueNumber > 0) {
++         const RepositoryRecord repo = m_repositories.at(repoIndex);
++         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
++                               m_userName);
++         if (!issueStore.canWrite()) {
++-            flashMessage("Only the host can delete an agent session from the issue.",
+++            flashMessage("Deleted locally; only the host can clear the agent on the "
+++                         "issue itself.",
++                          true);
++-            return false;
++-        }
++-        QString error;
++-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
++-                                    AgentStatus::Cleared, &error)) {
++-            flashMessage(error.isEmpty()
++-                             ? QStringLiteral("Could not clear the issue agent.")
++-                             : error,
++-                         true);
++-            return false;
+++        } else {
+++            QString error;
+++            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+++                                        AgentStatus::Cleared, &error)) {
+++                flashMessage(error.isEmpty()
+++                                 ? QStringLiteral("Deleted locally, but could not "
+++                                                  "clear the issue agent.")
+++                                 : error,
+++                             true);
+++            }
++         }
++     }
++ 
++@@ -29118,11 +29123,20 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
++             QStringLiteral("git"),
++             {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
++              QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
++-        setRepoDetailNotice(
++-            QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
++-            true);
++-        loadWorktreesPanel();
++-        return;
+++        // It may already be gone — e.g. an agent runner cleaned up its worktree
+++        // when its session was stopped/deleted. If the folder no longer exists,
+++        // treat removal as done and prune git's stale bookkeeping; only a
+++        // still-present worktree is a real failure.
+++        if (QDir(worktreePath).exists()) {
+++            setRepoDetailNotice(
+++                QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
+++                true);
+++            loadWorktreesPanel();
+++            return;
+++        }
+++        QProcess::execute(QStringLiteral("git"),
+++                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+++                           QStringLiteral("prune")});
++     }
++     // With the worktree gone the branch is no longer checked out anywhere, so it can
++     // be force-deleted. -D matches the "uncommitted changes will be lost" warning the
++@@ -29230,9 +29244,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
++         != QMessageBox::Yes)
++         return;
++ 
++-    // Delete the agent session(s) first — that stops any runner still holding the
++-    // worktree open. If one is mid-stop or we lack permission, bail (it flashed
++-    // why) before touching the worktree so nothing is half-deleted.
+++    // Delete the agent session(s) first — that stops (or abandons) any runner
+++    // still holding the worktree open so it's free to remove. A session is
+++    // always deletable now; only an unexpected filesystem failure bails here,
+++    // before touching the worktree, so nothing is half-deleted.
++     for (int id : std::as_const(agentIds)) {
++         if (!deleteStoredAgentSession(id)) {
++             reloadAgents();
+diff --git a/pulls/37/commits.mbox b/pulls/37/commits.mbox
+new file mode 100644
+index 00000000..715d1e69
+--- /dev/null
++++ b/pulls/37/commits.mbox
+@@ -0,0 +1,177 @@
++From 60ab7848ae79cdcf5479bc7d4690d9a07e278a5d Mon Sep 17 00:00:00 2001
++From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
++Date: Fri, 26 Jun 2026 20:02:43 -0400
++Subject: [PATCH] Make an agent session always deletable
++
++Deleting an agent session could fail in three ways: a runner that
++wouldn't exit within stop()'s 1.5s window forced a "delete it again
++once it exits" retry, and clearing the issue's agent assignment hard-
++failed deletion for non-hosts or on any write error.
++
++Now deletion always removes the local session: a runner that won't stop
++promptly is abandoned (killed, signals dropped so a late finish can't
++re-save the row, worktree cleaned, reset to idle for reuse), and the
++issue-event clear is best-effort with a warning instead of a bail.
++
++Also make removeWorktree tolerant of an already-removed worktree so the
++combined "delete worktree, branch & agent" action still deletes the
++branch after a runner has cleaned up its own worktree.
++
++Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
++---
++ qt_client/src/AgentRunner.cpp | 20 +++++++++++
++ qt_client/src/AgentRunner.h   |  5 +++
++ qt_client/src/MainWindow.cpp  | 63 ++++++++++++++++++++++-------------
++ 3 files changed, 64 insertions(+), 24 deletions(-)
++
++diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
++index fa4bf197..9d3cadfc 100644
++--- a/qt_client/src/AgentRunner.cpp
+++++ b/qt_client/src/AgentRunner.cpp
++@@ -313,6 +313,26 @@ void AgentRunner::stop()
++     complete(false, AgentStatus::Stopped, QStringLiteral("Stopped."));
++ }
++ 
+++void AgentRunner::abandon()
+++{
+++    // Forcefully forget the current session without finishing it: kill the
+++    // process now (no wait), disconnect it so a late finish can't re-save the
+++    // session the caller is about to delete, clean up the worktree, and reset to
+++    // idle so this pooled runner can be reused.
+++    if (m_noOutputTimer)
+++        m_noOutputTimer->stop();
+++    if (m_process) {
+++        m_process->disconnect(this);
+++        m_process->kill();
+++        m_process->deleteLater();
+++        m_process = nullptr;
+++    }
+++    cleanupWorktree();
+++    m_stopping = false;
+++    m_phase = Phase::Idle;
+++    m_busy = false;
+++}
+++
++ void AgentRunner::steer(const QString &prompt)
++ {
++     const QString trimmed = prompt.trimmed();
++diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
++index 6faca0b1..cb2fba78 100644
++--- a/qt_client/src/AgentRunner.h
+++++ b/qt_client/src/AgentRunner.h
++@@ -42,6 +42,11 @@ public:
++     void start(const AgentSession &session, const Issue &issue,
++                const QString &repoPath, const Config &config);
++     void stop();
+++    // Forget the current session without finishing it: kill the process now,
+++    // drop its signals so a late finish can't re-save a deleted session, clean
+++    // up the worktree and reset to idle. Used when a session must be deleted
+++    // even though its runner won't exit promptly.
+++    void abandon();
++     void steer(const QString &prompt);
++ 
++ signals:
++diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++index 2bb94197..93003969 100644
++--- a/qt_client/src/MainWindow.cpp
+++++ b/qt_client/src/MainWindow.cpp
++@@ -21353,35 +21353,40 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
++         return true; // already gone — nothing to delete
++ 
++     const AgentSession snapshot = *session;
+++    // A session can always be deleted. Stop a running runner, and if it won't
+++    // exit promptly, abandon it so a late finish can't re-save the row we're
+++    // about to remove. Either way we proceed to delete.
++     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
++         runner->stop();
++-        if (runner->busy()) {
++-            flashMessage("Stopping agent session. Delete it again once it exits.");
++-            return false;
++-        }
+++        if (runner->busy())
+++            runner->abandon();
++     }
++     m_agentQueue.removeAll(snapshot.id);
++ 
++     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
++     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
++-    // issue event to clear — skip straight to removing the session.
+++    // issue event to clear — skip straight to removing the session. Clearing the
+++    // issue's agent assignment is best-effort: if we can't write the issue (not
+++    // the host) or the update fails, warn but still remove the local session so
+++    // it never gets stuck undeletable.
++     if (repoIndex >= 0 && snapshot.issueNumber > 0) {
++         const RepositoryRecord repo = m_repositories.at(repoIndex);
++         IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
++                               m_userName);
++         if (!issueStore.canWrite()) {
++-            flashMessage("Only the host can delete an agent session from the issue.",
+++            flashMessage("Deleted locally; only the host can clear the agent on the "
+++                         "issue itself.",
++                          true);
++-            return false;
++-        }
++-        QString error;
++-        if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
++-                                    AgentStatus::Cleared, &error)) {
++-            flashMessage(error.isEmpty()
++-                             ? QStringLiteral("Could not clear the issue agent.")
++-                             : error,
++-                         true);
++-            return false;
+++        } else {
+++            QString error;
+++            if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+++                                        AgentStatus::Cleared, &error)) {
+++                flashMessage(error.isEmpty()
+++                                 ? QStringLiteral("Deleted locally, but could not "
+++                                                  "clear the issue agent.")
+++                                 : error,
+++                             true);
+++            }
++         }
++     }
++ 
++@@ -29118,11 +29123,20 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
++             QStringLiteral("git"),
++             {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
++              QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
++-        setRepoDetailNotice(
++-            QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
++-            true);
++-        loadWorktreesPanel();
++-        return;
+++        // It may already be gone — e.g. an agent runner cleaned up its worktree
+++        // when its session was stopped/deleted. If the folder no longer exists,
+++        // treat removal as done and prune git's stale bookkeeping; only a
+++        // still-present worktree is a real failure.
+++        if (QDir(worktreePath).exists()) {
+++            setRepoDetailNotice(
+++                QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
+++                true);
+++            loadWorktreesPanel();
+++            return;
+++        }
+++        QProcess::execute(QStringLiteral("git"),
+++                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+++                           QStringLiteral("prune")});
++     }
++     // With the worktree gone the branch is no longer checked out anywhere, so it can
++     // be force-deleted. -D matches the "uncommitted changes will be lost" warning the
++@@ -29230,9 +29244,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
++         != QMessageBox::Yes)
++         return;
++ 
++-    // Delete the agent session(s) first — that stops any runner still holding the
++-    // worktree open. If one is mid-stop or we lack permission, bail (it flashed
++-    // why) before touching the worktree so nothing is half-deleted.
+++    // Delete the agent session(s) first — that stops (or abandons) any runner
+++    // still holding the worktree open so it's free to remove. A session is
+++    // always deletable now; only an unexpected filesystem failure bails here,
+++    // before touching the worktree, so nothing is half-deleted.
++     for (int id : std::as_const(agentIds)) {
++         if (!deleteStoredAgentSession(id)) {
++             reloadAgents();
++-- 
++2.47.3
++
+diff --git a/pulls/37/pull.md b/pulls/37/pull.md
+new file mode 100644
+index 00000000..8676f1ac
+--- /dev/null
++++ b/pulls/37/pull.md
+@@ -0,0 +1,37 @@
++---
++schema: forkmesh-pull-v1
++number: 37
++title: Make an agent session always deletable
++base: main
++head: agent/adhoc-49-make-it-so-that-an-agent-session-can-always-be-d
++status: open
++ts: 1782518821616
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: dev-2f782c1c
++sig: 52QX2VtsiY-6mdQaTc5Z1nwoU01xTERBA9j0iL07qR1aagHyvTPrxspe_VN_Je7tadyv0Vk0gQrFlbKciEm9Ag
++---
++
++Deleting an agent session could get stuck. This makes it always work.
++
++## What blocked deletion before
++- A runner that wouldn't exit within `stop()`'s 1.5s window forced a
++  "Stopping agent session. Delete it again once it exits." retry.
++- Clearing the issue's agent assignment hard-failed deletion for
++  non-hosts ("Only the host can delete...") or on any write error.
++
++## Changes
++- `AgentRunner::abandon()` forcibly forgets a session: kills the process
++  now, drops its signals so a late `finished` can't re-save the row being
++  deleted, cleans up the worktree, and resets to idle so the pooled runner
++  is reusable.
++- `deleteStoredAgentSession()` now stops a running runner and, if it won't
++  exit promptly, abandons it instead of bailing. Clearing the issue event
++  is best-effort: a non-host or a failed write warns but still removes the
++  local session.
++- `removeWorktree()` tolerates an already-removed worktree (e.g. a runner
++  cleaned up its own on stop) so the combined "delete worktree, branch &
++  agent" action still deletes the branch.
++
++## Verify
++- forkmesh-tests and forkmesh-window-tests pass.
++
+-- 
+2.47.3
+

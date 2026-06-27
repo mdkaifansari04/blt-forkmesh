@@ -5,7 +5,7 @@ title: make it so we can restart Forkmesh and the agents keep running
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 39
 progress: 0
 assignees: []
 createdAt: 1782360915806

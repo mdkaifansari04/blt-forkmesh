@@ -357,6 +357,7 @@
                     d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"
                   ></path></svg
                 >Discussions
+                <span id="tab-discussions-count" class="repo-tab-count"></span>
               </button>
               <button
                 id="tab-mirrors"
@@ -461,7 +462,40 @@
                     <code>issues/</code> folder.
                   </p>
                 </div>
-                <span id="issues-meta" class="file-meta"></span>
+                <div class="panel-header-aside">
+                  <div
+                    class="issue-filter"
+                    role="group"
+                    aria-label="Filter issues by state"
+                  >
+                    <button
+                      id="issue-filter-open"
+                      class="is-active"
+                      type="button"
+                      data-state="open"
+                      aria-pressed="true"
+                    >
+                      Open
+                    </button>
+                    <button
+                      id="issue-filter-closed"
+                      type="button"
+                      data-state="closed"
+                      aria-pressed="false"
+                    >
+                      Closed
+                    </button>
+                    <button
+                      id="issue-filter-all"
+                      type="button"
+                      data-state="all"
+                      aria-pressed="false"
+                    >
+                      All
+                    </button>
+                  </div>
+                  <span id="issues-meta" class="file-meta"></span>
+                </div>
               </div>
               <div
                 id="issue-list"
@@ -501,18 +535,31 @@
               </div>
             </section>
 
-            <section id="discussions" class="panel" hidden>
-              <div class="empty-state">
-                <svg viewBox="0 0 24 24">
-                  <path
-                    d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"
-                  ></path>
-                </svg>
-                <h2>Repo discussions use encrypted rooms</h2>
-                <p>
-                  Use the public chat panel on the home page today. Repo-scoped
-                  room UI can be wired here next.
-                </p>
+            <section
+              id="discussions"
+              class="panel"
+              hidden
+              aria-labelledby="discussions-title"
+            >
+              <div class="panel-header">
+                <div>
+                  <h2 id="discussions-title">Discussions</h2>
+                  <p>
+                    Durable signed discussion history loaded from
+                    <code>discussions/</code> when present.
+                  </p>
+                </div>
+                <span id="discussions-meta" class="file-meta"></span>
+              </div>
+              <div
+                id="discussion-list"
+                class="issue-list"
+                role="list"
+                aria-live="polite"
+              >
+                <div class="file-empty">
+                  Open the tab to scan for discussions.
+                </div>
               </div>
             </section>
 

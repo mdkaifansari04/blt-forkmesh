@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 236
 title: Branch port/repo-mirrors-health — needs merge into main
-status: open
+status: closed
 labels: [infra]
 milestone: 
-priority: 22
+priority: 11
 progress: 0
 assignees: []
 createdAt: 1782356524859

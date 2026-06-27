@@ -5,7 +5,7 @@ title: make the branches page load better with the table expanded to see everyth
 status: open
 labels: []
 milestone: 
-priority: 27
+priority: 87
 progress: 0
 assignees: []
 createdAt: 1782349321778

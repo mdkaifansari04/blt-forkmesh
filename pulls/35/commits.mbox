@@ -1,0 +1,258 @@
+From c3a8a644be22b9a60608555a39eca9294fb9210e Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 18:28:28 -0400
+Subject: [PATCH] Agents tab: prompt-led session title, Enter-to-send, Claude
+ model picker
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Issue #36 (ad-hoc): three composer/session-view improvements.
+
+- Session title now leads with the prompt. Issue-less / ad-hoc runs showed
+  a meaningless "Claude Code · pull #0"; they now show the prompt the user
+  typed (the session's issueTitle), appending the PR number once one exists.
+- Enter in the new-agent composer starts the agent; Enter in the per-session
+  steering composer sends the message. Shift+Enter (or any modifier) keeps
+  the default newline so multi-line prompts still work.
+- A Claude model picker sits next to the agent picker in the new-agent
+  composer. The options are CLI --model aliases (opus/sonnet/haiku) so they
+  track the latest release of each tier; the choice persists and is passed
+  through ClaudeStreamSession to the claude CLI. It's disabled for the
+  API-key providers, which carry their own model settings.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/ClaudeStreamSession.cpp |   8 ++-
+ qt_client/src/ClaudeStreamSession.h   |   7 +-
+ qt_client/src/MainWindow.cpp          | 100 ++++++++++++++++++++++----
+ qt_client/src/MainWindow.h            |   1 +
+ 4 files changed, 101 insertions(+), 15 deletions(-)
+
+diff --git a/qt_client/src/ClaudeStreamSession.cpp b/qt_client/src/ClaudeStreamSession.cpp
+index cf929136..139ec43a 100644
+--- a/qt_client/src/ClaudeStreamSession.cpp
++++ b/qt_client/src/ClaudeStreamSession.cpp
+@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
+ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
+ 
+ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+-                                const QString &initialPrompt, bool skipPermissions)
++                                const QString &initialPrompt, bool skipPermissions,
++                                const QString &model)
+ {
+     stop();
+     m_buf.clear();
+@@ -43,6 +44,11 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+         "--verbose --include-partial-messages");
+     if (skipPermissions)
+         cmd += QStringLiteral(" --dangerously-skip-permissions");
++    // Honor an explicit model pick (the new-agent composer's model selector). The
++    // value comes from a fixed set of aliases, but single-quote it anyway so the
++    // shell never reinterprets it.
++    if (const QString m = model.trimmed(); !m.isEmpty())
++        cmd += QStringLiteral(" --model '") + m + QLatin1Char('\'');
+     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
+ 
+     if (!initialPrompt.isEmpty())
+diff --git a/qt_client/src/ClaudeStreamSession.h b/qt_client/src/ClaudeStreamSession.h
+index 50e54d5e..b94f2a55 100644
+--- a/qt_client/src/ClaudeStreamSession.h
++++ b/qt_client/src/ClaudeStreamSession.h
+@@ -21,9 +21,12 @@ public:
+ 
+     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
+     // '=' unsets that variable in the child (matches TerminalWidget semantics).
+-    // The initial prompt is sent as the first user turn.
++    // The initial prompt is sent as the first user turn. `model`, when non-empty,
++    // is passed straight through to the CLI's `--model` flag (an alias such as
++    // "opus"/"sonnet"/"haiku", or a full model id); empty keeps the CLI default.
+     void start(const QString &cwd, const QStringList &extraEnv,
+-               const QString &initialPrompt, bool skipPermissions = true);
++               const QString &initialPrompt, bool skipPermissions = true,
++               const QString &model = QString());
+     // Send another user turn to a running session (steering).
+     void sendUserText(const QString &text);
+     void stop();
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 0d0ecab4..1f241bc8 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -979,6 +979,10 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
+ // the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
+ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
+ const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
++// Which model the "Claude Code" agent runs (passed to the CLI's --model flag as
++// an alias like "opus"/"sonnet"/"haiku"). Empty => the CLI's configured default.
++// Chosen via the new-agent composer's model picker.
++const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
+ const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
+ const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
+ // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
+@@ -19353,6 +19357,8 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentNewPromptEdit->setFrameShape(QFrame::NoFrame);
+     m_agentNewPromptEdit->setStyleSheet(QStringLiteral(
+         "#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
++    // Enter starts the agent; Shift+Enter inserts a newline (issue #36).
++    m_agentNewPromptEdit->installEventFilter(this);
+     // Agent picker: the same three providers offered when assigning an issue.
+     m_agentNewProvider = new QComboBox;
+     m_agentNewProvider->setObjectName("agentNewProvider");
+@@ -19365,6 +19371,40 @@ QWidget *MainWindow::buildAgentsTab()
+                                 QStringLiteral("claude-code"));
+     selectDefaultAgentProvider(m_agentNewProvider);
+     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
++    // Model picker sitting right next to the agent picker: choose which Claude
++    // model the "Claude Code" agent runs (issue #36). The values are CLI --model
++    // aliases, so they track the latest release of each tier without hardcoding a
++    // dated id. Only meaningful for Claude Code, so it's disabled for the
++    // API-key providers (which carry their own model settings).
++    m_agentNewModel = new QComboBox;
++    m_agentNewModel->setObjectName("agentNewModel");
++    m_agentNewModel->setCursor(Qt::PointingHandCursor);
++    m_agentNewModel->addItem(QStringLiteral("Default model"), QString());
++    m_agentNewModel->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
++    m_agentNewModel->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
++    m_agentNewModel->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
++    m_agentNewModel->setToolTip("Which Claude model the Claude Code agent runs");
++    if (const int saved = m_agentNewModel->findData(
++            QSettings().value(kClaudeCodeModelSetting).toString().trimmed());
++        saved >= 0)
++        m_agentNewModel->setCurrentIndex(saved);
++    connect(m_agentNewModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [this](int) {
++                QSettings().setValue(kClaudeCodeModelSetting,
++                                     m_agentNewModel->currentData().toString());
++            });
++    auto syncModelPickerEnabled = [this] {
++        const bool claudeCode =
++            m_agentNewProvider->currentData().toString() == QLatin1String("claude-code");
++        m_agentNewModel->setEnabled(claudeCode);
++        m_agentNewModel->setToolTip(
++            claudeCode ? QStringLiteral("Which Claude model the Claude Code agent runs")
++                       : QStringLiteral("Model selection applies to the Claude Code "
++                                        "agent (set the API agents' model in Settings)"));
++    };
++    syncModelPickerEnabled();
++    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [syncModelPickerEnabled](int) { syncModelPickerEnabled(); });
+     m_agentStartButton = new QPushButton("Start agent");
+     m_agentStartButton->setObjectName("primaryButton");
+     m_agentStartButton->setCursor(Qt::PointingHandCursor);
+@@ -19386,6 +19426,7 @@ QWidget *MainWindow::buildAgentsTab()
+     newAgentBtns->setContentsMargins(0, 0, 0, 0);
+     newAgentBtns->setSpacing(6);
+     newAgentBtns->addWidget(m_agentNewProvider);
++    newAgentBtns->addWidget(m_agentNewModel);
+     newAgentBtns->addStretch(1);
+     newAgentBtns->addWidget(m_agentStartButton);
+     newAgentCol->addLayout(newAgentBtns);
+@@ -19663,6 +19704,8 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentPromptEdit->setObjectName("agentComposerEdit");
+     m_agentPromptEdit->setStyleSheet(
+         QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
++    // Enter sends the message; Shift+Enter inserts a newline (issue #36).
++    m_agentPromptEdit->installEventFilter(this);
+     m_agentSendPromptButton = new QPushButton("Send");
+     m_agentSendPromptButton->setObjectName("primaryButton");
+     m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
+@@ -20752,16 +20795,29 @@ void MainWindow::showAgentSession(int sessionId)
+                                              : session->branchName);
+             m_agentTitle->setText(QStringLiteral("External Claude Code · %1").arg(label));
+         } else {
+-            m_agentTitle->setText(
+-                session->issueNumber > 0
+-                    ? QStringLiteral("#%1 · %2")
+-                          .arg(session->issueNumber)
+-                          .arg(session->issueTitle.isEmpty()
+-                                   ? agentProviderName(session->provider)
+-                                   : session->issueTitle)
+-                    : QStringLiteral("%1 · pull #%2")
+-                          .arg(agentProviderName(session->provider))
+-                          .arg(session->prNumber));
++            // Lead with what this session is actually about. Issue-assigned runs
++            // show "#N · <issue title>". Ad-hoc / issue-less runs (issue #36) lead
++            // with the prompt the user typed (stored as issueTitle) rather than a
++            // meaningless "pull #0"; the PR number, once one exists, is appended.
++            const QString providerName = agentProviderName(session->provider);
++            QString title;
++            if (session->issueNumber > 0) {
++                title = QStringLiteral("#%1 · %2")
++                            .arg(session->issueNumber)
++                            .arg(session->issueTitle.isEmpty() ? providerName
++                                                               : session->issueTitle);
++            } else if (!session->issueTitle.isEmpty()) {
++                title = QStringLiteral("%1 · %2").arg(providerName, session->issueTitle);
++                if (session->prNumber > 0)
++                    title += QStringLiteral(" · pull #%1").arg(session->prNumber);
++            } else if (session->prNumber > 0) {
++                title = QStringLiteral("%1 · pull #%2")
++                            .arg(providerName)
++                            .arg(session->prNumber);
++            } else {
++                title = providerName;
++            }
++            m_agentTitle->setText(title);
+         }
+     }
+     // Issue #291: a "· merged into <base>" note appended to the meta line once
+@@ -21738,7 +21794,11 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+     // because the worktree checkout below finishes asynchronously; the IDE bridge
+     // and env are set up here since they depend on the final workdir.
+     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
+-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
++    // The model picked in the new-agent composer (empty => CLI default). Applies
++    // to every Claude Code run, ad-hoc or issue-assigned.
++    const QString model =
++        QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
++    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
+         ClaudeStreamSession *live = m_streamSessions.value(sid);
+         if (!live)
+             return; // session was stopped or deleted while the worktree was building
+@@ -21753,7 +21813,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
+                                     "on branch %1 in %2\n")
+                          .arg(branchName, workdir));
+-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
++        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
+     };
+ 
+     // Give the agent its own worktree + branch so concurrent agents never share a
+@@ -34002,6 +34062,22 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+             }
+         }
+     }
++    // Agent composers (issue #36): plain Enter sends/starts, Shift+Enter (or any
++    // other modifier) keeps the default newline so multi-line prompts still work.
++    if ((obj == m_agentNewPromptEdit || obj == m_agentPromptEdit) &&
++        event->type() == QEvent::KeyPress) {
++        auto *ke = static_cast<QKeyEvent *>(event);
++        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
++            (ke->modifiers() &
++             (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier |
++              Qt::MetaModifier)) == Qt::NoModifier) {
++            if (obj == m_agentNewPromptEdit)
++                startAdHocAgent();
++            else if (m_agentSendPromptButton)
++                m_agentSendPromptButton->click();
++            return true;
++        }
++    }
+     // Pasting an image into the chat composer shares it as an attachment. Only
+     // consume the event when we actually sent an image; otherwise let the line
+     // edit handle a normal text paste.
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index f519e377..0b7802f5 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -2179,6 +2179,7 @@ private:
+     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
+     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
+     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
++    QComboBox *m_agentNewModel = nullptr;    // Claude Code model picker (issue #36)
+     QPushButton *m_agentStartButton = nullptr;
+     void startAdHocAgent();
+     QPushButton *m_agentStopButton = nullptr;
+-- 
+2.47.3
+

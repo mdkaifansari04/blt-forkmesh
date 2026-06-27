@@ -38,12 +38,15 @@ set(FORKMESH_APP_SOURCES
     src/IssueStore.cpp
     src/IssueBurnup.h
     src/IssueBurnup.cpp
+    src/DiscussionStore.h
+    src/DiscussionStore.cpp
     src/PullStore.h
     src/PullStore.cpp
     src/PullReviewModel.h
     src/PullReviewModel.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
+    src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
     src/ActionStore.h
@@ -67,9 +70,19 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeStreamSession.cpp
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
+    src/ClaudeSessionScan.h
+    src/ClaudeSessionScan.cpp
+    src/ScrollJumpButtons.h
+    src/ScrollJumpButtons.cpp
+    src/StallWatchdog.h
+    src/StallWatchdog.cpp
+    src/SystemStats.h
+    src/SystemStats.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
+    src/HeadlessConsole.h
+    src/HeadlessConsole.cpp
 )
 
 qt_add_executable(forkmesh
@@ -82,6 +95,9 @@ target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSS
 # libutil (macOS provides it in libSystem, so no extra link there).
 if(UNIX AND NOT APPLE)
     target_link_libraries(forkmesh PRIVATE util)
+    # Export symbols so the StallWatchdog's backtrace_symbols() resolves function
+    # names (not just addresses) when it samples a frozen UI thread.
+    target_link_options(forkmesh PRIVATE -rdynamic)
 endif()
 
 if(APPLE)
@@ -112,12 +128,17 @@ if(FORKMESH_BUILD_TESTS)
         src/IssueStore.cpp
         src/IssueBurnup.h
         src/IssueBurnup.cpp
+        src/DiscussionStore.h
+        src/DiscussionStore.cpp
         src/PullStore.h
         src/PullStore.cpp
         src/PullReviewModel.h
         src/PullReviewModel.cpp
         src/CommitCommentStore.h
         src/CommitCommentStore.cpp
+        src/AgentStore.h
+        src/AgentStore.cpp
+        src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
