@@ -204,6 +204,11 @@ constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit
 // the Worktrees tab (issue #265). Shared by the link builder and its handler.
 const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 
+// "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
+// has a pull request, its "PR #N" reference links to that PR's tab. Shared by
+// the link builder and its linkActivated handler.
+const QLatin1String kPullLinkScheme("forkmesh-pull:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -19716,6 +19721,8 @@ QWidget *MainWindow::buildAgentsTab()
         if (href.startsWith(kWorktreeLinkScheme))
             switchToWorktree(QUrl::fromPercentEncoding(
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
+        else if (href.startsWith(kPullLinkScheme))
+            switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
     m_agentUsage = new QLabel;
     m_agentUsage->setObjectName("statusLine");
@@ -21051,6 +21058,19 @@ static QString worktreeLinkHtml(const QString &branch)
         .arg(href, branch.toHtmlEscaped());
 }
 
+// "PR #N open" for the agent-detail meta line, as a link to that pull request's
+// tab (forkmesh-pull:N, handled by m_agentMeta's linkActivated). Lets a session
+// with a PR jump straight to it from the detail header.
+static QString pullLinkHtml(int prNumber)
+{
+    const QString href = kPullLinkScheme + QString::number(prNumber);
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">"
+               "PR #%2 open</a>")
+        .arg(href)
+        .arg(prNumber);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -21124,13 +21144,16 @@ void MainWindow::showAgentSession(int sessionId)
         meta += mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
-        // PR status, spelled out so it's always visible.
-        QString pr = session->prNumber > 0
-                         ? QStringLiteral("PR #%1 open").arg(session->prNumber)
-                         : (session->createPr ? QStringLiteral("PR opens on finish")
-                                              : QStringLiteral("no PR"));
-        // Rich text so the branch name is a link to its Worktrees-tab row
-        // (issue #265); every other part is HTML-escaped to stay literal.
+        // PR status, spelled out so it's always visible. When a PR exists it
+        // links straight to that pull request's tab from the header (adhoc #53).
+        QString pr =
+            session->prNumber > 0
+                ? pullLinkHtml(session->prNumber)
+                : (session->createPr ? QStringLiteral("PR opens on finish")
+                                     : QStringLiteral("no PR"))
+                      .toHtmlEscaped();
+        // Rich text so the branch name and PR are links (issues #265, adhoc #53);
+        // every other part is HTML-escaped to stay literal.
         const QString sep = QStringLiteral(" · ");
         QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
                        QStringLiteral("%1/%2")
@@ -21140,7 +21163,7 @@ void MainWindow::showAgentSession(int sessionId)
                        (session->branchName.isEmpty()
                             ? QStringLiteral("(no branch)")
                             : worktreeLinkHtml(session->branchName)) +
-                       sep + pr.toHtmlEscaped();
+                       sep + pr;
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
