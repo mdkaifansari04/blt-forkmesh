@@ -2418,7 +2418,10 @@ private:
     void ensureStreamEventsLoaded(int sessionId);
     // Stop a live Claude Code stream session (the Stop button). stop() emits no
     // `finished`, so transition the session to Stopped and refresh here.
-    void stopStreamSession(int sessionId);
+    // refreshUi=false skips the agent-table reload + transcript re-render for
+    // callers that are about to delete the session and reload anyway (delete
+    // paths), so the heavy refresh doesn't run twice and stall the UI.
+    void stopStreamSession(int sessionId, bool refreshUi = true);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
     // Remove the isolated worktree a stream session ran in (if any) and prune the
