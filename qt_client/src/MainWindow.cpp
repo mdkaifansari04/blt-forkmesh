@@ -209,6 +209,11 @@ const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 // the link builder and its linkActivated handler.
 const QLatin1String kPullLinkScheme("forkmesh-pull:");
 
+// "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
+// session produced a pull request, the header links back to that session on the
+// Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
+const QLatin1String kAgentLinkScheme("forkmesh-agent:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -372,6 +377,17 @@ public:
         update();
     }
 
+    // The per-session token/cost detail that used to live on the agent detail
+    // page (issue #84): shown in the hover tooltip below the 5h/weekly figures.
+    // Pass an empty string to drop it (e.g. when no session is selected).
+    void setStats(const QString &stats)
+    {
+        if (m_stats == stats)
+            return;
+        m_stats = stats;
+        refreshTooltip();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -427,12 +443,16 @@ private:
             return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
                          : QStringLiteral("%1%").arg(v);
         };
-        setToolTip(QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
-                       .arg(fmt(m_fiveHour), fmt(m_weekly)));
+        QString tip = QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
+                          .arg(fmt(m_fiveHour), fmt(m_weekly));
+        if (!m_stats.isEmpty())
+            tip += QStringLiteral("\n\n") + m_stats;
+        setToolTip(tip);
     }
 
     int m_fiveHour = -1;
     int m_weekly = -1;
+    QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -501,6 +521,66 @@ void enableHoverRowHighlight(QAbstractItemView *view)
     if (view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
+
+// Outlines the SELECTED row in green with a transparent fill, instead of the
+// solid green selection band. Each cell paints its own slice: top + bottom
+// edges always, plus the left/right end caps on the first/last *visible* column
+// (visual order, so it follows reordered headers). One free helper so the
+// row-wide delegate and the per-column scanner delegate draw an identical
+// outline and the seam between them is invisible.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index)
+{
+    if (!(option.state & QStyle::State_Selected))
+        return;
+    bool drawLeft = index.column() == 0;
+    bool drawRight = true;
+    if (const auto *table = qobject_cast<const QTableView *>(option.widget)) {
+        QHeaderView *header = table->horizontalHeader();
+        int first = -1, last = -1;
+        for (int v = 0; v < header->count(); ++v) {
+            if (header->isSectionHidden(header->logicalIndex(v)))
+                continue;
+            if (first < 0)
+                first = v;
+            last = v;
+        }
+        const int visual = header->visualIndex(index.column());
+        drawLeft = (visual == first);
+        drawRight = (visual == last);
+    }
+    const QRect r = option.rect;
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setPen(QPen(QColor(46, 160, 67), 1)); // #2ea043, the brand green
+    painter->drawLine(r.topLeft(), r.topRight());
+    painter->drawLine(QPoint(r.left(), r.bottom()), QPoint(r.right(), r.bottom()));
+    if (drawLeft)
+        painter->drawLine(r.topLeft(), QPoint(r.left(), r.bottom()));
+    if (drawRight)
+        painter->drawLine(QPoint(r.right(), r.top()), QPoint(r.right(), r.bottom()));
+    painter->restore();
+}
+
+// HoverRowDelegate variant that renders the selected row as a transparent band
+// inside a green outline rather than a solid green fill. The selection flag is
+// stripped before the base paint so neither the stylesheet nor the style fills
+// the row; paintRowSelectionBorder() then draws the outline on top.
+class SelectionBorderRowDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        HoverRowDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
+    }
+};
 
 // Makes a draggable column's divider behave like dragging a boundary/margin: the
 // width it gains (or loses) is taken from (or handed to) its immediate right-hand
@@ -6720,7 +6800,12 @@ void MainWindow::startDiagnostics()
         const QString logPath =
             QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
         m_stallLogPath = logPath;
-        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath);
+        // Recorded with each stall so a report sent to an agent identifies the
+        // exact build and where its source lives (FORKMESH_SOURCE_DIR is the
+        // build-time qt_client path).
+        const QString buildInfo =
+            QStringLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
+        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath, buildInfo);
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
@@ -7090,10 +7175,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
     // Hard cap on the pill's width so a long toast can never widen the window; the
-    // text itself is elided to one line in flashMessage. Hovering an elided toast
-    // opens a scrollable modal with the full message (see eventFilter).
+    // text itself is elided to one line in flashMessage. A long message reveals its
+    // full text inline via the Expand button beside the toast (see renderTopMessage)
+    // rather than popping up a modal.
     m_topMessage->setMaximumWidth(620);
-    m_topMessage->installEventFilter(this);
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -14672,6 +14757,13 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
     m_pullMeta->setWordWrap(true);
+    m_pullMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                        Qt::LinksAccessibleByMouse);
+    // The "agent" reference (adhoc #78) jumps to the producing session's detail.
+    connect(m_pullMeta, &QLabel::linkActivated, this, [this](const QString &href) {
+        if (href.startsWith(kAgentLinkScheme))
+            switchToAgentsTab(href.mid(kAgentLinkScheme.size()).toInt());
+    });
     // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
     // it applies cleanly (or which files conflict) before they hit Merge.
     m_pullMergeStatus = new QLabel;
@@ -15103,6 +15195,12 @@ PullStore MainWindow::pullStoreForCurrentRepo() const
     return PullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
 }
 
+QString MainWindow::pullPatchFingerprint(const QString &patch)
+{
+    return QString::number(patch.size()) + QLatin1Char(':') +
+           QString::number(qHash(patch));
+}
+
 void MainWindow::reloadPulls()
 {
     if (!m_pullTable)
@@ -15133,18 +15231,19 @@ void MainWindow::reloadPulls()
             if (pr.status != QLatin1String("open"))
                 continue;
             openNumbers.insert(pr.number);
-            const QString fingerprint = QString::number(pr.patch.size()) +
-                                        QLatin1Char(':') +
-                                        QString::number(qHash(pr.patch));
+            const QString fingerprint = pullPatchFingerprint(pr.patch);
             const auto cached = m_pullConflictCache.constFind(pr.number);
             bool conflict;
             if (cached != m_pullConflictCache.constEnd() &&
-                cached->first == fingerprint) {
-                conflict = cached->second;
+                cached->fingerprint == fingerprint) {
+                conflict = cached->conflict;
             } else {
                 bool clean = false;
-                conflict = store.checkMergeable(pr.number, &clean, nullptr) && !clean;
-                m_pullConflictCache.insert(pr.number, qMakePair(fingerprint, conflict));
+                QStringList conflictFiles;
+                conflict =
+                    store.checkMergeable(pr.number, &clean, &conflictFiles) && !clean;
+                m_pullConflictCache.insert(
+                    pr.number, {fingerprint, conflict, conflictFiles});
             }
             if (conflict)
                 m_pullConflictByNumber.insert(pr.number, true);
@@ -15417,11 +15516,19 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(m_pullMeta->text() +
                             QString::fromUtf8(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
-    // If an agent task produced this PR, surface its estimated cost.
-    if (const AgentSession *agent = agentSessionForPull(found->number))
+    // If an agent task produced this PR, link the header back to that session on
+    // the Agents tab (adhoc #78) and surface its estimated cost.
+    if (const AgentSession *agent = agentSessionForPull(found->number)) {
+        const QString href = kAgentLinkScheme + QString::number(agent->id);
+        const QString link =
+            QStringLiteral("<a href=\"%1\" style=\"color:#58a6ff;"
+                           "text-decoration:none\">agent</a>")
+                .arg(href);
         m_pullMeta->setText(
             m_pullMeta->text() +
-            QString::fromUtf8(" \xC2\xB7 agent cost ~%1").arg(agentCostText(agent->costUsd)));
+            QString::fromUtf8(" \xC2\xB7 %1 cost ~%2")
+                .arg(link, agentCostText(agent->costUsd)));
+    }
     // The description is shown as the Conversation's opening card (renderPullThread),
     // so it is not repeated in the header.
 
@@ -16602,25 +16709,38 @@ void MainWindow::updatePullActionState()
     bool closed = false;
     bool merged = false;
     QString head;
+    QString patch;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
             closed = pr.status == "closed";
             merged = pr.status == "merged";
             head   = pr.head;
+            patch  = pr.patch;
         }
     }
     const bool mergeable = writable && have && open;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
-    // Dry-run the patch so the reviewer sees conflicts before merging.
+    // Dry-run the patch so the reviewer sees conflicts before merging. reloadPulls()
+    // already ran this apply for every open PR and cached the result, so reuse the
+    // cached entry for the current PR instead of re-spawning `git apply --check`
+    // here (that synchronous re-check blocked the UI for ~1.6s on every selection).
+    // Fall back to a live check only when there's no matching cache entry.
     bool mergeClean = true;
     QStringList conflictFiles;
     if (mergeable) {
-        bool clean = false;
-        if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
-            mergeClean = clean;
+        const auto cached = m_pullConflictCache.constFind(m_currentPullNumber);
+        if (cached != m_pullConflictCache.constEnd() &&
+            cached->fingerprint == pullPatchFingerprint(patch)) {
+            mergeClean = !cached->conflict;
+            conflictFiles = cached->conflictFiles;
+        } else {
+            bool clean = false;
+            if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
+                mergeClean = clean;
+        }
     }
     if (m_pullMergeStatus) {
         if (!mergeable) {
@@ -19358,13 +19478,17 @@ public:
     void paint(QPainter *p, const QStyleOptionViewItem &opt,
                const QModelIndex &idx) const override
     {
-        // Let the style draw the row background (selection/hover) but no text.
+        // Let the style draw the row background (hover) but no text. The solid
+        // green selection fill is suppressed so the row reads as a green outline
+        // (drawn below) over a transparent band, matching the rest of the row.
         QStyleOptionViewItem o(opt);
         initStyleOption(&o, idx);
         o.text.clear();
+        o.state &= ~QStyle::State_Selected;
         const QWidget *w = o.widget;
         QStyle *style = w ? w->style() : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
+        paintRowSelectionBorder(p, opt, idx);
 
         const int sessionId = idx.data(Qt::UserRole).toInt();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -19605,7 +19729,10 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 9);
     m_agentTable->setObjectName("issueTable");
-    enableHoverRowHighlight(m_agentTable);
+    // Selected agent rows get a green outline with a transparent fill (rather
+    // than the solid green band the other issueTable lists use); the per-column
+    // Activity delegate below draws the matching outline slice for its cell.
+    m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
@@ -19614,6 +19741,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_agentTable->setShowGrid(false);
     m_agentTable->setWordWrap(false);
+    // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
+    // carry a full-sentence, prompt-derived title that overruns the Issue column,
+    // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
+    // the cell edge instead — the column is user-widenable to read a title in full.
+    m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
@@ -19735,6 +19867,18 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::onExternalClaudeTick);
     m_externalClaudeTimer->start();
     listLayout->addLayout(usageText);
+
+    // Free-text filter over the session list (issue #82): type to narrow the
+    // table to sessions whose issue number/title, agent, status or PR match.
+    m_agentSearch = new QLineEdit;
+    m_agentSearch->setObjectName("issueSearch");
+    m_agentSearch->setPlaceholderText(
+        QString::fromUtf8("Search agents by issue, agent, status or PR\xE2\x80\xA6"));
+    m_agentSearch->setClearButtonEnabled(true);
+    connect(m_agentSearch, &QLineEdit::textChanged, this,
+            [this] { refreshAgentTable(); });
+    listLayout->addWidget(m_agentSearch);
+
     listLayout->addWidget(m_agentTable, 1);
 
     // Bottom-left composer (issue #273): type a prompt and start a brand-new
@@ -19825,11 +19969,6 @@ QWidget *MainWindow::buildAgentsTab()
         else if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
-    m_agentUsage = new QLabel;
-    m_agentUsage->setObjectName("statusLine");
-    m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentUsage->setWordWrap(true);
-
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
@@ -19943,15 +20082,9 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
-    connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
-            [this](qint64 tokens, double cost) {
-                if (m_agentStatsLabel) {
-                    m_agentStatsLabel->setText(
-                        QStringLiteral("⛁ %1 tokens · $%2")
-                            .arg(QLocale().toString(tokens)).arg(cost, 0, 'f', 4));
-                    m_agentStatsLabel->show();
-                }
-            });
+    // Issue #84: the live token/cost counter (statsChanged) is now folded into
+    // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
+    // the same totals plus the budget breakdown, so there's no separate label.
 
     m_agentOutputStack = new QStackedWidget;
     m_agentOutputStack->addWidget(m_agentLog);        // page 0: raw / piped log
@@ -20044,31 +20177,10 @@ QWidget *MainWindow::buildAgentsTab()
     outputContainer->setLayout(outputRow);
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // 5-hour + weekly usage graphs, fed live by rate_limit events and re-polled
-    // every minute from the OAuth usage endpoint (issue #290), plus a live
-    // token/cost counter.
-    auto makeUsageBar = [](const QString &name) {
-        auto *b = new QProgressBar;
-        b->setObjectName(name);
-        b->setRange(0, 100);
-        b->setTextVisible(true);
-        b->setMaximumHeight(16);
-        b->hide();
-        return b;
-    };
-    m_agentUsage5hBar = makeUsageBar(QStringLiteral("agentUsage5hBar"));
-    m_agentUsageBar = makeUsageBar(QStringLiteral("agentUsageBar"));
-    m_agentStatsLabel = new QLabel;
-    m_agentStatsLabel->setObjectName("agentStatsLabel");
-    m_agentStatsLabel->hide();
-    auto *usageRow = new QHBoxLayout;
-    usageRow->setContentsMargins(0, 0, 0, 0);
-    usageRow->setSpacing(10);
-    usageRow->addWidget(m_agentUsage5hBar, 1);
-    usageRow->addWidget(m_agentUsageBar, 1);
-    usageRow->addWidget(m_agentStatsLabel);
-    auto *usageRowWidget = new QWidget;
-    usageRowWidget->setLayout(usageRow);
+    // Issue #84: the 5-hour/weekly usage gauges and the live token/cost counter
+    // no longer live here — they were moved into the top-bar mini chart and its
+    // hover tooltip so the detail page stays focused on the transcript. The OAuth
+    // poll (issue #290) feeds that chart directly via applyClaudeUsage().
 
     // Refresh spend + the edited-files list once an hour while the app runs.
     m_agentHourlyTimer = new QTimer(this);
@@ -20122,6 +20234,10 @@ QWidget *MainWindow::buildAgentsTab()
                              {QStringLiteral("text"), prompt}};
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
+            // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
+            // it now to keep the top-bar chart + hover stats current rather than
+            // waiting for the next minute tick.
+            refreshClaudeCodeUsage();
             // Replying clears the "Waiting" state — the agent is working again.
             if (AgentSession *as = findAgentSession(sid);
                 as && as->status == AgentStatus::Waiting) {
@@ -20207,8 +20323,6 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
-    detailLayout->addWidget(m_agentUsage);
-    detailLayout->addWidget(usageRowWidget);
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentOutputToggle);
     detailLayout->addWidget(outputContainer, 1);
@@ -20225,7 +20339,8 @@ QWidget *MainWindow::buildAgentsTab()
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({430, 680});
+    // Equal split so the divider sits in the middle of the screen (issue #85).
+    splitter->setSizes({600, 600});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -20620,15 +20735,9 @@ void MainWindow::updateAgentTotalSpend()
 void MainWindow::applyClaudeUsage(bool weekly, int percent)
 {
     const int pct = qBound(0, percent, 100);
-    QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
-    if (bar) {
-        bar->setValue(pct);
-        bar->setFormat((weekly ? QStringLiteral("Weekly: %1%")
-                               : QStringLiteral("5h: %1%")).arg(pct));
-        bar->show();
-    }
-    // Mirror the same figure into the top-bar mini chart (issue #266) and cache
-    // it so it survives a restart and renders on the very first frame.
+    // Feed the figure into the top-bar mini chart (issue #266) and cache it so it
+    // survives a restart and renders on the very first frame. The detail-page
+    // gauges were retired in issue #84 in favour of this single chart.
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
     QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
@@ -20871,12 +20980,28 @@ void MainWindow::refreshAgentTable()
     }
 
     const int keep = m_selectedAgentSessionId;
+    // Free-text filter (issue #82): substring-match the query against each
+    // session's issue number/title, agent, status and PR number.
+    const QString query =
+        m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         if (session.owner != owner || session.name != name)
             continue;
+        if (!query.isEmpty()) {
+            QStringList haystack{session.issueTitle,
+                                 agentProviderName(session.provider),
+                                 agentStatusText(session.status)};
+            if (session.issueNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.issueNumber);
+            if (session.prNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.prNumber);
+            if (!haystack.join(QLatin1Char(' '))
+                     .contains(query, Qt::CaseInsensitive))
+                continue;
+        }
         const int row = m_agentTable->rowCount();
         m_agentTable->insertRow(row);
 
@@ -21183,8 +21308,9 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentStatusPill->clear();
         if (m_agentMeta)
             m_agentMeta->clear();
-        if (m_agentUsage)
-            m_agentUsage->clear();
+        // Drop the per-session token line from the top-bar chart's hover tooltip.
+        if (m_navTokenUsage)
+            static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
@@ -22368,6 +22494,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
         live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+        // Issue #84: launching with an initial prompt is a send too — refresh the
+        // top-bar usage chart + hover stats right away.
+        refreshClaudeCodeUsage();
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -22892,7 +23021,7 @@ void MainWindow::seedSessionTokens()
 
 void MainWindow::setAgentUsageLabel(const AgentSession &session)
 {
-    if (!m_agentUsage)
+    if (!m_navTokenUsage)
         return;
     const int window = session.contextWindow > 0 ? session.contextWindow : 32000;
     const int maxOutput =
@@ -22900,7 +23029,7 @@ void MainWindow::setAgentUsageLabel(const AgentSession &session)
             ? session.maxOutputTokens
             : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     const int pct = window > 0 ? qMin(100, session.contextTokens * 100 / window) : 0;
-    m_agentUsage->setText(
+    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(
         QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
             .arg(formatCount(sessionTokenTotal(session)))
             .arg(formatCount(session.promptTokens))
