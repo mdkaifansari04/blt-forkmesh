@@ -159,6 +159,12 @@ public:
     static void applyTheme();
     void refreshThemedIcons();
 
+    // Turn "#N" issue/PR references, pasted commit SHAs and forkmesh:// permalinks
+    // inside a markdown comment body into links the conversation views resolve via
+    // openBodyReference(). Leaves fenced/inline code and existing links untouched.
+    // Static + pure so the window tests can exercise it directly.
+    static QString autolinkReferences(const QString &markdown);
+
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
@@ -505,6 +511,15 @@ private:
     // Open the issue or pull request referenced by "#<number>" in a commit
     // message (a PR if one matches, otherwise an issue).
     void openCommitReference(int number);
+    // Resolve a reference link clicked inside an issue/PR comment body. Handles
+    // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
+    // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
+    // anything else opens externally.
+    void openBodyReference(const QString &href);
+    // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
+    // commit to the clipboard (owner/repo from the repo detail view). Pasting it
+    // into a comment renders a link via autolinkReferences() (issue #154).
+    void copyReferenceLink(const QString &kind, const QString &id);
     // Filter the commit list by the search box (matches hash or summary).
     void filterCommits(const QString &query);
     void downloadCommitPatch();           // save the open commit as a .patch file
