@@ -1,0 +1,166 @@
+diff --git a/qt_client/src/AgentStore.cpp b/qt_client/src/AgentStore.cpp
+index 6ea7ef18..8fd77847 100644
+--- a/qt_client/src/AgentStore.cpp
++++ b/qt_client/src/AgentStore.cpp
+@@ -57,6 +57,8 @@ QJsonObject AgentSession::toJson() const
+     obj["costUsd"] = costUsd;
+     obj["spendBeforeUsd"] = spendBeforeUsd;
+     obj["spendAfterUsd"] = spendAfterUsd;
++    obj["numTurns"] = numTurns;
++    obj["durationMs"] = durationMs;
+     obj["lastError"] = lastError;
+     return obj;
+ }
+@@ -91,6 +93,8 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
+     session.costUsd = obj.value("costUsd").toDouble();
+     session.spendBeforeUsd = obj.value("spendBeforeUsd").toDouble();
+     session.spendAfterUsd = obj.value("spendAfterUsd").toDouble();
++    session.numTurns = obj.value("numTurns").toInt();
++    session.durationMs = obj.value("durationMs").toVariant().toLongLong();
+     session.lastError = obj.value("lastError").toString();
+     return session;
+ }
+diff --git a/qt_client/src/AgentStore.h b/qt_client/src/AgentStore.h
+index d9e77739..b5a649b1 100644
+--- a/qt_client/src/AgentStore.h
++++ b/qt_client/src/AgentStore.h
+@@ -47,6 +47,11 @@ struct AgentSession {
+     double costUsd = 0.0;
+     double spendBeforeUsd = 0.0;
+     double spendAfterUsd = 0.0;
++    // Claude Code run summary, captured from the CLI's final `result` event
++    // ("done · N turns · Ms · $X"): the number of turns and total wall-clock
++    // duration the run took, persisted so the list shows it after a restart.
++    int numTurns = 0;
++    qint64 durationMs = 0;
+     QString lastError;
+ 
+     QString repoKey() const;
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2bb94197..b0491c50 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -18997,6 +18997,13 @@ QString agentMergeBase(const AgentSession &s)
+ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
+ {
+     QString text = agentStatusText(s.status);
++    // Append the Claude Code run summary the CLI reports on finish ("N turns ·
++    // Ms") so the agents list shows it alongside the Cost column's "$X" — the
++    // full "done · N turns · Ms · $X" line, spread across the row (issue #296).
++    if (s.numTurns > 0)
++        text += QString::fromUtf8(" \xC2\xB7 %1 turns").arg(s.numTurns);
++    if (s.durationMs > 0)
++        text += QString::fromUtf8(" \xC2\xB7 %1s").arg(s.durationMs / 1000.0, 0, 'f', 0);
+     if (s.merged)
+         text += QString::fromUtf8(" \xC2\xB7 merged");
+     cell->setText(text);
+@@ -22260,6 +22267,29 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
+     if (type == QLatin1String("result") || type == QLatin1String("control_request"))
+         notifyAgentWaiting(sessionId, type == QLatin1String("control_request"));
+ 
++    // The CLI's final `result` event carries the run summary the transcript shows
++    // as "done · N turns · Ms · $X". Persist those figures on the session and
++    // refresh the list cells in place so the summary survives a restart and shows
++    // in the agents list, not just the open transcript (issue #296).
++    if (type == QLatin1String("result")) {
++        if (AgentSession *as = findAgentSession(sessionId)) {
++            const int turns = ev.value(QStringLiteral("num_turns")).toInt();
++            const qint64 dur = static_cast<qint64>(
++                ev.value(QStringLiteral("duration_ms")).toDouble());
++            const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
++            if (turns > 0)
++                as->numTurns = turns;
++            if (dur > 0)
++                as->durationMs = dur;
++            if (cost > 0)
++                as->costUsd = cost;
++            if (m_agentStore && !isExternalSession(sessionId))
++                m_agentStore->saveSession(*as);
++            updateAgentCostCell(sessionId);
++            updateAgentStatusCell(sessionId); // status text now carries turns/duration
++        }
++    }
++
+     if (sessionId == m_selectedAgentSessionId && m_agentTranscript) {
+         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+             m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
+@@ -22399,6 +22429,33 @@ void MainWindow::updateAgentTokenCell(int sessionId)
+             setAgentUsageLabel(*s);
+ }
+ 
++// Refresh just the Cost cell for a session's row, in place, from its stored
++// costUsd — used when a Claude Code run reports its final cost via the `result`
++// event so the list updates without a full table rebuild (which would re-render
++// the open transcript). Sibling of updateAgentTokenCell (issue #296).
++void MainWindow::updateAgentCostCell(int sessionId)
++{
++    if (!m_agentTable)
++        return;
++    const AgentSession *s = findAgentSession(sessionId);
++    if (!s)
++        return;
++    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
++        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
++        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
++            continue;
++        QSignalBlocker block(m_agentTable);
++        QTableWidgetItem *cell = m_agentTable->item(r, 5);
++        if (!cell) {
++            cell = new QTableWidgetItem;
++            m_agentTable->setItem(r, 5, cell);
++        }
++        cell->setData(Qt::DisplayRole, agentCostText(s->costUsd));
++        cell->setData(Qt::UserRole, s->costUsd);
++        break;
++    }
++}
++
+ // Pulse a session's night-rider light so its activity column sweeps while raw
+ // output is streaming. Called from every raw-output path (headless AgentRunner
+ // logs, live Claude stream lines, surfaced external transcripts). The driving
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index f75dd9c9..1c4a7716 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -640,6 +640,7 @@ private:
+     void reloadAgents();
+     void refreshAgentTable();
+     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
++    void updateAgentCostCell(int sessionId);   // in-place Cost-column update
+     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+     // Pulse a session's night-rider light so the agents-list activity column
+     // sweeps while its raw output is streaming; onScannerTick drives the frames.
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index 3287762c..7f3498f2 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -889,6 +889,29 @@ int main(int argc, char *argv[])
+               "clearEvents starts the next run with a clean transcript");
+     }
+ 
++    // The Claude Code run summary the CLI reports on finish ("done · N turns ·
++    // Ms · $X") is stored on the session and survives a restart (issue #296).
++    {
++        QTemporaryDir tmp;
++        check(tmp.isValid(), "run-summary store temp dir is valid");
++        AgentStore store(tmp.path());
++        AgentSession session;
++        session.owner = "octo";
++        session.name = "demo";
++        session = store.createSession(session);
++        session.numTurns = 71;
++        session.durationMs = 828000;
++        session.costUsd = 4.59;
++        check(store.saveSession(session), "saving a session with a run summary succeeds");
++
++        AgentStore reopened(tmp.path());
++        const QList<AgentSession> sessions = reopened.loadAllSessions();
++        check(sessions.size() == 1 && sessions.first().numTurns == 71 &&
++                  sessions.first().durationMs == 828000 &&
++                  qAbs(sessions.first().costUsd - 4.59) < 1e-9,
++              "turns, duration and cost reload intact after restart");
++    }
++
+     if (failures) {
+         qCritical("TESTS FAILED");
+         return 1;

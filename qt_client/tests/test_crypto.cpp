@@ -889,6 +889,29 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
+    // The Claude Code run summary the CLI reports on finish ("done · N turns ·
+    // Ms · $X") is stored on the session and survives a restart (issue #296).
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "run-summary store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+        session.numTurns = 71;
+        session.durationMs = 828000;
+        session.costUsd = 4.59;
+        check(store.saveSession(session), "saving a session with a run summary succeeds");
+
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 && sessions.first().numTurns == 71 &&
+                  sessions.first().durationMs == 828000 &&
+                  qAbs(sessions.first().costUsd - 4.59) < 1e-9,
+              "turns, duration and cost reload intact after restart");
+    }
+
     if (failures) {
         qCritical("TESTS FAILED");
         return 1;
