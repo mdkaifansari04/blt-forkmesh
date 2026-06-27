@@ -1340,6 +1340,21 @@ void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// User's preferred tab a repository opens on (Settings → General). Stored as
+// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
+// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
+// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
+// without a manual click. Defaults to the Agents tab.
+const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
+constexpr int kFallbackRepoTab = 3; // Agents
+
+int defaultRepoTabIndex()
+{
+    const int value =
+        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
+    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
+}
+
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
 // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
@@ -25620,11 +25635,18 @@ void MainWindow::openRepoDetail(int repoIndex)
     updateRepoPullCount();
     logStartup(QStringLiteral("  openRepo: pulls loaded"));
 
-    // Default to the Code tab; reset the editor tabs/tree for the new repo.
-    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-        m_repoDetailTabs->button(0)->setChecked(true);
+    // Land on the user's preferred default tab (Settings → General; Agents by
+    // default). Each candidate tab's data was eagerly loaded above, so we only
+    // need to select it. Reset the editor tabs/tree for the new repo.
+    const int defaultTab = defaultRepoTabIndex();
+    if (m_repoDetailTabs && m_repoDetailTabs->button(defaultTab))
+        m_repoDetailTabs->button(defaultTab)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(0);
+        m_repoDetailStack->setCurrentIndex(defaultTab);
+    // The Agents list annotates each session with its PR status from the pulls
+    // loaded just above; reloadAgents() ran before them, so refresh on landing.
+    if (defaultTab == 3)
+        reloadAgents();
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -39336,6 +39358,28 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
+    // Default tab a repository opens on. Stored as the repo-detail tab index;
+    // defaults to Agents (see defaultRepoTabIndex()).
+    auto *defaultTabLabel = new QLabel("Open repositories on tab");
+    auto *defaultTabCombo = new QComboBox;
+    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
+    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
+    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
+    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
+    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
+    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
+    defaultTabCombo->setToolTip(
+        "Which tab to show when you open a repository. Defaults to Agents.");
+    {
+        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
+        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
+            [defaultTabCombo](int) {
+                QSettings().setValue(kDefaultRepoTabSetting,
+                                     defaultTabCombo->currentData().toInt());
+            });
+
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
@@ -39972,6 +40016,8 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(defaultTabLabel);
+    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 
