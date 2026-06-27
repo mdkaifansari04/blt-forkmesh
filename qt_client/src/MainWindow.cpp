@@ -12,6 +12,7 @@
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
+#include "ReferenceLinks.h"
 
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
@@ -12469,8 +12470,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMessage->setTextFormat(Qt::RichText);
     m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                              Qt::LinksAccessibleByMouse);
-    // "#123" references in the message are rendered as ref: links; open the
-    // matching pull request or issue when one is clicked.
+    // "#123" references in the message are rendered as ref: links and open
+    // issues first. PR/comment bodies use typed Markdown reference links.
     connect(m_commitMessage, &QLabel::linkActivated, this,
             [this](const QString &href) {
                 if (href.startsWith(QStringLiteral("ref:")))
@@ -16827,7 +16828,7 @@ void MainWindow::setPullThreadState(const QString &threadId, const QString &stat
 
 void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                                      const QString &headerHtml, const QString &body,
-                                     const QString &accent)
+                                     const QString &accent, const QString &copyLink)
 {
     if (!layout)
         return;
@@ -16855,10 +16856,35 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     headerBox->setObjectName("issueTimelineHeader");
     auto *headerRow = new QHBoxLayout(headerBox);
     headerRow->setContentsMargins(16, 8, 10, 8);
+    headerRow->setSpacing(8);
     auto *header = new QLabel(headerHtml);
     header->setTextFormat(Qt::RichText);
     headerRow->addWidget(header);
     headerRow->addStretch();
+    if (!copyLink.isEmpty() || !body.trimmed().isEmpty()) {
+        auto *menu = new QMenu(card);
+        if (!copyLink.isEmpty()) {
+            QAction *copyLinkAction = menu->addAction("Copy link");
+            connect(copyLinkAction, &QAction::triggered, this, [this, copyLink]() {
+                QApplication::clipboard()->setText(copyLink);
+                flashMessage("Link copied.");
+            });
+        }
+        if (!body.trimmed().isEmpty()) {
+            QAction *copyMarkdownAction = menu->addAction("Copy Markdown");
+            connect(copyMarkdownAction, &QAction::triggered, this, [this, body]() {
+                QApplication::clipboard()->setText(body);
+                flashMessage("Markdown copied.");
+            });
+        }
+        auto *actionsButton = new QToolButton(headerBox);
+        actionsButton->setObjectName("issueActionButton");
+        actionsButton->setText("...");
+        actionsButton->setCursor(Qt::PointingHandCursor);
+        actionsButton->setPopupMode(QToolButton::InstantPopup);
+        actionsButton->setMenu(menu);
+        headerRow->addWidget(actionsButton);
+    }
     cardLayout->addWidget(headerBox);
 
     if (!body.trimmed().isEmpty()) {
@@ -16917,12 +16943,20 @@ void MainWindow::renderPullThread(const PullRequest &pr)
 
     // The PR description as the opening card.
     const QString opener = pr.authorName.isEmpty() ? pr.author.left(10) : pr.authorName;
+    QString linkOwner = QStringLiteral("repo");
+    QString linkRepo = QStringLiteral("pull");
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
+        linkRepo = m_repositories.at(m_repoDetailIndex).name;
+    }
+    const QString pullLink =
+        QStringLiteral("forkmesh://pull/%1/%2/%3").arg(linkOwner, linkRepo).arg(pr.number);
     addConversationCard(
         m_pullThreadLayout, opener,
         QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
                        "request %2</span>")
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
-        pr.description);
+        pr.description, QString(), pullLink + QStringLiteral("#open"));
 
     for (const PullEvent &ev : pr.events) {
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
@@ -16976,7 +17010,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             m_pullThreadLayout, who,
             QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
                 .arg(who.toHtmlEscaped(), verb, when),
-            ev.body, accent);
+            ev.body, accent,
+            pullLink + QStringLiteral("#%1")
+                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id));
     }
     m_pullThreadLayout->addStretch();
 }
@@ -28703,27 +28739,83 @@ void MainWindow::filterCommits(const QString &query)
 
 void MainWindow::openCommitReference(int number)
 {
+    openIssueReference(number);
+}
+
+void MainWindow::openIssueReference(int number)
+{
     if (number <= 0)
         return;
-    // Decide issue vs. pull request by number: prefer a PR when one matches,
-    // otherwise treat it as an issue. Reload both lists so a reference resolves
-    // even if the user hasn't opened those tabs yet this session.
-    reloadPulls();
-    bool isPull = false;
-    for (const PullRequest &pr : std::as_const(m_currentPulls))
-        if (pr.number == number) {
-            isPull = true;
-            break;
-        }
-    const int tabId = isPull ? 4 : 2; // 4 = Pull requests, 2 = Issues
-    if (m_repoDetailTabs && m_repoDetailTabs->button(tabId))
-        m_repoDetailTabs->button(tabId)->click(); // switches tab + loads data
-    if (isPull)
-        showPull(number);
-    else {
-        reloadIssues();
-        showIssue(number);
+    if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+        m_repoDetailTabs->button(2)->click();
+    reloadIssues();
+    showIssue(number);
+}
+
+void MainWindow::openPullReference(int number)
+{
+    if (number <= 0)
+        return;
+    switchToPullTab(number);
+}
+
+void MainWindow::openCommitHashReference(const QString &hash)
+{
+    const QString ref = hash.trimmed();
+    if (ref.isEmpty())
+        return;
+    if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+        m_repoDetailTabs->button(1)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(1);
+    showCommit(ref);
+}
+
+void MainWindow::openReferenceLink(const QString &href)
+{
+    if (href.startsWith(QStringLiteral("fm-issue:"))) {
+        openIssueReference(href.mid(9).toInt());
+        return;
     }
+    if (href.startsWith(QStringLiteral("fm-pull:"))) {
+        openPullReference(href.mid(8).toInt());
+        return;
+    }
+    if (href.startsWith(QStringLiteral("fm-commit:"))) {
+        openCommitHashReference(href.mid(10));
+        return;
+    }
+
+    const QUrl url(href);
+    if (url.scheme() == QLatin1String("forkmesh")) {
+        const QString kind = url.host();
+        const QStringList parts =
+            url.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        auto switchLinkedRepo = [&]() {
+            if (parts.size() < 2)
+                return;
+            const int repoIndex = repoIndexFor(parts.at(0), parts.at(1));
+            if (repoIndex >= 0 && repoIndex != m_repoDetailIndex)
+                openRepoDetail(repoIndex);
+        };
+        if ((kind == QLatin1String("issue") || kind == QLatin1String("pull")) &&
+            parts.size() >= 3) {
+            switchLinkedRepo();
+            const int number = parts.last().toInt();
+            if (kind == QLatin1String("issue"))
+                openIssueReference(number);
+            else
+                openPullReference(number);
+            return;
+        }
+        if (kind == QLatin1String("commit") && parts.size() >= 3) {
+            switchLinkedRepo();
+            openCommitHashReference(parts.last());
+            return;
+        }
+    }
+
+    QDesktopServices::openUrl(url.isValid() ? url : QUrl::fromUserInput(href));
 }
 
 QString MainWindow::autolinkReferences(const QString &markdown)
@@ -29831,6 +29923,14 @@ void MainWindow::renderCommitThread(const QString &sha)
         m_commitThreadLayout->addStretch();
         return;
     }
+    QString linkOwner = QStringLiteral("repo");
+    QString linkRepo = QStringLiteral("commit");
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
+        linkRepo = m_repositories.at(m_repoDetailIndex).name;
+    }
+    const QString commitLink =
+        QStringLiteral("forkmesh://commit/%1/%2/%3").arg(linkOwner, linkRepo, sha);
     const RepositoryRecord rec =
         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
             ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
@@ -29843,7 +29943,9 @@ void MainWindow::renderCommitThread(const QString &sha)
             m_commitThreadLayout, who,
             QStringLiteral("<b>%1</b> <span style='color:#8b949e'>commented %2</span>")
                 .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
-            c.body);
+            c.body, QString(),
+            commitLink + QStringLiteral("#%1")
+                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id));
     }
     m_commitThreadLayout->addStretch();
 }
