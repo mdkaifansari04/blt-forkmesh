@@ -3481,6 +3481,24 @@ QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// "running" glyph in the agents list (issue #108). Not cached, since the angle
+// changes every animation frame; callers keep it to the handful of running rows.
+QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
+                                   int size, qreal angleDeg)
+{
+    const QPixmap base = tintedOcticonPixmap(name, color, size);
+    QPixmap out(size, size);
+    out.fill(Qt::transparent);
+    QPainter painter(&out);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(size / 2.0, size / 2.0);
+    painter.rotate(angleDeg);
+    painter.translate(-size / 2.0, -size / 2.0);
+    painter.drawPixmap(0, 0, base);
+    return out;
+}
+
 void applyStoredOcticon(QPushButton *button)
 {
     if (!button)
@@ -20122,6 +20140,20 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
+    // Status glyph next to the text (issue #108): a green spinner while running, a
+    // purple merge mark once it lands, a red stop sign when halted, and an orange
+    // hand while it waits on the user. The running glyph is seeded at frame 0 here;
+    // animateRunningAgentIcons() spins it. Other states carry no icon.
+    if (s.merged)
+        cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
+    else if (s.status == AgentStatus::Running)
+        cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+    else if (s.status == AgentStatus::Stopped)
+        cell->setIcon(themedOcticon("stop", QColor("#f85149"), 14));
+    else if (s.status == AgentStatus::Waiting)
+        cell->setIcon(themedOcticon("hand", QColor("#e3742f"), 14));
+    else
+        cell->setIcon(QIcon());
     cell->setToolTip(
         s.merged
             ? QStringLiteral("Worktree/PR merged into %1%2")
@@ -24013,6 +24045,28 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     }
     if (sessionId == m_selectedAgentSessionId)
         updateAgentActionState();
+}
+
+// Spin the green "sync" glyph on every running row's Status cell so the agents
+// list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
+// ticks while a session is running, so finished rows keep their static icon.
+void MainWindow::animateRunningAgentIcons()
+{
+    if (!m_agentTable)
+        return;
+    const QIcon icon(rotatedTintedOcticonPixmap(
+        "sync", QColor("#3fb950"), 14, m_agentsSpinFrame * 36.0));
+    QSignalBlocker block(m_agentTable);
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem)
+            continue;
+        const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
+        if (!s || s->merged || s->status != AgentStatus::Running)
+            continue;
+        if (QTableWidgetItem *cell = m_agentTable->item(r, 3))
+            cell->setIcon(icon);
+    }
 }
 
 qint64 MainWindow::sessionTokenTotal(const AgentSession &session) const
@@ -46155,6 +46209,7 @@ void MainWindow::updateAgentsTabIndicator()
                 m_agentSnake->setText(QString::fromUtf8(frames[m_agentsSpinFrame]));
                 positionAgentSnake();
             }
+            animateRunningAgentIcons(); // spin the running rows' Status glyph
             positionAgentSpinnerOverlay();
         });
     }
