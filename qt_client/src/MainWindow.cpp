@@ -41678,6 +41678,52 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         return;
 
     const QString repoKey = repo.owner + "/" + repo.name;
+
+    // Loading every issue, pull request and commit-comment thread off disk (each a
+    // parse of many small files) is the heavy part: on a large repo — the flagship
+    // forkmesh project runs to hundreds of issues/PRs — it froze the UI every time
+    // a sync or inbox drain finished, which is what fired this scan. Do that I/O on
+    // a worker thread, then match @mentions and raise notifications back on the main
+    // thread. The stores are copied by value and only read on the worker (no event
+    // signing), the same off-thread pattern deleteIssue uses for its git work.
+    if (m_mentionScanInFlight.contains(repoKey))
+        return; // a scan for this repo is already loading; don't double-notify
+    m_mentionScanInFlight.insert(repoKey);
+
+    auto loadedIssues = std::make_shared<QList<Issue>>();
+    auto loadedPulls = std::make_shared<QList<PullRequest>>();
+    auto loadedComments =
+        std::make_shared<QList<QPair<QString, QList<CommitComment>>>>();
+    IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                          m_userName);
+    PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                        m_userName);
+    CommitCommentStore commentStore(repo.localPath, repo.mirrorPath,
+                                    &m_profileIdentity, m_userName);
+    QThread *worker = QThread::create(
+        [issueStore, pullStore, commentStore, loadedIssues, loadedPulls,
+         loadedComments]() mutable {
+            *loadedIssues = issueStore.loadAll();
+            *loadedPulls = pullStore.loadAll();
+            *loadedComments = commentStore.loadAll();
+        });
+    connect(worker, &QThread::finished, this,
+            [this, worker, repo, repoKey, loadedIssues, loadedPulls,
+             loadedComments]() {
+                worker->deleteLater();
+                m_mentionScanInFlight.remove(repoKey);
+                applyRepoMentions(repo, *loadedIssues, *loadedPulls,
+                                  *loadedComments);
+            });
+    worker->start();
+}
+
+void MainWindow::applyRepoMentions(
+    const RepositoryRecord &repo, const QList<Issue> &allIssues,
+    const QList<PullRequest> &allPulls,
+    const QList<QPair<QString, QList<CommitComment>>> &allCommitComments)
+{
+    const QString repoKey = repo.owner + "/" + repo.name;
     QSettings settings;
     const QStringList seenList =
         settings.value(QStringLiteral("mentions/seen")).toStringList();
@@ -41742,9 +41788,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                       link);
     };
 
-    IssueStore issues(repo.localPath, repo.mirrorPath, &m_profileIdentity,
-                      m_userName);
-    for (const Issue &issue : issues.loadAll()) {
+    for (const Issue &issue : allIssues) {
         for (const IssueEvent &ev : issue.events) {
             if (ev.type != QLatin1String("open") &&
                 ev.type != QLatin1String("comment") &&
@@ -41756,8 +41800,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         }
     }
 
-    PullStore pulls(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
-    for (const PullRequest &pr : pulls.loadAll()) {
+    for (const PullRequest &pr : allPulls) {
         const QString openText =
             (pr.title + QStringLiteral("\n") + pr.description).trimmed();
         consider(QStringLiteral("pull"), pr.number, QStringLiteral("open"), pr.author,
@@ -41769,9 +41812,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     // Commit comments: per-commit conversations keyed by SHA (no number). Scan
     // every commented commit so an @mention in a commit thread notifies too.
-    CommitCommentStore commitComments(repo.localPath, repo.mirrorPath,
-                                      &m_profileIdentity, m_userName);
-    for (const auto &thread : commitComments.loadAll()) {
+    for (const auto &thread : allCommitComments) {
         const QString &sha = thread.first;
         for (const CommitComment &c : thread.second) {
             NotificationLink link;
