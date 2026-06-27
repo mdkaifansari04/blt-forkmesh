@@ -466,6 +466,8 @@ int main(int argc, char *argv[])
         check(window.testWorktreeBranchLabel().contains(
                   QStringLiteral("feature/keep-selected")),
               QStringLiteral("the worktree detail shows which branch it's on"));
+        check(window.testWorktreeBranchLabel().contains(QStringLiteral("wt-keep")),
+              QStringLiteral("the worktree detail shows the worktree's location"));
         window.testReloadWorktreesPanel(); // what "Update from main" does after merging
         check(window.testSelectedWorktreeBranch() ==
                   QStringLiteral("feature/keep-selected"),
