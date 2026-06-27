@@ -23802,8 +23802,18 @@ QString MainWindow::sessionWorkdir(int sessionId)
         return m_streamWorktree.value(sessionId);
     if (const AgentSession *s = findAgentSession(sessionId)) {
         const int ri = repoIndexFor(s->owner, s->name);
-        if (ri >= 0)
-            return m_repositories.at(ri).localPath;
+        if (ri >= 0) {
+            const QString repoLocal = m_repositories.at(ri).localPath;
+            // The in-memory m_streamWorktree map only knows sessions launched in
+            // *this* run. For a reloaded session (e.g. after restart, or one that
+            // finished earlier) resolve its worktree from the branch via git, so
+            // the Files-changed diff runs in the session's own tree rather than
+            // the main checkout — otherwise the tab shows the wrong files.
+            const QString wt = worktreePathForBranch(repoLocal, s->branchName);
+            if (!wt.isEmpty() && QDir(wt).exists())
+                return wt;
+            return repoLocal;
+        }
     }
     return QString();
 }
