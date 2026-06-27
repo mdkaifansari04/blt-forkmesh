@@ -20455,6 +20455,42 @@ void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 t
         QStringLiteral("Communication speed with the service (tokens/second)"));
 }
 
+// Fill the Diff cell (issue #170) — a "very small" at-a-glance summary of what
+// this agent changed: the number of files its captured patch touched, plus how
+// far its branch sits ahead of / behind the base branch (only when both differ).
+// Reads "-" until a finished run has a patch and/or a still-existing branch to
+// measure. Sorts on the file count via kTableSortRole.
+void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
+                        const QString &base)
+{
+    QStringList parts;
+    if (stat.files >= 0)
+        parts << (stat.files == 1 ? QStringLiteral("1 file")
+                                  : QStringLiteral("%1 files").arg(stat.files));
+    // Up arrow = ahead, down arrow = behind. Omit when the branch matches base
+    // (both zero) so a tidy, merged-in session stays uncluttered.
+    if (stat.ahead >= 0 && stat.behind >= 0 && (stat.ahead > 0 || stat.behind > 0))
+        parts << QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
+                     .arg(stat.ahead)
+                     .arg(stat.behind);
+    cell->setData(Qt::DisplayRole,
+                  parts.isEmpty()
+                      ? QStringLiteral("-")
+                      : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
+    cell->setData(kTableSortRole, stat.files);
+    QStringList tip;
+    if (stat.files >= 0)
+        tip << QStringLiteral("%1 file%2 changed")
+                   .arg(stat.files)
+                   .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+    if (stat.ahead >= 0 && stat.behind >= 0)
+        tip << QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
+                   .arg(stat.ahead)
+                   .arg(stat.behind)
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
+    cell->setToolTip(tip.join(QLatin1Char('\n')));
+}
+
 // "Night rider" scanner light shown in the agents list. Each session gets a
 // small Larson-scanner bar that sweeps left<->right while its raw output is
 // streaming, so the list shows real-time activity at a glance. The sweep is
@@ -20462,7 +20498,7 @@ void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 t
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 11;
+static constexpr int kAgentActivityColumn = 12;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -20734,7 +20770,7 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 12);
+    m_agentTable = new QTableWidget(0, 13);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
@@ -20750,9 +20786,10 @@ QWidget *MainWindow::buildAgentsTab()
         "#issueTable::item:selected { background: transparent; }");
     // Turns/Time are the run-summary figures the Claude CLI reports on finish;
     // they used to be crammed into the Status text and now get their own columns.
+    // "Diff" (issue #170) is a compact files-changed + branch ahead/behind badge.
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
-         "Speed", "Updated", "Activity"});
+         "Speed", "Updated", "Diff", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -22106,6 +22143,7 @@ void MainWindow::reloadAgents()
     seedSessionTokens(); // keep the live token counter from regressing on reload
     injectExternalSessions(); // append any surfaced external (watch-only) sessions
     refreshAgentMergeState();  // issue #291: note sessions landed in the base branch
+    m_agentDiffStats.clear();  // issue #170: recompute Diff cells against fresh data
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -22123,6 +22161,10 @@ void MainWindow::refreshAgentTable()
     }
 
     const int keep = m_selectedAgentSessionId;
+    // Resolved once for every row's Diff cell (issue #170): the repo's git dir and
+    // base branch the per-session ahead/behind probe measures against.
+    const QString agentGitDir = repoGitDir();
+    const QString agentBase = repoDefaultBranch(repoBranches());
     // Free-text filter (issue #82): substring-match the query against each
     // session's issue number/title, agent, status and PR number.
     const QString query =
@@ -22239,6 +22281,12 @@ void MainWindow::refreshAgentTable()
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
         m_agentTable->setItem(row, 10, updated);
+        // Diff column (issue #170): files changed + branch ahead/behind, computed
+        // once per session and memoised (see agentDiffStat). Sorts on file count.
+        auto *diff = new SortTableWidgetItem;
+        applyAgentDiffCell(diff, agentDiffStat(session, agentGitDir, agentBase),
+                           agentBase);
+        m_agentTable->setItem(row, 11, diff);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -22358,6 +22406,56 @@ bool MainWindow::agentSessionLandedInBase(const AgentSession &session) const
         return false;
     // … and all of them must now be reachable from base (nothing left outside).
     return count(QStringLiteral("%1..%2").arg(base, session.branchName)) == 0;
+}
+
+// Issue #170: the files-changed + branch ahead/behind figures behind a session's
+// Diff cell. Files come from the patch captured at run end (so the count survives
+// the worktree being cleaned up); ahead/behind is measured against the base
+// branch when the session's branch still exists. Results are memoised per session
+// so the per-row refresh (incl. search-as-you-type) doesn't re-shell git.
+AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
+                                        const QString &gitDir, const QString &base)
+{
+    auto cached = m_agentDiffStats.constFind(session.id);
+    if (cached != m_agentDiffStats.constEnd())
+        return cached.value();
+
+    AgentDiffStat stat;
+    // Count the file headers in the captured patch ("diff --git " at line start).
+    // Counting newline-anchored occurrences avoids materialising a line list for
+    // a large diff; an in-body "diff --git" line is always prefixed by +/-/space.
+    if (m_agentStore) {
+        const QString patch = m_agentStore->readPatch(session);
+        if (!patch.isEmpty()) {
+            int files = patch.startsWith(QLatin1String("diff --git ")) ? 1 : 0;
+            files += patch.count(QStringLiteral("\ndiff --git "));
+            stat.files = files;
+        }
+    }
+    // Ahead/behind of the session branch vs the base branch, when both exist and
+    // differ. Same probe the repo's branch list uses (left = base, right = branch
+    // → behind, ahead).
+    if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
+        session.branchName != base &&
+        runGitCapture(gitDir,
+                      {"rev-parse", "--verify", "--quiet",
+                       QStringLiteral("refs/heads/%1").arg(session.branchName)},
+                      nullptr, nullptr)) {
+        QByteArray counts;
+        if (runGitCapture(gitDir,
+                          {"rev-list", "--left-right", "--count",
+                           base + "..." + session.branchName},
+                          &counts, nullptr)) {
+            const QStringList p = QString::fromUtf8(counts).trimmed().split(
+                QRegularExpression(QStringLiteral("\\s+")));
+            if (p.size() >= 2) {
+                stat.behind = p.at(0).toInt();
+                stat.ahead = p.at(1).toInt();
+            }
+        }
+    }
+    m_agentDiffStats.insert(session.id, stat);
+    return stat;
 }
 
 // Eagerly flag the agent session(s) tied to a just-merged PR or worktree branch
