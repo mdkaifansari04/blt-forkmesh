@@ -29571,9 +29571,14 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branch,
-                                       const QString &worktreePath)
+void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+                                       const QString &worktreePathArg)
 {
+    // Copy by value: the keep-alive pump below services queued slots between git
+    // reads, and a refresh could reassign the m_worktreeSelected* members passed
+    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    const QString branch = branchArg;
+    const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
@@ -29603,6 +29608,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
         != QMessageBox::Yes)
         return;
 
+    // The merge checks out files, then removeWorktree recursively deletes the
+    // worktree folder (slow when it holds build artifacts), then two panels reload
+    // — all blocking git on the UI thread. Pump the event loop across the lot so
+    // the window stays responsive instead of freezing ("Not Responding").
+    GitKeepAlive keepAlive;
     QString err;
     if (runGitCapture(dir,
                       {"merge", "--no-ff", branch,
@@ -29668,10 +29678,13 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    if (QProcess::execute(
-            QStringLiteral("git"),
-            {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-             QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+    // runGitCapture (not QProcess::execute) so this honors GitKeepAlive: when the
+    // post-merge cleanup calls in, the event loop keeps pumping while git deletes
+    // the worktree folder recursively, instead of freezing the window.
+    if (!runGitCapture(repoPath,
+                       {QStringLiteral("worktree"), QStringLiteral("remove"),
+                        QStringLiteral("--force"), worktreePath},
+                       nullptr, nullptr)) {
         setRepoDetailNotice(
             QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
             true);
