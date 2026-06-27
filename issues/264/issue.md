@@ -5,7 +5,7 @@ title: clicking between PRs in the list is a bit laggy, please fix
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 53
 progress: 0
 assignees: []
 createdAt: 1782430970460
