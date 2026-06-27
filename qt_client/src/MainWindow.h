@@ -2448,6 +2448,17 @@ private:
     bool m_looperActive = false;
     int m_looperSessionId = 0;
     QString m_looperProvider;
+    // "Looper running" banner pinned to the top of the issues pane (adhoc #109): a
+    // turning gear + busy bar so it reads as actively working. m_issueLooperSpinner
+    // is an AgentSpinner (only the concrete type lives in the .cpp, so it is held
+    // as a QWidget* and downcast there). The current-issue fields drive the banner
+    // subtitle.
+    QWidget *m_issueLooperBanner = nullptr;
+    QLabel *m_issueLooperBannerTitle = nullptr;
+    QLabel *m_issueLooperBannerDetail = nullptr;
+    QWidget *m_issueLooperSpinner = nullptr;
+    int m_looperCurrentIssue = 0;
+    QString m_looperCurrentTitle;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;

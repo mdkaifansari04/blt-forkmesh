@@ -10381,9 +10381,43 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueListStack->addWidget(m_issueLabelsTable);     // 2 Labels
     m_issueListStack->addWidget(buildIssueBoard());      // 3 Board (Kanban)
 
+    // "Looper running" banner (adhoc #109): pinned to the very top of the issues
+    // pane and shown only while the looper is active. A turning gear (reused
+    // AgentSpinner) plus an indeterminate busy bar make it read as hard at work,
+    // with a subtitle naming the issue the agent is currently on.
+    m_issueLooperBanner = new QFrame;
+    m_issueLooperBanner->setObjectName("issueLooperBanner");
+    auto *looperBannerRow = new QHBoxLayout(m_issueLooperBanner);
+    looperBannerRow->setContentsMargins(12, 8, 12, 8);
+    looperBannerRow->setSpacing(10);
+    auto *looperSpinner = new AgentSpinner(m_issueLooperBanner);
+    looperSpinner->setToolTip(
+        QString::fromUtf8("Issue looper working the backlog\xE2\x80\xA6"));
+    m_issueLooperSpinner = looperSpinner;
+    looperBannerRow->addWidget(looperSpinner);
+    auto *looperTextCol = new QVBoxLayout;
+    looperTextCol->setContentsMargins(0, 0, 0, 0);
+    looperTextCol->setSpacing(1);
+    m_issueLooperBannerTitle = new QLabel(QStringLiteral("Issue looper running"));
+    m_issueLooperBannerTitle->setObjectName("issueLooperBannerTitle");
+    m_issueLooperBannerDetail = new QLabel;
+    m_issueLooperBannerDetail->setObjectName("issueLooperBannerDetail");
+    m_issueLooperBannerDetail->setWordWrap(true);
+    looperTextCol->addWidget(m_issueLooperBannerTitle);
+    looperTextCol->addWidget(m_issueLooperBannerDetail);
+    looperBannerRow->addLayout(looperTextCol, 1);
+    auto *looperBusyBar = new QProgressBar;
+    looperBusyBar->setObjectName("issueLooperBannerBar");
+    looperBusyBar->setRange(0, 0); // indeterminate: a perpetual sweep
+    looperBusyBar->setTextVisible(false);
+    looperBusyBar->setFixedSize(96, 6);
+    looperBannerRow->addWidget(looperBusyBar);
+    m_issueLooperBanner->hide();
+
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
+    listLayout->addWidget(m_issueLooperBanner);
     listLayout->addLayout(headingRow);
     listLayout->addWidget(m_issuesRepoCombo);
     listLayout->addLayout(filterRow);
@@ -21793,6 +21827,8 @@ void MainWindow::toggleIssueLooper()
     if (m_looperActive) {
         m_looperActive = false;
         m_looperSessionId = 0;
+        m_looperCurrentIssue = 0;
+        m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice(
             "Issue looper stopped. The current agent (if any) will finish; no more "
@@ -21844,6 +21880,8 @@ void MainWindow::looperStartNext()
     if (!next) {
         m_looperActive = false;
         m_looperSessionId = 0;
+        m_looperCurrentIssue = 0;
+        m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice(
             "Issue looper finished: every open issue has an agent.");
@@ -21857,12 +21895,17 @@ void MainWindow::looperStartNext()
     if (sessionId <= 0) {
         m_looperActive = false;
         m_looperSessionId = 0;
+        m_looperCurrentIssue = 0;
+        m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice("Issue looper stopped: could not start the next agent.",
                              true);
         return;
     }
     m_looperSessionId = sessionId;
+    m_looperCurrentIssue = issueNumber;
+    m_looperCurrentTitle = issueTitle;
+    updateIssueLooperButton(); // refresh the banner subtitle for the new issue
     setIssueInlineNotice(
         QString::fromUtf8("Issue looper: started %1 on issue #%2 \xE2\x80\x94 %3")
             .arg(agentProviderName(m_looperProvider))
@@ -21882,12 +21925,36 @@ void MainWindow::looperOnSessionFinished(int sessionId)
 
 void MainWindow::updateIssueLooperButton()
 {
-    if (!m_issueLooperButton)
-        return;
-    QSignalBlocker block(m_issueLooperButton);
-    m_issueLooperButton->setChecked(m_looperActive);
-    m_issueLooperButton->setText(m_looperActive ? QStringLiteral("Stop looping")
-                                                : QStringLiteral("Loop open issues"));
+    if (m_issueLooperButton) {
+        QSignalBlocker block(m_issueLooperButton);
+        m_issueLooperButton->setChecked(m_looperActive);
+        m_issueLooperButton->setText(m_looperActive
+                                         ? QStringLiteral("Stop looping")
+                                         : QStringLiteral("Loop open issues"));
+    }
+
+    // Top-of-pane "looper running" banner: visible only while looping, with the
+    // gear tinted by the running provider and a subtitle naming the live issue.
+    if (m_issueLooperBanner) {
+        m_issueLooperBanner->setVisible(m_looperActive);
+        if (m_looperActive) {
+            if (m_issueLooperSpinner)
+                static_cast<AgentSpinner *>(m_issueLooperSpinner)
+                    ->setProvider(m_looperProvider);
+            if (m_issueLooperBannerTitle)
+                m_issueLooperBannerTitle->setText(
+                    QString::fromUtf8("%1 is working the backlog\xE2\x80\xA6")
+                        .arg(agentProviderName(m_looperProvider)));
+            if (m_issueLooperBannerDetail)
+                m_issueLooperBannerDetail->setText(
+                    m_looperCurrentIssue > 0
+                        ? QString::fromUtf8("On issue #%1 \xE2\x80\x94 %2")
+                              .arg(m_looperCurrentIssue)
+                              .arg(m_looperCurrentTitle)
+                        : QString::fromUtf8(
+                              "Looking for the next open issue\xE2\x80\xA6"));
+        }
+    }
 }
 
 // Quick-add bar "No issue" mode (issue #299): start a brand-new agent from a
