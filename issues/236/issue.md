@@ -5,7 +5,7 @@ title: Branch port/repo-mirrors-health — needs merge into main
 status: open
 labels: [infra]
 milestone: 
-priority: 22
+priority: 11
 progress: 0
 assignees: []
 createdAt: 1782356524859
