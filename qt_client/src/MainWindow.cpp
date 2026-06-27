@@ -17884,7 +17884,7 @@ void MainWindow::importPatchAsPull()
     QString error;
     const int number = store.createPull(
         title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
-        base, head, patch, QString(), &error);
+        base, head, patch, QString(), /*branchBacked=*/false, &error);
     if (number < 0) {
         setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                             : error,
@@ -18084,7 +18084,8 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     if (store.canWrite() && targetOwner == currentRepo.owner) {
         QString error;
         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
-                                             pr.patch, pr.commits, &error);
+                                             pr.patch, pr.commits,
+                                             /*branchBacked=*/fromRange, &error);
         if (number < 0) {
             QMessageBox::warning(this, "New pull request", error);
             return;
@@ -21189,6 +21190,28 @@ QWidget *MainWindow::buildAgentsTab()
             s->branchName,
             worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName));
     });
+    // Same merge, but also tear down this agent session once its branch is in main
+    // (mirrors the Worktrees tab's "Merge & delete agent").
+    m_agentMergeDeleteButton = new QPushButton("Merge & delete agent");
+    m_agentMergeDeleteButton->setObjectName("ghostButton");
+    m_agentMergeDeleteButton->setProperty("buttonSize", "sm");
+    m_agentMergeDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentMergeDeleteButton, "check-circle", 14);
+    m_agentMergeDeleteButton->setToolTip(
+        "Merge this session's branch into the default branch, then delete the "
+        "worktree, its branch and its agent session");
+    connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        mergeWorktreeIntoMain(
+            s->branchName,
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
+            /*deleteAgent=*/true);
+    });
     m_agentWtDeleteButton = new QPushButton("Delete worktree");
     m_agentWtDeleteButton->setObjectName("ghostButton");
     m_agentWtDeleteButton->setProperty("buttonSize", "sm");
@@ -21213,6 +21236,7 @@ QWidget *MainWindow::buildAgentsTab()
     filesActionBar->addStretch();
     filesActionBar->addWidget(m_agentUpdateButton);
     filesActionBar->addWidget(m_agentMergeButton);
+    filesActionBar->addWidget(m_agentMergeDeleteButton);
     filesActionBar->addWidget(m_agentWtDeleteButton);
 
     auto *filesDiffSplit = new QSplitter(Qt::Horizontal);
@@ -24722,6 +24746,8 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
     const bool feature = !branch.isEmpty() && branch != base && !isMain;
     if (m_agentMergeButton)
         m_agentMergeButton->setEnabled(feature && repoHasWorkingTree());
+    if (m_agentMergeDeleteButton)
+        m_agentMergeDeleteButton->setEnabled(feature && repoHasWorkingTree());
     if (m_agentUpdateButton)
         m_agentUpdateButton->setEnabled(feature && onDisk);
     if (m_agentWtDeleteButton)
@@ -24772,7 +24798,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     const int pr = store.createPull(
         prTitle, prBody,
         s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
-        QString(), &error);
+        QString(), /*branchBacked=*/true, &error);
     if (pr > 0) {
         s->prNumber = pr;
         m_agentStore->saveSession(*s);
@@ -24922,7 +24948,8 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                         .arg(session->issueNumber),
                     session->baseBranch.isEmpty() ? session->baseRef
                                                   : session->baseBranch,
-                    session->branchName, patch, QString(), &error);
+                    session->branchName, patch, QString(), /*branchBacked=*/true,
+                    &error);
                 if (pr > 0) {
                     session->prNumber = pr;
                     m_agentStore->saveSession(*session);
@@ -26617,7 +26644,8 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
         QString error;
         const int number = store.createPull(title, description, base, branch,
                                             QString::fromUtf8(diff),
-                                            QString::fromUtf8(mbox), &error);
+                                            QString::fromUtf8(mbox),
+                                            /*branchBacked=*/true, &error);
         if (number < 0) {
             setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                                 : error,
@@ -33174,7 +33202,8 @@ void MainWindow::createPullFromBranch(const QString &branch)
     QString error;
     const int number = store.createPull(title, description, base, branch,
                                         QString::fromUtf8(diff),
-                                        QString::fromUtf8(mbox), &error);
+                                        QString::fromUtf8(mbox),
+                                        /*branchBacked=*/true, &error);
     if (number < 0) {
         setRepoDetailNotice(
             error.isEmpty() ? "Could not create the pull request." : error, true);
