@@ -19495,6 +19495,31 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setMinimumWidth(380);
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
+    // "Hide detail" toggle (issue #54): collapse the detail panel so the session
+    // list spans the full tab width. Re-checking restores it for the open row.
+    m_agentHideDetailButton = new QPushButton("Hide detail");
+    m_agentHideDetailButton->setObjectName("ghostButton");
+    m_agentHideDetailButton->setCursor(Qt::PointingHandCursor);
+    m_agentHideDetailButton->setCheckable(true);
+    m_agentHideDetailButton->setToolTip(
+        "Hide the detail panel and show the session list full width");
+    setOcticon(m_agentHideDetailButton, "chevron-right", 16);
+    connect(m_agentHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
+        m_agentDetailHidden = hidden;
+        m_agentHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
+        setOcticon(m_agentHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
+        if (hidden) {
+            if (m_agentDetail)
+                m_agentDetail->hide();
+        } else if (m_agentDetail && findAgentSession(m_selectedAgentSessionId)) {
+            m_agentDetail->show(); // reopen for the still-selected row
+        }
+    });
+    auto *headingRow = new QHBoxLayout;
+    headingRow->setContentsMargins(0, 0, 0, 0);
+    headingRow->setSpacing(8);
+    headingRow->addWidget(heading, 1);
+    headingRow->addWidget(m_agentHideDetailButton, 0, Qt::AlignTop);
     auto *hint = new QLabel(
         "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
         "from prompt and transcript size.");
@@ -19538,7 +19563,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(headingRow);
     listLayout->addWidget(hint);
     m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
     m_agentOpenAiSpend->setObjectName("channelTitle");
@@ -21078,7 +21103,9 @@ void MainWindow::showAgentSession(int sessionId)
     // deciding which output surface to show, so it survives an app restart.
     ensureStreamEventsLoaded(sessionId);
 
-    if (m_agentDetail)
+    // Keep the detail panel collapsed while "Hide detail" is engaged (issue #54);
+    // its contents below still update for when the user reopens it.
+    if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
@@ -34990,6 +35017,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoNewAgentPrompt())
             return true;
+        // Enter starts a brand-new agent on the typed prompt; Shift+Enter inserts a
+        // newline (issue #54). Mirrors the per-session steering composer above.
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && !(ke->modifiers() & Qt::ShiftModifier)) {
+            if (m_agentStartButton)
+                m_agentStartButton->click();
+            return true;
+        }
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
     // newline (issue #41). Mirrors the Claude Code conversation input.
