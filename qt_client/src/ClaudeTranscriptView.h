@@ -9,9 +9,9 @@ class QVBoxLayout;
 class QWidget;
 class QLabel;
 class QPropertyAnimation;
-class QPushButton;
 class QResizeEvent;
 class Collapsible;
+class ScrollJumpButtons;
 
 // Renders a Claude Code session as a native, extension-style chat transcript by
 // consuming the stream-json events from ClaudeStreamSession: assistant text,
@@ -48,8 +48,8 @@ protected:
     void resizeEvent(QResizeEvent *e) override;
 
 public:
-    // Jump the view to the start / end of the transcript (used by the floating
-    // ▲/▼ buttons in the corner).
+    // Jump the view to the start / end of the transcript (driven by the floating
+    // ▲/▼ ScrollJumpButtons in the corner).
     void scrollToTop();
     void scrollToBottom();
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
@@ -66,8 +66,6 @@ private:
     void cycleActivityWord();
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
-    void positionScrollButtons();
-    void updateScrollButtons();
     QString accentFor(const QString &toolName) const;
 
     QWidget *makeBubble(const QString &title, const QString &markdown,
@@ -107,8 +105,7 @@ private:
     // Follow mode: while the view is at the bottom, new content keeps it pinned
     // there; scrolling up releases it until the user returns to the bottom.
     bool m_stickBottom = true;
-    QPushButton *m_toTopBtn = nullptr;    // floating ▲ jump-to-top
-    QPushButton *m_toBottomBtn = nullptr; // floating ▼ jump-to-bottom
+    ScrollJumpButtons *m_jumpButtons = nullptr; // floating ▲/▼ jump corner
     bool m_splitDiffs = false;            // side-by-side vs unified diffs
     QWidget *m_activity = nullptr;        // live "what it's doing" ticker row
     QLabel *m_activityLabel = nullptr;
