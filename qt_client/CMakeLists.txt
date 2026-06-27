@@ -71,6 +71,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/ScrollJumpButtons.h
+    src/ScrollJumpButtons.cpp
     src/StallWatchdog.h
     src/StallWatchdog.cpp
     src/SystemStats.h
