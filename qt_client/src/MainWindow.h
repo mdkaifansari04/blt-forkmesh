@@ -893,8 +893,12 @@ private:
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
     int m_worktreeStatusGen = 0;
     // Open the Worktrees tab and select the row for a branch (used by the
-    // clickable branch link in the agent session header — issue #265).
+    // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
+    // Open the Branches tab and select the row for a branch, previewing its diff
+    // (used by the clickable branch-name link in the agent session header —
+    // adhoc #123).
+    void switchToBranch(const QString &branch);
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
