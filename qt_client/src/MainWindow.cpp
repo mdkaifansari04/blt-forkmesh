@@ -985,6 +985,11 @@ const QString kDefaultRoomName = QStringLiteral("general");
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+// Issue looper (adhoc #125): persist the running state so a restart resumes the
+// loop on the same repo with the same provider instead of silently dropping it.
+const QString kLooperActiveSetting = QStringLiteral("looper/active");
+const QString kLooperProviderSetting = QStringLiteral("looper/provider");
+const QString kLooperRepoSetting = QStringLiteral("looper/repo"); // "owner/name"
 
 QString savedSolanaAddress()
 {
@@ -3967,6 +3972,9 @@ void MainWindow::runDeferredStartup()
         refreshRepositoryList();
         openRepoDetail(index);
         logStartup(QStringLiteral("last repository detail loaded"));
+        // Issues are loaded synchronously by openRepoDetail, so the looper has a
+        // populated backlog to resume against (adhoc #125).
+        maybeRestoreIssueLooper();
     } else if (m_repoDetailIndex < 0) {
         // No saved repository to restore: land on the selected node's first repo
         // (if any) so a fresh session opens on real content, not an empty panel.
@@ -11247,8 +11255,19 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoCodeTab = b; // visible pill next to Commits; also shows repo size
         if (i == 1)
             m_repoCommitsTab = b;
-        if (i == 2)
+        if (i == 2) {
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
+            // Blue braille snake overlaid at the tab's right edge while the issue
+            // looper runs (adhoc #125); kept separate so "Issues (N)" keeps its
+            // normal colour, mirroring m_agentSnake on the Agents tab.
+            m_looperSnake = new QLabel(b);
+            m_looperSnake->setObjectName("looperSnake");
+            m_looperSnake->setAlignment(Qt::AlignCenter);
+            m_looperSnake->setAttribute(Qt::WA_TransparentForMouseEvents);
+            m_looperSnake->setStyleSheet(
+                "#looperSnake{color:#79c0ff;background:transparent;}");
+            m_looperSnake->hide();
+        }
         if (i == 3) {
             m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
             // Purple braille snake overlaid at the tab's right edge while an agent
@@ -21857,6 +21876,8 @@ void MainWindow::toggleIssueLooper()
     }
     m_looperActive = true;
     m_looperProvider = defaultAgentProvider();
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    m_looperRepoSlug = repo.owner + QLatin1Char('/') + repo.name;
     updateIssueLooperButton();
     setIssueInlineNotice(
         QString::fromUtf8("Issue looper started with %1. Working through the open "
@@ -21965,6 +21986,11 @@ void MainWindow::updateIssueLooperButton()
                               "Looking for the next open issue\xE2\x80\xA6"));
         }
     }
+
+    // Tiny snake on the Issues tab + persisted state — both keyed off the same
+    // m_looperActive this function is the funnel for (adhoc #125).
+    updateIssueLooperTabIndicator();
+    persistLooperState();
 }
 
 // Quick-add bar "No issue" mode (issue #299): start a brand-new agent from a
@@ -44585,6 +44611,93 @@ void MainWindow::positionAgentSnake()
     const int w = 16;
     m_agentSnake->setGeometry(m_repoAgentsTab->width() - w - 6, 0, w,
                               m_repoAgentsTab->height());
+}
+
+void MainWindow::positionLooperSnake()
+{
+    if (!m_looperSnake || !m_repoIssuesTab)
+        return;
+    const int w = 16;
+    m_looperSnake->setGeometry(m_repoIssuesTab->width() - w - 6, 0, w,
+                               m_repoIssuesTab->height());
+}
+
+// Tiny "looper running" indicator on the Issues tab (adhoc #125): a slowly
+// animated blue braille snake shown only while the loop is active, mirroring the
+// Agents tab's m_agentSnake so the loop is visible from any tab. Driven from
+// updateIssueLooperButton(), which already fires on every looper state change.
+void MainWindow::updateIssueLooperTabIndicator()
+{
+    if (!m_looperSnake)
+        return;
+    if (!m_looperActive) {
+        if (m_looperSpinTimer)
+            m_looperSpinTimer->stop();
+        m_looperSnake->hide();
+        return;
+    }
+    positionLooperSnake();
+    m_looperSnake->show();
+    m_looperSnake->raise();
+    if (!m_looperSpinTimer) {
+        m_looperSpinTimer = new QTimer(this);
+        connect(m_looperSpinTimer, &QTimer::timeout, this, [this] {
+            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
+                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
+                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+            m_looperSpinFrame = (m_looperSpinFrame + 1) % 10;
+            m_looperSnake->setText(QString::fromUtf8(frames[m_looperSpinFrame]));
+            positionLooperSnake(); // keep anchored as the window resizes
+        });
+    }
+    if (!m_looperSpinTimer->isActive())
+        m_looperSpinTimer->start(120);
+}
+
+// Persist the looper's running state so a restart resumes the loop on the same
+// repo with the same provider (adhoc #125). Called from updateIssueLooperButton,
+// the single funnel for every looper state change.
+void MainWindow::persistLooperState()
+{
+    QSettings settings;
+    settings.setValue(kLooperActiveSetting, m_looperActive);
+    settings.setValue(kLooperProviderSetting, m_looperProvider);
+    settings.setValue(kLooperRepoSetting, m_looperRepoSlug);
+}
+
+// On startup, after the last repository has been restored, resume the loop if it
+// was running on that repo when we quit (adhoc #125). Scoped to the open repo:
+// the loop drives agents on the currently-open repo's issues, so resuming on a
+// different repo would be surprising. The agent that was running at quit is gone,
+// so looperStartNext() simply picks the next un-attempted issue.
+void MainWindow::maybeRestoreIssueLooper()
+{
+    if (m_looperActive)
+        return; // already looping this session
+    QSettings settings;
+    if (!settings.value(kLooperActiveSetting, false).toBool())
+        return;
+    const QString slug = settings.value(kLooperRepoSetting).toString();
+    const int idx = issuesRepoIndex(); // the repo the looper would actually drive
+    if (slug.isEmpty() || idx < 0 || idx >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    if (slug != repo.owner + QLatin1Char('/') + repo.name)
+        return;
+    if (!issueStoreForCurrentRepo().canWrite())
+        return; // only the host runs the looper
+    m_looperActive = true;
+    m_looperProvider = settings.value(kLooperProviderSetting).toString();
+    if (m_looperProvider.isEmpty())
+        m_looperProvider = defaultAgentProvider();
+    m_looperRepoSlug = slug;
+    updateIssueLooperButton();
+    setIssueInlineNotice(
+        QString::fromUtf8("Resumed the issue looper with %1 after restart\xE2\x80\xA6")
+            .arg(agentProviderName(m_looperProvider)));
+    looperStartNext();
 }
 
 QList<ActionWorkflow>
