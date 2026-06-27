@@ -252,34 +252,6 @@ index 4d89ef56..793098eb 100644
    const ul = document.createElement("ul");
    ul.className = "mirror-nodes-list";
    for (const m of members) {
-diff --git a/cloudflare_worker/public/styles.css b/cloudflare_worker/public/styles.css
-index 63a3068b..b68849d9 100644
---- a/cloudflare_worker/public/styles.css
-+++ b/cloudflare_worker/public/styles.css
-@@ -1280,23 +1280,6 @@ a.repo-icon:hover {
-   color: var(--warning);
- }
- 
--.file-meta .cache-expire-btn {
--  margin-left: 8px;
--  padding: 1px 8px;
--  font-size: 11px;
--  font-family: inherit;
--  color: var(--muted);
--  background: var(--card-soft);
--  border: 1px solid var(--border);
--  border-radius: 999px;
--  cursor: pointer;
--}
--
--.file-meta .cache-expire-btn:hover {
--  color: var(--foreground);
--  border-color: var(--warning);
--}
--
- .mirror-summary-grid {
-   display: grid;
-   grid-template-columns: repeat(4, minmax(0, 1fr));
 diff --git a/cloudflare_worker/tests/test_offline_cache_frontend.py b/cloudflare_worker/tests/test_offline_cache_frontend.py
 deleted file mode 100644
 index fd046908..00000000
