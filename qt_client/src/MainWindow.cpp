@@ -1324,6 +1324,23 @@ QString prioritizePromptSetting()
     return stored.isEmpty() ? defaultPrioritizePrompt() : stored;
 }
 
+// Instruction for the "Analyze completeness" button (adhoc #139). The README and
+// the open-issue list are appended after this text before the request is sent.
+QString completenessPrompt()
+{
+    // \xE2\x80\x94 is an em-dash; keep this QString::fromUtf8 (not QStringLiteral)
+    // so the multi-byte UTF-8 escape decodes to one code point, not mojibake.
+    return QString::fromUtf8(
+        "You are reviewing a software project's open issues for completeness. An "
+        "issue is complete when it clearly states the problem or goal, gives "
+        "enough detail for someone to start work, and implies how to tell it is "
+        "done. Use the project's README for context. For EACH open issue, rate it "
+        "Complete, Partial or Incomplete and give one short sentence on what is "
+        "missing (or why it is ready). Respond in GitHub-flavoured markdown as a "
+        "list, one issue per line, e.g. \"- #12 **Partial** \xE2\x80\x94 no "
+        "acceptance criteria.\" Do not add any other commentary.");
+}
+
 QString codexCommandSetting()
 {
     QSettings settings;
@@ -10442,12 +10459,28 @@ QWidget *MainWindow::buildIssuesSection()
                                          QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
     m_issuePrioritizeAgentCombo->setToolTip(
-        "Agent that ranks the issues. Defaults to your default agent "
+        "Agent that ranks/reviews the issues. Defaults to your default agent "
         "(Settings \xE2\x86\x92 Agents).");
 
-    // Place it right after the "Issues" heading, ahead of the view-tab toggles.
+    // Adhoc #139: sibling of "Prioritize from README" that, instead of ranking,
+    // asks the same picked agent to judge how complete/actionable each open issue
+    // is and shows the verdict in a report dialog. Reuses the agent picker above.
+    m_issueCompletenessButton = new QPushButton("Analyze completeness");
+    m_issueCompletenessButton->setObjectName("ghostButton");
+    m_issueCompletenessButton->setProperty("buttonSize", "sm");
+    m_issueCompletenessButton->setCursor(Qt::PointingHandCursor);
+    m_issueCompletenessButton->setToolTip(
+        "Ask the picked agent to rate how complete each open issue is (clear "
+        "problem, enough detail, acceptance criteria) and show a report.");
+    setOcticon(m_issueCompletenessButton, "list-unordered", 16);
+    connect(m_issueCompletenessButton, &QPushButton::clicked, this,
+            &MainWindow::analyzeIssueCompleteness);
+
+    // Place them right after the "Issues" heading, ahead of the view-tab toggles:
+    // prioritize, then completeness, then the shared agent picker.
     headingRow->insertWidget(1, m_issuePrioritizeButton);
     headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
+    headingRow->insertWidget(2, m_issueCompletenessButton);
 
     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
     // are pledged only (funded on merge), so this never moves money.
@@ -37354,6 +37387,188 @@ void MainWindow::prioritizeIssuesFromReadme()
                       .arg(failed),
             failed != 0);
         reloadIssues();
+    });
+}
+
+void MainWindow::analyzeIssueCompleteness()
+{
+    if (m_completenessInFlight || !m_networkAccess)
+        return;
+
+    // Read-only review: we never write to the issue store, only report. Look at
+    // the open issues, since closed ones don't need completeness judged.
+    QList<Issue> open;
+    for (const Issue &issue : std::as_const(m_currentIssues))
+        if (issue.status != QLatin1String("closed"))
+            open.append(issue);
+    if (open.isEmpty()) {
+        setIssueInlineNotice("No open issues to analyze.");
+        return;
+    }
+
+    // README is context only here, so it's optional: include it when present,
+    // otherwise judge the issues on their own.
+    QString readme = currentRepoReadme().trimmed();
+    if (readme.size() > 8000)
+        readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
+
+    // Use the agent picked in the dropdown shared with "Prioritize from README";
+    // fall back to the saved default agent when the picker isn't built yet.
+    const QString provider = m_issuePrioritizeAgentCombo
+                                 ? m_issuePrioritizeAgentCombo->currentData()
+                                       .toString()
+                                 : defaultAgentProvider();
+    const bool claude = agentIsClaudeProvider(provider);
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    // "Claude Code" authenticates with the claude.ai subscription OAuth token,
+    // never a metered API key (see prioritizeIssuesFromReadme for the rationale).
+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
+    const QString apiKey =
+        claudeCode ? QString()
+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
+                             : QSettings().value(kCodexApiKeySetting))
+                         .toString()
+                         .trimmed();
+    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+        setIssueInlineNotice(
+            claudeCode
+                ? "Sign in to Claude Code first (run `claude` and log in)."
+                : claude ? "Add a Claude API key in Settings first."
+                         : "Add an OpenAI API key in Settings first.",
+            true);
+        return;
+    }
+
+    // One line per open issue: "#N: title - opening snippet".
+    QStringList lines;
+    for (const Issue &issue : std::as_const(open)) {
+        QString line =
+            QStringLiteral("#%1: %2").arg(issue.number).arg(issue.title.trimmed());
+        QString body;
+        for (const IssueEvent &ev : issue.events)
+            if (ev.type == QLatin1String("open")) {
+                body = ev.body.trimmed();
+                break;
+            }
+        if (!body.isEmpty()) {
+            body = body.simplified();
+            if (body.size() > 400)
+                body = body.left(400) + QString::fromUtf8("\xE2\x80\xA6");
+            line += QString::fromUtf8(" \xE2\x80\x94 ") + body;
+        }
+        lines << line;
+    }
+
+    const QString readmeSection =
+        readme.isEmpty()
+            ? QStringLiteral("(no README found)")
+            : readme;
+    const QString task =
+        QStringLiteral(
+            "%1\n\n----- README -----\n%2\n\n----- OPEN ISSUES -----\n%3")
+            .arg(completenessPrompt(), readmeSection, lines.join('\n'));
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
+    // Budget enough output for a sentence per issue, with headroom.
+    const int outTok = qBound(512, open.size() * 64 + 256, 4000);
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("max_tokens", outTok);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(
+            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        if (!oauthToken.isEmpty()) {
+            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
+            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+            payload.insert("system", kClaudeCodeOAuthSystem);
+        } else {
+            req.setRawHeader("x-api-key", apiKey.toUtf8());
+        }
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", outTok);
+        QNetworkRequest req = openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    m_completenessInFlight = true;
+    if (m_issueCompletenessButton) {
+        m_issueCompletenessButton->setEnabled(false);
+        m_issueCompletenessButton->setText(
+            QString::fromUtf8("Analyzing\xE2\x80\xA6"));
+    }
+    setIssueInlineNotice(QString::fromUtf8(
+        claude ? "Asking Claude to analyze completeness\xE2\x80\xA6"
+               : "Asking OpenAI to analyze completeness\xE2\x80\xA6"));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        m_completenessInFlight = false;
+        if (m_issueCompletenessButton) {
+            m_issueCompletenessButton->setEnabled(true);
+            m_issueCompletenessButton->setText("Analyze completeness");
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            setIssueInlineNotice(
+                "Completeness request failed: " + apiErrorSummary(reply, body),
+                true);
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        QString text;
+        if (claude) {
+            for (const QJsonValue &v : obj.value("content").toArray()) {
+                const QJsonObject o = v.toObject();
+                if (o.value("type").toString() == QLatin1String("text"))
+                    text += o.value("text").toString();
+            }
+        } else {
+            text = openAiResponseText(obj);
+        }
+        text = text.trimmed();
+        if (text.isEmpty()) {
+            setIssueInlineNotice(
+                "The agent returned an empty completeness report.", true);
+            return;
+        }
+
+        // Show the agent's markdown verdict in a read-only report dialog.
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("Issue completeness"));
+        dialog.resize(560, 480);
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *view = new QTextBrowser(&dialog);
+        view->setOpenExternalLinks(true);
+        view->setMarkdown(text);
+        layout->addWidget(view);
+        auto *buttons =
+            new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                &QDialog::accept);
+        layout->addWidget(buttons);
+        setIssueInlineNotice(QString());
+        dialog.exec();
     });
 }
 
