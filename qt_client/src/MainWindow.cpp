@@ -377,6 +377,17 @@ public:
         update();
     }
 
+    // The per-session token/cost detail that used to live on the agent detail
+    // page (issue #84): shown in the hover tooltip below the 5h/weekly figures.
+    // Pass an empty string to drop it (e.g. when no session is selected).
+    void setStats(const QString &stats)
+    {
+        if (m_stats == stats)
+            return;
+        m_stats = stats;
+        refreshTooltip();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -432,12 +443,16 @@ private:
             return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
                          : QStringLiteral("%1%").arg(v);
         };
-        setToolTip(QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
-                       .arg(fmt(m_fiveHour), fmt(m_weekly)));
+        QString tip = QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
+                          .arg(fmt(m_fiveHour), fmt(m_weekly));
+        if (!m_stats.isEmpty())
+            tip += QStringLiteral("\n\n") + m_stats;
+        setToolTip(tip);
     }
 
     int m_fiveHour = -1;
     int m_weekly = -1;
+    QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -19836,6 +19851,18 @@ QWidget *MainWindow::buildAgentsTab()
             &MainWindow::onExternalClaudeTick);
     m_externalClaudeTimer->start();
     listLayout->addLayout(usageText);
+
+    // Free-text filter over the session list (issue #82): type to narrow the
+    // table to sessions whose issue number/title, agent, status or PR match.
+    m_agentSearch = new QLineEdit;
+    m_agentSearch->setObjectName("issueSearch");
+    m_agentSearch->setPlaceholderText(
+        QString::fromUtf8("Search agents by issue, agent, status or PR\xE2\x80\xA6"));
+    m_agentSearch->setClearButtonEnabled(true);
+    connect(m_agentSearch, &QLineEdit::textChanged, this,
+            [this] { refreshAgentTable(); });
+    listLayout->addWidget(m_agentSearch);
+
     listLayout->addWidget(m_agentTable, 1);
 
     // Bottom-left composer (issue #273): type a prompt and start a brand-new
@@ -19926,11 +19953,6 @@ QWidget *MainWindow::buildAgentsTab()
         else if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
-    m_agentUsage = new QLabel;
-    m_agentUsage->setObjectName("statusLine");
-    m_agentUsage->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentUsage->setWordWrap(true);
-
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
@@ -20044,15 +20066,9 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
-    connect(m_agentTranscript, &ClaudeTranscriptView::statsChanged, this,
-            [this](qint64 tokens, double cost) {
-                if (m_agentStatsLabel) {
-                    m_agentStatsLabel->setText(
-                        QStringLiteral("⛁ %1 tokens · $%2")
-                            .arg(QLocale().toString(tokens)).arg(cost, 0, 'f', 4));
-                    m_agentStatsLabel->show();
-                }
-            });
+    // Issue #84: the live token/cost counter (statsChanged) is now folded into
+    // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
+    // the same totals plus the budget breakdown, so there's no separate label.
 
     m_agentOutputStack = new QStackedWidget;
     m_agentOutputStack->addWidget(m_agentLog);        // page 0: raw / piped log
@@ -20145,31 +20161,10 @@ QWidget *MainWindow::buildAgentsTab()
     outputContainer->setLayout(outputRow);
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // 5-hour + weekly usage graphs, fed live by rate_limit events and re-polled
-    // every minute from the OAuth usage endpoint (issue #290), plus a live
-    // token/cost counter.
-    auto makeUsageBar = [](const QString &name) {
-        auto *b = new QProgressBar;
-        b->setObjectName(name);
-        b->setRange(0, 100);
-        b->setTextVisible(true);
-        b->setMaximumHeight(16);
-        b->hide();
-        return b;
-    };
-    m_agentUsage5hBar = makeUsageBar(QStringLiteral("agentUsage5hBar"));
-    m_agentUsageBar = makeUsageBar(QStringLiteral("agentUsageBar"));
-    m_agentStatsLabel = new QLabel;
-    m_agentStatsLabel->setObjectName("agentStatsLabel");
-    m_agentStatsLabel->hide();
-    auto *usageRow = new QHBoxLayout;
-    usageRow->setContentsMargins(0, 0, 0, 0);
-    usageRow->setSpacing(10);
-    usageRow->addWidget(m_agentUsage5hBar, 1);
-    usageRow->addWidget(m_agentUsageBar, 1);
-    usageRow->addWidget(m_agentStatsLabel);
-    auto *usageRowWidget = new QWidget;
-    usageRowWidget->setLayout(usageRow);
+    // Issue #84: the 5-hour/weekly usage gauges and the live token/cost counter
+    // no longer live here — they were moved into the top-bar mini chart and its
+    // hover tooltip so the detail page stays focused on the transcript. The OAuth
+    // poll (issue #290) feeds that chart directly via applyClaudeUsage().
 
     // Refresh spend + the edited-files list once an hour while the app runs.
     m_agentHourlyTimer = new QTimer(this);
@@ -20223,6 +20218,10 @@ QWidget *MainWindow::buildAgentsTab()
                              {QStringLiteral("text"), prompt}};
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
+            // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
+            // it now to keep the top-bar chart + hover stats current rather than
+            // waiting for the next minute tick.
+            refreshClaudeCodeUsage();
             // Replying clears the "Waiting" state — the agent is working again.
             if (AgentSession *as = findAgentSession(sid);
                 as && as->status == AgentStatus::Waiting) {
@@ -20308,8 +20307,6 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
-    detailLayout->addWidget(m_agentUsage);
-    detailLayout->addWidget(usageRowWidget);
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(m_agentOutputToggle);
     detailLayout->addWidget(outputContainer, 1);
@@ -20326,7 +20323,8 @@ QWidget *MainWindow::buildAgentsTab()
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({430, 680});
+    // Equal split so the divider sits in the middle of the screen (issue #85).
+    splitter->setSizes({600, 600});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -20721,15 +20719,9 @@ void MainWindow::updateAgentTotalSpend()
 void MainWindow::applyClaudeUsage(bool weekly, int percent)
 {
     const int pct = qBound(0, percent, 100);
-    QProgressBar *bar = weekly ? m_agentUsageBar : m_agentUsage5hBar;
-    if (bar) {
-        bar->setValue(pct);
-        bar->setFormat((weekly ? QStringLiteral("Weekly: %1%")
-                               : QStringLiteral("5h: %1%")).arg(pct));
-        bar->show();
-    }
-    // Mirror the same figure into the top-bar mini chart (issue #266) and cache
-    // it so it survives a restart and renders on the very first frame.
+    // Feed the figure into the top-bar mini chart (issue #266) and cache it so it
+    // survives a restart and renders on the very first frame. The detail-page
+    // gauges were retired in issue #84 in favour of this single chart.
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
     QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
@@ -20972,12 +20964,28 @@ void MainWindow::refreshAgentTable()
     }
 
     const int keep = m_selectedAgentSessionId;
+    // Free-text filter (issue #82): substring-match the query against each
+    // session's issue number/title, agent, status and PR number.
+    const QString query =
+        m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         if (session.owner != owner || session.name != name)
             continue;
+        if (!query.isEmpty()) {
+            QStringList haystack{session.issueTitle,
+                                 agentProviderName(session.provider),
+                                 agentStatusText(session.status)};
+            if (session.issueNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.issueNumber);
+            if (session.prNumber > 0)
+                haystack << QStringLiteral("#%1").arg(session.prNumber);
+            if (!haystack.join(QLatin1Char(' '))
+                     .contains(query, Qt::CaseInsensitive))
+                continue;
+        }
         const int row = m_agentTable->rowCount();
         m_agentTable->insertRow(row);
 
@@ -21284,8 +21292,9 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentStatusPill->clear();
         if (m_agentMeta)
             m_agentMeta->clear();
-        if (m_agentUsage)
-            m_agentUsage->clear();
+        // Drop the per-session token line from the top-bar chart's hover tooltip.
+        if (m_navTokenUsage)
+            static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());
         if (m_agentNetPanel)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
@@ -22469,6 +22478,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
         live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+        // Issue #84: launching with an initial prompt is a send too — refresh the
+        // top-bar usage chart + hover stats right away.
+        refreshClaudeCodeUsage();
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -22993,7 +23005,7 @@ void MainWindow::seedSessionTokens()
 
 void MainWindow::setAgentUsageLabel(const AgentSession &session)
 {
-    if (!m_agentUsage)
+    if (!m_navTokenUsage)
         return;
     const int window = session.contextWindow > 0 ? session.contextWindow : 32000;
     const int maxOutput =
@@ -23001,7 +23013,7 @@ void MainWindow::setAgentUsageLabel(const AgentSession &session)
             ? session.maxOutputTokens
             : qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     const int pct = window > 0 ? qMin(100, session.contextTokens * 100 / window) : 0;
-    m_agentUsage->setText(
+    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(
         QStringLiteral("Session token usage: %1 total (%2 prompt estimate, %3 transcript estimate) · budget: context %4/%5 (%6%), max output %7 tokens · credits ~%8 · cost ~%9")
             .arg(formatCount(sessionTokenTotal(session)))
             .arg(formatCount(session.promptTokens))
