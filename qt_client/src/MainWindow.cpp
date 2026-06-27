@@ -6547,14 +6547,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
+    m_quickAddNoIssue = new QCheckBox("No issue");
+    m_quickAddNoIssue->setToolTip(
+        "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
+        "typed text as its prompt.");
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
-            &QCheckBox::setEnabled);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddAgentProvider,
-            &QComboBox::setEnabled);
+    // The provider/PR controls are live whenever an agent will run: either the
+    // user asked to assign one, or "No issue" mode (which always starts one). In
+    // "No issue" mode the plain "Assign agent" toggle is irrelevant, so disable it.
+    auto syncQuickAddAgentControls = [this]() {
+        const bool noIssue = m_quickAddNoIssue->isChecked();
+        m_quickAddAssignAgent->setEnabled(!noIssue);
+        const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
+        m_quickAddAgentProvider->setEnabled(agentRuns);
+        m_quickAddCreatePr->setEnabled(agentRuns);
+    };
+    connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    connect(m_quickAddNoIssue, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    syncQuickAddAgentControls();
 
     auto *quickAddSendButton = new QPushButton("Send");
     quickAddSendButton->setObjectName("primaryButton");
@@ -6611,6 +6626,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(quickAddSendButton);
+    quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
@@ -21525,27 +21541,35 @@ void MainWindow::assignIssueToAgent(const QString &provider)
 // worktree/branch and opens a pull request on finish, like every transcript run.
 void MainWindow::startAdHocAgent()
 {
-    if (!m_agentNewPromptEdit || !m_agentStore)
+    if (!m_agentNewPromptEdit)
         return;
     const QString task = m_agentNewPromptEdit->toPlainText().trimmed();
     if (task.isEmpty())
         return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        flashMessage("Open a repository first to start an agent.", true);
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.localPath.isEmpty()) {
-        flashMessage("This repository has no local checkout to run the agent in.",
-                     true);
-        return;
-    }
-
     // The agent picked in the composer; "claude-code" unless the user chose an
     // API-key provider.
     const QString provider = m_agentNewProvider
                                  ? m_agentNewProvider->currentData().toString()
                                  : QStringLiteral("claude-code");
+    if (startAdHocAgentForRepo(m_repoDetailIndex, task, provider, true) > 0)
+        m_agentNewPromptEdit->clear();
+}
+
+int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
+                                       const QString &provider, bool createPr)
+{
+    if (!m_agentStore || task.isEmpty())
+        return 0;
+    if (repoIndex < 0 || repoIndex >= m_repositories.size()) {
+        flashMessage("Open a repository first to start an agent.", true);
+        return 0;
+    }
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    if (repo.localPath.isEmpty()) {
+        flashMessage("This repository has no local checkout to run the agent in.",
+                     true);
+        return 0;
+    }
 
     AgentSession session;
     session.owner = repo.owner;
@@ -21553,7 +21577,7 @@ void MainWindow::startAdHocAgent()
     session.issueNumber = 0; // ad-hoc: not tied to any issue
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
-    session.createPr = true;
+    session.createPr = createPr;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     // A short title from the prompt's first line, for the list row and the PR.
@@ -21582,10 +21606,9 @@ void MainWindow::startAdHocAgent()
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Started from a prompt on the Agents tab (%1).\n")
+        QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
-    m_agentNewPromptEdit->clear();
     if (provider == QLatin1String("claude-code")) {
         // Claude Code renders as a native stream-json transcript; the typed
         // prompt is its task verbatim.
@@ -21600,6 +21623,7 @@ void MainWindow::startAdHocAgent()
         reloadAgents();
         switchToAgentsTab(session.id);
     }
+    return session.id;
 }
 
 // "Start a new agent" image button (issue #56): pick one or more image files and
@@ -34570,6 +34594,25 @@ void MainWindow::quickAddIssue()
     const QString title = m_issueQuickAdd->text().trimmed();
     if (title.isEmpty())
         return;
+
+    // "No issue" mode (issue #299): don't create an issue at all — hand the typed
+    // text straight to a coding agent as its prompt, like the Agents-tab composer.
+    if (m_quickAddNoIssue && m_quickAddNoIssue->isChecked()) {
+        const QString provider =
+            m_quickAddAgentProvider
+                ? m_quickAddAgentProvider->currentData().toString()
+                : QStringLiteral("claude-code");
+        const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        if (startAdHocAgentForRepo(issuesRepoIndex(), title, provider, createPr) > 0) {
+            m_issueQuickAdd->clear();
+            setIssueInlineNotice(
+                QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
+                               "issue created.")
+                    .arg(agentProviderName(provider)));
+        }
+        return;
+    }
+
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
@@ -34597,7 +34640,9 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
-    setIssueInlineNotice("Issue created.");
+    // A more descriptive confirmation than the old bare "Issue created." — names
+    // the number and title so the toast says exactly what landed (issue #299).
+    setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
     // If requested, hand the freshly-created issue straight to a coding agent.
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
         const QString provider =
