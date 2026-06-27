@@ -502,6 +502,66 @@ void enableHoverRowHighlight(QAbstractItemView *view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
 
+// Outlines the SELECTED row in green with a transparent fill, instead of the
+// solid green selection band. Each cell paints its own slice: top + bottom
+// edges always, plus the left/right end caps on the first/last *visible* column
+// (visual order, so it follows reordered headers). One free helper so the
+// row-wide delegate and the per-column scanner delegate draw an identical
+// outline and the seam between them is invisible.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index)
+{
+    if (!(option.state & QStyle::State_Selected))
+        return;
+    bool drawLeft = index.column() == 0;
+    bool drawRight = true;
+    if (const auto *table = qobject_cast<const QTableView *>(option.widget)) {
+        QHeaderView *header = table->horizontalHeader();
+        int first = -1, last = -1;
+        for (int v = 0; v < header->count(); ++v) {
+            if (header->isSectionHidden(header->logicalIndex(v)))
+                continue;
+            if (first < 0)
+                first = v;
+            last = v;
+        }
+        const int visual = header->visualIndex(index.column());
+        drawLeft = (visual == first);
+        drawRight = (visual == last);
+    }
+    const QRect r = option.rect;
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setPen(QPen(QColor(46, 160, 67), 1)); // #2ea043, the brand green
+    painter->drawLine(r.topLeft(), r.topRight());
+    painter->drawLine(QPoint(r.left(), r.bottom()), QPoint(r.right(), r.bottom()));
+    if (drawLeft)
+        painter->drawLine(r.topLeft(), QPoint(r.left(), r.bottom()));
+    if (drawRight)
+        painter->drawLine(QPoint(r.right(), r.top()), QPoint(r.right(), r.bottom()));
+    painter->restore();
+}
+
+// HoverRowDelegate variant that renders the selected row as a transparent band
+// inside a green outline rather than a solid green fill. The selection flag is
+// stripped before the base paint so neither the stylesheet nor the style fills
+// the row; paintRowSelectionBorder() then draws the outline on top.
+class SelectionBorderRowDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        HoverRowDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
+    }
+};
+
 // Makes a draggable column's divider behave like dragging a boundary/margin: the
 // width it gains (or loses) is taken from (or handed to) its immediate right-hand
 // neighbour, so the divider tracks the cursor and the rest of the table holds
@@ -6547,14 +6607,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
+    m_quickAddNoIssue = new QCheckBox("No issue");
+    m_quickAddNoIssue->setToolTip(
+        "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
+        "typed text as its prompt.");
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
-            &QCheckBox::setEnabled);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddAgentProvider,
-            &QComboBox::setEnabled);
+    // The provider/PR controls are live whenever an agent will run: either the
+    // user asked to assign one, or "No issue" mode (which always starts one). In
+    // "No issue" mode the plain "Assign agent" toggle is irrelevant, so disable it.
+    auto syncQuickAddAgentControls = [this]() {
+        const bool noIssue = m_quickAddNoIssue->isChecked();
+        m_quickAddAssignAgent->setEnabled(!noIssue);
+        const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
+        m_quickAddAgentProvider->setEnabled(agentRuns);
+        m_quickAddCreatePr->setEnabled(agentRuns);
+    };
+    connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    connect(m_quickAddNoIssue, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    syncQuickAddAgentControls();
 
     auto *quickAddSendButton = new QPushButton("Send");
     quickAddSendButton->setObjectName("primaryButton");
@@ -6611,6 +6686,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(quickAddSendButton);
+    quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
@@ -19326,13 +19402,17 @@ public:
     void paint(QPainter *p, const QStyleOptionViewItem &opt,
                const QModelIndex &idx) const override
     {
-        // Let the style draw the row background (selection/hover) but no text.
+        // Let the style draw the row background (hover) but no text. The solid
+        // green selection fill is suppressed so the row reads as a green outline
+        // (drawn below) over a transparent band, matching the rest of the row.
         QStyleOptionViewItem o(opt);
         initStyleOption(&o, idx);
         o.text.clear();
+        o.state &= ~QStyle::State_Selected;
         const QWidget *w = o.widget;
         QStyle *style = w ? w->style() : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
+        paintRowSelectionBorder(p, opt, idx);
 
         const int sessionId = idx.data(Qt::UserRole).toInt();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -19573,7 +19653,10 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 9);
     m_agentTable->setObjectName("issueTable");
-    enableHoverRowHighlight(m_agentTable);
+    // Selected agent rows get a green outline with a transparent fill (rather
+    // than the solid green band the other issueTable lists use); the per-column
+    // Activity delegate below draws the matching outline slice for its cell.
+    m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
@@ -19582,6 +19665,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_agentTable->setShowGrid(false);
     m_agentTable->setWordWrap(false);
+    // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
+    // carry a full-sentence, prompt-derived title that overruns the Issue column,
+    // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
+    // the cell edge instead — the column is user-widenable to read a title in full.
+    m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
@@ -21525,27 +21613,35 @@ void MainWindow::assignIssueToAgent(const QString &provider)
 // worktree/branch and opens a pull request on finish, like every transcript run.
 void MainWindow::startAdHocAgent()
 {
-    if (!m_agentNewPromptEdit || !m_agentStore)
+    if (!m_agentNewPromptEdit)
         return;
     const QString task = m_agentNewPromptEdit->toPlainText().trimmed();
     if (task.isEmpty())
         return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        flashMessage("Open a repository first to start an agent.", true);
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.localPath.isEmpty()) {
-        flashMessage("This repository has no local checkout to run the agent in.",
-                     true);
-        return;
-    }
-
     // The agent picked in the composer; "claude-code" unless the user chose an
     // API-key provider.
     const QString provider = m_agentNewProvider
                                  ? m_agentNewProvider->currentData().toString()
                                  : QStringLiteral("claude-code");
+    if (startAdHocAgentForRepo(m_repoDetailIndex, task, provider, true) > 0)
+        m_agentNewPromptEdit->clear();
+}
+
+int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
+                                       const QString &provider, bool createPr)
+{
+    if (!m_agentStore || task.isEmpty())
+        return 0;
+    if (repoIndex < 0 || repoIndex >= m_repositories.size()) {
+        flashMessage("Open a repository first to start an agent.", true);
+        return 0;
+    }
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    if (repo.localPath.isEmpty()) {
+        flashMessage("This repository has no local checkout to run the agent in.",
+                     true);
+        return 0;
+    }
 
     AgentSession session;
     session.owner = repo.owner;
@@ -21553,7 +21649,7 @@ void MainWindow::startAdHocAgent()
     session.issueNumber = 0; // ad-hoc: not tied to any issue
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
-    session.createPr = true;
+    session.createPr = createPr;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     // A short title from the prompt's first line, for the list row and the PR.
@@ -21582,10 +21678,9 @@ void MainWindow::startAdHocAgent()
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Started from a prompt on the Agents tab (%1).\n")
+        QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
-    m_agentNewPromptEdit->clear();
     if (provider == QLatin1String("claude-code")) {
         // Claude Code renders as a native stream-json transcript; the typed
         // prompt is its task verbatim.
@@ -21600,6 +21695,7 @@ void MainWindow::startAdHocAgent()
         reloadAgents();
         switchToAgentsTab(session.id);
     }
+    return session.id;
 }
 
 // "Start a new agent" image button (issue #56): pick one or more image files and
@@ -21796,6 +21892,12 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
             return false;
         }
     }
+    // A live Claude Code stream session (no runner) is killed by its own Stop
+    // path; deleting it from the list must stop it too, then release its worktree
+    // so the branch is freed (issue #74).
+    if (m_streamSessions.contains(snapshot.id))
+        stopStreamSession(snapshot.id);
+    cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
@@ -22269,6 +22371,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             }
         }
         maybeCreatePullForStreamSession(sid);
+        // The PR captured the diff as a patch, so the worktree is no longer
+        // needed; drop it to free the branch for checkout (issue #74).
+        cleanupStreamWorktree(sid);
         if (ClaudeStreamSession *done = m_streamSessions.take(sid))
             done->deleteLater();
         reloadAgents();
@@ -23175,6 +23280,35 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     } else {
         m_agentStore->appendLog(
             *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+    }
+}
+
+// Release the temp worktree a stream session ran in once the run is over. The
+// worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
+// so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
+// PR locally) fail with "already used by worktree at …". Removing the worktree
+// frees the branch while keeping the branch ref, so the PR still resolves.
+void MainWindow::cleanupStreamWorktree(int sessionId)
+{
+    const QString wtPath = m_streamWorktree.take(sessionId);
+    if (wtPath.isEmpty())
+        return;
+    QString repoPath;
+    if (const AgentSession *s = findAgentSession(sessionId)) {
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri >= 0)
+            repoPath = m_repositories.at(ri).localPath;
+    }
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+    }
+    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("prune")});
     }
 }
 
@@ -34570,6 +34704,25 @@ void MainWindow::quickAddIssue()
     const QString title = m_issueQuickAdd->text().trimmed();
     if (title.isEmpty())
         return;
+
+    // "No issue" mode (issue #299): don't create an issue at all — hand the typed
+    // text straight to a coding agent as its prompt, like the Agents-tab composer.
+    if (m_quickAddNoIssue && m_quickAddNoIssue->isChecked()) {
+        const QString provider =
+            m_quickAddAgentProvider
+                ? m_quickAddAgentProvider->currentData().toString()
+                : QStringLiteral("claude-code");
+        const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        if (startAdHocAgentForRepo(issuesRepoIndex(), title, provider, createPr) > 0) {
+            m_issueQuickAdd->clear();
+            setIssueInlineNotice(
+                QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
+                               "issue created.")
+                    .arg(agentProviderName(provider)));
+        }
+        return;
+    }
+
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
@@ -34597,7 +34750,9 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
-    setIssueInlineNotice("Issue created.");
+    // A more descriptive confirmation than the old bare "Issue created." — names
+    // the number and title so the toast says exactly what landed (issue #299).
+    setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
     // If requested, hand the freshly-created issue straight to a coding agent.
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
         const QString provider =
@@ -38164,6 +38319,15 @@ void MainWindow::headlessSyncNow()
 {
     autoSyncMirrors();
     pollOwnedInboxes();
+}
+
+void MainWindow::headlessUpdateRestart()
+{
+    // Same code path as the GUI "Update, rebuild & restart" button. The update log
+    // dialog it opens is invisible under the offscreen platform, but every phase is
+    // also echoed to the terminal by logRestart()/qInfo(), so a headless operator
+    // sees the full progress. On success the process relaunches itself and quits.
+    updateRebuildRestart();
 }
 
 QStringList MainWindow::headlessStatusLines() const
