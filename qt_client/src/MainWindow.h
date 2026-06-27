@@ -1100,6 +1100,16 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // --- Browser-style back / forward navigation, sat just left of the search box.
+    // A history of "places" (section + open repo) is recorded as you move around;
+    // Back and Forward walk it without recording new entries.
+    QWidget *createNavHistoryButtons();        // build the Back / Forward pair
+    void scheduleNavRecord();                  // queue a debounced location capture
+    void recordNavLocation();                  // snapshot the current place onto the trail
+    void restoreNavEntry(int index);           // navigate to a recorded place
+    void navigateBack();
+    void navigateForward();
+    void updateNavHistoryButtons();            // enable/disable per trail position
     // Full-page deep search opened by pressing Enter in the search box.
     QWidget *buildSearchResultsSection();
     void openSearchResultsPage(const QString &query);
@@ -1964,6 +1974,23 @@ private:
     QLineEdit *m_globalSearch = nullptr;
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
+    // Back / forward navigation trail (left of the search box). Each entry is a
+    // place we landed on: the top-level section index, plus the repo open in the
+    // detail panel (-1 = none) so returning to Code restores the right repo.
+    struct NavPlace {
+        int section = 0;
+        int repoIndex = -1;
+        bool operator==(const NavPlace &o) const
+        {
+            return section == o.section && repoIndex == o.repoIndex;
+        }
+    };
+    QPushButton *m_navBackButton = nullptr;
+    QPushButton *m_navForwardButton = nullptr;
+    QList<NavPlace> m_navHistory;
+    int m_navHistoryIndex = -1;     // current position in m_navHistory
+    bool m_navRestoring = false;    // suppress recording while replaying the trail
+    bool m_navRecordPending = false; // a debounced capture is already queued
     // Full-page deep search (Enter in the box): streams working-tree text
     // matches, commit-message matches and history-diff (pickaxe) hits live.
     QTreeWidget *m_searchResultsTree = nullptr;
