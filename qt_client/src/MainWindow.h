@@ -1289,6 +1289,10 @@ private:
     // configured provider with the editable Settings prompt, and rewrites each
     // issue's priority from the returned ranking.
     void prioritizeIssuesFromReadme();
+    // Adhoc #139: ask the picked agent to judge how complete/actionable each open
+    // issue is (clear problem, enough detail, acceptance criteria) using the
+    // README for context, then show the verdict per issue in a report dialog.
+    void analyzeIssueCompleteness();
     // README markdown for the currently selected issues repo (work tree first,
     // then a `git show HEAD:README*` fallback). Empty when none is found.
     QString currentRepoReadme() const;
@@ -2499,6 +2503,10 @@ private:
     // any provider, not just the saved default. Seeded from the default agent.
     QComboBox *m_issuePrioritizeAgentCombo = nullptr;
     bool m_prioritizeInFlight = false;
+    // Adhoc #139: "Analyze completeness" button next to "Prioritize from README".
+    // Shares the agent picker above; guarded by its own in-flight flag.
+    QPushButton *m_issueCompletenessButton = nullptr;
+    bool m_completenessInFlight = false;
     // Issue looper (adhoc #92): runs the default agent on every open issue in
     // turn. m_looperSessionId is the session currently being watched; when it
     // finishes the looper starts the next open issue.
