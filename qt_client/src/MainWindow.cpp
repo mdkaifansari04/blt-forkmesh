@@ -23539,7 +23539,14 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
         else
             m_agentTranscript->handleEvent(ev);
-        refreshAgentFilesPanel(sessionId);
+        // Refresh the Files-changed panel on real turns only, never on the
+        // high-frequency `stream_event` partials. With --include-partial-messages
+        // those deltas arrive far faster than the diff debounce's 400ms interval, so
+        // refreshing on every one perpetually restarted (starved) the timer and the
+        // `git diff` never fired while the agent streamed — the panel only caught up
+        // once output paused. Partial deltas can't change the file set anyway.
+        if (type != QLatin1String("stream_event"))
+            refreshAgentFilesPanel(sessionId);
         // The view was just kept in sync incrementally, so the render guard's
         // count must track the append — otherwise the next reload would force a
         // full rebuild of a transcript that's already up to date.
