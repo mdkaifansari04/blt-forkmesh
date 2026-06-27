@@ -2238,6 +2238,11 @@ private:
     void stopStreamSession(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // Remove the isolated worktree a stream session ran in (if any) and prune the
+    // registration, freeing its branch so the PR's branch can be checked out in
+    // the main repo. `git worktree remove` keeps the branch ref itself, so the
+    // pull request still resolves. No-op for sessions without a worktree.
+    void cleanupStreamWorktree(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
