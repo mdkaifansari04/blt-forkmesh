@@ -2914,6 +2914,177 @@ private:
     std::function<void()> m_onClick;
 };
 
+// Compact "issue looper" toggle that floats just above the Issues tab (adhoc
+// #130). It is both the control and the indicator: a small on/off switch, the
+// word "looper", and the open issue currently being worked ("#124"). While on,
+// a single neon-green segment travels slowly around the rounded-rect border — a
+// bright loop circling "the whole thing" so the running loop reads from any
+// tab. Replaces the old in-page "working the backlog" banner and the tiny
+// Issues-tab braille snake.
+class LooperToggle : public QWidget
+{
+public:
+    explicit LooperToggle(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setToolTip(QString::fromUtf8(
+            "Issue looper \xE2\x80\x94 run the default agent on every open issue in "
+            "turn. Click to start; click again to stop."));
+        m_loopTimer = new QTimer(this);
+        m_loopTimer->setInterval(40); // smooth travel; lap speed set by the step
+        connect(m_loopTimer, &QTimer::timeout, this, [this] {
+            m_loopPos += 0.0035; // ~one slow lap every ~11s
+            if (m_loopPos >= 1.0)
+                m_loopPos -= 1.0;
+            update();
+        });
+    }
+
+    void setActive(bool on)
+    {
+        if (m_active == on)
+            return;
+        m_active = on;
+        if (m_active)
+            m_loopTimer->start();
+        else
+            m_loopTimer->stop();
+        update();
+    }
+    bool isActive() const { return m_active; }
+
+    // The open issue the looper is currently working (0 = none yet). Shown as
+    // "#N" after the label so the toggle doubles as a "what's it on" readout.
+    void setIssueNumber(int n)
+    {
+        if (m_issue == n)
+            return;
+        m_issue = n;
+        updateGeometry(); // width depends on the "#N" suffix
+        update();
+    }
+    void setOnClick(std::function<void()> cb) { m_onClick = std::move(cb); }
+
+    QSize sizeHint() const override
+    {
+        // Measure with a bold font: the label is drawn bold while active (the
+        // wider state), so sizing for it keeps the width stable across toggles
+        // and never clips the "#N" suffix.
+        QFont bold = font();
+        bold.setBold(true);
+        const int textW = QFontMetrics(bold).horizontalAdvance(labelText());
+        return QSize(kPadX + int(kSwitchW) + kGap + textW + kPadX, 26);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && m_onClick)
+            m_onClick();
+        else
+            QWidget::mousePressEvent(e);
+    }
+    void enterEvent(QEnterEvent *) override
+    {
+        m_hover = true;
+        update();
+    }
+    void leaveEvent(QEvent *) override
+    {
+        m_hover = false;
+        update();
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter g(this);
+        g.setRenderHint(QPainter::Antialiasing);
+        const QColor neon(57, 255, 110); // neon green
+
+        // Pill background. Inset enough that the travelling glow (a ~5px stroke
+        // centred on the border) stays inside the widget rather than clipping.
+        const QRectF box = QRectF(rect()).adjusted(3.0, 3.0, -3.0, -3.0);
+        const qreal radius = box.height() / 2.0;
+        QPainterPath pill;
+        pill.addRoundedRect(box, radius, radius);
+        g.fillPath(pill, QColor(m_hover ? "#21262d" : "#161b22"));
+        // Static dim outline always; the bright travelling segment rides on top.
+        QPen base(QColor(m_active ? "#1f3d29" : "#30363d"));
+        base.setWidthF(1.4);
+        g.strokePath(pill, base);
+        if (m_active)
+            drawTravellingLoop(g, pill, neon);
+
+        // Toggle switch.
+        const qreal sx = box.left() + kPadX - 2.0;
+        QRectF track(sx, box.center().y() - kSwitchH / 2.0, kSwitchW, kSwitchH);
+        g.setPen(Qt::NoPen);
+        g.setBrush(m_active ? neon : QColor("#484f58"));
+        g.drawRoundedRect(track, kSwitchH / 2.0, kSwitchH / 2.0);
+        const qreal knobR = kSwitchH / 2.0 - 2.0;
+        const qreal knobCx = m_active ? track.right() - knobR - 2.0
+                                      : track.left() + knobR + 2.0;
+        g.setBrush(QColor("#f0f6fc"));
+        g.drawEllipse(QPointF(knobCx, track.center().y()), knobR, knobR);
+
+        // Label "looper" (+ "#N").
+        QFont f = font();
+        f.setBold(m_active);
+        g.setFont(f);
+        g.setPen(m_active ? neon : QColor("#8b949e"));
+        const qreal tx = sx + kSwitchW + kGap;
+        g.drawText(QRectF(tx, box.top(), box.right() - tx - 4, box.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, labelText());
+    }
+
+private:
+    QString labelText() const
+    {
+        return m_issue > 0 ? QStringLiteral("looper #%1").arg(m_issue)
+                           : QStringLiteral("looper");
+    }
+    // A single bright neon segment travelling around the pill's border, with a
+    // soft wider pass underneath for the "glow tube" look.
+    void drawTravellingLoop(QPainter &g, const QPainterPath &pill,
+                            const QColor &neon) const
+    {
+        const qreal seg = 0.30; // fraction of the loop lit at once
+        QPainterPath lit;
+        const int steps = 40;
+        for (int i = 0; i <= steps; ++i) {
+            qreal t = m_loopPos + seg * i / steps;
+            if (t >= 1.0)
+                t -= 1.0; // wrap into [0,1); m_loopPos<1 and seg<1, so one wrap
+            const QPointF p = pill.pointAtPercent(t);
+            if (i == 0)
+                lit.moveTo(p);
+            else
+                lit.lineTo(p);
+        }
+        QPen glow(QColor(neon.red(), neon.green(), neon.blue(), 70));
+        glow.setWidthF(5.0);
+        glow.setCapStyle(Qt::RoundCap);
+        g.strokePath(lit, glow);
+        QPen core(neon);
+        core.setWidthF(2.0);
+        core.setCapStyle(Qt::RoundCap);
+        g.strokePath(lit, core);
+    }
+
+    static constexpr int kPadX = 11;
+    static constexpr int kGap = 8;
+    static constexpr qreal kSwitchW = 26.0;
+    static constexpr qreal kSwitchH = 15.0;
+
+    bool m_active = false;
+    bool m_hover = false;
+    int m_issue = 0;
+    qreal m_loopPos = 0.0;
+    QTimer *m_loopTimer = nullptr;
+    std::function<void()> m_onClick;
+};
+
 class CodePreviewEditor;
 
 class CodeLineNumberArea : public QWidget
@@ -10213,22 +10384,9 @@ QWidget *MainWindow::buildIssuesSection()
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
 
-    // Issue looper (adhoc #92): a one-click "work through the backlog" toggle.
-    // Starts the default agent on the highest-priority open issue, watches it to
-    // completion, then automatically moves on to the next — looping until the
-    // backlog is exhausted or the user clicks again to stop.
-    m_issueLooperButton = new QPushButton("Loop open issues");
-    m_issueLooperButton->setObjectName("ghostButton");
-    m_issueLooperButton->setProperty("buttonSize", "sm");
-    m_issueLooperButton->setCheckable(true);
-    m_issueLooperButton->setCursor(Qt::PointingHandCursor);
-    m_issueLooperButton->setToolTip(
-        "Run the default agent on each open issue in turn: start one, wait for it "
-        "to finish, then automatically start the next. Click again to stop after "
-        "the current issue.");
-    setOcticon(m_issueLooperButton, "sync", 16);
-    connect(m_issueLooperButton, &QPushButton::clicked, this,
-            &MainWindow::toggleIssueLooper);
+    // Issue looper (adhoc #92): the one-click "work through the backlog" control
+    // now lives in a compact toggle floating just above the Issues tab (adhoc
+    // #130, see m_looperToggle), so it is no longer a button in this action row.
 
     // Issue #286: hand the README and the open backlog to the default agent and
     // let it rank the issues. The instruction is editable in Settings -> Agents.
@@ -10299,7 +10457,6 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
     actionRow->addWidget(reprioritizeButton);
-    actionRow->addWidget(m_issueLooperButton);
     actionRow->addWidget(bountyAllAmount);
     actionRow->addWidget(bountyAllButton);
     actionRow->addWidget(m_issueStatusFilter);
@@ -10395,43 +10552,13 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueListStack->addWidget(m_issueLabelsTable);     // 2 Labels
     m_issueListStack->addWidget(buildIssueBoard());      // 3 Board (Kanban)
 
-    // "Looper running" banner (adhoc #109): pinned to the very top of the issues
-    // pane and shown only while the looper is active. A turning gear (reused
-    // AgentSpinner) plus an indeterminate busy bar make it read as hard at work,
-    // with a subtitle naming the issue the agent is currently on.
-    m_issueLooperBanner = new QFrame;
-    m_issueLooperBanner->setObjectName("issueLooperBanner");
-    auto *looperBannerRow = new QHBoxLayout(m_issueLooperBanner);
-    looperBannerRow->setContentsMargins(12, 8, 12, 8);
-    looperBannerRow->setSpacing(10);
-    auto *looperSpinner = new AgentSpinner(m_issueLooperBanner);
-    looperSpinner->setToolTip(
-        QString::fromUtf8("Issue looper working the backlog\xE2\x80\xA6"));
-    m_issueLooperSpinner = looperSpinner;
-    looperBannerRow->addWidget(looperSpinner);
-    auto *looperTextCol = new QVBoxLayout;
-    looperTextCol->setContentsMargins(0, 0, 0, 0);
-    looperTextCol->setSpacing(1);
-    m_issueLooperBannerTitle = new QLabel(QStringLiteral("Issue looper running"));
-    m_issueLooperBannerTitle->setObjectName("issueLooperBannerTitle");
-    m_issueLooperBannerDetail = new QLabel;
-    m_issueLooperBannerDetail->setObjectName("issueLooperBannerDetail");
-    m_issueLooperBannerDetail->setWordWrap(true);
-    looperTextCol->addWidget(m_issueLooperBannerTitle);
-    looperTextCol->addWidget(m_issueLooperBannerDetail);
-    looperBannerRow->addLayout(looperTextCol, 1);
-    auto *looperBusyBar = new QProgressBar;
-    looperBusyBar->setObjectName("issueLooperBannerBar");
-    looperBusyBar->setRange(0, 0); // indeterminate: a perpetual sweep
-    looperBusyBar->setTextVisible(false);
-    looperBusyBar->setFixedSize(96, 6);
-    looperBannerRow->addWidget(looperBusyBar);
-    m_issueLooperBanner->hide();
+    // The "looper running" status now lives in the floating toggle above the
+    // Issues tab (adhoc #130), so the in-page banner that used to sit here has
+    // been removed from the issues page.
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addWidget(m_issueLooperBanner);
     listLayout->addLayout(headingRow);
     listLayout->addWidget(m_issuesRepoCombo);
     listLayout->addLayout(filterRow);
@@ -11261,19 +11388,10 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoCodeTab = b; // visible pill next to Commits; also shows repo size
         if (i == 1)
             m_repoCommitsTab = b;
-        if (i == 2) {
-            m_repoIssuesTab = b; // keep a handle for the Issues (N) badge
-            // Blue braille snake overlaid at the tab's right edge while the issue
-            // looper runs (adhoc #125); kept separate so "Issues (N)" keeps its
-            // normal colour, mirroring m_agentSnake on the Agents tab.
-            m_looperSnake = new QLabel(b);
-            m_looperSnake->setObjectName("looperSnake");
-            m_looperSnake->setAlignment(Qt::AlignCenter);
-            m_looperSnake->setAttribute(Qt::WA_TransparentForMouseEvents);
-            m_looperSnake->setStyleSheet(
-                "#looperSnake{color:#79c0ff;background:transparent;}");
-            m_looperSnake->hide();
-        }
+        if (i == 2)
+            m_repoIssuesTab = b; // keep a handle for the Issues (N) badge; the
+                                 // looper toggle floats just above this tab
+                                 // (adhoc #130, created below).
         if (i == 3) {
             m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
             // Purple braille snake overlaid at the tab's right edge while an agent
@@ -11326,6 +11444,16 @@ QWidget *MainWindow::buildRepoDetailSection()
     // changes never reflows the tab content below — that shift is what read as the
     // whole view "resizing" on small screens, most visibly on Mirror nodes.
     m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
+
+    // Issue-looper toggle (adhoc #130): a compact switch floating in the band
+    // just above the Issues tab, mirroring how the Sync button floats over
+    // Commits. It both shows the loop's state and toggles it, so the loop is
+    // controllable and visible from any tab without an in-page banner. Created
+    // parented to the window; positionLooperToggle reparents it onto the page.
+    auto *looperToggle = new LooperToggle(this);
+    looperToggle->hide();
+    looperToggle->setOnClick([this] { toggleIssueLooper(); });
+    m_looperToggle = looperToggle;
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -22026,40 +22154,13 @@ void MainWindow::looperOnSessionFinished(int sessionId)
 
 void MainWindow::updateIssueLooperButton()
 {
-    if (m_issueLooperButton) {
-        QSignalBlocker block(m_issueLooperButton);
-        m_issueLooperButton->setChecked(m_looperActive);
-        m_issueLooperButton->setText(m_looperActive
-                                         ? QStringLiteral("Stop looping")
-                                         : QStringLiteral("Loop open issues"));
+    // Drive the floating toggle above the Issues tab (adhoc #130): on/off state,
+    // the issue currently being worked, and a neon loop that animates while on.
+    if (auto *toggle = static_cast<LooperToggle *>(m_looperToggle)) {
+        toggle->setActive(m_looperActive);
+        toggle->setIssueNumber(m_looperActive ? m_looperCurrentIssue : 0);
+        positionLooperToggle(); // anchor + reveal over the Issues tab
     }
-
-    // Top-of-pane "looper running" banner: visible only while looping, with the
-    // gear tinted by the running provider and a subtitle naming the live issue.
-    if (m_issueLooperBanner) {
-        m_issueLooperBanner->setVisible(m_looperActive);
-        if (m_looperActive) {
-            if (m_issueLooperSpinner)
-                static_cast<AgentSpinner *>(m_issueLooperSpinner)
-                    ->setProvider(m_looperProvider);
-            if (m_issueLooperBannerTitle)
-                m_issueLooperBannerTitle->setText(
-                    QString::fromUtf8("%1 is working the backlog\xE2\x80\xA6")
-                        .arg(agentProviderName(m_looperProvider)));
-            if (m_issueLooperBannerDetail)
-                m_issueLooperBannerDetail->setText(
-                    m_looperCurrentIssue > 0
-                        ? QString::fromUtf8("On issue #%1 \xE2\x80\x94 %2")
-                              .arg(m_looperCurrentIssue)
-                              .arg(m_looperCurrentTitle)
-                        : QString::fromUtf8(
-                              "Looking for the next open issue\xE2\x80\xA6"));
-        }
-    }
-
-    // Tiny snake on the Issues tab + persisted state — both keyed off the same
-    // m_looperActive this function is the funnel for (adhoc #125).
-    updateIssueLooperTabIndicator();
     persistLooperState();
 }
 
@@ -24898,6 +24999,10 @@ void MainWindow::updateRepoIssueCount()
         m_repoIssuesTab->setText(
             QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
     }
+    // Opening a repo (or reloading its issues) runs here, so it's the reliable
+    // funnel for revealing the looper toggle above the Issues tab even when the
+    // loop is off — updateIssueLooperButton only fires on a state change (#130).
+    positionLooperToggle();
 }
 
 void MainWindow::updateRepoDiscussionCount()
@@ -44765,47 +44870,47 @@ void MainWindow::positionAgentSnake()
                               m_repoAgentsTab->height());
 }
 
-void MainWindow::positionLooperSnake()
+// Anchor the looper toggle in the meta band just above the Issues tab (adhoc
+// #130), mirroring positionRepoPushButton over Commits. It stays visible the
+// whole time a repo detail page is open — off (grey switch) or on (green switch
+// + travelling neon loop, naming the live issue). A modest timer keeps it
+// pinned over the tab as the window resizes or the tabs reflow.
+void MainWindow::positionLooperToggle()
 {
-    if (!m_looperSnake || !m_repoIssuesTab)
+    if (!m_looperToggle || !m_repoIssuesTab)
         return;
-    const int w = 16;
-    m_looperSnake->setGeometry(m_repoIssuesTab->width() - w - 6, 0, w,
-                               m_repoIssuesTab->height());
-}
-
-// Tiny "looper running" indicator on the Issues tab (adhoc #125): a slowly
-// animated blue braille snake shown only while the loop is active, mirroring the
-// Agents tab's m_agentSnake so the loop is visible from any tab. Driven from
-// updateIssueLooperButton(), which already fires on every looper state change.
-void MainWindow::updateIssueLooperTabIndicator()
-{
-    if (!m_looperSnake)
+    QWidget *tabBar = m_repoIssuesTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
         return;
-    if (!m_looperActive) {
-        if (m_looperSpinTimer)
-            m_looperSpinTimer->stop();
-        m_looperSnake->hide();
-        return;
+    if (m_looperToggle->parentWidget() != page)
+        m_looperToggle->setParent(page); // hides it; shown again just below
+    const int w = m_looperToggle->sizeHint().width();
+    const int h = m_looperToggle->sizeHint().height();
+    const QPoint tl = m_repoIssuesTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    m_looperToggle->setGeometry(x, y, w, h);
+    // Only show it while the repo-detail page is the one on screen; otherwise the
+    // overlay would float over whatever section replaced it.
+    const bool onPage = page->isVisible();
+    m_looperToggle->setVisible(onPage);
+    if (onPage)
+        m_looperToggle->raise();
+    // Keep a single low-rate timer running so the toggle re-anchors as the window
+    // resizes or the tabs reflow, and reappears when the user returns to the
+    // repo-detail page. Started once; the per-tick visibility check above is what
+    // hides/shows it, so it never needs stopping.
+    if (!m_looperToggleTimer) {
+        m_looperToggleTimer = new QTimer(this);
+        connect(m_looperToggleTimer, &QTimer::timeout, this,
+                &MainWindow::positionLooperToggle);
+        m_looperToggleTimer->start(400);
     }
-    positionLooperSnake();
-    m_looperSnake->show();
-    m_looperSnake->raise();
-    if (!m_looperSpinTimer) {
-        m_looperSpinTimer = new QTimer(this);
-        connect(m_looperSpinTimer, &QTimer::timeout, this, [this] {
-            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
-                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
-                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
-                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
-                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
-            m_looperSpinFrame = (m_looperSpinFrame + 1) % 10;
-            m_looperSnake->setText(QString::fromUtf8(frames[m_looperSpinFrame]));
-            positionLooperSnake(); // keep anchored as the window resizes
-        });
-    }
-    if (!m_looperSpinTimer->isActive())
-        m_looperSpinTimer->start(120);
 }
 
 // Persist the looper's running state so a restart resumes the loop on the same
