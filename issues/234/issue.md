@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 234
 title: Branch port/issue-154-reference-links — needs merge into main
-status: open
+status: closed
 labels: [feature]
 milestone: 
 priority: 9
