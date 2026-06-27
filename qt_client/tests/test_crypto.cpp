@@ -9,6 +9,7 @@
 #include "../src/IssueStore.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
+#include "../src/ReferenceLinks.h"
 #include "../src/RoomCrypto.h"
 
 #include <QByteArray>
@@ -74,6 +75,42 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     app.setApplicationName("ForkMeshCryptoTest");
     app.setOrganizationName("ForkMesh");
+
+    {
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(
+            "See #154, PR #7, pull request #8, abcdef1, and "
+            "forkmesh://pull/owner/repo/7#open.");
+        check(linked.contains("[#154](fm-issue:154)"),
+              "plain # references render as issue links");
+        check(linked.contains("[PR #7](fm-pull:7)"),
+              "explicit PR references render as pull links");
+        check(linked.contains("[pull request #8](fm-pull:8)"),
+              "explicit pull request references render as pull links");
+        check(linked.contains("[abcdef1](fm-commit:abcdef1)"),
+              "pasted commit hashes render as commit links");
+        check(linked.contains("[forkmesh://pull/owner/repo/7#open]"
+                              "(forkmesh://pull/owner/repo/7#open)"),
+              "pasted ForkMesh deep links render as clickable links");
+    }
+
+    {
+        const QString input =
+            "Already [#154](https://example.test/issues/154), `#155`, "
+            "https://example.test/#156\n```\n#157 abcdef1\n```";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        const QString input =
+            "Already [#154][issue], ``#155 abcdef1``, and a definition.\n"
+            "\n"
+            "[issue]: forkmesh://issue/owner/repo/154";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips reference-style links and multi-backtick code");
+    }
 
     ForkMeshIdentity identity;
     check(identity.load(), "Ed25519 identity loads or generates");
