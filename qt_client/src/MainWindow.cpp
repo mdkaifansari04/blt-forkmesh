@@ -7,6 +7,7 @@
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
+#include "ScrollJumpButtons.h"
 #include "CommitCommentStore.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
@@ -19562,12 +19563,20 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 // active run time (durationMs, the same value the Time column shows), and fall
 // back to the start→finish wall-clock span for sessions that don't report it
 // (e.g. the API agents) so the Speed field is populated for every finished task.
+// While a session is still running, measure against the wall clock from its
+// start so the Speed figure ticks up live as tokens stream in, rather than
+// staying blank until the final result lands.
 qint64 agentEffectiveDurationMs(const AgentSession &s)
 {
     if (s.durationMs > 0)
         return s.durationMs;
     if (s.finishedAtMs > s.startedAtMs && s.startedAtMs > 0)
         return s.finishedAtMs - s.startedAtMs;
+    if (s.startedAtMs > 0 && s.status == AgentStatus::Running) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now > s.startedAtMs)
+            return now - s.startedAtMs;
+    }
     return 0;
 }
 
@@ -20139,6 +20148,18 @@ QWidget *MainWindow::buildAgentsTab()
     applyLogFont(m_agentLog);
     new AgentLogHighlighter(m_agentLog->document());
     m_agentLog->setMaximumBlockCount(30000);
+    // Same floating ▲/▼ jump corner the transcript has, so the raw log scrolls
+    // to either end with one click.
+    auto *rawJump = new ScrollJumpButtons(m_agentLog);
+    connect(rawJump, &ScrollJumpButtons::topClicked, this, [this] {
+        if (m_agentLog)
+            m_agentLog->verticalScrollBar()->setValue(0);
+    });
+    connect(rawJump, &ScrollJumpButtons::bottomClicked, this, [this] {
+        if (m_agentLog)
+            m_agentLog->verticalScrollBar()->setValue(
+                m_agentLog->verticalScrollBar()->maximum());
+    });
 
     // Claude Code runs in a real embedded terminal; API-key agents keep the piped
     // log. Stack the two so the detail shows whichever fits the running session.
@@ -21566,8 +21587,10 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        if (m_agentLog)
+        if (m_agentLog) {
             m_agentLog->setPlainText(m_streamRaw.value(sessionId));
+            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
+        }
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -23254,6 +23277,13 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         }
         cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+        // Refresh the Speed cell in the same pass so the tok/s figure climbs in
+        // real time while the agent streams — agentEffectiveDurationMs measures
+        // a running session against the wall clock, so this recomputes the live
+        // rate from the freshly-bumped token total.
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+            if (const AgentSession *s = findAgentSession(sessionId))
+                applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
     // Keep the open detail panel's "Session token usage" line in step with the
@@ -23643,11 +23673,10 @@ void MainWindow::showAgentRawOutput()
 {
     if (!m_agentOutputStack || !m_agentLog)
         return;
-    if (m_streamRaw.contains(m_selectedAgentSessionId)) {
+    if (m_streamRaw.contains(m_selectedAgentSessionId))
         m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
-        m_agentLog->moveCursor(QTextCursor::End);
-    }
     m_agentOutputStack->setCurrentWidget(m_agentLog);
+    m_agentLog->moveCursor(QTextCursor::End); // always land on the tail when shown
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
@@ -29701,11 +29730,15 @@ QWidget *MainWindow::buildWorktreesTab()
             deleteWorktreeBranchAndAgent(m_worktreeSelectedPath,
                                          m_worktreeSelectedBranch);
     });
-    // Show which branch the selected worktree is on, beside its action buttons.
+    // Show which branch the selected worktree is on and where it lives on disk,
+    // beside its action buttons. The branch name and the path are links that open
+    // the worktree's folder in the system file manager.
     m_worktreeBranchLabel = new QLabel;
     m_worktreeBranchLabel->setObjectName("sectionLabel");
     m_worktreeBranchLabel->setTextFormat(Qt::RichText);
-    m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                   Qt::LinksAccessibleByMouse);
+    m_worktreeBranchLabel->setOpenExternalLinks(true);
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
@@ -30088,11 +30121,27 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     // "Update from main" also needs the worktree's folder on disk to merge into.
     m_worktreeSelectedBranch = branch;
     m_worktreeSelectedPath = worktreePath;
-    if (m_worktreeBranchLabel)
-        m_worktreeBranchLabel->setText(
-            branch.isEmpty()
-                ? QString()
-                : QStringLiteral("On branch <b>%1</b>").arg(branch.toHtmlEscaped()));
+    if (m_worktreeBranchLabel) {
+        if (branch.isEmpty()) {
+            m_worktreeBranchLabel->setText(QString());
+        } else {
+            // Only link to a folder that actually exists on disk; the merged-away
+            // main branch has no separate worktree dir to open.
+            const bool onDisk = !worktreePath.isEmpty() && QDir(worktreePath).exists();
+            const QString url =
+                onDisk ? QUrl::fromLocalFile(worktreePath).toString() : QString();
+            const auto link = [&url, onDisk](const QString &html) {
+                return onDisk ? QStringLiteral("<a href=\"%1\">%2</a>").arg(url, html)
+                              : html;
+            };
+            QString text = QStringLiteral("On branch %1")
+                               .arg(link(QStringLiteral("<b>%1</b>")
+                                             .arg(branch.toHtmlEscaped())));
+            if (!worktreePath.isEmpty())
+                text += QStringLiteral(" · %1").arg(link(worktreePath.toHtmlEscaped()));
+            m_worktreeBranchLabel->setText(text);
+        }
+    }
     const bool feature = !branch.isEmpty() && branch != base;
     QString repoLocal;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
@@ -42588,83 +42637,117 @@ void MainWindow::syncRepository(int index, bool quiet)
                 const QString errors =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
-                m_syncingRepos.remove(index);
 
                 if (index < 0 || index >= m_repositories.size()) {
+                    m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     return;
                 }
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (exitCode == 0) {
-                    // Fetch does not repair a bare repo's symbolic HEAD. Keep it
-                    // on the source/default branch so smart-HTTP clones check
-                    // out real content even after agent PR activity.
-                    repairMirrorHead(repo.mirrorPath, repo.localPath);
-                    // Drop churning tool refs left over from older --mirror
-                    // clones so peers cloning from us don't hit "not our ref".
-                    pruneNonStableMirrorRefs(repo.mirrorPath);
-                    const bool stillPreview = repo.previewOnly;
-                    // Did the owner's repo actually change?
-                    const bool changed =
-                        !hasMirror ||
-                        mirrorRefsDigest(repo.mirrorPath) != beforeDigest;
-                    repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
-                    if (!stillPreview)
-                        saveRepositories();
-                    refreshRepositoryList();
-                    // Now that the bare mirror exists, (re)install the push hook
-                    // so local pushes are detected (for actions + live refresh).
-                    if (!stillPreview)
-                        ensurePushHook(repo);
-                    if (changed && hasMirror && !stillPreview && m_actionStore) {
-                        const QString branch = mirrorHeadBranch(repo.mirrorPath);
-                        const QString commit =
-                            mirrorBranchCommit(repo.mirrorPath, branch);
-                        if (!branch.isEmpty() && !commit.isEmpty() &&
-                            commit != beforeHeadCommit) {
-                            enqueuePushEvent(repo.owner, repo.name, commit,
-                                             "refs/heads/" + branch);
+                    // The post-fetch mirror housekeeping all shells out to git:
+                    // repairing the bare repo's symbolic HEAD (so smart-HTTP clones
+                    // check out real content), pruning churning tool refs left by
+                    // older --mirror clones (so peers don't hit "not our ref"), and
+                    // reading the refs back to tell whether the owner's repo
+                    // actually changed. On a large or busy mirror that is hundreds
+                    // of milliseconds of subprocess spawns, and running it here on
+                    // the GUI thread froze the window every time a sync finished.
+                    // Do that git work on a worker thread — it only touches the
+                    // on-disk mirror through these path strings, never m_repositories
+                    // or any widget — then apply the results back on the main thread,
+                    // the same off-thread pattern scanRepoMentionsFor/deleteIssue
+                    // use. The repo stays flagged "syncing" until the housekeeping
+                    // finishes so a concurrent auto-sync can't race it on the same
+                    // mirror.
+                    const QString mirrorPath = repo.mirrorPath;
+                    const QString localPath = repo.localPath;
+                    auto afterDigest = std::make_shared<QString>();
+                    auto headBranch = std::make_shared<QString>();
+                    auto headCommit = std::make_shared<QString>();
+                    QThread *worker = QThread::create(
+                        [mirrorPath, localPath, afterDigest, headBranch,
+                         headCommit] {
+                            repairMirrorHead(mirrorPath, localPath);
+                            pruneNonStableMirrorRefs(mirrorPath);
+                            *afterDigest = mirrorRefsDigest(mirrorPath);
+                            *headBranch = mirrorHeadBranch(mirrorPath);
+                            *headCommit =
+                                mirrorBranchCommit(mirrorPath, *headBranch);
+                        });
+                    connect(worker, &QThread::finished, this,
+                            [this, worker, index, quiet, hasMirror, beforeDigest,
+                             beforeHeadCommit, afterDigest, headBranch,
+                             headCommit] {
+                        worker->deleteLater();
+                        m_syncingRepos.remove(index);
+                        if (index < 0 || index >= m_repositories.size()) {
+                            refreshRepositoryList();
+                            return;
                         }
-                    }
-                    // If this repo's detail is open, reflect the new commits.
-                    if (changed && index == m_repoDetailIndex)
-                        refreshOpenRepoDetail();
-                    // Newly-synced issues/PRs may @mention the local user.
-                    if (changed && !stillPreview)
-                        scanRepoMentionsFor(repo);
-                    // Tell connected peers that also mirror this repo that it
-                    // advanced from its source of truth. Only for real mirrors
-                    // that already existed (an actual update, not a first clone).
-                    if (changed && hasMirror && !stillPreview && m_backend)
-                        m_backend->notifyMirrorUpdated(
-                            catalogOwner(repo) + "/" +
-                            repoSegment(repo.name, QStringLiteral("repository")));
-                    // Quiet auto-syncs only speak up when something changed.
-                    if (!quiet || changed) {
-                        logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
-                                                : QStringLiteral("Mirror: synced ")) +
-                                  repo.owner + "/" + repo.name + " into " +
-                                  repo.mirrorPath + ".");
-                    }
-                    if (!quiet) {
-                        flashMessage(stillPreview
-                                         ? "Cached preview for " + repo.owner + "/" +
-                                               repo.name +
-                                               (changed ? QString()
-                                                        : " (already up to date)")
-                                         : "Synced " + repo.owner + "/" + repo.name +
-                                               (changed ? QString()
-                                                        : " (already up to date)"));
-                    }
-                    if (!stillPreview && repo.publishToNetwork &&
-                        (changed || !quiet)) {
-                        publishRepository(index, false);
-                        // Serve this repo's files live to the web now that a
-                        // mirror exists (pure live tunnel, nothing uploaded).
-                        startRepoHosts();
-                    }
+                        RepositoryRecord &repo = m_repositories[index];
+                        const bool stillPreview = repo.previewOnly;
+                        // Did the owner's repo actually change?
+                        const bool changed =
+                            !hasMirror || *afterDigest != beforeDigest;
+                        repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+                        if (!stillPreview)
+                            saveRepositories();
+                        refreshRepositoryList();
+                        // Now that the bare mirror exists, (re)install the push
+                        // hook so local pushes are detected (actions + refresh).
+                        if (!stillPreview)
+                            ensurePushHook(repo);
+                        if (changed && hasMirror && !stillPreview &&
+                            m_actionStore && !headBranch->isEmpty() &&
+                            !headCommit->isEmpty() &&
+                            *headCommit != beforeHeadCommit) {
+                            enqueuePushEvent(repo.owner, repo.name, *headCommit,
+                                             "refs/heads/" + *headBranch);
+                        }
+                        // If this repo's detail is open, reflect the new commits.
+                        if (changed && index == m_repoDetailIndex)
+                            refreshOpenRepoDetail();
+                        // Newly-synced issues/PRs may @mention the local user.
+                        if (changed && !stillPreview)
+                            scanRepoMentionsFor(repo);
+                        // Tell connected peers that also mirror this repo that it
+                        // advanced from its source of truth. Only for real mirrors
+                        // that already existed (an actual update, not a first clone).
+                        if (changed && hasMirror && !stillPreview && m_backend)
+                            m_backend->notifyMirrorUpdated(
+                                catalogOwner(repo) + "/" +
+                                repoSegment(repo.name,
+                                            QStringLiteral("repository")));
+                        // Quiet auto-syncs only speak up when something changed.
+                        if (!quiet || changed) {
+                            logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
+                                                    : QStringLiteral("Mirror: synced ")) +
+                                      repo.owner + "/" + repo.name + " into " +
+                                      repo.mirrorPath + ".");
+                        }
+                        if (!quiet) {
+                            flashMessage(stillPreview
+                                             ? "Cached preview for " + repo.owner + "/" +
+                                                   repo.name +
+                                                   (changed ? QString()
+                                                            : " (already up to date)")
+                                             : "Synced " + repo.owner + "/" + repo.name +
+                                                   (changed ? QString()
+                                                            : " (already up to date)"));
+                        }
+                        if (!stillPreview && repo.publishToNetwork &&
+                            (changed || !quiet)) {
+                            publishRepository(index, false);
+                            // Serve this repo's files live to the web now that a
+                            // mirror exists (pure live tunnel, nothing uploaded).
+                            startRepoHosts();
+                        }
+                    });
+                    worker->start();
                 } else {
+                    m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     // Relay/host hiccups (HTTP 5xx, RPC failed, connection
                     // resets) are transient: the host serving this repo is
