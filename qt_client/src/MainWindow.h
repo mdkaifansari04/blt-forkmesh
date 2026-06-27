@@ -1278,6 +1278,13 @@ private:
     // user's node is what alerts them. Deduped and seeded via QSettings so we
     // never repeat an alert or backfill a freshly-cloned repo's history.
     void scanRepoMentionsFor(const RepositoryRecord &repo);
+    // Match @mentions against issues/PRs/commit-comments already loaded off the UI
+    // thread (see scanRepoMentionsFor) and raise notifications. Runs on the main
+    // thread so it can touch QSettings and the notification UI.
+    void applyRepoMentions(
+        const RepositoryRecord &repo, const QList<Issue> &allIssues,
+        const QList<PullRequest> &allPulls,
+        const QList<QPair<QString, QList<CommitComment>>> &allCommitComments);
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
@@ -2480,6 +2487,10 @@ private:
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
     QSet<int> m_pushingRepos;
+    // "owner/name" of repos whose @mention scan is running on a worker thread, so
+    // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
+    // while the first is still loading issues/PRs off the UI thread.
+    QSet<QString> m_mentionScanInFlight;
     QString m_currentConversation;
     // Per-conversation message log and the live rows for the open conversation.
     QHash<QString, QList<ChatMessage>> m_history;

@@ -328,7 +328,30 @@ void RepoHost::handleRequest(const QJsonObject &request)
     if (reqId.isEmpty())
         return;
 
-    emit requestServed(m_owner, m_name, op == "git-upload-pack");
+    const bool clone = op == "git-upload-pack";
+    emit requestServed(m_owner, m_name, clone);
+
+    // Surface every served request in the node log so the operator can see their
+    // node working (issue #297). Describe the operation in plain terms; clone and
+    // ref-advertisement requests are the git smart-HTTP clone/fetch handshake.
+    QString action;
+    if (clone)
+        action = QStringLiteral("clone/fetch (upload-pack)");
+    else if (op == "git-info-refs")
+        action = QStringLiteral("clone handshake (ref advertisement)");
+    else if (op == "tree")
+        action = path.isEmpty() ? QStringLiteral("browse tree (root)")
+                                : QStringLiteral("browse tree '%1'").arg(path);
+    else if (op == "blob")
+        action = QStringLiteral("view file '%1'").arg(path);
+    else if (op == "commits")
+        action = QStringLiteral("commit history");
+    else if (op == "commit")
+        action = QStringLiteral("view commit %1").arg(path);
+    else
+        action = op.isEmpty() ? QStringLiteral("request") : op;
+    emit log(QStringLiteral("Host: served %1 for %2/%3.")
+                 .arg(action, m_owner, m_name));
 
     // Git smart-HTTP clone: stream the packfile/advertisement back in chunks.
     if (op == "git-info-refs") {
