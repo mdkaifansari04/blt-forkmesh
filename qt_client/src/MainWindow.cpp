@@ -77,6 +77,7 @@
 #include <QSslError>
 #include <QImage>
 #include <QKeyEvent>
+#include <QConicalGradient>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
@@ -466,6 +467,141 @@ private:
     int m_fiveHour = -1;
     int m_weekly = -1;
     QString m_stats; // per-session token/cost line, shown under the gauges
+};
+
+// Tiny spinning-radar dish + latency readout shown just left of the relay name.
+// The dish always sweeps (a continuously rotating wedge) so the relay looks
+// "alive"; a one-minute probe feeds in the round-trip time, which renders as
+// "33ms" beside it. When the relay stops answering the whole control flips to a
+// red alert (red dish + "offline"). Colour-grades the latency green/amber so a
+// degrading link is visible at a glance.
+class RelayRadarWidget : public QWidget
+{
+public:
+    explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(58, 24);
+        refreshTooltip();
+        // Drive the sweep: a slow, steady rotation independent of probe timing.
+        m_sweep = new QTimer(this);
+        m_sweep->setInterval(60);
+        connect(m_sweep, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 9) % 360;
+            update();
+        });
+        m_sweep->start();
+    }
+
+    // Record a successful probe (round-trip milliseconds).
+    void setLatency(int ms)
+    {
+        m_latencyMs = qMax(0, ms);
+        m_unreachable = false;
+        refreshTooltip();
+        update();
+    }
+
+    // The relay failed to answer the last probe: show the red alert.
+    void setUnreachable()
+    {
+        if (m_unreachable)
+            return;
+        m_unreachable = true;
+        refreshTooltip();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const int dish = qMin(height() - 4, 18);
+        const QRectF dishRect(2, (height() - dish) / 2.0, dish, dish);
+        const QPointF c = dishRect.center();
+        const qreal r = dish / 2.0;
+        const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
+                                            : statusColor();
+
+        // Faint radar rings.
+        QColor ring = accent;
+        ring.setAlpha(70);
+        p.setPen(QPen(ring, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(dishRect);
+        p.drawEllipse(c, r * 0.5, r * 0.5);
+
+        // Rotating sweep wedge, fading behind the leading edge.
+        QConicalGradient sweep(c, -m_angle);
+        QColor lead = accent;
+        QColor tail = accent;
+        tail.setAlpha(0);
+        sweep.setColorAt(0.0, lead);
+        sweep.setColorAt(0.18, tail);
+        sweep.setColorAt(1.0, tail);
+        p.setPen(Qt::NoPen);
+        p.setBrush(sweep);
+        p.drawPie(dishRect, -m_angle * 16, 70 * 16);
+
+        // Centre blip.
+        p.setBrush(accent);
+        p.drawEllipse(c, 1.4, 1.4);
+
+        // Latency text / alert to the right of the dish.
+        QFont f = font();
+        f.setPointSizeF(qMax(6.5, f.pointSizeF() - 2.0));
+        p.setFont(f);
+        const QRectF textRect(dishRect.right() + 4, 0,
+                              width() - dishRect.right() - 4, height());
+        QString label;
+        QColor textCol;
+        if (m_unreachable) {
+            label = QStringLiteral("offline");
+            textCol = QColor("#f85149");
+        } else if (m_latencyMs < 0) {
+            label = QString::fromUtf8("\xE2\x80\xA6"); // ellipsis: probing
+            textCol = palette().color(QPalette::WindowText);
+            textCol.setAlpha(150);
+        } else {
+            label = QStringLiteral("%1ms").arg(m_latencyMs);
+            textCol = statusColor();
+        }
+        p.setPen(textCol);
+        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, label);
+    }
+
+private:
+    // Green when snappy, amber when sluggish, red when very slow.
+    QColor statusColor() const
+    {
+        if (m_latencyMs < 0)
+            return palette().color(QPalette::WindowText);
+        if (m_latencyMs >= 1000)
+            return QColor("#f85149"); // red
+        if (m_latencyMs >= 300)
+            return QColor("#d29922"); // amber
+        return QColor("#3fb950");     // green
+    }
+    void refreshTooltip()
+    {
+        if (m_unreachable) {
+            setToolTip(QStringLiteral(
+                "Relay not responding \xE2\x80\x94 last probe timed out"));
+        } else if (m_latencyMs < 0) {
+            setToolTip(QStringLiteral("Measuring relay latency\xE2\x80\xA6"));
+        } else {
+            setToolTip(QStringLiteral(
+                           "Relay round-trip latency: %1 ms\nProbed every minute")
+                           .arg(m_latencyMs));
+        }
+    }
+
+    int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
+    bool m_unreachable = false; // relay failed to answer the last probe
+    int m_angle = 0;            // sweep rotation (degrees)
+    QTimer *m_sweep = nullptr;  // drives the spin
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -1203,6 +1339,21 @@ void selectDefaultAgentProvider(QComboBox *combo)
         return;
     const int index = combo->findData(defaultAgentProvider());
     combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+// User's preferred tab a repository opens on (Settings → General). Stored as
+// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
+// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
+// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
+// without a manual click. Defaults to the Agents tab.
+const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
+constexpr int kFallbackRepoTab = 3; // Agents
+
+int defaultRepoTabIndex()
+{
+    const int value =
+        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
+    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
 }
 
 // Live claude.ai OAuth access token the Claude Code CLI stores in
@@ -3331,6 +3482,24 @@ QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// "running" glyph in the agents list (issue #108). Not cached, since the angle
+// changes every animation frame; callers keep it to the handful of running rows.
+QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
+                                   int size, qreal angleDeg)
+{
+    const QPixmap base = tintedOcticonPixmap(name, color, size);
+    QPixmap out(size, size);
+    out.fill(Qt::transparent);
+    QPainter painter(&out);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(size / 2.0, size / 2.0);
+    painter.rotate(angleDeg);
+    painter.translate(-size / 2.0, -size / 2.0);
+    painter.drawPixmap(0, 0, base);
+    return out;
+}
+
 void applyStoredOcticon(QPushButton *button)
 {
     if (!button)
@@ -4130,6 +4299,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::pollOwnedInboxes);
     m_inboxPollTimer->start(60 * 1000);
     QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
+    // Radar: probe the active relay's round-trip latency once a minute (issue
+    // #144), plus a first reading shortly after launch so the dish isn't stuck
+    // on "…" while the UI settles.
+    m_relayLatencyTimer = new QTimer(this);
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::probeRelayLatency);
+    m_relayLatencyTimer->start(60 * 1000);
+    QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
@@ -7331,6 +7508,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
 
+    // Spinning radar + once-a-minute latency readout, sitting just left of the
+    // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
+    m_relayRadar = new RelayRadarWidget;
+
     m_relayOpenButton = new QPushButton;
     m_relayOpenButton->setObjectName("relayOpenButton");
     m_relayOpenButton->setCursor(Qt::PointingHandCursor);
@@ -7508,6 +7689,30 @@ QWidget *MainWindow::buildBreadcrumb()
             renderTopMessageCountdown();
     });
 
+    // The expanded full text lives in this floating panel, parented to the window
+    // (not to any layout) and raised above everything when shown. Revealing it
+    // therefore overlays the UI on top instead of growing the inline toast, so it
+    // never shifts the top bar or the layout below it. See renderTopMessage.
+    m_topMessageOverlay = new QFrame(this);
+    m_topMessageOverlay->setObjectName("topMessageOverlay");
+    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
+    overlayLayout->setContentsMargins(12, 10, 12, 10);
+    m_topMessageOverlayText = new QLabel;
+    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
+    m_topMessageOverlayText->setTextFormat(Qt::RichText);
+    m_topMessageOverlayText->setWordWrap(true);
+    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                     Qt::LinksAccessibleByMouse);
+    connect(m_topMessageOverlayText, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (href == QLatin1String("fm:resetpin"))
+                    resetRepoPin();
+                else if (href == QLatin1String("fm:whypin"))
+                    showPinExplanation();
+            });
+    overlayLayout->addWidget(m_topMessageOverlayText);
+    m_topMessageOverlay->hide();
+
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
     m_avatarNavButton = new QPushButton;
@@ -7620,6 +7825,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setSpacing(8);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
+    mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
@@ -7784,6 +7990,45 @@ void MainWindow::updateRelaySwitcher()
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
     m_relayMenuButton->setText(host + "  " + caret + "  " +
                                QString::number(m_servers.size()));
+}
+
+// Measure the round-trip latency to the active relay and feed it to the radar
+// readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
+// Durable-Object fan-out) and time the request; a transport error or timeout
+// flips the radar to its red "offline" alert. Only one probe runs at a time.
+void MainWindow::probeRelayLatency()
+{
+    if (!m_relayRadar || !m_networkAccess || m_relayProbeInFlight)
+        return;
+    auto *radar = static_cast<RelayRadarWidget *>(m_relayRadar);
+
+    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
+    if (!url.isValid() || url.host().isEmpty()) {
+        radar->setUnreachable();
+        return;
+    }
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setTransferTimeout(10000); // a no-answer within 10s counts as down
+
+    m_relayProbeInFlight = true;
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, radar] {
+        const qint64 elapsed = clock->elapsed();
+        delete clock;
+        m_relayProbeInFlight = false;
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            radar->setLatency(static_cast<int>(elapsed));
+        else
+            radar->setUnreachable();
+    });
 }
 
 void MainWindow::openServerWebsite(int index)
@@ -8829,6 +9074,8 @@ void MainWindow::showPinWarning()
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -11148,10 +11395,20 @@ QWidget *MainWindow::buildIssuesSection()
     auto *cloneIssue = makeAction("Clone issue", "copy");
     auto *lockIssue = makeAction("Lock conversation", "lock");
     auto *pinIssue = makeAction("Pin issue", "tag");
+    // Copy a forkmesh:// permalink to this issue (issue #154): pasted into a
+    // comment it renders as a link back here via autolinkReferences().
+    auto *copyIssueLink = makeAction("Copy link", "link");
+    copyIssueLink->setToolTip(
+        "Copy a link to this issue you can paste into an issue or PR comment");
+    connect(copyIssueLink, &QPushButton::clicked, this, [this] {
+        if (m_currentIssueNumber > 0)
+            copyReferenceLink(QStringLiteral("issue"),
+                              QString::number(m_currentIssueNumber));
+    });
     auto *feedbackIssue = makeAction("Give feedback", "comment");
     for (QPushButton *action :
-         {transferIssue, cloneIssue, lockIssue, pinIssue, m_issueDeleteButton,
-          feedbackIssue})
+         {transferIssue, cloneIssue, lockIssue, pinIssue, copyIssueLink,
+          m_issueDeleteButton, feedbackIssue})
         metaLayout->addWidget(action);
     metaLayout->addStretch();
 
@@ -11177,9 +11434,64 @@ QWidget *MainWindow::buildIssuesSection()
     detailSplit->setStretchFactor(0, 1);
     detailSplit->setStretchFactor(1, 0);
     detailSplit->setSizes({520, 220});
+
+    // Issue #145: a "Files changed" tab beside the issue thread, mirroring the
+    // agent detail. A file list scrolls a diff viewer; selecting a file jumps to
+    // its hunk, activating one opens it (when it lives in a worktree on disk).
+    m_issueFilesList = new QListWidget;
+    m_issueFilesList->setObjectName("agentFilesList");
+    m_issueFilesList->setMinimumWidth(190);
+    connect(m_issueFilesList, &QListWidget::itemActivated, this,
+            [](QListWidgetItem *it) {
+                const QString path = it->data(Qt::UserRole).toString();
+                if (!path.isEmpty() && QFileInfo::exists(path))
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+            });
+    connect(m_issueFilesList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *it, QListWidgetItem *) {
+                if (!it || !m_issueDiffView)
+                    return;
+                const QString anchor = it->data(Qt::UserRole + 1).toString();
+                if (!anchor.isEmpty())
+                    m_issueDiffView->scrollToAnchor(anchor);
+            });
+    m_issueFilesChangedSummary = new QLabel;
+    m_issueFilesChangedSummary->setObjectName("agentFilesHeading");
+    auto *issueFilesV = new QVBoxLayout;
+    issueFilesV->setContentsMargins(0, 0, 0, 0);
+    issueFilesV->setSpacing(4);
+    issueFilesV->addWidget(m_issueFilesChangedSummary);
+    issueFilesV->addWidget(m_issueFilesList, 1);
+    auto *issueFilesPanel = new QWidget;
+    issueFilesPanel->setLayout(issueFilesV);
+
+    m_issueDiffView = new QTextBrowser;
+    m_issueDiffView->setObjectName("diffView");
+    m_issueDiffView->setOpenExternalLinks(false);
+    m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
+
+    auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
+    issueFilesSplit->setChildrenCollapsible(false);
+    issueFilesSplit->addWidget(issueFilesPanel);
+    issueFilesSplit->addWidget(m_issueDiffView);
+    issueFilesSplit->setStretchFactor(0, 0);
+    issueFilesSplit->setStretchFactor(1, 1);
+    issueFilesSplit->setSizes({220, 700});
+    auto *issueFilesPage = new QWidget;
+    auto *issueFilesPageLayout = new QVBoxLayout(issueFilesPage);
+    issueFilesPageLayout->setContentsMargins(0, 8, 0, 0);
+    issueFilesPageLayout->addWidget(issueFilesSplit, 1);
+
+    m_issueDetailTabs = new QTabWidget;
+    m_issueDetailTabs->setObjectName("agentDetailTabs"); // reuse the agent tab style
+    m_issueDetailTabs->addTab(detailSplit, QStringLiteral("Issue"));
+    m_issueFilesTabIndex =
+        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Files changed"));
+    m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+
     auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);
-    detailLayout->addWidget(detailSplit);
+    detailLayout->addWidget(m_issueDetailTabs);
 
     m_issueDetailStack = new QStackedWidget;
     m_issueDetailStack->addWidget(issueDetailView);
@@ -11664,6 +11976,146 @@ QString linkifyIssueRefs(const QString &escaped)
     return out;
 }
 
+// Reference patterns recognised inside a markdown comment body. Tried in order at
+// each position: a forkmesh:// permalink, a "#123" issue/PR reference, or a bare
+// commit SHA (7-40 hex with at least one a-f letter, so plain numbers are left
+// alone). See autolinkReferences() / openBodyReference().
+const QRegularExpression &bodyReferenceRegex()
+{
+    static const QRegularExpression re(QStringLiteral(
+        // Permalink: stop before trailing sentence punctuation so "...#3." links #3.
+        "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
+        "|(?<![\\w/#])#(\\d+)\\b"
+        "|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
+    return re;
+}
+
+// Linkify the plain-text portion of a line (no code/links): wrap each reference in
+// a markdown link with a private scheme openBodyReference() resolves.
+QString linkifyReferenceText(const QString &text)
+{
+    QString out;
+    int last = 0;
+    auto it = bodyReferenceRegex().globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += text.mid(last, m.capturedStart() - last);
+        if (!m.captured(1).isEmpty()) {
+            // Keep the permalink as an explicit <autolink> so the exact href reaches
+            // the router untouched by markdown.
+            out += QStringLiteral("<%1>").arg(m.captured(1));
+        } else if (!m.captured(2).isEmpty()) {
+            const QString num = m.captured(2);
+            out += QStringLiteral("[#%1](forkmesh-ref:%1)").arg(num);
+        } else {
+            const QString sha = m.captured(3);
+            out += QStringLiteral("[%1](forkmesh-commit:%1)").arg(sha);
+        }
+        last = m.capturedEnd();
+    }
+    out += text.mid(last);
+    return out;
+}
+
+// If a "[label](target)" link starts at `start`, return the index past its closing
+// ')'; otherwise -1. First-match bracket/paren scan — enough to leave existing
+// markdown links verbatim so we never nest one inside another.
+int markdownLinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char(']'), start + 1);
+    if (close < 0)
+        return -1;
+    const int paren = close + 1;
+    if (paren >= line.size() || line.at(paren) != QLatin1Char('('))
+        return -1;
+    const int end = line.indexOf(QLatin1Char(')'), paren + 1);
+    return end < 0 ? -1 : end + 1;
+}
+
+// If a "<scheme://...>" autolink starts at `start`, return the index past its '>';
+// otherwise -1 (a bare '<' is left as literal text).
+int autolinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char('>'), start + 1);
+    if (close < 0)
+        return -1;
+    if (!line.mid(start + 1, close - start - 1).contains(QStringLiteral("://")))
+        return -1;
+    return close + 1;
+}
+
+// Linkify one non-fenced line: copy inline `code` spans, existing markdown links and
+// autolinks verbatim, and linkify references in the remaining text.
+QString linkifyReferenceLine(const QString &line)
+{
+    QString out;
+    const int n = line.size();
+    int i = 0;
+    while (i < n) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('`')) {
+            int run = 1;
+            while (i + run < n && line.at(i + run) == QLatin1Char('`'))
+                ++run;
+            const QString ticks = line.mid(i, run);
+            int close = i + run;
+            int found = -1;
+            while (close < n) {
+                const int idx = line.indexOf(ticks, close);
+                if (idx < 0)
+                    break;
+                const int after = idx + run;
+                if (after < n && line.at(after) == QLatin1Char('`')) {
+                    close = after; // part of a longer run; keep looking
+                    continue;
+                }
+                found = idx;
+                break;
+            }
+            if (found >= 0) {
+                out += line.mid(i, found + run - i);
+                i = found + run;
+            } else {
+                out += ticks; // unterminated: emit literally
+                i += run;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('[')) {
+            const int end = markdownLinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        if (c == QLatin1Char('<')) {
+            const int end = autolinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        int j = i;
+        while (j < n) {
+            const QChar d = line.at(j);
+            if (d == QLatin1Char('`') || d == QLatin1Char('[') || d == QLatin1Char('<'))
+                break;
+            ++j;
+        }
+        out += linkifyReferenceText(line.mid(i, j - i));
+        i = j;
+    }
+    return out;
+}
+
 struct DiffFileEntry {
     QString path;
     QString anchor;
@@ -11923,6 +12375,18 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitTitle->setTextFormat(Qt::RichText);
     m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
+    // Copy a forkmesh:// permalink to this commit (issue #154): pasted into a
+    // comment it renders as a link back here via autolinkReferences().
+    auto *commitCopyLinkButton = new QPushButton("Copy link");
+    commitCopyLinkButton->setObjectName("ghostButton");
+    commitCopyLinkButton->setCursor(Qt::PointingHandCursor);
+    commitCopyLinkButton->setToolTip(
+        "Copy a link to this commit you can paste into an issue or PR comment");
+    setOcticon(commitCopyLinkButton, "copy", 16);
+    connect(commitCopyLinkButton, &QPushButton::clicked, this, [this] {
+        copyReferenceLink(QStringLiteral("commit"), m_currentCommitHash);
+    });
+
     m_commitDownloadButton = new QPushButton("Download patch");
     m_commitDownloadButton->setObjectName("ghostButton");
     m_commitDownloadButton->setCursor(Qt::PointingHandCursor);
@@ -11987,6 +12451,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->setSpacing(4);
     prevNextRow->addStretch();
     prevNextRow->addWidget(m_commitSplitButton);
+    prevNextRow->addWidget(commitCopyLinkButton);
     prevNextRow->addWidget(m_commitDownloadButton);
     prevNextRow->addWidget(m_commitDeleteButton);
     prevNextRow->addWidget(m_commitRevertButton);
@@ -15000,6 +15465,20 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton->setToolTip("Link an issue to this pull request");
     connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
             &MainWindow::linkIssueToPullFromPullPage);
+    // Copy a forkmesh:// permalink to this PR (issue #154): pasted into a comment
+    // it renders as a link back here via autolinkReferences().
+    auto *pullCopyLinkButton = new QPushButton("Copy link");
+    pullCopyLinkButton->setObjectName("ghostButton");
+    pullCopyLinkButton->setProperty("buttonSize", "sm");
+    pullCopyLinkButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(pullCopyLinkButton, "copy", 16);
+    pullCopyLinkButton->setToolTip(
+        "Copy a link to this pull request you can paste into an issue or PR comment");
+    connect(pullCopyLinkButton, &QPushButton::clicked, this, [this] {
+        if (m_currentPullNumber > 0)
+            copyReferenceLink(QStringLiteral("pull"),
+                              QString::number(m_currentPullNumber));
+    });
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
@@ -15535,14 +16014,19 @@ void MainWindow::reloadPulls()
     // badge their rows. Done here (not per refresh) so typing in the search box
     // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
     // we have a working tree to test the patch against.
+    //
+    // Bump the generation so any in-flight async conflict pass aborts, and reset
+    // the pending queue: a fresh reload rebuilds both the badges and the work to do.
+    const quint64 gen = ++m_pullConflictGen;
+    m_pendingPullConflictChecks.clear();
     m_pullConflictByNumber.clear();
     if (store.canWrite()) {
         // The dry-run apply only changes when the base tip or a PR's patch moves,
         // so cache it: otherwise every reloadPulls() (each push, search keystroke
-        // path, or merge of a different PR) re-spawns `git apply --check` for every
-        // open PR and blocks the event loop for seconds. Invalidate wholesale when
-        // the repo or the base tip changes; per-PR entries re-check when the patch
-        // fingerprint differs.
+        // path, or merge of a different PR) re-queues `git apply --check` for every
+        // open PR. Invalidate wholesale when the repo or the base tip changes;
+        // per-PR entries re-check when the patch fingerprint differs. Cache misses
+        // are resolved asynchronously below rather than inline.
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         const QString cacheKey = repo.owner + QLatin1Char('/') + repo.name +
                                  QLatin1Char('@') + store.baseTip();
@@ -15557,20 +16041,16 @@ void MainWindow::reloadPulls()
             openNumbers.insert(pr.number);
             const QString fingerprint = pullPatchFingerprint(pr.patch);
             const auto cached = m_pullConflictCache.constFind(pr.number);
-            bool conflict;
             if (cached != m_pullConflictCache.constEnd() &&
                 cached->fingerprint == fingerprint) {
-                conflict = cached->conflict;
+                // Cache hit: badge straight from the stored result.
+                if (cached->conflict)
+                    m_pullConflictByNumber.insert(pr.number, true);
             } else {
-                bool clean = false;
-                QStringList conflictFiles;
-                conflict =
-                    store.checkMergeable(pr.number, &clean, &conflictFiles) && !clean;
-                m_pullConflictCache.insert(
-                    pr.number, {fingerprint, conflict, conflictFiles});
+                // Cold/stale entry: defer the (slow) `git apply --check` dry-run to
+                // the async pass below so a full reload never blocks the GUI thread.
+                m_pendingPullConflictChecks.append(qMakePair(pr.number, fingerprint));
             }
-            if (conflict)
-                m_pullConflictByNumber.insert(pr.number, true);
         }
         // Drop cache entries for PRs that have since closed/merged or been deleted
         // so the map can't grow without bound across a long session.
@@ -15585,6 +16065,62 @@ void MainWindow::reloadPulls()
     updateRepoPullCount();
     refreshPullList();
     updatePullActionState();
+    // Fill in any uncached conflict badges off the critical path, one PR per
+    // event-loop turn, so a cold cache never freezes the UI (the list above is
+    // already on screen; the badges drop in as each dry-run finishes).
+    if (!m_pendingPullConflictChecks.isEmpty())
+        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+}
+
+void MainWindow::processPendingPullConflicts(quint64 gen)
+{
+    // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
+    if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
+        return;
+    const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
+    const int number = item.first;
+    const PullStore store = pullStoreForCurrentRepo();
+    if (store.canWrite()) {
+        bool clean = false;
+        QStringList conflictFiles;
+        const bool conflict =
+            store.checkMergeable(number, &clean, &conflictFiles) && !clean;
+        // The gen check at entry already gates this turn; re-check defensively in
+        // case checkMergeable() ever pumps the event loop and lets a fresh
+        // reloadPulls() supersede this pass while git ran.
+        if (gen == m_pullConflictGen) {
+            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
+            if (conflict)
+                m_pullConflictByNumber.insert(number, true);
+            else
+                m_pullConflictByNumber.remove(number);
+            setPullConflictBadge(number, conflict);
+        }
+    }
+    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+}
+
+void MainWindow::setPullConflictBadge(int number, bool conflict)
+{
+    if (!m_pullTable)
+        return;
+    for (int row = 0; row < m_pullTable->rowCount(); ++row) {
+        const QTableWidgetItem *num = m_pullTable->item(row, 0);
+        if (!num || num->data(Qt::UserRole).toInt() != number)
+            continue;
+        QTableWidgetItem *st = m_pullTable->item(row, 3);
+        if (!st)
+            return;
+        if (conflict) {
+            st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
+            st->setToolTip(QStringLiteral("This pull request has merge conflicts"));
+        } else {
+            st->setIcon(QIcon());
+            st->setToolTip(QString());
+        }
+        return;
+    }
 }
 
 void MainWindow::refreshPullList()
@@ -16354,12 +16890,14 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     if (!body.trimmed().isEmpty()) {
         auto *bodyLabel = new QLabel;
         bodyLabel->setTextFormat(Qt::MarkdownText);
-        bodyLabel->setText(ReferenceLinks::linkifyMarkdownReferences(body));
+        bodyLabel->setText(autolinkReferences(body));
         bodyLabel->setWordWrap(true);
         bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        // Reference links (#N, commit SHAs, forkmesh:// permalinks) resolve in app;
+        // real external links fall through to the system browser.
         bodyLabel->setOpenExternalLinks(false);
         connect(bodyLabel, &QLabel::linkActivated, this,
-                &MainWindow::openReferenceLink);
+                [this](const QString &href) { openBodyReference(href); });
         bodyLabel->setContentsMargins(16, 12, 16, 14);
         cardLayout->addWidget(bodyLabel);
     }
@@ -19819,6 +20357,20 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
+    // Status glyph next to the text (issue #108): a green spinner while running, a
+    // purple merge mark once it lands, a red stop sign when halted, and an orange
+    // hand while it waits on the user. The running glyph is seeded at frame 0 here;
+    // animateRunningAgentIcons() spins it. Other states carry no icon.
+    if (s.merged)
+        cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
+    else if (s.status == AgentStatus::Running)
+        cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+    else if (s.status == AgentStatus::Stopped)
+        cell->setIcon(themedOcticon("stop", QColor("#f85149"), 14));
+    else if (s.status == AgentStatus::Waiting)
+        cell->setIcon(themedOcticon("hand", QColor("#e3742f"), 14));
+    else
+        cell->setIcon(QIcon());
     cell->setToolTip(
         s.merged
             ? QStringLiteral("Worktree/PR merged into %1%2")
@@ -20868,8 +21420,16 @@ QWidget *MainWindow::buildAgentsTab()
         if (rows.isEmpty())
             return;
         QTableWidgetItem *first = m_agentTable->item(rows.first().row(), 0);
-        if (first)
+        if (first) {
             showAgentSession(first->data(Qt::UserRole).toInt());
+            // Always reveal the latest turn when a session is clicked (adhoc
+            // #128). showAgentSession() also runs on every reload, so this lives
+            // here in the genuine selection-change handler rather than there —
+            // otherwise reloads would yank a scrolled-up reader back to the
+            // bottom.
+            if (m_agentTranscript)
+                m_agentTranscript->jumpToBottom();
+        }
     });
     return page;
 }
@@ -21928,12 +22488,12 @@ void MainWindow::showAgentSession(int sessionId)
                                    : session->issueTitle));
         }
     }
-    // Issue #291: a "· merged into <base>" note appended to the meta line once
-    // the session's worktree/PR has landed in the base branch.
+    // Issue #291: a "merged into <base>" note appended to the meta line once
+    // the session's worktree/PR has landed in the base branch. Joined with the
+    // block's separator below, like every other part.
     const QString mergedMeta =
         session->merged
-            ? QStringLiteral(
-                  " · <span style='color:#a371f7'>merged into %1</span>")
+            ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
                   .arg(agentMergeBase(*session).toHtmlEscaped())
             : QString();
     // Resolve this session's worktree folder from its branch so the header can
@@ -21948,8 +22508,9 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentMeta && isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Branches-tab row and the
         // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal.
-        const QString sep = QStringLiteral(" · ");
+        // #123); every other part is HTML-escaped to stay literal. Each part
+        // sits on its own line (adhoc #156).
+        const QString sep = QStringLiteral("<br>");
         QString meta = QStringLiteral("External Claude Code") + sep +
                        QStringLiteral("%1/%2")
                            .arg(session->owner.toHtmlEscaped(),
@@ -21961,7 +22522,8 @@ void MainWindow::showAgentSession(int sessionId)
                 meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
         }
         meta += sep + QStringLiteral("watch-only");
-        meta += mergedMeta;
+        if (!mergedMeta.isEmpty())
+            meta += sep + mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible. When a PR exists it
@@ -21974,8 +22536,8 @@ void MainWindow::showAgentSession(int sessionId)
                       .toHtmlEscaped();
         // Rich text so the branch name, worktree location and PR are links
         // (issues #265, adhoc #53, adhoc #123); every other part is HTML-escaped
-        // to stay literal.
-        const QString sep = QStringLiteral(" · ");
+        // to stay literal. Each part sits on its own line (adhoc #156).
+        const QString sep = QStringLiteral("<br>");
         QString branchPart = session->branchName.isEmpty()
                                  ? QStringLiteral("(no branch)")
                                  : branchLinkHtml(session->branchName);
@@ -21994,7 +22556,8 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
-        meta += mergedMeta;
+        if (!mergedMeta.isEmpty())
+            meta += sep + mergedMeta;
         m_agentMeta->setText(meta);
     }
     setAgentUsageLabel(*session);
@@ -23701,6 +24264,28 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         updateAgentActionState();
 }
 
+// Spin the green "sync" glyph on every running row's Status cell so the agents
+// list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
+// ticks while a session is running, so finished rows keep their static icon.
+void MainWindow::animateRunningAgentIcons()
+{
+    if (!m_agentTable)
+        return;
+    const QIcon icon(rotatedTintedOcticonPixmap(
+        "sync", QColor("#3fb950"), 14, m_agentsSpinFrame * 36.0));
+    QSignalBlocker block(m_agentTable);
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem)
+            continue;
+        const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
+        if (!s || s->merged || s->status != AgentStatus::Running)
+            continue;
+        if (QTableWidgetItem *cell = m_agentTable->item(r, 3))
+            cell->setIcon(icon);
+    }
+}
+
 qint64 MainWindow::sessionTokenTotal(const AgentSession &session) const
 {
     // The live counter is the source of truth while a session streams; the
@@ -24509,6 +25094,120 @@ void MainWindow::updateIssueAgentUi(const Issue &issue)
         m_issueAgentViewButton->setVisible(session);
 }
 
+// Issue #145: drive the issue detail's "Files changed" tab. The tab appears only
+// when the issue has a diff to show — preferring a linked agent session's live
+// worktree branch diff (exactly the agent detail's view), falling back to a
+// linked pull request's stored patch. Otherwise the tab stays hidden.
+void MainWindow::refreshIssueFilesPanel(const Issue &issue)
+{
+    if (!m_issueDetailTabs || m_issueFilesTabIndex < 0)
+        return;
+
+    auto hideTab = [this] {
+        if (m_issueFilesList)
+            m_issueFilesList->clear();
+        if (m_issueDiffView)
+            m_issueDiffView->clear();
+        if (m_issueDetailTabs->currentIndex() == m_issueFilesTabIndex)
+            m_issueDetailTabs->setCurrentIndex(0);
+        m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+        m_issueDetailTabs->setTabText(m_issueFilesTabIndex,
+                                      QStringLiteral("Files changed"));
+    };
+
+    if (issue.number <= 0) {
+        hideTab();
+        return;
+    }
+
+    // A linked agent session's branch gives a live worktree diff (committed +
+    // uncommitted), measured against the same base its PR is built from.
+    if (const AgentSession *s = latestAgentSessionForIssue(issue.number)) {
+        const QString dir = sessionWorkdir(s->id);
+        if (!dir.isEmpty()) {
+            const QString base = sessionBaseRef(s->id);
+            QStringList args{QStringLiteral("diff")};
+            if (!base.isEmpty())
+                args << base;
+            m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, true);
+            const int issueNo = issue.number;
+            runGitDetached(dir, args,
+                           [this, issueNo, dir, base](bool ok, const QByteArray &out) {
+                               if (ok && issueNo == m_currentIssueNumber)
+                                   renderIssueDiff(issueNo, out, dir, base);
+                           });
+            return;
+        }
+    }
+
+    // Otherwise fall back to a linked pull request's patch (newest first). The PR
+    // patch carries no git object context, so render it as a standalone diff.
+    const QList<int> pulls = pullsLinkedToIssue(issue.number);
+    for (auto it = pulls.crbegin(); it != pulls.crend(); ++it) {
+        for (const PullRequest &pr : m_currentPulls) {
+            if (pr.number == *it && !pr.patch.isEmpty()) {
+                m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, true);
+                renderIssueDiff(issue.number, pr.patch.toUtf8(), QString(), QString());
+                return;
+            }
+        }
+    }
+
+    hideTab();
+}
+
+// Render a patch into the issue's Files-changed tab: lay out the diff, rebuild the
+// per-file list with +/- counts and scroll anchors, and stamp the file count onto
+// the tab header. Mirrors renderAgentDiff; a no-op once the selection has moved on
+// so a late async (git diff) callback can't clobber another issue's panel.
+void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
+                                 const QString &dir, const QString &base)
+{
+    if (!m_issueDiffView || issueNumber != m_currentIssueNumber)
+        return;
+    m_issueDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    QList<DiffFileEntry> files;
+    const QString html =
+        renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
+                       QString(), QHash<QString, QString>(), QSet<QString>());
+    m_issueDiffView->setHtml(
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+            : html);
+
+    if (m_issueFilesList) {
+        QSignalBlocker block(m_issueFilesList);
+        m_issueFilesList->clear();
+        for (const DiffFileEntry &f : files) {
+            const QString name = f.path.section(QLatin1Char('/'), -1);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QColor tint("#d29922");
+            QString icon = "file-diff";
+            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
+            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
+            item->setIcon(themedOcticon(icon, tint, 14));
+            const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
+            item->setData(Qt::UserRole, abs);          // open on activate
+            item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            m_issueFilesList->addItem(item);
+        }
+        fitFileListToWidestEntry(m_issueFilesList);
+    }
+
+    const int n = files.size();
+    if (m_issueDetailTabs && m_issueFilesTabIndex >= 0)
+        m_issueDetailTabs->setTabText(
+            m_issueFilesTabIndex,
+            n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
+                  : QStringLiteral("Files changed"));
+    if (m_issueFilesChangedSummary)
+        m_issueFilesChangedSummary->setText(
+            QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
+}
+
 QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Two modes: a GitHub-style overview, and an explorer+editor view shown only
@@ -25275,11 +25974,18 @@ void MainWindow::openRepoDetail(int repoIndex)
     updateRepoPullCount();
     logStartup(QStringLiteral("  openRepo: pulls loaded"));
 
-    // Default to the Code tab; reset the editor tabs/tree for the new repo.
-    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
-        m_repoDetailTabs->button(0)->setChecked(true);
+    // Land on the user's preferred default tab (Settings → General; Agents by
+    // default). Each candidate tab's data was eagerly loaded above, so we only
+    // need to select it. Reset the editor tabs/tree for the new repo.
+    const int defaultTab = defaultRepoTabIndex();
+    if (m_repoDetailTabs && m_repoDetailTabs->button(defaultTab))
+        m_repoDetailTabs->button(defaultTab)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(0);
+        m_repoDetailStack->setCurrentIndex(defaultTab);
+    // The Agents list annotates each session with its PR status from the pulls
+    // loaded just above; reloadAgents() ran before them, so refresh on landing.
+    if (defaultTab == 3)
+        reloadAgents();
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -28106,6 +28812,97 @@ void MainWindow::openReferenceLink(const QString &href)
     QDesktopServices::openUrl(url.isValid() ? url : QUrl::fromUserInput(href));
 }
 
+QString MainWindow::autolinkReferences(const QString &markdown)
+{
+    if (markdown.isEmpty())
+        return markdown;
+    // Walk line by line so fenced code blocks (``` / ~~~) are left verbatim, then
+    // linkify references in each non-fenced line (which also skips inline code and
+    // existing links). Kept as markdown source so MarkdownText still formats it.
+    QString out;
+    out.reserve(markdown.size() + 32);
+    bool inFence = false;
+    QString fenceMarker;
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    for (int li = 0; li < lines.size(); ++li) {
+        if (li > 0)
+            out += QLatin1Char('\n');
+        const QString &line = lines.at(li);
+        const QString trimmed = line.trimmed();
+        const bool fenceLine = trimmed.startsWith(QStringLiteral("```")) ||
+                               trimmed.startsWith(QStringLiteral("~~~"));
+        if (inFence) {
+            out += line;
+            if (fenceLine && trimmed.startsWith(fenceMarker))
+                inFence = false;
+        } else if (fenceLine) {
+            inFence = true;
+            fenceMarker = trimmed.left(3);
+            out += line;
+        } else {
+            out += linkifyReferenceLine(line);
+        }
+    }
+    return out;
+}
+
+void MainWindow::openBodyReference(const QString &href)
+{
+    if (href.startsWith(QStringLiteral("forkmesh-ref:"))) {
+        openCommitReference(href.mid(13).toInt()); // PR if one matches, else issue
+        return;
+    }
+    if (href.startsWith(QStringLiteral("forkmesh-commit:"))) {
+        const QString sha = href.mid(16);
+        if (sha.isEmpty())
+            return;
+        if (m_repoDetailTabs && m_repoDetailTabs->button(1)) // 1 = Commits
+            m_repoDetailTabs->button(1)->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(1);
+        showCommit(sha);
+        return;
+    }
+    if (href.startsWith(QStringLiteral("forkmesh://"))) {
+        // forkmesh://<kind>/<owner>/<repo>/<id>[#eventId]
+        const QString rest = href.mid(QStringLiteral("forkmesh://").size());
+        const QString kind = rest.section(QLatin1Char('/'), 0, 0);
+        const QString id =
+            rest.section(QLatin1Char('/'), -1).section(QLatin1Char('#'), 0, 0);
+        if (kind == QLatin1String("issue")) {
+            if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+                m_repoDetailTabs->button(2)->click();
+            reloadIssues();
+            showIssue(id.toInt());
+        } else if (kind == QLatin1String("pull")) {
+            reloadPulls();
+            if (m_repoDetailTabs && m_repoDetailTabs->button(4))
+                m_repoDetailTabs->button(4)->click();
+            showPull(id.toInt());
+        } else if (kind == QLatin1String("commit")) {
+            openBodyReference(QStringLiteral("forkmesh-commit:%1").arg(id));
+        }
+        return;
+    }
+    QDesktopServices::openUrl(QUrl(href));
+}
+
+void MainWindow::copyReferenceLink(const QString &kind, const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QString owner = QStringLiteral("repo");
+    QString repo = kind;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        repo = m_repositories.at(m_repoDetailIndex).name;
+    }
+    QApplication::clipboard()->setText(
+        QStringLiteral("forkmesh://%1/%2/%3/%4").arg(kind, owner, repo, id));
+    setRepoDetailNotice(QStringLiteral("Link copied \xE2\x80\x94 paste it into a "
+                                       "comment to link back here."));
+}
+
 void MainWindow::downloadCommitPatch()
 {
     const QString dir = repoGitDir();
@@ -30385,6 +31182,21 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
     });
+    // Commit the worktree's uncommitted changes in place, so you can snapshot
+    // in-progress work without dropping to a terminal (sits beside "Update from
+    // main" since you typically commit before pulling main in).
+    m_worktreeCommitButton = new QPushButton("Commit changes");
+    m_worktreeCommitButton->setObjectName("ghostButton");
+    m_worktreeCommitButton->setProperty("buttonSize", "sm");
+    m_worktreeCommitButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeCommitButton, "git-branch", 14);
+    m_worktreeCommitButton->setToolTip(
+        "Stage and commit the selected worktree's uncommitted changes");
+    m_worktreeCommitButton->setEnabled(false);
+    connect(m_worktreeCommitButton, &QPushButton::clicked, this, [this] {
+        if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
+            commitWorktreeChanges(m_worktreeSelectedPath, m_worktreeSelectedBranch);
+    });
     m_worktreeRemoveButton = new QPushButton("Delete");
     m_worktreeRemoveButton->setObjectName("ghostButton");
     m_worktreeRemoveButton->setProperty("buttonSize", "sm");
@@ -30411,6 +31223,7 @@ QWidget *MainWindow::buildWorktreesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_worktreeCommitButton);
     detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
     detailBar->addWidget(m_worktreeMergeDeleteAgentButton);
@@ -30845,6 +31658,11 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     if (m_worktreeUpdateButton)
         m_worktreeUpdateButton->setEnabled(feature && !worktreePath.isEmpty() &&
                                            QDir(worktreePath).exists());
+    // Committing only makes sense when the worktree is on disk; whether it
+    // actually has anything to commit is re-checked when the button is clicked.
+    if (m_worktreeCommitButton)
+        m_worktreeCommitButton->setEnabled(!worktreePath.isEmpty() &&
+                                           QDir(worktreePath).exists());
     if (m_worktreeRemoveButton)
         m_worktreeRemoveButton->setEnabled(!isMain && !worktreePath.isEmpty());
     QByteArray out;
@@ -30898,9 +31716,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                        const QString &worktreePathArg,
                                        bool deleteAgent)
 {
-    // Copy by value: the keep-alive pump below services queued slots between git
-    // reads, and a refresh could reassign the m_worktreeSelected* members passed
-    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    // Copy by value: the detached merge below runs the event loop before its
+    // callback fires, and a refresh could reassign the m_worktreeSelected* members
+    // passed here by reference meanwhile — leaving these refs pointing at a new
+    // worktree. The callback captures these stable copies instead.
     const QString branch = branchArg;
     const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
@@ -30942,10 +31761,23 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // the window stays responsive instead of freezing ("Not Responding").
     GitKeepAlive keepAlive;
     QString err;
-    if (runGitCapture(dir,
+    const bool merged =
+        runGitCapture(dir,
                       {"merge", "--no-ff", branch,
                        "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
-                      nullptr, &err)) {
+                      nullptr, &err);
+    // Only treat the merge as clean when git succeeded *and* left no conflicted
+    // paths behind. Issue #126: a worktree that couldn't merge cleanly must be kept,
+    // not deleted — its commits aren't in main yet, so removing it would discard the
+    // only copy of that work. Gate the removal on the repo's actual state rather than
+    // git's exit code alone (a killed/slow merge can exit non-zero with the merge
+    // already applied, or leave unmerged paths), so we never delete on a dirty merge.
+    QByteArray conflicted;
+    const bool hasConflicts =
+        runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &conflicted,
+                      nullptr) &&
+        !QString::fromUtf8(conflicted).trimmed().isEmpty();
+    if (merged && !hasConflicts) {
         // The branch is now in main, so the worktree has served its purpose — clean
         // it up (silently; the merge was already confirmed). Delete the branch too:
         // its work is preserved in the merge commit, so leaving it behind only
@@ -30995,10 +31827,14 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             updateIssueActionState();
         }
     } else {
+        // Roll the failed merge back so the checkout is left clean, and keep the
+        // worktree so its work isn't lost (issue #126).
         runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
         setRepoDetailNotice(
-            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR and use "
-                           "\"Fix with agent\" on the Branches tab.").arg(branch), true);
+            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — kept its worktree. "
+                           "Open a PR and use \"Fix with agent\" on the Branches tab.")
+                .arg(branch),
+            true);
     }
     loadWorktreesPanel();
     if (m_branchesTable)
@@ -31006,7 +31842,8 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
-                                bool confirm, bool alsoDeleteBranch, bool async)
+                                bool confirm, bool alsoDeleteBranch, bool async,
+                                std::function<void()> onDone)
 {
     if (worktreePath.isEmpty())
         return;
@@ -31041,7 +31878,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
     // branch can be force-deleted. -D matches the "uncommitted changes will be lost"
     // warning the user just accepted: they asked for the whole worktree — branch and
     // all — to go. Then refresh the panels that listed it.
-    auto finish = [this, repoPath, worktreePath, branch, deleteBranch] {
+    auto finish = [this, repoPath, worktreePath, branch, deleteBranch,
+                   onDone = std::move(onDone)] {
         if (deleteBranch) {
             QString err;
             if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
@@ -31062,6 +31900,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
         loadWorktreesPanel();
         if (m_branchesTable)
             loadBranchesPanel();
+        if (onDone)
+            onDone();
     };
 
     const QStringList removeArgs{QStringLiteral("-C"), repoPath,
@@ -31330,6 +32170,53 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
     loadWorktreesPanel();
 }
 
+void MainWindow::commitWorktreeChanges(const QString &worktreePath,
+                                       const QString &branch)
+{
+    if (worktreePath.isEmpty() || branch.isEmpty())
+        return;
+    if (!QDir(worktreePath).exists()) {
+        setRepoDetailNotice("That worktree's folder is gone.", true);
+        loadWorktreesPanel();
+        return;
+    }
+    // Nothing staged or unstaged means there's nothing to commit — say so rather
+    // than popping a dialog that would only produce an empty-commit error.
+    QByteArray st;
+    if (runGitCapture(worktreePath, {"status", "--porcelain"}, &st, nullptr) &&
+        QString::fromUtf8(st).trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Worktree %1 has no changes to commit.").arg(branch),
+            false);
+        return;
+    }
+    bool ok = false;
+    const QString message =
+        QInputDialog::getMultiLineText(this, "Commit changes", "Commit message:",
+                                       QString(), &ok)
+            .trimmed();
+    if (!ok)
+        return;
+    if (message.isEmpty()) {
+        setRepoDetailNotice("A commit message is required.", true);
+        return;
+    }
+    QString err;
+    if (runGitCapture(worktreePath, {"add", "-A"}, nullptr, &err) &&
+        runGitCapture(worktreePath, {"commit", "-m", message}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Committed changes in %1.").arg(branch), false);
+    } else {
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't commit changes in %1: %2")
+                .arg(branch, err.trimmed()),
+            true);
+    }
+    // Preserves the current selection across the rebuild (#272) and refreshes the
+    // diff so the just-committed changes show against the default branch.
+    loadWorktreesPanel();
+}
+
 QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
@@ -31494,18 +32381,32 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
     auto *fixMenu = new QMenu(m_branchFixButton);
-    connect(fixMenu->addAction(QStringLiteral("Fix with Claude")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("claude"));
-            });
-    connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("openai"));
-            });
+    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
+    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
+    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
+    connect(fixClaude, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
+    });
+    connect(fixOpenAi, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
+    });
+    connect(fixClaudeCode, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                        QStringLiteral("claude-code"));
+    });
+    // Bold the user's configured default agent (Settings -> Agents) so the dropdown
+    // makes the default choice obvious; refresh on open in case it changed.
+    auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
+        const QString def = defaultAgentProvider();
+        fixMenu->setDefaultAction(def == QLatin1String("claude-code") ? fixClaudeCode
+                                  : def == QLatin1String("claude-api") ? fixClaude
+                                                                       : fixOpenAi);
+    };
+    highlightDefaultFix();
+    connect(fixMenu, &QMenu::aboutToShow, fixMenu, highlightDefaultFix);
     m_branchFixButton->setMenu(fixMenu);
 
     m_branchPrButton = new QPushButton("Create PR");
@@ -31582,6 +32483,27 @@ void MainWindow::loadBranchesPanel()
                 .arg(branches.size())
                 .arg(base.isEmpty() ? "none" : base));
 
+    // Branch commit timestamps in one batch: spawning a `git log -1` per branch
+    // (below) blocked the UI thread for ~2s on repos with many branches because
+    // each row started its own git process serially (issue #152). for-each-ref
+    // returns every branch tip's committer date in a single call.
+    QHash<QString, qint64> branchTimes;
+    if (!dir.isEmpty()) {
+        QByteArray times;
+        if (runGitCapture(dir,
+                          {"for-each-ref",
+                           "--format=%(refname:short) %(committerdate:unix)",
+                           "refs/heads/"},
+                          &times, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
+                const qsizetype sp = line.lastIndexOf(u' ');
+                if (sp > 0)
+                    branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
+            }
+        }
+    }
+
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
@@ -31629,10 +32551,7 @@ void MainWindow::loadBranchesPanel()
                 if (hasConflict)
                     status += QString::fromUtf8(" \xC2\xB7 conflicts");
             }
-            QByteArray when;
-            if (runGitCapture(dir,
-                              {"log", "-1", "--format=%ct", branch}, &when, nullptr))
-                ts = QString::fromUtf8(when).trimmed().toLongLong();
+            ts = branchTimes.value(branch, 0);
         }
         auto *statusItem = new QTableWidgetItem(status);
         if (hasConflict) {
@@ -32466,18 +33385,26 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     if (branch.isEmpty() || branch == base || base.isEmpty())
         return;
 
-    const bool claude = provider == QLatin1String("claude");
+    // "claude-code" drives the real `claude` CLI (no API key, authenticates via the
+    // local login); the two API providers POST each conflicted file to their endpoint.
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    const bool claude = !claudeCode && agentIsClaudeProvider(provider);
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
-    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
-                                   : QSettings().value(kCodexApiKeySetting))
-                               .toString()
-                               .trimmed();
-    if (apiKey.isEmpty()) {
-        flashMessage(claude ? "Add a Claude API key in Settings first."
-                            : "Add an OpenAI API key in Settings first.",
-                     true);
-        return;
+        claudeCode ? QString()
+                   : claude ? QStringLiteral("claude-haiku-4-5")
+                            : QStringLiteral("gpt-4.1-nano");
+    QString apiKey;
+    if (!claudeCode) {
+        apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                         : QSettings().value(kCodexApiKeySetting))
+                     .toString()
+                     .trimmed();
+        if (apiKey.isEmpty()) {
+            flashMessage(claude ? "Add a Claude API key in Settings first."
+                                : "Add an OpenAI API key in Settings first.",
+                         true);
+            return;
+        }
     }
 
     // Nothing to do if it's already current.
@@ -32565,8 +33492,11 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
-            .arg(agentProviderName(provider), model, base, branch));
+        claudeCode
+            ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
+                  .arg(agentProviderName(provider), base, branch)
+            : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
+                  .arg(agentProviderName(provider), model, base, branch));
 
     m_aiFix = new AiConflictFix;
     m_aiFix->branchMerge = true;
@@ -32580,12 +33510,16 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_aiFix->branch = branch;
     m_aiFix->baseBranch = base;
     m_aiFix->restoreBranch = restoreBranch;
+    m_aiFix->claudeCode = claudeCode;
 
     switchToAgentsTab(session.id);
     aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
                  .arg(conflicted.size())
                  .arg(conflicted.join(QStringLiteral(", "))));
-    aiFixResolveNextFile();
+    if (m_aiFix->claudeCode)
+        aiFixRunClaudeCode();
+    else
+        aiFixResolveNextFile();
 }
 
 void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
@@ -33931,6 +34865,8 @@ void MainWindow::showLoadStatus(const QString &what)
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -35056,6 +35992,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         if (m_issuePriorityValue)
             m_issuePriorityValue->setText("No priority");
         updateIssueAgentUi(Issue());
+        refreshIssueFilesPanel(Issue());
         cancelIssueSidebarEditors();
         m_issueThreadLayout->addStretch();
         return;
@@ -35130,6 +36067,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         }
     }
     updateIssueAgentUi(issue);
+    refreshIssueFilesPanel(issue);
     if (m_issueDevelopmentValue) {
         const QList<int> pulls = pullsLinkedToIssue(issue.number);
         if (pulls.isEmpty()) {
@@ -35262,12 +36200,14 @@ void MainWindow::renderIssueThread(const Issue &issue)
             clearBody();
             auto *body = new QLabel;
             body->setTextFormat(Qt::MarkdownText);
-            body->setText(ReferenceLinks::linkifyMarkdownReferences(eventBody));
+            body->setText(autolinkReferences(eventBody));
             body->setWordWrap(true);
             body->setTextInteractionFlags(Qt::TextBrowserInteraction);
+            // Reference links (#N, commit SHAs, forkmesh:// permalinks) resolve in
+            // app; real external links fall through to the system browser.
             body->setOpenExternalLinks(false);
             connect(body, &QLabel::linkActivated, this,
-                    &MainWindow::openReferenceLink);
+                    [this](const QString &href) { openBodyReference(href); });
             const bool emptyEditableDescription =
                 writable && isOpen && eventBody.trimmed().isEmpty();
             if (emptyEditableDescription) {
@@ -39017,6 +39957,28 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
+    // Default tab a repository opens on. Stored as the repo-detail tab index;
+    // defaults to Agents (see defaultRepoTabIndex()).
+    auto *defaultTabLabel = new QLabel("Open repositories on tab");
+    auto *defaultTabCombo = new QComboBox;
+    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
+    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
+    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
+    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
+    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
+    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
+    defaultTabCombo->setToolTip(
+        "Which tab to show when you open a repository. Defaults to Agents.");
+    {
+        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
+        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
+            [defaultTabCombo](int) {
+                QSettings().setValue(kDefaultRepoTabSetting,
+                                     defaultTabCombo->currentData().toInt());
+            });
+
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
@@ -39653,6 +40615,8 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(defaultTabLabel);
+    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 
@@ -40323,13 +41287,14 @@ void MainWindow::renderTopMessage()
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // The inline toast always stays a single elided one-liner; expanding never
+    // wraps or grows it. The full text is revealed in the floating overlay below
+    // instead, so it can't widen the window or push the layout around.
     QString display = m_topMessageRaw;
-    if (m_topMessageElided && !m_topMessageExpanded)
+    if (m_topMessageElided)
         display = display.left(kToastMaxChars - 1).trimmed()
                   + QString::fromUtf8("\xE2\x80\xA6"); // …
-    // Wrap only when expanded so the full text grows the toast vertically;
-    // collapsed it stays a single elided line that can't widen the window.
-    m_topMessage->setWordWrap(m_topMessageExpanded);
+    m_topMessage->setWordWrap(false);
     // The base HTML carries the message; auto-dismissing successes append a
     // ticking countdown suffix on top of it (see renderTopMessageCountdown).
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
@@ -40344,6 +41309,49 @@ void MainWindow::renderTopMessage()
                                            ? QStringLiteral("Collapse the message")
                                            : QStringLiteral("Show the full message"));
     }
+    // Float the full, wrapped message on top of the layout when expanded; hide
+    // the panel again when collapsed.
+    if (m_topMessageOverlay && m_topMessageOverlayText) {
+        if (m_topMessageExpanded) {
+            m_topMessageOverlayText->setText(
+                QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                    .arg(fg, glyph, m_topMessageRaw.toHtmlEscaped()));
+            positionTopMessageOverlay();
+            m_topMessageOverlay->show();
+            m_topMessageOverlay->raise();
+        } else {
+            m_topMessageOverlay->hide();
+        }
+    }
+}
+
+// Size the floating expanded-toast panel to its content (capped to a readable
+// width) and anchor it just under the inline toast, centred on it but clamped to
+// stay inside the window. Called on expand and on window resize.
+void MainWindow::positionTopMessageOverlay()
+{
+    if (!m_topMessageOverlay || !m_topMessage)
+        return;
+    const int margin = 16;
+    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    m_topMessageOverlay->setFixedWidth(w);
+    int h = m_topMessageOverlay->heightForWidth(w);
+    if (h <= 0)
+        h = m_topMessageOverlay->sizeHint().height();
+    m_topMessageOverlay->setFixedHeight(h);
+    // Anchor just below the inline toast, horizontally centred on it.
+    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
+    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    x = qBound(margin, x, width() - w - margin);
+    m_topMessageOverlay->move(x, anchor.y() + 6);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
+    if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
+        positionTopMessageOverlay();
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)
@@ -40438,6 +41446,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -45561,6 +46571,7 @@ void MainWindow::updateAgentsTabIndicator()
                 m_agentSnake->setText(QString::fromUtf8(frames[m_agentsSpinFrame]));
                 positionAgentSnake();
             }
+            animateRunningAgentIcons(); // spin the running rows' Status glyph
             positionAgentSpinnerOverlay();
         });
     }
