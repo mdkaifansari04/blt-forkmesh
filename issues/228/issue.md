@@ -5,7 +5,7 @@ title: add a security.md file
 status: open
 labels: []
 milestone: 
-priority: 48
+priority: 35
 progress: 0
 assignees: []
 createdAt: 1782354993210
