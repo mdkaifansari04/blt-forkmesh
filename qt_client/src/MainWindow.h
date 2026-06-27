@@ -28,6 +28,16 @@ struct AgentScannerState {
     double intensity = 0.0;    // 0..1 live-output rate the effect reacts to
 };
 
+// Per-session "what did this agent change" summary shown in the agents list
+// (issue #170): files its patch touched, and how far its branch sits ahead of /
+// behind the base branch. -1 means "unknown / not applicable" — e.g. a running
+// session with no patch yet, or a branch that has since been removed.
+struct AgentDiffStat {
+    int files = -1;
+    int ahead = -1;
+    int behind = -1;
+};
+
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -695,6 +705,12 @@ private:
     void initAgents();
     void reloadAgents();
     void refreshAgentTable();
+    // Files-changed + branch ahead/behind summary for a session's Diff cell
+    // (issue #170), computed against the given git dir / base branch and memoised
+    // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
+    // loop doesn't re-resolve them.
+    AgentDiffStat agentDiffStat(const AgentSession &session, const QString &gitDir,
+                                const QString &base);
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
@@ -1011,6 +1027,9 @@ private:
     void setDiffViewed(const QString &context, const QString &path, bool viewed);
     // Merge the default branch into `branch` so it catches up with main.
     void updateBranchFromBase(const QString &branch);
+    // Bring `branch` up to date with base via the interactive merge editor,
+    // resolving conflicts by hand. Reached from the "Merge editor" button.
+    void openBranchMergeEditor(const QString &branch);
     // Merge the default branch into every branch that's behind it in one pass;
     // clean merges land via plumbing (no checkout), conflicts are reported so the
     // list can surface them and offer "Fix with agent".
@@ -1081,6 +1100,16 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // --- Browser-style back / forward navigation, sat just left of the search box.
+    // A history of "places" (section + open repo) is recorded as you move around;
+    // Back and Forward walk it without recording new entries.
+    QWidget *createNavHistoryButtons();        // build the Back / Forward pair
+    void scheduleNavRecord();                  // queue a debounced location capture
+    void recordNavLocation();                  // snapshot the current place onto the trail
+    void restoreNavEntry(int index);           // navigate to a recorded place
+    void navigateBack();
+    void navigateForward();
+    void updateNavHistoryButtons();            // enable/disable per trail position
     // Full-page deep search opened by pressing Enter in the search box.
     QWidget *buildSearchResultsSection();
     void openSearchResultsPage(const QString &query);
@@ -1881,6 +1910,7 @@ private:
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
     QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
@@ -1944,6 +1974,23 @@ private:
     QLineEdit *m_globalSearch = nullptr;
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
+    // Back / forward navigation trail (left of the search box). Each entry is a
+    // place we landed on: the top-level section index, plus the repo open in the
+    // detail panel (-1 = none) so returning to Code restores the right repo.
+    struct NavPlace {
+        int section = 0;
+        int repoIndex = -1;
+        bool operator==(const NavPlace &o) const
+        {
+            return section == o.section && repoIndex == o.repoIndex;
+        }
+    };
+    QPushButton *m_navBackButton = nullptr;
+    QPushButton *m_navForwardButton = nullptr;
+    QList<NavPlace> m_navHistory;
+    int m_navHistoryIndex = -1;     // current position in m_navHistory
+    bool m_navRestoring = false;    // suppress recording while replaying the trail
+    bool m_navRecordPending = false; // a debounced capture is already queued
     // Full-page deep search (Enter in the box): streams working-tree text
     // matches, commit-message matches and history-diff (pickaxe) hits live.
     QTreeWidget *m_searchResultsTree = nullptr;
@@ -2380,6 +2427,10 @@ private:
     // it survives full table rebuilds) and the timer that animates the active ones.
     QHash<int, AgentScannerState> m_scannerStates;
     QTimer *m_scannerTimer = nullptr;
+    // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
+    // search-as-you-type refresh reuses them instead of re-shelling git per row.
+    // Rebuilt from scratch on each reloadAgents() (the data-changed entry point).
+    QHash<int, AgentDiffStat> m_agentDiffStats;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
