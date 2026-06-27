@@ -19818,6 +19818,14 @@ QWidget *MainWindow::buildAgentsTab()
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
+    // Stripping State_Selected in the delegate stops the delegate from filling
+    // the row, but the view still paints the selection band itself from the
+    // app-wide #issueTable stylesheet (selection-background-color, plus the
+    // ::item:selected background rule) — that's the green bar that survived. Blank
+    // both for this table only, so the delegate's green outline is all that shows.
+    m_agentTable->setStyleSheet(
+        "#issueTable { selection-background-color: transparent; }"
+        "#issueTable::item:selected { background: transparent; }");
     // Turns/Time are the run-summary figures the Claude CLI reports on finish;
     // they used to be crammed into the Status text and now get their own columns.
     m_agentTable->setHorizontalHeaderLabels(
