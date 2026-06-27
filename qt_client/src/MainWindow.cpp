@@ -23037,25 +23037,40 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // stream object and the UI hand-off below are set up *before* the worktree is
     // created so assigning an agent feels instant — the slow checkout then runs
     // asynchronously and the CLI starts from its continuation (issue #262).
-    m_streamEvents[sid].clear();
-    m_streamRaw[sid].clear();
-    m_streamFiles[sid].clear();
-    // This session's transcript is being reset; force the next show to rebuild.
+    //
+    // Resuming a session that already streamed a transcript — an app-restart resume
+    // of a still-Running agent (issue #242), or a user-driven Continue/Revision —
+    // must KEEP that transcript: wiping events.jsonl here is what made a
+    // recently-started agent look like it lost its history after a restart. Load any
+    // persisted events back into memory and only start from a clean slate for a
+    // genuinely fresh run (a brand-new ad-hoc or issue assignment has none). The
+    // resumed CLI emits its own "session started" event, marking the boundary.
+    ensureStreamEventsLoaded(sid);
+    const bool resuming = !m_streamEvents.value(sid).isEmpty();
+    if (!resuming) {
+        m_streamEvents[sid].clear();
+        m_streamRaw[sid].clear();
+        m_streamFiles[sid].clear();
+        m_agentStore->clearEvents(session);
+    }
+    // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
         m_renderedTranscriptSession = -1;
     // Capture the session so applyTranscriptEvent can persist each turn to disk
     // (issue #41) — m_agentSessions doesn't yet hold a freshly created ad-hoc
-    // session — and start this run's transcript file from a clean slate.
+    // session.
     m_streamSessionInfo[sid] = session;
-    m_agentStore->clearEvents(session);
     if (ClaudeStreamSession *old = m_streamSessions.take(sid))
         old->deleteLater();
     auto *stream = new ClaudeStreamSession(this);
     m_streamSessions.insert(sid, stream);
     // Record the initial user turn so it replays when switching back to this view.
-    applyTranscriptEvent(sid, QJsonObject{
-                                  {QStringLiteral("type"), QStringLiteral("_local_user")},
-                                  {QStringLiteral("text"), prompt}});
+    // On a resume the preserved transcript already holds the original prompt, so
+    // only a fresh run logs it here.
+    if (!resuming)
+        applyTranscriptEvent(sid, QJsonObject{
+                                      {QStringLiteral("type"), QStringLiteral("_local_user")},
+                                      {QStringLiteral("text"), prompt}});
     connect(stream, &ClaudeStreamSession::event, this,
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
