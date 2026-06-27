@@ -307,6 +307,18 @@ void ClaudeTranscriptView::scrollToBottom()
     smoothScrollTo(verticalScrollBar()->maximum());
 }
 
+void ClaudeTranscriptView::jumpToBottom()
+{
+    m_stickBottom = true;
+    if (m_scrollAnim)
+        m_scrollAnim->stop(); // don't let an in-flight smooth scroll pull us back
+    QScrollBar *sb = verticalScrollBar();
+    sb->setValue(sb->maximum());
+    // After a rebuild the rows haven't laid out yet, so maximum() is still stale;
+    // m_stickBottom keeps us pinned when the deferred rangeChanged lands the real
+    // range (see the rangeChanged handler in the constructor).
+}
+
 void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
 
 // A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker.
