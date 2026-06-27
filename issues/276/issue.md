@@ -5,7 +5,7 @@ title: fix icon / avatar display on PR detail page
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 62
 progress: 0
 assignees: []
 createdAt: 1782485809121
