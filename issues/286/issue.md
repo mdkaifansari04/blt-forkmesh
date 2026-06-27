@@ -5,7 +5,7 @@ title: have a button on the issues that prioritizes the issues based on the read
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 72
 progress: 0
 assignees: []
 createdAt: 1782488006349
