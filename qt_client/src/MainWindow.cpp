@@ -11202,9 +11202,64 @@ QWidget *MainWindow::buildIssuesSection()
     detailSplit->setStretchFactor(0, 1);
     detailSplit->setStretchFactor(1, 0);
     detailSplit->setSizes({520, 220});
+
+    // Issue #145: a "Files changed" tab beside the issue thread, mirroring the
+    // agent detail. A file list scrolls a diff viewer; selecting a file jumps to
+    // its hunk, activating one opens it (when it lives in a worktree on disk).
+    m_issueFilesList = new QListWidget;
+    m_issueFilesList->setObjectName("agentFilesList");
+    m_issueFilesList->setMinimumWidth(190);
+    connect(m_issueFilesList, &QListWidget::itemActivated, this,
+            [](QListWidgetItem *it) {
+                const QString path = it->data(Qt::UserRole).toString();
+                if (!path.isEmpty() && QFileInfo::exists(path))
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+            });
+    connect(m_issueFilesList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *it, QListWidgetItem *) {
+                if (!it || !m_issueDiffView)
+                    return;
+                const QString anchor = it->data(Qt::UserRole + 1).toString();
+                if (!anchor.isEmpty())
+                    m_issueDiffView->scrollToAnchor(anchor);
+            });
+    m_issueFilesChangedSummary = new QLabel;
+    m_issueFilesChangedSummary->setObjectName("agentFilesHeading");
+    auto *issueFilesV = new QVBoxLayout;
+    issueFilesV->setContentsMargins(0, 0, 0, 0);
+    issueFilesV->setSpacing(4);
+    issueFilesV->addWidget(m_issueFilesChangedSummary);
+    issueFilesV->addWidget(m_issueFilesList, 1);
+    auto *issueFilesPanel = new QWidget;
+    issueFilesPanel->setLayout(issueFilesV);
+
+    m_issueDiffView = new QTextBrowser;
+    m_issueDiffView->setObjectName("diffView");
+    m_issueDiffView->setOpenExternalLinks(false);
+    m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
+
+    auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
+    issueFilesSplit->setChildrenCollapsible(false);
+    issueFilesSplit->addWidget(issueFilesPanel);
+    issueFilesSplit->addWidget(m_issueDiffView);
+    issueFilesSplit->setStretchFactor(0, 0);
+    issueFilesSplit->setStretchFactor(1, 1);
+    issueFilesSplit->setSizes({220, 700});
+    auto *issueFilesPage = new QWidget;
+    auto *issueFilesPageLayout = new QVBoxLayout(issueFilesPage);
+    issueFilesPageLayout->setContentsMargins(0, 8, 0, 0);
+    issueFilesPageLayout->addWidget(issueFilesSplit, 1);
+
+    m_issueDetailTabs = new QTabWidget;
+    m_issueDetailTabs->setObjectName("agentDetailTabs"); // reuse the agent tab style
+    m_issueDetailTabs->addTab(detailSplit, QStringLiteral("Issue"));
+    m_issueFilesTabIndex =
+        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Files changed"));
+    m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+
     auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);
-    detailLayout->addWidget(detailSplit);
+    detailLayout->addWidget(m_issueDetailTabs);
 
     m_issueDetailStack = new QStackedWidget;
     m_issueDetailStack->addWidget(issueDetailView);
@@ -24497,6 +24552,120 @@ void MainWindow::updateIssueAgentUi(const Issue &issue)
         m_issueAgentViewButton->setVisible(session);
 }
 
+// Issue #145: drive the issue detail's "Files changed" tab. The tab appears only
+// when the issue has a diff to show — preferring a linked agent session's live
+// worktree branch diff (exactly the agent detail's view), falling back to a
+// linked pull request's stored patch. Otherwise the tab stays hidden.
+void MainWindow::refreshIssueFilesPanel(const Issue &issue)
+{
+    if (!m_issueDetailTabs || m_issueFilesTabIndex < 0)
+        return;
+
+    auto hideTab = [this] {
+        if (m_issueFilesList)
+            m_issueFilesList->clear();
+        if (m_issueDiffView)
+            m_issueDiffView->clear();
+        if (m_issueDetailTabs->currentIndex() == m_issueFilesTabIndex)
+            m_issueDetailTabs->setCurrentIndex(0);
+        m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+        m_issueDetailTabs->setTabText(m_issueFilesTabIndex,
+                                      QStringLiteral("Files changed"));
+    };
+
+    if (issue.number <= 0) {
+        hideTab();
+        return;
+    }
+
+    // A linked agent session's branch gives a live worktree diff (committed +
+    // uncommitted), measured against the same base its PR is built from.
+    if (const AgentSession *s = latestAgentSessionForIssue(issue.number)) {
+        const QString dir = sessionWorkdir(s->id);
+        if (!dir.isEmpty()) {
+            const QString base = sessionBaseRef(s->id);
+            QStringList args{QStringLiteral("diff")};
+            if (!base.isEmpty())
+                args << base;
+            m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, true);
+            const int issueNo = issue.number;
+            runGitDetached(dir, args,
+                           [this, issueNo, dir, base](bool ok, const QByteArray &out) {
+                               if (ok && issueNo == m_currentIssueNumber)
+                                   renderIssueDiff(issueNo, out, dir, base);
+                           });
+            return;
+        }
+    }
+
+    // Otherwise fall back to a linked pull request's patch (newest first). The PR
+    // patch carries no git object context, so render it as a standalone diff.
+    const QList<int> pulls = pullsLinkedToIssue(issue.number);
+    for (auto it = pulls.crbegin(); it != pulls.crend(); ++it) {
+        for (const PullRequest &pr : m_currentPulls) {
+            if (pr.number == *it && !pr.patch.isEmpty()) {
+                m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, true);
+                renderIssueDiff(issue.number, pr.patch.toUtf8(), QString(), QString());
+                return;
+            }
+        }
+    }
+
+    hideTab();
+}
+
+// Render a patch into the issue's Files-changed tab: lay out the diff, rebuild the
+// per-file list with +/- counts and scroll anchors, and stamp the file count onto
+// the tab header. Mirrors renderAgentDiff; a no-op once the selection has moved on
+// so a late async (git diff) callback can't clobber another issue's panel.
+void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
+                                 const QString &dir, const QString &base)
+{
+    if (!m_issueDiffView || issueNumber != m_currentIssueNumber)
+        return;
+    m_issueDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    QList<DiffFileEntry> files;
+    const QString html =
+        renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
+                       QString(), QHash<QString, QString>(), QSet<QString>());
+    m_issueDiffView->setHtml(
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+            : html);
+
+    if (m_issueFilesList) {
+        QSignalBlocker block(m_issueFilesList);
+        m_issueFilesList->clear();
+        for (const DiffFileEntry &f : files) {
+            const QString name = f.path.section(QLatin1Char('/'), -1);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QColor tint("#d29922");
+            QString icon = "file-diff";
+            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
+            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
+            item->setIcon(themedOcticon(icon, tint, 14));
+            const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
+            item->setData(Qt::UserRole, abs);          // open on activate
+            item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            m_issueFilesList->addItem(item);
+        }
+        fitFileListToWidestEntry(m_issueFilesList);
+    }
+
+    const int n = files.size();
+    if (m_issueDetailTabs && m_issueFilesTabIndex >= 0)
+        m_issueDetailTabs->setTabText(
+            m_issueFilesTabIndex,
+            n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
+                  : QStringLiteral("Files changed"));
+    if (m_issueFilesChangedSummary)
+        m_issueFilesChangedSummary->setText(
+            QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
+}
+
 QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Two modes: a GitHub-style overview, and an explorer+editor view shown only
@@ -34980,6 +35149,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         if (m_issuePriorityValue)
             m_issuePriorityValue->setText("No priority");
         updateIssueAgentUi(Issue());
+        refreshIssueFilesPanel(Issue());
         cancelIssueSidebarEditors();
         m_issueThreadLayout->addStretch();
         return;
@@ -35054,6 +35224,7 @@ void MainWindow::renderIssueThread(const Issue &issue)
         }
     }
     updateIssueAgentUi(issue);
+    refreshIssueFilesPanel(issue);
     if (m_issueDevelopmentValue) {
         const QList<int> pulls = pullsLinkedToIssue(issue.number);
         if (pulls.isEmpty()) {
