@@ -817,6 +817,19 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #58a6ff; }
 #issueComposeSidebar { background: transparent; }
+/* Agent detail "Queue another message" composer (adhoc #177). */
+#agentComposer {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+}
+QPlainTextEdit#agentComposerEdit {
+    background: transparent;
+    border: none;
+    color: #e6edf3;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#agentComposerEdit:disabled { color: #6e7681; }
 QPushButton#markdownTab {
     background-color: #161b22;
     border: 1px solid #30363d;
@@ -1762,6 +1775,19 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #0969da; }
 #issueComposeSidebar { background: transparent; }
+/* Agent detail "Queue another message" composer (adhoc #177). */
+#agentComposer {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 12px;
+}
+QPlainTextEdit#agentComposerEdit {
+    background: transparent;
+    border: none;
+    color: #1f2328;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#agentComposerEdit:disabled { color: #8c959f; }
 QPushButton#markdownTab {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;

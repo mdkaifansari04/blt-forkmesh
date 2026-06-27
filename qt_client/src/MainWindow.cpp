@@ -8024,10 +8024,18 @@ void MainWindow::probeRelayLatency()
         delete clock;
         m_relayProbeInFlight = false;
         reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
+        if (reply->error() == QNetworkReply::NoError) {
             radar->setLatency(static_cast<int>(elapsed));
-        else
+            // Back online: relax to the once-a-minute cadence (issue #179).
+            if (m_relayLatencyTimer && m_relayLatencyTimer->interval() != 60 * 1000)
+                m_relayLatencyTimer->start(60 * 1000);
+        } else {
             radar->setUnreachable();
+            // Offline: re-probe every second until the relay answers again so
+            // the radar clears its red alert promptly (issue #179).
+            if (m_relayLatencyTimer)
+                m_relayLatencyTimer->start(1000);
+        }
     });
 }
 
@@ -17884,7 +17892,7 @@ void MainWindow::importPatchAsPull()
     QString error;
     const int number = store.createPull(
         title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
-        base, head, patch, QString(), &error);
+        base, head, patch, QString(), /*branchBacked=*/false, &error);
     if (number < 0) {
         setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                             : error,
@@ -18084,7 +18092,8 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     if (store.canWrite() && targetOwner == currentRepo.owner) {
         QString error;
         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
-                                             pr.patch, pr.commits, &error);
+                                             pr.patch, pr.commits,
+                                             /*branchBacked=*/fromRange, &error);
         if (number < 0) {
             QMessageBox::warning(this, "New pull request", error);
             return;
@@ -21226,6 +21235,28 @@ QWidget *MainWindow::buildAgentsTab()
             s->branchName,
             worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName));
     });
+    // Same merge, but also tear down this agent session once its branch is in main
+    // (mirrors the Worktrees tab's "Merge & delete agent").
+    m_agentMergeDeleteButton = new QPushButton("Merge & delete agent");
+    m_agentMergeDeleteButton->setObjectName("ghostButton");
+    m_agentMergeDeleteButton->setProperty("buttonSize", "sm");
+    m_agentMergeDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentMergeDeleteButton, "check-circle", 14);
+    m_agentMergeDeleteButton->setToolTip(
+        "Merge this session's branch into the default branch, then delete the "
+        "worktree, its branch and its agent session");
+    connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        mergeWorktreeIntoMain(
+            s->branchName,
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
+            /*deleteAgent=*/true);
+    });
     m_agentWtDeleteButton = new QPushButton("Delete worktree");
     m_agentWtDeleteButton->setObjectName("ghostButton");
     m_agentWtDeleteButton->setProperty("buttonSize", "sm");
@@ -21250,6 +21281,7 @@ QWidget *MainWindow::buildAgentsTab()
     filesActionBar->addStretch();
     filesActionBar->addWidget(m_agentUpdateButton);
     filesActionBar->addWidget(m_agentMergeButton);
+    filesActionBar->addWidget(m_agentMergeDeleteButton);
     filesActionBar->addWidget(m_agentWtDeleteButton);
 
     auto *filesDiffSplit = new QSplitter(Qt::Horizontal);
@@ -21326,8 +21358,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentPromptEdit->setMaximumHeight(92);
     m_agentPromptEdit->setFrameShape(QFrame::NoFrame);
     m_agentPromptEdit->setObjectName("agentComposerEdit");
-    m_agentPromptEdit->setStyleSheet(
-        QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+    // Wrap long messages instead of growing sideways — no horizontal scrollbar,
+    // and the colours come from the themed stylesheet so the composer follows the
+    // light/dark theme (adhoc #177).
+    m_agentPromptEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_agentPromptEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // Enter sends the message, Shift+Enter inserts a newline (see eventFilter),
     // matching the Claude Code conversation input.
     m_agentPromptEdit->installEventFilter(this);
@@ -21365,11 +21400,22 @@ QWidget *MainWindow::buildAgentsTab()
         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
-            m_agentStore->appendLog(
-                *session,
-                QStringLiteral("\n==> User prompt saved while session was not running\n%1")
-                    .arg(prompt));
-            showAgentSession(session->id);
+            // No live process: the session is stopped, waiting, failed or done.
+            // Restart it and fold this message into the resumed run as a steering
+            // instruction so the queued message actually takes effect (adhoc #177).
+            const int sid = session->id;
+            m_pendingSteerMessage.insert(sid, prompt);
+            if (session->provider == QLatin1String("claude-code"))
+                applyTranscriptEvent(
+                    sid, QJsonObject{
+                             {QStringLiteral("type"), QStringLiteral("_local_user")},
+                             {QStringLiteral("text"), prompt}});
+            else
+                m_agentStore->appendLog(
+                    *session,
+                    QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                        .arg(prompt));
+            continueSelectedAgentSession();
         }
         m_agentPromptEdit->clear();
     });
@@ -21412,8 +21458,7 @@ QWidget *MainWindow::buildAgentsTab()
     // with the message field above an accessory + send button row.
     auto *composer = new QFrame;
     composer->setObjectName("agentComposer");
-    composer->setStyleSheet(QStringLiteral(
-        "#agentComposer{background:#161b22;border:1px solid #30363d;border-radius:12px;}"));
+    // Styled from the themed stylesheet (Theme.h) so it matches the light theme.
     auto *composerCol = new QVBoxLayout(composer);
     composerCol->setContentsMargins(12, 10, 10, 8);
     composerCol->setSpacing(6);
@@ -23470,6 +23515,16 @@ void MainWindow::processAgentQueue()
         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
             config.taskOverride = snapshot.prompt;
+        // A message queued from the always-on composer while this session was
+        // stopped/waiting (adhoc #177): hand it to the resumed run as a steer.
+        if (const QString steer = m_pendingSteerMessage.take(sessionId); !steer.isEmpty()) {
+            const QString base = config.taskOverride.isEmpty() ? snapshot.prompt
+                                                               : config.taskOverride;
+            config.taskOverride =
+                base.isEmpty()
+                    ? steer
+                    : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
+        }
         acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
     }
     reloadAgents();
@@ -23736,10 +23791,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // built-in default preamble followed by the full workflow body, as before.
     const QString customPreamble =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
-    const QString prompt =
+    QString prompt =
         customPreamble.isEmpty()
             ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
             : customPreamble + QStringLiteral("\n\n") + lead;
+    // A message queued from the always-on composer while this session was stopped
+    // or waiting (adhoc #177): a fresh `claude` process replays the prompt, so
+    // append the steer here rather than relying on the preserved transcript.
+    if (const QString steer = m_pendingSteerMessage.take(sid); !steer.isEmpty())
+        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -24820,6 +24880,8 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
     const bool feature = !branch.isEmpty() && branch != base && !isMain;
     if (m_agentMergeButton)
         m_agentMergeButton->setEnabled(feature && repoHasWorkingTree());
+    if (m_agentMergeDeleteButton)
+        m_agentMergeDeleteButton->setEnabled(feature && repoHasWorkingTree());
     if (m_agentUpdateButton)
         m_agentUpdateButton->setEnabled(feature && onDisk);
     if (m_agentWtDeleteButton)
@@ -24870,7 +24932,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     const int pr = store.createPull(
         prTitle, prBody,
         s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
-        QString(), &error);
+        QString(), /*branchBacked=*/true, &error);
     if (pr > 0) {
         s->prNumber = pr;
         m_agentStore->saveSession(*s);
@@ -25020,7 +25082,8 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
                         .arg(session->issueNumber),
                     session->baseBranch.isEmpty() ? session->baseRef
                                                   : session->baseBranch,
-                    session->branchName, patch, QString(), &error);
+                    session->branchName, patch, QString(), /*branchBacked=*/true,
+                    &error);
                 if (pr > 0) {
                     session->prNumber = pr;
                     m_agentStore->saveSession(*session);
@@ -25088,10 +25151,13 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
+    // The composer is always live whenever a session is selected: typing + Send
+    // steers a running agent, or restarts a stopped/waiting one with the message
+    // folded in (adhoc #177). It no longer greys out for PR-scoped sessions.
     if (m_agentSendPromptButton)
-        m_agentSendPromptButton->setEnabled(issueBacked);
+        m_agentSendPromptButton->setEnabled(selected);
     if (m_agentPromptEdit)
-        m_agentPromptEdit->setEnabled(issueBacked);
+        m_agentPromptEdit->setEnabled(selected);
 }
 
 // ---- IDE extension integration --------------------------------------------
@@ -26715,7 +26781,8 @@ bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
         QString error;
         const int number = store.createPull(title, description, base, branch,
                                             QString::fromUtf8(diff),
-                                            QString::fromUtf8(mbox), &error);
+                                            QString::fromUtf8(mbox),
+                                            /*branchBacked=*/true, &error);
         if (number < 0) {
             setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                                 : error,
@@ -33272,7 +33339,8 @@ void MainWindow::createPullFromBranch(const QString &branch)
     QString error;
     const int number = store.createPull(title, description, base, branch,
                                         QString::fromUtf8(diff),
-                                        QString::fromUtf8(mbox), &error);
+                                        QString::fromUtf8(mbox),
+                                        /*branchBacked=*/true, &error);
     if (number < 0) {
         setRepoDetailNotice(
             error.isEmpty() ? "Could not create the pull request." : error, true);
