@@ -1280,6 +1280,23 @@ a.repo-icon:hover {
   color: var(--warning);
 }
 
+.file-meta .cache-expire-btn {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--muted);
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.file-meta .cache-expire-btn:hover {
+  color: var(--foreground);
+  border-color: var(--warning);
+}
+
 .mirror-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
