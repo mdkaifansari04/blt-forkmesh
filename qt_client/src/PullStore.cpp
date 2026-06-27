@@ -550,15 +550,27 @@ QString PullStore::pullDir(int number) const
 void PullStore::computeStats(PullRequest &pr)
 {
     int files = 0, add = 0, del = 0;
-    for (const QString &line : pr.patch.split('\n')) {
-        if (line.startsWith("diff --git "))
+    // Walk the patch line-by-line over a view instead of pr.patch.split('\n'):
+    // a large patch otherwise materialises a QStringList holding one heap-allocated
+    // QString per line, and building + destroying that list blocked the UI thread
+    // for ~1.6s (the QString destructor was the stall hot spot, issue #152).
+    const QStringView patch(pr.patch);
+    for (qsizetype start = 0; start <= patch.size();) {
+        const qsizetype nl = patch.indexOf(u'\n', start);
+        const QStringView line =
+            patch.sliced(start, (nl < 0 ? patch.size() : nl) - start);
+        if (line.startsWith(QLatin1String("diff --git ")))
             ++files;
-        else if (line.startsWith("+++") || line.startsWith("---"))
-            continue;
-        else if (line.startsWith('+'))
+        else if (line.startsWith(QLatin1String("+++")) ||
+                 line.startsWith(QLatin1String("---"))) {
+            // file-header line, not a +/- content line
+        } else if (line.startsWith(u'+'))
             ++add;
-        else if (line.startsWith('-'))
+        else if (line.startsWith(u'-'))
             ++del;
+        if (nl < 0)
+            break;
+        start = nl + 1;
     }
     pr.filesChanged = files;
     pr.additions = add;

@@ -31943,6 +31943,27 @@ void MainWindow::loadBranchesPanel()
                 .arg(branches.size())
                 .arg(base.isEmpty() ? "none" : base));
 
+    // Branch commit timestamps in one batch: spawning a `git log -1` per branch
+    // (below) blocked the UI thread for ~2s on repos with many branches because
+    // each row started its own git process serially (issue #152). for-each-ref
+    // returns every branch tip's committer date in a single call.
+    QHash<QString, qint64> branchTimes;
+    if (!dir.isEmpty()) {
+        QByteArray times;
+        if (runGitCapture(dir,
+                          {"for-each-ref",
+                           "--format=%(refname:short) %(committerdate:unix)",
+                           "refs/heads/"},
+                          &times, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
+                const qsizetype sp = line.lastIndexOf(u' ');
+                if (sp > 0)
+                    branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
+            }
+        }
+    }
+
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
@@ -31990,10 +32011,7 @@ void MainWindow::loadBranchesPanel()
                 if (hasConflict)
                     status += QString::fromUtf8(" \xC2\xB7 conflicts");
             }
-            QByteArray when;
-            if (runGitCapture(dir,
-                              {"log", "-1", "--format=%ct", branch}, &when, nullptr))
-                ts = QString::fromUtf8(when).trimmed().toLongLong();
+            ts = branchTimes.value(branch, 0);
         }
         auto *statusItem = new QTableWidgetItem(status);
         if (hasConflict) {
