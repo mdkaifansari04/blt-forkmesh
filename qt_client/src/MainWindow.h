@@ -1176,6 +1176,14 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
+    // Quick-add image attachment (issue #79): pick or paste an image in the footer
+    // quick-add bar. In "No issue" mode the path is sent to the agent in its
+    // prompt; otherwise the image is attached to the created issue.
+    void attachQuickAddImage();
+    bool tryPasteImageIntoQuickAdd();
+    void queueQuickAddImage(const QString &path);
+    void clearQuickAddImages();
+    void updateQuickAddImageButton();
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -1667,6 +1675,8 @@ private:
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
+    QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
+    QStringList m_quickAddImages;               // image paths queued for next send
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
