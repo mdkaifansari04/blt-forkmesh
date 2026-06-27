@@ -5,7 +5,7 @@ title: have prioritise from readme button use the defautl agent please
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 79
 progress: 0
 assignees: []
 createdAt: 1782512635428
