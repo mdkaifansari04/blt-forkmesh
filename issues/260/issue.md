@@ -5,7 +5,7 @@ title: allow claude clde prompt to be edited and saved in the settings
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 50
 progress: 0
 assignees: []
 createdAt: 1782428147358
