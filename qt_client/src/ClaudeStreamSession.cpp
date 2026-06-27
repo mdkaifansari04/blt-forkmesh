@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QTimer>
 
 ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
 
@@ -71,15 +72,28 @@ void ClaudeStreamSession::stop()
 {
     if (!m_proc)
         return;
-    m_proc->disconnect(this);
-    if (m_proc->state() != QProcess::NotRunning) {
-        m_proc->closeWriteChannel(); // signal end-of-input first
-        m_proc->terminate();
-        if (!m_proc->waitForFinished(1500))
-            m_proc->kill();
-    }
-    m_proc->deleteLater();
+    QProcess *proc = m_proc;
     m_proc = nullptr;
+    proc->disconnect(this);
+    // Detach the process from this session so it survives our own destruction and
+    // tears itself down on its own time.
+    proc->setParent(nullptr);
+    if (proc->state() == QProcess::NotRunning) {
+        proc->deleteLater();
+        return;
+    }
+    // Don't block the UI thread waiting for Claude to exit. This used to call
+    // waitForFinished(1500), freezing the window for up to 1.5s every time a
+    // running session was stopped or deleted. Instead ask it to terminate and let
+    // it clean itself up: kill it if it's still alive after a grace period, and
+    // delete the QProcess once it has actually exited.
+    connect(proc, &QProcess::finished, proc, &QObject::deleteLater);
+    proc->closeWriteChannel(); // signal end-of-input first
+    proc->terminate();
+    QTimer::singleShot(1500, proc, [proc] {
+        if (proc->state() != QProcess::NotRunning)
+            proc->kill(); // finished() → deleteLater() then frees it
+    });
 }
 
 bool ClaudeStreamSession::running() const
