@@ -19313,12 +19313,17 @@ public:
         const int sessionId = idx.data(Qt::UserRole).toInt();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         double phase = 0.0;
+        double intensity = 0.0; // live-output rate, drives the reactive effect
         bool active = false;
         if (m_states) {
             const auto it = m_states->constFind(sessionId);
             if (it != m_states->constEnd()) {
                 phase = it->phase;
-                active = (now - it->lastActivityMs) < kScannerIdleMs;
+                intensity = it->intensity;
+                // Keep painting the sweep until the meter has fully wound down,
+                // so the light stays continuously going between output bursts.
+                active = (now - it->lastActivityMs) < kScannerIdleMs
+                         || intensity > 0.0;
             }
         }
 
@@ -19334,19 +19339,26 @@ public:
         // Triangle wave: 0 -> (n-1) -> 0, the back-and-forth night-rider sweep.
         const double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
         const double pos = tri * (n - 1);
-        const double trail = 2.4; // how many LEDs the comet's glow spans
+        // Real-time reactive effect: the comet's tail streaks longer the more raw
+        // output is pouring in, so the trail length tracks throughput at a glance.
+        const double trail = 1.8 + 2.6 * intensity; // LEDs the comet's glow spans
 
         p->save();
         p->setRenderHint(QPainter::Antialiasing, true);
         p->setPen(Qt::NoPen);
-        const QColor base(248, 81, 73); // #f85149 — KITT red
-        const double restAlpha = active ? 0.12 : 0.06;
+        // Hot output shifts KITT red toward bright amber, so the colour itself
+        // climbs with the live stream rate (cool #f85149 -> hot #ffc75c).
+        auto mix = [](int a, int b, double t) { return int(a + (b - a) * t); };
+        const QColor base(mix(248, 255, intensity), mix(81, 199, intensity),
+                          mix(73, 92, intensity));
+        const double restAlpha = active ? 0.10 + 0.10 * intensity : 0.06;
         for (int i = 0; i < n; ++i) {
             double glow = 0.0;
             if (active) {
                 const double d = qAbs(i - pos);
                 glow = qMax(0.0, 1.0 - d / trail);
-                glow *= glow; // sharpen the comet head
+                glow *= glow;                       // sharpen the comet head
+                glow *= 0.6 + 0.4 * intensity;      // brighter head when busy
             }
             QColor c = base;
             c.setAlphaF(restAlpha + (1.0 - restAlpha) * glow);
@@ -22214,7 +22226,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     connect(stream, &ClaudeStreamSession::event, this,
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
-        noteAgentActivity(sid); // pulse the list's night-rider light
+        noteAgentActivity(sid, line.size()); // pulse the list's night-rider light
         QString &buf = m_streamRaw[sid];
         // Separate each JSON object with a blank line so the raw view is readable.
         buf += line + QStringLiteral("\n\n");
@@ -22584,7 +22596,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         ClaudeSessionScan::readEvents(ext.path, offset, &newOffset);
     m_externalReadOffset[sessionId] = newOffset;
     if (!events.isEmpty())
-        noteAgentActivity(sessionId); // pulse the list's night-rider light
+        // Surfaced external transcripts arrive in event batches rather than raw
+        // bytes; scale the meter bump by how many landed this read.
+        noteAgentActivity(sessionId, events.size() * 200);
 
     qint64 addedTokens = 0;
     for (const QJsonObject &ev : events) {
@@ -22885,11 +22899,17 @@ void MainWindow::updateAgentCostCell(int sessionId)
 // output is streaming. Called from every raw-output path (headless AgentRunner
 // logs, live Claude stream lines, surfaced external transcripts). The driving
 // timer is started on demand and self-stops once every light has gone idle.
-void MainWindow::noteAgentActivity(int sessionId)
+void MainWindow::noteAgentActivity(int sessionId, int bytes)
 {
     if (sessionId <= 0)
         return;
-    m_scannerStates[sessionId].lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    AgentScannerState &st = m_scannerStates[sessionId];
+    st.lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    // Top up the live-output intensity meter by how much just streamed (a ~512B
+    // chunk pins it). onScannerTick decays this every frame, so a steady stream
+    // holds it hot while a pause fades it out — that's what the sweep reacts to.
+    const double bump = bytes > 0 ? qMin(1.0, bytes / 512.0) : 0.5;
+    st.intensity = qMin(1.0, st.intensity + bump);
     if (m_scannerTimer && !m_scannerTimer->isActive())
         m_scannerTimer->start();
 }
@@ -22900,13 +22920,21 @@ void MainWindow::noteAgentActivity(int sessionId)
 void MainWindow::onScannerTick()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // One full back-and-forth bounce per ~1.1s, stepped per timer interval.
-    const double step = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1100.0;
+    // Baseline bounce ~one back-and-forth per 1.7s; the live-output intensity
+    // accelerates it up to ~2.5x so a busy agent visibly races.
+    const double base = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1700.0;
     bool anyActive = false;
     for (auto it = m_scannerStates.begin(); it != m_scannerStates.end(); ++it) {
-        if (now - it->lastActivityMs >= kScannerIdleMs)
+        // Decay the live-output meter every frame; noteAgentActivity re-bumps it
+        // per chunk, so a steady stream holds it high and a pause fades it out.
+        it->intensity *= 0.85;
+        if (it->intensity < 0.01)
+            it->intensity = 0.0;
+        // Keep the light continuously sweeping while there's any activity left:
+        // either output landed recently or the meter is still winding down.
+        if (it->intensity <= 0.0 && now - it->lastActivityMs >= kScannerIdleMs)
             continue;
-        it->phase += step;
+        it->phase += base * (0.6 + 1.9 * it->intensity);
         if (it->phase >= 1.0)
             it->phase -= 1.0;
         anyActive = true;
@@ -23164,7 +23192,7 @@ void MainWindow::showAgentRawOutput()
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
 {
-    noteAgentActivity(sessionId); // pulse the list's night-rider light
+    noteAgentActivity(sessionId, text.size()); // pulse the night-rider light
     if (sessionId != m_selectedAgentSessionId || !m_agentLog)
         return;
     m_agentLog->moveCursor(QTextCursor::End);
