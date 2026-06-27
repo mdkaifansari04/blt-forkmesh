@@ -5,7 +5,7 @@ title: Split MainWindow.cpp (34.8k lines) into feature-grouped files for faster 
 status: open
 labels: []
 milestone: 
-priority: 49
+priority: 2
 progress: 0
 assignees: []
 createdAt: 1782345034609
