@@ -5,7 +5,7 @@ title: when deleting a worktree from the worktree section also delete it's branc
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 59
 progress: 0
 assignees: []
 createdAt: 1782483168534
