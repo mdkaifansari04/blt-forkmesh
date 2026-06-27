@@ -2384,6 +2384,10 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // A message typed into the composer for a session whose process isn't live:
+    // it restarts the session and this is folded into the resumed run's prompt as
+    // a steering instruction (the composer is always typeable — adhoc #177).
+    QHash<int, QString> m_pendingSteerMessage;
     // Snapshot of each live stream session, captured at launch so transcript
     // events can be persisted to disk without depending on m_agentSessions
     // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
