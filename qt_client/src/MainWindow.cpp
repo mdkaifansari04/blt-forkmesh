@@ -21114,8 +21114,16 @@ QWidget *MainWindow::buildAgentsTab()
         if (rows.isEmpty())
             return;
         QTableWidgetItem *first = m_agentTable->item(rows.first().row(), 0);
-        if (first)
+        if (first) {
             showAgentSession(first->data(Qt::UserRole).toInt());
+            // Always reveal the latest turn when a session is clicked (adhoc
+            // #128). showAgentSession() also runs on every reload, so this lives
+            // here in the genuine selection-change handler rather than there —
+            // otherwise reloads would yank a scrolled-up reader back to the
+            // bottom.
+            if (m_agentTranscript)
+                m_agentTranscript->jumpToBottom();
+        }
     });
     return page;
 }
