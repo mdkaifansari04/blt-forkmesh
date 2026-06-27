@@ -5,7 +5,7 @@ title: on the branches page show if they have a worktree, linked pr and / or a l
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 65
 progress: 0
 assignees: []
 createdAt: 1782487083349
