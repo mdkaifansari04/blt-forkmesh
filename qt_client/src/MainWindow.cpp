@@ -30289,10 +30289,23 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // the window stays responsive instead of freezing ("Not Responding").
     GitKeepAlive keepAlive;
     QString err;
-    if (runGitCapture(dir,
+    const bool merged =
+        runGitCapture(dir,
                       {"merge", "--no-ff", branch,
                        "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
-                      nullptr, &err)) {
+                      nullptr, &err);
+    // Only treat the merge as clean when git succeeded *and* left no conflicted
+    // paths behind. Issue #126: a worktree that couldn't merge cleanly must be kept,
+    // not deleted — its commits aren't in main yet, so removing it would discard the
+    // only copy of that work. Gate the removal on the repo's actual state rather than
+    // git's exit code alone (a killed/slow merge can exit non-zero with the merge
+    // already applied, or leave unmerged paths), so we never delete on a dirty merge.
+    QByteArray conflicted;
+    const bool hasConflicts =
+        runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &conflicted,
+                      nullptr) &&
+        !QString::fromUtf8(conflicted).trimmed().isEmpty();
+    if (merged && !hasConflicts) {
         // The branch is now in main, so the worktree has served its purpose — clean
         // it up (silently; the merge was already confirmed). Removing a worktree
         // leaves its branch behind, which is fine: it stays mergeable/visible.
@@ -30311,10 +30324,14 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         // Issue #291: flag any agent session that produced this branch.
         markAgentSessionsMerged(0, branch);
     } else {
+        // Roll the failed merge back so the checkout is left clean, and keep the
+        // worktree so its work isn't lost (issue #126).
         runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
         setRepoDetailNotice(
-            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR and use "
-                           "\"Fix with agent\" on the Branches tab.").arg(branch), true);
+            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — kept its worktree. "
+                           "Open a PR and use \"Fix with agent\" on the Branches tab.")
+                .arg(branch),
+            true);
     }
     loadWorktreesPanel();
     if (m_branchesTable)
