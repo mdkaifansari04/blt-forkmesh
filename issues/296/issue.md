@@ -5,7 +5,7 @@ title: on the agent list when the agent is finished it says somethin glike done 
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 81
 progress: 0
 assignees: []
 createdAt: 1782515276058
