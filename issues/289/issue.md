@@ -5,7 +5,7 @@ title: there is a slight lag when clicking from issues to agents tab
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 74
 progress: 0
 assignees: []
 createdAt: 1782498191742
