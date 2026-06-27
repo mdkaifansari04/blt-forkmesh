@@ -340,26 +340,6 @@ index fd046908..00000000
 -    assert "members.length < 1" in render
 -    assert "members.length <= 1" not in render
 -    assert 'm.liveHost ? "status-pill online" : "status-pill offline"' in render
-diff --git a/issues/255/0006-agent.md b/issues/255/0006-agent.md
-deleted file mode 100644
-index 532ff74b..00000000
---- a/issues/255/0006-agent.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--type: agent
--id: 9ba733f6-eb9e-4d39-9a2f-01c424ce5a50
--author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
--authorName: newnewnode
--ts: 1782529291398
--agentProvider: 
--agentSessionId: 0
--agentStatus: cleared
--agentCreatePr: false
--sig: wMy_wFv-dK_tqqp2ATaPH1Fy9VW_0BcqTfCxeIfCG67NubxmdCgOdLfwv0Iq2JHm-1_lPFFynHTtVWCT_PKHAw
-----
--
--
 diff --git a/issues/297/0002-agent.md b/issues/297/0002-agent.md
 deleted file mode 100644
 index f43f5235..00000000

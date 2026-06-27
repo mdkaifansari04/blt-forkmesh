@@ -12,4 +12,3 @@ sig: fjCjWCsx_zGINscacNH3v8aeutRuI3msUtCTTF6tJ6Lu-C38C-iHFbXz5ImeyTPsbImSCGBIqTn
 ---
 
 - adhoc #65: continue a failed agent with a typed follow-up prompt
-
