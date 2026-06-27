@@ -21189,6 +21189,28 @@ QWidget *MainWindow::buildAgentsTab()
             s->branchName,
             worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName));
     });
+    // Same merge, but also tear down this agent session once its branch is in main
+    // (mirrors the Worktrees tab's "Merge & delete agent").
+    m_agentMergeDeleteButton = new QPushButton("Merge & delete agent");
+    m_agentMergeDeleteButton->setObjectName("ghostButton");
+    m_agentMergeDeleteButton->setProperty("buttonSize", "sm");
+    m_agentMergeDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentMergeDeleteButton, "check-circle", 14);
+    m_agentMergeDeleteButton->setToolTip(
+        "Merge this session's branch into the default branch, then delete the "
+        "worktree, its branch and its agent session");
+    connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        mergeWorktreeIntoMain(
+            s->branchName,
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
+            /*deleteAgent=*/true);
+    });
     m_agentWtDeleteButton = new QPushButton("Delete worktree");
     m_agentWtDeleteButton->setObjectName("ghostButton");
     m_agentWtDeleteButton->setProperty("buttonSize", "sm");
@@ -21213,6 +21235,7 @@ QWidget *MainWindow::buildAgentsTab()
     filesActionBar->addStretch();
     filesActionBar->addWidget(m_agentUpdateButton);
     filesActionBar->addWidget(m_agentMergeButton);
+    filesActionBar->addWidget(m_agentMergeDeleteButton);
     filesActionBar->addWidget(m_agentWtDeleteButton);
 
     auto *filesDiffSplit = new QSplitter(Qt::Horizontal);
@@ -24722,6 +24745,8 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
     const bool feature = !branch.isEmpty() && branch != base && !isMain;
     if (m_agentMergeButton)
         m_agentMergeButton->setEnabled(feature && repoHasWorkingTree());
+    if (m_agentMergeDeleteButton)
+        m_agentMergeDeleteButton->setEnabled(feature && repoHasWorkingTree());
     if (m_agentUpdateButton)
         m_agentUpdateButton->setEnabled(feature && onDisk);
     if (m_agentWtDeleteButton)
