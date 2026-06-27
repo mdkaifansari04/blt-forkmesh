@@ -6622,11 +6622,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
-    m_issueQuickAdd->setMaxLength(160);
+    // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
+    // field is sized to the same cap as the Claude prompt / message input
+    // (kMaxTextChars) rather than a short-title length.
+    m_issueQuickAdd->setMaxLength(16000);
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
 
-    // Characters-remaining counter: counts down from the 160-char limit as you
+    // Characters-remaining counter: counts down from the field's limit as you
     // type, so it's clear how much room is left before the field stops accepting
     // input. Greys out when empty, turns amber as the limit approaches.
     m_quickAddCharCount = new QLabel;
@@ -10190,6 +10193,23 @@ QWidget *MainWindow::buildIssuesSection()
     connect(reprioritizeButton, &QPushButton::clicked, this,
             &MainWindow::reprioritizeBacklog);
 
+    // Issue looper (adhoc #92): a one-click "work through the backlog" toggle.
+    // Starts the default agent on the highest-priority open issue, watches it to
+    // completion, then automatically moves on to the next — looping until the
+    // backlog is exhausted or the user clicks again to stop.
+    m_issueLooperButton = new QPushButton("Loop open issues");
+    m_issueLooperButton->setObjectName("ghostButton");
+    m_issueLooperButton->setProperty("buttonSize", "sm");
+    m_issueLooperButton->setCheckable(true);
+    m_issueLooperButton->setCursor(Qt::PointingHandCursor);
+    m_issueLooperButton->setToolTip(
+        "Run the default agent on each open issue in turn: start one, wait for it "
+        "to finish, then automatically start the next. Click again to stop after "
+        "the current issue.");
+    setOcticon(m_issueLooperButton, "sync", 16);
+    connect(m_issueLooperButton, &QPushButton::clicked, this,
+            &MainWindow::toggleIssueLooper);
+
     // Issue #286: hand the README and the open backlog to the default agent and
     // let it rank the issues. The instruction is editable in Settings -> Agents.
     // Sits at the top of the panel next to the title (a primary action, not lost
@@ -10259,6 +10279,7 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueSyncButton);
     actionRow->addWidget(issueBurnupButton);
     actionRow->addWidget(reprioritizeButton);
+    actionRow->addWidget(m_issueLooperButton);
     actionRow->addWidget(bountyAllAmount);
     actionRow->addWidget(bountyAllButton);
     actionRow->addWidget(m_issueStatusFilter);
@@ -19498,6 +19519,38 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
 }
 
+// Effective run duration for the throughput figure: prefer the CLI-reported
+// active run time (durationMs, the same value the Time column shows), and fall
+// back to the start→finish wall-clock span for sessions that don't report it
+// (e.g. the API agents) so the Speed field is populated for every finished task.
+qint64 agentEffectiveDurationMs(const AgentSession &s)
+{
+    if (s.durationMs > 0)
+        return s.durationMs;
+    if (s.finishedAtMs > s.startedAtMs && s.startedAtMs > 0)
+        return s.finishedAtMs - s.startedAtMs;
+    return 0;
+}
+
+// Fill the Speed cell — the throughput at which this agent exchanged tokens with
+// the service over the task, in tokens/second (total tokens ÷ run time). A rough
+// gauge of how fast the model and network served the task; shows "-" until both a
+// token total and a run duration are known. Sorts on the raw rate via
+// kTableSortRole.
+void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+{
+    const qint64 durationMs = agentEffectiveDurationMs(s);
+    const double rate = (tokens > 0 && durationMs > 0)
+                            ? tokens * 1000.0 / static_cast<double>(durationMs)
+                            : 0.0;
+    cell->setData(Qt::DisplayRole,
+                  rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                           : QStringLiteral("-"));
+    cell->setData(kTableSortRole, rate);
+    cell->setToolTip(
+        QStringLiteral("Communication speed with the service (tokens/second)"));
+}
+
 // "Night rider" scanner light shown in the agents list. Each session gets a
 // small Larson-scanner bar that sweeps left<->right while its raw output is
 // streaming, so the list shows real-time activity at a glance. The sweep is
@@ -19505,7 +19558,7 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 10;
+static constexpr int kAgentActivityColumn = 11;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -19777,17 +19830,25 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 11);
+    m_agentTable = new QTableWidget(0, 12);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
+    // Stripping State_Selected in the delegate stops the delegate from filling
+    // the row, but the view still paints the selection band itself from the
+    // app-wide #issueTable stylesheet (selection-background-color, plus the
+    // ::item:selected background rule) — that's the green bar that survived. Blank
+    // both for this table only, so the delegate's green outline is all that shows.
+    m_agentTable->setStyleSheet(
+        "#issueTable { selection-background-color: transparent; }"
+        "#issueTable::item:selected { background: transparent; }");
     // Turns/Time are the run-summary figures the Claude CLI reports on finish;
     // they used to be crammed into the Status text and now get their own columns.
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
-         "Updated", "Activity"});
+         "Speed", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -21060,6 +21121,12 @@ void MainWindow::refreshAgentTable()
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
         m_agentTable->setItem(row, 8, tokens);
+        // Speed column: the token throughput with the service over the task,
+        // derived from the token total and the run duration (see
+        // applyAgentSpeedCell). Sorts on the raw rate via SortTableWidgetItem.
+        auto *speed = new SortTableWidgetItem;
+        applyAgentSpeedCell(speed, session, toks);
+        m_agentTable->setItem(row, 9, speed);
         // "Updated" column: when the session was last touched — created,
         // started, finished or merged, whichever is most recent — shown as a
         // friendly "x ago" string. The tooltip carries the full timestamp, and
@@ -21074,7 +21141,7 @@ void MainWindow::refreshAgentTable()
         if (updatedMs > 0)
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 9, updated);
+        m_agentTable->setItem(row, 10, updated);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -21602,31 +21669,42 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
 
 void MainWindow::assignIssueToAgent(const QString &provider)
 {
-    if (!m_agentStore || m_currentIssueNumber < 0)
+    if (m_currentIssueNumber < 0)
         return;
-    const int idx = issuesRepoIndex();
-    if (idx < 0 || idx >= m_repositories.size())
-        return;
-    IssueStore issueStore = issueStoreForCurrentRepo();
-    if (!issueStore.canWrite()) {
-        setIssueInlineNotice("Only the host can assign coding agents.", true);
-        return;
-    }
     const Issue *issue = nullptr;
     for (const Issue &candidate : std::as_const(m_currentIssues))
         if (candidate.number == m_currentIssueNumber)
             issue = &candidate;
     if (!issue)
         return;
+    const bool createPr =
+        m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+    startAgentForIssue(*issue, provider, createPr);
+}
+
+int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
+                                   bool createPr, bool quiet)
+{
+    if (!m_agentStore || issue.number <= 0)
+        return 0;
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size())
+        return 0;
+    IssueStore issueStore = issueStoreForCurrentRepo();
+    if (!issueStore.canWrite()) {
+        if (!quiet)
+            setIssueInlineNotice("Only the host can assign coding agents.", true);
+        return 0;
+    }
 
     const RepositoryRecord &repo = m_repositories.at(idx);
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
-    session.issueNumber = issue->number;
-    session.issueTitle = issue->title;
+    session.issueNumber = issue.number;
+    session.issueTitle = issue.title;
     session.provider = provider;
-    session.createPr = m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
+    session.createPr = createPr;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
@@ -21649,29 +21727,139 @@ void MainWindow::assignIssueToAgent(const QString &provider)
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue->number));
+        QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue.number));
 
     QString error;
-    if (!issueStore.assignAgent(issue->number, provider, session.id, session.createPr,
+    if (!issueStore.assignAgent(issue.number, provider, session.id, session.createPr,
                                 AgentStatus::Queued, &error)) {
         session.status = AgentStatus::Failed;
         session.lastError = error.isEmpty() ? QStringLiteral("Could not write issue event.")
                                             : error;
         m_agentStore->saveSession(session);
-        setIssueInlineNotice(session.lastError, true);
+        if (!quiet)
+            setIssueInlineNotice(session.lastError, true);
         reloadAgents();
-        return;
+        return 0;
     }
 
-    m_agentQueue.append(session.id);
+    const int sessionId = session.id;
+    m_agentQueue.append(sessionId);
     reloadAgents();
     reloadIssues();
-    setIssueInlineNotice(
-        QStringLiteral("Assigned %1 session #%2.")
-            .arg(agentProviderName(provider))
-            .arg(session.id));
-    switchToAgentsTab(session.id);
+    if (!quiet) {
+        setIssueInlineNotice(
+            QStringLiteral("Assigned %1 session #%2.")
+                .arg(agentProviderName(provider))
+                .arg(sessionId));
+        switchToAgentsTab(sessionId);
+    }
     processAgentQueue();
+    return sessionId;
+}
+
+// Toggle the issue looper (adhoc #92). On: capture the default agent and start
+// the first open issue. Off: leave any in-flight session running but don't start
+// any more once it finishes.
+void MainWindow::toggleIssueLooper()
+{
+    if (m_looperActive) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice(
+            "Issue looper stopped. The current agent (if any) will finish; no more "
+            "issues will be started.");
+        return;
+    }
+    const int idx = issuesRepoIndex();
+    if (idx < 0 || idx >= m_repositories.size()) {
+        updateIssueLooperButton();
+        return;
+    }
+    if (!issueStoreForCurrentRepo().canWrite()) {
+        setIssueInlineNotice("Only the host can run the issue looper.", true);
+        updateIssueLooperButton();
+        return;
+    }
+    m_looperActive = true;
+    m_looperProvider = defaultAgentProvider();
+    updateIssueLooperButton();
+    setIssueInlineNotice(
+        QString::fromUtf8("Issue looper started with %1. Working through the open "
+                          "backlog one issue at a time\xE2\x80\xA6")
+            .arg(agentProviderName(m_looperProvider)));
+    looperStartNext();
+}
+
+// Pick the highest-priority open issue that has no agent session yet and start
+// the looper's agent on it. Stops the looper when nothing is left to do. Each
+// issue is attempted at most once (any existing session — queued, running, done,
+// or failed — disqualifies it), so the loop always makes forward progress.
+void MainWindow::looperStartNext()
+{
+    if (!m_looperActive)
+        return;
+    const Issue *next = nullptr;
+    int bestPriority = 1 << 30;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.isDeleted() || issue.status != QLatin1String("open"))
+            continue;
+        if (latestAgentSessionForIssue(issue.number))
+            continue; // already attempted by an agent
+        const int p = issue.priority > 0 ? issue.priority : 100000;
+        if (p < bestPriority ||
+            (p == bestPriority && (!next || issue.number < next->number))) {
+            bestPriority = p;
+            next = &issue;
+        }
+    }
+    if (!next) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice(
+            "Issue looper finished: every open issue has an agent.");
+        return;
+    }
+    // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
+    const int issueNumber = next->number;
+    const QString issueTitle = next->title;
+    const int sessionId =
+        startAgentForIssue(*next, m_looperProvider, /*createPr=*/true, /*quiet=*/true);
+    if (sessionId <= 0) {
+        m_looperActive = false;
+        m_looperSessionId = 0;
+        updateIssueLooperButton();
+        setIssueInlineNotice("Issue looper stopped: could not start the next agent.",
+                             true);
+        return;
+    }
+    m_looperSessionId = sessionId;
+    setIssueInlineNotice(
+        QString::fromUtf8("Issue looper: started %1 on issue #%2 \xE2\x80\x94 %3")
+            .arg(agentProviderName(m_looperProvider))
+            .arg(issueNumber)
+            .arg(issueTitle));
+}
+
+// Called from both agent-completion paths. When the finished session is the one
+// the looper is watching, advance to the next open issue.
+void MainWindow::looperOnSessionFinished(int sessionId)
+{
+    if (!m_looperActive || sessionId <= 0 || sessionId != m_looperSessionId)
+        return;
+    m_looperSessionId = 0;
+    looperStartNext();
+}
+
+void MainWindow::updateIssueLooperButton()
+{
+    if (!m_issueLooperButton)
+        return;
+    QSignalBlocker block(m_issueLooperButton);
+    m_issueLooperButton->setChecked(m_looperActive);
+    m_issueLooperButton->setText(m_looperActive ? QStringLiteral("Stop looping")
+                                                : QStringLiteral("Loop open issues"));
 }
 
 // Quick-add bar "No issue" mode (issue #299): start a brand-new agent from a
@@ -22380,6 +22568,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         reloadAgents();
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
+        looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
     });
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()
@@ -23049,6 +23238,9 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
             applyAgentTurnsCell(turns, *s);
         if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
             applyAgentTimeCell(runTime, *s);
+        // Speed needs both the token total and the now-known run duration.
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
 }
@@ -23328,17 +23520,26 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
         if (ri >= 0)
             repoPath = m_repositories.at(ri).localPath;
     }
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
-    }
-    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
-    if (!repoPath.isEmpty()) {
-        QProcess::execute(QStringLiteral("git"),
-                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-                           QStringLiteral("prune")});
-    }
+    // Removing a worktree shells out to `git worktree remove`/`prune` and then
+    // recursively deletes a full source checkout — slow enough to freeze the UI for
+    // a moment when a session is deleted. The paths are captured above on the UI
+    // thread; the filesystem/git work touches nothing shared, so hand it to a
+    // detached worker that cleans itself up.
+    QThread *worker = QThread::create([wtPath, repoPath]() {
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+        }
+        QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+        if (!repoPath.isEmpty()) {
+            QProcess::execute(QStringLiteral("git"),
+                              {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                               QStringLiteral("prune")});
+        }
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
@@ -23470,6 +23671,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             testOpenAiAgentKey();
     }
     processAgentQueue();
+    looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
 }
 
 void MainWindow::updateAgentActionState()
