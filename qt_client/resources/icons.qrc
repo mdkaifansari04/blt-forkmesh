@@ -13,6 +13,7 @@
         <file alias="code.svg">icons/octicons/code.svg</file>
         <file alias="comment.svg">icons/octicons/comment.svg</file>
         <file alias="copy.svg">icons/octicons/copy.svg</file>
+        <file alias="credit-card.svg">icons/octicons/credit-card.svg</file>
         <file alias="device-desktop.svg">icons/octicons/device-desktop.svg</file>
         <file alias="diff.svg">icons/octicons/diff.svg</file>
         <file alias="download.svg">icons/octicons/download.svg</file>
@@ -26,6 +27,7 @@
         <file alias="history.svg">icons/octicons/history.svg</file>
         <file alias="home.svg">icons/octicons/home.svg</file>
         <file alias="issue-opened.svg">icons/octicons/issue-opened.svg</file>
+        <file alias="issue-reopened.svg">icons/octicons/issue-reopened.svg</file>
         <file alias="key.svg">icons/octicons/key.svg</file>
         <file alias="link.svg">icons/octicons/link.svg</file>
         <file alias="list-unordered.svg">icons/octicons/list-unordered.svg</file>
