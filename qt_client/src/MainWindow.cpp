@@ -76,6 +76,7 @@
 #include <QSslError>
 #include <QImage>
 #include <QKeyEvent>
+#include <QConicalGradient>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
@@ -465,6 +466,141 @@ private:
     int m_fiveHour = -1;
     int m_weekly = -1;
     QString m_stats; // per-session token/cost line, shown under the gauges
+};
+
+// Tiny spinning-radar dish + latency readout shown just left of the relay name.
+// The dish always sweeps (a continuously rotating wedge) so the relay looks
+// "alive"; a one-minute probe feeds in the round-trip time, which renders as
+// "33ms" beside it. When the relay stops answering the whole control flips to a
+// red alert (red dish + "offline"). Colour-grades the latency green/amber so a
+// degrading link is visible at a glance.
+class RelayRadarWidget : public QWidget
+{
+public:
+    explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(58, 24);
+        refreshTooltip();
+        // Drive the sweep: a slow, steady rotation independent of probe timing.
+        m_sweep = new QTimer(this);
+        m_sweep->setInterval(60);
+        connect(m_sweep, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 9) % 360;
+            update();
+        });
+        m_sweep->start();
+    }
+
+    // Record a successful probe (round-trip milliseconds).
+    void setLatency(int ms)
+    {
+        m_latencyMs = qMax(0, ms);
+        m_unreachable = false;
+        refreshTooltip();
+        update();
+    }
+
+    // The relay failed to answer the last probe: show the red alert.
+    void setUnreachable()
+    {
+        if (m_unreachable)
+            return;
+        m_unreachable = true;
+        refreshTooltip();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const int dish = qMin(height() - 4, 18);
+        const QRectF dishRect(2, (height() - dish) / 2.0, dish, dish);
+        const QPointF c = dishRect.center();
+        const qreal r = dish / 2.0;
+        const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
+                                            : statusColor();
+
+        // Faint radar rings.
+        QColor ring = accent;
+        ring.setAlpha(70);
+        p.setPen(QPen(ring, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(dishRect);
+        p.drawEllipse(c, r * 0.5, r * 0.5);
+
+        // Rotating sweep wedge, fading behind the leading edge.
+        QConicalGradient sweep(c, -m_angle);
+        QColor lead = accent;
+        QColor tail = accent;
+        tail.setAlpha(0);
+        sweep.setColorAt(0.0, lead);
+        sweep.setColorAt(0.18, tail);
+        sweep.setColorAt(1.0, tail);
+        p.setPen(Qt::NoPen);
+        p.setBrush(sweep);
+        p.drawPie(dishRect, -m_angle * 16, 70 * 16);
+
+        // Centre blip.
+        p.setBrush(accent);
+        p.drawEllipse(c, 1.4, 1.4);
+
+        // Latency text / alert to the right of the dish.
+        QFont f = font();
+        f.setPointSizeF(qMax(6.5, f.pointSizeF() - 2.0));
+        p.setFont(f);
+        const QRectF textRect(dishRect.right() + 4, 0,
+                              width() - dishRect.right() - 4, height());
+        QString label;
+        QColor textCol;
+        if (m_unreachable) {
+            label = QStringLiteral("offline");
+            textCol = QColor("#f85149");
+        } else if (m_latencyMs < 0) {
+            label = QString::fromUtf8("\xE2\x80\xA6"); // ellipsis: probing
+            textCol = palette().color(QPalette::WindowText);
+            textCol.setAlpha(150);
+        } else {
+            label = QStringLiteral("%1ms").arg(m_latencyMs);
+            textCol = statusColor();
+        }
+        p.setPen(textCol);
+        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, label);
+    }
+
+private:
+    // Green when snappy, amber when sluggish, red when very slow.
+    QColor statusColor() const
+    {
+        if (m_latencyMs < 0)
+            return palette().color(QPalette::WindowText);
+        if (m_latencyMs >= 1000)
+            return QColor("#f85149"); // red
+        if (m_latencyMs >= 300)
+            return QColor("#d29922"); // amber
+        return QColor("#3fb950");     // green
+    }
+    void refreshTooltip()
+    {
+        if (m_unreachable) {
+            setToolTip(QStringLiteral(
+                "Relay not responding \xE2\x80\x94 last probe timed out"));
+        } else if (m_latencyMs < 0) {
+            setToolTip(QStringLiteral("Measuring relay latency\xE2\x80\xA6"));
+        } else {
+            setToolTip(QStringLiteral(
+                           "Relay round-trip latency: %1 ms\nProbed every minute")
+                           .arg(m_latencyMs));
+        }
+    }
+
+    int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
+    bool m_unreachable = false; // relay failed to answer the last probe
+    int m_angle = 0;            // sweep rotation (degrees)
+    QTimer *m_sweep = nullptr;  // drives the spin
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -4129,6 +4265,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::pollOwnedInboxes);
     m_inboxPollTimer->start(60 * 1000);
     QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
+    // Radar: probe the active relay's round-trip latency once a minute (issue
+    // #144), plus a first reading shortly after launch so the dish isn't stuck
+    // on "…" while the UI settles.
+    m_relayLatencyTimer = new QTimer(this);
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::probeRelayLatency);
+    m_relayLatencyTimer->start(60 * 1000);
+    QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
@@ -7330,6 +7474,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
 
+    // Spinning radar + once-a-minute latency readout, sitting just left of the
+    // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
+    m_relayRadar = new RelayRadarWidget;
+
     m_relayOpenButton = new QPushButton;
     m_relayOpenButton->setObjectName("relayOpenButton");
     m_relayOpenButton->setCursor(Qt::PointingHandCursor);
@@ -7619,6 +7767,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setSpacing(8);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
+    mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
@@ -7783,6 +7932,45 @@ void MainWindow::updateRelaySwitcher()
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
     m_relayMenuButton->setText(host + "  " + caret + "  " +
                                QString::number(m_servers.size()));
+}
+
+// Measure the round-trip latency to the active relay and feed it to the radar
+// readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
+// Durable-Object fan-out) and time the request; a transport error or timeout
+// flips the radar to its red "offline" alert. Only one probe runs at a time.
+void MainWindow::probeRelayLatency()
+{
+    if (!m_relayRadar || !m_networkAccess || m_relayProbeInFlight)
+        return;
+    auto *radar = static_cast<RelayRadarWidget *>(m_relayRadar);
+
+    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
+    if (!url.isValid() || url.host().isEmpty()) {
+        radar->setUnreachable();
+        return;
+    }
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setTransferTimeout(10000); // a no-answer within 10s counts as down
+
+    m_relayProbeInFlight = true;
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, radar] {
+        const qint64 elapsed = clock->elapsed();
+        delete clock;
+        m_relayProbeInFlight = false;
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            radar->setLatency(static_cast<int>(elapsed));
+        else
+            radar->setUnreachable();
+    });
 }
 
 void MainWindow::openServerWebsite(int index)
