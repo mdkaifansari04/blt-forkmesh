@@ -489,6 +489,21 @@ int main(int argc, char *argv[])
         check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
               QString("worktrees list shows the branch one commit ahead of main "
                       "(ahead/behind cell = %1)").arg(abText));
+
+        // issue #172: the Branches list must also surface the worktree a branch
+        // is checked out in, so an agent's isolated working tree is visible
+        // without a trip to the Worktrees tab.
+        window.testReloadBranchesPanel();
+        const QString listedWt =
+            window.testBranchWorktreePath(QStringLiteral("feature/keep-selected"));
+        check(listedWt.contains(QStringLiteral("wt-keep")),
+              QString("branches list shows the worktree a branch is checked out "
+                      "in (#172, worktree cell = %1)").arg(listedWt));
+        // The default branch lives in the main checkout, not a linked worktree,
+        // so its Worktree cell stays empty rather than pointing at the main tree.
+        check(window.testBranchWorktreePath(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch checked out in the main tree has an empty "
+                             "Worktree cell (#172)"));
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
