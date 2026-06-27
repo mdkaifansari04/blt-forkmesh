@@ -785,6 +785,12 @@ private:
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
     void updateIssueAgentUi(const Issue &issue);
+    // Issue #145: populate the issue detail's "Files changed" tab from a linked
+    // pull request's patch or a linked agent session's branch diff, and show or
+    // hide the tab depending on whether such a source exists.
+    void refreshIssueFilesPanel(const Issue &issue);
+    void renderIssueDiff(int issueNumber, const QByteArray &patch,
+                         const QString &dir, const QString &base);
     // IDE extension integration (see ide_extension/). Detection polls the
     // extension's heartbeat file; startIssueInIde drops it a task request.
     bool ideExtensionActive(QString *ideName = nullptr) const;
@@ -2551,6 +2557,14 @@ private:
     QPushButton *m_issueAssigneesButton = nullptr;
     QLabel *m_issueDevelopmentValue = nullptr;    // linked pull requests list
     QPushButton *m_issueLinkPullButton = nullptr; // "Link pull request"
+    // Issue #145: top tabs (Issue | Files changed) on the issue detail, mirroring
+    // the agent detail. The Files changed tab appears only when the issue has a
+    // linked branch (agent session) or pull request, and shows that diff.
+    QTabWidget *m_issueDetailTabs = nullptr;
+    int m_issueFilesTabIndex = -1;                // tab index of "Files changed"
+    QListWidget *m_issueFilesList = nullptr;      // changed files in the linked diff
+    QTextBrowser *m_issueDiffView = nullptr;      // diff viewer in the files tab
+    QLabel *m_issueFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
