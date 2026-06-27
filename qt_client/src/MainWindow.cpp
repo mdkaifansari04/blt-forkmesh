@@ -19478,6 +19478,38 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
 }
 
+// Effective run duration for the throughput figure: prefer the CLI-reported
+// active run time (durationMs, the same value the Time column shows), and fall
+// back to the start→finish wall-clock span for sessions that don't report it
+// (e.g. the API agents) so the Speed field is populated for every finished task.
+qint64 agentEffectiveDurationMs(const AgentSession &s)
+{
+    if (s.durationMs > 0)
+        return s.durationMs;
+    if (s.finishedAtMs > s.startedAtMs && s.startedAtMs > 0)
+        return s.finishedAtMs - s.startedAtMs;
+    return 0;
+}
+
+// Fill the Speed cell — the throughput at which this agent exchanged tokens with
+// the service over the task, in tokens/second (total tokens ÷ run time). A rough
+// gauge of how fast the model and network served the task; shows "-" until both a
+// token total and a run duration are known. Sorts on the raw rate via
+// kTableSortRole.
+void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+{
+    const qint64 durationMs = agentEffectiveDurationMs(s);
+    const double rate = (tokens > 0 && durationMs > 0)
+                            ? tokens * 1000.0 / static_cast<double>(durationMs)
+                            : 0.0;
+    cell->setData(Qt::DisplayRole,
+                  rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                           : QStringLiteral("-"));
+    cell->setData(kTableSortRole, rate);
+    cell->setToolTip(
+        QStringLiteral("Communication speed with the service (tokens/second)"));
+}
+
 // "Night rider" scanner light shown in the agents list. Each session gets a
 // small Larson-scanner bar that sweeps left<->right while its raw output is
 // streaming, so the list shows real-time activity at a glance. The sweep is
@@ -19485,7 +19517,7 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 10;
+static constexpr int kAgentActivityColumn = 11;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -19757,7 +19789,7 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 11);
+    m_agentTable = new QTableWidget(0, 12);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
@@ -19767,7 +19799,7 @@ QWidget *MainWindow::buildAgentsTab()
     // they used to be crammed into the Status text and now get their own columns.
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
-         "Updated", "Activity"});
+         "Speed", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -21108,6 +21140,12 @@ void MainWindow::refreshAgentTable()
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
         m_agentTable->setItem(row, 8, tokens);
+        // Speed column: the token throughput with the service over the task,
+        // derived from the token total and the run duration (see
+        // applyAgentSpeedCell). Sorts on the raw rate via SortTableWidgetItem.
+        auto *speed = new SortTableWidgetItem;
+        applyAgentSpeedCell(speed, session, toks);
+        m_agentTable->setItem(row, 9, speed);
         // "Updated" column: when the session was last touched — created,
         // started, finished or merged, whichever is most recent — shown as a
         // friendly "x ago" string. The tooltip carries the full timestamp, and
@@ -21122,7 +21160,7 @@ void MainWindow::refreshAgentTable()
         if (updatedMs > 0)
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 9, updated);
+        m_agentTable->setItem(row, 10, updated);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -23164,6 +23202,9 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
             applyAgentTurnsCell(turns, *s);
         if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
             applyAgentTimeCell(runTime, *s);
+        // Speed needs both the token total and the now-known run duration.
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
 }
