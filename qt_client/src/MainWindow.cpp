@@ -38558,31 +38558,18 @@ void MainWindow::flashMessage(const QString &text, bool error)
         dismissTopMessage();
         return;
     }
-    // Green for success, red for failure; compact pill in the centre of the bar.
-    const QString fg = error ? "#f85149" : "#3fb950";
-    const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
-                                : QString::fromUtf8("\xE2\x9C\x93"); // ✓
     // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
     // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
     m_pinWarningActive = false;
+    m_topMessageError = error;
     m_topMessageRaw = trimmed;
     // Keep the pill compact: a long message (a multi-line git error, say) must not
     // stretch the top bar and drag the whole window wide. Show an elided one-liner;
-    // the full text is preserved in m_topMessageRaw and is reachable by hovering the
-    // toast (a scrollable modal) or via Copy.
-    constexpr int kToastMaxChars = 100;
-    QString display = trimmed;
-    m_topMessageElided = display.size() > kToastMaxChars;
-    if (m_topMessageElided)
-        display = display.left(kToastMaxChars - 1).trimmed()
-                  + QString::fromUtf8("\xE2\x80\xA6"); // …
-    m_topMessage->setCursor(m_topMessageElided ? Qt::PointingHandCursor
-                                               : Qt::ArrowCursor);
-    // The base HTML carries the message; auto-dismissing successes append a
-    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
-    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                               .arg(fg, glyph, display.toHtmlEscaped());
-    m_topMessage->setText(m_topMessageBaseHtml);
+    // the full text is preserved in m_topMessageRaw and is revealed inline by the
+    // Expand button (see renderTopMessage) or copied via Copy.
+    m_topMessageElided = trimmed.size() > kToastMaxChars;
+    m_topMessageExpanded = false; // every new message starts collapsed
+    renderTopMessage();
     m_topMessage->show();
 
     if (!m_topMessageTimer) {
@@ -38617,6 +38604,10 @@ void MainWindow::flashMessage(const QString &text, bool error)
         renderTopMessageCountdown();
         m_topMessageTimer->start(1000);
     }
+    // The Expand affordance appears only when the message was truncated, so the
+    // user can read it in full inline instead of via a popup.
+    if (m_topMessageExpand)
+        m_topMessageExpand->setVisible(m_topMessageElided);
 }
 
 // Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
