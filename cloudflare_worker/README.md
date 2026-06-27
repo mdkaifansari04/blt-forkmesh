@@ -1,7 +1,7 @@
 # ForkMesh Cloudflare Python Relay
 
 This Python Worker serves the ForkMesh public site from `public/` and hosts
-encrypted ForkMesh mainnode rooms at:
+encrypted ForkMesh mainnode rooms at: test
 
 ```text
 /api/repo/{owner}/{repo}/rooms/{room}/ws
