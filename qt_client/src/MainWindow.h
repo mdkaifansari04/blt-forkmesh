@@ -1343,7 +1343,7 @@ private:
     void flashMessage(const QString &text, bool error = false);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
-    void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
+    void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1521,11 +1521,13 @@ private:
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
+    QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
-    bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
+    bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
+    bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
 
     // Setup widgets
@@ -1662,6 +1664,7 @@ private:
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
+    QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
@@ -2235,6 +2238,11 @@ private:
     void stopStreamSession(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // Remove the isolated worktree a stream session ran in (if any) and prune the
+    // registration, freeing its branch so the PR's branch can be checked out in
+    // the main repo. `git worktree remove` keeps the branch ref itself, so the
+    // pull request still resolves. No-op for sessions without a worktree.
+    void cleanupStreamWorktree(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
@@ -2276,6 +2284,11 @@ private:
     QPushButton *m_agentStartButton = nullptr;
     QPushButton *m_agentNewImageButton = nullptr; // attach an image to the prompt
     void startAdHocAgent();
+    // Core of startAdHocAgent, reusable from the quick-add bar (issue #299): start
+    // an issue-less coding agent in repoIndex's checkout with `task` as its prompt.
+    // Returns the new session id (>0) or 0 if it could not start.
+    int startAdHocAgentForRepo(int repoIndex, const QString &task,
+                               const QString &provider, bool createPr);
     // Image attachments on the "Start a new agent" prompt (issue #56): paste from
     // the clipboard or pick a file; the image is referenced by path so the
     // launched agent can read it.
