@@ -28,6 +28,16 @@ struct AgentScannerState {
     double intensity = 0.0;    // 0..1 live-output rate the effect reacts to
 };
 
+// Per-session "what did this agent change" summary shown in the agents list
+// (issue #170): files its patch touched, and how far its branch sits ahead of /
+// behind the base branch. -1 means "unknown / not applicable" — e.g. a running
+// session with no patch yet, or a branch that has since been removed.
+struct AgentDiffStat {
+    int files = -1;
+    int ahead = -1;
+    int behind = -1;
+};
+
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -695,6 +705,12 @@ private:
     void initAgents();
     void reloadAgents();
     void refreshAgentTable();
+    // Files-changed + branch ahead/behind summary for a session's Diff cell
+    // (issue #170), computed against the given git dir / base branch and memoised
+    // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
+    // loop doesn't re-resolve them.
+    AgentDiffStat agentDiffStat(const AgentSession &session, const QString &gitDir,
+                                const QString &base);
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
@@ -2379,6 +2395,10 @@ private:
     // it survives full table rebuilds) and the timer that animates the active ones.
     QHash<int, AgentScannerState> m_scannerStates;
     QTimer *m_scannerTimer = nullptr;
+    // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
+    // search-as-you-type refresh reuses them instead of re-shelling git per row.
+    // Rebuilt from scratch on each reloadAgents() (the data-changed entry point).
+    QHash<int, AgentDiffStat> m_agentDiffStats;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
