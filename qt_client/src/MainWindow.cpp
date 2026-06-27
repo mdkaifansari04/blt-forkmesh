@@ -31841,18 +31841,32 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
     auto *fixMenu = new QMenu(m_branchFixButton);
-    connect(fixMenu->addAction(QStringLiteral("Fix with Claude")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("claude"));
-            });
-    connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")), &QAction::triggered,
-            this, [this] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                                QStringLiteral("openai"));
-            });
+    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
+    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
+    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
+    connect(fixClaude, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
+    });
+    connect(fixOpenAi, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
+    });
+    connect(fixClaudeCode, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                        QStringLiteral("claude-code"));
+    });
+    // Bold the user's configured default agent (Settings -> Agents) so the dropdown
+    // makes the default choice obvious; refresh on open in case it changed.
+    auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
+        const QString def = defaultAgentProvider();
+        fixMenu->setDefaultAction(def == QLatin1String("claude-code") ? fixClaudeCode
+                                  : def == QLatin1String("claude-api") ? fixClaude
+                                                                       : fixOpenAi);
+    };
+    highlightDefaultFix();
+    connect(fixMenu, &QMenu::aboutToShow, fixMenu, highlightDefaultFix);
     m_branchFixButton->setMenu(fixMenu);
 
     m_branchPrButton = new QPushButton("Create PR");
@@ -32813,18 +32827,26 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     if (branch.isEmpty() || branch == base || base.isEmpty())
         return;
 
-    const bool claude = provider == QLatin1String("claude");
+    // "claude-code" drives the real `claude` CLI (no API key, authenticates via the
+    // local login); the two API providers POST each conflicted file to their endpoint.
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    const bool claude = !claudeCode && agentIsClaudeProvider(provider);
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : QStringLiteral("gpt-4.1-nano");
-    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
-                                   : QSettings().value(kCodexApiKeySetting))
-                               .toString()
-                               .trimmed();
-    if (apiKey.isEmpty()) {
-        flashMessage(claude ? "Add a Claude API key in Settings first."
-                            : "Add an OpenAI API key in Settings first.",
-                     true);
-        return;
+        claudeCode ? QString()
+                   : claude ? QStringLiteral("claude-haiku-4-5")
+                            : QStringLiteral("gpt-4.1-nano");
+    QString apiKey;
+    if (!claudeCode) {
+        apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                         : QSettings().value(kCodexApiKeySetting))
+                     .toString()
+                     .trimmed();
+        if (apiKey.isEmpty()) {
+            flashMessage(claude ? "Add a Claude API key in Settings first."
+                                : "Add an OpenAI API key in Settings first.",
+                         true);
+            return;
+        }
     }
 
     // Nothing to do if it's already current.
@@ -32912,8 +32934,11 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
-            .arg(agentProviderName(provider), model, base, branch));
+        claudeCode
+            ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
+                  .arg(agentProviderName(provider), base, branch)
+            : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
+                  .arg(agentProviderName(provider), model, base, branch));
 
     m_aiFix = new AiConflictFix;
     m_aiFix->branchMerge = true;
@@ -32927,12 +32952,16 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_aiFix->branch = branch;
     m_aiFix->baseBranch = base;
     m_aiFix->restoreBranch = restoreBranch;
+    m_aiFix->claudeCode = claudeCode;
 
     switchToAgentsTab(session.id);
     aiFixLog(QStringLiteral("==> %1 file(s) to resolve: %2\n")
                  .arg(conflicted.size())
                  .arg(conflicted.join(QStringLiteral(", "))));
-    aiFixResolveNextFile();
+    if (m_aiFix->claudeCode)
+        aiFixRunClaudeCode();
+    else
+        aiFixResolveNextFile();
 }
 
 void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
