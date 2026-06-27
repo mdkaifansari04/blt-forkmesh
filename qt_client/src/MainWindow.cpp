@@ -84,6 +84,7 @@
 #include <QTreeWidgetItem>
 #include <QtMath>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPropertyAnimation>
 #include <QRandomGenerator>
 #include <QEventLoop>
@@ -14488,6 +14489,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
+    m_pullPreviewButton = new QPushButton("Build & preview");
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
@@ -14495,6 +14497,7 @@ QWidget *MainWindow::buildPullsTab()
                            m_pullEditFileButton, m_pullDeleteFileButton,
                            m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
+                           m_pullPreviewButton,
                            m_pullLinkIssueButton, m_pullSplitButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
@@ -14534,6 +14537,13 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullMergeDeleteButton, "check-circle", 16);
     m_pullMergeDeleteButton->setToolTip(
         "Merge this pull request, then permanently delete it and its head branch");
+    setOcticon(m_pullPreviewButton, "device-desktop", 16);
+    m_pullPreviewButton->setToolTip(
+        "Check out this pull request, build the app from it, and launch the result "
+        "as an isolated preview \xE2\x80\x94 try the change running before merging");
+    m_pullPreviewButton->hide(); // only shown for buildable ForkMesh checkouts
+    connect(m_pullPreviewButton, &QPushButton::clicked, this,
+            &MainWindow::buildAndPreviewCurrentPull);
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullResolveButton->setToolTip(
         "Open a merge editor to resolve this pull request's conflicts and commit "
@@ -14579,6 +14589,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullPreviewButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullFixButton, 0, Qt::AlignTop);
@@ -16172,6 +16183,222 @@ void MainWindow::runChecksForCurrentPull()
     updatePullSubTabCounts(*pr);
 }
 
+void MainWindow::buildAndPreviewCurrentPull()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &p : std::as_const(m_currentPulls))
+        if (p.number == m_currentPullNumber)
+            pr = &p;
+    if (!pr || pr->head.isEmpty()) {
+        setRepoDetailNotice("This pull request has no head branch to build.", true);
+        return;
+    }
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString gitDir = repoGitDir();
+    if (gitDir.isEmpty()) {
+        setRepoDetailNotice("No local copy of this repository to build from.", true);
+        return;
+    }
+    // Resolve the PR head to a concrete commit (as runChecksForCurrentPull does)
+    // so the worktree is checked out at exactly what the PR proposes.
+    QByteArray tip;
+    if (!runGitCapture(gitDir, {QStringLiteral("rev-parse"), pr->head}, &tip,
+                       nullptr) ||
+        tip.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "Could not resolve this pull request's head commit to build it.", true);
+        return;
+    }
+    const QString commit = QString::fromUtf8(tip).trimmed();
+    const int number = pr->number;
+
+    // A stable per-PR worktree under temp, reused across rebuilds so the CMake
+    // build directory (untracked, so a plain checkout never disturbs it) survives
+    // and later previews build incrementally.
+    QString slug = repo.owner + QLatin1Char('-') + repo.name;
+    slug.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")),
+                 QStringLiteral("_"));
+    const QString previewDir =
+        QDir::tempPath() + QStringLiteral("/forkmesh-pr-preview/%1-pr%2")
+                               .arg(slug).arg(number);
+    const QString clientDir = previewDir + QStringLiteral("/qt_client");
+    const QString buildDir = clientDir + QStringLiteral("/build");
+    const bool haveWorktree = QFileInfo::exists(previewDir + QStringLiteral("/.git"));
+
+    // A live build-log dialog (one at a time; replace any previous run's window).
+    if (m_pullPreviewDialog) {
+        m_pullPreviewDialog->deleteLater();
+        m_pullPreviewDialog = nullptr;
+    }
+    auto *dialog = new QDialog(this);
+    m_pullPreviewDialog = dialog;
+    // Closing the window cancels the in-flight build (its QProcess children are
+    // parented to the dialog) and clears our handle to it.
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &QObject::destroyed, this, [this] { m_pullPreviewDialog = nullptr; });
+    dialog->setWindowTitle(
+        QStringLiteral("Build & preview pull request #%1").arg(number));
+    dialog->resize(760, 480);
+    auto *status = new QLabel(QString::fromUtf8("Preparing\xE2\x80\xA6"), dialog);
+    status->setObjectName("statusLine");
+    status->setWordWrap(true);
+    auto *log = new QPlainTextEdit(dialog);
+    log->setReadOnly(true);
+    log->setObjectName("codeEditor");
+    log->setLineWrapMode(QPlainTextEdit::NoWrap);
+    applyLogFont(log);
+    auto *closeBtn = new QPushButton(QStringLiteral("Close"), dialog);
+    closeBtn->setObjectName("ghostButton");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, dialog, &QDialog::close);
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addStretch();
+    buttonRow->addWidget(closeBtn);
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(status);
+    layout->addWidget(log, 1);
+    layout->addLayout(buttonRow);
+    dialog->show();
+
+    QPointer<QDialog> dlg(dialog);
+    QPointer<QLabel> statusPtr(status);
+    QPointer<QPlainTextEdit> logPtr(log);
+    auto appendLog = [logPtr](const QString &text) {
+        if (!logPtr)
+            return;
+        logPtr->moveCursor(QTextCursor::End);
+        logPtr->insertPlainText(text);
+        logPtr->moveCursor(QTextCursor::End);
+    };
+
+    // What to do once the build succeeds: launch the freshly built binary as an
+    // isolated node (its own XDG dirs) so the preview never touches the running
+    // app's identity, repos or settings.
+    auto launchPreview = [this, dlg, statusPtr, appendLog, buildDir, previewDir,
+                          number] {
+        const QString binary = builtExecutablePath(buildDir);
+        if (!QFileInfo::exists(binary)) {
+            if (statusPtr)
+                statusPtr->setText(
+                    QStringLiteral("Build finished but the binary was not found at %1.")
+                        .arg(binary));
+            return;
+        }
+        const QString sandbox = previewDir + QStringLiteral("/preview-home");
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("XDG_DATA_HOME"), sandbox + QStringLiteral("/data"));
+        env.insert(QStringLiteral("XDG_CONFIG_HOME"),
+                   sandbox + QStringLiteral("/config"));
+        env.insert(QStringLiteral("XDG_CACHE_HOME"), sandbox + QStringLiteral("/cache"));
+        env.insert(QStringLiteral("XDG_STATE_HOME"), sandbox + QStringLiteral("/state"));
+        QProcess launcher;
+        launcher.setProgram(binary);
+        launcher.setProcessEnvironment(env);
+        launcher.setWorkingDirectory(QFileInfo(binary).absolutePath());
+        appendLog(QString::fromUtf8("\n\xE2\x86\x92 launching %1\n").arg(binary));
+        if (launcher.startDetached()) {
+            if (statusPtr)
+                statusPtr->setText(
+                    QStringLiteral("Launched the ForkMesh preview for pull request "
+                                   "#%1.").arg(number));
+            flashMessage(QStringLiteral("Launched preview of pull request #%1.")
+                             .arg(number));
+        } else if (statusPtr) {
+            statusPtr->setText(QStringLiteral("Could not launch %1.").arg(binary));
+        }
+    };
+
+    // Sequential build pipeline streamed into the dialog. Captured by a shared
+    // recursive lambda so each step starts the next only on success.
+    struct PreviewStep {
+        QString program;
+        QStringList args;
+        QString dir;
+        QString status;
+    };
+    auto steps = std::make_shared<QList<PreviewStep>>();
+    // Drop any stale worktree registration so the checkout/add below is clean.
+    *steps << PreviewStep{QStringLiteral("git"),
+                          {QStringLiteral("-C"), gitDir,
+                           QStringLiteral("worktree"), QStringLiteral("prune")},
+                          gitDir, QString::fromUtf8("Preparing worktree\xE2\x80\xA6")};
+    if (haveWorktree) {
+        // Reuse the existing worktree: just move it to the PR's head commit.
+        *steps << PreviewStep{QStringLiteral("git"),
+                              {QStringLiteral("-C"), previewDir,
+                               QStringLiteral("checkout"), QStringLiteral("--detach"),
+                               QStringLiteral("-f"), commit},
+                              previewDir,
+                              QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
+    } else {
+        QDir(previewDir).removeRecursively(); // clear any stale, unregistered dir
+        QDir().mkpath(QFileInfo(previewDir).absolutePath());
+        *steps << PreviewStep{QStringLiteral("git"),
+                              {QStringLiteral("-C"), gitDir,
+                               QStringLiteral("worktree"), QStringLiteral("add"),
+                               QStringLiteral("--detach"), previewDir, commit},
+                              gitDir,
+                              QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
+    }
+    *steps << PreviewStep{QStringLiteral("cmake"),
+                          cmakeConfigureArgs(clientDir, buildDir,
+                                             QStringLiteral("Release")),
+                          clientDir, QString::fromUtf8("Configuring\xE2\x80\xA6")};
+    *steps << PreviewStep{QStringLiteral("cmake"),
+                          {QStringLiteral("--build"), buildDir, QStringLiteral("-j"),
+                           QString::number(QThread::idealThreadCount())},
+                          buildDir, QString::fromUtf8("Building\xE2\x80\xA6")};
+
+    auto runNext = std::make_shared<std::function<void(int)>>();
+    *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,
+                launchPreview](int index) {
+        if (!dlg)
+            return; // dialog closed — abandon the build
+        if (index >= steps->size()) {
+            launchPreview();
+            return;
+        }
+        const PreviewStep st = steps->at(index);
+        if (statusPtr)
+            statusPtr->setText(st.status);
+        appendLog(QStringLiteral("\n$ %1 %2\n  (in %3)\n")
+                      .arg(st.program, st.args.join(QLatin1Char(' ')), st.dir));
+        auto *proc = new QProcess(dlg);
+        proc->setWorkingDirectory(st.dir);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        connect(proc, &QProcess::readyReadStandardOutput, this, [proc, appendLog] {
+            appendLog(QString::fromUtf8(proc->readAllStandardOutput()));
+        });
+        connect(proc, &QProcess::finished, this,
+                [proc, runNext, index, appendLog, statusPtr](
+                    int code, QProcess::ExitStatus exitStatus) {
+                    appendLog(QString::fromUtf8(proc->readAllStandardOutput()));
+                    proc->deleteLater();
+                    if (exitStatus != QProcess::NormalExit || code != 0) {
+                        if (statusPtr)
+                            statusPtr->setText(
+                                QStringLiteral("Build failed (exit %1). See the log "
+                                               "above.").arg(code));
+                        return;
+                    }
+                    (*runNext)(index + 1);
+                });
+        connect(proc, &QProcess::errorOccurred, this,
+                [proc, statusPtr](QProcess::ProcessError) {
+                    if (statusPtr && proc->state() != QProcess::Running)
+                        statusPtr->setText(
+                            QString::fromUtf8("Could not run %1 \xE2\x80\x94 is it "
+                                              "installed?").arg(proc->program()));
+                });
+        proc->start(st.program, st.args);
+    };
+    (*runNext)(0);
+}
+
 void MainWindow::updatePullSubTabCounts(const PullRequest &pr)
 {
     const auto label = [](QPushButton *b, const QString &name, int n) {
@@ -16308,11 +16535,13 @@ void MainWindow::updatePullActionState()
     bool open = false;
     bool closed = false;
     bool merged = false;
+    QString head;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
             closed = pr.status == "closed";
             merged = pr.status == "merged";
+            head   = pr.head;
         }
     }
     const bool mergeable = writable && have && open;
@@ -16377,6 +16606,19 @@ void MainWindow::updatePullActionState()
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(mergeable && mergeClean &&
                                             !m_pullDeleteInProgress);
+    // "Build & preview" only makes sense when this repo's local checkout is a
+    // ForkMesh source tree we know how to build (qt_client/CMakeLists.txt) and the
+    // PR has a head branch to check out. Hidden everywhere else.
+    if (m_pullPreviewButton) {
+        const bool buildable =
+            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+            !m_repositories.at(m_repoDetailIndex).localPath.isEmpty() &&
+            QFileInfo::exists(m_repositories.at(m_repoDetailIndex).localPath +
+                              QStringLiteral("/qt_client/CMakeLists.txt"));
+        const bool canPreview = have && !head.isEmpty() && buildable;
+        m_pullPreviewButton->setVisible(canPreview);
+        m_pullPreviewButton->setEnabled(canPreview);
+    }
     const bool conflicted = mergeable && !mergeClean;
     // Conflicting-files card in the conversation, above the comment composer:
     // list every file that no longer applies so the reviewer sees what to fix
