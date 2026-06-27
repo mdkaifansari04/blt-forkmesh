@@ -21386,9 +21386,14 @@ void MainWindow::showAgentSession(int sessionId)
                           .arg(session->issueTitle.isEmpty()
                                    ? agentProviderName(session->provider)
                                    : session->issueTitle)
-                    : QStringLiteral("%1 · pull #%2")
+                    // Ad-hoc sessions (no issue) lead with the prompt-derived
+                    // title rather than "pull #0" — before a PR exists prNumber
+                    // is 0, and the prompt is what identifies the run anyway.
+                    : QStringLiteral("%1 · %2")
                           .arg(agentProviderName(session->provider))
-                          .arg(session->prNumber));
+                          .arg(session->issueTitle.isEmpty()
+                                   ? QStringLiteral("pull #%1").arg(session->prNumber)
+                                   : session->issueTitle));
         }
     }
     // Issue #291: a "· merged into <base>" note appended to the meta line once
