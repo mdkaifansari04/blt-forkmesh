@@ -268,6 +268,15 @@ public:
     // branch is checked out in (issue #172).
     void testReloadBranchesPanel() { loadBranchesPanel(); }
     QString testBranchWorktreePath(const QString &branch) const;
+    // Inject an agent session so a test can prove the branches list surfaces the
+    // issue/agent a branch is attached to (adhoc #191).
+    void testAddAgentSession(const AgentSession &session)
+    {
+        m_agentSessions.append(session);
+    }
+    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
+    // the branches list names the issue/agent a branch is attached to (adhoc #191).
+    QString testBranchAttachmentText(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
