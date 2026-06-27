@@ -2357,6 +2357,7 @@ private:
     QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
     QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
+    QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
