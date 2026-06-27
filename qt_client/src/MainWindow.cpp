@@ -8024,10 +8024,18 @@ void MainWindow::probeRelayLatency()
         delete clock;
         m_relayProbeInFlight = false;
         reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
+        if (reply->error() == QNetworkReply::NoError) {
             radar->setLatency(static_cast<int>(elapsed));
-        else
+            // Back online: relax to the once-a-minute cadence (issue #179).
+            if (m_relayLatencyTimer && m_relayLatencyTimer->interval() != 60 * 1000)
+                m_relayLatencyTimer->start(60 * 1000);
+        } else {
             radar->setUnreachable();
+            // Offline: re-probe every second until the relay answers again so
+            // the radar clears its red alert promptly (issue #179).
+            if (m_relayLatencyTimer)
+                m_relayLatencyTimer->start(1000);
+        }
     });
 }
 
