@@ -624,6 +624,11 @@ private:
     // owns the repo and falling back to the maintainer's relay inbox otherwise.
     void postIssueLinkComment(int issueNumber, const QString &body);
     void postPullLinkComment(int pullNumber, const QString &body);
+    // Issue #156: after an agent opens a PR for the issue it was working, record an
+    // explicit "Linked pull request #M" note on that issue so the link is durable
+    // in the Development section, the same way a manual link is. Repo-aware: the
+    // agent's repo may differ from the one currently on screen.
+    void linkAgentPullToIssue(const AgentSession &session, int prNumber);
     void closeCurrentPull();
     void reopenCurrentPull();
     void deleteCurrentPull();
@@ -905,8 +910,12 @@ private:
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
     int m_worktreeStatusGen = 0;
     // Open the Worktrees tab and select the row for a branch (used by the
-    // clickable branch link in the agent session header — issue #265).
+    // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
+    // Open the Branches tab and select the row for a branch, previewing its diff
+    // (used by the clickable branch-name link in the agent session header —
+    // adhoc #123).
+    void switchToBranch(const QString &branch);
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
@@ -914,16 +923,19 @@ private:
     bool selectWorktreeRow(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
-    // worktree is removed (its work is in main); pass its folder so it can be.
+    // worktree and its branch are removed (the work is preserved in the merge
+    // commit); pass its folder so it can be. deleteAgent=true additionally tears
+    // down the agent session(s) that produced the branch.
     void mergeWorktreeIntoMain(const QString &branch,
-                               const QString &worktreePath = QString());
+                               const QString &worktreePath = QString(),
+                               bool deleteAgent = false);
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
     // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
-    // now-orphaned branch too (the default for the Worktrees-tab "Remove" action);
-    // the post-merge cleanup passes false so the just-merged branch stays visible.
+    // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
+    // the post-merge cleanup, whose work is already preserved in the merge commit).
     // async=true runs the (slow, recursive) folder delete off the UI thread so the
     // window stays clickable; the branch delete + panel refresh follow in a
     // callback. The post-merge cleanup leaves it false because it inspects the
@@ -1773,6 +1785,7 @@ private:
     QLabel *m_worktreeFilesSummary = nullptr;
     QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
+    QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
