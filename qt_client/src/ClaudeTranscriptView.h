@@ -52,6 +52,12 @@ public:
     // ▲/▼ ScrollJumpButtons in the corner).
     void scrollToTop();
     void scrollToBottom();
+    // Land on the latest content immediately (no smooth animation) and keep it
+    // pinned through any pending relayout — used when a session is opened so a
+    // click always shows the bottom of its transcript (adhoc #128). A plain
+    // scrollToBottom() animation would be overridden by, and fight, the deferred
+    // rangeChanged pin after the freshly-rebuilt rows lay out.
+    void jumpToBottom();
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
 
