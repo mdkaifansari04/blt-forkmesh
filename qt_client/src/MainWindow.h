@@ -17,11 +17,15 @@ struct CommitComment; // CommitCommentStore.h
 
 // Per-session "night rider" scanner-light state, animated in the agents list
 // while raw output is streaming. phase is the Larson-sweep parameter advanced on
-// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep only
-// runs while the agent is actively producing output.
+// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep keeps
+// running while the agent is actively producing output. intensity is a smoothed
+// live-output meter (decays every frame, re-bumped per chunk by how much just
+// streamed) that the sweep's speed, brightness, trail and colour ride in real
+// time — so a quiet agent crawls dim red and a busy one races hot and bright.
 struct AgentScannerState {
     double phase = 0.0;        // 0..1 sweep parameter (bounced into a triangle)
     qint64 lastActivityMs = 0; // wall-clock of the last raw-output chunk
+    double intensity = 0.0;    // 0..1 live-output rate the effect reacts to
 };
 
 #include <QHash>
@@ -649,7 +653,9 @@ private:
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
-    void noteAgentActivity(int sessionId);
+    // bytes is how much just streamed, which drives the live-output intensity
+    // effect (the sweep's speed/brightness/colour); 0 applies a default bump.
+    void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
     // Authoritative cumulative token total for a session: the live running
@@ -1727,6 +1733,9 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
+    // "Reset integrity pin" action, shown in the Mirror nodes header only when
+    // this node is the source of truth (the owner holding the working copy).
+    QPushButton *m_mirrorResetPinButton = nullptr;
     // GitHub-style repo page: header actions, tabs, branch/search, About sidebar.
     QString m_repoBranch;
     RepoInfo m_repoInfo;
@@ -2130,6 +2139,10 @@ private:
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
+    // "Hide detail" toggle: when checked the detail panel stays hidden even with a
+    // row selected, so the session list spans the full tab width (issue #54).
+    QPushButton *m_agentHideDetailButton = nullptr;
+    bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
