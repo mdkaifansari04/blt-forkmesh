@@ -340,36 +340,6 @@ index fd046908..00000000
 -    assert "members.length < 1" in render
 -    assert "members.length <= 1" not in render
 -    assert 'm.liveHost ? "status-pill online" : "status-pill offline"' in render
-diff --git a/issues/297/issue.md b/issues/297/issue.md
-deleted file mode 100644
-index 5638b602..00000000
---- a/issues/297/issue.md
-+++ /dev/null
-@@ -1,24 +0,0 @@
-----
--schema: forkmesh-issue-v1
--number: 297
--title: when a node serves a request or clone request show it in it's logs please
--status: open
--labels: []
--milestone: 
--priority: 0
--progress: 0
--assignees: []
--createdAt: 1782525869625
--author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
--authorName: newnewnode
--bountyUsd: 0.00
--bountyAddress: 
--bountyStatus: 
--type: open
--id: open-297
--ts: 1782525869625
--attachments: []
--sig: _qaxaQDL4Odz6IPwXAt73-e43WlCA29iDO9mgenxLSPwnhgyYKUTgeyIhtgE7LkNddw1n-XCNkIwLLnmjLqvAA
-----
--
--
 diff --git a/issues/298/0002-agent.md b/issues/298/0002-agent.md
 deleted file mode 100644
 index 9de69085..00000000
