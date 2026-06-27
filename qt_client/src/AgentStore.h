@@ -20,6 +20,10 @@ struct AgentSession {
     QString name;
     int issueNumber = 0;
     QString issueTitle;
+    // Ad-hoc sessions (issueNumber == 0, the Agents-tab composer) have no issue
+    // to re-read their task from, so the free-form prompt is persisted here and
+    // replayed verbatim when the session is resumed after an app restart.
+    QString prompt;
     QString provider; // openai | claude-api (legacy: codex, claude-code)
     bool createPr = false;
     int prNumber = 0;

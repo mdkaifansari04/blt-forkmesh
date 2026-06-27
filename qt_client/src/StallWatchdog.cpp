@@ -1,5 +1,6 @@
 #include "StallWatchdog.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -90,12 +91,18 @@ StallWatchdog::~StallWatchdog()
         m_worker.join();
 }
 
-void StallWatchdog::start(int stallThresholdMs, const QString &logPath)
+void StallWatchdog::start(int stallThresholdMs, const QString &logPath,
+                          const QString &buildInfo)
 {
     if (m_running.load())
         return;
     m_thresholdMs = stallThresholdMs;
     m_logPath = logPath;
+    m_buildInfo = buildInfo;
+    // Captured here on the main thread so the watcher thread doesn't touch Qt
+    // app state; both feed the per-stall context header (see watchLoop()).
+    m_pid = QCoreApplication::applicationPid();
+    m_exePath = QCoreApplication::applicationFilePath();
     m_lastBeatMs.store(monoClock().elapsed());
 
 #ifdef STALL_BACKTRACE
@@ -169,7 +176,23 @@ void StallWatchdog::watchLoop()
             }
         } else if (inStall) {
             inStall = false; // the event loop resumed
-            const QString full = bt + extra;
+            // Context header so a stall report is actionable on its own: which
+            // build (and where its source lives), the process, how long/how badly
+            // it blocked, and how to turn the raw frames below into file:line.
+            QString header =
+                QStringLiteral("context: %1 | pid %2 | main thread blocked ~%3 ms "
+                               "(threshold %4 ms) | %5 stack sample(s)\n")
+                    .arg(m_buildInfo.isEmpty() ? QStringLiteral("ForkMesh (build unknown)")
+                                               : m_buildInfo)
+                    .arg(m_pid)
+                    .arg(peak)
+                    .arg(m_thresholdMs)
+                    .arg(sampleCount);
+            if (!m_exePath.isEmpty())
+                header += QStringLiteral(
+                              "symbolize unresolved frames: addr2line -fpe %1 <hex-addr>\n")
+                              .arg(m_exePath);
+            const QString full = header + bt + extra;
             // Durable record first, so it survives a later hang/crash.
             if (!m_logPath.isEmpty()) {
                 QDir().mkpath(QFileInfo(m_logPath).absolutePath());

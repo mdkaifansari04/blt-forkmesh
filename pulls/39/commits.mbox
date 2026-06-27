@@ -1,0 +1,1044 @@
+From a107de0bd3e3fffd3e074850d3d244c5d8ee0fbf Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 20:03:19 -0400
+Subject: [PATCH 1/2] agents: advance selection on delete + add LLM model
+ picker
+
+When deleting an agent from the Agents list, advance the selection to the
+next row (or the previous one when deleting the last row) instead of
+resetting to the top of the list.
+
+Add an LLM model dropdown beside the provider picker in the "Start a new
+agent" composer. The chosen model is passed to the agent: Claude Code's
+`--model` for the transcript path, and the runner's model override for the
+API-key providers. The available models follow the selected provider.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/ClaudeStreamSession.cpp | 11 +++-
+ qt_client/src/ClaudeStreamSession.h   |  6 +-
+ qt_client/src/MainWindow.cpp          | 87 +++++++++++++++++++++++++--
+ qt_client/src/MainWindow.h            |  8 ++-
+ 4 files changed, 103 insertions(+), 9 deletions(-)
+
+diff --git a/qt_client/src/ClaudeStreamSession.cpp b/qt_client/src/ClaudeStreamSession.cpp
+index cf929136..e8f4faf2 100644
+--- a/qt_client/src/ClaudeStreamSession.cpp
++++ b/qt_client/src/ClaudeStreamSession.cpp
+@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
+ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
+ 
+ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+-                                const QString &initialPrompt, bool skipPermissions)
++                                const QString &initialPrompt, bool skipPermissions,
++                                const QString &model)
+ {
+     stop();
+     m_buf.clear();
+@@ -43,6 +44,14 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+         "--verbose --include-partial-messages");
+     if (skipPermissions)
+         cmd += QStringLiteral(" --dangerously-skip-permissions");
++    // Pick a specific model when requested, single-quoted so the value is passed
++    // through the login shell verbatim.
++    const QString trimmedModel = model.trimmed();
++    if (!trimmedModel.isEmpty()) {
++        QString quoted = trimmedModel;
++        quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
++        cmd += QStringLiteral(" --model '") + quoted + QLatin1Char('\'');
++    }
+     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
+ 
+     if (!initialPrompt.isEmpty())
+diff --git a/qt_client/src/ClaudeStreamSession.h b/qt_client/src/ClaudeStreamSession.h
+index 50e54d5e..a2422529 100644
+--- a/qt_client/src/ClaudeStreamSession.h
++++ b/qt_client/src/ClaudeStreamSession.h
+@@ -21,9 +21,11 @@ public:
+ 
+     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
+     // '=' unsets that variable in the child (matches TerminalWidget semantics).
+-    // The initial prompt is sent as the first user turn.
++    // The initial prompt is sent as the first user turn. `model`, when non-empty,
++    // is passed to the CLI as `--model` to pick a specific LLM.
+     void start(const QString &cwd, const QStringList &extraEnv,
+-               const QString &initialPrompt, bool skipPermissions = true);
++               const QString &initialPrompt, bool skipPermissions = true,
++               const QString &model = QString());
+     // Send another user turn to a running session (steering).
+     void sendUserText(const QString &text);
+     void stop();
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2bb94197..e3ffb85f 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -1100,6 +1100,32 @@ void selectDefaultAgentProvider(QComboBox *combo)
+     combo->setCurrentIndex(index >= 0 ? index : 0);
+ }
+ 
++// Fill a model picker with the LLM models available for the given agent
++// provider. An empty data value means "provider default" — no explicit model
++// override, so the agent keeps whatever its CLI/Settings default is. The current
++// selection is preserved across a provider switch when the model still applies.
++void populateAgentModelCombo(QComboBox *combo, const QString &provider)
++{
++    if (!combo)
++        return;
++    const QString previous = combo->currentData().toString();
++    QSignalBlocker block(combo);
++    combo->clear();
++    combo->addItem(QStringLiteral("Default model"), QString());
++    // Claude Code and the Claude API both take Claude model ids; OpenAI's model
++    // is configured in Settings, so it keeps the default-only choice here.
++    if (provider != QLatin1String("openai")) {
++        combo->addItem(QStringLiteral("Claude Opus 4.8"),
++                       QStringLiteral("claude-opus-4-8"));
++        combo->addItem(QStringLiteral("Claude Sonnet 4.6"),
++                       QStringLiteral("claude-sonnet-4-6"));
++        combo->addItem(QStringLiteral("Claude Haiku 4.5"),
++                       QStringLiteral("claude-haiku-4-5"));
++    }
++    const int index = combo->findData(previous);
++    combo->setCurrentIndex(index >= 0 ? index : 0);
++}
++
+ // Live claude.ai OAuth access token the Claude Code CLI stores in
+ // ~/.claude/.credentials.json. Empty when the user logged in with an API key
+ // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
+@@ -19406,6 +19432,20 @@ QWidget *MainWindow::buildAgentsTab()
+                                 QStringLiteral("claude-code"));
+     selectDefaultAgentProvider(m_agentNewProvider);
+     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
++    // Model picker beside the agent dropdown: the chosen LLM model is passed to
++    // the agent (Claude Code's --model, or the API runner's model override). The
++    // available models follow the selected provider.
++    m_agentNewModel = new QComboBox;
++    m_agentNewModel->setObjectName("agentNewModel");
++    m_agentNewModel->setCursor(Qt::PointingHandCursor);
++    m_agentNewModel->setToolTip("Which LLM model the agent should use");
++    populateAgentModelCombo(m_agentNewModel,
++                            m_agentNewProvider->currentData().toString());
++    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [this] {
++                populateAgentModelCombo(m_agentNewModel,
++                                        m_agentNewProvider->currentData().toString());
++            });
+     m_agentStartButton = new QPushButton("Start agent");
+     m_agentStartButton->setObjectName("primaryButton");
+     m_agentStartButton->setCursor(Qt::PointingHandCursor);
+@@ -19427,6 +19467,7 @@ QWidget *MainWindow::buildAgentsTab()
+     newAgentBtns->setContentsMargins(0, 0, 0, 0);
+     newAgentBtns->setSpacing(6);
+     newAgentBtns->addWidget(m_agentNewProvider);
++    newAgentBtns->addWidget(m_agentNewModel);
+     newAgentBtns->addStretch(1);
+     newAgentBtns->addWidget(m_agentStartButton);
+     newAgentCol->addLayout(newAgentBtns);
+@@ -21186,6 +21227,10 @@ void MainWindow::startAdHocAgent()
+     const QString provider = m_agentNewProvider
+                                  ? m_agentNewProvider->currentData().toString()
+                                  : QStringLiteral("claude-code");
++    // The LLM model picked beside it; empty means "use the provider default".
++    const QString model = m_agentNewModel
++                              ? m_agentNewModel->currentData().toString()
++                              : QString();
+ 
+     AgentSession session;
+     session.owner = repo.owner;
+@@ -21228,12 +21273,14 @@ void MainWindow::startAdHocAgent()
+     if (provider == QLatin1String("claude-code")) {
+         // Claude Code renders as a native stream-json transcript; the typed
+         // prompt is its task verbatim.
+-        startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
++        startClaudeCodeTranscript(session, Issue(), repo.localPath, task, model);
+     } else {
+         // API-key agents run headlessly through a runner. There's no issue to
+         // anchor to, so the task rides through the config as an override prompt.
+         AgentRunner::Config config = agentConfigForProvider(provider);
+         config.taskOverride = task;
++        if (!model.isEmpty())
++            config.model = model; // override the provider's default model
+         markAgentLimitWindow(provider);
+         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
+         reloadAgents();
+@@ -21327,16 +21374,45 @@ void MainWindow::continueSelectedAgentSession()
+     processAgentQueue();
+ }
+ 
++int MainWindow::nextAgentSessionAfterSelected() const
++{
++    if (!m_agentTable)
++        return -1;
++    const QModelIndexList sel = m_agentTable->selectionModel()->selectedRows();
++    if (sel.isEmpty())
++        return -1;
++    const int row = sel.first().row();
++    // Prefer the row below the one being deleted; fall back to the row above
++    // when the last row is going away.
++    int nextRow = -1;
++    if (row + 1 < m_agentTable->rowCount())
++        nextRow = row + 1;
++    else if (row - 1 >= 0)
++        nextRow = row - 1;
++    if (nextRow < 0)
++        return -1;
++    QTableWidgetItem *item = m_agentTable->item(nextRow, 0);
++    return item ? item->data(Qt::UserRole).toInt() : -1;
++}
++
+ void MainWindow::deleteSelectedAgentSession()
+ {
++    // Once this row is gone, advance the selection to the next agent in the list.
++    const int advanceTo = nextAgentSessionAfterSelected();
++
+     // External (watch-only) rows aren't in the store — Delete just drops the
+     // temporary mirror; the real session keeps running in its own process.
+     if (isExternalSession(m_selectedAgentSessionId)) {
+-        unsurfaceExternalSession(m_selectedAgentSessionId);
++        const int deleted = m_selectedAgentSessionId;
++        // Point the selection at the next row before unsurface's reload runs, so
++        // it lands there instead of resetting to the top of the list.
++        m_selectedAgentSessionId = advanceTo;
++        unsurfaceExternalSession(deleted);
+         return;
+     }
+     if (!deleteStoredAgentSession(m_selectedAgentSessionId))
+         return;
++    m_selectedAgentSessionId = advanceTo; // reloadAgents() reselects this row
+     reloadAgents();
+     reloadIssues();
+     refreshIssueList();
+@@ -21680,7 +21756,8 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
+ // stays reachable via the "Raw output" toggle, and a PR is opened on finish.
+ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+                                            const QString &repoPath,
+-                                           const QString &customPrompt)
++                                           const QString &customPrompt,
++                                           const QString &model)
+ {
+     if (!m_agentTranscript || !m_agentStore)
+         return;
+@@ -21835,7 +21912,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+     // because the worktree checkout below finishes asynchronously; the IDE bridge
+     // and env are set up here since they depend on the final workdir.
+     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
+-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
++    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
+         ClaudeStreamSession *live = m_streamSessions.value(sid);
+         if (!live)
+             return; // session was stopped or deleted while the worktree was building
+@@ -21850,7 +21927,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
+                                     "on branch %1 in %2\n")
+                          .arg(branchName, workdir));
+-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
++        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
+     };
+ 
+     // Give the agent its own worktree + branch so concurrent agents never share a
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index f75dd9c9..4cb98c9e 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -673,6 +673,10 @@ private:
+     void assignIssueToAgent(const QString &provider);
+     void continueSelectedAgentSession();
+     void deleteSelectedAgentSession();
++    // Session to advance to once the selected agent is deleted: the next row in
++    // the visible list, or the previous one when deleting the last row. -1 when
++    // nothing else remains.
++    int nextAgentSessionAfterSelected() const;
+     // Stop and remove one stored agent session (clear its issue assignment, drop
+     // it from the run queue, delete it from the store). Returns true once it's
+     // gone; false (after flashing why) when it can't go yet — a running agent
+@@ -2170,7 +2174,8 @@ private:
+     // derived from `issue`.
+     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+                                    const QString &repoPath,
+-                                   const QString &customPrompt = QString());
++                                   const QString &customPrompt = QString(),
++                                   const QString &model = QString());
+     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
+     void renderTranscriptForSession(int sessionId);
+     void refreshAgentFilesPanel(int sessionId);
+@@ -2224,6 +2229,7 @@ private:
+     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
+     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
+     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
++    QComboBox *m_agentNewModel = nullptr;    // LLM model to run on the prompt
+     QPushButton *m_agentStartButton = nullptr;
+     void startAdHocAgent();
+     QPushButton *m_agentStopButton = nullptr;
+-- 
+2.47.3
+
+
+From 610837ebd4567aa725791fb497d7a74d7b6ba0e1 Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 20:04:37 -0400
+Subject: [PATCH 2/2] pull #36: open
+
+---
+ pulls/36/changes.patch | 422 +++++++++++++++++++++++++++++++++++++++++
+ pulls/36/commits.mbox  | 273 ++++++++++++++++++++++++++
+ pulls/36/pull.md       |  39 ++++
+ 3 files changed, 734 insertions(+)
+ create mode 100644 pulls/36/changes.patch
+ create mode 100644 pulls/36/commits.mbox
+ create mode 100644 pulls/36/pull.md
+
+diff --git a/pulls/36/changes.patch b/pulls/36/changes.patch
+new file mode 100644
+index 00000000..9bb4ea76
+--- /dev/null
++++ b/pulls/36/changes.patch
+@@ -0,0 +1,422 @@
++diff --git a/issues/272/0003-agent.md b/issues/272/0003-agent.md
++deleted file mode 100644
++index 610e9358..00000000
++--- a/issues/272/0003-agent.md
+++++ /dev/null
++@@ -1,14 +0,0 @@
++----
++-type: agent
++-id: 9ea49083-cf46-4177-8753-9078ffb1f513
++-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++-authorName: newnewnode
++-ts: 1782518225911
++-agentProvider: 
++-agentSessionId: 0
++-agentStatus: cleared
++-agentCreatePr: false
++-sig: umbZdRmhhaVDSGGx9hvdZwaEGqKqaXGsqI7QnqYAFhgeDRTjo1lLn1zglfYYZbtP7PoK_ivBPzlpTk0B_YgFCg
++----
++-
++-
++diff --git a/pulls/36/changes.patch b/pulls/36/changes.patch
++deleted file mode 100644
++index d12aa877..00000000
++--- a/pulls/36/changes.patch
+++++ /dev/null
++@@ -1,45 +0,0 @@
++-diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++-index 2bb94197..81547150 100644
++---- a/qt_client/src/MainWindow.cpp
++-+++ b/qt_client/src/MainWindow.cpp
++-@@ -35138,22 +35138,26 @@ void MainWindow::prioritizeIssuesFromReadme()
++-                                        .toString()
++-                                  : defaultAgentProvider();
++-     const bool claude = agentIsClaudeProvider(provider);
++--    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
++--                                   : QSettings().value(kCodexApiKeySetting))
++--                               .toString()
++--                               .trimmed();
++--    // When the default agent is Claude Code (issue #294) the user signs in with
++--    // a claude.ai subscription OAuth token rather than an API key, so fall back
++--    // to that token when no Claude API key is configured.
++--    const QString oauthToken =
++--        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
++--            ? claudeCodeOAuthToken()
++--            : QString();
++-+    const bool claudeCode = provider == QLatin1String("claude-code");
++-+    // "Claude Code" (issue #294) authenticates with the claude.ai subscription
++-+    // OAuth token the CLI keeps in ~/.claude/.credentials.json, never a metered
++-+    // API key. Read that token first and ignore any stored Claude API key, so an
++-+    // explicit Claude Code selection can't silently fall through to the
++-+    // credit-billed API and fail with "credit balance too low". "Claude API" and
++-+    // "OpenAI API" keep using their respective keys.
++-+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
++-+    const QString apiKey =
++-+        claudeCode ? QString()
++-+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
++-+                             : QSettings().value(kCodexApiKeySetting))
++-+                         .toString()
++-+                         .trimmed();
++-     if (apiKey.isEmpty() && oauthToken.isEmpty()) {
++-         setIssueInlineNotice(
++--            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
++--                     "first."
++--                   : "Add an OpenAI API key in Settings first.",
++-+            claudeCode
++-+                ? "Sign in to Claude Code first (run `claude` and log in)."
++-+                : claude ? "Add a Claude API key in Settings first."
++-+                         : "Add an OpenAI API key in Settings first.",
++-             true);
++-         return;
++-     }
++diff --git a/pulls/36/commits.mbox b/pulls/36/commits.mbox
++deleted file mode 100644
++index b6410074..00000000
++--- a/pulls/36/commits.mbox
+++++ /dev/null
++@@ -1,70 +0,0 @@
++-From 6764bdb9fec67d227a38b48f06660a48274ff438 Mon Sep 17 00:00:00 2001
++-From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
++-Date: Fri, 26 Jun 2026 19:51:38 -0400
++-Subject: [PATCH] fix: Prioritize-from-README uses Claude Code OAuth, not the
++- metered API
++-
++-When "Claude Code" was selected in the Prioritize agent picker, the code
++-read the stored Claude API key first and only fell back to the claude.ai
++-subscription OAuth token when that key was empty. A user signed in to
++-Claude Code who also had a Claude API key configured therefore hit the
++-metered API and failed with "credit balance too low".
++-
++-Route an explicit Claude Code selection to the OAuth token exclusively,
++-ignoring any stored API key, and tell the user to sign in to Claude Code
++-(rather than add an API key) when no token is found. "Claude API" and
++-"OpenAI API" keep using their respective keys.
++-
++-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
++----
++- qt_client/src/MainWindow.cpp | 32 ++++++++++++++++++--------------
++- 1 file changed, 18 insertions(+), 14 deletions(-)
++-
++-diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++-index 2bb94197..81547150 100644
++---- a/qt_client/src/MainWindow.cpp
++-+++ b/qt_client/src/MainWindow.cpp
++-@@ -35138,22 +35138,26 @@ void MainWindow::prioritizeIssuesFromReadme()
++-                                        .toString()
++-                                  : defaultAgentProvider();
++-     const bool claude = agentIsClaudeProvider(provider);
++--    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
++--                                   : QSettings().value(kCodexApiKeySetting))
++--                               .toString()
++--                               .trimmed();
++--    // When the default agent is Claude Code (issue #294) the user signs in with
++--    // a claude.ai subscription OAuth token rather than an API key, so fall back
++--    // to that token when no Claude API key is configured.
++--    const QString oauthToken =
++--        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
++--            ? claudeCodeOAuthToken()
++--            : QString();
++-+    const bool claudeCode = provider == QLatin1String("claude-code");
++-+    // "Claude Code" (issue #294) authenticates with the claude.ai subscription
++-+    // OAuth token the CLI keeps in ~/.claude/.credentials.json, never a metered
++-+    // API key. Read that token first and ignore any stored Claude API key, so an
++-+    // explicit Claude Code selection can't silently fall through to the
++-+    // credit-billed API and fail with "credit balance too low". "Claude API" and
++-+    // "OpenAI API" keep using their respective keys.
++-+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
++-+    const QString apiKey =
++-+        claudeCode ? QString()
++-+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
++-+                             : QSettings().value(kCodexApiKeySetting))
++-+                         .toString()
++-+                         .trimmed();
++-     if (apiKey.isEmpty() && oauthToken.isEmpty()) {
++-         setIssueInlineNotice(
++--            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
++--                     "first."
++--                   : "Add an OpenAI API key in Settings first.",
++-+            claudeCode
++-+                ? "Sign in to Claude Code first (run `claude` and log in)."
++-+                : claude ? "Add a Claude API key in Settings first."
++-+                         : "Add an OpenAI API key in Settings first.",
++-             true);
++-         return;
++-     }
++--- 
++-2.47.3
++-
++diff --git a/pulls/36/pull.md b/pulls/36/pull.md
++deleted file mode 100644
++index a59baf29..00000000
++--- a/pulls/36/pull.md
+++++ /dev/null
++@@ -1,21 +0,0 @@
++----
++-schema: forkmesh-pull-v1
++-number: 36
++-title: Prioritize from README: use Claude Code OAuth, not the metered API
++-base: main
++-head: agent/adhoc-47-i-got-this-message-when-prioritzing-even-though
++-status: open
++-ts: 1782518213654
++-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++-authorName: newnewnode
++-sig: lZTOIL_P_ZUcmi5T1_XXtgt7gaFKIx-b6VB0neMMtqDXFdYN47OiAkwrH_F_gPvaJ3ITO2JprlUHLW6oiO3wAQ
++----
++-
++-When **Claude Code** is selected in the Prioritize-from-README agent picker, the request now authenticates with the claude.ai subscription OAuth token instead of a stored Claude API key.
++-
++-Previously the code read the Claude API key first and only fell back to the OAuth token when that key was empty, so a user signed in to Claude Code who also had an API key configured hit the metered API and failed with `HTTP 400: Your credit balance is too low`.
++-
++-- `claude-code` now uses the OAuth token exclusively (ignores any stored API key)
++-- Clearer "Sign in to Claude Code first" notice when no token is found
++-- `Claude API` and `OpenAI API` keep using their own keys
++-
++diff --git a/qt_client/src/ClaudeStreamSession.cpp b/qt_client/src/ClaudeStreamSession.cpp
++index cf929136..e8f4faf2 100644
++--- a/qt_client/src/ClaudeStreamSession.cpp
+++++ b/qt_client/src/ClaudeStreamSession.cpp
++@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
++ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
++ 
++ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
++-                                const QString &initialPrompt, bool skipPermissions)
+++                                const QString &initialPrompt, bool skipPermissions,
+++                                const QString &model)
++ {
++     stop();
++     m_buf.clear();
++@@ -43,6 +44,14 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
++         "--verbose --include-partial-messages");
++     if (skipPermissions)
++         cmd += QStringLiteral(" --dangerously-skip-permissions");
+++    // Pick a specific model when requested, single-quoted so the value is passed
+++    // through the login shell verbatim.
+++    const QString trimmedModel = model.trimmed();
+++    if (!trimmedModel.isEmpty()) {
+++        QString quoted = trimmedModel;
+++        quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+++        cmd += QStringLiteral(" --model '") + quoted + QLatin1Char('\'');
+++    }
++     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
++ 
++     if (!initialPrompt.isEmpty())
++diff --git a/qt_client/src/ClaudeStreamSession.h b/qt_client/src/ClaudeStreamSession.h
++index 50e54d5e..a2422529 100644
++--- a/qt_client/src/ClaudeStreamSession.h
+++++ b/qt_client/src/ClaudeStreamSession.h
++@@ -21,9 +21,11 @@ public:
++ 
++     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
++     // '=' unsets that variable in the child (matches TerminalWidget semantics).
++-    // The initial prompt is sent as the first user turn.
+++    // The initial prompt is sent as the first user turn. `model`, when non-empty,
+++    // is passed to the CLI as `--model` to pick a specific LLM.
++     void start(const QString &cwd, const QStringList &extraEnv,
++-               const QString &initialPrompt, bool skipPermissions = true);
+++               const QString &initialPrompt, bool skipPermissions = true,
+++               const QString &model = QString());
++     // Send another user turn to a running session (steering).
++     void sendUserText(const QString &text);
++     void stop();
++diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++index 2bb94197..e3ffb85f 100644
++--- a/qt_client/src/MainWindow.cpp
+++++ b/qt_client/src/MainWindow.cpp
++@@ -1100,6 +1100,32 @@ void selectDefaultAgentProvider(QComboBox *combo)
++     combo->setCurrentIndex(index >= 0 ? index : 0);
++ }
++ 
+++// Fill a model picker with the LLM models available for the given agent
+++// provider. An empty data value means "provider default" — no explicit model
+++// override, so the agent keeps whatever its CLI/Settings default is. The current
+++// selection is preserved across a provider switch when the model still applies.
+++void populateAgentModelCombo(QComboBox *combo, const QString &provider)
+++{
+++    if (!combo)
+++        return;
+++    const QString previous = combo->currentData().toString();
+++    QSignalBlocker block(combo);
+++    combo->clear();
+++    combo->addItem(QStringLiteral("Default model"), QString());
+++    // Claude Code and the Claude API both take Claude model ids; OpenAI's model
+++    // is configured in Settings, so it keeps the default-only choice here.
+++    if (provider != QLatin1String("openai")) {
+++        combo->addItem(QStringLiteral("Claude Opus 4.8"),
+++                       QStringLiteral("claude-opus-4-8"));
+++        combo->addItem(QStringLiteral("Claude Sonnet 4.6"),
+++                       QStringLiteral("claude-sonnet-4-6"));
+++        combo->addItem(QStringLiteral("Claude Haiku 4.5"),
+++                       QStringLiteral("claude-haiku-4-5"));
+++    }
+++    const int index = combo->findData(previous);
+++    combo->setCurrentIndex(index >= 0 ? index : 0);
+++}
+++
++ // Live claude.ai OAuth access token the Claude Code CLI stores in
++ // ~/.claude/.credentials.json. Empty when the user logged in with an API key
++ // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
++@@ -19406,6 +19432,20 @@ QWidget *MainWindow::buildAgentsTab()
++                                 QStringLiteral("claude-code"));
++     selectDefaultAgentProvider(m_agentNewProvider);
++     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
+++    // Model picker beside the agent dropdown: the chosen LLM model is passed to
+++    // the agent (Claude Code's --model, or the API runner's model override). The
+++    // available models follow the selected provider.
+++    m_agentNewModel = new QComboBox;
+++    m_agentNewModel->setObjectName("agentNewModel");
+++    m_agentNewModel->setCursor(Qt::PointingHandCursor);
+++    m_agentNewModel->setToolTip("Which LLM model the agent should use");
+++    populateAgentModelCombo(m_agentNewModel,
+++                            m_agentNewProvider->currentData().toString());
+++    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
+++            this, [this] {
+++                populateAgentModelCombo(m_agentNewModel,
+++                                        m_agentNewProvider->currentData().toString());
+++            });
++     m_agentStartButton = new QPushButton("Start agent");
++     m_agentStartButton->setObjectName("primaryButton");
++     m_agentStartButton->setCursor(Qt::PointingHandCursor);
++@@ -19427,6 +19467,7 @@ QWidget *MainWindow::buildAgentsTab()
++     newAgentBtns->setContentsMargins(0, 0, 0, 0);
++     newAgentBtns->setSpacing(6);
++     newAgentBtns->addWidget(m_agentNewProvider);
+++    newAgentBtns->addWidget(m_agentNewModel);
++     newAgentBtns->addStretch(1);
++     newAgentBtns->addWidget(m_agentStartButton);
++     newAgentCol->addLayout(newAgentBtns);
++@@ -21186,6 +21227,10 @@ void MainWindow::startAdHocAgent()
++     const QString provider = m_agentNewProvider
++                                  ? m_agentNewProvider->currentData().toString()
++                                  : QStringLiteral("claude-code");
+++    // The LLM model picked beside it; empty means "use the provider default".
+++    const QString model = m_agentNewModel
+++                              ? m_agentNewModel->currentData().toString()
+++                              : QString();
++ 
++     AgentSession session;
++     session.owner = repo.owner;
++@@ -21228,12 +21273,14 @@ void MainWindow::startAdHocAgent()
++     if (provider == QLatin1String("claude-code")) {
++         // Claude Code renders as a native stream-json transcript; the typed
++         // prompt is its task verbatim.
++-        startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
+++        startClaudeCodeTranscript(session, Issue(), repo.localPath, task, model);
++     } else {
++         // API-key agents run headlessly through a runner. There's no issue to
++         // anchor to, so the task rides through the config as an override prompt.
++         AgentRunner::Config config = agentConfigForProvider(provider);
++         config.taskOverride = task;
+++        if (!model.isEmpty())
+++            config.model = model; // override the provider's default model
++         markAgentLimitWindow(provider);
++         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
++         reloadAgents();
++@@ -21327,16 +21374,45 @@ void MainWindow::continueSelectedAgentSession()
++     processAgentQueue();
++ }
++ 
+++int MainWindow::nextAgentSessionAfterSelected() const
+++{
+++    if (!m_agentTable)
+++        return -1;
+++    const QModelIndexList sel = m_agentTable->selectionModel()->selectedRows();
+++    if (sel.isEmpty())
+++        return -1;
+++    const int row = sel.first().row();
+++    // Prefer the row below the one being deleted; fall back to the row above
+++    // when the last row is going away.
+++    int nextRow = -1;
+++    if (row + 1 < m_agentTable->rowCount())
+++        nextRow = row + 1;
+++    else if (row - 1 >= 0)
+++        nextRow = row - 1;
+++    if (nextRow < 0)
+++        return -1;
+++    QTableWidgetItem *item = m_agentTable->item(nextRow, 0);
+++    return item ? item->data(Qt::UserRole).toInt() : -1;
+++}
+++
++ void MainWindow::deleteSelectedAgentSession()
++ {
+++    // Once this row is gone, advance the selection to the next agent in the list.
+++    const int advanceTo = nextAgentSessionAfterSelected();
+++
++     // External (watch-only) rows aren't in the store — Delete just drops the
++     // temporary mirror; the real session keeps running in its own process.
++     if (isExternalSession(m_selectedAgentSessionId)) {
++-        unsurfaceExternalSession(m_selectedAgentSessionId);
+++        const int deleted = m_selectedAgentSessionId;
+++        // Point the selection at the next row before unsurface's reload runs, so
+++        // it lands there instead of resetting to the top of the list.
+++        m_selectedAgentSessionId = advanceTo;
+++        unsurfaceExternalSession(deleted);
++         return;
++     }
++     if (!deleteStoredAgentSession(m_selectedAgentSessionId))
++         return;
+++    m_selectedAgentSessionId = advanceTo; // reloadAgents() reselects this row
++     reloadAgents();
++     reloadIssues();
++     refreshIssueList();
++@@ -21680,7 +21756,8 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
++ // stays reachable via the "Raw output" toggle, and a PR is opened on finish.
++ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
++                                            const QString &repoPath,
++-                                           const QString &customPrompt)
+++                                           const QString &customPrompt,
+++                                           const QString &model)
++ {
++     if (!m_agentTranscript || !m_agentStore)
++         return;
++@@ -21835,7 +21912,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
++     // because the worktree checkout below finishes asynchronously; the IDE bridge
++     // and env are set up here since they depend on the final workdir.
++     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
++-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+++    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
++         ClaudeStreamSession *live = m_streamSessions.value(sid);
++         if (!live)
++             return; // session was stopped or deleted while the worktree was building
++@@ -21850,7 +21927,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
++                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
++                                     "on branch %1 in %2\n")
++                          .arg(branchName, workdir));
++-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+++        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
++     };
++ 
++     // Give the agent its own worktree + branch so concurrent agents never share a
++diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
++index f75dd9c9..4cb98c9e 100644
++--- a/qt_client/src/MainWindow.h
+++++ b/qt_client/src/MainWindow.h
++@@ -673,6 +673,10 @@ private:
++     void assignIssueToAgent(const QString &provider);
++     void continueSelectedAgentSession();
++     void deleteSelectedAgentSession();
+++    // Session to advance to once the selected agent is deleted: the next row in
+++    // the visible list, or the previous one when deleting the last row. -1 when
+++    // nothing else remains.
+++    int nextAgentSessionAfterSelected() const;
++     // Stop and remove one stored agent session (clear its issue assignment, drop
++     // it from the run queue, delete it from the store). Returns true once it's
++     // gone; false (after flashing why) when it can't go yet — a running agent
++@@ -2170,7 +2174,8 @@ private:
++     // derived from `issue`.
++     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
++                                    const QString &repoPath,
++-                                   const QString &customPrompt = QString());
+++                                   const QString &customPrompt = QString(),
+++                                   const QString &model = QString());
++     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
++     void renderTranscriptForSession(int sessionId);
++     void refreshAgentFilesPanel(int sessionId);
++@@ -2224,6 +2229,7 @@ private:
++     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
++     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
++     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
+++    QComboBox *m_agentNewModel = nullptr;    // LLM model to run on the prompt
++     QPushButton *m_agentStartButton = nullptr;
++     void startAdHocAgent();
++     QPushButton *m_agentStopButton = nullptr;
+diff --git a/pulls/36/commits.mbox b/pulls/36/commits.mbox
+new file mode 100644
+index 00000000..147f20de
+--- /dev/null
++++ b/pulls/36/commits.mbox
+@@ -0,0 +1,273 @@
++From a107de0bd3e3fffd3e074850d3d244c5d8ee0fbf Mon Sep 17 00:00:00 2001
++From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
++Date: Fri, 26 Jun 2026 20:03:19 -0400
++Subject: [PATCH] agents: advance selection on delete + add LLM model picker
++
++When deleting an agent from the Agents list, advance the selection to the
++next row (or the previous one when deleting the last row) instead of
++resetting to the top of the list.
++
++Add an LLM model dropdown beside the provider picker in the "Start a new
++agent" composer. The chosen model is passed to the agent: Claude Code's
++`--model` for the transcript path, and the runner's model override for the
++API-key providers. The available models follow the selected provider.
++
++Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
++---
++ qt_client/src/ClaudeStreamSession.cpp | 11 +++-
++ qt_client/src/ClaudeStreamSession.h   |  6 +-
++ qt_client/src/MainWindow.cpp          | 87 +++++++++++++++++++++++++--
++ qt_client/src/MainWindow.h            |  8 ++-
++ 4 files changed, 103 insertions(+), 9 deletions(-)
++
++diff --git a/qt_client/src/ClaudeStreamSession.cpp b/qt_client/src/ClaudeStreamSession.cpp
++index cf929136..e8f4faf2 100644
++--- a/qt_client/src/ClaudeStreamSession.cpp
+++++ b/qt_client/src/ClaudeStreamSession.cpp
++@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
++ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
++ 
++ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
++-                                const QString &initialPrompt, bool skipPermissions)
+++                                const QString &initialPrompt, bool skipPermissions,
+++                                const QString &model)
++ {
++     stop();
++     m_buf.clear();
++@@ -43,6 +44,14 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
++         "--verbose --include-partial-messages");
++     if (skipPermissions)
++         cmd += QStringLiteral(" --dangerously-skip-permissions");
+++    // Pick a specific model when requested, single-quoted so the value is passed
+++    // through the login shell verbatim.
+++    const QString trimmedModel = model.trimmed();
+++    if (!trimmedModel.isEmpty()) {
+++        QString quoted = trimmedModel;
+++        quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+++        cmd += QStringLiteral(" --model '") + quoted + QLatin1Char('\'');
+++    }
++     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
++ 
++     if (!initialPrompt.isEmpty())
++diff --git a/qt_client/src/ClaudeStreamSession.h b/qt_client/src/ClaudeStreamSession.h
++index 50e54d5e..a2422529 100644
++--- a/qt_client/src/ClaudeStreamSession.h
+++++ b/qt_client/src/ClaudeStreamSession.h
++@@ -21,9 +21,11 @@ public:
++ 
++     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
++     // '=' unsets that variable in the child (matches TerminalWidget semantics).
++-    // The initial prompt is sent as the first user turn.
+++    // The initial prompt is sent as the first user turn. `model`, when non-empty,
+++    // is passed to the CLI as `--model` to pick a specific LLM.
++     void start(const QString &cwd, const QStringList &extraEnv,
++-               const QString &initialPrompt, bool skipPermissions = true);
+++               const QString &initialPrompt, bool skipPermissions = true,
+++               const QString &model = QString());
++     // Send another user turn to a running session (steering).
++     void sendUserText(const QString &text);
++     void stop();
++diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
++index 2bb94197..e3ffb85f 100644
++--- a/qt_client/src/MainWindow.cpp
+++++ b/qt_client/src/MainWindow.cpp
++@@ -1100,6 +1100,32 @@ void selectDefaultAgentProvider(QComboBox *combo)
++     combo->setCurrentIndex(index >= 0 ? index : 0);
++ }
++ 
+++// Fill a model picker with the LLM models available for the given agent
+++// provider. An empty data value means "provider default" — no explicit model
+++// override, so the agent keeps whatever its CLI/Settings default is. The current
+++// selection is preserved across a provider switch when the model still applies.
+++void populateAgentModelCombo(QComboBox *combo, const QString &provider)
+++{
+++    if (!combo)
+++        return;
+++    const QString previous = combo->currentData().toString();
+++    QSignalBlocker block(combo);
+++    combo->clear();
+++    combo->addItem(QStringLiteral("Default model"), QString());
+++    // Claude Code and the Claude API both take Claude model ids; OpenAI's model
+++    // is configured in Settings, so it keeps the default-only choice here.
+++    if (provider != QLatin1String("openai")) {
+++        combo->addItem(QStringLiteral("Claude Opus 4.8"),
+++                       QStringLiteral("claude-opus-4-8"));
+++        combo->addItem(QStringLiteral("Claude Sonnet 4.6"),
+++                       QStringLiteral("claude-sonnet-4-6"));
+++        combo->addItem(QStringLiteral("Claude Haiku 4.5"),
+++                       QStringLiteral("claude-haiku-4-5"));
+++    }
+++    const int index = combo->findData(previous);
+++    combo->setCurrentIndex(index >= 0 ? index : 0);
+++}
+++
++ // Live claude.ai OAuth access token the Claude Code CLI stores in
++ // ~/.claude/.credentials.json. Empty when the user logged in with an API key
++ // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
++@@ -19406,6 +19432,20 @@ QWidget *MainWindow::buildAgentsTab()
++                                 QStringLiteral("claude-code"));
++     selectDefaultAgentProvider(m_agentNewProvider);
++     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
+++    // Model picker beside the agent dropdown: the chosen LLM model is passed to
+++    // the agent (Claude Code's --model, or the API runner's model override). The
+++    // available models follow the selected provider.
+++    m_agentNewModel = new QComboBox;
+++    m_agentNewModel->setObjectName("agentNewModel");
+++    m_agentNewModel->setCursor(Qt::PointingHandCursor);
+++    m_agentNewModel->setToolTip("Which LLM model the agent should use");
+++    populateAgentModelCombo(m_agentNewModel,
+++                            m_agentNewProvider->currentData().toString());
+++    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
+++            this, [this] {
+++                populateAgentModelCombo(m_agentNewModel,
+++                                        m_agentNewProvider->currentData().toString());
+++            });
++     m_agentStartButton = new QPushButton("Start agent");
++     m_agentStartButton->setObjectName("primaryButton");
++     m_agentStartButton->setCursor(Qt::PointingHandCursor);
++@@ -19427,6 +19467,7 @@ QWidget *MainWindow::buildAgentsTab()
++     newAgentBtns->setContentsMargins(0, 0, 0, 0);
++     newAgentBtns->setSpacing(6);
++     newAgentBtns->addWidget(m_agentNewProvider);
+++    newAgentBtns->addWidget(m_agentNewModel);
++     newAgentBtns->addStretch(1);
++     newAgentBtns->addWidget(m_agentStartButton);
++     newAgentCol->addLayout(newAgentBtns);
++@@ -21186,6 +21227,10 @@ void MainWindow::startAdHocAgent()
++     const QString provider = m_agentNewProvider
++                                  ? m_agentNewProvider->currentData().toString()
++                                  : QStringLiteral("claude-code");
+++    // The LLM model picked beside it; empty means "use the provider default".
+++    const QString model = m_agentNewModel
+++                              ? m_agentNewModel->currentData().toString()
+++                              : QString();
++ 
++     AgentSession session;
++     session.owner = repo.owner;
++@@ -21228,12 +21273,14 @@ void MainWindow::startAdHocAgent()
++     if (provider == QLatin1String("claude-code")) {
++         // Claude Code renders as a native stream-json transcript; the typed
++         // prompt is its task verbatim.
++-        startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
+++        startClaudeCodeTranscript(session, Issue(), repo.localPath, task, model);
++     } else {
++         // API-key agents run headlessly through a runner. There's no issue to
++         // anchor to, so the task rides through the config as an override prompt.
++         AgentRunner::Config config = agentConfigForProvider(provider);
++         config.taskOverride = task;
+++        if (!model.isEmpty())
+++            config.model = model; // override the provider's default model
++         markAgentLimitWindow(provider);
++         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
++         reloadAgents();
++@@ -21327,16 +21374,45 @@ void MainWindow::continueSelectedAgentSession()
++     processAgentQueue();
++ }
++ 
+++int MainWindow::nextAgentSessionAfterSelected() const
+++{
+++    if (!m_agentTable)
+++        return -1;
+++    const QModelIndexList sel = m_agentTable->selectionModel()->selectedRows();
+++    if (sel.isEmpty())
+++        return -1;
+++    const int row = sel.first().row();
+++    // Prefer the row below the one being deleted; fall back to the row above
+++    // when the last row is going away.
+++    int nextRow = -1;
+++    if (row + 1 < m_agentTable->rowCount())
+++        nextRow = row + 1;
+++    else if (row - 1 >= 0)
+++        nextRow = row - 1;
+++    if (nextRow < 0)
+++        return -1;
+++    QTableWidgetItem *item = m_agentTable->item(nextRow, 0);
+++    return item ? item->data(Qt::UserRole).toInt() : -1;
+++}
+++
++ void MainWindow::deleteSelectedAgentSession()
++ {
+++    // Once this row is gone, advance the selection to the next agent in the list.
+++    const int advanceTo = nextAgentSessionAfterSelected();
+++
++     // External (watch-only) rows aren't in the store — Delete just drops the
++     // temporary mirror; the real session keeps running in its own process.
++     if (isExternalSession(m_selectedAgentSessionId)) {
++-        unsurfaceExternalSession(m_selectedAgentSessionId);
+++        const int deleted = m_selectedAgentSessionId;
+++        // Point the selection at the next row before unsurface's reload runs, so
+++        // it lands there instead of resetting to the top of the list.
+++        m_selectedAgentSessionId = advanceTo;
+++        unsurfaceExternalSession(deleted);
++         return;
++     }
++     if (!deleteStoredAgentSession(m_selectedAgentSessionId))
++         return;
+++    m_selectedAgentSessionId = advanceTo; // reloadAgents() reselects this row
++     reloadAgents();
++     reloadIssues();
++     refreshIssueList();
++@@ -21680,7 +21756,8 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
++ // stays reachable via the "Raw output" toggle, and a PR is opened on finish.
++ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
++                                            const QString &repoPath,
++-                                           const QString &customPrompt)
+++                                           const QString &customPrompt,
+++                                           const QString &model)
++ {
++     if (!m_agentTranscript || !m_agentStore)
++         return;
++@@ -21835,7 +21912,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
++     // because the worktree checkout below finishes asynchronously; the IDE bridge
++     // and env are set up here since they depend on the final workdir.
++     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
++-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+++    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
++         ClaudeStreamSession *live = m_streamSessions.value(sid);
++         if (!live)
++             return; // session was stopped or deleted while the worktree was building
++@@ -21850,7 +21927,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
++                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
++                                     "on branch %1 in %2\n")
++                          .arg(branchName, workdir));
++-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+++        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
++     };
++ 
++     // Give the agent its own worktree + branch so concurrent agents never share a
++diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
++index f75dd9c9..4cb98c9e 100644
++--- a/qt_client/src/MainWindow.h
+++++ b/qt_client/src/MainWindow.h
++@@ -673,6 +673,10 @@ private:
++     void assignIssueToAgent(const QString &provider);
++     void continueSelectedAgentSession();
++     void deleteSelectedAgentSession();
+++    // Session to advance to once the selected agent is deleted: the next row in
+++    // the visible list, or the previous one when deleting the last row. -1 when
+++    // nothing else remains.
+++    int nextAgentSessionAfterSelected() const;
++     // Stop and remove one stored agent session (clear its issue assignment, drop
++     // it from the run queue, delete it from the store). Returns true once it's
++     // gone; false (after flashing why) when it can't go yet — a running agent
++@@ -2170,7 +2174,8 @@ private:
++     // derived from `issue`.
++     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
++                                    const QString &repoPath,
++-                                   const QString &customPrompt = QString());
+++                                   const QString &customPrompt = QString(),
+++                                   const QString &model = QString());
++     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
++     void renderTranscriptForSession(int sessionId);
++     void refreshAgentFilesPanel(int sessionId);
++@@ -2224,6 +2229,7 @@ private:
++     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
++     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
++     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
+++    QComboBox *m_agentNewModel = nullptr;    // LLM model to run on the prompt
++     QPushButton *m_agentStartButton = nullptr;
++     void startAdHocAgent();
++     QPushButton *m_agentStopButton = nullptr;
++-- 
++2.47.3
++
+diff --git a/pulls/36/pull.md b/pulls/36/pull.md
+new file mode 100644
+index 00000000..ac8b9ec0
+--- /dev/null
++++ b/pulls/36/pull.md
+@@ -0,0 +1,39 @@
++---
++schema: forkmesh-pull-v1
++number: 36
++title: Agents: advance selection on delete + LLM model picker
++base: main
++head: agent/adhoc-48-when-i-delete-an-agent-from-the-list-please-adva
++status: open
++ts: 1782518677488
++author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
++authorName: dev-2f782c1c
++sig: UuLlwx8Qzw968TX5VwjwoG2bDav8uY0QAmq8sxXyH_nsggTl7En425E3K0Ca0K8TlOozGvHO8oIHXShGbgywDA
++---
++
++Resolves the ad-hoc request on the Agents tab.
++
++## Advance to the next agent on delete
++Deleting an agent from the list now advances the selection to the next row
++(or the previous one when the last row is removed) instead of snapping back
++to the top of the list. Works for both stored sessions and external
++(watch-only) rows.
++
++## Model picker in "Start a new agent"
++A second dropdown sits beside the agent (Claude Code) picker, listing the
++available LLM models. The chosen model is actually used:
++- Claude Code path: passed to the `claude` CLI as `--model`.
++- API-key providers (Claude API / OpenAI API): set as the runner's model
++  override.
++
++The model list follows the selected provider, and "Default model" leaves the
++provider's own default untouched.
++
++## Verify
++- Open a repo's Agents tab, select an agent, Delete -> selection moves to the
++  next agent rather than the first.
++- In "Start a new agent", pick a model and start a Claude Code run; the agent
++  launches with `--model <chosen>`.
++
++Build and the forkmesh-tests + forkmesh-window-tests suites pass.
++
+-- 
+2.47.3
+

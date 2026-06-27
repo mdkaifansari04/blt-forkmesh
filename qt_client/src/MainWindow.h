@@ -17,11 +17,15 @@ struct CommitComment; // CommitCommentStore.h
 
 // Per-session "night rider" scanner-light state, animated in the agents list
 // while raw output is streaming. phase is the Larson-sweep parameter advanced on
-// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep only
-// runs while the agent is actively producing output.
+// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep keeps
+// running while the agent is actively producing output. intensity is a smoothed
+// live-output meter (decays every frame, re-bumped per chunk by how much just
+// streamed) that the sweep's speed, brightness, trail and colour ride in real
+// time — so a quiet agent crawls dim red and a busy one races hot and bright.
 struct AgentScannerState {
     double phase = 0.0;        // 0..1 sweep parameter (bounced into a triangle)
     qint64 lastActivityMs = 0; // wall-clock of the last raw-output chunk
+    double intensity = 0.0;    // 0..1 live-output rate the effect reacts to
 };
 
 #include <QHash>
@@ -252,6 +256,11 @@ public:
     void headlessStart(const QString &name, const QString &solana = QString());
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
+    // Pull the latest version from the live install mirror, rebuild and relaunch
+    // (the relaunched process inherits QT_QPA_PLATFORM=offscreen, so it comes back
+    // up headless). Reuses the exact GUI "update, rebuild & restart" path; progress
+    // streams to the terminal via the [restart +Nms] log lines.
+    void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
@@ -652,7 +661,9 @@ private:
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
-    void noteAgentActivity(int sessionId);
+    // bytes is how much just streamed, which drives the live-output intensity
+    // effect (the sweep's speed/brightness/colour); 0 applies a default bump.
+    void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
     // Authoritative cumulative token total for a session: the live running
@@ -664,7 +675,9 @@ private:
     // Seed m_sessionTokens from the persisted totals (taking the max) so the live
     // counter survives reloads and continues from the saved base, not from zero.
     void seedSessionTokens();
-    // Repaint the detail panel's "Session token usage" line for one session.
+    // Refresh the "Session token usage" line for one session. Since issue #84
+    // this no longer paints a detail-panel label — it feeds the figures into the
+    // top-bar usage chart's hover tooltip (TokenUsageMiniChart::setStats).
     void setAgentUsageLabel(const AgentSession &session);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
@@ -1166,6 +1179,14 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
+    // Quick-add image attachment (issue #79): pick or paste an image in the footer
+    // quick-add bar. In "No issue" mode the path is sent to the agent in its
+    // prompt; otherwise the image is attached to the created issue.
+    void attachQuickAddImage();
+    bool tryPasteImageIntoQuickAdd();
+    void queueQuickAddImage(const QString &path);
+    void clearQuickAddImages();
+    void updateQuickAddImageButton();
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -1275,6 +1296,13 @@ private:
     // user's node is what alerts them. Deduped and seeded via QSettings so we
     // never repeat an alert or backfill a freshly-cloned repo's history.
     void scanRepoMentionsFor(const RepositoryRecord &repo);
+    // Match @mentions against issues/PRs/commit-comments already loaded off the UI
+    // thread (see scanRepoMentionsFor) and raise notifications. Runs on the main
+    // thread so it can touch QSettings and the notification UI.
+    void applyRepoMentions(
+        const RepositoryRecord &repo, const QList<Issue> &allIssues,
+        const QList<PullRequest> &allPulls,
+        const QList<QPair<QString, QList<CommitComment>>> &allCommitComments);
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
@@ -1328,7 +1356,7 @@ private:
     void flashMessage(const QString &text, bool error = false);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
-    void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
+    void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1506,11 +1534,13 @@ private:
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
+    QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
-    bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
+    bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
+    bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
 
     // Setup widgets
@@ -1647,6 +1677,9 @@ private:
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
+    QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
+    QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
+    QStringList m_quickAddImages;               // image paths queued for next send
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
@@ -2003,7 +2036,19 @@ private:
     // UI for seconds). Invalidated when the base tip moves; each per-PR entry
     // carries the patch fingerprint that produced it so an edited patch re-checks.
     QString m_pullConflictCacheBaseTip;
-    QHash<int, QPair<QString, bool>> m_pullConflictCache;
+    // Per-PR dry-run apply result. fingerprint pins it to the patch that produced
+    // it; conflictFiles is carried so updatePullActionState() can reuse this entry
+    // for the current PR instead of re-spawning `git apply --check` (which blocked
+    // the UI for ~1.6s on every pull selection).
+    struct PullConflictEntry {
+        QString fingerprint;
+        bool conflict = false;
+        QStringList conflictFiles;
+    };
+    QHash<int, PullConflictEntry> m_pullConflictCache;
+    // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
+    // the patch changes. Shared by reloadPulls() and updatePullActionState().
+    static QString pullPatchFingerprint(const QString &patch);
     int m_currentPullNumber = -1;
 
     // Actions (CI on push to the mirror)
@@ -2128,6 +2173,9 @@ private:
     void aiFixLog(const QString &text);    // stream a line into the agent session log
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
+    // Free-text filter over the session list: matches issue number/title,
+    // provider, status and PR. Empty shows everything (issue #82).
+    QLineEdit *m_agentSearch = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).
@@ -2136,7 +2184,6 @@ private:
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
-    QLabel *m_agentUsage = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
@@ -2161,9 +2208,6 @@ private:
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
-    QProgressBar *m_agentUsageBar = nullptr;     // weekly usage graph
-    QProgressBar *m_agentUsage5hBar = nullptr;   // 5-hour usage graph
-    QLabel *m_agentStatsLabel = nullptr;         // live tokens + cost counter
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
     QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
@@ -2220,6 +2264,11 @@ private:
     void stopStreamSession(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // Remove the isolated worktree a stream session ran in (if any) and prune the
+    // registration, freeing its branch so the PR's branch can be checked out in
+    // the main repo. `git worktree remove` keeps the branch ref itself, so the
+    // pull request still resolves. No-op for sessions without a worktree.
+    void cleanupStreamWorktree(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
@@ -2261,6 +2310,11 @@ private:
     QPushButton *m_agentStartButton = nullptr;
     QPushButton *m_agentNewImageButton = nullptr; // attach an image to the prompt
     void startAdHocAgent();
+    // Core of startAdHocAgent, reusable from the quick-add bar (issue #299): start
+    // an issue-less coding agent in repoIndex's checkout with `task` as its prompt.
+    // Returns the new session id (>0) or 0 if it could not start.
+    int startAdHocAgentForRepo(int repoIndex, const QString &task,
+                               const QString &provider, bool createPr);
     // Image attachments on the "Start a new agent" prompt (issue #56): paste from
     // the clipboard or pick a file; the image is referenced by path so the
     // launched agent can read it.
@@ -2477,6 +2531,10 @@ private:
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
     QSet<int> m_pushingRepos;
+    // "owner/name" of repos whose @mention scan is running on a worker thread, so
+    // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
+    // while the first is still loading issues/PRs off the UI thread.
+    QSet<QString> m_mentionScanInFlight;
     QString m_currentConversation;
     // Per-conversation message log and the live rows for the open conversation.
     QHash<QString, QList<ChatMessage>> m_history;
