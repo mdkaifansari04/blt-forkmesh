@@ -8427,10 +8427,16 @@ void MainWindow::showPinWarning()
         "integrity pin</a>"
         "<span style='color:#f85149'> \xC2\xB7" " </span>"
         "<a href='fm:whypin' style='color:#58a6ff;text-decoration:none'>Why?</a>"));
+    // The warning carries its own inline links, so it isn't an expandable toast.
+    m_topMessageElided = false;
+    m_topMessageExpanded = false;
+    m_topMessage->setWordWrap(false);
     m_topMessage->show();
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->show();
     if (m_topMessageClose)
@@ -32422,10 +32428,15 @@ void MainWindow::showLoadStatus(const QString &what)
         QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
             .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
                  what.toHtmlEscaped()));
+    m_topMessage->setWordWrap(false);
     m_topMessage->show();
     m_loadStatusShowing = true;
+    m_topMessageElided = false;
+    m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageClose)
@@ -38624,15 +38635,20 @@ void MainWindow::renderTopMessageCountdown()
     m_topMessage->setText(m_topMessageBaseHtml + suffix);
 }
 
-// Hide the top toast and its error affordances (Copy / dismiss).
+// Hide the top toast and its error affordances (Expand / Copy / dismiss).
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
+    m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
-    if (m_topMessage)
+    if (m_topMessage) {
         m_topMessage->hide();
+        m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
+    }
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageClose)
