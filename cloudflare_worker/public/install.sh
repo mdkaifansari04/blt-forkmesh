@@ -9,7 +9,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.9.2 (2026-06-24)"
+INSTALLER_VERSION="0.9.3 (2026-06-26)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -617,12 +617,16 @@ launch_forkmesh() {
 CURRENT_STEP="launch"
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
+  say "  On a server with no display, forkmesh opens an interactive CLI."
   diag launch 1 "skipped"
 elif launch_forkmesh; then
   say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
   diag launch 1 "launched"
 else
   say "Done. Launch it with:  forkmesh"
+  say "  No display detected — forkmesh opens an interactive CLI here."
+  say "  Type 'help' once it starts; on a dedicated VM you can run it as root"
+  say "  with:  forkmesh --allow-root"
   diag launch 1 "manual"
 fi
 

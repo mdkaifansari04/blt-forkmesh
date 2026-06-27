@@ -169,9 +169,31 @@ function repoCloneUrl(owner, name) {
   return `${origin}/${owner}/${name}`;
 }
 
+// The last-known counts are cached so the header/catalog pills render instantly
+// on a cold load instead of sitting at "Loading"/"Checking…" until the first
+// fetch returns (stale-while-revalidate). Values are plain non-negative numbers.
+function readCachedStat(key) {
+  try {
+    const raw = localStorage.getItem(`forkmesh.stats.${key}`);
+    if (raw === null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch (error) {
+    return null;
+  }
+}
+function writeCachedStat(key, value) {
+  try {
+    localStorage.setItem(`forkmesh.stats.${key}`, String(value));
+  } catch (error) {
+    /* storage disabled or quota exceeded — caching is best-effort */
+  }
+}
+
 function updateCatalogStats(repos) {
   const logical = groupRepositories(repos).length; // distinct repos, not mirrors
   if (count) count.textContent = `${logical} mirrored`;
+  writeCachedStat("catalogRepos", logical);
   if (statRepos) statRepos.textContent = String(logical);
   if (statIssues) statIssues.textContent = "Git";
   if (statPulls) statPulls.textContent = "Patch";
@@ -378,14 +400,33 @@ function formatSize(bytes) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// How long an offline-browse snapshot stays usable before it is considered
+// stale and dropped on the next read. Shown to the user as a countdown next to
+// the "cached · host offline" badge so they know how fresh the snapshot is.
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
 function cacheKey(kind, owner, name, path) {
   return `fm:${kind}:${owner}/${name}:${path}`;
 }
 
+// Returns { value, cachedAt } or null. Entries are wrapped with the time they
+// were written so the UI can show an expiry countdown; a snapshot older than
+// CACHE_TTL_MS is dropped here so it never resurfaces as fresh.
 function readCache(key) {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Back-compat: entries written before timestamping stored the bare value.
+    const cachedAt =
+      parsed && typeof parsed === "object" && typeof parsed.t === "number"
+        ? parsed.t
+        : null;
+    if (cachedAt !== null && Date.now() - cachedAt > CACHE_TTL_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return { value: cachedAt !== null ? parsed.v : parsed, cachedAt };
   } catch (error) {
     return null;
   }
@@ -393,9 +434,67 @@ function readCache(key) {
 
 function writeCache(key, value) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(key, JSON.stringify({ v: value, t: Date.now() }));
   } catch (error) {
     /* quota exceeded or storage disabled — caching is best-effort */
+  }
+}
+
+// Drop every cached tree/blob snapshot for a repo so the next pull goes back to
+// the live host instead of the stale copy. Backs the "Expire cache" button.
+function expireRepoCache(owner, name) {
+  const needle = `:${owner}/${name}:`;
+  const doomed = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("fm:") && k.includes(needle)) doomed.push(k);
+  }
+  for (const k of doomed) {
+    try {
+      localStorage.removeItem(k);
+    } catch (error) {
+      /* best-effort */
+    }
+  }
+}
+
+// Human countdown ("expires in 3h 12m") until a snapshot taken at `cachedAt`
+// ages past CACHE_TTL_MS.
+function formatCacheCountdown(cachedAt) {
+  if (!cachedAt) return "";
+  const remaining = cachedAt + CACHE_TTL_MS - Date.now();
+  if (remaining <= 0) return "expired";
+  const mins = Math.ceil(remaining / 60000);
+  if (mins < 60) return `expires in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (hours < 24) return rem ? `expires in ${hours}h ${rem}m` : `expires in ${hours}h`;
+  return `expires in ${Math.floor(hours / 24)}d`;
+}
+
+// Render the "● cached · host offline" badge into `metaEl`, with the cache
+// expiry countdown and an Expire button that drops the snapshot and reloads.
+function renderCachedMeta(metaEl, cachedAt, reload) {
+  if (!metaEl) return;
+  metaEl.className = "file-meta source-cached";
+  metaEl.replaceChildren();
+  const countdown = formatCacheCountdown(cachedAt);
+  const label = document.createElement("span");
+  label.textContent = `● cached · host offline${countdown ? " · " + countdown : ""}`;
+  metaEl.append(label);
+  if (reload && fileState) {
+    const owner = fileState.owner;
+    const name = fileState.name;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cache-expire-btn";
+    button.textContent = "Expire cache";
+    button.title = "Drop the cached snapshot and reload live from the host";
+    button.addEventListener("click", () => {
+      expireRepoCache(owner, name);
+      reload();
+    });
+    metaEl.append(button);
   }
 }
 
@@ -420,7 +519,7 @@ async function pullPath(kind, path) {
     liveError = "unreachable";
   }
   const cached = readCache(key);
-  if (cached) return { data: cached, source: "cached" };
+  if (cached) return { data: cached.value, source: "cached", cachedAt: cached.cachedAt };
   return { data: null, source: null, error: liveError };
 }
 
@@ -438,15 +537,14 @@ function unavailableMessage(error) {
   return `Could not load this from the host${error ? ` (${error})` : ""}.`;
 }
 
-function setSource(source) {
+function setSource(source, opts) {
   if (!fileMetaEl) return;
   fileMetaEl.className = "file-meta";
   if (source === "live") {
     fileMetaEl.textContent = "● live from host";
     fileMetaEl.classList.add("source-live");
   } else if (source === "cached") {
-    fileMetaEl.textContent = "● cached · host offline";
-    fileMetaEl.classList.add("source-cached");
+    renderCachedMeta(fileMetaEl, opts && opts.cachedAt, opts && opts.reload);
   } else {
     fileMetaEl.textContent = "";
   }
@@ -557,9 +655,9 @@ async function openDir(path) {
   showList();
   renderBreadcrumb();
   fileListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
-  const { data, source, error } = await pullPath("tree", path);
+  const { data, source, error, cachedAt } = await pullPath("tree", path);
   if (token !== navToken) return; // a newer navigation superseded this one
-  setSource(source);
+  setSource(source, { cachedAt, reload: () => openDir(path) });
   if (!data || !Array.isArray(data.entries)) {
     fileListEl.replaceChildren();
     const note = document.createElement("div");
@@ -568,6 +666,10 @@ async function openDir(path) {
     fileListEl.append(note);
     return;
   }
+
+  // The root listing carries the repo's tab tallies; apply them so every badge
+  // updates from this one reply rather than a request per counter (issue #93).
+  if (!path) applyServedCounts(data.counts, `${fileState.owner}/${fileState.name}`);
 
   const entries = data.entries.slice();
   entries.sort((a, b) => {
@@ -610,9 +712,9 @@ async function openBlob(path) {
   if (viewerPathEl) viewerPathEl.textContent = path;
   showViewerMessage("Loading...");
   showViewer();
-  const { data, source, error } = await pullPath("blob", path);
+  const { data, source, error, cachedAt } = await pullPath("blob", path);
   if (token !== navToken) return;
-  setSource(source);
+  setSource(source, { cachedAt, reload: () => openBlob(path) });
   if (!data) {
     showViewerMessage(unavailableMessage(error));
     return;
@@ -644,8 +746,14 @@ const codeSectionEl = document.querySelector("#code");
 const issuesSectionEl = document.querySelector("#issues");
 const issueListEl = document.querySelector("#issue-list");
 const issuesMetaEl = document.querySelector("#issues-meta");
+const issueFilterButtons = Array.from(
+  document.querySelectorAll(".issue-filter button")
+);
 let issuesLoadedFor = null;
 let issuesToken = 0;
+// Issues default to the "open" view; "closed" and "all" are opt-in (issue #270).
+let issueFilter = "open";
+let loadedIssues = [];
 
 const tabPullsEl = document.querySelector("#tab-pulls");
 const tabPullsCountEl = document.querySelector("#tab-pulls-count");
@@ -653,7 +761,10 @@ const pullsSectionEl = document.querySelector("#pulls");
 const pullListEl = document.querySelector("#pull-list");
 const pullsMetaEl = document.querySelector("#pulls-meta");
 const tabDiscussionsEl = document.querySelector("#tab-discussions");
+const tabDiscussionsCountEl = document.querySelector("#tab-discussions-count");
 const discussionsSectionEl = document.querySelector("#discussions");
+const discussionListEl = document.querySelector("#discussion-list");
+const discussionsMetaEl = document.querySelector("#discussions-meta");
 const tabMirrorsEl = document.querySelector("#tab-mirrors");
 const mirrorsSectionEl = document.querySelector("#repo-mirrors");
 const mirrorSummaryEl = document.querySelector("#mirror-summary");
@@ -662,6 +773,9 @@ const mirrorsMetaEl = document.querySelector("#mirrors-meta");
 let pullsLoadedFor = null;
 let pullsToken = 0;
 let pullsCountToken = 0;
+let discussionsLoadedFor = null;
+let discussionsToken = 0;
+let discussionsCountToken = 0;
 let mirrorsLoadedFor = null;
 let mirrorsToken = 0;
 
@@ -702,13 +816,56 @@ function issueRow(number, title, status) {
   return row;
 }
 
+// Render the loaded issues filtered by the active state toggle. Anything that
+// isn't explicitly "open" counts as closed, so a later -status.md that sets,
+// say, "resolved" still falls under the Closed view.
+function renderIssueList() {
+  if (!issueListEl) return;
+  const visible = loadedIssues.filter((i) => {
+    if (issueFilter === "all") return true;
+    if (issueFilter === "open") return i.status === "open";
+    return i.status !== "open";
+  });
+  if (!visible.length) {
+    issueListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent =
+      issueFilter === "open"
+        ? "No open issues. Switch to All to see closed ones."
+        : issueFilter === "closed"
+          ? "No closed issues."
+          : "No issues have been filed for this repository yet.";
+    issueListEl.append(note);
+    return;
+  }
+  issueListEl.replaceChildren(
+    ...visible.map((i) => issueRow(i.number, i.title, i.status))
+  );
+}
+
+for (const btn of issueFilterButtons) {
+  btn.addEventListener("click", () => {
+    const state = btn.dataset.state || "open";
+    if (state === issueFilter) return;
+    issueFilter = state;
+    for (const b of issueFilterButtons) {
+      const active = b === btn;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    renderIssueList();
+  });
+}
+
 async function loadIssues(owner, name) {
   if (!issueListEl) return;
   const token = ++issuesToken;
+  loadedIssues = [];
   issueListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
   if (issuesMetaEl) issuesMetaEl.textContent = "";
 
-  const { data, source, error } = await pullPath("tree", "issues");
+  const { data, source, error, cachedAt } = await pullPath("tree", "issues");
   if (token !== issuesToken) return;
   if (!data || !Array.isArray(data.entries)) {
     issueListEl.replaceChildren();
@@ -730,8 +887,7 @@ async function loadIssues(owner, name) {
       issuesMetaEl.textContent = "● live from host";
       issuesMetaEl.classList.add("source-live");
     } else if (source === "cached") {
-      issuesMetaEl.textContent = "● cached · host offline";
-      issuesMetaEl.classList.add("source-cached");
+      renderCachedMeta(issuesMetaEl, cachedAt, () => loadIssues(owner, name));
     }
   }
 
@@ -773,10 +929,11 @@ async function loadIssues(owner, name) {
   );
   if (token !== issuesToken) return;
 
-  if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(issues.length);
-  issueListEl.replaceChildren(
-    ...issues.map((i) => issueRow(i.number, i.title, i.status))
-  );
+  loadedIssues = issues;
+  // The tab badge tracks open issues, matching the default Open view (issue #270).
+  const openCount = issues.filter((i) => i.status === "open").length;
+  if (tabIssuesCountEl) tabIssuesCountEl.textContent = String(openCount);
+  renderIssueList();
 }
 
 
@@ -813,13 +970,43 @@ async function loadPullCount() {
   tabPullsCountEl.textContent = String(count);
 }
 
+async function loadDiscussionCount() {
+  if (!tabDiscussionsCountEl) return;
+  const token = ++discussionsCountToken;
+  const { data, error } = await pullPath("tree", "discussions");
+  if (token !== discussionsCountToken) return;
+  const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+  if (!data || !Array.isArray(data.entries)) {
+    if (!hostDown) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+  const count = data.entries.filter((e) => e.type === "tree" && /^\d+$/.test(e.name)).length;
+  tabDiscussionsCountEl.textContent = String(count);
+}
+
+// Fill the tab badges from the issue/pull/discussion/commit tallies the host
+// bundles with the root tree reply (issue #93), so opening a repo updates every
+// counter from that single response instead of one request per badge. The Issues
+// badge tracks *open* issues (needs each issue's status), so the served total
+// only seeds it until the Issues tab computes the exact open count.
+function applyServedCounts(counts, repoKey) {
+  if (!counts || typeof counts !== "object") return;
+  const set = (el, value) => {
+    if (el && Number.isFinite(value)) el.textContent = String(value);
+  };
+  set(tabPullsCountEl, counts.pulls);
+  set(tabDiscussionsCountEl, counts.discussions);
+  set(tabCommitsCountEl, counts.commits);
+  if (issuesLoadedFor !== repoKey) set(tabIssuesCountEl, counts.issues);
+}
+
 async function loadPulls(owner, name) {
   if (!pullListEl) return;
   const token = ++pullsToken;
   pullListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
   if (pullsMetaEl) pullsMetaEl.textContent = "";
 
-  const { data, source, error } = await pullPath("tree", "pulls");
+  const { data, source, error, cachedAt } = await pullPath("tree", "pulls");
   if (token !== pullsToken) return;
   if (!data || !Array.isArray(data.entries)) {
     pullListEl.replaceChildren();
@@ -840,8 +1027,7 @@ async function loadPulls(owner, name) {
       pullsMetaEl.textContent = "● live from host";
       pullsMetaEl.classList.add("source-live");
     } else if (source === "cached") {
-      pullsMetaEl.textContent = "● cached · host offline";
-      pullsMetaEl.classList.add("source-cached");
+      renderCachedMeta(pullsMetaEl, cachedAt, () => loadPulls(owner, name));
     }
   }
 
@@ -877,6 +1063,93 @@ async function loadPulls(owner, name) {
   if (tabPullsCountEl) tabPullsCountEl.textContent = String(pulls.length);
   pullListEl.replaceChildren(
     ...pulls.map((p) => pullRow(p.number, p.title, p.status, p.base, p.head, p.signed))
+  );
+}
+
+function discussionRow(number, title, category) {
+  const row = document.createElement("button");
+  row.className = "file-row issue-row";
+  row.type = "button";
+  const dot = document.createElement("span");
+  dot.className = "issue-dot is-open";
+  dot.title = "Discussion";
+  const label = document.createElement("span");
+  label.className = "file-name";
+  label.textContent = `#${number} ${title}`;
+  const categoryEl = document.createElement("span");
+  categoryEl.className = "file-note";
+  categoryEl.textContent = category || "Discussion";
+  row.append(dot, label, categoryEl);
+  row.addEventListener("click", () => {
+    if (fileState)
+      go(blobUrl(fileState.owner, fileState.name, `discussions/${number}/discussion.md`));
+  });
+  return row;
+}
+
+async function loadDiscussions(owner, name) {
+  if (!discussionListEl) return;
+  const token = ++discussionsToken;
+  discussionListEl.innerHTML = `<div class="file-empty">Loading…</div>`;
+  if (discussionsMetaEl) discussionsMetaEl.textContent = "";
+
+  const { data, source, error, cachedAt } = await pullPath("tree", "discussions");
+  if (token !== discussionsToken) return;
+  if (!data || !Array.isArray(data.entries)) {
+    discussionListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    const hostDown = ["no_host", "unreachable", "timeout"].includes(error);
+    note.textContent = hostDown
+      ? unavailableMessage(error)
+      : "No discussions have been published for this repository yet.";
+    discussionListEl.append(note);
+    if (tabDiscussionsCountEl && !hostDown) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+
+  if (discussionsMetaEl) {
+    discussionsMetaEl.className = "file-meta";
+    if (source === "live") {
+      discussionsMetaEl.textContent = "● live from host";
+      discussionsMetaEl.classList.add("source-live");
+    } else if (source === "cached") {
+      renderCachedMeta(discussionsMetaEl, cachedAt, () => loadDiscussions(owner, name));
+    }
+  }
+
+  const numbers = data.entries
+    .filter((e) => e.type === "tree" && /^\d+$/.test(e.name))
+    .map((e) => parseInt(e.name, 10));
+  if (!numbers.length) {
+    discussionListEl.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "file-empty";
+    note.textContent = "No discussions have been published for this repository yet.";
+    discussionListEl.append(note);
+    if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = "0";
+    return;
+  }
+
+  const discussions = await Promise.all(
+    numbers.map(async (n) => {
+      const { data: blob } = await pullPath("blob", `discussions/${n}/discussion.md`);
+      const fm = parseFrontmatter(blob && blob.content);
+      const createdAt = Number(fm.createdAt || fm.ts || 0);
+      return {
+        number: n,
+        title: fm.title || `Discussion #${n}`,
+        category: fm.category || "Discussion",
+        sortKey: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : n,
+      };
+    })
+  );
+  if (token !== discussionsToken) return;
+
+  discussions.sort((a, b) => b.sortKey - a.sortKey || b.number - a.number);
+  if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = String(discussions.length);
+  discussionListEl.replaceChildren(
+    ...discussions.map((d) => discussionRow(d.number, d.title, d.category))
   );
 }
 
@@ -1164,6 +1437,10 @@ function showRepoTab(tab) {
   if (tab === "pulls" && pullsLoadedFor !== repoKey) {
     pullsLoadedFor = repoKey;
     loadPulls(fileState.owner, fileState.name);
+  }
+  if (tab === "discussions" && discussionsLoadedFor !== repoKey) {
+    discussionsLoadedFor = repoKey;
+    loadDiscussions(fileState.owner, fileState.name);
   }
   if (tab === "mirrors" && mirrorsLoadedFor !== repoKey) {
     loadMirrors(fileState.owner, fileState.name);
@@ -1540,7 +1817,10 @@ function renderMirrorNodes(owner, name, repo) {
     .sort((a, b) =>
       (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0) ||
       Number(b.lastSync || 0) - Number(a.lastSync || 0));
-  if (members.length <= 1) {
+  // Always list the node(s) hosting this repo — including a lone, offline, or
+  // unregistered node — so every node shows up with its status. Only an empty
+  // group (no catalog record at all) hides the section.
+  if (members.length < 1) {
     el.hidden = true;
     el.replaceChildren();
     return;
@@ -1551,7 +1831,8 @@ function renderMirrorNodes(owner, name, repo) {
   const live = members.reduce((n, m) => n + (m.liveHost ? 1 : 0), 0);
   const heading = document.createElement("div");
   heading.className = "mirror-nodes-title";
-  heading.textContent = `Mirror nodes · ${members.length} (${live} live)`;
+  const noun = members.length === 1 ? "node" : "nodes";
+  heading.textContent = `Mirror ${noun} · ${members.length} (${live} live)`;
   const ul = document.createElement("ul");
   ul.className = "mirror-nodes-list";
   for (const m of members) {
@@ -1624,17 +1905,26 @@ function openRepoPage(owner, name, mode = null, filePath = "") {
     checkHost(owner, name, repoStatus);
   }
   resetDownloadProgress();
-  // Reset to the Code tab; issues/commits/pulls lazy-load when their tab is opened.
+  // Reset to the Code tab; issues/commits/pulls/discussions lazy-load when their tab is opened.
   issuesLoadedFor = null;
   commitsLoadedFor = null;
   pullsLoadedFor = null;
+  discussionsLoadedFor = null;
   mirrorsLoadedFor = null;
   if (tabIssuesCountEl) tabIssuesCountEl.textContent = "";
   if (tabCommitsCountEl) tabCommitsCountEl.textContent = "";
   if (tabPullsCountEl) tabPullsCountEl.textContent = "";
+  if (tabDiscussionsCountEl) tabDiscussionsCountEl.textContent = "";
   if (latestCommitEl) latestCommitEl.hidden = true;
   renderRepoPath(owner, name, mode, filePath);
-  loadPullCount();
+  // Browsing the repo root fetches the root tree, whose reply now bundles the
+  // pull/discussion/issue/commit tallies (issue #93) — only fall back to the
+  // per-counter requests when we enter on a blob or a sub-directory instead.
+  const entersAtRoot = mode !== "blob" && !(mode === "tree" && filePath);
+  if (!entersAtRoot) {
+    loadPullCount();
+    loadDiscussionCount();
+  }
   loadLatestCommit(owner, name);
 }
 
@@ -1878,6 +2168,7 @@ function renderClients(online) {
   clientsCount.textContent =
     online === 1 ? "1 client online" : `${online} clients online`;
   if (clientsDot) clientsDot.classList.toggle("online", online > 0);
+  writeCachedStat("clients", online);
 }
 
 async function pollClients() {
@@ -1914,6 +2205,16 @@ document.addEventListener("visibilitychange", () => {
     startPacmanTicker();
   }
 });
+
+// Render the last-known counts immediately (stale-while-revalidate) so the
+// catalog and client pills aren't blank "Loading"/"Checking…" placeholders on a
+// cold load; loadCatalog() and the stats poll below refresh them with live data.
+const cachedCatalogRepos = readCachedStat("catalogRepos");
+if (count && cachedCatalogRepos !== null) {
+  count.textContent = `${cachedCatalogRepos} mirrored`;
+}
+const cachedClients = readCachedStat("clients");
+if (cachedClients !== null) renderClients(cachedClients);
 
 loadCatalog();
 startClients();

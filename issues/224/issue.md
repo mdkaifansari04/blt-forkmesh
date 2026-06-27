@@ -5,7 +5,7 @@ title: on agents page have a button to delete all merged and closed agents
 status: open
 labels: []
 milestone: 
-priority: 30
+priority: 32
 progress: 0
 assignees: []
 createdAt: 1782354783801

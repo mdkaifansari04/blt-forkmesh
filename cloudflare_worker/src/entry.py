@@ -50,8 +50,8 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
-# Per-author cap across the issue/pull/commit inboxes, so one signing key can't
-# fill a repo's whole inbox to the global cap and block everyone else.
+# Per-author cap across the issue/pull/commit/discussion inboxes, so one signing
+# key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
 # issue body but still bounded.
@@ -60,6 +60,9 @@ MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
 MAX_PENDING_COMMIT_COMMENTS = 500
+# Discussion inbox: signed open/comment events for read-only contributors.
+MAX_DISCUSSION_BYTES = 64 * 1024
+MAX_PENDING_DISCUSSIONS = 500
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -70,6 +73,8 @@ REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
+# Discussion inbox: signed discussion open/comment submissions from any node.
+REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
 # Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
 # and split it 90/10 to the PR author + treasury when the issue's PR merges.
 REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
@@ -228,6 +233,55 @@ async def verify_issue_event(number, ev):
     canonical = (
         "forkmesh-issue-event-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
         author + "\n" + str(ts) + "\n" + content_hash
+    ).encode()
+    return await ed25519_verify(author, signature, canonical)
+
+
+DISCUSSION_CATEGORIES = {
+    "Announcements", "Ideas", "Q&A", "Show and tell", "Maintainer notes",
+}
+DISCUSSION_CATEGORY_MAP = {
+    category.lower(): category for category in DISCUSSION_CATEGORIES
+}
+
+
+def normalized_discussion_category(value):
+    return DISCUSSION_CATEGORY_MAP.get(clean_string(value, 80).strip().lower(), "")
+
+
+def discussion_event_content(ev):
+    # Mirrors DiscussionStore::contentForSigning. Fields joined by NUL.
+    t = ev.get("type", "")
+    if t == "open":
+        return "\x00".join([
+            ev.get("title", ""), ev.get("body", ""), ev.get("category", "")
+        ])
+    if t == "comment":
+        return ev.get("body", "")
+    return ""
+
+
+async def verify_discussion_event(number, ev):
+    # Mirrors DiscussionStore::canonicalString(number, ev): the signature binds
+    # the canonical discussion number plus type-specific content. New discussions
+    # submitted through the inbox are signed with number 0 because the owner
+    # assigns the durable repo number when draining the inbox.
+    author = ev.get("author", "")
+    signature = ev.get("sig", "")
+    event_type = ev.get("type", "")
+    if not author or not signature or event_type not in ("open", "comment"):
+        return False
+    if event_type == "open" and not normalized_discussion_category(
+            ev.get("category", "")):
+        return False
+    try:
+        ts = int(ev.get("ts", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(discussion_event_content(ev))
+    canonical = (
+        "forkmesh-discussion-event-v1\n" + event_type + "\n" + str(int(number)) +
+        "\n" + author + "\n" + str(ts) + "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
 
@@ -541,6 +595,26 @@ def repo_mirror_same_group(target, record):
     return bool(tname) and tname == rname
 
 
+def mirroring_owner_set(records):
+    # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
+    # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one
+    # owner hosts (a single repo with no mirror elsewhere) don't qualify their
+    # owner. Grouping reuses repo_mirror_group_key (root commit, name fallback)
+    # so two nodes serving the same logical repo land in one group. Used to keep
+    # nodes that mirror nothing for anyone out of the donation split (issue #94).
+    groups = {}
+    for rec in records or []:
+        owner = str((rec or {}).get("owner") or "").strip()
+        if not owner:
+            continue
+        groups.setdefault(repo_mirror_group_key(rec), set()).add(owner.lower())
+    owners = set()
+    for members in groups.values():
+        if len(members) > 1:
+            owners |= members
+    return owners
+
+
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
 ):
@@ -625,6 +699,59 @@ def build_repo_mirrors_payload(
         },
         "mirrors": mirrors,
     }
+
+
+def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online):
+    # Pick a healthy, online mirror to serve a clone of owner/repo from when the
+    # named owner's own host is offline. This is what keeps a repo cloneable when
+    # the source of truth goes down: a clone of /owner/repo is redirected to a peer
+    # that mirrors the SAME logical repo (grouped by root commit, name fallback) and
+    # is online right now. Returns the fallback owner's name, or None to fall
+    # through to the normal named-owner host route.
+    #
+    # Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload; the
+    # caller gathers the catalog rows + host_presence map and whether the named
+    # owner is currently online. We never redirect away from an online source.
+    owner_l = (owner or "").strip().lower()
+    repo_l = (repo or "").strip().lower()
+    if not owner_l or not repo_l or source_online:
+        return None
+    public = []
+    target = None
+    for row in rows or []:
+        rec = row.get("data") or {}
+        if row.get("is_private") or rec.get("visibility") == "private":
+            continue
+        rec_owner = str(rec.get("owner") or "").strip()
+        rec_name = str(rec.get("name") or "").strip()
+        if not rec_owner or not rec_name:
+            continue
+        item = {"key_bi": row.get("key_bi"), "data": rec}
+        public.append(item)
+        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
+            target = item
+    # When the source itself never published a record we can still group by name so
+    # an offline-but-unpublished source can fall back to a name-matching mirror.
+    target_data = target["data"] if target else {
+        "owner": owner, "name": repo, "rootCommit": ""}
+    candidates = []
+    for item in public:
+        rec = item["data"]
+        rec_owner = str(rec.get("owner") or "").strip()
+        if not rec_owner or rec_owner.lower() == owner_l:
+            continue  # never redirect to the (offline) source owner itself
+        if not repo_mirror_same_group(target_data, rec):
+            continue
+        seen = _mirror_ms(presence.get(item.get("key_bi")))
+        if not (seen and now - seen <= stale_ms):
+            continue  # only redirect to a mirror that is actually online
+        sync = _mirror_ms(rec.get("lastSync")) or 0
+        candidates.append((sync, seen, rec_owner))
+    if not candidates:
+        return None
+    # Freshest-synced wins, then most-recently-seen, then name for a stable order.
+    candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
+    return candidates[0][2]
 
 
 async def touch_host_presence(env, repo_bi):
@@ -725,6 +852,7 @@ async def _network_payout_nodes(env):
              ORDER BY COALESCE(ap.ts, 0) DESC, a.name ASC""",
         cutoff,
     )
+    mirroring = await _mirroring_owners(env)
     nodes = []
     seen_wallets = set()
     for row in rows:
@@ -735,7 +863,11 @@ async def _network_payout_nodes(env):
         wallet = (rec.get("solana") or "").strip()
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
-        eligible = bool(online and has_wallet and wallet not in seen_wallets)
+        first_wallet = has_wallet and wallet not in seen_wallets
+        # A node only shares the split if it mirrors a repo for another node, so
+        # its eligibility on /network/ must reflect that too (issue #94).
+        mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
+        eligible = bool(online and first_wallet and mirrors_repo)
         balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
         if has_wallet:
             seen_wallets.add(wallet)
@@ -744,8 +876,10 @@ async def _network_payout_nodes(env):
             reason = "offline"
         elif not has_wallet:
             reason = "missing_wallet"
-        elif not eligible:
+        elif not first_wallet:
             reason = "duplicate_wallet"
+        elif not mirrors_repo:
+            reason = "no_mirrors"
         nodes.append({
             "name": name or _short_presence_label("node", row.get("name_bi")),
             "wallet": wallet if has_wallet else "",
@@ -1470,8 +1604,9 @@ DONATION_ADDRESS_DELETE_GRACE_MS = 60 * 60 * 1000
 # from signup confirmation now that signup payments go directly to treasury.
 TREASURY_SPLIT_NUMERATOR = 1
 TREASURY_SPLIT_DENOMINATOR = 2
-# The reward split is over every online node with a payout wallet, not just the
-# first batch returned by the presence table.
+# The node half is split over every online node with a payout wallet that
+# actually mirrors a repo for another node (issue #94) — single-repo-only nodes
+# add no redundancy, so they don't share the pool. See _mirroring_owners.
 SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
@@ -1521,6 +1656,10 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
+    """CREATE TABLE IF NOT EXISTS discussion_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        data TEXT NOT NULL, submitter_bi TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
     # Issue bounty escrow: one row per (repo, issue number). data is the encrypted
     # record holding the deposit address, its Ed25519 seed, the required amount,
     # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
@@ -1652,7 +1791,7 @@ async def ensure_schema(env):
     # Plaintext blind index of the (signature-verified) submitter on each inbox
     # row, so a per-author quota can be enforced with a COUNT instead of
     # decrypting every pending row. Added separately for tables predating it.
-    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox"):
+    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox", "discussion_inbox"):
         try:
             await env.DB.prepare(
                 "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
@@ -3211,14 +3350,38 @@ async def _account_heartbeat(env, request):
     return json_response(response)
 
 
+async def _mirroring_owners(env):
+    # Set of owner names that actually mirror a repo for another node, used to
+    # keep single-repo-only nodes out of the donation split (issue #94). Best
+    # effort: on any read error return None so callers keep their prior behaviour
+    # (fail open) rather than starving every node of its share.
+    try:
+        rows = await d1_all(
+            env, "SELECT data FROM repositories WHERE is_private = 0")
+    except Exception:
+        return None
+    records = []
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+            continue
+        records.append(rec)
+    return mirroring_owner_set(records)
+
+
 async def _online_payout_addresses(env):
-    # Deduplicated payout addresses of currently-online, active accounts. Stale
-    # presence rows self-heal here so the table stays bounded.
+    # Deduplicated payout addresses of currently-online, active accounts that
+    # actually mirror a repo for another node. A node hosting only its own
+    # un-mirrored repos adds no redundancy, so it is left out of the split
+    # (issue #94). Stale presence rows self-heal here so the table stays bounded.
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
         await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
     except Exception:
         pass
+    mirroring = await _mirroring_owners(env)
     rows = await d1_all(
         env, "SELECT name_bi FROM account_presence WHERE ts >= ? ORDER BY ts DESC",
         cutoff,
@@ -3227,11 +3390,15 @@ async def _online_payout_addresses(env):
     addresses = []
     for r in rows:
         row = await d1_first(
-            env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+            env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
         if not rec or rec.get("status") != "active":
+            continue
+        owner = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+        # Only nodes that mirror a repo shared with another node earn a share.
+        if mirroring is not None and owner.lower() not in mirroring:
             continue
         solana = (rec.get("solana") or "").strip()
         if not solana or not SOLANA_RE.match(solana) or solana in seen:
@@ -4370,7 +4537,7 @@ async def accounts_handler(env, request):
     return json_response({"error": "not_found"}, status=404)
 
 
-# --- Issue & pull submission inboxes (encrypted) ----------------------------
+# --- Repository submission inboxes (encrypted) ------------------------------
 
 async def _authorize_owner(env, request, owner):
     if not owner:
@@ -4637,6 +4804,72 @@ async def commits_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def discussions_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        event = data.get("event")
+        if not isinstance(event, dict):
+            return json_response({"error": "event_required"}, status=400)
+        try:
+            number = int(data.get("number", 0))
+        except (TypeError, ValueError):
+            number = 0
+        if event.get("type", "") == "open":
+            number = 0
+        if len(discussion_event_content(event).encode("utf-8")) > MAX_DISCUSSION_BYTES:
+            return json_response({"error": "discussion_too_large"}, status=413)
+        if not await verify_discussion_event(number, event):
+            return json_response({"error": "bad_signature"}, status=401)
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM discussion_inbox WHERE repo_bi=?", repo_bi
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_DISCUSSIONS:
+            return json_response({"error": "inbox_full"}, status=429)
+        submitter_bi = await blind_index(env, event.get("author", ""))
+        if await _inbox_author_over_quota(
+                env, "discussion_inbox", repo_bi, submitter_bi):
+            return json_response({"error": "author_quota"}, status=429)
+        item = {
+            "number": number,
+            "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
+            "event": event,
+            "submitter": clean_string(event.get("author", ""), 120),
+            "submittedAt": int(Date.now()),
+        }
+        await d1_run(
+            env,
+            "INSERT INTO discussion_inbox (repo_bi, data, submitter_bi) "
+            "VALUES (?,?,?)",
+            repo_bi, await encrypt_row(env, item), submitter_bi,
+        )
+        return json_response({"ok": True}, status=201)
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env, "SELECT data FROM discussion_inbox WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
+        )
+        pending = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        return json_response({"ok": True, "pending": pending})
+
+    if method == "DELETE":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -5600,8 +5833,12 @@ class Default(WorkerEntrypoint):
             return Response("", status=308, headers={"location": "/network/"})
         if url.path == "/docs":
             return Response("", status=308, headers={"location": "/docs/"})
+
         if url.path == "/blog":
             return Response("", status=308, headers={"location": "/blog/"})
+
+        if url.path == "/features":
+            return Response("", status=308, headers={"location": "/features/"})
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
@@ -5698,6 +5935,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await commits_handler(self.env, request, owner, repo)
 
+        discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
+        if discussions_match:
+            owner = safe_segment(discussions_match.group(1))
+            repo = safe_segment(discussions_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await discussions_handler(self.env, request, owner, repo)
+
         bounty_match = REPO_BOUNTY_RE.match(url.path)
         if bounty_match:
             owner = safe_segment(bounty_match.group(1))
@@ -5769,6 +6014,50 @@ class Default(WorkerEntrypoint):
 
         return json_response({"error": "not_found"}, status=404)
 
+    async def _select_clone_fallback(self, owner, repo):
+        # When owner/repo's own host is offline, find a healthy online mirror of the
+        # same logical repo to redirect a clone to. Best-effort: any failure returns
+        # None so the request just falls through to the normal named-owner route.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            presence_rows = await d1_all(
+                self.env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {
+                str(r.get("repo_bi")): int(r.get("ts") or 0)
+                for r in presence_rows
+                if r.get("repo_bi")
+            }
+            source_ts = presence.get(repo_bi) or 0
+            source_online = bool(
+                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS)
+            # Fast path: the named host is live, so serve it directly (and skip the
+            # catalog decrypt entirely) — never redirect away from an online source.
+            if source_online:
+                return None
+            rows = await d1_all(
+                self.env,
+                "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
+            catalog_rows = []
+            for row in rows:
+                rec = await decrypt_row(self.env, row.get("data"))
+                if not rec:
+                    continue
+                if _is_blocked_catalog_identity(
+                        self.env, rec.get("owner"), rec.get("name")):
+                    continue
+                catalog_rows.append({
+                    "key_bi": row.get("key_bi"),
+                    "is_private": int(row.get("is_private") or 0),
+                    "data": rec,
+                })
+            return select_clone_fallback(
+                owner, repo, catalog_rows, presence, now,
+                HOST_PRESENCE_STALE_MS, source_online)
+        except Exception:
+            return None
+
     async def _git_host(self, request, owner_raw, repo_raw):
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
@@ -5780,6 +6069,21 @@ class Default(WorkerEntrypoint):
         if await _repo_is_private(self.env, owner, repo):
             if not await _basic_auth_view_ok(self.env, owner, repo, request):
                 return _basic_auth_challenge()
+        else:
+            # Public repo whose named host is offline: redirect the clone to a
+            # healthy mirror of the same logical repo so the code survives the
+            # source of truth going down (forkmesh's core promise). Only the
+            # initial info/refs probe is redirected; git then rebases on the
+            # mirror's URL and talks to it directly for the upload-pack POST.
+            url = urlparse(request.url)
+            if url.path.endswith("/info/refs"):
+                fallback = await self._select_clone_fallback(owner, repo)
+                if fallback and fallback.lower() != owner.lower():
+                    query = url.query or "service=git-upload-pack"
+                    location = "/%s/%s/info/refs?%s" % (fallback, repo, query)
+                    return Response(
+                        "", status=302,
+                        headers={"location": location, "cache-control": "no-store"})
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)

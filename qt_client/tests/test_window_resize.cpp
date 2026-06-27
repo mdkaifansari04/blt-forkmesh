@@ -1,10 +1,12 @@
 #include "../src/MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QMenu>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
@@ -221,6 +223,50 @@ int main(int argc, char *argv[])
               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
     }
 
+    // Issue #263: data-table columns are user-resizable — ResizeToContents
+    // columns flip to draggable Interactive once rows arrive, keeping their
+    // fitted widths, while Stretch and Fixed columns are left as configured.
+    check(window.testColumnsBecomeResizable(),
+          QStringLiteral("data-table content columns become drag-resizable"));
+
+    // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
+    // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
+    // button instead of separate per-provider buttons. The Branches tab carries
+    // its own "Fix with agent" button too (issue #116), so identify the PR one by
+    // its distinctive three-resolver menu rather than by label alone.
+    bool prFixMenuFound = false;
+    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
+        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
+            !fixButton->menu())
+            continue;
+        QStringList labels;
+        for (QAction *action : fixButton->menu()->actions())
+            labels << action->text();
+        if (labels == QStringList({QStringLiteral("Claude API"),
+                                   QStringLiteral("OpenAI API"),
+                                   QStringLiteral("Claude Code")})) {
+            prFixMenuFound = true;
+            break;
+        }
+    }
+    check(prFixMenuFound,
+          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
+                         "and Claude Code"));
+
+    // Issue #268: dragging a column divider resizes like moving a margin — the
+    // width comes from the immediate neighbour, not a far-off Stretch column, so
+    // the divider tracks the cursor instead of snapping back.
+    check(window.testMarginResize(),
+          QStringLiteral("column drag trades width with its neighbour"));
+
+    // Issue #33: the agents list lets the user drag column headers into a new
+    // order, and resizing afterwards still trades width with the visual
+    // neighbour so the divider keeps tracking the cursor.
+    check(window.testAgentColumnsMovable(),
+          QStringLiteral("agents list column headers are draggable/reorderable"));
+    check(window.testMarginResizeAfterMove(),
+          QStringLiteral("column drag trades with visual neighbour after a move"));
+
     window.testEnableSessionStartBypass(true);
 
     // No wallet, no signup: starting a node needs only a valid name. The core
@@ -352,6 +398,30 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // Issue #286: the "Prioritize from README" button must actually be on the
+    // open issues view (not hidden, not pushed off the right edge of the panel).
+    {
+        window.resize(1100, 800);
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+        QPushButton *pb =
+            findButtonStartingWith(window, "Prioritize from README");
+        const bool realized = pb && pb->isVisibleTo(&window);
+        bool onScreen = false;
+        if (realized) {
+            const QPoint tl = pb->mapTo(&window, QPoint(0, 0));
+            onScreen = tl.x() >= 0 && tl.x() + pb->width() <= window.width();
+        }
+        check(shown && realized && onScreen,
+              QString("issue #286 prioritize button is visible on the issues "
+                      "view (shown=%1 realized=%2 onScreen=%3)")
+                  .arg(shown)
+                  .arg(realized)
+                  .arg(onScreen));
+    }
+
     window.resize(480, 420);
     QApplication::processEvents();
     window.testShowPublishBar(false);
@@ -373,6 +443,136 @@ int main(int argc, char *argv[])
               .arg(topBarHidden).arg(topBarShown).arg(hBarShown));
     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
         dumpTallMinimums(window);
+
+    // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
+    // rebuild must keep the same worktree selected so its diff/detail pane stays
+    // on screen instead of going blank.
+    QTemporaryDir wtRepo;
+    if (initGitRepo(wtRepo)) {
+        runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+        const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", wtPath, "feature/keep-selected"});
+        // Put the worktree's branch one commit ahead of main so the ahead/behind
+        // column has something non-trivial to report.
+        runGitChecked(wtPath, {"commit", "--allow-empty", "-m", "ahead by one"});
+        const int wtIdx =
+            window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
+        window.testOpenRepository(wtIdx);
+        QApplication::processEvents();
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("selecting a worktree records it as the selection"));
+        check(window.testWorktreeBranchLabel().contains(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("the worktree detail shows which branch it's on"));
+        check(window.testWorktreeBranchLabel().contains(QStringLiteral("wt-keep")),
+              QStringLiteral("the worktree detail shows the worktree's location"));
+        window.testReloadWorktreesPanel(); // what "Update from main" does after merging
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("reloading the worktrees panel keeps the selected "
+                             "worktree instead of going blank (#272)"));
+        // The ahead/behind column is filled by an async `git rev-list`; pump the
+        // event loop until it lands, then check it reports "1 ahead" (↑1).
+        QString abText;
+        QElapsedTimer abTimer;
+        abTimer.start();
+        while (abTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            abText = window.testWorktreeAheadBehindText(
+                QStringLiteral("feature/keep-selected"));
+            if (!abText.isEmpty() && !abText.contains(QStringLiteral("checking")))
+                break;
+        }
+        check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
+              QString("worktrees list shows the branch one commit ahead of main "
+                      "(ahead/behind cell = %1)").arg(abText));
+    }
+
+    // issue #251: the Settings "Default agent" choice should seed the agent
+    // pickers. A window built while the default is Claude Code must start both
+    // the quick-add and issue-detail pickers there (not the OpenAI fallback),
+    // and changing the default afterwards must update the live pickers.
+    {
+        QSettings().setValue(QStringLiteral("agents/defaultProvider"),
+                             QStringLiteral("claude-code"));
+        MainWindow seeded;
+        seeded.show();
+        QApplication::processEvents();
+        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-code") &&
+                  seeded.testIssueAgentProvider() == QStringLiteral("claude-code"),
+              QString("default agent seeds the pickers (quick-add %1, issue %2)")
+                  .arg(seeded.testQuickAddAgentProvider(),
+                       seeded.testIssueAgentProvider()));
+
+        seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
+        check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
+                  seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),
+              QString("changing the default updates the live pickers "
+                      "(quick-add %1, issue %2)")
+                  .arg(seeded.testQuickAddAgentProvider(),
+                       seeded.testIssueAgentProvider()));
+        stopChildProcesses(seeded);
+    }
+
+    // Issue #287: the headless "mirrors" view leads with this node's own CPU and
+    // memory so an operator watching a durable daemon can see its load, and the
+    // "status" view carries the same Load line.
+    {
+        const QStringList mirrorLines = window.headlessMirrorLines();
+        check(!mirrorLines.isEmpty() &&
+                  mirrorLines.first().startsWith(QStringLiteral("node load:")) &&
+                  mirrorLines.first().contains(QStringLiteral("cpu")) &&
+                  mirrorLines.first().contains(QStringLiteral("mem")),
+              QStringLiteral("headless mirrors view leads with a cpu/memory load line"));
+
+        bool statusHasLoad = false;
+        for (const QString &line : window.headlessStatusLines()) {
+            if (line.startsWith(QStringLiteral("Load:")) &&
+                line.contains(QStringLiteral("cpu")) &&
+                line.contains(QStringLiteral("mem"))) {
+                statusHasLoad = true;
+                break;
+            }
+        }
+        check(statusHasLoad,
+              QStringLiteral("headless status view includes a cpu/memory load line"));
+    }
+
+    // issue #154: references inside an issue/PR comment body become in-app links.
+    {
+        check(MainWindow::autolinkReferences(QStringLiteral("see #123 please")) ==
+                  QStringLiteral("see [#123](forkmesh-ref:123) please"),
+              QStringLiteral("autolink turns #123 into a ref link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("fixed in a1b2c3d.")) ==
+                  QStringLiteral("fixed in [a1b2c3d](forkmesh-commit:a1b2c3d)."),
+              QStringLiteral("autolink turns a pasted commit SHA into a commit link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("build 1234567 ok")) ==
+                  QStringLiteral("build 1234567 ok"),
+              QStringLiteral("autolink leaves a plain number (no a-f) untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("use `#5` token")) ==
+                  QStringLiteral("use `#5` token"),
+              QStringLiteral("autolink leaves references in inline code untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("```\n#5\n```")) ==
+                  QStringLiteral("```\n#5\n```"),
+              QStringLiteral("autolink leaves references in a fenced block untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("[#5](http://x)")) ==
+                  QStringLiteral("[#5](http://x)"),
+              QStringLiteral("autolink never nests inside an existing markdown link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("at http://x/#5 only")) ==
+                  QStringLiteral("at http://x/#5 only"),
+              QStringLiteral("autolink leaves a #fragment inside a URL untouched"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("ref forkmesh://issue/o/r/12#e3 here")) ==
+                  QStringLiteral("ref <forkmesh://issue/o/r/12#e3> here"),
+              QStringLiteral("autolink wraps a pasted forkmesh:// permalink as a link"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("see forkmesh://pull/o/r/7.")) ==
+                  QStringLiteral("see <forkmesh://pull/o/r/7>."),
+              QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
 
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;

@@ -196,6 +196,57 @@ const QRegularExpression &eventFileRe()
     return re;
 }
 
+QString pendingAttachmentPlaceholder(int index)
+{
+    return QStringLiteral("forkmesh-pending-image:%1").arg(index);
+}
+
+QStringList effectiveAttachmentPlaceholders(const QStringList &srcPaths,
+                                            const QStringList &placeholders)
+{
+    if (!placeholders.isEmpty())
+        return placeholders;
+    QStringList inferred;
+    for (int i = 0; i < srcPaths.size(); ++i)
+        inferred << pendingAttachmentPlaceholder(i);
+    return inferred;
+}
+
+QString replaceAttachmentPlaceholders(QString body, const QStringList &srcPaths,
+                                      const QStringList &placeholders,
+                                      const QStringList &copiedAttachments)
+{
+    const QStringList effective =
+        effectiveAttachmentPlaceholders(srcPaths, placeholders);
+    const int count = std::min(effective.size(), copiedAttachments.size());
+    QList<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i)
+        order.append(i);
+    std::sort(order.begin(), order.end(), [&effective](int a, int b) {
+        return effective.at(a).size() > effective.at(b).size();
+    });
+    for (int i : order) {
+        if (!effective.at(i).isEmpty())
+            body.replace(effective.at(i), copiedAttachments.at(i));
+    }
+    return body;
+}
+
+bool copiedEveryAttachment(const QStringList &srcPaths,
+                           const QStringList &copiedAttachments,
+                           QString *error)
+{
+    if (copiedAttachments.size() == srcPaths.size())
+        return true;
+    if (error) {
+        *error = QStringLiteral("Could not copy %1 of %2 attachment(s).")
+                     .arg(srcPaths.size() - copiedAttachments.size())
+                     .arg(srcPaths.size());
+    }
+    return false;
+}
+
 } // namespace
 
 // ---- IssueEvent (JSON is the wire format for the relay inbox) ---------------
@@ -849,6 +900,17 @@ int IssueStore::createIssue(const QString &title, const QString &body,
                             const QStringList &assignees,
                             const QStringList &attachmentSrcPaths, QString *error)
 {
+    return createIssue(title, body, labels, milestone, priority, assignees,
+                       attachmentSrcPaths, {}, error);
+}
+
+int IssueStore::createIssue(const QString &title, const QString &body,
+                            const QStringList &labels, const QString &milestone,
+                            int priority,
+                            const QStringList &assignees,
+                            const QStringList &attachmentSrcPaths,
+                            const QStringList &attachmentPlaceholders, QString *error)
+{
     if (!canWrite()) {
         if (error)
             *error = QStringLiteral("This repository is read-only on this node.");
@@ -861,8 +923,11 @@ int IssueStore::createIssue(const QString &title, const QString &body,
     ev.type = "open";
     ev.id = QStringLiteral("open-%1").arg(number);
     ev.title = title;
-    ev.body = stripEdgeNewlines(body);
     ev.attachments = copyAttachments(number, attachmentSrcPaths);
+    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
+        return -1;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
     ev = makeSignedEvent(number, ev);
 
     Issue issue;
@@ -888,6 +953,13 @@ int IssueStore::createIssue(const QString &title, const QString &body,
 bool IssueStore::addComment(int number, const QString &body,
                             const QStringList &attachmentSrcPaths, QString *error)
 {
+    return addComment(number, body, attachmentSrcPaths, {}, error);
+}
+
+bool IssueStore::addComment(int number, const QString &body,
+                            const QStringList &attachmentSrcPaths,
+                            const QStringList &attachmentPlaceholders, QString *error)
+{
     if (!canWrite()) {
         if (error)
             *error = QStringLiteral("This repository is read-only on this node.");
@@ -901,8 +973,11 @@ bool IssueStore::addComment(int number, const QString &body,
     }
     IssueEvent ev;
     ev.type = "comment";
-    ev.body = stripEdgeNewlines(body);
     ev.attachments = copyAttachments(number, attachmentSrcPaths);
+    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
+        return false;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
     ev = makeSignedEvent(number, ev);
     issue.events.append(ev);
     if (!writeIssueFile(issue, error))
@@ -938,6 +1013,15 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
                            const QStringList &keepAttachments,
                            const QStringList &newAttachmentSrcPaths, QString *error)
 {
+    return editEvent(number, eventId, newBody, keepAttachments,
+                     newAttachmentSrcPaths, {}, error);
+}
+
+bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
+                           const QStringList &keepAttachments,
+                           const QStringList &newAttachmentSrcPaths,
+                           const QStringList &newAttachmentPlaceholders, QString *error)
+{
     if (!canWrite())
         return false;
     Issue issue;
@@ -946,12 +1030,15 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
     IssueEvent ev;
     ev.type = "edit";
     ev.target = eventId;
-    ev.body = stripEdgeNewlines(newBody);
     // An edit overwrites the target's attachment set, so carry forward the ones
     // being kept (already in the issue folder) and copy in any newly added.
     ev.attachments = keepAttachments;
-    if (!newAttachmentSrcPaths.isEmpty())
-        ev.attachments += copyAttachments(number, newAttachmentSrcPaths);
+    const QStringList copiedAttachments = copyAttachments(number, newAttachmentSrcPaths);
+    if (!copiedEveryAttachment(newAttachmentSrcPaths, copiedAttachments, error))
+        return false;
+    ev.attachments += copiedAttachments;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        newBody, newAttachmentSrcPaths, newAttachmentPlaceholders, copiedAttachments));
     ev = makeSignedEvent(number, ev);
     issue.events.append(ev);
     if (!writeIssueFile(issue, error))

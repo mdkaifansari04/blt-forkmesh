@@ -1,0 +1,346 @@
+From ef6b1be0c2313a5bdd7d9e20a695f14320f81d0f Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 20:12:54 -0400
+Subject: [PATCH] perf: stop UI-thread git calls from freezing the agent window
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The StallWatchdog reported repeated multi-second event-loop stalls, all
+ultimately blocked in QProcess::waitForFinished() (git) or layout run on
+the GUI thread. Fix the worst, most user-visible offenders:
+
+- refreshAgentFilesPanel ran a blocking `git diff --name-only` on *every*
+  transcript event, freezing the agent UI in ~1.5-2s bursts while a
+  session streamed. The in-memory tool-call files now render instantly and
+  the working-tree diff is coalesced (400ms debounce) and run off the
+  event loop, so clicking through a streaming agent stays smooth.
+
+- loadWorktreesPanel ran a synchronous `git status` per worktree row,
+  which blocked the window for seconds (a 21s stall was reported) on repos
+  with many worktrees. Each row now shows a placeholder and fills its
+  dirty/clean state in asynchronously; a generation tag drops stale
+  callbacks when the table is rebuilt.
+
+Add a small reusable runGitDetached() helper (non-blocking QProcess that
+self-deletes and reports on the main thread) backing both fixes.
+
+Also make the StallWatchdog more useful for the remaining stalls: a long
+stall is now re-sampled as it drags on (up to 6 distinct spots), so
+multi-phase blocks — back-to-back git calls, layout thrash — are
+attributed correctly instead of being blamed on whatever the single first
+sample happened to catch.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/MainWindow.cpp    | 135 +++++++++++++++++++++++++++-----
+ qt_client/src/MainWindow.h      |  16 ++++
+ qt_client/src/StallWatchdog.cpp |  44 ++++++++++-
+ 3 files changed, 171 insertions(+), 24 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2bb94197..957141fd 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -22513,8 +22513,24 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
+ {
+     if (!m_agentFilesList)
+         return;
+-    const QString repoPath = sessionWorkdir(sessionId); // the worktree, if any
++    // Render the files we already know about from the session's tool calls right
++    // away — that's in-memory and cheap, so an edit shows up the instant the agent
++    // makes it. The working-tree `git diff` augmentation used to run here with a
++    // blocking waitForFinished(), which fired on *every* transcript event and
++    // froze the UI in ~1.5-2s bursts while an agent streamed. It's now coalesced
++    // and run off the event loop instead (scheduleAgentFilesDiff).
++    populateAgentFilesPanel(sessionId, QStringList());
++    scheduleAgentFilesDiff(sessionId);
++}
+ 
++// Rebuild the edited-files list from the session's in-memory tool-call files plus
++// any working-tree diff paths handed in. A no-op when the session is no longer the
++// one on screen, so a late async diff callback can't clobber another session's list.
++void MainWindow::populateAgentFilesPanel(int sessionId, const QStringList &diffFiles)
++{
++    if (!m_agentFilesList || sessionId != m_selectedAgentSessionId)
++        return;
++    const QString repoPath = sessionWorkdir(sessionId); // the worktree, if any
+     QStringList absPaths;
+     auto addAbs = [&](const QString &p) {
+         QString abs = QDir::isAbsolutePath(p) || repoPath.isEmpty()
+@@ -22524,15 +22540,8 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
+     };
+     for (const QString &p : m_streamFiles.value(sessionId))
+         addAbs(p);
+-    if (!repoPath.isEmpty()) {
+-        QProcess git;
+-        git.setWorkingDirectory(repoPath);
+-        git.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only")});
+-        if (git.waitForFinished(3000) && git.exitCode() == 0)
+-            for (const QString &f : QString::fromUtf8(git.readAllStandardOutput())
+-                                        .split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+-                addAbs(f);
+-    }
++    for (const QString &p : diffFiles)
++        addAbs(p);
+ 
+     m_agentFilesList->clear();
+     for (const QString &abs : absPaths) {
+@@ -22545,6 +22554,39 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
+     }
+ }
+ 
++// Coalesce the working-tree `git diff --name-only` that augments the edited-files
++// panel: a burst of transcript events restarts a short single-shot timer, so the
++// (async) diff runs once after the burst rather than once per event.
++void MainWindow::scheduleAgentFilesDiff(int sessionId)
++{
++    if (sessionId != m_selectedAgentSessionId)
++        return;
++    const QString repoPath = sessionWorkdir(sessionId);
++    if (repoPath.isEmpty())
++        return;
++    if (!m_agentFilesDiffTimer) {
++        m_agentFilesDiffTimer = new QTimer(this);
++        m_agentFilesDiffTimer->setSingleShot(true);
++        m_agentFilesDiffTimer->setInterval(400);
++        connect(m_agentFilesDiffTimer, &QTimer::timeout, this, [this] {
++            const int sid = m_selectedAgentSessionId;
++            const QString dir = sessionWorkdir(sid);
++            if (sid <= 0 || dir.isEmpty())
++                return;
++            runGitDetached(
++                dir, {QStringLiteral("diff"), QStringLiteral("--name-only")},
++                [this, sid](bool ok, const QByteArray &out) {
++                    if (!ok || sid != m_selectedAgentSessionId)
++                        return;
++                    populateAgentFilesPanel(
++                        sid, QString::fromUtf8(out).split(QLatin1Char('\n'),
++                                                          Qt::SkipEmptyParts));
++                });
++        });
++    }
++    m_agentFilesDiffTimer->start();
++}
++
+ // Open a ForkMesh pull request from the session's changes (diff since baseRef),
+ // mirroring onAgentFinished's PR path but for the live-tree transcript session.
+ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
+@@ -28712,6 +28754,32 @@ QWidget *MainWindow::buildWorktreesTab()
+     return page;
+ }
+ 
++void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
++                                std::function<void(bool, const QByteArray &)> onDone)
++{
++    auto *git = new QProcess(this);
++    if (!dir.isEmpty())
++        git->setWorkingDirectory(dir);
++    // FailedToStart fires errorOccurred but not finished, and a crash fires both,
++    // so guard the callback so it runs exactly once whichever way the process ends.
++    auto done = std::make_shared<bool>(false);
++    auto finish = [git, done, onDone = std::move(onDone)](bool ok) {
++        if (*done)
++            return;
++        *done = true;
++        if (onDone)
++            onDone(ok, git->readAllStandardOutput());
++        git->deleteLater();
++    };
++    connect(git, &QProcess::finished, this,
++            [finish](int code, QProcess::ExitStatus st) {
++                finish(st == QProcess::NormalExit && code == 0);
++            });
++    connect(git, &QProcess::errorOccurred, this,
++            [finish](QProcess::ProcessError) { finish(false); });
++    git->start(QStringLiteral("git"), args);
++}
++
+ void MainWindow::loadWorktreesPanel()
+ {
+     if (!m_worktreesTable)
+@@ -28764,6 +28832,12 @@ void MainWindow::loadWorktreesPanel()
+     }
+ 
+     const QString mainPath = QDir(repoPath).absolutePath();
++    // Each worktree's dirty/clean status needs its own `git status`, which was run
++    // synchronously per row and froze the UI for seconds on repos with many
++    // worktrees (a 21s stall was reported). Fill the column asynchronously instead
++    // (see runGitDetached); this generation tag lets a stale callback bail if the
++    // table is rebuilt before it returns.
++    const int statusGen = ++m_worktreeStatusGen;
+     int actionWidth = 0;
+     for (const WT &wt : wts) {
+         const int row = m_worktreesTable->rowCount();
+@@ -28780,16 +28854,37 @@ void MainWindow::loadWorktreesPanel()
+         m_worktreesTable->setItem(row, 0, bItem);
+         m_worktreesTable->setItem(row, 1, new QTableWidgetItem(wt.path));
+ 
+-        QString status = isMain ? QStringLiteral("main checkout") : QString();
+-        QByteArray st;
+-        if (runGitCapture(wt.path, {QStringLiteral("status"), QStringLiteral("--porcelain")},
+-                          &st, nullptr)
+-            && !QString::fromUtf8(st).trimmed().isEmpty())
+-            status = status.isEmpty() ? QStringLiteral("uncommitted changes")
+-                                      : status + QStringLiteral(" · dirty");
+-        if (status.isEmpty())
+-            status = QStringLiteral("clean");
+-        m_worktreesTable->setItem(row, 2, new QTableWidgetItem(status));
++        // Show a placeholder now; the real dirty/clean state is filled in by the
++        // async `git status` below so the panel appears instantly.
++        m_worktreesTable->setItem(
++            row, 2,
++            new QTableWidgetItem(isMain ? QStringLiteral("main checkout")
++                                        : QString::fromUtf8("checking\xE2\x80\xA6")));
++        const QString wtPath = wt.path;
++        const bool mainRow = isMain;
++        runGitDetached(
++            wt.path, {QStringLiteral("status"), QStringLiteral("--porcelain")},
++            [this, statusGen, wtPath, mainRow](bool ok, const QByteArray &st) {
++                if (statusGen != m_worktreeStatusGen || !m_worktreesTable)
++                    return; // the table was rebuilt while git ran — drop this result
++                const bool dirty =
++                    ok && !QString::fromUtf8(st).trimmed().isEmpty();
++                QString status = mainRow ? QStringLiteral("main checkout") : QString();
++                if (dirty)
++                    status = status.isEmpty() ? QStringLiteral("uncommitted changes")
++                                              : status + QStringLiteral(" · dirty");
++                if (status.isEmpty())
++                    status = QStringLiteral("clean");
++                const QString want = QDir(wtPath).absolutePath();
++                for (int r = 0; r < m_worktreesTable->rowCount(); ++r) {
++                    QTableWidgetItem *p = m_worktreesTable->item(r, 1);
++                    if (p && QDir(p->text()).absolutePath() == want) {
++                        if (QTableWidgetItem *c = m_worktreesTable->item(r, 2))
++                            c->setText(status);
++                        break;
++                    }
++                }
++            });
+ 
+         auto *cell = new QWidget;
+         auto *h = new QHBoxLayout(cell);
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index f75dd9c9..21351f0c 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -843,6 +843,15 @@ private:
+     void loadBranchesPanel();
+     QWidget *buildWorktreesTab();
+     void loadWorktreesPanel();
++    // Run `git <args>` in `dir` without blocking the event loop: the QProcess is
++    // parented to this window and self-deletes, and onDone(ok, stdout) runs on the
++    // main thread once it finishes. Used for UI-thread git calls that were
++    // freezing the window via waitForFinished() (see StallWatchdog reports).
++    void runGitDetached(const QString &dir, const QStringList &args,
++                        std::function<void(bool, const QByteArray &)> onDone);
++    // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
++    // status` callbacks can drop their result if the table was rebuilt meanwhile.
++    int m_worktreeStatusGen = 0;
+     // Open the Worktrees tab and select the row for a branch (used by the
+     // clickable branch link in the agent session header — issue #265).
+     void switchToWorktree(const QString &branch);
+@@ -2173,7 +2182,14 @@ private:
+                                    const QString &customPrompt = QString());
+     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
+     void renderTranscriptForSession(int sessionId);
++    // Refresh the edited-files panel. The in-memory tool-call files render
++    // immediately; the working-tree `git diff` augmentation is coalesced and run
++    // off the event loop (see scheduleAgentFilesDiff) so a streaming agent can't
++    // freeze the UI by re-spawning `git diff` on every transcript event.
+     void refreshAgentFilesPanel(int sessionId);
++    void populateAgentFilesPanel(int sessionId, const QStringList &diffFiles);
++    void scheduleAgentFilesDiff(int sessionId);
++    QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
+     void maybeCreatePullForStreamSession(int sessionId);
+     bool isStreamTranscriptSession(int sessionId) const;
+     // Lazily restore a session's persisted transcript events from disk (issue
+diff --git a/qt_client/src/StallWatchdog.cpp b/qt_client/src/StallWatchdog.cpp
+index d003a841..07671d26 100644
+--- a/qt_client/src/StallWatchdog.cpp
++++ b/qt_client/src/StallWatchdog.cpp
+@@ -68,6 +68,14 @@ QString captureBacktrace()
+ #else
+ QString captureBacktrace() { return QString(); }
+ #endif
++
++// The innermost (deepest) symbol line of a backtrace, used to tell whether a
++// dragging stall has moved on to a different blocking spot between samples.
++QString firstFrame(const QString &bt)
++{
++    const int nl = bt.indexOf(QLatin1Char('\n'));
++    return nl < 0 ? bt : bt.left(nl);
++}
+ } // namespace
+ 
+ StallWatchdog::StallWatchdog(QObject *parent) : QObject(parent)
+@@ -122,7 +130,17 @@ void StallWatchdog::watchLoop()
+ {
+     bool inStall = false;
+     qint64 peak = 0;
+-    QString bt;
++    qint64 lastSampleMs = 0;
++    int sampleCount = 0;
++    QString bt;       // first sample (also handed to the stalled() signal)
++    QString extra;    // later samples taken while a long stall keeps dragging on
++    QString lastTop;  // deepest frame of the last sample, to skip duplicate spots
++    // A single sample taken at the 1.5s mark mislabels multi-phase stalls — e.g. a
++    // panel rebuild that runs a dozen back-to-back git calls, or layout thrash,
++    // gets blamed on whatever frame the one sample happened to catch. Re-sampling a
++    // dragging stall captures each distinct blocking spot so it's actually fixable.
++    constexpr int kMaxSamples = 6;
++    constexpr qint64 kResampleMs = 1500;
+     while (m_running.load()) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+         const qint64 now = monoClock().elapsed();
+@@ -132,11 +150,26 @@ void StallWatchdog::watchLoop()
+                 inStall = true;
+                 peak = age;
+                 bt = captureBacktrace(); // sample the stack at first detection
++                lastTop = firstFrame(bt);
++                lastSampleMs = now;
++                sampleCount = 1;
+             } else {
+                 peak = qMax(peak, age);
++                if (sampleCount < kMaxSamples && now - lastSampleMs >= kResampleMs) {
++                    lastSampleMs = now;
++                    const QString s = captureBacktrace();
++                    const QString top = firstFrame(s);
++                    if (!s.isEmpty() && top != lastTop) {
++                        extra += QStringLiteral("-- still blocked ~%1 ms in --\n").arg(age);
++                        extra += s;
++                        lastTop = top;
++                        ++sampleCount;
++                    }
++                }
+             }
+         } else if (inStall) {
+             inStall = false; // the event loop resumed
++            const QString full = bt + extra;
+             // Durable record first, so it survives a later hang/crash.
+             if (!m_logPath.isEmpty()) {
+                 QDir().mkpath(QFileInfo(m_logPath).absolutePath());
+@@ -145,14 +178,17 @@ void StallWatchdog::watchLoop()
+                     QTextStream ts(&f);
+                     ts << QDateTime::currentDateTime().toString(Qt::ISODate)
+                        << "  UI stalled ~" << peak << " ms\n";
+-                    if (!bt.isEmpty())
+-                        ts << bt;
++                    if (!full.isEmpty())
++                        ts << full;
+                     ts << "----\n";
+                 }
+             }
+-            emit stalled(peak, bt); // queued to the main thread for live display
++            emit stalled(peak, full); // queued to the main thread for live display
+             peak = 0;
++            sampleCount = 0;
+             bt.clear();
++            extra.clear();
++            lastTop.clear();
+         }
+     }
+ }
+-- 
+2.47.3
+

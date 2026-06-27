@@ -5,7 +5,7 @@ title: have the ability to show the cove password on the source of truth node al
 status: open
 labels: []
 milestone: 
-priority: 42
+priority: 37
 progress: 0
 assignees: []
 createdAt: 1782355389527

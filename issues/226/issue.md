@@ -5,7 +5,7 @@ title: show number of releases in releases tab
 status: open
 labels: []
 milestone: 
-priority: 43
+priority: 33
 progress: 0
 assignees: []
 createdAt: 1782354908601

@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 156
 title: when the agent takes and completes an issue make sure to link the PR back to the issue through the development section - also let users link PRs there
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
-priority: 15
+priority: 5
 progress: 0
 assignees: []
 createdAt: 1782179543375

@@ -5,7 +5,7 @@ title: when we restart make sure we are on the node and repo in the top menu fro
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 17
 progress: 0
 assignees: []
 createdAt: 1782363064053
