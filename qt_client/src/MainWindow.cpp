@@ -20318,7 +20318,8 @@ QWidget *MainWindow::buildAgentsTab()
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({430, 680});
+    // Equal split so the divider sits in the middle of the screen (issue #85).
+    splitter->setSizes({600, 600});
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
