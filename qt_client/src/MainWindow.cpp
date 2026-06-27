@@ -42541,83 +42541,117 @@ void MainWindow::syncRepository(int index, bool quiet)
                 const QString errors =
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
-                m_syncingRepos.remove(index);
 
                 if (index < 0 || index >= m_repositories.size()) {
+                    m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     return;
                 }
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (exitCode == 0) {
-                    // Fetch does not repair a bare repo's symbolic HEAD. Keep it
-                    // on the source/default branch so smart-HTTP clones check
-                    // out real content even after agent PR activity.
-                    repairMirrorHead(repo.mirrorPath, repo.localPath);
-                    // Drop churning tool refs left over from older --mirror
-                    // clones so peers cloning from us don't hit "not our ref".
-                    pruneNonStableMirrorRefs(repo.mirrorPath);
-                    const bool stillPreview = repo.previewOnly;
-                    // Did the owner's repo actually change?
-                    const bool changed =
-                        !hasMirror ||
-                        mirrorRefsDigest(repo.mirrorPath) != beforeDigest;
-                    repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
-                    if (!stillPreview)
-                        saveRepositories();
-                    refreshRepositoryList();
-                    // Now that the bare mirror exists, (re)install the push hook
-                    // so local pushes are detected (for actions + live refresh).
-                    if (!stillPreview)
-                        ensurePushHook(repo);
-                    if (changed && hasMirror && !stillPreview && m_actionStore) {
-                        const QString branch = mirrorHeadBranch(repo.mirrorPath);
-                        const QString commit =
-                            mirrorBranchCommit(repo.mirrorPath, branch);
-                        if (!branch.isEmpty() && !commit.isEmpty() &&
-                            commit != beforeHeadCommit) {
-                            enqueuePushEvent(repo.owner, repo.name, commit,
-                                             "refs/heads/" + branch);
+                    // The post-fetch mirror housekeeping all shells out to git:
+                    // repairing the bare repo's symbolic HEAD (so smart-HTTP clones
+                    // check out real content), pruning churning tool refs left by
+                    // older --mirror clones (so peers don't hit "not our ref"), and
+                    // reading the refs back to tell whether the owner's repo
+                    // actually changed. On a large or busy mirror that is hundreds
+                    // of milliseconds of subprocess spawns, and running it here on
+                    // the GUI thread froze the window every time a sync finished.
+                    // Do that git work on a worker thread — it only touches the
+                    // on-disk mirror through these path strings, never m_repositories
+                    // or any widget — then apply the results back on the main thread,
+                    // the same off-thread pattern scanRepoMentionsFor/deleteIssue
+                    // use. The repo stays flagged "syncing" until the housekeeping
+                    // finishes so a concurrent auto-sync can't race it on the same
+                    // mirror.
+                    const QString mirrorPath = repo.mirrorPath;
+                    const QString localPath = repo.localPath;
+                    auto afterDigest = std::make_shared<QString>();
+                    auto headBranch = std::make_shared<QString>();
+                    auto headCommit = std::make_shared<QString>();
+                    QThread *worker = QThread::create(
+                        [mirrorPath, localPath, afterDigest, headBranch,
+                         headCommit] {
+                            repairMirrorHead(mirrorPath, localPath);
+                            pruneNonStableMirrorRefs(mirrorPath);
+                            *afterDigest = mirrorRefsDigest(mirrorPath);
+                            *headBranch = mirrorHeadBranch(mirrorPath);
+                            *headCommit =
+                                mirrorBranchCommit(mirrorPath, *headBranch);
+                        });
+                    connect(worker, &QThread::finished, this,
+                            [this, worker, index, quiet, hasMirror, beforeDigest,
+                             beforeHeadCommit, afterDigest, headBranch,
+                             headCommit] {
+                        worker->deleteLater();
+                        m_syncingRepos.remove(index);
+                        if (index < 0 || index >= m_repositories.size()) {
+                            refreshRepositoryList();
+                            return;
                         }
-                    }
-                    // If this repo's detail is open, reflect the new commits.
-                    if (changed && index == m_repoDetailIndex)
-                        refreshOpenRepoDetail();
-                    // Newly-synced issues/PRs may @mention the local user.
-                    if (changed && !stillPreview)
-                        scanRepoMentionsFor(repo);
-                    // Tell connected peers that also mirror this repo that it
-                    // advanced from its source of truth. Only for real mirrors
-                    // that already existed (an actual update, not a first clone).
-                    if (changed && hasMirror && !stillPreview && m_backend)
-                        m_backend->notifyMirrorUpdated(
-                            catalogOwner(repo) + "/" +
-                            repoSegment(repo.name, QStringLiteral("repository")));
-                    // Quiet auto-syncs only speak up when something changed.
-                    if (!quiet || changed) {
-                        logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
-                                                : QStringLiteral("Mirror: synced ")) +
-                                  repo.owner + "/" + repo.name + " into " +
-                                  repo.mirrorPath + ".");
-                    }
-                    if (!quiet) {
-                        flashMessage(stillPreview
-                                         ? "Cached preview for " + repo.owner + "/" +
-                                               repo.name +
-                                               (changed ? QString()
-                                                        : " (already up to date)")
-                                         : "Synced " + repo.owner + "/" + repo.name +
-                                               (changed ? QString()
-                                                        : " (already up to date)"));
-                    }
-                    if (!stillPreview && repo.publishToNetwork &&
-                        (changed || !quiet)) {
-                        publishRepository(index, false);
-                        // Serve this repo's files live to the web now that a
-                        // mirror exists (pure live tunnel, nothing uploaded).
-                        startRepoHosts();
-                    }
+                        RepositoryRecord &repo = m_repositories[index];
+                        const bool stillPreview = repo.previewOnly;
+                        // Did the owner's repo actually change?
+                        const bool changed =
+                            !hasMirror || *afterDigest != beforeDigest;
+                        repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+                        if (!stillPreview)
+                            saveRepositories();
+                        refreshRepositoryList();
+                        // Now that the bare mirror exists, (re)install the push
+                        // hook so local pushes are detected (actions + refresh).
+                        if (!stillPreview)
+                            ensurePushHook(repo);
+                        if (changed && hasMirror && !stillPreview &&
+                            m_actionStore && !headBranch->isEmpty() &&
+                            !headCommit->isEmpty() &&
+                            *headCommit != beforeHeadCommit) {
+                            enqueuePushEvent(repo.owner, repo.name, *headCommit,
+                                             "refs/heads/" + *headBranch);
+                        }
+                        // If this repo's detail is open, reflect the new commits.
+                        if (changed && index == m_repoDetailIndex)
+                            refreshOpenRepoDetail();
+                        // Newly-synced issues/PRs may @mention the local user.
+                        if (changed && !stillPreview)
+                            scanRepoMentionsFor(repo);
+                        // Tell connected peers that also mirror this repo that it
+                        // advanced from its source of truth. Only for real mirrors
+                        // that already existed (an actual update, not a first clone).
+                        if (changed && hasMirror && !stillPreview && m_backend)
+                            m_backend->notifyMirrorUpdated(
+                                catalogOwner(repo) + "/" +
+                                repoSegment(repo.name,
+                                            QStringLiteral("repository")));
+                        // Quiet auto-syncs only speak up when something changed.
+                        if (!quiet || changed) {
+                            logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
+                                                    : QStringLiteral("Mirror: synced ")) +
+                                      repo.owner + "/" + repo.name + " into " +
+                                      repo.mirrorPath + ".");
+                        }
+                        if (!quiet) {
+                            flashMessage(stillPreview
+                                             ? "Cached preview for " + repo.owner + "/" +
+                                                   repo.name +
+                                                   (changed ? QString()
+                                                            : " (already up to date)")
+                                             : "Synced " + repo.owner + "/" + repo.name +
+                                                   (changed ? QString()
+                                                            : " (already up to date)"));
+                        }
+                        if (!stillPreview && repo.publishToNetwork &&
+                            (changed || !quiet)) {
+                            publishRepository(index, false);
+                            // Serve this repo's files live to the web now that a
+                            // mirror exists (pure live tunnel, nothing uploaded).
+                            startRepoHosts();
+                        }
+                    });
+                    worker->start();
                 } else {
+                    m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     // Relay/host hiccups (HTTP 5xx, RPC failed, connection
                     // resets) are transient: the host serving this repo is
