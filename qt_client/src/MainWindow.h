@@ -2269,6 +2269,17 @@ private:
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
+    // Issue #131: the output area is split into two tabs — "Agent" (the
+    // transcript/terminal/log) and "Files changed (N)" (the edited-files list, a
+    // diff viewer and the per-session worktree actions). The files-tab header
+    // carries the changed-file count.
+    QTabWidget *m_agentDetailTabs = nullptr;
+    int m_agentFilesTabIndex = -1;               // tab index of "Files changed"
+    QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
+    QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
+    QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
+    QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
+    QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
     QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
@@ -2312,6 +2323,12 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void populateAgentFilesPanel(int sessionId, const QStringList &diffFiles);
     void scheduleAgentFilesDiff(int sessionId);
+    // Render the session's full diff (vs its base ref) into the Files-changed tab's
+    // viewer, rebuild the file list with per-file +/- counts and anchors, and stamp
+    // the changed-file count onto the tab header. Runs off the event loop.
+    void renderAgentDiff(int sessionId, const QByteArray &patch);
+    void updateAgentFilesTabState(int sessionId);
+    QString sessionBaseRef(int sessionId);
     QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;

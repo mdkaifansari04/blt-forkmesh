@@ -20305,38 +20305,140 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputToggle->setLayout(toggleRow);
     m_agentOutputToggle->hide();
 
-    // Edited-files panel beside the live transcript: the files this session has
+    // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
-    // refreshed from `git diff` hourly). Double-click opens the file.
+    // refreshed from `git diff` hourly). Selecting a file scrolls the diff viewer
+    // to it; activating (double-click/Enter) opens the file in the OS.
     m_agentFilesList = new QListWidget;
     m_agentFilesList->setObjectName("agentFilesList");
     m_agentFilesList->setMinimumWidth(190);
-    m_agentFilesList->setMaximumWidth(280);
     connect(m_agentFilesList, &QListWidget::itemActivated, this,
             [](QListWidgetItem *it) {
                 const QString path = it->data(Qt::UserRole).toString();
                 if (!path.isEmpty())
                     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             });
+    connect(m_agentFilesList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *it, QListWidgetItem *) {
+                if (!it || !m_agentDiffView)
+                    return;
+                const QString anchor = it->data(Qt::UserRole + 1).toString();
+                if (!anchor.isEmpty())
+                    m_agentDiffView->scrollToAnchor(anchor);
+            });
     auto *filesV = new QVBoxLayout;
     filesV->setContentsMargins(0, 0, 0, 0);
     filesV->setSpacing(4);
-    auto *filesHeading = new QLabel(QStringLiteral("Edited files"));
-    filesHeading->setObjectName("agentFilesHeading");
-    filesV->addWidget(filesHeading);
+    m_agentFilesChangedSummary = new QLabel;
+    m_agentFilesChangedSummary->setObjectName("agentFilesHeading");
+    filesV->addWidget(m_agentFilesChangedSummary);
     filesV->addWidget(m_agentFilesList, 1);
     m_agentFilesPanel = new QWidget;
     m_agentFilesPanel->setLayout(filesV);
-    m_agentFilesPanel->hide();
 
-    // Files panel on the LEFT, the output stack fills the rest.
-    auto *outputRow = new QHBoxLayout;
-    outputRow->setContentsMargins(0, 0, 0, 0);
-    outputRow->setSpacing(10);
-    outputRow->addWidget(m_agentFilesPanel);
-    outputRow->addWidget(m_agentOutputStack, 1);
-    auto *outputContainer = new QWidget;
-    outputContainer->setLayout(outputRow);
+    // Diff viewer beside the file list (same pattern as the Worktrees tab).
+    m_agentDiffView = new QTextBrowser;
+    m_agentDiffView->setObjectName("diffView");
+    m_agentDiffView->setOpenExternalLinks(false);
+    m_agentDiffView->setLineWrapMode(QTextEdit::NoWrap);
+
+    // Per-session worktree actions, mirroring the Worktrees tab's detail bar but
+    // acting on this session's branch (issue #131: "add the worktree functions
+    // there too"). Enabled only for a real feature-branch worktree on disk.
+    m_agentUpdateButton = new QPushButton("Update from main");
+    m_agentUpdateButton->setObjectName("ghostButton");
+    m_agentUpdateButton->setProperty("buttonSize", "sm");
+    m_agentUpdateButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentUpdateButton, "sync", 14);
+    m_agentUpdateButton->setToolTip(
+        "Merge the default branch into this session's worktree branch");
+    connect(m_agentUpdateButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        updateWorktreeFromMain(
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
+            s->branchName);
+    });
+    m_agentMergeButton = new QPushButton("Merge into main");
+    m_agentMergeButton->setObjectName("primaryButton");
+    m_agentMergeButton->setProperty("buttonSize", "sm");
+    m_agentMergeButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentMergeButton, "check-circle", 14);
+    m_agentMergeButton->setToolTip(
+        "Merge this session's branch into the default branch, then delete the "
+        "worktree and its branch");
+    connect(m_agentMergeButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        mergeWorktreeIntoMain(
+            s->branchName,
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName));
+    });
+    m_agentWtDeleteButton = new QPushButton("Delete worktree");
+    m_agentWtDeleteButton->setObjectName("ghostButton");
+    m_agentWtDeleteButton->setProperty("buttonSize", "sm");
+    m_agentWtDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentWtDeleteButton, "trash", 14);
+    m_agentWtDeleteButton->setToolTip(
+        "Remove this session's worktree, delete its branch and its agent session");
+    connect(m_agentWtDeleteButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->branchName.isEmpty())
+            return;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        deleteWorktreeBranchAndAgent(
+            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
+            s->branchName);
+    });
+
+    auto *filesActionBar = new QHBoxLayout;
+    filesActionBar->setContentsMargins(0, 0, 0, 0);
+    filesActionBar->addStretch();
+    filesActionBar->addWidget(m_agentUpdateButton);
+    filesActionBar->addWidget(m_agentMergeButton);
+    filesActionBar->addWidget(m_agentWtDeleteButton);
+
+    auto *filesDiffSplit = new QSplitter(Qt::Horizontal);
+    filesDiffSplit->setChildrenCollapsible(false);
+    filesDiffSplit->addWidget(m_agentFilesPanel);
+    filesDiffSplit->addWidget(m_agentDiffView);
+    filesDiffSplit->setStretchFactor(0, 0);
+    filesDiffSplit->setStretchFactor(1, 1);
+    filesDiffSplit->setSizes({220, 700});
+
+    auto *filesChangedPage = new QWidget;
+    auto *filesChangedLayout = new QVBoxLayout(filesChangedPage);
+    filesChangedLayout->setContentsMargins(0, 8, 0, 0);
+    filesChangedLayout->setSpacing(6);
+    filesChangedLayout->addLayout(filesActionBar);
+    filesChangedLayout->addWidget(filesDiffSplit, 1);
+
+    // Agent tab: the Transcript|Raw toggle over the output stack.
+    auto *agentOutputPage = new QWidget;
+    auto *agentOutputLayout = new QVBoxLayout(agentOutputPage);
+    agentOutputLayout->setContentsMargins(0, 8, 0, 0);
+    agentOutputLayout->setSpacing(6);
+    agentOutputLayout->addWidget(m_agentOutputToggle);
+    agentOutputLayout->addWidget(m_agentOutputStack, 1);
+
+    // The new "row with two tabs" (issue #131): Agent | Files changed.
+    m_agentDetailTabs = new QTabWidget;
+    m_agentDetailTabs->setObjectName("agentDetailTabs");
+    m_agentDetailTabs->addTab(agentOutputPage, QStringLiteral("Agent"));
+    m_agentFilesTabIndex =
+        m_agentDetailTabs->addTab(filesChangedPage, QStringLiteral("Files changed"));
+
+    auto *outputContainer = m_agentDetailTabs;
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // Issue #84: the 5-hour/weekly usage gauges and the live token/cost counter
@@ -20486,8 +20588,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentNetPanel);
-    detailLayout->addWidget(m_agentOutputToggle);
-    detailLayout->addWidget(outputContainer, 1);
+    detailLayout->addWidget(outputContainer, 1); // the Agent | Files changed tabs
     detailLayout->addWidget(composer);
 
     m_agentDetail = detailPane;
@@ -21693,8 +21794,16 @@ void MainWindow::showAgentSession(int sessionId)
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
-    if (m_agentFilesPanel)
-        m_agentFilesPanel->setVisible(transcript && !external); // no edited-files panel for external
+    // The "Files changed" tab only applies to local transcript sessions (external
+    // sessions have no worktree/diff here). Hide it otherwise and fall back to the
+    // Agent tab so the user never lands on an empty tab.
+    if (m_agentDetailTabs && m_agentFilesTabIndex >= 0) {
+        const bool filesOk = transcript && !external;
+        m_agentDetailTabs->setTabVisible(m_agentFilesTabIndex, filesOk);
+        if (!filesOk && m_agentDetailTabs->currentIndex() == m_agentFilesTabIndex)
+            m_agentDetailTabs->setCurrentIndex(0);
+    }
+    updateAgentFilesTabState(sessionId);
     if (m_agentOutputStack) {
         const bool termLive = sessionId == m_terminalSessionId && m_agentTerminal &&
                               m_agentTerminal->isRunning();
@@ -23642,18 +23751,113 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             const QString dir = sessionWorkdir(sid);
             if (sid <= 0 || dir.isEmpty())
                 return;
-            runGitDetached(
-                dir, {QStringLiteral("diff"), QStringLiteral("--name-only")},
-                [this, sid](bool ok, const QByteArray &out) {
-                    if (!ok || sid != m_selectedAgentSessionId)
-                        return;
-                    populateAgentFilesPanel(
-                        sid, QString::fromUtf8(out).split(QLatin1Char('\n'),
-                                                          Qt::SkipEmptyParts));
-                });
+            // Diff against the session's base commit so committed work counts too
+            // (agents auto-commit mid-run): this is the same range the PR is built
+            // from, so the Files-changed tab shows exactly what the PR will carry.
+            const QString base = sessionBaseRef(sid);
+            QStringList args{QStringLiteral("diff")};
+            if (!base.isEmpty())
+                args << base;
+            runGitDetached(dir, args, [this, sid](bool ok, const QByteArray &out) {
+                if (!ok || sid != m_selectedAgentSessionId)
+                    return;
+                renderAgentDiff(sid, out);
+            });
         });
     }
     m_agentFilesDiffTimer->start();
+}
+
+// The base commit a session's diff is measured against (captured at run start).
+QString MainWindow::sessionBaseRef(int sessionId)
+{
+    if (const AgentSession *s = findAgentSession(sessionId); s && !s->baseRef.isEmpty())
+        return s->baseRef;
+    if (m_streamSessionInfo.contains(sessionId))
+        return m_streamSessionInfo.value(sessionId).baseRef;
+    return QString();
+}
+
+// Render the session's diff into the Files-changed tab's viewer, rebuild the file
+// list with per-file +/- counts and scroll anchors, and stamp the changed-file
+// count onto the tab header (issue #131). A no-op for a stale/other session so a
+// late async callback can't clobber the panel after the selection moved on.
+void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
+{
+    if (!m_agentDiffView || sessionId != m_selectedAgentSessionId)
+        return;
+    const QString dir = sessionWorkdir(sessionId);
+    const QString base = sessionBaseRef(sessionId);
+    m_agentDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    QList<DiffFileEntry> files;
+    const QString html =
+        renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
+                       QString(), QHash<QString, QString>(), QSet<QString>());
+    m_agentDiffView->setHtml(
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+            : html);
+
+    if (m_agentFilesList) {
+        QSignalBlocker block(m_agentFilesList);
+        m_agentFilesList->clear();
+        for (const DiffFileEntry &f : files) {
+            const QString name = f.path.section(QLatin1Char('/'), -1);
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+            QColor tint("#d29922");
+            QString icon = "file-diff";
+            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
+            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
+            item->setIcon(themedOcticon(icon, tint, 14));
+            const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
+            item->setData(Qt::UserRole, abs);          // open on activate
+            item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
+            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            m_agentFilesList->addItem(item);
+        }
+        fitFileListToWidestEntry(m_agentFilesList);
+    }
+
+    const int n = files.size();
+    if (m_agentDetailTabs && m_agentFilesTabIndex >= 0)
+        m_agentDetailTabs->setTabText(
+            m_agentFilesTabIndex,
+            n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
+                  : QStringLiteral("Files changed"));
+    if (m_agentFilesChangedSummary)
+        m_agentFilesChangedSummary->setText(
+            QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
+}
+
+// Enable the per-session worktree actions (merge / update / delete) only for a
+// real feature-branch worktree that exists on disk — never the default branch or
+// the primary checkout. Mirrors showWorktreeDiff's button gating.
+void MainWindow::updateAgentFilesTabState(int sessionId)
+{
+    AgentSession *s = findAgentSession(sessionId);
+    QString branch, wt, repoLocal;
+    if (s) {
+        branch = s->branchName;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri >= 0) {
+            repoLocal = m_repositories.at(ri).localPath;
+            if (!branch.isEmpty())
+                wt = worktreePathForBranch(repoLocal, branch);
+        }
+    }
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool onDisk = !wt.isEmpty() && QDir(wt).exists();
+    const bool isMain = !wt.isEmpty() && !repoLocal.isEmpty() &&
+                        QDir(wt).absolutePath() == QDir(repoLocal).absolutePath();
+    const bool feature = !branch.isEmpty() && branch != base && !isMain;
+    if (m_agentMergeButton)
+        m_agentMergeButton->setEnabled(feature && repoHasWorkingTree());
+    if (m_agentUpdateButton)
+        m_agentUpdateButton->setEnabled(feature && onDisk);
+    if (m_agentWtDeleteButton)
+        m_agentWtDeleteButton->setEnabled(feature && onDisk);
 }
 
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
