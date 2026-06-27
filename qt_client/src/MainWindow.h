@@ -2123,6 +2123,10 @@ private:
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
     QTableWidget *m_agentTable = nullptr;
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
+    // "Hide detail" toggle: when checked the detail panel stays hidden even with a
+    // row selected, so the session list spans the full tab width (issue #54).
+    QPushButton *m_agentHideDetailButton = nullptr;
+    bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
