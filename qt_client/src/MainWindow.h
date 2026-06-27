@@ -942,6 +942,9 @@ private:
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // Stage everything in a worktree and commit it under a message the user types,
+    // so its in-progress changes can be committed without leaving the app.
+    void commitWorktreeChanges(const QString &worktreePath, const QString &branch);
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
     // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
     // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
@@ -1817,6 +1820,7 @@ private:
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
+    QPushButton *m_worktreeCommitButton = nullptr; // commit the worktree's uncommitted changes
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
