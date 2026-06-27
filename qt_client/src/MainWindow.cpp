@@ -15159,6 +15159,12 @@ PullStore MainWindow::pullStoreForCurrentRepo() const
     return PullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
 }
 
+QString MainWindow::pullPatchFingerprint(const QString &patch)
+{
+    return QString::number(patch.size()) + QLatin1Char(':') +
+           QString::number(qHash(patch));
+}
+
 void MainWindow::reloadPulls()
 {
     if (!m_pullTable)
@@ -15189,18 +15195,19 @@ void MainWindow::reloadPulls()
             if (pr.status != QLatin1String("open"))
                 continue;
             openNumbers.insert(pr.number);
-            const QString fingerprint = QString::number(pr.patch.size()) +
-                                        QLatin1Char(':') +
-                                        QString::number(qHash(pr.patch));
+            const QString fingerprint = pullPatchFingerprint(pr.patch);
             const auto cached = m_pullConflictCache.constFind(pr.number);
             bool conflict;
             if (cached != m_pullConflictCache.constEnd() &&
-                cached->first == fingerprint) {
-                conflict = cached->second;
+                cached->fingerprint == fingerprint) {
+                conflict = cached->conflict;
             } else {
                 bool clean = false;
-                conflict = store.checkMergeable(pr.number, &clean, nullptr) && !clean;
-                m_pullConflictCache.insert(pr.number, qMakePair(fingerprint, conflict));
+                QStringList conflictFiles;
+                conflict =
+                    store.checkMergeable(pr.number, &clean, &conflictFiles) && !clean;
+                m_pullConflictCache.insert(
+                    pr.number, {fingerprint, conflict, conflictFiles});
             }
             if (conflict)
                 m_pullConflictByNumber.insert(pr.number, true);
@@ -16666,25 +16673,38 @@ void MainWindow::updatePullActionState()
     bool closed = false;
     bool merged = false;
     QString head;
+    QString patch;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
             closed = pr.status == "closed";
             merged = pr.status == "merged";
             head   = pr.head;
+            patch  = pr.patch;
         }
     }
     const bool mergeable = writable && have && open;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
-    // Dry-run the patch so the reviewer sees conflicts before merging.
+    // Dry-run the patch so the reviewer sees conflicts before merging. reloadPulls()
+    // already ran this apply for every open PR and cached the result, so reuse the
+    // cached entry for the current PR instead of re-spawning `git apply --check`
+    // here (that synchronous re-check blocked the UI for ~1.6s on every selection).
+    // Fall back to a live check only when there's no matching cache entry.
     bool mergeClean = true;
     QStringList conflictFiles;
     if (mergeable) {
-        bool clean = false;
-        if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
-            mergeClean = clean;
+        const auto cached = m_pullConflictCache.constFind(m_currentPullNumber);
+        if (cached != m_pullConflictCache.constEnd() &&
+            cached->fingerprint == pullPatchFingerprint(patch)) {
+            mergeClean = !cached->conflict;
+            conflictFiles = cached->conflictFiles;
+        } else {
+            bool clean = false;
+            if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
+                mergeClean = clean;
+        }
     }
     if (m_pullMergeStatus) {
         if (!mergeable) {
