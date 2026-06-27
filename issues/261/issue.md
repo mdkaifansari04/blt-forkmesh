@@ -5,7 +5,7 @@ title: have an option on pr detail to "merge, delete pr + branch"
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 20
 progress: 0
 assignees: []
 createdAt: 1782430497821
