@@ -7,6 +7,7 @@
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
+#include "ScrollJumpButtons.h"
 #include "CommitCommentStore.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
@@ -20105,6 +20106,18 @@ QWidget *MainWindow::buildAgentsTab()
     applyLogFont(m_agentLog);
     new AgentLogHighlighter(m_agentLog->document());
     m_agentLog->setMaximumBlockCount(30000);
+    // Same floating ▲/▼ jump corner the transcript has, so the raw log scrolls
+    // to either end with one click.
+    auto *rawJump = new ScrollJumpButtons(m_agentLog);
+    connect(rawJump, &ScrollJumpButtons::topClicked, this, [this] {
+        if (m_agentLog)
+            m_agentLog->verticalScrollBar()->setValue(0);
+    });
+    connect(rawJump, &ScrollJumpButtons::bottomClicked, this, [this] {
+        if (m_agentLog)
+            m_agentLog->verticalScrollBar()->setValue(
+                m_agentLog->verticalScrollBar()->maximum());
+    });
 
     // Claude Code runs in a real embedded terminal; API-key agents keep the piped
     // log. Stack the two so the detail shows whichever fits the running session.
@@ -21532,8 +21545,10 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        if (m_agentLog)
+        if (m_agentLog) {
             m_agentLog->setPlainText(m_streamRaw.value(sessionId));
+            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
+        }
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -23576,11 +23591,10 @@ void MainWindow::showAgentRawOutput()
 {
     if (!m_agentOutputStack || !m_agentLog)
         return;
-    if (m_streamRaw.contains(m_selectedAgentSessionId)) {
+    if (m_streamRaw.contains(m_selectedAgentSessionId))
         m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
-        m_agentLog->moveCursor(QTextCursor::End);
-    }
     m_agentOutputStack->setCurrentWidget(m_agentLog);
+    m_agentLog->moveCursor(QTextCursor::End); // always land on the tail when shown
 }
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
