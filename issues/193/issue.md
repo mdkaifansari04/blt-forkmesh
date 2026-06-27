@@ -5,7 +5,7 @@ title: make a chekcbox in settings to auto sync  new issues (if clean)
 status: open
 labels: []
 milestone: 
-priority: 20
+priority: 25
 progress: 0
 assignees: []
 createdAt: 1782339177891
