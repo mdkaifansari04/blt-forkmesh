@@ -6547,14 +6547,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
+    m_quickAddNoIssue = new QCheckBox("No issue");
+    m_quickAddNoIssue->setToolTip(
+        "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
+        "typed text as its prompt.");
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddCreatePr,
-            &QCheckBox::setEnabled);
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, m_quickAddAgentProvider,
-            &QComboBox::setEnabled);
+    // The provider/PR controls are live whenever an agent will run: either the
+    // user asked to assign one, or "No issue" mode (which always starts one). In
+    // "No issue" mode the plain "Assign agent" toggle is irrelevant, so disable it.
+    auto syncQuickAddAgentControls = [this]() {
+        const bool noIssue = m_quickAddNoIssue->isChecked();
+        m_quickAddAssignAgent->setEnabled(!noIssue);
+        const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
+        m_quickAddAgentProvider->setEnabled(agentRuns);
+        m_quickAddCreatePr->setEnabled(agentRuns);
+    };
+    connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    connect(m_quickAddNoIssue, &QCheckBox::toggled, this,
+            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    syncQuickAddAgentControls();
 
     auto *quickAddSendButton = new QPushButton("Send");
     quickAddSendButton->setObjectName("primaryButton");
@@ -6611,6 +6626,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(quickAddSendButton);
+    quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddCreatePr);
@@ -7097,6 +7113,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); });
 
+    // Shown beside the toast when a message is too long to fit on one line.
+    // Clicking it expands the full message in place (wrapped, growing the toast)
+    // and toggles back to the elided one-liner — no modal pops up.
+    m_topMessageExpand = new QPushButton;
+    m_topMessageExpand->setObjectName("ghostButton");
+    m_topMessageExpand->setCursor(Qt::PointingHandCursor);
+    m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
+    setOcticon(m_topMessageExpand, "chevron-down", 14);
+    m_topMessageExpand->hide();
+    connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
+        m_topMessageExpanded = !m_topMessageExpanded;
+        renderTopMessage();
+        // Keep the live countdown suffix if a success toast is still ticking.
+        if (m_topMessageTimer && m_topMessageTimer->isActive())
+            renderTopMessageCountdown();
+    });
+
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
     m_avatarNavButton = new QPushButton;
@@ -7227,6 +7260,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
     mainRow->addWidget(m_topMessage);
+    mainRow->addWidget(m_topMessageExpand);
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
@@ -8409,10 +8443,16 @@ void MainWindow::showPinWarning()
         "integrity pin</a>"
         "<span style='color:#f85149'> \xC2\xB7" " </span>"
         "<a href='fm:whypin' style='color:#58a6ff;text-decoration:none'>Why?</a>"));
+    // The warning carries its own inline links, so it isn't an expandable toast.
+    m_topMessageElided = false;
+    m_topMessageExpanded = false;
+    m_topMessage->setWordWrap(false);
     m_topMessage->show();
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->show();
     if (m_topMessageClose)
@@ -21506,27 +21546,35 @@ void MainWindow::assignIssueToAgent(const QString &provider)
 // worktree/branch and opens a pull request on finish, like every transcript run.
 void MainWindow::startAdHocAgent()
 {
-    if (!m_agentNewPromptEdit || !m_agentStore)
+    if (!m_agentNewPromptEdit)
         return;
     const QString task = m_agentNewPromptEdit->toPlainText().trimmed();
     if (task.isEmpty())
         return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        flashMessage("Open a repository first to start an agent.", true);
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.localPath.isEmpty()) {
-        flashMessage("This repository has no local checkout to run the agent in.",
-                     true);
-        return;
-    }
-
     // The agent picked in the composer; "claude-code" unless the user chose an
     // API-key provider.
     const QString provider = m_agentNewProvider
                                  ? m_agentNewProvider->currentData().toString()
                                  : QStringLiteral("claude-code");
+    if (startAdHocAgentForRepo(m_repoDetailIndex, task, provider, true) > 0)
+        m_agentNewPromptEdit->clear();
+}
+
+int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
+                                       const QString &provider, bool createPr)
+{
+    if (!m_agentStore || task.isEmpty())
+        return 0;
+    if (repoIndex < 0 || repoIndex >= m_repositories.size()) {
+        flashMessage("Open a repository first to start an agent.", true);
+        return 0;
+    }
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    if (repo.localPath.isEmpty()) {
+        flashMessage("This repository has no local checkout to run the agent in.",
+                     true);
+        return 0;
+    }
 
     AgentSession session;
     session.owner = repo.owner;
@@ -21534,7 +21582,7 @@ void MainWindow::startAdHocAgent()
     session.issueNumber = 0; // ad-hoc: not tied to any issue
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
-    session.createPr = true;
+    session.createPr = createPr;
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     // A short title from the prompt's first line, for the list row and the PR.
@@ -21563,10 +21611,9 @@ void MainWindow::startAdHocAgent()
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        QStringLiteral("==> Started from a prompt on the Agents tab (%1).\n")
+        QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
-    m_agentNewPromptEdit->clear();
     if (provider == QLatin1String("claude-code")) {
         // Claude Code renders as a native stream-json transcript; the typed
         // prompt is its task verbatim.
@@ -21581,6 +21628,7 @@ void MainWindow::startAdHocAgent()
         reloadAgents();
         switchToAgentsTab(session.id);
     }
+    return session.id;
 }
 
 // "Start a new agent" image button (issue #56): pick one or more image files and
@@ -21777,6 +21825,12 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
             return false;
         }
     }
+    // A live Claude Code stream session (no runner) is killed by its own Stop
+    // path; deleting it from the list must stop it too, then release its worktree
+    // so the branch is freed (issue #74).
+    if (m_streamSessions.contains(snapshot.id))
+        stopStreamSession(snapshot.id);
+    cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
@@ -22250,6 +22304,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             }
         }
         maybeCreatePullForStreamSession(sid);
+        // The PR captured the diff as a patch, so the worktree is no longer
+        // needed; drop it to free the branch for checkout (issue #74).
+        cleanupStreamWorktree(sid);
         if (ClaudeStreamSession *done = m_streamSessions.take(sid))
             done->deleteLater();
         reloadAgents();
@@ -23156,6 +23213,35 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     } else {
         m_agentStore->appendLog(
             *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+    }
+}
+
+// Release the temp worktree a stream session ran in once the run is over. The
+// worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
+// so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
+// PR locally) fail with "already used by worktree at …". Removing the worktree
+// frees the branch while keeping the branch ref, so the PR still resolves.
+void MainWindow::cleanupStreamWorktree(int sessionId)
+{
+    const QString wtPath = m_streamWorktree.take(sessionId);
+    if (wtPath.isEmpty())
+        return;
+    QString repoPath;
+    if (const AgentSession *s = findAgentSession(sessionId)) {
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri >= 0)
+            repoPath = m_repositories.at(ri).localPath;
+    }
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("remove"), QStringLiteral("--force"), wtPath});
+    }
+    QDir(wtPath).removeRecursively(); // fall back to deleting the folder either way
+    if (!repoPath.isEmpty()) {
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+                           QStringLiteral("prune")});
     }
 }
 
@@ -32409,10 +32495,15 @@ void MainWindow::showLoadStatus(const QString &what)
         QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
             .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
                  what.toHtmlEscaped()));
+    m_topMessage->setWordWrap(false);
     m_topMessage->show();
     m_loadStatusShowing = true;
+    m_topMessageElided = false;
+    m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageClose)
@@ -34546,6 +34637,25 @@ void MainWindow::quickAddIssue()
     const QString title = m_issueQuickAdd->text().trimmed();
     if (title.isEmpty())
         return;
+
+    // "No issue" mode (issue #299): don't create an issue at all — hand the typed
+    // text straight to a coding agent as its prompt, like the Agents-tab composer.
+    if (m_quickAddNoIssue && m_quickAddNoIssue->isChecked()) {
+        const QString provider =
+            m_quickAddAgentProvider
+                ? m_quickAddAgentProvider->currentData().toString()
+                : QStringLiteral("claude-code");
+        const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        if (startAdHocAgentForRepo(issuesRepoIndex(), title, provider, createPr) > 0) {
+            m_issueQuickAdd->clear();
+            setIssueInlineNotice(
+                QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
+                               "issue created.")
+                    .arg(agentProviderName(provider)));
+        }
+        return;
+    }
+
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
@@ -34573,7 +34683,9 @@ void MainWindow::quickAddIssue()
     m_currentIssueNumber = number;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
-    setIssueInlineNotice("Issue created.");
+    // A more descriptive confirmation than the old bare "Issue created." — names
+    // the number and title so the toast says exactly what landed (issue #299).
+    setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
     // If requested, hand the freshly-created issue straight to a coding agent.
     if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
         const QString provider =
@@ -35092,15 +35204,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (QWindow *handle = windowHandle(); handle && handle->isExposed())
             QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
         return QMainWindow::eventFilter(obj, event); // never consume expose
-    }
-    // The toast pill is elided to one line; hovering (or clicking) one that was
-    // truncated opens a scrollable modal with the full message. Deferred so the
-    // dialog's nested event loop doesn't run inside event delivery.
-    if (obj == m_topMessage && m_topMessageElided
-        && (event->type() == QEvent::Enter
-            || event->type() == QEvent::MouseButtonRelease)) {
-        QTimer::singleShot(0, this, [this] { showFullMessageDialog(); });
-        return false; // let normal handling (selection, links) proceed too
     }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
@@ -38151,6 +38254,15 @@ void MainWindow::headlessSyncNow()
     pollOwnedInboxes();
 }
 
+void MainWindow::headlessUpdateRestart()
+{
+    // Same code path as the GUI "Update, rebuild & restart" button. The update log
+    // dialog it opens is invisible under the offscreen platform, but every phase is
+    // also echoed to the terminal by logRestart()/qInfo(), so a headless operator
+    // sees the full progress. On success the process relaunches itself and quits.
+    updateRebuildRestart();
+}
+
 QStringList MainWindow::headlessStatusLines() const
 {
     QStringList lines;
@@ -38502,44 +38614,42 @@ void MainWindow::logSystem(const QString &text)
     appendNetworkLogLine(line);
 }
 
-// Show the full text of the current toast in a scrollable modal. The pill itself
-// is elided so it can never widen the window; this dialog is how the whole message
-// (e.g. a long git error) gets read or copied.
-void MainWindow::showFullMessageDialog()
+// Toast pill caps the inline message at this many characters; longer text is
+// elided to one line and revealed in full via the Expand button.
+static constexpr int kToastMaxChars = 100;
+
+// (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
+// A long message shows as an elided one-liner so it can never widen the window;
+// expanding it wraps the full text so the toast grows in place (no modal).
+void MainWindow::renderTopMessage()
 {
-    if (m_topMessageRaw.isEmpty() || m_topMessageDialogOpen)
+    if (!m_topMessage)
         return;
-    m_topMessageDialogOpen = true;
-
-    QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Message"));
-    dlg.resize(560, 320);
-    auto *layout = new QVBoxLayout(&dlg);
-
-    auto *view = new QPlainTextEdit(&dlg);
-    view->setReadOnly(true);
-    view->setLineWrapMode(QPlainTextEdit::WidgetWidth); // wrap; vertical scroll only
-    view->setPlainText(m_topMessageRaw);
-    layout->addWidget(view);
-
-    auto *row = new QHBoxLayout;
-    row->addStretch();
-    auto *copyBtn = new QPushButton(QStringLiteral("Copy"), &dlg);
-    copyBtn->setObjectName("ghostButton");
-    copyBtn->setCursor(Qt::PointingHandCursor);
-    connect(copyBtn, &QPushButton::clicked, &dlg, [this] {
-        QGuiApplication::clipboard()->setText(m_topMessageRaw);
-    });
-    auto *closeBtn = new QPushButton(QStringLiteral("Close"), &dlg);
-    closeBtn->setObjectName("ghostButton");
-    closeBtn->setCursor(Qt::PointingHandCursor);
-    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
-    row->addWidget(copyBtn);
-    row->addWidget(closeBtn);
-    layout->addLayout(row);
-
-    dlg.exec();
-    m_topMessageDialogOpen = false;
+    // Green for success, red for failure; compact pill in the centre of the bar.
+    const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
+    const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
+                                            : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    QString display = m_topMessageRaw;
+    if (m_topMessageElided && !m_topMessageExpanded)
+        display = display.left(kToastMaxChars - 1).trimmed()
+                  + QString::fromUtf8("\xE2\x80\xA6"); // …
+    // Wrap only when expanded so the full text grows the toast vertically;
+    // collapsed it stays a single elided line that can't widen the window.
+    m_topMessage->setWordWrap(m_topMessageExpanded);
+    // The base HTML carries the message; auto-dismissing successes append a
+    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                               .arg(fg, glyph, display.toHtmlEscaped());
+    m_topMessage->setText(m_topMessageBaseHtml);
+    // The expand toggle's glyph tracks the state: chevron-down to reveal more,
+    // chevron-up to collapse back to the one-liner.
+    if (m_topMessageExpand) {
+        setOcticon(m_topMessageExpand,
+                   m_topMessageExpanded ? "chevron-up" : "chevron-down", 14);
+        m_topMessageExpand->setToolTip(m_topMessageExpanded
+                                           ? QStringLiteral("Collapse the message")
+                                           : QStringLiteral("Show the full message"));
+    }
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)
@@ -38556,31 +38666,18 @@ void MainWindow::flashMessage(const QString &text, bool error)
         dismissTopMessage();
         return;
     }
-    // Green for success, red for failure; compact pill in the centre of the bar.
-    const QString fg = error ? "#f85149" : "#3fb950";
-    const QString glyph = error ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
-                                : QString::fromUtf8("\xE2\x9C\x93"); // ✓
     // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
     // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
     m_pinWarningActive = false;
+    m_topMessageError = error;
     m_topMessageRaw = trimmed;
     // Keep the pill compact: a long message (a multi-line git error, say) must not
     // stretch the top bar and drag the whole window wide. Show an elided one-liner;
-    // the full text is preserved in m_topMessageRaw and is reachable by hovering the
-    // toast (a scrollable modal) or via Copy.
-    constexpr int kToastMaxChars = 100;
-    QString display = trimmed;
-    m_topMessageElided = display.size() > kToastMaxChars;
-    if (m_topMessageElided)
-        display = display.left(kToastMaxChars - 1).trimmed()
-                  + QString::fromUtf8("\xE2\x80\xA6"); // …
-    m_topMessage->setCursor(m_topMessageElided ? Qt::PointingHandCursor
-                                               : Qt::ArrowCursor);
-    // The base HTML carries the message; auto-dismissing successes append a
-    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
-    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                               .arg(fg, glyph, display.toHtmlEscaped());
-    m_topMessage->setText(m_topMessageBaseHtml);
+    // the full text is preserved in m_topMessageRaw and is revealed inline by the
+    // Expand button (see renderTopMessage) or copied via Copy.
+    m_topMessageElided = trimmed.size() > kToastMaxChars;
+    m_topMessageExpanded = false; // every new message starts collapsed
+    renderTopMessage();
     m_topMessage->show();
 
     if (!m_topMessageTimer) {
@@ -38615,6 +38712,10 @@ void MainWindow::flashMessage(const QString &text, bool error)
         renderTopMessageCountdown();
         m_topMessageTimer->start(1000);
     }
+    // The Expand affordance appears only when the message was truncated, so the
+    // user can read it in full inline instead of via a popup.
+    if (m_topMessageExpand)
+        m_topMessageExpand->setVisible(m_topMessageElided);
 }
 
 // Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
@@ -38631,15 +38732,20 @@ void MainWindow::renderTopMessageCountdown()
     m_topMessage->setText(m_topMessageBaseHtml + suffix);
 }
 
-// Hide the top toast and its error affordances (Copy / dismiss).
+// Hide the top toast and its error affordances (Expand / Copy / dismiss).
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
+    m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
-    if (m_topMessage)
+    if (m_topMessage) {
         m_topMessage->hide();
+        m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
+    }
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageClose)
@@ -41674,6 +41780,52 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         return;
 
     const QString repoKey = repo.owner + "/" + repo.name;
+
+    // Loading every issue, pull request and commit-comment thread off disk (each a
+    // parse of many small files) is the heavy part: on a large repo — the flagship
+    // forkmesh project runs to hundreds of issues/PRs — it froze the UI every time
+    // a sync or inbox drain finished, which is what fired this scan. Do that I/O on
+    // a worker thread, then match @mentions and raise notifications back on the main
+    // thread. The stores are copied by value and only read on the worker (no event
+    // signing), the same off-thread pattern deleteIssue uses for its git work.
+    if (m_mentionScanInFlight.contains(repoKey))
+        return; // a scan for this repo is already loading; don't double-notify
+    m_mentionScanInFlight.insert(repoKey);
+
+    auto loadedIssues = std::make_shared<QList<Issue>>();
+    auto loadedPulls = std::make_shared<QList<PullRequest>>();
+    auto loadedComments =
+        std::make_shared<QList<QPair<QString, QList<CommitComment>>>>();
+    IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                          m_userName);
+    PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                        m_userName);
+    CommitCommentStore commentStore(repo.localPath, repo.mirrorPath,
+                                    &m_profileIdentity, m_userName);
+    QThread *worker = QThread::create(
+        [issueStore, pullStore, commentStore, loadedIssues, loadedPulls,
+         loadedComments]() mutable {
+            *loadedIssues = issueStore.loadAll();
+            *loadedPulls = pullStore.loadAll();
+            *loadedComments = commentStore.loadAll();
+        });
+    connect(worker, &QThread::finished, this,
+            [this, worker, repo, repoKey, loadedIssues, loadedPulls,
+             loadedComments]() {
+                worker->deleteLater();
+                m_mentionScanInFlight.remove(repoKey);
+                applyRepoMentions(repo, *loadedIssues, *loadedPulls,
+                                  *loadedComments);
+            });
+    worker->start();
+}
+
+void MainWindow::applyRepoMentions(
+    const RepositoryRecord &repo, const QList<Issue> &allIssues,
+    const QList<PullRequest> &allPulls,
+    const QList<QPair<QString, QList<CommitComment>>> &allCommitComments)
+{
+    const QString repoKey = repo.owner + "/" + repo.name;
     QSettings settings;
     const QStringList seenList =
         settings.value(QStringLiteral("mentions/seen")).toStringList();
@@ -41738,9 +41890,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
                       link);
     };
 
-    IssueStore issues(repo.localPath, repo.mirrorPath, &m_profileIdentity,
-                      m_userName);
-    for (const Issue &issue : issues.loadAll()) {
+    for (const Issue &issue : allIssues) {
         for (const IssueEvent &ev : issue.events) {
             if (ev.type != QLatin1String("open") &&
                 ev.type != QLatin1String("comment") &&
@@ -41752,8 +41902,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
         }
     }
 
-    PullStore pulls(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
-    for (const PullRequest &pr : pulls.loadAll()) {
+    for (const PullRequest &pr : allPulls) {
         const QString openText =
             (pr.title + QStringLiteral("\n") + pr.description).trimmed();
         consider(QStringLiteral("pull"), pr.number, QStringLiteral("open"), pr.author,
@@ -41765,9 +41914,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     // Commit comments: per-commit conversations keyed by SHA (no number). Scan
     // every commented commit so an @mention in a commit thread notifies too.
-    CommitCommentStore commitComments(repo.localPath, repo.mirrorPath,
-                                      &m_profileIdentity, m_userName);
-    for (const auto &thread : commitComments.loadAll()) {
+    for (const auto &thread : allCommitComments) {
         const QString &sha = thread.first;
         for (const CommitComment &c : thread.second) {
             NotificationLink link;
