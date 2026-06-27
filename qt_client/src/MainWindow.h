@@ -253,6 +253,18 @@ public:
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
+    // Focus the worktrees table and deliver an Up/Down key press, returning the
+    // branch that ends up selected so a test can prove keyboard arrow keys move
+    // the selection (and drive the detail pane) like a click does.
+    QString testArrowOnWorktrees(bool down);
+    // Open a repo-detail tab exactly as a user clicking its nav button would, so a
+    // test can prove the tab switch hands keyboard focus to that tab's list.
+    int testWorktreesTabIndex() const { return m_worktreesTabIndex; }
+    void testClickRepoDetailTab(int id);
+    // Activation-independent: is the worktrees table the focus widget of its
+    // window? (hasFocus() also requires the window to be active, which an
+    // offscreen test window isn't.)
+    bool testWorktreesTableHasKeyboardFocus() const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -948,6 +960,11 @@ private:
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
+    // Give the just-opened repo-detail tab's primary list table keyboard focus so
+    // the user can arrow up/down through its rows immediately, without clicking a
+    // row first. `id` is the m_repoDetailStack index switched to; tabs without a
+    // navigable table (Code, Settings, …) are skipped.
+    void focusRepoDetailTable(int id);
     // Run `git <args>` in `dir` without blocking the event loop: the QProcess is
     // parented to this window and self-deletes, and onDone(ok, stdout) runs on the
     // main thread once it finishes. Used for UI-thread git calls that were
