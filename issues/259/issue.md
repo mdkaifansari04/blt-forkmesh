@@ -5,7 +5,7 @@ title: on the claude code transcript please have a space between each json objec
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 49
 progress: 0
 assignees: []
 createdAt: 1782428033666
