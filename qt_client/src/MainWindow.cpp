@@ -20339,9 +20339,9 @@ QWidget *MainWindow::buildAgentsTab()
             applyTranscriptEvent(sid, turn);
             s->sendUserText(prompt);
             // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
-            // it now to keep the top-bar chart + hover stats current rather than
-            // waiting for the next minute tick.
-            refreshClaudeCodeUsage();
+            // it now (and once more shortly after) to keep the top-bar chart +
+            // hover stats current rather than waiting for the next minute tick.
+            bumpClaudeCodeUsage();
             // Replying clears the "Waiting" state — the agent is working again.
             if (AgentSession *as = findAgentSession(sid);
                 as && as->status == AgentStatus::Waiting) {
@@ -20847,6 +20847,18 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
                                 : kClaudeUsage5hPctSetting,
                          pct);
+}
+
+void MainWindow::bumpClaudeCodeUsage()
+{
+    // A just-started agent (or a freshly sent prompt) hasn't consumed anything
+    // yet, so polling only at that instant leaves the top-bar gauge showing the
+    // pre-start figure — which reads as "not updating". Poll now for any usage
+    // already on the clock, then once more after the first turn has had time to
+    // land, so the gauge moves promptly rather than on the next minute boundary.
+    // The steady one-minute m_claudeUsageTimer keeps it current after that.
+    refreshClaudeCodeUsage();
+    QTimer::singleShot(10 * 1000, this, &MainWindow::refreshClaudeCodeUsage);
 }
 
 void MainWindow::refreshClaudeCodeUsage()
@@ -22708,8 +22720,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                          .arg(branchName, workdir));
         live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
         // Issue #84: launching with an initial prompt is a send too — refresh the
-        // top-bar usage chart + hover stats right away.
-        refreshClaudeCodeUsage();
+        // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
+        // first turn's usage shows without waiting for the next minute tick.
+        bumpClaudeCodeUsage();
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -30683,11 +30696,93 @@ QWidget *MainWindow::buildBranchesTab()
     filesLayout->addWidget(m_branchFilesSummary);
     filesLayout->addWidget(m_branchFileList, 1);
 
+    // Detail pane: a toolbar with the primary branch actions over its diff. These
+    // act on whichever branch is selected (m_branchDiffBranch), so the common
+    // actions are reachable at the top while reviewing the changes rather than
+    // hunting for the matching row button (issue #116). Their enabled/tooltip
+    // state is set in updateBranchDetailActions() as the selection changes.
+    m_branchDetailLabel = new QLabel;
+    m_branchDetailLabel->setObjectName("sectionLabel");
+    m_branchDetailLabel->setTextFormat(Qt::RichText);
+
+    m_branchPullButton = new QPushButton("Pull main");
+    m_branchPullButton->setObjectName("ghostButton");
+    m_branchPullButton->setProperty("buttonSize", "sm");
+    m_branchPullButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchPullButton, "download", 14);
+    m_branchPullButton->setEnabled(false);
+    connect(m_branchPullButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            updateBranchFromBase(m_branchDiffBranch);
+    });
+
+    // Fix with agent: only relevant when the selected branch conflicts with base,
+    // so updateBranchDetailActions() hides it otherwise.
+    m_branchFixButton = new QPushButton("Fix with agent");
+    m_branchFixButton->setObjectName("ghostButton");
+    m_branchFixButton->setProperty("buttonSize", "sm");
+    m_branchFixButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchFixButton, "rocket", 14);
+    m_branchFixButton->hide();
+    auto *fixMenu = new QMenu(m_branchFixButton);
+    connect(fixMenu->addAction(QStringLiteral("Fix with Claude")), &QAction::triggered,
+            this, [this] {
+                if (!m_branchDiffBranch.isEmpty())
+                    fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                                QStringLiteral("claude"));
+            });
+    connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")), &QAction::triggered,
+            this, [this] {
+                if (!m_branchDiffBranch.isEmpty())
+                    fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                                QStringLiteral("openai"));
+            });
+    m_branchFixButton->setMenu(fixMenu);
+
+    m_branchPrButton = new QPushButton("Create PR");
+    m_branchPrButton->setObjectName("ghostButton");
+    m_branchPrButton->setProperty("buttonSize", "sm");
+    m_branchPrButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchPrButton, "git-pull-request", 14);
+    m_branchPrButton->setEnabled(false);
+    connect(m_branchPrButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            createPullFromBranch(m_branchDiffBranch);
+    });
+
+    // Merge the selected branch straight into the default branch (an empty
+    // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
+    m_branchMergeButton = new QPushButton("Merge to main");
+    m_branchMergeButton->setObjectName("primaryButton");
+    m_branchMergeButton->setProperty("buttonSize", "sm");
+    m_branchMergeButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchMergeButton, "check-circle", 14);
+    m_branchMergeButton->setEnabled(false);
+    connect(m_branchMergeButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            mergeWorktreeIntoMain(m_branchDiffBranch, QString());
+    });
+
+    auto *detailBar = new QHBoxLayout;
+    detailBar->setContentsMargins(0, 0, 0, 0);
+    detailBar->addWidget(m_branchDetailLabel);
+    detailBar->addStretch();
+    detailBar->addWidget(m_branchPullButton);
+    detailBar->addWidget(m_branchFixButton);
+    detailBar->addWidget(m_branchPrButton);
+    detailBar->addWidget(m_branchMergeButton);
+    auto *diffPane = new QWidget;
+    auto *diffPaneLayout = new QVBoxLayout(diffPane);
+    diffPaneLayout->setContentsMargins(0, 0, 0, 0);
+    diffPaneLayout->setSpacing(6);
+    diffPaneLayout->addLayout(detailBar);
+    diffPaneLayout->addWidget(m_branchDiffView, 1);
+
     auto *split = new QSplitter(Qt::Horizontal);
     split->setChildrenCollapsible(false);
     split->addWidget(m_branchesTable);
     split->addWidget(filesPane);
-    split->addWidget(m_branchDiffView);
+    split->addWidget(diffPane);
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
@@ -30779,7 +30874,12 @@ void MainWindow::loadBranchesPanel()
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         m_branchesTable->setItem(row, 2, updated);
 
-        // Row actions: open a pull request from this branch, and delete it.
+        // Row actions: just delete here — the Pull / Fix with agent / Create PR /
+        // Merge to main actions live in the detail-pane toolbar and act on the
+        // selected branch (issue #116). The ahead/behind/conflict counts above
+        // still drive the header's "Pull into all" / "Delete merged" enablement.
+        if (writable && branch != base && behind > 0)
+            anyBehind = true;
         auto *actions = new QWidget;
         // Keep the container transparent so the row's hover/selection highlight
         // shows through it; the global "QWidget { background }" rule would
@@ -30789,75 +30889,6 @@ void MainWindow::loadBranchesPanel()
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(0, 0, 8, 0);
         actionRow->setSpacing(4);
-
-        // Bring this branch up to date by merging the default branch into it.
-        auto *updateButton = new QPushButton(QStringLiteral("Pull %1").arg(base));
-        updateButton->setObjectName("ghostButton");
-        updateButton->setProperty("buttonSize", "sm");
-        updateButton->setCursor(Qt::PointingHandCursor);
-        setOcticon(updateButton, "download", 14);
-        const bool canUpdate = writable && branch != base && behind > 0;
-        if (canUpdate)
-            anyBehind = true;
-        updateButton->setEnabled(canUpdate);
-        if (branch == base)
-            updateButton->setToolTip(
-                QStringLiteral("%1 is the default branch").arg(base));
-        else if (!writable)
-            updateButton->setToolTip(
-                "Read-only mirror \xE2\x80\x94 no working tree to update");
-        else if (behind == 0)
-            updateButton->setToolTip(
-                QStringLiteral("%1 is already up to date with %2").arg(branch, base));
-        else
-            updateButton->setToolTip(
-                QStringLiteral("Merge %1 into %2 (%3 commit(s) behind)")
-                    .arg(base, branch)
-                    .arg(behind));
-        connect(updateButton, &QPushButton::clicked, this,
-                [this, branch] { updateBranchFromBase(branch); });
-        actionRow->addWidget(updateButton);
-
-        // When base can't merge cleanly, offer a one-click AI fix that resolves
-        // the conflicts and commits the merge onto this branch.
-        if (hasConflict) {
-            auto *fixButton = new QPushButton(QStringLiteral("Fix with agent"));
-            fixButton->setObjectName("ghostButton");
-            fixButton->setProperty("buttonSize", "sm");
-            fixButton->setCursor(Qt::PointingHandCursor);
-            setOcticon(fixButton, "rocket", 14);
-            fixButton->setEnabled(writable);
-            fixButton->setToolTip(
-                QStringLiteral("Let a low-cost model merge %1 into %2 and resolve "
-                               "the conflicts \xE2\x80\x94 watch it on the Agents tab")
-                    .arg(base, branch));
-            auto *fixMenu = new QMenu(fixButton);
-            connect(fixMenu->addAction(QStringLiteral("Fix with Claude")),
-                    &QAction::triggered, this, [this, branch] {
-                        fixBranchConflictsWithAgent(branch, QStringLiteral("claude"));
-                    });
-            connect(fixMenu->addAction(QStringLiteral("Fix with OpenAI")),
-                    &QAction::triggered, this, [this, branch] {
-                        fixBranchConflictsWithAgent(branch, QStringLiteral("openai"));
-                    });
-            fixButton->setMenu(fixMenu);
-            actionRow->addWidget(fixButton);
-        }
-
-        auto *prButton = new QPushButton("Create PR");
-        prButton->setObjectName("ghostButton");
-        prButton->setProperty("buttonSize", "sm");
-        prButton->setCursor(Qt::PointingHandCursor);
-        setOcticon(prButton, "git-pull-request", 14);
-        const bool canPr = writable && branch != base;
-        prButton->setEnabled(canPr);
-        prButton->setToolTip(
-            canPr ? QStringLiteral("Open a pull request from %1 into %2").arg(branch, base)
-                  : (writable ? "The default branch can't open a pull request into itself"
-                              : "Read-only mirror — no working tree to open a pull request from"));
-        connect(prButton, &QPushButton::clicked, this,
-                [this, branch] { createPullFromBranch(branch); });
-        actionRow->addWidget(prButton);
 
         // Delete button (disabled for the default/checked-out branch).
         auto *del = new QPushButton;
@@ -30882,11 +30913,11 @@ void MainWindow::loadBranchesPanel()
         actionRow->addWidget(del);
 
         m_branchesTable->setCellWidget(row, 3, actions);
-        // Measure the true width the buttons need:
+        // Measure the true width the delete button needs:
         //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
         //    which sizeHint() ignores until the style is in effect;
         //  - pin each button to its natural width so a tight column can't
-        //    compress and clip "Pull main" / "Create PR";
+        //    compress and clip it;
         //  - invalidate the row layout so it recomputes its hint from the now
         //    polished buttons instead of the stale (too-small) cached value.
         actions->ensurePolished();
@@ -31090,11 +31121,109 @@ void MainWindow::deleteMergedBranches()
     loadBranchesAndTags();
 }
 
+// Refresh the detail-pane action bar for the selected branch: label its
+// ahead/behind status and enable Pull / Fix with agent / Create PR / Merge to
+// main exactly as the per-row buttons used to (issue #116). Fix with agent only
+// appears when the branch genuinely conflicts with the base.
+void MainWindow::updateBranchDetailActions(const QString &branch)
+{
+    if (!m_branchMergeButton)
+        return;
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool writable = repoHasWorkingTree();
+    const bool isBase = branch.isEmpty() || branch == base;
+
+    int behind = 0, ahead = 0;
+    bool hasConflict = false;
+    if (!dir.isEmpty() && !isBase) {
+        QByteArray counts;
+        if (runGitCapture(dir,
+                          {"rev-list", "--left-right", "--count", base + "..." + branch},
+                          &counts, nullptr)) {
+            const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+                QRegularExpression(QStringLiteral("\\s+")));
+            if (parts.size() >= 2) {
+                behind = parts.at(0).toInt();
+                ahead = parts.at(1).toInt();
+            }
+        }
+        // Only a branch with its own commits and base commits it lacks can conflict.
+        if (behind > 0 && ahead > 0)
+            hasConflict = branchMergeTree(dir, base, branch).isEmpty();
+    }
+
+    if (m_branchDetailLabel) {
+        QString text;
+        if (branch.isEmpty())
+            text.clear();
+        else if (branch == base)
+            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 default branch")
+                       .arg(branch.toHtmlEscaped());
+        else {
+            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 %2 behind \xC2\xB7 %3 ahead")
+                       .arg(branch.toHtmlEscaped())
+                       .arg(behind)
+                       .arg(ahead);
+            if (hasConflict)
+                text += QString::fromUtf8(
+                    " \xC2\xB7 <span style='color:#f85149'>conflicts</span>");
+        }
+        m_branchDetailLabel->setText(text);
+    }
+
+    // Pull <base> into this branch (only when it's actually behind).
+    m_branchPullButton->setText(base.isEmpty() ? QStringLiteral("Pull main")
+                                               : QStringLiteral("Pull %1").arg(base));
+    const bool canPull = writable && !isBase && behind > 0;
+    m_branchPullButton->setEnabled(canPull);
+    if (isBase)
+        m_branchPullButton->setToolTip(
+            QStringLiteral("Select a branch other than %1").arg(base));
+    else if (!writable)
+        m_branchPullButton->setToolTip(
+            "Read-only mirror \xE2\x80\x94 no working tree to update");
+    else if (behind == 0)
+        m_branchPullButton->setToolTip(
+            QStringLiteral("%1 is already up to date with %2").arg(branch, base));
+    else
+        m_branchPullButton->setToolTip(
+            QStringLiteral("Merge %1 into %2 (%3 commit(s) behind)")
+                .arg(base, branch)
+                .arg(behind));
+
+    // Fix with agent: shown only when the selected branch conflicts with base.
+    m_branchFixButton->setVisible(hasConflict);
+    m_branchFixButton->setEnabled(hasConflict && writable);
+    m_branchFixButton->setToolTip(
+        QStringLiteral("Let a low-cost model merge %1 into %2 and resolve the "
+                       "conflicts \xE2\x80\x94 watch it on the Agents tab")
+            .arg(base, branch));
+
+    // Create PR from this branch into base.
+    const bool canPr = writable && !isBase;
+    m_branchPrButton->setEnabled(canPr);
+    m_branchPrButton->setToolTip(
+        canPr ? QStringLiteral("Open a pull request from %1 into %2").arg(branch, base)
+              : (isBase ? "Select a branch other than the default to open a pull request"
+                        : "Read-only mirror \xE2\x80\x94 no working tree to open a pull "
+                          "request from"));
+
+    // Merge this branch directly into the default branch.
+    const bool canMerge = writable && !isBase;
+    m_branchMergeButton->setEnabled(canMerge);
+    m_branchMergeButton->setToolTip(
+        canMerge ? QStringLiteral("Merge %1 into %2").arg(branch, base)
+                 : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
+                           : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
+}
+
 void MainWindow::showBranchDiff(const QString &branch)
 {
     if (!m_branchDiffView)
         return;
     m_branchDiffBranch = branch;
+    updateBranchDetailActions(branch);
     m_branchDiffFileSpans.clear();
     // Reset the changed-files list; the success path below repopulates it.
     if (m_branchFileList) {
