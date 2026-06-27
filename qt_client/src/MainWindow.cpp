@@ -216,6 +216,11 @@ const QLatin1String kBranchLinkScheme("forkmesh-branch:");
 // the link builder and its linkActivated handler.
 const QLatin1String kPullLinkScheme("forkmesh-pull:");
 
+// "forkmesh-issue:<number>" link in the agent-detail meta line: when a session
+// was started from an issue, its "#N" reference links to that issue's tab in the
+// session's repo (adhoc #138). Shared by the link builder and its handler.
+const QLatin1String kIssueLinkScheme("forkmesh-issue:");
+
 // "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
 // session produced a pull request, the header links back to that session on the
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
@@ -20316,6 +20321,19 @@ QWidget *MainWindow::buildAgentsTab()
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
         else if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
+        else if (href.startsWith(kIssueLinkScheme)) {
+            // Open the issue in its own repo's Issues tab (the session may belong to
+            // a repo other than the one currently shown), reusing the notification
+            // navigation that handles the section + repo switch (adhoc #138).
+            if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId)) {
+                NotificationLink link;
+                link.kind = QStringLiteral("issue");
+                link.owner = s->owner;
+                link.name = s->name;
+                link.number = href.mid(kIssueLinkScheme.size()).toInt();
+                openNotificationLink(link);
+            }
+        }
     });
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
@@ -21799,6 +21817,21 @@ static QString pullLinkHtml(int prNumber)
         .arg(prNumber);
 }
 
+// "#N <title>" for the agent-detail meta line, as a link to that issue's tab in
+// the session's repo (forkmesh-issue:N, handled by m_agentMeta's linkActivated).
+// Shown only when the session was started from an issue (adhoc #138).
+static QString issueLinkHtml(int issueNumber, const QString &title)
+{
+    const QString href = kIssueLinkScheme + QString::number(issueNumber);
+    const QString label =
+        title.isEmpty()
+            ? QStringLiteral("issue #%1").arg(issueNumber)
+            : QStringLiteral("issue #%1 %2").arg(issueNumber).arg(title.toHtmlEscaped());
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, label);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -21916,6 +21949,10 @@ void MainWindow::showAgentSession(int sessionId)
                                 session->name.toHtmlEscaped()) +
                        sep + agentStatusText(session->status).toHtmlEscaped() + sep +
                        branchPart + sep + pr;
+        // Started from an issue? Surface it at the top with a link straight to that
+        // issue's tab in the session's repo (adhoc #138).
+        if (session->issueNumber > 0)
+            meta += sep + issueLinkHtml(session->issueNumber, session->issueTitle);
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -31003,13 +31040,19 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
         return;
     }
 
-    // Every stored (non-external) agent session that ran on this branch.
+    // Every stored (non-external) agent session that ran on this branch, plus the
+    // issues those sessions were started from: deleting the work means that issue is
+    // done, so close it along with the worktree/branch (adhoc #138).
     QList<int> agentIds;
+    QSet<int> issueNumbers;
     if (!branch.isEmpty()) {
         for (const AgentSession &s : std::as_const(m_agentSessions)) {
             if (s.owner == repo.owner && s.name == repo.name
-                && s.branchName == branch && !isExternalSession(s.id))
+                && s.branchName == branch && !isExternalSession(s.id)) {
                 agentIds.append(s.id);
+                if (s.issueNumber > 0)
+                    issueNumbers.insert(s.issueNumber);
+            }
         }
     }
 
@@ -31034,11 +31077,17 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
             : QStringLiteral("%1 and %2").arg(
                   QStringList(parts.mid(0, parts.size() - 1)).join(QStringLiteral(", ")),
                   parts.last());
-    if (QMessageBox::question(
-            this, QStringLiteral("Delete worktree, branch & agent"),
-            QStringLiteral("Delete %1?\n\nUncommitted changes there will be lost. "
-                           "This cannot be undone.")
-                .arg(what))
+    QString prompt = QStringLiteral("Delete %1?\n\nUncommitted changes there will be "
+                                    "lost. This cannot be undone.")
+                         .arg(what);
+    if (!issueNumbers.isEmpty())
+        prompt += issueNumbers.size() == 1
+                      ? QStringLiteral("\n\nThe linked issue #%1 will be closed.")
+                            .arg(*issueNumbers.cbegin())
+                      : QStringLiteral("\n\nThe %1 linked issues will be closed.")
+                            .arg(issueNumbers.size());
+    if (QMessageBox::question(this, QStringLiteral("Delete worktree, branch & agent"),
+                              prompt)
         != QMessageBox::Yes)
         return;
 
@@ -31075,11 +31124,48 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
             loadBranchesPanel();
     }
 
+    // Close the issue(s) those agent sessions were started from — the worktree and
+    // branch holding that work are gone, so the issue's work is done (adhoc #138).
+    int closedIssues = 0;
+    if (!issueNumbers.isEmpty()) {
+        const RepositoryRecord &writable = writableRecordFor(repo);
+        IssueStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (store.canWrite()) {
+            QHash<int, QString> statusByNumber;
+            for (const Issue &issue : store.loadAll())
+                statusByNumber.insert(issue.number, issue.status);
+            for (const int number : std::as_const(issueNumbers)) {
+                // Skip issues that are gone or already closed (no spurious event).
+                if (!statusByNumber.contains(number)
+                    || statusByNumber.value(number) == QLatin1String("closed"))
+                    continue;
+                QString err;
+                if (store.setStatus(number, QStringLiteral("closed"), &err)) {
+                    logSystem(
+                        QStringLiteral("Closed issue #%1 (agent worktree deleted).")
+                            .arg(number));
+                    ++closedIssues;
+                } else {
+                    logSystem(QStringLiteral("Issue #%1: could not close on delete: %2")
+                                  .arg(number)
+                                  .arg(err));
+                }
+            }
+        }
+    }
+
     if (!agentIds.isEmpty()) {
         reloadAgents();
         reloadIssues();
         refreshIssueList();
         updateIssueActionState();
+    }
+    if (closedIssues > 0) {
+        updateRepoIssueCount();
+        flashMessage(closedIssues == 1
+                         ? QStringLiteral("Closed the linked issue.")
+                         : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
     }
 }
 
