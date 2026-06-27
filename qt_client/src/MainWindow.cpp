@@ -11394,10 +11394,20 @@ QWidget *MainWindow::buildIssuesSection()
     auto *cloneIssue = makeAction("Clone issue", "copy");
     auto *lockIssue = makeAction("Lock conversation", "lock");
     auto *pinIssue = makeAction("Pin issue", "tag");
+    // Copy a forkmesh:// permalink to this issue (issue #154): pasted into a
+    // comment it renders as a link back here via autolinkReferences().
+    auto *copyIssueLink = makeAction("Copy link", "link");
+    copyIssueLink->setToolTip(
+        "Copy a link to this issue you can paste into an issue or PR comment");
+    connect(copyIssueLink, &QPushButton::clicked, this, [this] {
+        if (m_currentIssueNumber > 0)
+            copyReferenceLink(QStringLiteral("issue"),
+                              QString::number(m_currentIssueNumber));
+    });
     auto *feedbackIssue = makeAction("Give feedback", "comment");
     for (QPushButton *action :
-         {transferIssue, cloneIssue, lockIssue, pinIssue, m_issueDeleteButton,
-          feedbackIssue})
+         {transferIssue, cloneIssue, lockIssue, pinIssue, copyIssueLink,
+          m_issueDeleteButton, feedbackIssue})
         metaLayout->addWidget(action);
     metaLayout->addStretch();
 
@@ -11965,6 +11975,146 @@ QString linkifyIssueRefs(const QString &escaped)
     return out;
 }
 
+// Reference patterns recognised inside a markdown comment body. Tried in order at
+// each position: a forkmesh:// permalink, a "#123" issue/PR reference, or a bare
+// commit SHA (7-40 hex with at least one a-f letter, so plain numbers are left
+// alone). See autolinkReferences() / openBodyReference().
+const QRegularExpression &bodyReferenceRegex()
+{
+    static const QRegularExpression re(QStringLiteral(
+        // Permalink: stop before trailing sentence punctuation so "...#3." links #3.
+        "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
+        "|(?<![\\w/#])#(\\d+)\\b"
+        "|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
+    return re;
+}
+
+// Linkify the plain-text portion of a line (no code/links): wrap each reference in
+// a markdown link with a private scheme openBodyReference() resolves.
+QString linkifyReferenceText(const QString &text)
+{
+    QString out;
+    int last = 0;
+    auto it = bodyReferenceRegex().globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += text.mid(last, m.capturedStart() - last);
+        if (!m.captured(1).isEmpty()) {
+            // Keep the permalink as an explicit <autolink> so the exact href reaches
+            // the router untouched by markdown.
+            out += QStringLiteral("<%1>").arg(m.captured(1));
+        } else if (!m.captured(2).isEmpty()) {
+            const QString num = m.captured(2);
+            out += QStringLiteral("[#%1](forkmesh-ref:%1)").arg(num);
+        } else {
+            const QString sha = m.captured(3);
+            out += QStringLiteral("[%1](forkmesh-commit:%1)").arg(sha);
+        }
+        last = m.capturedEnd();
+    }
+    out += text.mid(last);
+    return out;
+}
+
+// If a "[label](target)" link starts at `start`, return the index past its closing
+// ')'; otherwise -1. First-match bracket/paren scan — enough to leave existing
+// markdown links verbatim so we never nest one inside another.
+int markdownLinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char(']'), start + 1);
+    if (close < 0)
+        return -1;
+    const int paren = close + 1;
+    if (paren >= line.size() || line.at(paren) != QLatin1Char('('))
+        return -1;
+    const int end = line.indexOf(QLatin1Char(')'), paren + 1);
+    return end < 0 ? -1 : end + 1;
+}
+
+// If a "<scheme://...>" autolink starts at `start`, return the index past its '>';
+// otherwise -1 (a bare '<' is left as literal text).
+int autolinkSpanEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char('>'), start + 1);
+    if (close < 0)
+        return -1;
+    if (!line.mid(start + 1, close - start - 1).contains(QStringLiteral("://")))
+        return -1;
+    return close + 1;
+}
+
+// Linkify one non-fenced line: copy inline `code` spans, existing markdown links and
+// autolinks verbatim, and linkify references in the remaining text.
+QString linkifyReferenceLine(const QString &line)
+{
+    QString out;
+    const int n = line.size();
+    int i = 0;
+    while (i < n) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('`')) {
+            int run = 1;
+            while (i + run < n && line.at(i + run) == QLatin1Char('`'))
+                ++run;
+            const QString ticks = line.mid(i, run);
+            int close = i + run;
+            int found = -1;
+            while (close < n) {
+                const int idx = line.indexOf(ticks, close);
+                if (idx < 0)
+                    break;
+                const int after = idx + run;
+                if (after < n && line.at(after) == QLatin1Char('`')) {
+                    close = after; // part of a longer run; keep looking
+                    continue;
+                }
+                found = idx;
+                break;
+            }
+            if (found >= 0) {
+                out += line.mid(i, found + run - i);
+                i = found + run;
+            } else {
+                out += ticks; // unterminated: emit literally
+                i += run;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('[')) {
+            const int end = markdownLinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        if (c == QLatin1Char('<')) {
+            const int end = autolinkSpanEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+            out += c;
+            ++i;
+            continue;
+        }
+        int j = i;
+        while (j < n) {
+            const QChar d = line.at(j);
+            if (d == QLatin1Char('`') || d == QLatin1Char('[') || d == QLatin1Char('<'))
+                break;
+            ++j;
+        }
+        out += linkifyReferenceText(line.mid(i, j - i));
+        i = j;
+    }
+    return out;
+}
+
 struct DiffFileEntry {
     QString path;
     QString anchor;
@@ -12224,6 +12374,18 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitTitle->setTextFormat(Qt::RichText);
     m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
+    // Copy a forkmesh:// permalink to this commit (issue #154): pasted into a
+    // comment it renders as a link back here via autolinkReferences().
+    auto *commitCopyLinkButton = new QPushButton("Copy link");
+    commitCopyLinkButton->setObjectName("ghostButton");
+    commitCopyLinkButton->setCursor(Qt::PointingHandCursor);
+    commitCopyLinkButton->setToolTip(
+        "Copy a link to this commit you can paste into an issue or PR comment");
+    setOcticon(commitCopyLinkButton, "copy", 16);
+    connect(commitCopyLinkButton, &QPushButton::clicked, this, [this] {
+        copyReferenceLink(QStringLiteral("commit"), m_currentCommitHash);
+    });
+
     m_commitDownloadButton = new QPushButton("Download patch");
     m_commitDownloadButton->setObjectName("ghostButton");
     m_commitDownloadButton->setCursor(Qt::PointingHandCursor);
@@ -12288,6 +12450,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     prevNextRow->setSpacing(4);
     prevNextRow->addStretch();
     prevNextRow->addWidget(m_commitSplitButton);
+    prevNextRow->addWidget(commitCopyLinkButton);
     prevNextRow->addWidget(m_commitDownloadButton);
     prevNextRow->addWidget(m_commitDeleteButton);
     prevNextRow->addWidget(m_commitRevertButton);
@@ -15301,6 +15464,20 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton->setToolTip("Link an issue to this pull request");
     connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
             &MainWindow::linkIssueToPullFromPullPage);
+    // Copy a forkmesh:// permalink to this PR (issue #154): pasted into a comment
+    // it renders as a link back here via autolinkReferences().
+    auto *pullCopyLinkButton = new QPushButton("Copy link");
+    pullCopyLinkButton->setObjectName("ghostButton");
+    pullCopyLinkButton->setProperty("buttonSize", "sm");
+    pullCopyLinkButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(pullCopyLinkButton, "copy", 16);
+    pullCopyLinkButton->setToolTip(
+        "Copy a link to this pull request you can paste into an issue or PR comment");
+    connect(pullCopyLinkButton, &QPushButton::clicked, this, [this] {
+        if (m_currentPullNumber > 0)
+            copyReferenceLink(QStringLiteral("pull"),
+                              QString::number(m_currentPullNumber));
+    });
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
@@ -16687,10 +16864,14 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     if (!body.trimmed().isEmpty()) {
         auto *bodyLabel = new QLabel;
         bodyLabel->setTextFormat(Qt::MarkdownText);
-        bodyLabel->setText(body);
+        bodyLabel->setText(autolinkReferences(body));
         bodyLabel->setWordWrap(true);
         bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        bodyLabel->setOpenExternalLinks(true);
+        // Reference links (#N, commit SHAs, forkmesh:// permalinks) resolve in app;
+        // real external links fall through to the system browser.
+        bodyLabel->setOpenExternalLinks(false);
+        connect(bodyLabel, &QLabel::linkActivated, this,
+                [this](const QString &href) { openBodyReference(href); });
         bodyLabel->setContentsMargins(16, 12, 16, 14);
         cardLayout->addWidget(bodyLabel);
     }
@@ -28539,6 +28720,97 @@ void MainWindow::openCommitReference(int number)
     }
 }
 
+QString MainWindow::autolinkReferences(const QString &markdown)
+{
+    if (markdown.isEmpty())
+        return markdown;
+    // Walk line by line so fenced code blocks (``` / ~~~) are left verbatim, then
+    // linkify references in each non-fenced line (which also skips inline code and
+    // existing links). Kept as markdown source so MarkdownText still formats it.
+    QString out;
+    out.reserve(markdown.size() + 32);
+    bool inFence = false;
+    QString fenceMarker;
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    for (int li = 0; li < lines.size(); ++li) {
+        if (li > 0)
+            out += QLatin1Char('\n');
+        const QString &line = lines.at(li);
+        const QString trimmed = line.trimmed();
+        const bool fenceLine = trimmed.startsWith(QStringLiteral("```")) ||
+                               trimmed.startsWith(QStringLiteral("~~~"));
+        if (inFence) {
+            out += line;
+            if (fenceLine && trimmed.startsWith(fenceMarker))
+                inFence = false;
+        } else if (fenceLine) {
+            inFence = true;
+            fenceMarker = trimmed.left(3);
+            out += line;
+        } else {
+            out += linkifyReferenceLine(line);
+        }
+    }
+    return out;
+}
+
+void MainWindow::openBodyReference(const QString &href)
+{
+    if (href.startsWith(QStringLiteral("forkmesh-ref:"))) {
+        openCommitReference(href.mid(13).toInt()); // PR if one matches, else issue
+        return;
+    }
+    if (href.startsWith(QStringLiteral("forkmesh-commit:"))) {
+        const QString sha = href.mid(16);
+        if (sha.isEmpty())
+            return;
+        if (m_repoDetailTabs && m_repoDetailTabs->button(1)) // 1 = Commits
+            m_repoDetailTabs->button(1)->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(1);
+        showCommit(sha);
+        return;
+    }
+    if (href.startsWith(QStringLiteral("forkmesh://"))) {
+        // forkmesh://<kind>/<owner>/<repo>/<id>[#eventId]
+        const QString rest = href.mid(QStringLiteral("forkmesh://").size());
+        const QString kind = rest.section(QLatin1Char('/'), 0, 0);
+        const QString id =
+            rest.section(QLatin1Char('/'), -1).section(QLatin1Char('#'), 0, 0);
+        if (kind == QLatin1String("issue")) {
+            if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+                m_repoDetailTabs->button(2)->click();
+            reloadIssues();
+            showIssue(id.toInt());
+        } else if (kind == QLatin1String("pull")) {
+            reloadPulls();
+            if (m_repoDetailTabs && m_repoDetailTabs->button(4))
+                m_repoDetailTabs->button(4)->click();
+            showPull(id.toInt());
+        } else if (kind == QLatin1String("commit")) {
+            openBodyReference(QStringLiteral("forkmesh-commit:%1").arg(id));
+        }
+        return;
+    }
+    QDesktopServices::openUrl(QUrl(href));
+}
+
+void MainWindow::copyReferenceLink(const QString &kind, const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QString owner = QStringLiteral("repo");
+    QString repo = kind;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        repo = m_repositories.at(m_repoDetailIndex).name;
+    }
+    QApplication::clipboard()->setText(
+        QStringLiteral("forkmesh://%1/%2/%3/%4").arg(kind, owner, repo, id));
+    setRepoDetailNotice(QStringLiteral("Link copied \xE2\x80\x94 paste it into a "
+                                       "comment to link back here."));
+}
+
 void MainWindow::downloadCommitPatch()
 {
     const QString dir = repoGitDir();
@@ -35842,10 +36114,14 @@ void MainWindow::renderIssueThread(const Issue &issue)
             clearBody();
             auto *body = new QLabel;
             body->setTextFormat(Qt::MarkdownText);
-            body->setText(eventBody);
+            body->setText(autolinkReferences(eventBody));
             body->setWordWrap(true);
             body->setTextInteractionFlags(Qt::TextBrowserInteraction);
-            body->setOpenExternalLinks(true);
+            // Reference links (#N, commit SHAs, forkmesh:// permalinks) resolve in
+            // app; real external links fall through to the system browser.
+            body->setOpenExternalLinks(false);
+            connect(body, &QLabel::linkActivated, this,
+                    [this](const QString &href) { openBodyReference(href); });
             const bool emptyEditableDescription =
                 writable && isOpen && eventBody.trimmed().isEmpty();
             if (emptyEditableDescription) {
