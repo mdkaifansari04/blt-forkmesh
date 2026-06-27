@@ -53,12 +53,23 @@ struct PullRequest {
     QString author;          // signer pubkey (base64url)
     QString authorName;
     QString sig;
-    QString patch;           // unified diff (from changes.patch)
+    QString patch;           // unified diff (from changes.patch, or derived from refs)
     // git format-patch series (mbox) for base..head when the PR is built from a
     // branch range, so the owner can replay it with `git am` and keep every
     // commit's author/date/message. Empty for working-tree or imported-patch PRs,
     // which fall back to a single `git apply` of `patch`.
-    QString commits;         // from commits.mbox
+    QString commits;         // from commits.mbox, or derived from refs
+    // Branch-backed PRs keep their diff out of the repo entirely: the head branch
+    // ref already carries every commit (full author history), so nothing but this
+    // signed pull.md pointer is committed and `patch`/`commits` are reconstructed
+    // from base..head on demand. Working-tree/imported/cross-node PRs are not
+    // branch-backed and persist a portable patch/mbox alongside pull.md.
+    bool branchBacked = false;
+    // For a *merged* branch-backed PR, the exact base/head commits the merge
+    // applied, so the historical diff stays viewable after the base absorbs the
+    // commits (a live base...head would then resolve to empty). Empty otherwise.
+    QString mergeBase;
+    QString mergeHead;
     int filesChanged = 0;
     int additions = 0;
     int deletions = 0;
@@ -88,10 +99,15 @@ public:
 
     // Owner-side: create a PR locally from an already-computed diff. `commits` is
     // the optional format-patch mbox (base..head) used to preserve authorship on
-    // merge; pass an empty string for working-tree/imported patches.
+    // merge; pass an empty string for working-tree/imported patches. Set
+    // `branchBacked` when `head` is a real branch whose committed range (base..head)
+    // *is* the change: the PR then stores only its signed pointer and reconstructs
+    // the diff/commits from the synced ref, so no diff text is committed to the
+    // repo (the passed patch/commits are recomputed from the refs before signing).
     int createPull(const QString &title, const QString &description,
                    const QString &base, const QString &head, const QString &patch,
-                   const QString &commits, QString *error = nullptr);
+                   const QString &commits, bool branchBacked = false,
+                   QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr) const;
     bool updateBranchFromBase(int number, QString *error = nullptr);
