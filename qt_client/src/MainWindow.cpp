@@ -22182,12 +22182,12 @@ void MainWindow::showAgentSession(int sessionId)
                                    : session->issueTitle));
         }
     }
-    // Issue #291: a "· merged into <base>" note appended to the meta line once
-    // the session's worktree/PR has landed in the base branch.
+    // Issue #291: a "merged into <base>" note appended to the meta line once
+    // the session's worktree/PR has landed in the base branch. Joined with the
+    // block's separator below, like every other part.
     const QString mergedMeta =
         session->merged
-            ? QStringLiteral(
-                  " · <span style='color:#a371f7'>merged into %1</span>")
+            ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
                   .arg(agentMergeBase(*session).toHtmlEscaped())
             : QString();
     // Resolve this session's worktree folder from its branch so the header can
@@ -22202,8 +22202,9 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentMeta && isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Branches-tab row and the
         // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal.
-        const QString sep = QStringLiteral(" · ");
+        // #123); every other part is HTML-escaped to stay literal. Each part
+        // sits on its own line (adhoc #156).
+        const QString sep = QStringLiteral("<br>");
         QString meta = QStringLiteral("External Claude Code") + sep +
                        QStringLiteral("%1/%2")
                            .arg(session->owner.toHtmlEscaped(),
@@ -22215,7 +22216,8 @@ void MainWindow::showAgentSession(int sessionId)
                 meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
         }
         meta += sep + QStringLiteral("watch-only");
-        meta += mergedMeta;
+        if (!mergedMeta.isEmpty())
+            meta += sep + mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
         // PR status, spelled out so it's always visible. When a PR exists it
@@ -22228,8 +22230,8 @@ void MainWindow::showAgentSession(int sessionId)
                       .toHtmlEscaped();
         // Rich text so the branch name, worktree location and PR are links
         // (issues #265, adhoc #53, adhoc #123); every other part is HTML-escaped
-        // to stay literal.
-        const QString sep = QStringLiteral(" · ");
+        // to stay literal. Each part sits on its own line (adhoc #156).
+        const QString sep = QStringLiteral("<br>");
         QString branchPart = session->branchName.isEmpty()
                                  ? QStringLiteral("(no branch)")
                                  : branchLinkHtml(session->branchName);
@@ -22248,7 +22250,8 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
-        meta += mergedMeta;
+        if (!mergedMeta.isEmpty())
+            meta += sep + mergedMeta;
         m_agentMeta->setText(meta);
     }
     setAgentUsageLabel(*session);
