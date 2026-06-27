@@ -263,6 +263,11 @@ public:
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
+    // Rebuild the Branches panel, then read back the Worktree column (column 3)
+    // for `branch`, so a test can prove the branches list surfaces the worktree a
+    // branch is checked out in (issue #172).
+    void testReloadBranchesPanel() { loadBranchesPanel(); }
+    QString testBranchWorktreePath(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
