@@ -19433,22 +19433,14 @@ QString agentMergeBase(const AgentSession &s)
 }
 
 // Fill the agent table's Status cell for a session. A session whose worktree/PR
-// has landed in the base branch (issue #291) gets a "· merged" suffix, the
-// merged-purple foreground used across the app, and a tooltip spelling out the
-// branch and time so the note is visible straight from the list.
+// has landed in the base branch (issue #291) simply reads "merged" in the merged-
+// purple foreground used across the app, with a tooltip spelling out the branch
+// and time so the note is visible straight from the list. The Claude run summary
+// ("N turns · Ms") that used to be appended here now lives in dedicated Turns/Time
+// columns (see applyAgentTurnsCell / applyAgentTimeCell).
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
 {
-    QString text = agentStatusText(s.status);
-    // Append the Claude Code run summary the CLI reports on finish ("N turns ·
-    // Ms") so the agents list shows it alongside the Cost column's "$X" — the
-    // full "done · N turns · Ms · $X" line, spread across the row (issue #296).
-    if (s.numTurns > 0)
-        text += QString::fromUtf8(" \xC2\xB7 %1 turns").arg(s.numTurns);
-    if (s.durationMs > 0)
-        text += QString::fromUtf8(" \xC2\xB7 %1s").arg(s.durationMs / 1000.0, 0, 'f', 0);
-    if (s.merged)
-        text += QString::fromUtf8(" \xC2\xB7 merged");
-    cell->setText(text);
+    cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
     cell->setToolTip(
         s.merged
@@ -19462,6 +19454,30 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
             : QString());
 }
 
+// Fill the Turns cell — the conversation-turn count the CLI reports on finish.
+// Sorts on the raw number via kTableSortRole (so the item must be a
+// SortTableWidgetItem), shows "-" until a run summary lands.
+void applyAgentTurnsCell(QTableWidgetItem *cell, const AgentSession &s)
+{
+    cell->setData(Qt::DisplayRole,
+                  s.numTurns > 0 ? QString::number(s.numTurns)
+                                 : QStringLiteral("-"));
+    cell->setData(kTableSortRole, s.numTurns);
+    cell->setToolTip(QStringLiteral("Conversation turns this agent ran"));
+}
+
+// Fill the Time cell — the agent's wall-clock run time, in whole seconds to match
+// the figure the CLI prints. Sorts on the raw millisecond value.
+void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
+{
+    cell->setData(Qt::DisplayRole,
+                  s.durationMs > 0
+                      ? QStringLiteral("%1s").arg(s.durationMs / 1000)
+                      : QStringLiteral("-"));
+    cell->setData(kTableSortRole, static_cast<qlonglong>(s.durationMs));
+    cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
+}
+
 // "Night rider" scanner light shown in the agents list. Each session gets a
 // small Larson-scanner bar that sweeps left<->right while its raw output is
 // streaming, so the list shows real-time activity at a glance. The sweep is
@@ -19469,7 +19485,7 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 8;
+static constexpr int kAgentActivityColumn = 10;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -19741,14 +19757,17 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 9);
+    m_agentTable = new QTableWidget(0, 11);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
+    // Turns/Time are the run-summary figures the Claude CLI reports on finish;
+    // they used to be crammed into the Status text and now get their own columns.
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
+        {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
+         "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -21037,6 +21056,14 @@ void MainWindow::refreshAgentTable()
         auto *status = new QTableWidgetItem;
         applyAgentStatusCell(status, session);
         m_agentTable->setItem(row, 3, status);
+        // Turns / Time columns: the run summary the CLI reports on finish, each
+        // sorting on its raw value (SortTableWidgetItem reads kTableSortRole).
+        auto *turns = new SortTableWidgetItem;
+        applyAgentTurnsCell(turns, session);
+        m_agentTable->setItem(row, 4, turns);
+        auto *runTime = new SortTableWidgetItem;
+        applyAgentTimeCell(runTime, session);
+        m_agentTable->setItem(row, 5, runTime);
         // PR column: number plus the PR's current status (open/merged/closed),
         // looked up from the loaded pulls and colored to match the Pulls tab.
         QString prText;
@@ -21066,12 +21093,12 @@ void MainWindow::refreshAgentTable()
         auto *prItem = new QTableWidgetItem(prText);
         if (prColor.isValid())
             prItem->setForeground(prColor);
-        m_agentTable->setItem(row, 4, prItem);
+        m_agentTable->setItem(row, 6, prItem);
         auto *cost = new QTableWidgetItem;
         cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
         cost->setData(Qt::UserRole, session.costUsd);
         cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
-        m_agentTable->setItem(row, 5, cost);
+        m_agentTable->setItem(row, 7, cost);
         // Live token usage, refreshed in place as the session streams (see
         // updateAgentTokenCell). Sort by the raw number, not the formatted text.
         auto *tokens = new QTableWidgetItem;
@@ -21080,7 +21107,7 @@ void MainWindow::refreshAgentTable()
                         toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
-        m_agentTable->setItem(row, 6, tokens);
+        m_agentTable->setItem(row, 8, tokens);
         // "Updated" column: when the session was last touched — created,
         // started, finished or merged, whichever is most recent — shown as a
         // friendly "x ago" string. The tooltip carries the full timestamp, and
@@ -21095,7 +21122,7 @@ void MainWindow::refreshAgentTable()
         if (updatedMs > 0)
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 7, updated);
+        m_agentTable->setItem(row, 9, updated);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -22941,7 +22968,8 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
             updateAgentCostCell(sessionId);
-            updateAgentStatusCell(sessionId); // status text now carries turns/duration
+            updateAgentRunSummaryCells(sessionId); // fill the Turns/Time columns
+            updateAgentStatusCell(sessionId);
         }
     }
 
@@ -23068,10 +23096,10 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 6);
+        QTableWidgetItem *cell = m_agentTable->item(r, 8);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 6, cell);
+            m_agentTable->setItem(r, 8, cell);
         }
         cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
@@ -23100,13 +23128,37 @@ void MainWindow::updateAgentCostCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 5);
+        QTableWidgetItem *cell = m_agentTable->item(r, 7);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 5, cell);
+            m_agentTable->setItem(r, 7, cell);
         }
         cell->setData(Qt::DisplayRole, agentCostText(s->costUsd));
         cell->setData(Qt::UserRole, s->costUsd);
+        break;
+    }
+}
+
+// Refresh the Turns and Time cells for a session's row, in place — used when a
+// Claude Code run reports its final `num_turns`/`duration_ms` via the `result`
+// event so the new columns fill without a full table rebuild (which would
+// re-render the open transcript). Sibling of updateAgentCostCell.
+void MainWindow::updateAgentRunSummaryCells(int sessionId)
+{
+    if (!m_agentTable)
+        return;
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
+            continue;
+        QSignalBlocker block(m_agentTable);
+        if (QTableWidgetItem *turns = m_agentTable->item(r, 4))
+            applyAgentTurnsCell(turns, *s);
+        if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
+            applyAgentTimeCell(runTime, *s);
         break;
     }
 }
