@@ -5,7 +5,7 @@ title: remove teh click a column header to sort message that appears sometimes
 status: open
 labels: []
 milestone: 
-priority: 35
+priority: 85
 progress: 0
 assignees: []
 createdAt: 1782348662454
