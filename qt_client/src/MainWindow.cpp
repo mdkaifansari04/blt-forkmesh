@@ -18997,6 +18997,13 @@ QString agentMergeBase(const AgentSession &s)
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
 {
     QString text = agentStatusText(s.status);
+    // Append the Claude Code run summary the CLI reports on finish ("N turns ·
+    // Ms") so the agents list shows it alongside the Cost column's "$X" — the
+    // full "done · N turns · Ms · $X" line, spread across the row (issue #296).
+    if (s.numTurns > 0)
+        text += QString::fromUtf8(" \xC2\xB7 %1 turns").arg(s.numTurns);
+    if (s.durationMs > 0)
+        text += QString::fromUtf8(" \xC2\xB7 %1s").arg(s.durationMs / 1000.0, 0, 'f', 0);
     if (s.merged)
         text += QString::fromUtf8(" \xC2\xB7 merged");
     cell->setText(text);
@@ -21708,6 +21715,23 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
 
     const QString baseName =
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
+    // Comment thread: issues/<n>/issue.md holds only the original description, so
+    // fold the issue's signed comment events into the prompt — otherwise the agent
+    // never sees the follow-up discussion that often refines or redirects the task.
+    QString commentThread;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type != QLatin1String("comment"))
+            continue;
+        const QString text = ev.body.trimmed();
+        if (text.isEmpty())
+            continue;
+        const QString who = ev.authorName.isEmpty() ? ev.author : ev.authorName;
+        commentThread += QStringLiteral("\n\n--- comment by %1 ---\n%2")
+                             .arg(who, text.left(6000));
+    }
+    if (!commentThread.isEmpty())
+        commentThread = QStringLiteral("\n\nComments on the issue (newest last):")
+                        + commentThread;
     // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
     // issue-assigned sessions point the agent at issues/<n>/issue.md. Both share
     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
@@ -21716,11 +21740,12 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             ? QStringLiteral(
                   "Resolve ForkMesh issue #%1: %2\n\n"
                   "You are working in a dedicated git worktree on branch `%3` "
-                  "(forked from `%4`). The full issue is in issues/%1/issue.md.")
+                  "(forked from `%4`). The full issue is in issues/%1/issue.md.%5")
                   .arg(session.issueNumber)
                   .arg(issue.title)
                   .arg(session.branchName)
                   .arg(baseName)
+                  .arg(commentThread)
             : QStringLiteral(
                   "%1\n\n"
                   "You are working in a dedicated git worktree on branch `%2` "
@@ -22260,6 +22285,29 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     if (type == QLatin1String("result") || type == QLatin1String("control_request"))
         notifyAgentWaiting(sessionId, type == QLatin1String("control_request"));
 
+    // The CLI's final `result` event carries the run summary the transcript shows
+    // as "done · N turns · Ms · $X". Persist those figures on the session and
+    // refresh the list cells in place so the summary survives a restart and shows
+    // in the agents list, not just the open transcript (issue #296).
+    if (type == QLatin1String("result")) {
+        if (AgentSession *as = findAgentSession(sessionId)) {
+            const int turns = ev.value(QStringLiteral("num_turns")).toInt();
+            const qint64 dur = static_cast<qint64>(
+                ev.value(QStringLiteral("duration_ms")).toDouble());
+            const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
+            if (turns > 0)
+                as->numTurns = turns;
+            if (dur > 0)
+                as->durationMs = dur;
+            if (cost > 0)
+                as->costUsd = cost;
+            if (m_agentStore && !isExternalSession(sessionId))
+                m_agentStore->saveSession(*as);
+            updateAgentCostCell(sessionId);
+            updateAgentStatusCell(sessionId); // status text now carries turns/duration
+        }
+    }
+
     if (sessionId == m_selectedAgentSessionId && m_agentTranscript) {
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
             m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
@@ -22397,6 +22445,33 @@ void MainWindow::updateAgentTokenCell(int sessionId)
     if (sessionId == m_selectedAgentSessionId)
         if (const AgentSession *s = findAgentSession(sessionId))
             setAgentUsageLabel(*s);
+}
+
+// Refresh just the Cost cell for a session's row, in place, from its stored
+// costUsd — used when a Claude Code run reports its final cost via the `result`
+// event so the list updates without a full table rebuild (which would re-render
+// the open transcript). Sibling of updateAgentTokenCell (issue #296).
+void MainWindow::updateAgentCostCell(int sessionId)
+{
+    if (!m_agentTable)
+        return;
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
+            continue;
+        QSignalBlocker block(m_agentTable);
+        QTableWidgetItem *cell = m_agentTable->item(r, 5);
+        if (!cell) {
+            cell = new QTableWidgetItem;
+            m_agentTable->setItem(r, 5, cell);
+        }
+        cell->setData(Qt::DisplayRole, agentCostText(s->costUsd));
+        cell->setData(Qt::UserRole, s->costUsd);
+        break;
+    }
 }
 
 // Pulse a session's night-rider light so its activity column sweeps while raw
@@ -35233,22 +35308,26 @@ void MainWindow::prioritizeIssuesFromReadme()
                                        .toString()
                                  : defaultAgentProvider();
     const bool claude = agentIsClaudeProvider(provider);
-    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
-                                   : QSettings().value(kCodexApiKeySetting))
-                               .toString()
-                               .trimmed();
-    // When the default agent is Claude Code (issue #294) the user signs in with
-    // a claude.ai subscription OAuth token rather than an API key, so fall back
-    // to that token when no Claude API key is configured.
-    const QString oauthToken =
-        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
-            ? claudeCodeOAuthToken()
-            : QString();
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    // "Claude Code" (issue #294) authenticates with the claude.ai subscription
+    // OAuth token the CLI keeps in ~/.claude/.credentials.json, never a metered
+    // API key. Read that token first and ignore any stored Claude API key, so an
+    // explicit Claude Code selection can't silently fall through to the
+    // credit-billed API and fail with "credit balance too low". "Claude API" and
+    // "OpenAI API" keep using their respective keys.
+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
+    const QString apiKey =
+        claudeCode ? QString()
+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
+                             : QSettings().value(kCodexApiKeySetting))
+                         .toString()
+                         .trimmed();
     if (apiKey.isEmpty() && oauthToken.isEmpty()) {
         setIssueInlineNotice(
-            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
-                     "first."
-                   : "Add an OpenAI API key in Settings first.",
+            claudeCode
+                ? "Sign in to Claude Code first (run `claude` and log in)."
+                : claude ? "Add a Claude API key in Settings first."
+                         : "Add an OpenAI API key in Settings first.",
             true);
         return;
     }

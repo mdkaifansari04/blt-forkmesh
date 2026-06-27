@@ -640,6 +640,7 @@ private:
     void reloadAgents();
     void refreshAgentTable();
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
+    void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
