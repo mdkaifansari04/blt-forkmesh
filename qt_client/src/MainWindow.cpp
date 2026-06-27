@@ -204,6 +204,11 @@ constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit
 // the Worktrees tab (issue #265). Shared by the link builder and its handler.
 const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 
+// "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
+// has a pull request, its "PR #N" reference links to that PR's tab. Shared by
+// the link builder and its linkActivated handler.
+const QLatin1String kPullLinkScheme("forkmesh-pull:");
+
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
@@ -10108,7 +10113,11 @@ QWidget *MainWindow::buildIssuesSection()
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
-    header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title
+    // Title is user-expandable: a draggable Interactive column with a generous
+    // default width rather than a locked Stretch flex column, so long titles can
+    // be widened (or narrowed) to taste instead of being elided with no recourse.
+    header->setSectionResizeMode(1, QHeaderView::Interactive);      // Title
+    m_issueTable->setColumnWidth(1, 360);
     header->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Priority
     header->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Status
     header->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Votes
@@ -19304,12 +19313,17 @@ public:
         const int sessionId = idx.data(Qt::UserRole).toInt();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         double phase = 0.0;
+        double intensity = 0.0; // live-output rate, drives the reactive effect
         bool active = false;
         if (m_states) {
             const auto it = m_states->constFind(sessionId);
             if (it != m_states->constEnd()) {
                 phase = it->phase;
-                active = (now - it->lastActivityMs) < kScannerIdleMs;
+                intensity = it->intensity;
+                // Keep painting the sweep until the meter has fully wound down,
+                // so the light stays continuously going between output bursts.
+                active = (now - it->lastActivityMs) < kScannerIdleMs
+                         || intensity > 0.0;
             }
         }
 
@@ -19325,19 +19339,26 @@ public:
         // Triangle wave: 0 -> (n-1) -> 0, the back-and-forth night-rider sweep.
         const double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
         const double pos = tri * (n - 1);
-        const double trail = 2.4; // how many LEDs the comet's glow spans
+        // Real-time reactive effect: the comet's tail streaks longer the more raw
+        // output is pouring in, so the trail length tracks throughput at a glance.
+        const double trail = 1.8 + 2.6 * intensity; // LEDs the comet's glow spans
 
         p->save();
         p->setRenderHint(QPainter::Antialiasing, true);
         p->setPen(Qt::NoPen);
-        const QColor base(248, 81, 73); // #f85149 — KITT red
-        const double restAlpha = active ? 0.12 : 0.06;
+        // Hot output shifts KITT red toward bright amber, so the colour itself
+        // climbs with the live stream rate (cool #f85149 -> hot #ffc75c).
+        auto mix = [](int a, int b, double t) { return int(a + (b - a) * t); };
+        const QColor base(mix(248, 255, intensity), mix(81, 199, intensity),
+                          mix(73, 92, intensity));
+        const double restAlpha = active ? 0.10 + 0.10 * intensity : 0.06;
         for (int i = 0; i < n; ++i) {
             double glow = 0.0;
             if (active) {
                 const double d = qAbs(i - pos);
                 glow = qMax(0.0, 1.0 - d / trail);
-                glow *= glow; // sharpen the comet head
+                glow *= glow;                       // sharpen the comet head
+                glow *= 0.6 + 0.4 * intensity;      // brighter head when busy
             }
             QColor c = base;
             c.setAlphaF(restAlpha + (1.0 - restAlpha) * glow);
@@ -19495,6 +19516,31 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setMinimumWidth(380);
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
+    // "Hide detail" toggle (issue #54): collapse the detail panel so the session
+    // list spans the full tab width. Re-checking restores it for the open row.
+    m_agentHideDetailButton = new QPushButton("Hide detail");
+    m_agentHideDetailButton->setObjectName("ghostButton");
+    m_agentHideDetailButton->setCursor(Qt::PointingHandCursor);
+    m_agentHideDetailButton->setCheckable(true);
+    m_agentHideDetailButton->setToolTip(
+        "Hide the detail panel and show the session list full width");
+    setOcticon(m_agentHideDetailButton, "chevron-right", 16);
+    connect(m_agentHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
+        m_agentDetailHidden = hidden;
+        m_agentHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
+        setOcticon(m_agentHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
+        if (hidden) {
+            if (m_agentDetail)
+                m_agentDetail->hide();
+        } else if (m_agentDetail && findAgentSession(m_selectedAgentSessionId)) {
+            m_agentDetail->show(); // reopen for the still-selected row
+        }
+    });
+    auto *headingRow = new QHBoxLayout;
+    headingRow->setContentsMargins(0, 0, 0, 0);
+    headingRow->setSpacing(8);
+    headingRow->addWidget(heading, 1);
+    headingRow->addWidget(m_agentHideDetailButton, 0, Qt::AlignTop);
     auto *hint = new QLabel(
         "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
         "from prompt and transcript size.");
@@ -19520,7 +19566,11 @@ QWidget *MainWindow::buildAgentsTab()
     // bound to its logical column, so it follows the header wherever it lands.
     agentHeader->setSectionsMovable(true);
     agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    agentHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+    // The Issue (title) column is user-expandable: a draggable Interactive column
+    // with a generous default width rather than a locked Stretch flex column, so a
+    // long issue title can be widened to read in full.
+    agentHeader->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_agentTable->setColumnWidth(1, 320);
     for (int c = 2; c < kAgentActivityColumn; ++c)
         agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     // The night-rider light column is a fixed-width, custom-painted scanner.
@@ -19538,7 +19588,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(headingRow);
     listLayout->addWidget(hint);
     m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
     m_agentOpenAiSpend->setObjectName("channelTitle");
@@ -19716,6 +19766,8 @@ QWidget *MainWindow::buildAgentsTab()
         if (href.startsWith(kWorktreeLinkScheme))
             switchToWorktree(QUrl::fromPercentEncoding(
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
+        else if (href.startsWith(kPullLinkScheme))
+            switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
     });
     m_agentUsage = new QLabel;
     m_agentUsage->setObjectName("statusLine");
@@ -21051,6 +21103,19 @@ static QString worktreeLinkHtml(const QString &branch)
         .arg(href, branch.toHtmlEscaped());
 }
 
+// "PR #N open" for the agent-detail meta line, as a link to that pull request's
+// tab (forkmesh-pull:N, handled by m_agentMeta's linkActivated). Lets a session
+// with a PR jump straight to it from the detail header.
+static QString pullLinkHtml(int prNumber)
+{
+    const QString href = kPullLinkScheme + QString::number(prNumber);
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">"
+               "PR #%2 open</a>")
+        .arg(href)
+        .arg(prNumber);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -21078,7 +21143,9 @@ void MainWindow::showAgentSession(int sessionId)
     // deciding which output surface to show, so it survives an app restart.
     ensureStreamEventsLoaded(sessionId);
 
-    if (m_agentDetail)
+    // Keep the detail panel collapsed while "Hide detail" is engaged (issue #54);
+    // its contents below still update for when the user reopens it.
+    if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
@@ -21124,13 +21191,16 @@ void MainWindow::showAgentSession(int sessionId)
         meta += mergedMeta;
         m_agentMeta->setText(meta);
     } else if (m_agentMeta) {
-        // PR status, spelled out so it's always visible.
-        QString pr = session->prNumber > 0
-                         ? QStringLiteral("PR #%1 open").arg(session->prNumber)
-                         : (session->createPr ? QStringLiteral("PR opens on finish")
-                                              : QStringLiteral("no PR"));
-        // Rich text so the branch name is a link to its Worktrees-tab row
-        // (issue #265); every other part is HTML-escaped to stay literal.
+        // PR status, spelled out so it's always visible. When a PR exists it
+        // links straight to that pull request's tab from the header (adhoc #53).
+        QString pr =
+            session->prNumber > 0
+                ? pullLinkHtml(session->prNumber)
+                : (session->createPr ? QStringLiteral("PR opens on finish")
+                                     : QStringLiteral("no PR"))
+                      .toHtmlEscaped();
+        // Rich text so the branch name and PR are links (issues #265, adhoc #53);
+        // every other part is HTML-escaped to stay literal.
         const QString sep = QStringLiteral(" · ");
         QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
                        QStringLiteral("%1/%2")
@@ -21140,7 +21210,7 @@ void MainWindow::showAgentSession(int sessionId)
                        (session->branchName.isEmpty()
                             ? QStringLiteral("(no branch)")
                             : worktreeLinkHtml(session->branchName)) +
-                       sep + pr.toHtmlEscaped();
+                       sep + pr;
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -21457,6 +21527,7 @@ void MainWindow::startAdHocAgent()
     session.owner = repo.owner;
     session.name = repo.name;
     session.issueNumber = 0; // ad-hoc: not tied to any issue
+    session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = true;
     session.contextWindow =
@@ -21819,36 +21890,46 @@ void MainWindow::processAgentQueue()
             m_agentStore->saveSession(*session);
             continue;
         }
+        // Ad-hoc sessions (issueNumber == 0) carry no issue; their task lives in
+        // session->prompt. Only issue-assigned sessions need the issue resolved —
+        // requiring one for ad-hoc runs is what failed every resumed ad-hoc agent
+        // on restart with "Issue not found".
         Issue issue;
-        const QList<Issue> issues =
-            IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
-                .loadAll();
-        bool found = false;
-        for (const Issue &candidate : issues)
-            if (candidate.number == session->issueNumber) {
-                issue = candidate;
-                found = true;
-                break;
+        if (session->issueNumber > 0) {
+            const QList<Issue> issues =
+                IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
+                    .loadAll();
+            bool found = false;
+            for (const Issue &candidate : issues)
+                if (candidate.number == session->issueNumber) {
+                    issue = candidate;
+                    found = true;
+                    break;
+                }
+            if (!found) {
+                session->status = AgentStatus::Failed;
+                session->lastError = QStringLiteral("Issue not found.");
+                m_agentStore->saveSession(*session);
+                continue;
             }
-        if (!found) {
-            session->status = AgentStatus::Failed;
-            session->lastError = QStringLiteral("Issue not found.");
-            m_agentStore->saveSession(*session);
-            continue;
         }
         // Claude Code renders as a native stream-json transcript on the agent
         // detail screen (with a Raw-output toggle), not headlessly through a
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTranscript(*session, issue, repo.localPath);
+            startClaudeCodeTranscript(*session, issue, repo.localPath, session->prompt);
             continue;
         }
         const AgentSession snapshot = *session;
         // A launched run consumes from this provider's rolling usage windows;
         // anchor them so the agent sessions screen can count down the time left.
         markAgentLimitWindow(snapshot.provider);
-        acquireAgentRunner()->start(snapshot, issue, repo.localPath,
-                                    agentConfigForProvider(session->provider));
+        AgentRunner::Config config = agentConfigForProvider(session->provider);
+        // Ad-hoc API-key runs ride their saved task through the config override,
+        // mirroring startAdHocAgent so they resume the same way after a restart.
+        if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
+            config.taskOverride = snapshot.prompt;
+        acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
     }
     reloadAgents();
 }
@@ -22046,6 +22127,10 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     if (session.baseBranch.isEmpty())
         session.baseBranch = session.baseRef;
     session.createPr = true; // always open a PR for a finished transcript session
+    // Persist an ad-hoc task so it can be replayed after an app restart (the
+    // composer's free-form prompt has no issue to re-read it from).
+    if (session.prompt.isEmpty() && !customPrompt.trimmed().isEmpty())
+        session.prompt = customPrompt.trimmed();
 
     const QString baseName =
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
@@ -22141,7 +22226,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     connect(stream, &ClaudeStreamSession::event, this,
             [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
     connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
-        noteAgentActivity(sid); // pulse the list's night-rider light
+        noteAgentActivity(sid, line.size()); // pulse the list's night-rider light
         QString &buf = m_streamRaw[sid];
         // Separate each JSON object with a blank line so the raw view is readable.
         buf += line + QStringLiteral("\n\n");
@@ -22511,7 +22596,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         ClaudeSessionScan::readEvents(ext.path, offset, &newOffset);
     m_externalReadOffset[sessionId] = newOffset;
     if (!events.isEmpty())
-        noteAgentActivity(sessionId); // pulse the list's night-rider light
+        // Surfaced external transcripts arrive in event batches rather than raw
+        // bytes; scale the meter bump by how many landed this read.
+        noteAgentActivity(sessionId, events.size() * 200);
 
     qint64 addedTokens = 0;
     for (const QJsonObject &ev : events) {
@@ -22812,11 +22899,17 @@ void MainWindow::updateAgentCostCell(int sessionId)
 // output is streaming. Called from every raw-output path (headless AgentRunner
 // logs, live Claude stream lines, surfaced external transcripts). The driving
 // timer is started on demand and self-stops once every light has gone idle.
-void MainWindow::noteAgentActivity(int sessionId)
+void MainWindow::noteAgentActivity(int sessionId, int bytes)
 {
     if (sessionId <= 0)
         return;
-    m_scannerStates[sessionId].lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    AgentScannerState &st = m_scannerStates[sessionId];
+    st.lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    // Top up the live-output intensity meter by how much just streamed (a ~512B
+    // chunk pins it). onScannerTick decays this every frame, so a steady stream
+    // holds it hot while a pause fades it out — that's what the sweep reacts to.
+    const double bump = bytes > 0 ? qMin(1.0, bytes / 512.0) : 0.5;
+    st.intensity = qMin(1.0, st.intensity + bump);
     if (m_scannerTimer && !m_scannerTimer->isActive())
         m_scannerTimer->start();
 }
@@ -22827,13 +22920,21 @@ void MainWindow::noteAgentActivity(int sessionId)
 void MainWindow::onScannerTick()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // One full back-and-forth bounce per ~1.1s, stepped per timer interval.
-    const double step = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1100.0;
+    // Baseline bounce ~one back-and-forth per 1.7s; the live-output intensity
+    // accelerates it up to ~2.5x so a busy agent visibly races.
+    const double base = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1700.0;
     bool anyActive = false;
     for (auto it = m_scannerStates.begin(); it != m_scannerStates.end(); ++it) {
-        if (now - it->lastActivityMs >= kScannerIdleMs)
+        // Decay the live-output meter every frame; noteAgentActivity re-bumps it
+        // per chunk, so a steady stream holds it high and a pause fades it out.
+        it->intensity *= 0.85;
+        if (it->intensity < 0.01)
+            it->intensity = 0.0;
+        // Keep the light continuously sweeping while there's any activity left:
+        // either output landed recently or the meter is still winding down.
+        if (it->intensity <= 0.0 && now - it->lastActivityMs >= kScannerIdleMs)
             continue;
-        it->phase += step;
+        it->phase += base * (0.6 + 1.9 * it->intensity);
         if (it->phase >= 1.0)
             it->phase -= 1.0;
         anyActive = true;
@@ -23091,7 +23192,7 @@ void MainWindow::showAgentRawOutput()
 
 void MainWindow::onAgentLog(int sessionId, const QString &text)
 {
-    noteAgentActivity(sessionId); // pulse the list's night-rider light
+    noteAgentActivity(sessionId, text.size()); // pulse the night-rider light
     if (sessionId != m_selectedAgentSessionId || !m_agentLog)
         return;
     m_agentLog->moveCursor(QTextCursor::End);
@@ -29521,9 +29622,14 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branch,
-                                       const QString &worktreePath)
+void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+                                       const QString &worktreePathArg)
 {
+    // Copy by value: the keep-alive pump below services queued slots between git
+    // reads, and a refresh could reassign the m_worktreeSelected* members passed
+    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    const QString branch = branchArg;
+    const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
@@ -29553,6 +29659,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branch,
         != QMessageBox::Yes)
         return;
 
+    // The merge checks out files, then removeWorktree recursively deletes the
+    // worktree folder (slow when it holds build artifacts), then two panels reload
+    // — all blocking git on the UI thread. Pump the event loop across the lot so
+    // the window stays responsive instead of freezing ("Not Responding").
+    GitKeepAlive keepAlive;
     QString err;
     if (runGitCapture(dir,
                       {"merge", "--no-ff", branch,
@@ -29618,10 +29729,13 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
                 .arg(worktreePath, branch.isEmpty() ? QStringLiteral("-") : branch))
             != QMessageBox::Yes)
         return;
-    if (QProcess::execute(
-            QStringLiteral("git"),
-            {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
-             QStringLiteral("remove"), QStringLiteral("--force"), worktreePath}) != 0) {
+    // runGitCapture (not QProcess::execute) so this honors GitKeepAlive: when the
+    // post-merge cleanup calls in, the event loop keeps pumping while git deletes
+    // the worktree folder recursively, instead of freezing the window.
+    if (!runGitCapture(repoPath,
+                       {QStringLiteral("worktree"), QStringLiteral("remove"),
+                        QStringLiteral("--force"), worktreePath},
+                       nullptr, nullptr)) {
         setRepoDetailNotice(
             QStringLiteral("Could not remove the worktree at %1.").arg(worktreePath),
             true);
@@ -31181,6 +31295,19 @@ QWidget *MainWindow::buildMirrorNodesTab()
     heading->setObjectName("channelTitle");
     m_mirrorNodesSummary = new QLabel;
     m_mirrorNodesSummary->setObjectName("statusLine");
+    // Re-attest the relay's integrity pin to the refs we currently serve. Only the
+    // source of truth (the owner holding the working copy) can do this, so the
+    // button stays hidden until loadMirrorNodesPanel() finds we are that node.
+    m_mirrorResetPinButton = new QPushButton("Reset integrity pin");
+    m_mirrorResetPinButton->setObjectName("ghostButton");
+    m_mirrorResetPinButton->setCursor(Qt::PointingHandCursor);
+    m_mirrorResetPinButton->setToolTip(QStringLiteral(
+        "Re-sign the refs this node serves and overwrite the relay's integrity "
+        "pin, so clones work again after the served refs have moved on."));
+    setOcticon(m_mirrorResetPinButton, "shield-check", 16);
+    m_mirrorResetPinButton->hide();
+    connect(m_mirrorResetPinButton, &QPushButton::clicked, this,
+            &MainWindow::resetRepoPin);
     auto *refreshButton = new QPushButton("Refresh");
     refreshButton->setObjectName("ghostButton");
     refreshButton->setCursor(Qt::PointingHandCursor);
@@ -31191,6 +31318,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     headerRow->addWidget(heading);
     headerRow->addWidget(m_mirrorNodesSummary);
     headerRow->addStretch();
+    headerRow->addWidget(m_mirrorResetPinButton);
     headerRow->addWidget(refreshButton);
     layout->addLayout(headerRow);
 
@@ -31261,6 +31389,8 @@ void MainWindow::loadMirrorNodesPanel()
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         if (m_mirrorNodesSummary)
             m_mirrorNodesSummary->clear();
+        if (m_mirrorResetPinButton)
+            m_mirrorResetPinButton->hide();
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -31589,6 +31719,13 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesSummary->setTextFormat(Qt::RichText);
         m_mirrorNodesSummary->setText(text);
     }
+    // "Reset integrity pin" is the source of truth's concern alone: only the
+    // node holding the working copy can re-attest the relay's pin. Mirror nodes
+    // (even on the owner's own account) never get the button — a stale pin there
+    // is the source of truth's problem to fix (see refreshRepoPinBanner).
+    if (m_mirrorResetPinButton)
+        m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
+
     if (m_repoMirrorsTab)
         m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
     if (count == 0) {
@@ -34990,6 +35127,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoNewAgentPrompt())
             return true;
+        // Enter starts a brand-new agent on the typed prompt; Shift+Enter inserts a
+        // newline (issue #54). Mirrors the per-session steering composer above.
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && !(ke->modifiers() & Qt::ShiftModifier)) {
+            if (m_agentStartButton)
+                m_agentStartButton->click();
+            return true;
+        }
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
     // newline (issue #41). Mirrors the Claude Code conversation input.
