@@ -5,7 +5,7 @@ title: when I quick add an issue and its nto assigned to an agent then open to t
 status: open
 labels: []
 milestone: 
-priority: 33
+priority: 26
 progress: 0
 assignees: []
 createdAt: 1782349222533
