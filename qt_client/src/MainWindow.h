@@ -547,6 +547,12 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
+    // `git apply --check` dry-runs never block the GUI thread in a single sweep.
+    void processPendingPullConflicts(quint64 gen);
+    // Set/clear the conflict badge on a single pull-list row, in place, so async
+    // badge updates don't rebuild (and flicker) the whole table.
+    void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
