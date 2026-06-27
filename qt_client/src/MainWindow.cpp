@@ -5055,6 +5055,20 @@ QString MainWindow::testWorktreeBranchLabel() const
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
 }
 
+QString MainWindow::testBranchWorktreePath(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+                return wt->text();
+        }
+    }
+    return QString();
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -32751,11 +32765,11 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
 
-    m_branchesTable = new QTableWidget(0, 4);
+    m_branchesTable = new QTableWidget(0, 5);
     m_branchesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
-        {"Branch", "Status", "Updated", ""});
+        {"Branch", "Status", "Updated", "Worktree", ""});
     m_branchesTable->verticalHeader()->setVisible(false);
     // Give each row enough height for the sm action buttons (max 28px tall) plus
     // breathing room, so the buttons don't crowd the row above/below.
@@ -32771,11 +32785,15 @@ QWidget *MainWindow::buildBranchesTab()
     bh->setSectionResizeMode(0, QHeaderView::Stretch);
     bh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     bh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    // Worktree column: shows the on-disk path of the worktree (if any) a branch
+    // is checked out in, so the list surfaces an agent's isolated working tree
+    // without a trip to the Worktrees tab. Sized to its content.
+    bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     // The action column holds cell widgets (Pull / Create PR / delete
     // buttons). ResizeToContents only measures item delegates and ignores
     // cell widgets, so it would collapse this column and clip the buttons.
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
-    bh->setSectionResizeMode(3, QHeaderView::Fixed);
+    bh->setSectionResizeMode(4, QHeaderView::Fixed);
     makeColumnsResizable(m_branchesTable);
     connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -33001,6 +33019,32 @@ void MainWindow::loadBranchesPanel()
         }
     }
 
+    // Map each branch to the worktree (other than the main checkout) it's checked
+    // out in, in a single `git worktree list --porcelain` call so the per-row
+    // Worktree column below doesn't spawn a git process each (issue #172).
+    QHash<QString, QString> branchWorktrees;
+    if (!dir.isEmpty()) {
+        QByteArray wtOut;
+        if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
+            const QString mainPath = QDir(dir).absolutePath();
+            QString currentPath;
+            for (const QString &raw :
+                 QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
+                const QString line = raw.trimmed();
+                if (line.startsWith(QLatin1String("worktree ")))
+                    currentPath = line.mid(9).trimmed();
+                else if (line.startsWith(QLatin1String("branch "))) {
+                    const QString br =
+                        line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
+                                                      QString());
+                    if (!br.isEmpty() && !currentPath.isEmpty()
+                        && QDir(currentPath).absolutePath() != mainPath)
+                        branchWorktrees.insert(br, currentPath);
+                }
+            }
+        }
+    }
+
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
@@ -33059,6 +33103,18 @@ void MainWindow::loadBranchesPanel()
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         m_branchesTable->setItem(row, 2, updated);
 
+        // Worktree this branch is checked out in (an agent's isolated tree), if
+        // any. Shown so the list reveals where the branch lives on disk; the full
+        // path is also the cell tooltip for the long /tmp agent-worktree paths.
+        const QString worktreePath = branchWorktrees.value(branch);
+        auto *worktree = new QTableWidgetItem(worktreePath);
+        if (!worktreePath.isEmpty()) {
+            worktree->setIcon(themedOcticon("file-directory", QColor("#8b949e"), 13));
+            worktree->setToolTip(worktreePath);
+            worktree->setForeground(QColor("#8b949e"));
+        }
+        m_branchesTable->setItem(row, 3, worktree);
+
         // Row actions: just delete here — the Pull / Fix with agent / Create PR /
         // Merge to main actions live in the detail-pane toolbar and act on the
         // selected branch (issue #116). The ahead/behind/conflict counts above
@@ -33097,7 +33153,7 @@ void MainWindow::loadBranchesPanel()
                 [this, branch] { deleteBranch(branch); });
         actionRow->addWidget(del);
 
-        m_branchesTable->setCellWidget(row, 3, actions);
+        m_branchesTable->setCellWidget(row, 4, actions);
         // Measure the true width the delete button needs:
         //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
         //    which sizeHint() ignores until the style is in effect;
@@ -33116,7 +33172,7 @@ void MainWindow::loadBranchesPanel()
     if (actionWidth > 0)
         // A little slack so the rightmost button never sits flush against the
         // column edge (the action row already carries an 8px right margin).
-        m_branchesTable->horizontalHeader()->resizeSection(3, actionWidth + 8);
+        m_branchesTable->horizontalHeader()->resizeSection(4, actionWidth + 8);
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
