@@ -7507,6 +7507,30 @@ QWidget *MainWindow::buildBreadcrumb()
             renderTopMessageCountdown();
     });
 
+    // The expanded full text lives in this floating panel, parented to the window
+    // (not to any layout) and raised above everything when shown. Revealing it
+    // therefore overlays the UI on top instead of growing the inline toast, so it
+    // never shifts the top bar or the layout below it. See renderTopMessage.
+    m_topMessageOverlay = new QFrame(this);
+    m_topMessageOverlay->setObjectName("topMessageOverlay");
+    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
+    overlayLayout->setContentsMargins(12, 10, 12, 10);
+    m_topMessageOverlayText = new QLabel;
+    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
+    m_topMessageOverlayText->setTextFormat(Qt::RichText);
+    m_topMessageOverlayText->setWordWrap(true);
+    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                     Qt::LinksAccessibleByMouse);
+    connect(m_topMessageOverlayText, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (href == QLatin1String("fm:resetpin"))
+                    resetRepoPin();
+                else if (href == QLatin1String("fm:whypin"))
+                    showPinExplanation();
+            });
+    overlayLayout->addWidget(m_topMessageOverlayText);
+    m_topMessageOverlay->hide();
+
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
     m_avatarNavButton = new QPushButton;
@@ -8828,6 +8852,8 @@ void MainWindow::showPinWarning()
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -33865,6 +33891,8 @@ void MainWindow::showLoadStatus(const QString &what)
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -40255,13 +40283,14 @@ void MainWindow::renderTopMessage()
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // The inline toast always stays a single elided one-liner; expanding never
+    // wraps or grows it. The full text is revealed in the floating overlay below
+    // instead, so it can't widen the window or push the layout around.
     QString display = m_topMessageRaw;
-    if (m_topMessageElided && !m_topMessageExpanded)
+    if (m_topMessageElided)
         display = display.left(kToastMaxChars - 1).trimmed()
                   + QString::fromUtf8("\xE2\x80\xA6"); // …
-    // Wrap only when expanded so the full text grows the toast vertically;
-    // collapsed it stays a single elided line that can't widen the window.
-    m_topMessage->setWordWrap(m_topMessageExpanded);
+    m_topMessage->setWordWrap(false);
     // The base HTML carries the message; auto-dismissing successes append a
     // ticking countdown suffix on top of it (see renderTopMessageCountdown).
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
@@ -40276,6 +40305,49 @@ void MainWindow::renderTopMessage()
                                            ? QStringLiteral("Collapse the message")
                                            : QStringLiteral("Show the full message"));
     }
+    // Float the full, wrapped message on top of the layout when expanded; hide
+    // the panel again when collapsed.
+    if (m_topMessageOverlay && m_topMessageOverlayText) {
+        if (m_topMessageExpanded) {
+            m_topMessageOverlayText->setText(
+                QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                    .arg(fg, glyph, m_topMessageRaw.toHtmlEscaped()));
+            positionTopMessageOverlay();
+            m_topMessageOverlay->show();
+            m_topMessageOverlay->raise();
+        } else {
+            m_topMessageOverlay->hide();
+        }
+    }
+}
+
+// Size the floating expanded-toast panel to its content (capped to a readable
+// width) and anchor it just under the inline toast, centred on it but clamped to
+// stay inside the window. Called on expand and on window resize.
+void MainWindow::positionTopMessageOverlay()
+{
+    if (!m_topMessageOverlay || !m_topMessage)
+        return;
+    const int margin = 16;
+    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    m_topMessageOverlay->setFixedWidth(w);
+    int h = m_topMessageOverlay->heightForWidth(w);
+    if (h <= 0)
+        h = m_topMessageOverlay->sizeHint().height();
+    m_topMessageOverlay->setFixedHeight(h);
+    // Anchor just below the inline toast, horizontally centred on it.
+    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
+    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    x = qBound(margin, x, width() - w - margin);
+    m_topMessageOverlay->move(x, anchor.y() + 6);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
+    if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
+        positionTopMessageOverlay();
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)
@@ -40370,6 +40442,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)

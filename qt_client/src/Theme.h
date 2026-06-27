@@ -319,6 +319,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -1280,6 +1283,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
