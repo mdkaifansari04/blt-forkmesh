@@ -940,12 +940,12 @@ private:
     // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
     // the post-merge cleanup, whose work is already preserved in the merge commit).
     // async=true runs the (slow, recursive) folder delete off the UI thread so the
-    // window stays clickable; the branch delete + panel refresh follow in a
-    // callback. The post-merge cleanup leaves it false because it inspects the
-    // result inline.
+    // window stays clickable; the branch delete + panel refresh follow in a callback.
+    // onDone, if set, runs after that cleanup succeeds (lets the post-merge flow set
+    // its own final notice once the worktree is actually gone).
     void removeWorktree(const QString &worktreePath, const QString &branch,
                         bool confirm, bool alsoDeleteBranch = true,
-                        bool async = false);
+                        bool async = false, std::function<void()> onDone = {});
     // Filesystem path of the worktree currently checked out to `branch` (other
     // than the main checkout), or empty if none. Lets the agent detail resolve a
     // session's worktree folder from its branch.
