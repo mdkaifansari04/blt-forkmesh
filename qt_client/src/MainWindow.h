@@ -160,6 +160,12 @@ public:
     static void applyTheme();
     void refreshThemedIcons();
 
+    // Turn "#N" issue/PR references, pasted commit SHAs and forkmesh:// permalinks
+    // inside a markdown comment body into links the conversation views resolve via
+    // openBodyReference(). Leaves fenced/inline code and existing links untouched.
+    // Static + pure so the window tests can exercise it directly.
+    static QString autolinkReferences(const QString &markdown);
+
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
@@ -509,6 +515,15 @@ private:
     // Open the issue or pull request referenced by "#<number>" in a commit
     // message (a PR if one matches, otherwise an issue).
     void openCommitReference(int number);
+    // Resolve a reference link clicked inside an issue/PR comment body. Handles
+    // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
+    // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
+    // anything else opens externally.
+    void openBodyReference(const QString &href);
+    // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
+    // commit to the clipboard (owner/repo from the repo detail view). Pasting it
+    // into a comment renders a link via autolinkReferences() (issue #154).
+    void copyReferenceLink(const QString &kind, const QString &id);
     // Filter the commit list by the search box (matches hash or summary).
     void filterCommits(const QString &query);
     void downloadCommitPatch();           // save the open commit as a .patch file
@@ -547,6 +562,12 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
+    // `git apply --check` dry-runs never block the GUI thread in a single sweep.
+    void processPendingPullConflicts(quint64 gen);
+    // Set/clear the conflict badge on a single pull-list row, in place, so async
+    // badge updates don't rebuild (and flicker) the whole table.
+    void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
@@ -673,6 +694,7 @@ private:
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+    void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
     // sweeps while its raw output is streaming; onScannerTick drives the frames.
     // bytes is how much just streamed, which drives the live-output intensity
@@ -942,6 +964,9 @@ private:
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // Stage everything in a worktree and commit it under a message the user types,
+    // so its in-progress changes can be committed without leaving the app.
+    void commitWorktreeChanges(const QString &worktreePath, const QString &branch);
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
     // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
     // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
@@ -1817,6 +1842,7 @@ private:
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
+    QPushButton *m_worktreeCommitButton = nullptr; // commit the worktree's uncommitted changes
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
