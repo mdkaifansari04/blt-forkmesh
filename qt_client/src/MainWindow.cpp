@@ -7097,6 +7097,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); });
 
+    // Shown beside the toast when a message is too long to fit on one line.
+    // Clicking it expands the full message in place (wrapped, growing the toast)
+    // and toggles back to the elided one-liner — no modal pops up.
+    m_topMessageExpand = new QPushButton;
+    m_topMessageExpand->setObjectName("ghostButton");
+    m_topMessageExpand->setCursor(Qt::PointingHandCursor);
+    m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
+    setOcticon(m_topMessageExpand, "chevron-down", 14);
+    m_topMessageExpand->hide();
+    connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
+        m_topMessageExpanded = !m_topMessageExpanded;
+        renderTopMessage();
+        // Keep the live countdown suffix if a success toast is still ticking.
+        if (m_topMessageTimer && m_topMessageTimer->isActive())
+            renderTopMessageCountdown();
+    });
+
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
     m_avatarNavButton = new QPushButton;
@@ -7227,6 +7244,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
     mainRow->addWidget(m_topMessage);
+    mainRow->addWidget(m_topMessageExpand);
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
@@ -35088,15 +35106,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
         return QMainWindow::eventFilter(obj, event); // never consume expose
     }
-    // The toast pill is elided to one line; hovering (or clicking) one that was
-    // truncated opens a scrollable modal with the full message. Deferred so the
-    // dialog's nested event loop doesn't run inside event delivery.
-    if (obj == m_topMessage && m_topMessageElided
-        && (event->type() == QEvent::Enter
-            || event->type() == QEvent::MouseButtonRelease)) {
-        QTimer::singleShot(0, this, [this] { showFullMessageDialog(); });
-        return false; // let normal handling (selection, links) proceed too
-    }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
         cycleNavSolanaCurrency();
@@ -38497,44 +38506,42 @@ void MainWindow::logSystem(const QString &text)
     appendNetworkLogLine(line);
 }
 
-// Show the full text of the current toast in a scrollable modal. The pill itself
-// is elided so it can never widen the window; this dialog is how the whole message
-// (e.g. a long git error) gets read or copied.
-void MainWindow::showFullMessageDialog()
+// Toast pill caps the inline message at this many characters; longer text is
+// elided to one line and revealed in full via the Expand button.
+static constexpr int kToastMaxChars = 100;
+
+// (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
+// A long message shows as an elided one-liner so it can never widen the window;
+// expanding it wraps the full text so the toast grows in place (no modal).
+void MainWindow::renderTopMessage()
 {
-    if (m_topMessageRaw.isEmpty() || m_topMessageDialogOpen)
+    if (!m_topMessage)
         return;
-    m_topMessageDialogOpen = true;
-
-    QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Message"));
-    dlg.resize(560, 320);
-    auto *layout = new QVBoxLayout(&dlg);
-
-    auto *view = new QPlainTextEdit(&dlg);
-    view->setReadOnly(true);
-    view->setLineWrapMode(QPlainTextEdit::WidgetWidth); // wrap; vertical scroll only
-    view->setPlainText(m_topMessageRaw);
-    layout->addWidget(view);
-
-    auto *row = new QHBoxLayout;
-    row->addStretch();
-    auto *copyBtn = new QPushButton(QStringLiteral("Copy"), &dlg);
-    copyBtn->setObjectName("ghostButton");
-    copyBtn->setCursor(Qt::PointingHandCursor);
-    connect(copyBtn, &QPushButton::clicked, &dlg, [this] {
-        QGuiApplication::clipboard()->setText(m_topMessageRaw);
-    });
-    auto *closeBtn = new QPushButton(QStringLiteral("Close"), &dlg);
-    closeBtn->setObjectName("ghostButton");
-    closeBtn->setCursor(Qt::PointingHandCursor);
-    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
-    row->addWidget(copyBtn);
-    row->addWidget(closeBtn);
-    layout->addLayout(row);
-
-    dlg.exec();
-    m_topMessageDialogOpen = false;
+    // Green for success, red for failure; compact pill in the centre of the bar.
+    const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
+    const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
+                                            : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    QString display = m_topMessageRaw;
+    if (m_topMessageElided && !m_topMessageExpanded)
+        display = display.left(kToastMaxChars - 1).trimmed()
+                  + QString::fromUtf8("\xE2\x80\xA6"); // …
+    // Wrap only when expanded so the full text grows the toast vertically;
+    // collapsed it stays a single elided line that can't widen the window.
+    m_topMessage->setWordWrap(m_topMessageExpanded);
+    // The base HTML carries the message; auto-dismissing successes append a
+    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                               .arg(fg, glyph, display.toHtmlEscaped());
+    m_topMessage->setText(m_topMessageBaseHtml);
+    // The expand toggle's glyph tracks the state: chevron-down to reveal more,
+    // chevron-up to collapse back to the one-liner.
+    if (m_topMessageExpand) {
+        setOcticon(m_topMessageExpand,
+                   m_topMessageExpanded ? "chevron-up" : "chevron-down", 14);
+        m_topMessageExpand->setToolTip(m_topMessageExpanded
+                                           ? QStringLiteral("Collapse the message")
+                                           : QStringLiteral("Show the full message"));
+    }
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)

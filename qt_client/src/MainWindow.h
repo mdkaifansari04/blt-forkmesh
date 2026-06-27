@@ -1338,7 +1338,7 @@ private:
     void flashMessage(const QString &text, bool error = false);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
-    void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
+    void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     MessageRow *addMessageRow(const ChatMessage &message);
     void rebuildConversationView();
     void scrollToBottom();
@@ -1516,11 +1516,13 @@ private:
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
+    QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
-    bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
+    bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
+    bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
 
     // Setup widgets
