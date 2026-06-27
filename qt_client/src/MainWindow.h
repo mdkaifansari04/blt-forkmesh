@@ -253,6 +253,11 @@ public:
     void headlessStart(const QString &name, const QString &solana = QString());
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
+    // Pull the latest version from the live install mirror, rebuild and relaunch
+    // (the relaunched process inherits QT_QPA_PLATFORM=offscreen, so it comes back
+    // up headless). Reuses the exact GUI "update, rebuild & restart" path; progress
+    // streams to the terminal via the [restart +Nms] log lines.
+    void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
