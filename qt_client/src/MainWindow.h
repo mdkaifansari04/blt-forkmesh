@@ -926,6 +926,9 @@ private:
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
     void showBranchDiff(const QString &branch);
+    // Refresh the detail-pane action bar (Pull / Fix with agent / Create PR /
+    // Merge to main) for the currently selected branch.
+    void updateBranchDetailActions(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
     void updateBranchDiffSticky();
@@ -1778,6 +1781,14 @@ private:
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
+    // Detail-pane action bar above the branch diff: acts on the selected branch
+    // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
+    // state is refreshed in updateBranchDetailActions() as the selection changes.
+    QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
+    QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
+    QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
+    QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
