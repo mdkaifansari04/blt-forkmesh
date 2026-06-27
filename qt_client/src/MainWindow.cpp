@@ -7655,6 +7655,30 @@ QWidget *MainWindow::buildBreadcrumb()
             renderTopMessageCountdown();
     });
 
+    // The expanded full text lives in this floating panel, parented to the window
+    // (not to any layout) and raised above everything when shown. Revealing it
+    // therefore overlays the UI on top instead of growing the inline toast, so it
+    // never shifts the top bar or the layout below it. See renderTopMessage.
+    m_topMessageOverlay = new QFrame(this);
+    m_topMessageOverlay->setObjectName("topMessageOverlay");
+    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
+    overlayLayout->setContentsMargins(12, 10, 12, 10);
+    m_topMessageOverlayText = new QLabel;
+    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
+    m_topMessageOverlayText->setTextFormat(Qt::RichText);
+    m_topMessageOverlayText->setWordWrap(true);
+    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                                     Qt::LinksAccessibleByMouse);
+    connect(m_topMessageOverlayText, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (href == QLatin1String("fm:resetpin"))
+                    resetRepoPin();
+                else if (href == QLatin1String("fm:whypin"))
+                    showPinExplanation();
+            });
+    overlayLayout->addWidget(m_topMessageOverlayText);
+    m_topMessageOverlay->hide();
+
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
     // dropdown with account-level actions.
     m_avatarNavButton = new QPushButton;
@@ -9016,6 +9040,8 @@ void MainWindow::showPinWarning()
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -30982,9 +31008,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                        const QString &worktreePathArg,
                                        bool deleteAgent)
 {
-    // Copy by value: the keep-alive pump below services queued slots between git
-    // reads, and a refresh could reassign the m_worktreeSelected* members passed
-    // here by reference mid-merge — leaving these refs pointing at a new worktree.
+    // Copy by value: the detached merge below runs the event loop before its
+    // callback fires, and a refresh could reassign the m_worktreeSelected* members
+    // passed here by reference meanwhile — leaving these refs pointing at a new
+    // worktree. The callback captures these stable copies instead.
     const QString branch = branchArg;
     const QString worktreePath = worktreePathArg;
     const QString dir = repoGitDir();
@@ -31020,77 +31047,111 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         != QMessageBox::Yes)
         return;
 
-    // The merge checks out files, then removeWorktree recursively deletes the
-    // worktree folder (slow when it holds build artifacts), then two panels reload
-    // — all blocking git on the UI thread. Pump the event loop across the lot so
-    // the window stays responsive instead of freezing ("Not Responding").
-    GitKeepAlive keepAlive;
-    QString err;
-    if (runGitCapture(dir,
-                      {"merge", "--no-ff", branch,
-                       "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
-                      nullptr, &err)) {
-        // The branch is now in main, so the worktree has served its purpose — clean
-        // it up (silently; the merge was already confirmed). Delete the branch too:
-        // its work is preserved in the merge commit, so leaving it behind only
-        // clutters the Worktrees/Branches tabs.
-        QList<int> deletedAgents;
-        if (deleteAgent && !branch.isEmpty()
-            && m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-            // Tear down any agent session(s) that produced this branch first, so no
-            // runner is left holding the worktree open while we remove it.
-            const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-            for (const AgentSession &s : std::as_const(m_agentSessions)) {
-                if (s.owner == repo.owner && s.name == repo.name
-                    && s.branchName == branch && !isExternalSession(s.id))
-                    deletedAgents.append(s.id);
-            }
-            for (int id : std::as_const(deletedAgents))
-                deleteStoredAgentSession(id);
-        }
-        bool removed = false;
-        if (!worktreePath.isEmpty() &&
-            QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
-            removeWorktree(worktreePath, branch, /*confirm=*/false,
-                           /*alsoDeleteBranch=*/true);
-            removed = !QDir(worktreePath).exists();
-        }
-        const QString agentNote =
-            deletedAgents.isEmpty()
-                ? QString()
-                : (deletedAgents.size() == 1
-                       ? QStringLiteral(" and deleted its agent session")
-                       : QStringLiteral(" and deleted its %1 agent sessions")
-                             .arg(deletedAgents.size()));
-        setRepoDetailNotice(
-            (removed ? QStringLiteral("Merged %1 into %2, removed its worktree and "
-                                      "deleted its branch")
-                           .arg(branch, base)
-                     : QStringLiteral("Merged %1 into %2").arg(branch, base))
-                + agentNote + QStringLiteral("."),
-            false);
-        if (deletedAgents.isEmpty()) {
-            // Issue #291: flag any agent session that produced this branch.
-            markAgentSessionsMerged(0, branch);
-        } else {
-            reloadAgents();
-            reloadIssues();
-            refreshIssueList();
-            updateIssueActionState();
-        }
-    } else {
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
-        setRepoDetailNotice(
-            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR and use "
-                           "\"Fix with agent\" on the Branches tab.").arg(branch), true);
+    // The merge checks out files and removeWorktree recursively deletes the worktree
+    // folder (slow when it holds build artifacts) — both ran git on the UI thread, and
+    // even pumped via GitKeepAlive the window stopped registering clicks for the whole
+    // run (waitForGit pumps with ExcludeUserInputEvents). Run the merge as a detached
+    // process and finish the cleanup in its callback, then let removeWorktree's async
+    // path delete the folder off the UI thread, so the window stays interactive
+    // throughout (issue #127).
+    //
+    // Snapshot the repo identity now: the callback below fires after the event loop has
+    // run, by which point m_repoDetailIndex may point elsewhere if the user navigated.
+    QString repoOwner, repoName;
+    if (deleteAgent && m_repoDetailIndex >= 0
+        && m_repoDetailIndex < m_repositories.size()) {
+        repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        repoName = m_repositories.at(m_repoDetailIndex).name;
     }
-    loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    setRepoDetailNotice(
+        QStringLiteral("Merging %1 into %2…").arg(branch, base), false);
+    runGitDetached(
+        dir,
+        {"merge", "--no-ff", branch,
+         "-m", QStringLiteral("Merge %1 into %2").arg(branch, base)},
+        [this, branch, base, worktreePath, deleteAgent, repoOwner, repoName,
+         dir](bool ok, const QByteArray &) {
+            if (!ok) {
+                runGitDetached(dir, {"merge", "--abort"}, nullptr);
+                setRepoDetailNotice(
+                    QStringLiteral("Couldn't merge %1 cleanly (conflicts) — open a PR "
+                                   "and use \"Fix with agent\" on the Branches tab.")
+                        .arg(branch),
+                    true);
+                loadWorktreesPanel();
+                if (m_branchesTable)
+                    loadBranchesPanel();
+                return;
+            }
+            // The branch is now in main, so the worktree has served its purpose — clean
+            // it up (silently; the merge was already confirmed). Delete the branch too:
+            // its work is preserved in the merge commit, so leaving it behind only
+            // clutters the Worktrees/Branches tabs.
+            QList<int> deletedAgents;
+            if (deleteAgent && !branch.isEmpty() && !repoOwner.isEmpty()) {
+                // Tear down any agent session(s) that produced this branch first, so no
+                // runner is left holding the worktree open while we remove it.
+                for (const AgentSession &s : std::as_const(m_agentSessions)) {
+                    if (s.owner == repoOwner && s.name == repoName
+                        && s.branchName == branch && !isExternalSession(s.id))
+                        deletedAgents.append(s.id);
+                }
+                for (int id : std::as_const(deletedAgents))
+                    deleteStoredAgentSession(id);
+            }
+            const QString agentNote =
+                deletedAgents.isEmpty()
+                    ? QString()
+                    : (deletedAgents.size() == 1
+                           ? QStringLiteral(" and deleted its agent session")
+                           : QStringLiteral(" and deleted its %1 agent sessions")
+                                 .arg(deletedAgents.size()));
+            auto afterAgents = [this, deletedAgents, branch] {
+                if (deletedAgents.isEmpty()) {
+                    // Issue #291: flag any agent session that produced this branch.
+                    markAgentSessionsMerged(0, branch);
+                } else {
+                    reloadAgents();
+                    reloadIssues();
+                    refreshIssueList();
+                    updateIssueActionState();
+                }
+            };
+            if (!worktreePath.isEmpty()
+                && QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
+                setRepoDetailNotice(
+                    QStringLiteral("Merged %1 into %2 — removing its worktree…")
+                        .arg(branch, base),
+                    false);
+                // async: the folder delete + branch delete + panel refresh run off the
+                // UI thread; onDone sets the final notice once it's gone.
+                removeWorktree(worktreePath, branch, /*confirm=*/false,
+                               /*alsoDeleteBranch=*/true, /*async=*/true,
+                               [this, branch, base, agentNote, afterAgents] {
+                                   setRepoDetailNotice(
+                                       QStringLiteral("Merged %1 into %2, removed its "
+                                                      "worktree and deleted its branch")
+                                               .arg(branch, base)
+                                           + agentNote + QStringLiteral("."),
+                                       false);
+                                   afterAgents();
+                               });
+            } else {
+                setRepoDetailNotice(
+                    QStringLiteral("Merged %1 into %2").arg(branch, base) + agentNote
+                        + QStringLiteral("."),
+                    false);
+                afterAgents();
+                loadWorktreesPanel();
+                if (m_branchesTable)
+                    loadBranchesPanel();
+            }
+        });
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
-                                bool confirm, bool alsoDeleteBranch, bool async)
+                                bool confirm, bool alsoDeleteBranch, bool async,
+                                std::function<void()> onDone)
 {
     if (worktreePath.isEmpty())
         return;
@@ -31125,7 +31186,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
     // branch can be force-deleted. -D matches the "uncommitted changes will be lost"
     // warning the user just accepted: they asked for the whole worktree — branch and
     // all — to go. Then refresh the panels that listed it.
-    auto finish = [this, repoPath, worktreePath, branch, deleteBranch] {
+    auto finish = [this, repoPath, worktreePath, branch, deleteBranch,
+                   onDone = std::move(onDone)] {
         if (deleteBranch) {
             QString err;
             if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
@@ -31146,6 +31208,8 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
         loadWorktreesPanel();
         if (m_branchesTable)
             loadBranchesPanel();
+        if (onDone)
+            onDone();
     };
 
     const QStringList removeArgs{QStringLiteral("-C"), repoPath,
@@ -34015,6 +34079,8 @@ void MainWindow::showLoadStatus(const QString &what)
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -40405,13 +40471,14 @@ void MainWindow::renderTopMessage()
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    // The inline toast always stays a single elided one-liner; expanding never
+    // wraps or grows it. The full text is revealed in the floating overlay below
+    // instead, so it can't widen the window or push the layout around.
     QString display = m_topMessageRaw;
-    if (m_topMessageElided && !m_topMessageExpanded)
+    if (m_topMessageElided)
         display = display.left(kToastMaxChars - 1).trimmed()
                   + QString::fromUtf8("\xE2\x80\xA6"); // …
-    // Wrap only when expanded so the full text grows the toast vertically;
-    // collapsed it stays a single elided line that can't widen the window.
-    m_topMessage->setWordWrap(m_topMessageExpanded);
+    m_topMessage->setWordWrap(false);
     // The base HTML carries the message; auto-dismissing successes append a
     // ticking countdown suffix on top of it (see renderTopMessageCountdown).
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
@@ -40426,6 +40493,49 @@ void MainWindow::renderTopMessage()
                                            ? QStringLiteral("Collapse the message")
                                            : QStringLiteral("Show the full message"));
     }
+    // Float the full, wrapped message on top of the layout when expanded; hide
+    // the panel again when collapsed.
+    if (m_topMessageOverlay && m_topMessageOverlayText) {
+        if (m_topMessageExpanded) {
+            m_topMessageOverlayText->setText(
+                QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                    .arg(fg, glyph, m_topMessageRaw.toHtmlEscaped()));
+            positionTopMessageOverlay();
+            m_topMessageOverlay->show();
+            m_topMessageOverlay->raise();
+        } else {
+            m_topMessageOverlay->hide();
+        }
+    }
+}
+
+// Size the floating expanded-toast panel to its content (capped to a readable
+// width) and anchor it just under the inline toast, centred on it but clamped to
+// stay inside the window. Called on expand and on window resize.
+void MainWindow::positionTopMessageOverlay()
+{
+    if (!m_topMessageOverlay || !m_topMessage)
+        return;
+    const int margin = 16;
+    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    m_topMessageOverlay->setFixedWidth(w);
+    int h = m_topMessageOverlay->heightForWidth(w);
+    if (h <= 0)
+        h = m_topMessageOverlay->sizeHint().height();
+    m_topMessageOverlay->setFixedHeight(h);
+    // Anchor just below the inline toast, horizontally centred on it.
+    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
+    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    x = qBound(margin, x, width() - w - margin);
+    m_topMessageOverlay->move(x, anchor.y() + 6);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
+    if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
+        positionTopMessageOverlay();
 }
 
 void MainWindow::flashMessage(const QString &text, bool error)
@@ -40520,6 +40630,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
