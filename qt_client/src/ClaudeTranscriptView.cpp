@@ -920,15 +920,36 @@ QWidget *ClaudeTranscriptView::ioRow(const QString &label, QWidget *content)
     return row;
 }
 
+// Bound text destined for a word-wrapped QLabel so a pathological tool input/result
+// (a minified bundle, a base64 blob, a megabyte of command output on one line)
+// can't freeze the UI: QLabel lays its document out synchronously on the GUI
+// thread, and one very long logical line makes QTextLine line-breaking
+// pathologically slow even when the line *count* is tiny (adhoc #169). Caps the
+// line count (when collapsing), elides runaway single lines, and caps the grand
+// total. The raw-log surface and on-disk transcript still keep the full text.
+static QString capLabelText(const QString &text, bool collapseLines)
+{
+    constexpr int kMaxLines = 16;        // matches the long-output collapse below
+    constexpr int kMaxLineChars = 2000;  // one wrapped line stays cheap to lay out
+    constexpr int kMaxTotalChars = 20000;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    const bool longText = collapseLines && lines.size() > kMaxLines;
+    QStringList shownLines = longText ? lines.mid(0, kMaxLines) : lines;
+    for (QString &ln : shownLines)
+        if (ln.size() > kMaxLineChars)
+            ln = ln.left(kMaxLineChars) + QStringLiteral(" …");
+    QString shown = shownLines.join(QLatin1Char('\n'));
+    if (longText)
+        shown += QStringLiteral("\n… (%1 more lines)").arg(lines.size() - kMaxLines);
+    if (shown.size() > kMaxTotalChars)
+        shown = shown.left(kMaxTotalChars) + QStringLiteral("\n… (truncated)");
+    return shown;
+}
+
 // Monospace content with no panel background — it sits inside a tool card box.
 QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLong)
 {
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    const bool longText = collapsedIfLong && lines.size() > 16;
-    const QString shown = longText
-        ? lines.mid(0, 16).join(QLatin1Char('\n'))
-          + QStringLiteral("\n… (%1 more lines)").arg(lines.size() - 16)
-        : text;
+    const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new QLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
@@ -944,12 +965,7 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
 // shell metacharacters like " and > show literally instead of as entities.
 QWidget *ClaudeTranscriptView::makeCode(const QString &text, bool collapsedIfLong)
 {
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    const bool longText = collapsedIfLong && lines.size() > 16;
-    const QString shown = longText
-        ? lines.mid(0, 16).join(QLatin1Char('\n'))
-          + QStringLiteral("\n… (%1 more lines)").arg(lines.size() - 16)
-        : text;
+    const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new QLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
