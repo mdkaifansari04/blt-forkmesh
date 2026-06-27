@@ -507,6 +507,66 @@ void enableHoverRowHighlight(QAbstractItemView *view)
         view->setItemDelegate(new HoverRowDelegate(view));
 }
 
+// Outlines the SELECTED row in green with a transparent fill, instead of the
+// solid green selection band. Each cell paints its own slice: top + bottom
+// edges always, plus the left/right end caps on the first/last *visible* column
+// (visual order, so it follows reordered headers). One free helper so the
+// row-wide delegate and the per-column scanner delegate draw an identical
+// outline and the seam between them is invisible.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index)
+{
+    if (!(option.state & QStyle::State_Selected))
+        return;
+    bool drawLeft = index.column() == 0;
+    bool drawRight = true;
+    if (const auto *table = qobject_cast<const QTableView *>(option.widget)) {
+        QHeaderView *header = table->horizontalHeader();
+        int first = -1, last = -1;
+        for (int v = 0; v < header->count(); ++v) {
+            if (header->isSectionHidden(header->logicalIndex(v)))
+                continue;
+            if (first < 0)
+                first = v;
+            last = v;
+        }
+        const int visual = header->visualIndex(index.column());
+        drawLeft = (visual == first);
+        drawRight = (visual == last);
+    }
+    const QRect r = option.rect;
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setPen(QPen(QColor(46, 160, 67), 1)); // #2ea043, the brand green
+    painter->drawLine(r.topLeft(), r.topRight());
+    painter->drawLine(QPoint(r.left(), r.bottom()), QPoint(r.right(), r.bottom()));
+    if (drawLeft)
+        painter->drawLine(r.topLeft(), QPoint(r.left(), r.bottom()));
+    if (drawRight)
+        painter->drawLine(QPoint(r.right(), r.top()), QPoint(r.right(), r.bottom()));
+    painter->restore();
+}
+
+// HoverRowDelegate variant that renders the selected row as a transparent band
+// inside a green outline rather than a solid green fill. The selection flag is
+// stripped before the base paint so neither the stylesheet nor the style fills
+// the row; paintRowSelectionBorder() then draws the outline on top.
+class SelectionBorderRowDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        HoverRowDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
+    }
+};
+
 // Makes a draggable column's divider behave like dragging a boundary/margin: the
 // width it gains (or loses) is taken from (or handed to) its immediate right-hand
 // neighbour, so the divider tracks the cursor and the rest of the table holds
@@ -7079,10 +7139,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setTextFormat(Qt::RichText);
     m_topMessage->setAlignment(Qt::AlignCenter);
     // Hard cap on the pill's width so a long toast can never widen the window; the
-    // text itself is elided to one line in flashMessage. Hovering an elided toast
-    // opens a scrollable modal with the full message (see eventFilter).
+    // text itself is elided to one line in flashMessage. A long message reveals its
+    // full text inline via the Expand button beside the toast (see renderTopMessage)
+    // rather than popping up a modal.
     m_topMessage->setMaximumWidth(620);
-    m_topMessage->installEventFilter(this);
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -19362,13 +19422,17 @@ public:
     void paint(QPainter *p, const QStyleOptionViewItem &opt,
                const QModelIndex &idx) const override
     {
-        // Let the style draw the row background (selection/hover) but no text.
+        // Let the style draw the row background (hover) but no text. The solid
+        // green selection fill is suppressed so the row reads as a green outline
+        // (drawn below) over a transparent band, matching the rest of the row.
         QStyleOptionViewItem o(opt);
         initStyleOption(&o, idx);
         o.text.clear();
+        o.state &= ~QStyle::State_Selected;
         const QWidget *w = o.widget;
         QStyle *style = w ? w->style() : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
+        paintRowSelectionBorder(p, opt, idx);
 
         const int sessionId = idx.data(Qt::UserRole).toInt();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -19609,7 +19673,10 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 9);
     m_agentTable->setObjectName("issueTable");
-    enableHoverRowHighlight(m_agentTable);
+    // Selected agent rows get a green outline with a transparent fill (rather
+    // than the solid green band the other issueTable lists use); the per-column
+    // Activity delegate below draws the matching outline slice for its cell.
+    m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
     m_agentTable->setHorizontalHeaderLabels(
         {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
@@ -19618,6 +19685,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_agentTable->setShowGrid(false);
     m_agentTable->setWordWrap(false);
+    // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
+    // carry a full-sentence, prompt-derived title that overruns the Issue column,
+    // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
+    // the cell edge instead — the column is user-widenable to read a title in full.
+    m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
