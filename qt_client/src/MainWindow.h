@@ -550,6 +550,10 @@ private:
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
     QList<int> runIdsForPull(const PullRequest &pr) const;   // matching action runs
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
+    // Check out the PR's head into a throwaway worktree, build the ForkMesh app
+    // from it, and launch the freshly built binary as an isolated preview node so
+    // the reviewer can try the change running before merging (issue #214).
+    void buildAndPreviewCurrentPull();
     void updatePullSubTabCounts(const PullRequest &pr);
     void refreshOpenPullChecks();                   // re-render checks for the open PR
     // Enqueue every push-triggered workflow found at `commit` for owner/name.
@@ -1933,6 +1937,8 @@ private:
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
+    QPushButton *m_pullPreviewButton = nullptr;      // build the PR and launch the app
+    QDialog *m_pullPreviewDialog = nullptr;          // live build log for the preview
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
