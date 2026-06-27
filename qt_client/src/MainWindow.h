@@ -694,6 +694,19 @@ private:
     void refreshAgentMergeState();
     bool agentSessionLandedInBase(const AgentSession &session) const;
     void assignIssueToAgent(const QString &provider);
+    // Core of assignIssueToAgent, factored out so the issue looper can drive it
+    // for any issue (not just the selected one). Returns the new session id, or 0
+    // on failure. quiet suppresses the inline notice + Agents-tab switch the
+    // manual assign path shows.
+    int startAgentForIssue(const Issue &issue, const QString &provider, bool createPr,
+                           bool quiet = false);
+    // Issue looper (adhoc #92): start an agent on the next open issue, watch it to
+    // completion, then automatically start the next — working through the open
+    // backlog one issue at a time until toggled off or the backlog is exhausted.
+    void toggleIssueLooper();
+    void looperStartNext();
+    void looperOnSessionFinished(int sessionId);
+    void updateIssueLooperButton();
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
     // Stop and remove one stored agent session (clear its issue assignment, drop
@@ -1680,7 +1693,7 @@ private:
     QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
     QLineEdit *m_issueQuickAdd = nullptr;
-    QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 160)
+    QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
@@ -2423,6 +2436,13 @@ private:
     // any provider, not just the saved default. Seeded from the default agent.
     QComboBox *m_issuePrioritizeAgentCombo = nullptr;
     bool m_prioritizeInFlight = false;
+    // Issue looper (adhoc #92): a checkable button that runs the default agent on
+    // every open issue in turn. m_looperSessionId is the session currently being
+    // watched; when it finishes the looper starts the next open issue.
+    QPushButton *m_issueLooperButton = nullptr;
+    bool m_looperActive = false;
+    int m_looperSessionId = 0;
+    QString m_looperProvider;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
     QPushButton *m_issueVoteButton = nullptr;
