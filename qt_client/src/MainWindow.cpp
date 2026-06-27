@@ -120,6 +120,7 @@
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QSystemTrayIcon>
@@ -19413,6 +19414,21 @@ QWidget *MainWindow::buildAgentsTab()
                                 QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_agentNewProvider);
     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
+    // Attach an image to the prompt (issue #56): paste from the clipboard (Ctrl+V
+    // is also handled below) or pick a file. The image is referenced by path so
+    // the launched agent can read it.
+    m_agentNewImageButton = new QPushButton;
+    m_agentNewImageButton->setObjectName("ghostButton");
+    m_agentNewImageButton->setCursor(Qt::PointingHandCursor);
+    m_agentNewImageButton->setFixedWidth(32);
+    m_agentNewImageButton->setToolTip(
+        "Attach an image to the prompt (or paste one with Ctrl+V)");
+    setOcticon(m_agentNewImageButton, "paperclip", 16);
+    connect(m_agentNewImageButton, &QPushButton::clicked, this,
+            &MainWindow::attachImageToNewAgentPrompt);
+    // Intercept Ctrl+V to turn a clipboard image into an attachment.
+    m_agentNewPromptEdit->installEventFilter(this);
+
     m_agentStartButton = new QPushButton("Start agent");
     m_agentStartButton->setObjectName("primaryButton");
     m_agentStartButton->setCursor(Qt::PointingHandCursor);
@@ -19433,6 +19449,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *newAgentBtns = new QHBoxLayout;
     newAgentBtns->setContentsMargins(0, 0, 0, 0);
     newAgentBtns->setSpacing(6);
+    newAgentBtns->addWidget(m_agentNewImageButton);
     newAgentBtns->addWidget(m_agentNewProvider);
     newAgentBtns->addStretch(1);
     newAgentBtns->addWidget(m_agentStartButton);
@@ -21246,6 +21263,81 @@ void MainWindow::startAdHocAgent()
         reloadAgents();
         switchToAgentsTab(session.id);
     }
+}
+
+// "Start a new agent" image button (issue #56): pick one or more image files and
+// reference each by absolute path in the prompt. The path survives into the
+// agent's worktree run, where Claude Code's Read tool can open the image.
+void MainWindow::attachImageToNewAgentPrompt()
+{
+    if (!m_agentNewPromptEdit)
+        return;
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Attach image to the prompt"), QString(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)"));
+    for (const QString &f : files)
+        referenceImageInNewAgentPrompt(f);
+    if (!files.isEmpty())
+        m_agentNewPromptEdit->setFocus();
+}
+
+// Ctrl+V into the new-agent prompt: if the clipboard holds an image, save it to a
+// temp PNG and reference it. Returns true only when an image was attached, so a
+// normal text paste still falls through to the editor.
+bool MainWindow::tryPasteImageIntoNewAgentPrompt()
+{
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    if (!mime || !mime->hasImage())
+        return false;
+    const QString path =
+        saveNewAgentPromptImage(qvariant_cast<QImage>(mime->imageData()));
+    if (path.isEmpty())
+        return false;
+    referenceImageInNewAgentPrompt(path);
+    return true;
+}
+
+// Save a pasted image to a stable temp file (not auto-removed: it must outlive
+// this call and be readable once the agent starts). Returns the path, or empty.
+QString MainWindow::saveNewAgentPromptImage(const QImage &image)
+{
+    if (image.isNull())
+        return QString();
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+        QStringLiteral("/forkmesh-agent-images");
+    QDir().mkpath(dir);
+    QTemporaryFile file(dir + QStringLiteral("/paste-XXXXXX.png"));
+    file.setAutoRemove(false);
+    if (!file.open())
+        return QString();
+    const QString path = file.fileName();
+    const bool ok = image.save(&file, "PNG");
+    file.close();
+    if (!ok) {
+        QFile::remove(path);
+        return QString();
+    }
+    return path;
+}
+
+// Append an "Attached image: <path>" line to the prompt. A plain absolute path is
+// enough for Claude Code to read the image; it also reads naturally for the
+// API-key providers, which see the same prompt text.
+void MainWindow::referenceImageInNewAgentPrompt(const QString &path)
+{
+    if (path.isEmpty() || !m_agentNewPromptEdit)
+        return;
+    const QString existing = m_agentNewPromptEdit->toPlainText();
+    QString ins;
+    if (!existing.isEmpty() && !existing.endsWith(QLatin1Char('\n')))
+        ins += QLatin1Char('\n');
+    ins += QStringLiteral("Attached image: %1\n").arg(path);
+    QTextCursor cursor = m_agentNewPromptEdit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(ins);
+    m_agentNewPromptEdit->setTextCursor(cursor);
+    m_agentNewPromptEdit->setFocus();
 }
 
 // Composer "+" : pick files and insert them as @path references (resolved
@@ -34553,6 +34645,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_messageInput && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+            return true;
+    }
+    // Pasting an image into the "Start a new agent" prompt attaches it (issue #56).
+    // Let a normal text paste fall through when the clipboard has no image.
+    if (obj == m_agentNewPromptEdit && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoNewAgentPrompt())
             return true;
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a

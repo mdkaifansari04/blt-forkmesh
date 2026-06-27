@@ -67,6 +67,7 @@ class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
 class QPlainTextEdit;
+class QImage;
 class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
@@ -2226,7 +2227,15 @@ private:
     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
     QPushButton *m_agentStartButton = nullptr;
+    QPushButton *m_agentNewImageButton = nullptr; // attach an image to the prompt
     void startAdHocAgent();
+    // Image attachments on the "Start a new agent" prompt (issue #56): paste from
+    // the clipboard or pick a file; the image is referenced by path so the
+    // launched agent can read it.
+    void attachImageToNewAgentPrompt();
+    bool tryPasteImageIntoNewAgentPrompt();
+    void referenceImageInNewAgentPrompt(const QString &path);
+    QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
