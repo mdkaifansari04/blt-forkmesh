@@ -21313,8 +21313,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentPromptEdit->setMaximumHeight(92);
     m_agentPromptEdit->setFrameShape(QFrame::NoFrame);
     m_agentPromptEdit->setObjectName("agentComposerEdit");
-    m_agentPromptEdit->setStyleSheet(
-        QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+    // Wrap long messages instead of growing sideways — no horizontal scrollbar,
+    // and the colours come from the themed stylesheet so the composer follows the
+    // light/dark theme (adhoc #177).
+    m_agentPromptEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_agentPromptEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // Enter sends the message, Shift+Enter inserts a newline (see eventFilter),
     // matching the Claude Code conversation input.
     m_agentPromptEdit->installEventFilter(this);
@@ -21352,11 +21355,22 @@ QWidget *MainWindow::buildAgentsTab()
         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
             runner->steer(prompt);
         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
-            m_agentStore->appendLog(
-                *session,
-                QStringLiteral("\n==> User prompt saved while session was not running\n%1")
-                    .arg(prompt));
-            showAgentSession(session->id);
+            // No live process: the session is stopped, waiting, failed or done.
+            // Restart it and fold this message into the resumed run as a steering
+            // instruction so the queued message actually takes effect (adhoc #177).
+            const int sid = session->id;
+            m_pendingSteerMessage.insert(sid, prompt);
+            if (session->provider == QLatin1String("claude-code"))
+                applyTranscriptEvent(
+                    sid, QJsonObject{
+                             {QStringLiteral("type"), QStringLiteral("_local_user")},
+                             {QStringLiteral("text"), prompt}});
+            else
+                m_agentStore->appendLog(
+                    *session,
+                    QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                        .arg(prompt));
+            continueSelectedAgentSession();
         }
         m_agentPromptEdit->clear();
     });
@@ -21399,8 +21413,7 @@ QWidget *MainWindow::buildAgentsTab()
     // with the message field above an accessory + send button row.
     auto *composer = new QFrame;
     composer->setObjectName("agentComposer");
-    composer->setStyleSheet(QStringLiteral(
-        "#agentComposer{background:#161b22;border:1px solid #30363d;border-radius:12px;}"));
+    // Styled from the themed stylesheet (Theme.h) so it matches the light theme.
     auto *composerCol = new QVBoxLayout(composer);
     composerCol->setContentsMargins(12, 10, 10, 8);
     composerCol->setSpacing(6);
@@ -23396,6 +23409,16 @@ void MainWindow::processAgentQueue()
         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
             config.taskOverride = snapshot.prompt;
+        // A message queued from the always-on composer while this session was
+        // stopped/waiting (adhoc #177): hand it to the resumed run as a steer.
+        if (const QString steer = m_pendingSteerMessage.take(sessionId); !steer.isEmpty()) {
+            const QString base = config.taskOverride.isEmpty() ? snapshot.prompt
+                                                               : config.taskOverride;
+            config.taskOverride =
+                base.isEmpty()
+                    ? steer
+                    : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
+        }
         acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
     }
     reloadAgents();
@@ -23662,10 +23685,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // built-in default preamble followed by the full workflow body, as before.
     const QString customPreamble =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
-    const QString prompt =
+    QString prompt =
         customPreamble.isEmpty()
             ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
             : customPreamble + QStringLiteral("\n\n") + lead;
+    // A message queued from the always-on composer while this session was stopped
+    // or waiting (adhoc #177): a fresh `claude` process replays the prompt, so
+    // append the steer here rather than relying on the preserved transcript.
+    if (const QString steer = m_pendingSteerMessage.take(sid); !steer.isEmpty())
+        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -25017,10 +25045,13 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
+    // The composer is always live whenever a session is selected: typing + Send
+    // steers a running agent, or restarts a stopped/waiting one with the message
+    // folded in (adhoc #177). It no longer greys out for PR-scoped sessions.
     if (m_agentSendPromptButton)
-        m_agentSendPromptButton->setEnabled(issueBacked);
+        m_agentSendPromptButton->setEnabled(selected);
     if (m_agentPromptEdit)
-        m_agentPromptEdit->setEnabled(issueBacked);
+        m_agentPromptEdit->setEnabled(selected);
 }
 
 // ---- IDE extension integration --------------------------------------------
