@@ -19559,13 +19559,11 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
 }
 
-// Effective run duration for the throughput figure: prefer the CLI-reported
-// active run time (durationMs, the same value the Time column shows), and fall
-// back to the start→finish wall-clock span for sessions that don't report it
-// (e.g. the API agents) so the Speed field is populated for every finished task.
-// While a session is still running, measure against the wall clock from its
-// start so the Speed figure ticks up live as tokens stream in, rather than
-// staying blank until the final result lands.
+// Effective run duration for the throughput figure. The Speed cell is only shown
+// while a session is running, so the live path matters most: measure against the
+// wall clock from the session's start so the figure ticks up as tokens stream in.
+// The CLI-reported active run time (durationMs) and the start→finish span are kept
+// as fallbacks for any caller that needs a duration for a finished session.
 qint64 agentEffectiveDurationMs(const AgentSession &s)
 {
     if (s.durationMs > 0)
@@ -19582,13 +19580,13 @@ qint64 agentEffectiveDurationMs(const AgentSession &s)
 
 // Fill the Speed cell — the throughput at which this agent exchanged tokens with
 // the service over the task, in tokens/second (total tokens ÷ run time). A rough
-// gauge of how fast the model and network served the task; shows "-" until both a
-// token total and a run duration are known. Sorts on the raw rate via
-// kTableSortRole.
+// gauge of how fast the model and network served the task. Only shown while the
+// session is running (a live tok/s gauge); finished sessions show "-" since the
+// figure is no longer ticking. Sorts on the raw rate via kTableSortRole.
 void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
 {
     const qint64 durationMs = agentEffectiveDurationMs(s);
-    const double rate = (tokens > 0 && durationMs > 0)
+    const double rate = (s.status == AgentStatus::Running && tokens > 0 && durationMs > 0)
                             ? tokens * 1000.0 / static_cast<double>(durationMs)
                             : 0.0;
     cell->setData(Qt::DisplayRole,
