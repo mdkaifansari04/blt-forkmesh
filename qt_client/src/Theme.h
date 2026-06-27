@@ -516,6 +516,23 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #solanaBannerLabel {
     color: #56d364; font-size: 13px; font-weight: 600; background: transparent;
 }
+#issueLooperBanner {
+    background-color: #161f2e;
+    border: 1px solid #1f6feb;
+    border-radius: 8px;
+}
+#issueLooperBannerTitle {
+    color: #79c0ff; font-size: 13px; font-weight: 700; background: transparent;
+}
+#issueLooperBannerDetail {
+    color: #8b949e; font-size: 12px; background: transparent;
+}
+#issueLooperBannerBar {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 3px;
+}
+#issueLooperBannerBar::chunk {
+    background-color: #1f6feb; border-radius: 3px; margin: 0px;
+}
 #walletVerifyBanner {
     background-color: #2b210a;
     border-bottom: 1px solid #bb8009;
@@ -975,6 +992,15 @@ QAbstractItemView::item { border: 0px; }
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #238636; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #238636; }
+
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #1f2630; }
 
 )";
 
@@ -1449,6 +1475,23 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #solanaBannerLabel {
     color: #1a7f37; font-size: 13px; font-weight: 600; background: transparent;
 }
+#issueLooperBanner {
+    background-color: #ddf4ff;
+    border: 1px solid #54aeff;
+    border-radius: 8px;
+}
+#issueLooperBannerTitle {
+    color: #0969da; font-size: 13px; font-weight: 700; background: transparent;
+}
+#issueLooperBannerDetail {
+    color: #57606a; font-size: 12px; background: transparent;
+}
+#issueLooperBannerBar {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 3px;
+}
+#issueLooperBannerBar::chunk {
+    background-color: #0969da; border-radius: 3px; margin: 0px;
+}
 #walletVerifyBanner {
     background-color: #fff8c5;
     border-bottom: 1px solid #d4a72c;
@@ -1907,6 +1950,15 @@ QAbstractItemView::item { border: 0px; }
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #1f883d; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #1f883d; }
+
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #f6f8fa; color: #1f2328;
+    border: 1px solid #d0d7de; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #eef1f5; }
 
 )";
 
