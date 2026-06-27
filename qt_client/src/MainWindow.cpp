@@ -4554,6 +4554,20 @@ QString MainWindow::testIssueAgentProvider() const
                                 : QString();
 }
 
+QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
+{
+    if (!m_worktreesTable)
+        return QString();
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+        if (b && b->data(Qt::UserRole).toString() == branch) {
+            if (QTableWidgetItem *ab = m_worktreesTable->item(row, 3))
+                return ab->text();
+        }
+    }
+    return QString();
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -29370,10 +29384,11 @@ QWidget *MainWindow::buildWorktreesTab()
     info->setWordWrap(true);
     layout->addWidget(info);
 
-    m_worktreesTable = new QTableWidget(0, 4);
+    m_worktreesTable = new QTableWidget(0, 5);
     m_worktreesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_worktreesTable);
-    m_worktreesTable->setHorizontalHeaderLabels({"Branch", "Path", "Status", ""});
+    m_worktreesTable->setHorizontalHeaderLabels(
+        {"Branch", "Path", "Status", "Ahead/Behind", ""});
     m_worktreesTable->verticalHeader()->setVisible(false);
     m_worktreesTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_worktreesTable->verticalHeader()->setDefaultSectionSize(36);
@@ -29387,7 +29402,8 @@ QWidget *MainWindow::buildWorktreesTab()
     wh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     wh->setSectionResizeMode(1, QHeaderView::Stretch);
     wh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    wh->setSectionResizeMode(3, QHeaderView::Fixed);
+    wh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    wh->setSectionResizeMode(4, QHeaderView::Fixed);
     makeColumnsResizable(m_worktreesTable);
     connect(m_worktreesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -29573,6 +29589,9 @@ void MainWindow::loadWorktreesPanel()
     }
 
     const QString mainPath = QDir(repoPath).absolutePath();
+    // Base branch each worktree's ahead/behind count is measured against (#272
+    // follow-up: show how far each worktree has diverged from main in the list).
+    const QString baseBranch = repoDefaultBranch(repoBranches());
     // Each worktree's dirty/clean status needs its own `git status`, which was run
     // synchronously per row and froze the UI for seconds on repos with many
     // worktrees (a 21s stall was reported). Fill the column asynchronously instead
@@ -29626,6 +29645,60 @@ void MainWindow::loadWorktreesPanel()
                     }
                 }
             });
+
+        // Ahead/behind vs the default branch, also filled async per row so a repo
+        // with many worktrees still paints instantly. `rev-list --left-right` on
+        // base...HEAD reports "<behind>\t<ahead>" (left = base, right = worktree).
+        auto *abItem = new QTableWidgetItem(
+            baseBranch.isEmpty() ? QStringLiteral("—")
+                                 : QString::fromUtf8("checking\xE2\x80\xA6"));
+        abItem->setTextAlignment(Qt::AlignCenter);
+        m_worktreesTable->setItem(row, 3, abItem);
+        if (!baseBranch.isEmpty()) {
+            runGitDetached(
+                wt.path,
+                {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
+                 QStringLiteral("--count"),
+                 baseBranch + QStringLiteral("...HEAD")},
+                [this, statusGen, wtPath, baseBranch](bool ok, const QByteArray &c) {
+                    if (statusGen != m_worktreeStatusGen || !m_worktreesTable)
+                        return; // table rebuilt while git ran — drop this result
+                    const QStringList n =
+                        QString::fromUtf8(c).trimmed().split(QRegularExpression(
+                            QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                    const int behind = ok && n.size() > 0 ? n.at(0).toInt() : 0;
+                    const int ahead = ok && n.size() > 1 ? n.at(1).toInt() : 0;
+                    QString text, tip;
+                    if (ahead > 0 && behind > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
+                                   .arg(ahead).arg(behind);
+                        tip = QStringLiteral("%1 commit(s) ahead of and %2 behind %3")
+                                  .arg(ahead).arg(behind).arg(baseBranch);
+                    } else if (ahead > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x91%1").arg(ahead);
+                        tip = QStringLiteral("%1 commit(s) ahead of %2")
+                                  .arg(ahead).arg(baseBranch);
+                    } else if (behind > 0) {
+                        text = QString::fromUtf8("\xE2\x86\x93%1").arg(behind);
+                        tip = QStringLiteral("%1 commit(s) behind %2")
+                                  .arg(behind).arg(baseBranch);
+                    } else {
+                        text = QStringLiteral("—");
+                        tip = QStringLiteral("Up to date with %1").arg(baseBranch);
+                    }
+                    const QString want = QDir(wtPath).absolutePath();
+                    for (int r = 0; r < m_worktreesTable->rowCount(); ++r) {
+                        QTableWidgetItem *p = m_worktreesTable->item(r, 1);
+                        if (p && QDir(p->text()).absolutePath() == want) {
+                            if (QTableWidgetItem *cc = m_worktreesTable->item(r, 3)) {
+                                cc->setText(text);
+                                cc->setToolTip(tip);
+                            }
+                            break;
+                        }
+                    }
+                });
+        }
 
         auto *cell = new QWidget;
         auto *h = new QHBoxLayout(cell);
@@ -29719,11 +29792,11 @@ void MainWindow::loadWorktreesPanel()
             h->addWidget(rmBtn);
         }
         h->addStretch();
-        m_worktreesTable->setCellWidget(row, 3, cell);
+        m_worktreesTable->setCellWidget(row, 4, cell);
         actionWidth = qMax(actionWidth, cell->sizeHint().width());
     }
     if (actionWidth > 0)
-        m_worktreesTable->setColumnWidth(3, actionWidth + 12);
+        m_worktreesTable->setColumnWidth(4, actionWidth + 12);
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
