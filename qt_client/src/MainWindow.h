@@ -1472,6 +1472,11 @@ private:
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
+    // Second half of syncRepository: spawn the async fetch/clone once the
+    // off-thread pre-fetch prep (refs digest + origin set-url) has finished.
+    void startSyncFetch(int index, bool quiet, bool hasMirror,
+                        const QStringList &args, const QString &beforeDigest,
+                        const QString &beforeHeadCommit);
     void autoSyncMirrors();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
