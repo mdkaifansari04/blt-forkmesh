@@ -238,6 +238,9 @@ public:
     void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
     void testReloadWorktreesPanel() { loadWorktreesPanel(); }
     QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
+    // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
+    // test can prove the list shows how far each worktree diverges from main.
+    QString testWorktreeAheadBehindText(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -673,7 +676,9 @@ private:
     // Seed m_sessionTokens from the persisted totals (taking the max) so the live
     // counter survives reloads and continues from the saved base, not from zero.
     void seedSessionTokens();
-    // Repaint the detail panel's "Session token usage" line for one session.
+    // Refresh the "Session token usage" line for one session. Since issue #84
+    // this no longer paints a detail-panel label — it feeds the figures into the
+    // top-bar usage chart's hover tooltip (TokenUsageMiniChart::setStats).
     void setAgentUsageLabel(const AgentSession &session);
     // Parse "==> [net]" markers from a session log into the traffic graphic.
     void updateAgentNetworkPanel(const QString &log, const QString &status);
@@ -1175,6 +1180,14 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
+    // Quick-add image attachment (issue #79): pick or paste an image in the footer
+    // quick-add bar. In "No issue" mode the path is sent to the agent in its
+    // prompt; otherwise the image is attached to the created issue.
+    void attachQuickAddImage();
+    bool tryPasteImageIntoQuickAdd();
+    void queueQuickAddImage(const QString &path);
+    void clearQuickAddImages();
+    void updateQuickAddImageButton();
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -1666,6 +1679,8 @@ private:
     QComboBox *m_quickAddAgentProvider = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
+    QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
+    QStringList m_quickAddImages;               // image paths queued for next send
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
@@ -2170,7 +2185,6 @@ private:
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
-    QLabel *m_agentUsage = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
@@ -2195,9 +2209,6 @@ private:
     QWidget *m_agentOutputToggle = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
-    QProgressBar *m_agentUsageBar = nullptr;     // weekly usage graph
-    QProgressBar *m_agentUsage5hBar = nullptr;   // 5-hour usage graph
-    QLabel *m_agentStatsLabel = nullptr;         // live tokens + cost counter
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
     QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
