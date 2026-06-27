@@ -57,6 +57,8 @@ QJsonObject AgentSession::toJson() const
     obj["costUsd"] = costUsd;
     obj["spendBeforeUsd"] = spendBeforeUsd;
     obj["spendAfterUsd"] = spendAfterUsd;
+    obj["numTurns"] = numTurns;
+    obj["durationMs"] = durationMs;
     obj["lastError"] = lastError;
     return obj;
 }
@@ -91,6 +93,8 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.costUsd = obj.value("costUsd").toDouble();
     session.spendBeforeUsd = obj.value("spendBeforeUsd").toDouble();
     session.spendAfterUsd = obj.value("spendAfterUsd").toDouble();
+    session.numTurns = obj.value("numTurns").toInt();
+    session.durationMs = obj.value("durationMs").toVariant().toLongLong();
     session.lastError = obj.value("lastError").toString();
     return session;
 }
