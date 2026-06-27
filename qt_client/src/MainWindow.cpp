@@ -6769,7 +6769,12 @@ void MainWindow::startDiagnostics()
         const QString logPath =
             QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
         m_stallLogPath = logPath;
-        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath);
+        // Recorded with each stall so a report sent to an agent identifies the
+        // exact build and where its source lives (FORKMESH_SOURCE_DIR is the
+        // build-time qt_client path).
+        const QString buildInfo =
+            QStringLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
+        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath, buildInfo);
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
