@@ -5,7 +5,7 @@ title: make the sync run in the background so it doesn't freeze the ui
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 3
 progress: 0
 assignees: []
 createdAt: 1782425823542
