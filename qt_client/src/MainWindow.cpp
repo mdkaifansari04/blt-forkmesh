@@ -200,10 +200,16 @@ constexpr int kCommitGraphCol = 8;
 constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
 
-// URL scheme for the clickable branch link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Worktrees tab (issue #265). Shared by the link builder and its handler.
+// URL scheme for the clickable worktree-location link in the agent session
+// header; the percent-encoded branch name follows. Clicking it opens that
+// branch's row in the Worktrees tab (issue #265). Shared by the link builder
+// and its handler.
 const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
+
+// URL scheme for the clickable branch-name link in the agent session header; the
+// percent-encoded branch name follows. Clicking it opens that branch's row in
+// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+const QLatin1String kBranchLinkScheme("forkmesh-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -20085,7 +20091,10 @@ QWidget *MainWindow::buildAgentsTab()
                                          Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href.startsWith(kWorktreeLinkScheme))
+        if (href.startsWith(kBranchLinkScheme))
+            switchToBranch(QUrl::fromPercentEncoding(
+                href.mid(kBranchLinkScheme.size()).toUtf8()));
+        else if (href.startsWith(kWorktreeLinkScheme))
             switchToWorktree(QUrl::fromPercentEncoding(
                 href.mid(kWorktreeLinkScheme.size()).toUtf8()));
         else if (href.startsWith(kPullLinkScheme))
@@ -21431,17 +21440,32 @@ void MainWindow::refreshAgentMergeState()
 }
 
 // HTML for a branch name that, when clicked in the agent session header, opens
-// the branch's worktree in the Worktrees tab (handled by m_agentMeta's
-// linkActivated -> switchToWorktree). Plain (un-escaped) when there's no branch.
-static QString worktreeLinkHtml(const QString &branch)
+// the branch's row in the Branches tab (handled by m_agentMeta's linkActivated
+// -> switchToBranch). Plain (un-escaped) when there's no branch.
+static QString branchLinkHtml(const QString &branch)
 {
     if (branch.isEmpty())
+        return QString();
+    const QString href = kBranchLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, branch.toHtmlEscaped());
+}
+
+// HTML for a worktree location shown next to the branch in the agent session
+// header. Clicking it opens the branch's row in the Worktrees tab (handled by
+// m_agentMeta's linkActivated -> switchToWorktree); the branch is carried in the
+// href so the handler can match the row. Empty when there's no worktree on disk.
+static QString worktreeLinkHtml(const QString &branch, const QString &worktreePath)
+{
+    if (branch.isEmpty() || worktreePath.isEmpty())
         return QString();
     const QString href = kWorktreeLinkScheme +
                          QString::fromUtf8(QUrl::toPercentEncoding(branch));
     return QStringLiteral(
                "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
-        .arg(href, branch.toHtmlEscaped());
+        .arg(href, worktreePath.toHtmlEscaped());
 }
 
 // "PR #N open" for the agent-detail meta line, as a link to that pull request's
@@ -21523,17 +21547,30 @@ void MainWindow::showAgentSession(int sessionId)
                   " · <span style='color:#a371f7'>merged into %1</span>")
                   .arg(agentMergeBase(*session).toHtmlEscaped())
             : QString();
+    // Resolve this session's worktree folder from its branch so the header can
+    // show its location next to the branch and link straight to it (adhoc #123).
+    QString worktreePath;
+    if (!session->branchName.isEmpty()) {
+        const int repoIdx = repoIndexFor(session->owner, session->name);
+        if (repoIdx >= 0)
+            worktreePath = worktreePathForBranch(
+                m_repositories.at(repoIdx).localPath, session->branchName);
+    }
     if (m_agentMeta && isExternalSession(sessionId)) {
-        // Rich text so the branch name links to its Worktrees-tab row (issue
-        // #265); every other part is HTML-escaped to stay literal.
+        // Rich text so the branch name links to its Branches-tab row and the
+        // worktree location links to its Worktrees-tab row (issue #265, adhoc
+        // #123); every other part is HTML-escaped to stay literal.
         const QString sep = QStringLiteral(" · ");
         QString meta = QStringLiteral("External Claude Code") + sep +
                        QStringLiteral("%1/%2")
                            .arg(session->owner.toHtmlEscaped(),
                                 session->name.toHtmlEscaped()) +
                        sep + agentStatusText(session->status).toHtmlEscaped();
-        if (!session->branchName.isEmpty())
-            meta += sep + worktreeLinkHtml(session->branchName);
+        if (!session->branchName.isEmpty()) {
+            meta += sep + branchLinkHtml(session->branchName);
+            if (!worktreePath.isEmpty())
+                meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
+        }
         meta += sep + QStringLiteral("watch-only");
         meta += mergedMeta;
         m_agentMeta->setText(meta);
@@ -21546,18 +21583,21 @@ void MainWindow::showAgentSession(int sessionId)
                 : (session->createPr ? QStringLiteral("PR opens on finish")
                                      : QStringLiteral("no PR"))
                       .toHtmlEscaped();
-        // Rich text so the branch name and PR are links (issues #265, adhoc #53);
-        // every other part is HTML-escaped to stay literal.
+        // Rich text so the branch name, worktree location and PR are links
+        // (issues #265, adhoc #53, adhoc #123); every other part is HTML-escaped
+        // to stay literal.
         const QString sep = QStringLiteral(" · ");
+        QString branchPart = session->branchName.isEmpty()
+                                 ? QStringLiteral("(no branch)")
+                                 : branchLinkHtml(session->branchName);
+        if (!worktreePath.isEmpty())
+            branchPart += sep + worktreeLinkHtml(session->branchName, worktreePath);
         QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
                        QStringLiteral("%1/%2")
                            .arg(session->owner.toHtmlEscaped(),
                                 session->name.toHtmlEscaped()) +
                        sep + agentStatusText(session->status).toHtmlEscaped() + sep +
-                       (session->branchName.isEmpty()
-                            ? QStringLiteral("(no branch)")
-                            : worktreeLinkHtml(session->branchName)) +
-                       sep + pr;
+                       branchPart + sep + pr;
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
             meta += sep + QStringLiteral("%1s")
                               .arg((session->finishedAtMs - session->startedAtMs) / 1000);
@@ -30146,6 +30186,27 @@ void MainWindow::switchToWorktree(const QString &branch)
         m_repoDetailStack->setCurrentIndex(m_worktreesTabIndex);
     loadWorktreesPanel();
     selectWorktreeRow(branch);
+}
+
+// Open the Branches tab and select the row whose name matches, so clicking a
+// branch name in the agent session header lands on that branch's diff (adhoc
+// #123). Selecting the row fires currentCellChanged -> showBranchDiff.
+void MainWindow::switchToBranch(const QString &branch)
+{
+    if (m_repoDetailTabs && m_repoDetailTabs->button(m_branchesTabIndex))
+        m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
+    if (m_repoDetailStack && m_branchesTabIndex >= 0)
+        m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
+    loadBranchesPanel();
+    if (!m_branchesTable || branch.isEmpty())
+        return;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *it = m_branchesTable->item(row, 0);
+        if (it && it->text() == branch) {
+            m_branchesTable->selectRow(row); // fires currentCellChanged -> diff
+            return;
+        }
+    }
 }
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
