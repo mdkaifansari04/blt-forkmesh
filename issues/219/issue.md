@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 219
 title: use the icons we have in the folder for web as well i guess move them to the cloudfalre dir and have qt share from there
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 30
 progress: 0
