@@ -829,7 +829,27 @@ public:
         QStyledItemDelegate::paint(painter, opt, index);
     }
 
+    // Item views shape (and, for elided columns, fully lay out) the ENTIRE
+    // display string on every paint, even though only the first few dozen
+    // characters are ever visible in a list cell. An adhoc agent session stores
+    // its whole prompt as the row "title", so a single cell could carry a
+    // multi-thousand-character backtrace (issue #216) and block the GUI thread
+    // for >1.5 s HarfBuzz-shaping text nobody can see. Capping the handed-off
+    // string to a length far beyond any column's visible width keeps the drawn
+    // result pixel-identical while bounding the per-paint shaping cost.
+    QString displayText(const QVariant &value, const QLocale &locale) const override
+    {
+        QString text = QStyledItemDelegate::displayText(value, locale);
+        if (text.size() > kMaxCellDisplayChars) {
+            text.truncate(kMaxCellDisplayChars);
+            text += QChar(0x2026); // horizontal ellipsis
+        }
+        return text;
+    }
+
 protected:
+    static constexpr int kMaxCellDisplayChars = 512;
+
     bool eventFilter(QObject *obj, QEvent *event) override
     {
         if (event->type() == QEvent::Leave)
@@ -32564,8 +32584,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
     }
     loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
+    // the Branches panel — it runs a git command per branch (probing each for
+    // merge conflicts), which was slow and pointless here since "Merge into main"
+    // is driven from the Agents/Worktrees tabs, not the Branches tab.
+    // loadBranchesAndTags() repaints the panel only if it's the visible tab.
+    loadBranchesAndTags();
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
