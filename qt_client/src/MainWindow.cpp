@@ -16518,39 +16518,71 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // One dry-run runs off-thread at a time. A redundant drain (a double
+    // singleShot, or queuePullConflictCheck firing while a worker runs) just
+    // returns here — the in-flight worker reschedules us when it finishes, so the
+    // queue still drains in order.
+    if (m_pullConflictCheckInFlight)
+        return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
+    const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
-    if (store.canWrite()) {
-        bool clean = false;
-        QStringList conflictFiles;
-        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
-        // single cold `git apply --check` can run well over the 1.5s stall
-        // threshold — pump the event loop while it runs so the window stays
-        // responsive instead of freezing on one PR's dry-run.
-        const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
-                                 /*keepGuiAlive=*/true) &&
-            !clean;
-        // The gen check at entry already gates this turn; re-check defensively in
-        // case checkMergeable() ever pumps the event loop and lets a fresh
-        // reloadPulls() supersede this pass while git ran.
-        if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
-            if (conflict)
-                m_pullConflictByNumber.insert(number, true);
-            else
-                m_pullConflictByNumber.remove(number);
-            setPullConflictBadge(number, conflict);
-            // If this dry-run was for the PR currently on screen, refresh its
-            // merge UI now that the result is cached — updatePullActionState()
-            // deferred to us instead of blocking the GUI on the live check.
-            if (number == m_currentPullNumber)
-                updatePullActionState();
-        }
+    if (!store.canWrite()) {
+        // No working tree to test the patch against; skip and drain the rest.
+        if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+            QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+        return;
     }
-    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
-        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A single cold `git apply --check` can run well over the 1.5s stall
+    // threshold, so run it on a worker thread rather than on the GUI thread. The
+    // old keepGuiAlive path pumped the event loop in place, which could itself
+    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
+    // reports). PullStore is copied by value and only shells out to git, so the
+    // worker touches no shared Qt state; results come back via shared_ptr to the
+    // finished handler, which runs on the main thread.
+    m_pullConflictCheckInFlight = true;
+    auto clean = std::make_shared<bool>(false);
+    auto mergeable = std::make_shared<bool>(false);
+    auto conflictFiles = std::make_shared<QStringList>();
+    QThread *worker = QThread::create([store, number, clean, mergeable,
+                                       conflictFiles]() mutable {
+        *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
+                                          nullptr, /*keepGuiAlive=*/false);
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, gen, number, fingerprint, clean, mergeable,
+             conflictFiles]() {
+                m_pullConflictCheckInFlight = false;
+                worker->deleteLater();
+                const bool conflict = *mergeable && !*clean;
+                // Apply the result only if this repo/list is still current; a
+                // reloadPulls() may have bumped the generation while git ran.
+                if (gen == m_pullConflictGen) {
+                    m_pullConflictCache.insert(
+                        number, {fingerprint, conflict, *conflictFiles});
+                    if (conflict)
+                        m_pullConflictByNumber.insert(number, true);
+                    else
+                        m_pullConflictByNumber.remove(number);
+                    setPullConflictBadge(number, conflict);
+                    // If this dry-run was for the PR currently on screen, refresh
+                    // its merge UI now that the result is cached.
+                    if (number == m_currentPullNumber)
+                        updatePullActionState();
+                }
+                // Drain the next pending check under the *current* generation,
+                // whether or not this result was superseded: a superseding
+                // reloadPulls() rebuilt the queue and is waiting on this worker to
+                // release the in-flight guard.
+                if (!m_pendingPullConflictChecks.isEmpty()) {
+                    const quint64 current = m_pullConflictGen;
+                    QTimer::singleShot(0, this, [this, current] {
+                        processPendingPullConflicts(current);
+                    });
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
@@ -21451,7 +21483,24 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSearch->setClearButtonEnabled(true);
     connect(m_agentSearch, &QLineEdit::textChanged, this,
             [this] { refreshAgentTable(); });
-    listLayout->addWidget(m_agentSearch);
+
+    // "Delete all merged" sits on top of the list and wipes every merged session's
+    // worktree, branch and agent in one batch (adhoc #235). It shares the search
+    // row to keep the toolbar compact and stays disabled until something is merged.
+    m_agentDeleteMergedButton = new QPushButton("Delete all merged");
+    m_agentDeleteMergedButton->setObjectName("dangerButton");
+    m_agentDeleteMergedButton->setCursor(Qt::PointingHandCursor);
+    m_agentDeleteMergedButton->setToolTip(
+        "Delete the worktree, branch and session of every merged agent");
+    setOcticon(m_agentDeleteMergedButton, "trash", 16);
+    connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
+            &MainWindow::deleteAllMergedAgentSessions);
+    auto *agentListToolbar = new QHBoxLayout;
+    agentListToolbar->setContentsMargins(0, 0, 0, 0);
+    agentListToolbar->setSpacing(8);
+    agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
+    listLayout->addLayout(agentListToolbar);
 
     listLayout->addWidget(m_agentTable, 1);
 
@@ -22798,9 +22847,15 @@ void MainWindow::refreshAgentTable()
     // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
     // this iterator valid even if the member vector is replaced underneath us.
     const QList<AgentSession> sessions = m_agentSessions;
+    // Whether "Delete all merged" has anything to act on — counted across the whole
+    // repo, before the search filter, since the batch ignores the filter (adhoc #235).
+    int mergedDeletable = 0;
     for (const AgentSession &session : sessions) {
         if (session.owner != owner || session.name != name)
             continue;
+        if (session.merged && !session.branchName.isEmpty()
+            && !isExternalSession(session.id))
+            ++mergedDeletable;
         if (!query.isEmpty()) {
             QStringList haystack{session.issueTitle,
                                  agentProviderName(session.provider),
@@ -22924,6 +22979,17 @@ void MainWindow::refreshAgentTable()
     }
     m_agentTable->setSortingEnabled(true);
     block.unblock();
+
+    if (m_agentDeleteMergedButton) {
+        m_agentDeleteMergedButton->setEnabled(mergedDeletable > 0);
+        m_agentDeleteMergedButton->setToolTip(
+            mergedDeletable > 0
+                ? QStringLiteral("Delete the worktree, branch and session of %1 "
+                                 "merged agent%2")
+                      .arg(mergedDeletable)
+                      .arg(mergedDeletable == 1 ? QString() : QStringLiteral("s"))
+                : QStringLiteral("No merged agent sessions to delete"));
+    }
 
     int selRow = -1;
     for (int row = 0; row < m_agentTable->rowCount(); ++row) {
@@ -33457,7 +33523,8 @@ bool MainWindow::localBranchExists(const QString &repoPath,
 // branch, and the stored agent session(s) that ran on it. Resolves the repo from
 // the open detail view; agent sessions are matched by branch.
 void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
-                                              const QString &branch)
+                                              const QString &branch, bool confirm,
+                                              bool async)
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -33518,9 +33585,11 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                             .arg(*issueNumbers.cbegin())
                       : QStringLiteral("\n\nThe %1 linked issues will be closed.")
                             .arg(issueNumbers.size());
-    if (QMessageBox::question(this, QStringLiteral("Delete worktree, branch & agent"),
-                              prompt)
-        != QMessageBox::Yes)
+    if (confirm
+        && QMessageBox::question(this,
+                                 QStringLiteral("Delete worktree, branch & agent"),
+                                 prompt)
+               != QMessageBox::Yes)
         return;
 
     // The recursive worktree folder delete is already off the UI thread (async
@@ -33543,9 +33612,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     if (!worktreePath.isEmpty()) {
         // removeWorktree handles the folder + branch and refreshes the panels.
         // async=true so the recursive folder delete runs off the UI thread and the
-        // window stays clickable while it works (issue #95).
+        // window stays clickable while it works (issue #95). The "Delete all merged"
+        // batch passes async=false so its sequential removes don't race each other.
         removeWorktree(worktreePath, branch, /*confirm=*/false,
-                       /*alsoDeleteBranch=*/willDeleteBranch, /*async=*/true);
+                       /*alsoDeleteBranch=*/willDeleteBranch, async);
     } else if (willDeleteBranch && localBranchExists(repoPath, branch)) {
         // No worktree left (the agent already cleaned it up) — just drop the branch.
         QString err;
@@ -33606,6 +33676,65 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                          ? QStringLiteral("Closed the linked issue.")
                          : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
     }
+}
+
+// Batch "Delete all merged": for every merged agent session in the open repo, wipe
+// its worktree folder, branch and stored session — the same cleanup the per-session
+// "Delete all" does, but for the whole merged backlog after one confirmation (adhoc
+// #235). Sessions are grouped by branch so a branch with several sessions is handled
+// once; deleteWorktreeBranchAndAgent removes all of that branch's sessions together.
+void MainWindow::deleteAllMergedAgentSessions()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoPath = repo.localPath;
+    if (repoPath.isEmpty())
+        return;
+
+    QStringList branches;
+    QSet<QString> seen;
+    int sessionCount = 0;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner != repo.owner || s.name != repo.name)
+            continue;
+        // Only landed work, with a real branch, that we actually own (external
+        // watch-only sessions have no worktree/branch to remove).
+        if (!s.merged || s.branchName.isEmpty() || isExternalSession(s.id))
+            continue;
+        ++sessionCount;
+        if (!seen.contains(s.branchName)) {
+            seen.insert(s.branchName);
+            branches << s.branchName;
+        }
+    }
+    if (branches.isEmpty()) {
+        flashMessage(QStringLiteral("No merged agent sessions to delete."));
+        return;
+    }
+
+    const QString prompt =
+        QStringLiteral("Delete %1 merged agent session%2 along with their worktrees "
+                       "and branches?\n\nUncommitted changes in those worktrees will "
+                       "be lost. This cannot be undone.")
+            .arg(sessionCount)
+            .arg(sessionCount == 1 ? QString() : QStringLiteral("s"));
+    if (QMessageBox::question(this, QStringLiteral("Delete all merged"), prompt)
+        != QMessageBox::Yes)
+        return;
+
+    // Resolve every worktree path up front against the live worktree list, then
+    // delete: each call below reloads m_agentSessions, but we iterate the branch
+    // snapshot captured here, so that churn can't disturb the loop. confirm=false —
+    // the user already approved the whole batch above; async=false so the removes
+    // run one at a time instead of racing concurrent `git worktree remove`s.
+    for (const QString &branch : std::as_const(branches)) {
+        const QString wt = worktreePathForBranch(repoPath, branch);
+        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false, /*async=*/false);
+    }
+    flashMessage(QStringLiteral("Deleted %1 merged agent session%2.")
+                     .arg(sessionCount)
+                     .arg(sessionCount == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,

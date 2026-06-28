@@ -853,8 +853,16 @@ private:
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
     // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
+    // once up front); async=false removes the worktree synchronously so a batch of
+    // deletes runs one git worktree-remove at a time rather than racing.
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
-                                      const QString &branch);
+                                      const QString &branch, bool confirm = true,
+                                      bool async = true);
+    // Batch counterpart to "Delete all": wipe the worktree, branch and session of
+    // every merged agent session in the open repo after one confirmation (adhoc
+    // #235).
+    void deleteAllMergedAgentSessions();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
@@ -2408,6 +2416,11 @@ private:
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
     QList<QPair<int, QString>> m_pendingPullConflictChecks;
+    // True while a conflict dry-run runs on a worker thread. The drain launches
+    // one `git apply --check` at a time off the GUI thread (the slow cold-cache
+    // run used to block the event loop for ~1.5s); this guard keeps a second
+    // drain from starting a concurrent worker before the first finishes.
+    bool m_pullConflictCheckInFlight = false;
     // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
     // the patch changes. Shared by reloadPulls() and updatePullActionState().
     static QString pullPatchFingerprint(const QString &patch);
@@ -2739,6 +2752,9 @@ private:
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
+    // Above the session list: wipe every merged session's worktree, branch and
+    // agent in one batch (adhoc #235).
+    QPushButton *m_agentDeleteMergedButton = nullptr;
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
