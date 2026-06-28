@@ -4035,6 +4035,27 @@ namespace {
 // m_repoDetailLoading guard backstops anything that still slips through.
 int g_gitKeepAliveDepth = 0;
 
+// Process-wide monotonic clock + the time we last pumped the GUI under a
+// keep-alive scope. Shared across every git read so a burst of separate-but-fast
+// calls can be throttled as one stream (see waitForGit).
+QElapsedTimer &keepAliveClock()
+{
+    static QElapsedTimer c;
+    if (!c.isValid())
+        c.start();
+    return c;
+}
+qint64 g_lastKeepAlivePumpMs = 0;
+
+// Service the GUI (timers — incl. the stall-watchdog heartbeat — paints, queued
+// slots, but not user input) and record when. One place so the per-call throttle
+// and the in-wait poll share a single "last pumped" timestamp.
+void pumpKeepAlive()
+{
+    g_lastKeepAlivePumpMs = keepAliveClock().elapsed();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+}
+
 // Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
 // short slices and service the GUI between them so the window stays responsive
 // and spinners animate; otherwise block as before.
@@ -4048,6 +4069,14 @@ bool waitForGit(QProcess &process, QString *err)
             *err = QStringLiteral("git timed out");
         return false;
     }
+    // A burst of individually fast (<40ms) git reads — refreshAgentTable shells two
+    // per session, so a repo with many sessions runs dozens back-to-back — each
+    // returns from waitForFinished(40) on the first poll, so the loop below never
+    // pumps and the GUI (and the watchdog heartbeat) starves across the whole burst
+    // even though no single call is slow. Pump up front when enough wall time has
+    // elapsed since the last pump so the window keeps breathing between calls too.
+    if (keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
+        pumpKeepAlive();
     QElapsedTimer timer;
     timer.start();
     while (!process.waitForFinished(40)) {
@@ -4059,7 +4088,7 @@ bool waitForGit(QProcess &process, QString *err)
                 *err = QStringLiteral("git timed out");
             return false;
         }
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+        pumpKeepAlive();
     }
     return true;
 }
