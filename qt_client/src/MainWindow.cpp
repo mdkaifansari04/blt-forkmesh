@@ -4929,8 +4929,12 @@ void MainWindow::applyTheme()
     // Honour the user's override; otherwise follow the OS color scheme.
     qApp->setStyleSheet(Theme::styleSheetForDark(currentThemeIsDark()));
     for (QWidget *widget : QApplication::topLevelWidgets()) {
-        if (auto *window = qobject_cast<MainWindow *>(widget))
+        if (auto *window = qobject_cast<MainWindow *>(widget)) {
             window->refreshThemedIcons();
+            // The floating agent strip carries its own inline stylesheet (not the
+            // global sheet), so re-point it at the new theme's opaque surface.
+            window->styleAgentSpinnerOverlay();
+        }
     }
 }
 
@@ -49380,8 +49384,7 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay = new QWidget(page);
     m_agentSpinnerOverlay->setObjectName("agentSpinnerOverlay");
     m_agentSpinnerOverlay->setAttribute(Qt::WA_StyledBackground, true);
-    m_agentSpinnerOverlay->setStyleSheet(
-        "#agentSpinnerOverlay{background:rgba(130,130,150,0.16);border-radius:13px;}");
+    styleAgentSpinnerOverlay();
     auto *outer = new QHBoxLayout(m_agentSpinnerOverlay);
     outer->setContentsMargins(5, 3, 5, 3);
     outer->setSpacing(0);
@@ -49402,6 +49405,22 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay->hide();
 }
 
+void MainWindow::styleAgentSpinnerOverlay()
+{
+    if (!m_agentSpinnerOverlay)
+        return;
+    // The strip floats over the meta band above the Agents tab. A near-transparent
+    // wash let the page (and the spinners themselves) bleed through and read as
+    // washed-out; back it with the opaque surface/border for the active theme so
+    // the running-agent spinners stand out clearly.
+    const bool dark = currentThemeIsDark();
+    m_agentSpinnerOverlay->setStyleSheet(
+        QStringLiteral("#agentSpinnerOverlay{background:%1;border:1px solid %2;"
+                       "border-radius:13px;}")
+            .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+                 dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de")));
+}
+
 void MainWindow::positionAgentSpinnerOverlay()
 {
     if (!m_agentSpinnerOverlay || !m_repoAgentsTab || !m_agentSpinnerRow)
@@ -49413,8 +49432,9 @@ void MainWindow::positionAgentSpinnerOverlay()
     const int visible = qMin(total, 5);
     const int spinnerW = 20, gap = 5;
     const int innerW = visible * spinnerW + (visible > 1 ? (visible - 1) * gap : 0);
-    const int w = innerW + 12;
-    const int h = 26 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
+    const int w = innerW + 14; // inner + h-margins + 1px border each side
+    // 28 keeps the 20px spinners clear of the margins and the 1px border.
+    const int h = 28 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
     const QPoint tl = m_repoAgentsTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1;
