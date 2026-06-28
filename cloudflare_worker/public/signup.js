@@ -2,7 +2,7 @@
   // Must match valid_node_name in cloudflare_worker/src/entry.py and the Qt
   // client: a single DNS-like label, lowercase, hyphens allowed, no underscores.
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-  const PAYOUT_PER_JOIN_SOL = 0.0001; // illustrative only — reward engine WIP
+  const PAYOUT_PER_JOIN_SOL = 0.0001; // illustrative only - reward engine WIP
   // Mirror of TREASURY_SPLIT_NUMERATOR / TREASURY_SPLIT_DENOMINATOR in
   // cloudflare_worker/src/entry.py: half of each join donation funds ForkMesh's
   // servers, the other half is shared evenly across online payout nodes.
@@ -35,6 +35,11 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function setText(sel, value) {
+    const el = $(sel);
+    if (el) el.textContent = value;
+  }
+
   async function api(path, options) {
     const res = await fetch(path, {
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -49,15 +54,13 @@
   async function loadStats() {
     if (!isLive) return;
     try {
-      const { body } = await api("/api/network/stats");
+      const { ok, body } = await api("/api/network/stats");
+      if (!ok) return;
       const nodes = Number(body.hosts) || 0;
       nodesOnline = nodes;
-      $("#stat-nodes").textContent = String(nodes);
-      $("#stat-repos").textContent = String(Number(body.repos) || 0);
-      $("#stat-clients").textContent = String(Number(body.clients) || 0);
-      $("#calc-nodes").textContent = String(nodes);
+      setText("#calc-nodes", String(nodes));
       const earn = (Math.max(nodes, 1) * PAYOUT_PER_JOIN_SOL).toFixed(9);
-      $("#calc-earn").textContent = earn + " SOL";
+      setText("#calc-earn", earn + " SOL");
       // Live minimum donation (~$1), computed server-side from the SOL price.
       const minSol = Number(body.minSol) || 0;
       const minUsd = Number(body.minUsd) || 0;
@@ -89,7 +92,6 @@
     const nodesUsd = usd * (1 - TREASURY_SHARE);
     const online = Math.max(nodesOnline, 0);
     const perNode = online > 0 ? nodesUsd / online : 0;
-    const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
     setText("#split-node-count", String(online));
     setText("#split-node-count-2", String(online));
     setText("#split-servers-usd",
@@ -98,7 +100,7 @@
       nodesUsd > 0 ? "≈ " + money(nodesUsd) : "shared by uptime & data");
     setText("#split-per-node",
       online <= 0 ? "no nodes yet"
-        : perNode > 0 ? "≈ " + money(perNode) : "—");
+        : perNode > 0 ? "≈ " + money(perNode) : "...");
   }
 
   // --- Step 1: node name -----------------------------------------------------
@@ -120,7 +122,7 @@
       return;
     }
     if (!NAME_RE.test(value)) {
-      setHint("Use lowercase letters, numbers and hyphens — start with a letter, end with a letter or number, no spaces or underscores.", "bad");
+      setHint("Use lowercase letters, numbers and hyphens - start with a letter, end with a letter or number, no spaces or underscores.", "bad");
       return;
     }
     setHint("Checking availability…", "");
@@ -133,14 +135,14 @@
     try {
       const { body } = await api("/api/accounts/" + encodeURIComponent(value));
       if (body.exists && body.available === false) {
-        setHint("That name is already taken — try another.", "bad");
+        setHint("That name is already taken - try another.", "bad");
         nameContinue.disabled = true;
       } else {
         setHint("“" + value + "” is available.", "good");
         nameContinue.disabled = false;
       }
     } catch (_) {
-      setHint("Couldn’t check availability — you can still continue.", "");
+      setHint("Couldn’t check availability - you can still continue.", "");
       nameContinue.disabled = false;
     }
   }
@@ -157,7 +159,7 @@
     nameContinue.textContent = "Continue";
     if (!ok) {
       setHint(body.error === "node_name_taken"
-        ? "That name was just taken — try another."
+        ? "That name was just taken - try another."
         : "Could not reserve that name. Please try again.", "bad");
       nameContinue.disabled = false;
       return;
@@ -409,7 +411,7 @@
       hint.textContent = body.error === "email_taken"
         ? "That email is already registered."
         : body.error === "donation_required"
-          ? "We haven’t confirmed your donation yet — please wait a moment."
+          ? "We haven’t confirmed your donation yet - please wait a moment."
           : "Could not create the account. Please try again.";
       hint.className = "hint bad";
       return;

@@ -1,110 +1,212 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark h-full scroll-smooth">
   <head>
     <meta charset="utf-8" />
-    <script src="/posthog.js"></script>
-    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ForkMesh Terms</title>
-    <meta
-      name="description"
-      content="Simple terms for using ForkMesh, joining the network, and hosting mirrored repositories."
-    />
-    <link rel="stylesheet" href="styles.css" />
-    <script src="static-page.js" defer></script>
+    <meta name="description" content="Simple terms for using ForkMesh, joining the network, and hosting mirrored repositories." />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script>
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = { darkMode: "class", theme: { extend: { colors: { background: "var(--background)", foreground: "var(--foreground)", border: "var(--border)", "muted-foreground": "var(--muted-foreground)" }, fontFamily: { domine: ["Domine", "Georgia", "serif"], "favorit-mono": ["ABCFavoritMono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"] } } } };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      .legal-wrap { max-width: 820px; margin: 0 auto; padding: 42px 20px 80px; }
-      .legal-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
-      .legal-wrap h2 { font-size: 20px; margin: 28px 0 8px; }
-      .legal-wrap p, .legal-wrap li { color: var(--muted); }
-      .legal-wrap ul { padding-left: 22px; }
-      .legal-note {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 12px; padding: 16px; margin: 20px 0;
+      @font-face {
+        font-family: "Domine";
+        src: url("/assets/fonts/Lato-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
       }
+      @font-face {
+        font-family: "ABCFavoritMono";
+        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      :root {
+        --background: #090909;
+        --foreground: #f5f5f5;
+        --muted-foreground: #a3a3a3;
+        --border: #313131;
+        --green: #3fb950;
+        --violet: #9672ee;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100%;
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+      .font-domine { font-family: Domine, Georgia, serif; font-synthesis: none; }
+      .font-favorit-mono { font-family: ABCFavoritMono, ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .legal-shell { position: relative; min-height: 100svh; isolation: isolate; overflow: hidden; background: #090909; }
+      .mesh-bg {
+        position: absolute; inset: 0; z-index: -3;
+        background:
+          radial-gradient(circle at 18% 10%, rgba(150, 114, 238, 0.20), transparent 28rem),
+          radial-gradient(circle at 84% 8%, rgba(63, 185, 80, 0.14), transparent 30rem),
+          radial-gradient(circle at 50% 56%, rgba(255, 255, 255, 0.055), transparent 36rem),
+          #090909;
+      }
+      .mesh-grid {
+        position: absolute; inset: -1px; z-index: -2; opacity: 0.24;
+        background-image:
+          linear-gradient(rgba(255,255,255,0.065) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.065) 1px, transparent 1px);
+        background-size: 72px 72px;
+        mask-image: linear-gradient(to bottom, black 0%, black 35%, transparent 72%);
+      }
+      .mesh-vignette {
+        position: absolute; inset: 0; z-index: -1;
+        background: linear-gradient(to bottom, rgba(9,9,9,.92), rgba(9,9,9,.56) 34%, #090909 78%);
+      }
+      .brand-mark { filter: drop-shadow(0 0 22px rgba(63,185,80,.16)); }
+      .legal-card {
+        border: 1px solid rgba(255,255,255,.09);
+        background: linear-gradient(180deg, rgba(255,255,255,.065), rgba(255,255,255,.025)), rgba(12,12,12,.78);
+        box-shadow: 0 24px 90px rgba(0,0,0,.42);
+        backdrop-filter: blur(18px);
+      }
+      .legal-content h2 { margin: 2rem 0 .65rem; font-size: 1.1rem; line-height: 1.2; color: #fff; }
+      .legal-content p, .legal-content li { color: var(--muted-foreground); line-height: 1.75; }
+      .legal-content ul { padding-left: 1.25rem; }
+      .legal-note { border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.045); border-radius: 1rem; padding: 1rem; margin: 1.5rem 0; }
+      .site-footer-word { color: #0d0d0d; }
+      .footer-glow-text { color: rgba(255,255,255,.045); text-shadow: 0 0 72px rgba(150,114,238,.18); }
+      .site-footer-panel { background: #000; }
+      .site-footer-link-list { list-style: none; padding: 0; }
+      .site-footer-status-dot { background: var(--green); box-shadow: 0 0 18px rgba(63,185,80,.55); }
+
     </style>
   </head>
-  <body>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="brand" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-          <span>ForkMesh</span>
+  <body class="h-full">
+    <main class="legal-shell flex min-h-screen flex-col">
+      <div class="mesh-bg" aria-hidden="true"></div>
+      <div class="mesh-grid" aria-hidden="true"></div>
+      <div class="mesh-vignette" aria-hidden="true"></div>
+
+      <header class="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-6 lg:px-8">
+        <a href="/" class="brand inline-flex items-center gap-3" aria-label="ForkMesh home">
+          <img class="brand-mark h-10 w-auto" src="/assets/logo.png" alt="" aria-hidden="true" />
         </a>
-        <nav class="global-nav" aria-label="Global">
-          <a href="/#catalog">Repositories</a>
-          <a href="/network/">Network</a>
-          <a href="/docs/">Docs</a>
-          <a href="/signup.html">Join</a>
-          <a href="/privacy.html">Privacy</a>
+        <nav class="hidden items-center gap-6 text-sm text-muted-foreground md:flex" aria-label="Primary">
+          <a class="transition-colors hover:text-foreground" href="/docs">Docs</a>
+          <a class="transition-colors hover:text-foreground" href="/blogs">Blog</a>
+          <a class="transition-colors hover:text-foreground" href="/login">Login</a>
         </nav>
-        <div class="header-actions">
-          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
-          </button>
+      </header>
+
+      <section class="relative z-10 mx-auto w-full max-w-4xl px-5 pb-8 pt-16 lg:px-8 lg:pt-24">
+        <article class="legal-card rounded-[2rem] px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
+          <p class="font-favorit-mono text-sm uppercase tracking-[0.34em] text-muted-foreground">Plain-language terms</p>
+          <h1 class="font-domine mt-5 text-balance text-5xl leading-[1] tracking-tight text-foreground sm:text-7xl">ForkMesh Terms</h1>
+          <p class="mt-5 text-sm text-muted-foreground">Last updated June 20, 2026.</p>
+          <div class="legal-content mt-8 text-base">
+            <div class="legal-note">
+              <strong class="text-foreground">Short version:</strong>
+              ForkMesh is experimental distributed code-hosting software. Use it for public repositories you have the right to mirror, keep your keys safe, and do not send SOL to an expired payment request.
+            </div>
+            <h2>Using ForkMesh</h2>
+            <p>You are responsible for the repositories, messages, issues, pull requests, profile data, and payment addresses you publish through ForkMesh. Do not use ForkMesh to host or distribute content you do not have permission to share.</p>
+            <h2>Joining the network</h2>
+            <p>The join flow may ask you to donate Solana (SOL) using a payment reference. That request expires after one hour if it receives no transactions. When it expires, ForkMesh hides it, warns you not to send funds, and removes the unpaid request from the system after five more minutes. Generate a fresh request instead.</p>
+            <h2>Rewards and availability</h2>
+            <p>Any payout, reward, uptime, or earnings display is experimental and may change. Running a node does not guarantee payment, availability, or data recovery. You are responsible for backing up your own repositories and keys.</p>
+            <h2>Third parties</h2>
+            <p>We try our best not to use third parties. The current public service still involves a few:</p>
+            <ul>
+              <li>Cloudflare for hosting, Workers, D1 storage, caching, and relay infrastructure.</li>
+              <li>A Solana JSON-RPC endpoint for payment-reference lookups.</li>
+              <li>Bundled open-source font files served locally by ForkMesh; no remote font service is used.</li>
+              <li>Tailwind Play CDN on the current home page.</li>
+              <li>The Solana network for payment settlement.</li>
+              <li>Any Git hosting provider or remote repository you choose to mirror.</li>
+            </ul>
+            <h2>No warranty</h2>
+            <p>ForkMesh is provided as-is. The software and network may have bugs, outages, incomplete features, or data loss. Use it at your own risk.</p>
+            <p class="mt-8"><a class="text-foreground underline decoration-white/25 underline-offset-4 hover:decoration-white" href="/privacy">Read the privacy notes</a></p>
+          </div>
+        </article>
+      </section>
+
+      <footer class="relative mt-24 overflow-hidden">
+        <div aria-hidden="true" class="site-footer-word-wrap relative -mb-[7.5rem] flex select-none justify-center overflow-hidden">
+          <div class="site-footer-glow relative inline-block">
+            <span class="site-footer-word footer-glow-base text-[23vw] font-semibold leading-none tracking-normal">forkmesh</span>
+            <span class="site-footer-word footer-glow-text pointer-events-none absolute inset-0 text-[23vw] font-semibold leading-none tracking-normal">forkmesh</span>
+          </div>
         </div>
-      </div>
-    </header>
-
-    <main class="legal-wrap">
-      <p class="eyebrow">Plain-language terms</p>
-      <h1>ForkMesh Terms</h1>
-      <p>Last updated June 20, 2026.</p>
-
-      <div class="legal-note">
-        <strong>Short version:</strong>
-        ForkMesh is experimental distributed code-hosting software. Use it for
-        public repositories you have the right to mirror, keep your keys safe,
-        and do not send SOL to an expired payment request.
-      </div>
-
-      <h2>Using ForkMesh</h2>
-      <p>
-        You are responsible for the repositories, messages, issues, pull
-        requests, profile data, and payment addresses you publish through
-        ForkMesh. Do not use ForkMesh to host or distribute content you do not
-        have permission to share.
-      </p>
-
-      <h2>Joining the network</h2>
-      <p>
-        The join flow may ask you to donate Solana (SOL) using a payment
-        reference. That request expires after one hour if it receives no
-        transactions. When it expires, ForkMesh hides it, warns you not to send
-        funds, and removes the unpaid request from the system after five more
-        minutes. Generate a fresh request instead.
-      </p>
-
-      <h2>Rewards and availability</h2>
-      <p>
-        Any payout, reward, uptime, or earnings display is experimental and may
-        change. Running a node does not guarantee payment, availability, or data
-        recovery. You are responsible for backing up your own repositories and
-        keys.
-      </p>
-
-      <h2>Third parties</h2>
-      <p>
-        We try our best not to use third parties. The current public service
-        still involves a few:
-      </p>
-      <ul>
-        <li>Cloudflare for hosting, Workers, D1 storage, caching, and relay infrastructure.</li>
-        <li>A Solana JSON-RPC endpoint for payment-reference lookups.</li>
-        <li>Bundled open-source font files served locally by ForkMesh; no remote font service is used.</li>
-        <li>Tailwind Play CDN on the current home page.</li>
-        <li>The Solana network for payment settlement.</li>
-        <li>Any Git hosting provider or remote repository you choose to mirror.</li>
-      </ul>
-
-      <h2>No warranty</h2>
-      <p>
-        ForkMesh is provided as-is. The software and network may have bugs,
-        outages, incomplete features, or data loss. Use it at your own risk.
-      </p>
-
-      <p class="row-links"><a href="/privacy.html">Privacy</a> · <a href="/signup.html">Back to signup</a></p>
+        <div class="site-footer-panel relative z-10 border-t-[0.5px] border-[#3B3B3B] bg-black">
+          <div class="site-footer-links-grid mx-auto grid max-w-7xl grid-cols-2 gap-x-10 gap-y-12 px-5 py-14 md:grid-cols-3 lg:grid-cols-6 lg:px-8">
+            <div class="site-footer-brand col-span-2 md:col-span-3 lg:col-span-1">
+              <a href="/" aria-label="home" class="flex items-center space-x-2">
+                <img src="/assets/logo.png" alt="ForkMesh logo" class="site-footer-logo h-10 w-auto" />
+              </a>
+              <p class="site-footer-brand-copy mt-5 text-sm leading-relaxed text-muted-foreground">Local-first distributed source-code preservation and collaboration infrastructure.</p>
+              <div class="site-footer-status-pill mt-6 inline-flex items-center gap-2 rounded-lg border-[0.5px] border-[#3B3B3B] px-3 py-1.5 text-sm text-muted-foreground">
+                <span class="site-footer-status-dot size-2 rounded-full"></span>
+                Live now
+              </div>
+            </div>
+            <div>
+              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Explore</h3>
+              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Features</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#network">Network discovery</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#solution">Solution</a></li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Product</h3>
+              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Local-first Git</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Encrypted rooms</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#solution">Live node routing</a></li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Plans</h3>
+              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#pricing">Pricing</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/signup">Create account</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/signup">Sign up</a></li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Learn</h3>
+              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#faq">FAQ</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/docs">Read docs</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/blogs">Blog</a></li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Company</h3>
+              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/privacy">Privacy</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/terms">Terms</a></li>
+                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/login">Login</a></li>
+              </ul>
+            </div>
+          </div>
+          <div class="site-footer-copyright mx-auto max-w-7xl border-t-[0.5px] border-[#3B3B3B] px-5 py-6 text-sm text-muted-foreground lg:px-8">© 2026 ForkMesh. Built for local-first Git collaboration.</div>
+        </div>
+      </footer>
     </main>
   </body>
 </html>
