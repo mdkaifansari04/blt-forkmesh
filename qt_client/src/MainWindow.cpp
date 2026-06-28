@@ -32567,8 +32567,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
     }
     loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
+    // the Branches panel — it runs a git command per branch (probing each for
+    // merge conflicts), which was slow and pointless here since "Merge into main"
+    // is driven from the Agents/Worktrees tabs, not the Branches tab.
+    // loadBranchesAndTags() repaints the panel only if it's the visible tab.
+    loadBranchesAndTags();
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
