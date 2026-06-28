@@ -217,9 +217,13 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                  QStringLiteral("No command is configured for this agent."));
         return;
     }
-    if (!QDir(m_repoPath).exists(QStringLiteral(".git"))) {
+    // Accept either a working-tree checkout (has .git) or a bare mirror (has a
+    // HEAD at its root): a node that only mirrors a repo runs agents straight off
+    // the mirror, building the branch in a throwaway worktree (adhoc #191).
+    if (!QDir(m_repoPath).exists(QStringLiteral(".git")) &&
+        !QDir(m_repoPath).exists(QStringLiteral("HEAD"))) {
         complete(false, AgentStatus::Failed,
-                 QStringLiteral("No writable git checkout is available for this repo."));
+                 QStringLiteral("No git checkout is available for this repo."));
         return;
     }
 
