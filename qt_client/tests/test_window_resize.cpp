@@ -553,6 +553,17 @@ int main(int argc, char *argv[])
         check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
               QStringLiteral("a branch with no agent session has an empty "
                              "Issue / Agent cell (adhoc #191)"));
+
+        // adhoc #185: the default branch must stay pinned to the top of the list.
+        // feature/keep-selected was committed to more recently (it's a worktree one
+        // commit ahead of main), so a plain committer-date sort would float it above
+        // main; the panel must override that and list main first.
+        const QStringList order = window.testBranchRowOrder();
+        qInfo("branch row order: %s", qPrintable(order.join(QStringLiteral(", "))));
+        check(!order.isEmpty() && order.first() == QStringLiteral("main"),
+              QString("the default branch is pinned to the top of the branches "
+                      "list (adhoc #185, first row = %1)")
+                  .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
@@ -661,6 +672,39 @@ int main(int argc, char *argv[])
                   QStringLiteral("see forkmesh://pull/o/r/7.")) ==
                   QStringLiteral("see <forkmesh://pull/o/r/7>."),
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
+
+    // adhoc #191: the issue looper (and per-issue agent assignment) must work on
+    // a node that only mirrors a repo it doesn't host. Such a repo has a bare
+    // network mirror and no working tree, so the gate now resolves the bare mirror
+    // as the git dir agents run against instead of refusing with "only the host".
+    {
+        QTemporaryDir mirrorDir;
+        const bool madeBare =
+            mirrorDir.isValid() &&
+            runGitChecked(mirrorDir.path(), {"init", "--bare", "-q"});
+        const int mirrorIdx =
+            window.testAddPublishedRepository("someone", "theirrepo", mirrorDir.path());
+        check(madeBare &&
+                  window.testRepoAgentGitDir(mirrorIdx) == mirrorDir.path(),
+              QStringLiteral("a mirror-only repo resolves its bare mirror as the "
+                             "agent/looper git dir (adhoc #191)"));
+
+        QTemporaryDir localRepo;
+        const bool madeLocal = initGitRepo(localRepo);
+        const int localIdx =
+            window.testAddLocalRepository("me", "minerepo", localRepo.path());
+        check(madeLocal &&
+                  window.testRepoAgentGitDir(localIdx) == localRepo.path(),
+              QStringLiteral("a hosted repo still resolves its working tree as the "
+                             "agent/looper git dir"));
+
+        QTemporaryDir emptyDir;
+        const int noneIdx = window.testAddPublishedRepository(
+            "someone", "uncached", emptyDir.path() + QStringLiteral("/missing.git"));
+        check(window.testRepoAgentGitDir(noneIdx).isEmpty(),
+              QStringLiteral("a repo with neither a working tree nor a cached "
+                             "mirror has no agent/looper git dir"));
     }
 
     stopChildProcesses(window);
