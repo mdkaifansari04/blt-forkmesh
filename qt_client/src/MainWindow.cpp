@@ -6133,18 +6133,14 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         QSettings().setValue(kAuthedAccountSetting, accountName);
         return true;
     }
-    // Previously authenticated on this machine — either by key (above) or by a
-    // password (cross-device) login, where this node key does NOT own the
-    // account so the pubkey check above can never pass. Trust the cached marker
-    // so those users aren't forced to re-enter credentials on every launch.
-    // When the relay is reachable we still require the account to exist and be
-    // active; when it's unreachable (status == 0) we trust the cache outright.
-    // Either way the relay re-verifies the signed token for any real hosting.
+    // If the relay is unreachable, trust a previously authenticated marker so a
+    // returning user can still open the app shell offline. When the relay is
+    // reachable, do not treat a password-login cache as signed hosting auth unless
+    // the server pubkey matched above. Publishing and heartbeat require this
+    // desktop's Ed25519 key, not just an email/password session.
     const bool cachedHere =
         QSettings().value(kAuthedAccountSetting).toString() == accountName;
-    const bool activeAccount = lookup.value("exists").toBool() &&
-                               lookup.value("status").toString() == "active";
-    if (cachedHere && (status == 0 || activeAccount)) {
+    if (cachedHere && status == 0) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
@@ -6163,7 +6159,8 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     const QJsonObject resp = postAccountSync(
         "login",
         QJsonObject{{"email", email}, {"password", password},
-                    {"totp", totp}},
+                    {"totp", totp},
+                    {"pubkey", m_profileIdentity.publicKey()}},
         &status);
     if (status == 200 && resp.value("ok").toBool()) {
         m_accountAuthenticated = true;
@@ -6190,6 +6187,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                              : err == "too_many_attempts"
                                    ? "Too many failed attempts. Wait a few minutes "
                                      "and try again."
+                             : err == "pubkey_mismatch"
+                                   ? "This account is already bound to another "
+                                     "desktop key. Use that device or rotate the "
+                                     "account key before publishing from here."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");
