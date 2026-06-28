@@ -1310,6 +1310,12 @@ private:
     // reload runs (kept visible briefly after, since the reload is near-instant).
     void startCommitsRefreshSpin();
     void stopCommitsRefreshSpin();
+    // Loading overlay shown over the commit diff view while showCommit reads and
+    // renders the diff (a big commit can take a second or two). Lazily built over
+    // m_commitDiffView and animates a spinner so the click never looks frozen.
+    void ensureCommitDiffSpinner();
+    void startCommitDiffSpin();
+    void stopCommitDiffSpin();
     // Generic click feedback for any Refresh button: briefly spins its icon, then
     // restores it. addRefreshSpin wires it onto a button's clicked signal.
     void spinRefreshButton(QPushButton *button);
@@ -2150,6 +2156,8 @@ private:
     QLabel *m_commitFilesSummary = nullptr;
     QListWidget *m_commitFileList = nullptr;
     QTextBrowser *m_commitDiffView = nullptr;
+    QWidget *m_commitDiffSpinner = nullptr; // loading overlay over the diff view
+    bool m_commitDetailLoading = false;     // guards re-entrant showCommit loads
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
