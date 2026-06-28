@@ -516,6 +516,20 @@ int main(int argc, char *argv[])
         check(afterDown == QStringLiteral("feature/keep-selected"),
               QStringLiteral("arrow down on the last worktree row stays put"));
 
+        // adhoc #183 (the "and more" tables): the Releases and Mirror-nodes tabs
+        // are single-list tables too, so opening either should also hand keyboard
+        // focus to its table for immediate arrow-key navigation.
+        window.testClickRepoDetailTab(window.testReleasesTabIndex());
+        QApplication::processEvents();
+        check(window.testReleasesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Releases tab focuses its table for "
+                             "arrow-key navigation"));
+        window.testClickRepoDetailTab(window.testMirrorNodesTabIndex());
+        QApplication::processEvents();
+        check(window.testMirrorNodesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Mirror-nodes tab focuses its table for "
+                             "arrow-key navigation"));
+
         // issue #172: the Branches list must also surface the worktree a branch
         // is checked out in, so an agent's isolated working tree is visible
         // without a trip to the Worktrees tab.
