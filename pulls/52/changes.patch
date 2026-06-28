@@ -1,0 +1,339 @@
+diff --git a/cloudflare_worker/deploy.sh b/cloudflare_worker/deploy.sh
+index 081ad750..75ea4d0d 100755
+--- a/cloudflare_worker/deploy.sh
++++ b/cloudflare_worker/deploy.sh
+@@ -150,6 +150,59 @@ verify_deploy() {
+     return 1
+ }
+ 
++verify_public_assets() {
++    local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
++    base="${base%/}"
++    if ! command -v curl >/dev/null 2>&1; then
++        echo "note: curl not found - skipping public asset verification." >&2
++        return 0
++    fi
++
++    local checks=(
++        "/assets/logo.webp image/webp"
++        "/favicon/favicon-32x32.png image/png"
++        "/favicon/site.webmanifest application/manifest+json"
++        "/assets/video/network.jpg image/jpeg"
++        "/assets/video/network.mp4 video/mp4"
++    )
++
++    echo "Verifying public static assets on $base ..."
++    local check path expected url headers status content_type failed=0
++    for check in "${checks[@]}"; do
++        path="${check%% *}"
++        expected="${check#* }"
++        url="$base$path"
++        headers="$(curl -sSI --max-time 15 "$url" 2>/dev/null || true)"
++        status="$(
++            printf '%s\n' "$headers" |
++                awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }'
++        )"
++        content_type="$(
++            printf '%s\n' "$headers" |
++                awk -F': *' 'tolower($1) == "content-type" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
++        )"
++
++        if [ "$status" != "200" ]; then
++            echo "ERROR: $url returned HTTP ${status:-<none>} (expected 200)." >&2
++            failed=1
++            continue
++        fi
++        case "$content_type" in
++            "$expected"*) ;;
++            *)
++                echo "ERROR: $url returned content-type '${content_type:-<none>}' (expected $expected)." >&2
++                failed=1
++                ;;
++        esac
++    done
++
++    if [ "$failed" != "0" ]; then
++        echo "       Static assets did not publish correctly. Check the Worker assets upload and redeploy." >&2
++        return 1
++    fi
++    echo "Verified: public static assets are serving expected content types."
++}
++
+ # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
+ # Idempotent (re-running updates values) and persists across redeploys. Requires
+ # the Worker to already exist, so run it after `pywrangler deploy`.
+@@ -247,6 +300,7 @@ case "${1:-deploy}" in
+         # failed/no-op/wrong-account deploy now aborts here instead of printing a
+         # phantom success.
+         verify_deploy "$BUILD_REV"
++        verify_public_assets
+         echo "Done. Live at https://forkmesh.com (and any custom domain)."
+         ;;
+     secrets)
+diff --git a/cloudflare_worker/public/404.html b/cloudflare_worker/public/404.html
+index 684f3a2a..ecf22f02 100644
+--- a/cloudflare_worker/public/404.html
++++ b/cloudflare_worker/public/404.html
+@@ -13,9 +13,23 @@
+     <meta name="theme-color" content="#090909" />
+     <meta name="color-scheme" content="dark" />
+     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+-    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
++    <link
++      rel="icon"
++      type="image/png"
++      sizes="32x32"
++      href="/favicon/favicon-32x32.png"
++    />
++    <link
++      rel="icon"
++      type="image/png"
++      sizes="16x16"
++      href="/favicon/favicon-16x16.png"
++    />
++    <link
++      rel="apple-touch-icon"
++      sizes="180x180"
++      href="/favicon/apple-touch-icon.png"
++    />
+     <link rel="manifest" href="/favicon/site.webmanifest" />
+     <meta name="robots" content="noindex, follow" />
+     <script>
+@@ -111,9 +125,21 @@
+         inset: 0;
+         z-index: -3;
+         background:
+-          radial-gradient(circle at 18% 18%, rgba(150, 114, 238, 0.22), transparent 28rem),
+-          radial-gradient(circle at 82% 22%, rgba(63, 185, 80, 0.18), transparent 30rem),
+-          radial-gradient(circle at 50% 88%, rgba(255, 255, 255, 0.08), transparent 34rem),
++          radial-gradient(
++            circle at 18% 18%,
++            rgba(150, 114, 238, 0.22),
++            transparent 28rem
++          ),
++          radial-gradient(
++            circle at 82% 22%,
++            rgba(63, 185, 80, 0.18),
++            transparent 30rem
++          ),
++          radial-gradient(
++            circle at 50% 88%,
++            rgba(255, 255, 255, 0.08),
++            transparent 34rem
++          ),
+           #090909;
+       }
+ 
+@@ -124,9 +150,17 @@
+         opacity: 0.32;
+         background-image:
+           linear-gradient(rgba(255, 255, 255, 0.065) 1px, tra
+
+... [OUTPUT TRUNCATED - 443020 chars omitted out of 455020 total] ...
+
+_worker_first = WRANGLER["assets"]["run_worker_first"]
+ 
+-    assert "/features" not in run_worker_first
++    assert "/features" in run_worker_first
++
++
++def test_features_directory_serves_static_page():
++    assert "/features /features/ 308" in REDIRECTS
++    assert "/features/ /features/index.html 200" in REDIRECTS
++    assert "/features.html /features/ 308" in REDIRECTS
+diff --git a/cloudflare_worker/tests/test_index_pricing_section.py b/cloudflare_worker/tests/test_index_pricing_section.py
+index 344dcefd..596c852e 100644
+--- a/cloudflare_worker/tests/test_index_pricing_section.py
++++ b/cloudflare_worker/tests/test_index_pricing_section.py
+@@ -2,6 +2,7 @@
+ """Static contracts for the homepage pricing section."""
+ 
+ from pathlib import Path
++import re
+ 
+ 
+ PUBLIC = Path(__file__).resolve().parents[1] / "public"
+@@ -16,6 +17,7 @@ def _pricing_region() -> str:
+ 
+ def test_pricing_section_uses_network_participation_copy():
+     pricing = _pricing_region()
++    normalized = re.sub(r"\s+", " ", pricing)
+ 
+     for text in (
+         '<section id="pricing" class="forkmesh">',
+@@ -34,7 +36,7 @@ def test_pricing_section_uses_network_participation_copy():
+         "Join the network",
+         "Paid in Solana (SOL)",
+     ):
+-        assert text in pricing
++        assert text in normalized
+ 
+ 
+ def test_pricing_section_replaces_previous_stack_design_inside_pattern_rails():
+diff --git a/cloudflare_worker/tests/test_legal_pages_frontend.py b/cloudflare_worker/tests/test_legal_pages_frontend.py
+index 3e33f978..d7643380 100644
+--- a/cloudflare_worker/tests/test_legal_pages_frontend.py
++++ b/cloudflare_worker/tests/test_legal_pages_frontend.py
+@@ -74,7 +74,7 @@ def test_legal_pages_include_landing_footer_markup():
+             'class="site-footer-links-grid',
+             'class="site-footer-brand',
+             'class="site-footer-copyright',
+-            'src="/assets/logo.png"',
++            'src="/assets/logo.webp"',
+             '© 2026 ForkMesh. Built for local-first Git collaboration.',
+         ):
+             assert marker in html
+diff --git a/cloudflare_worker/tests/test_public_logo.py b/cloudflare_worker/tests/test_public_logo.py
+index 120fb7f3..d8cecfff 100644
+--- a/cloudflare_worker/tests/test_public_logo.py
++++ b/cloudflare_worker/tests/test_public_logo.py
+@@ -7,7 +7,7 @@ import re
+ 
+ 
+ PUBLIC_DIR = Path(__file__).resolve().parents[1] / "public"
+-LOGO_SRC = "/assets/logo.png"
++LOGO_SRC = "/assets/logo.webp"
+ 
+ 
+ class BrandLogoParser(HTMLParser):
+@@ -45,7 +45,7 @@ class BrandLogoParser(HTMLParser):
+ 
+ 
+ def test_all_public_html_pages_use_logo_in_brand_link():
+-    assert (PUBLIC_DIR / "assets" / "logo.png").is_file()
++    assert (PUBLIC_DIR / "assets" / "logo.webp").is_file()
+ 
+     html_pages = sorted(PUBLIC_DIR.rglob("*.html"))
+     assert html_pages
+diff --git a/cloudflare_worker/tests/test_public_static_assets.py b/cloudflare_worker/tests/test_public_static_assets.py
+new file mode 100644
+index 00000000..58a45c0f
+--- /dev/null
++++ b/cloudflare_worker/tests/test_public_static_assets.py
+@@ -0,0 +1,102 @@
++#!/usr/bin/env python3
++"""Static contract tests for browser-loaded public assets."""
++
++from html.parser import HTMLParser
++from pathlib import Path
++import re
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++
++
++class StaticAssetParser(HTMLParser):
++    def __init__(self):
++        super().__init__()
++        self.paths = []
++
++    def handle_starttag(self, tag, attrs):
++        values = dict(attrs)
++        if tag == "img":
++            self._append(values.get("src"))
++            self._append(values.get("data-src"))
++            self._append_srcset(values.get("srcset"))
++            return
++
++        if tag == "video":
++            self._append(values.get("src"))
++            self._append(values.get("poster"))
++            return
++
++        if tag == "source":
++            self._append(values.get("src"))
++            self._append_srcset(values.get("srcset"))
++            return
++
++        if tag == "script":
++            self._append(values.get("src"))
++            return
++
++        if tag == "link":
++            rel = values.get("rel", "")
++            if any(token in rel.split() for token in ("icon", "manifest", "preload", "stylesheet")):
++                self._append(values.get("href"))
++
++    def _append_srcset(self, value):
++        if not value:
++            return
++        for candidate in value.split(","):
++            self._append(candidate.strip().split(" ", 1)[0])
++
++    def _append(self, value):
++        if not value or not value.startswith("/") or value.startswith("//"):
++            return
++        self.paths.append(value.split("?", 1)[0].split("#", 1)[0])
++
++
++def _css_urls(text):
++    return [
++        match.group(1).split("?", 1)[0].split("#", 1)[0]
++        for match in re.finditer(r"url\([\"']?(/[^)\"']+)", text)
++    ]
++
++
++def _absolute_forkmesh_asset_urls(text):
++    asset_extensions = (
++        ".avif",
++        ".gif",
++        ".ico",
++        ".jpg",
++        ".jpeg",
++        ".mp4",
++        ".png",
++        ".svg",
++        ".webmanifest",
++        ".webp",
++    )
++    paths = []
++    for match in re.finditer(r"https://forkmesh\.com(/[^\s\"'<>]+)", text):
++        path = match.group(1).split("?", 1)[0].split("#", 1)[0]
++        if path.lower().endswith(asset_extensions):
++            paths.append(path)
++    return paths
++
++
++def test_browser_loaded_public_assets_exist():
++    missing = []
++
++    for page in sorted(PUBLIC.rglob("*.html")):
++        parser = StaticAssetParser()
++        text = page.read_text(encoding="utf-8")
++        parser.feed(text)
++        paths = parser.paths + _css_urls(text) + _absolute_forkmesh_asset_urls(text)
++        for path in paths:
++            if not (PUBLIC / path.lstrip("/")).is_file():
++                missing.append(f"{page.relative_to(PUBLIC).as_posix()}: {path}")
++
++    for stylesheet in sorted(PUBLIC.rglob("*.css")):
++        text = stylesheet.read_text(encoding="utf-8")
++        for path in _css_urls(text):
++            if not (PUBLIC / path.lstrip("/")).is_file():
++                missing.append(f"{stylesheet.relative_to(PUBLIC).as_posix()}: {path}")
++
++    assert missing == []
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index 3790d7dc..62feb056 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -20,7 +20,7 @@ html_handling = "none"
+ not_found_handling = "404-page"
+ # /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
+ # handled in code rather than served as a static asset.
+-run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/blog", "/blog.html", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
++run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/blog", "/blog.html", "/features", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
+ 
+ [vars]
+ NODE_NAME = "forkmesh-mainnode"
+@@ -79,7 +79,7 @@ class_name = "ForkMeshHost"
+ [[d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh"
+-database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
++database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
