@@ -1172,10 +1172,9 @@ private:
     void openBranchMergeEditor(const QString &branch);
     // Merge the default branch into every branch that's behind it in one pass;
     // clean merges land via plumbing (no checkout), conflicts are reported so the
-    // list can surface them and offer "Fix with agent". `confirm` is false when
-    // run automatically after a merge (the "auto pull into all" toggle), so it
-    // skips the scope-confirmation prompt.
-    void pullBaseIntoAllBranches(bool confirm = true);
+    // list can surface them and offer "Fix with agent". Runs without a
+    // confirmation prompt; the "Pull into all" button spins while it works.
+    void pullBaseIntoAllBranches();
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
@@ -1409,6 +1408,11 @@ private:
     // restores it. addRefreshSpin wires it onto a button's clicked signal.
     void spinRefreshButton(QPushButton *button);
     void addRefreshSpin(QPushButton *button);
+    // Open-ended variant for a button whose work runs synchronously for an
+    // unknown span: start spinning on click, stop (restoring the icon) when the
+    // work finishes. Pair these around a GitKeepAlive scope so it animates.
+    void startButtonSpin(QPushButton *button);
+    void stopButtonSpin(QPushButton *button);
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
