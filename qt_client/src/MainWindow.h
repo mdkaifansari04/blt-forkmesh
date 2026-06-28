@@ -713,6 +713,10 @@ private:
     void linkAgentPullToIssue(const AgentSession &session, int prNumber);
     void closeCurrentPull();
     void reopenCurrentPull();
+    // Deliver the open PR on screen to the repo owner's inbox (the relay queues it
+    // so it lands even if the source-of-truth node is offline). Shown on mirror
+    // nodes, which can't merge locally.
+    void sendCurrentPullToSource();
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
     // Merge the PR, then delete it and its head branch in one confirmed step
@@ -2269,6 +2273,9 @@ private:
     QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullReopenButton = nullptr;
+    // Mirror-node-only: re-deliver this PR to the repo owner's inbox so it reaches
+    // the source of truth even while that node is offline (the relay holds it).
+    QPushButton *m_pullSendToSourceButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
