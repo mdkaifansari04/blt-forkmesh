@@ -808,6 +808,9 @@ private:
     // restart (adhoc #130, #125).
     void updateIssueLooperButton();
     void positionLooperToggle();
+    // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
+    // (adhoc #197), mirroring positionLooperToggle over Issues.
+    void positionMirrorActivityStrip();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -2002,10 +2005,13 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
-    // Live activity strip atop the Mirror nodes tab: a dot per active node that
-    // flashes green when it serves a clone, orange when it serves browsing. Held
-    // as a QWidget* (concrete MirrorActivityStrip is private to MainWindow.cpp).
+    // Live activity strip floating just above the Mirror nodes tab: a dot per
+    // active node that flashes green when it serves a clone, orange when it
+    // serves browsing. Held as a QWidget* (concrete MirrorActivityStrip is
+    // private to MainWindow.cpp). m_mirrorActivityStripTimer keeps it anchored
+    // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
     QWidget *m_mirrorActivityStrip = nullptr;
+    QTimer *m_mirrorActivityStripTimer = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
