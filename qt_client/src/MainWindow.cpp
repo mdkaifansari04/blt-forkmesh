@@ -12637,7 +12637,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitSearch = new QLineEdit;
     m_commitSearch->setObjectName("issueSearch"); // reuse the search-field styling
     m_commitSearch->setClearButtonEnabled(true);
-    m_commitSearch->setPlaceholderText("Search commits by hash or message\xE2\x80\xA6");
+    m_commitSearch->setPlaceholderText(
+        "Search commits by hash, message, or author\xE2\x80\xA6");
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
@@ -14897,6 +14898,20 @@ QWidget *MainWindow::buildInsightsTab()
     m_insightsContributors->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_insightsContributors, &QWidget::customContextMenuRequested, this,
             &MainWindow::showInsightsContributorMenu);
+    // Left-click a contributor's name or commit count to open the Commits tab
+    // filtered to that author.
+    connect(m_insightsContributors, &QTableWidget::cellClicked, this,
+            [this](int row, int column) {
+                if (column != 0 && column != 1)
+                    return;
+                QTableWidgetItem *nameItem = m_insightsContributors->item(row, 0);
+                if (!nameItem)
+                    return;
+                const QString name = nameItem->data(Qt::UserRole).toString().isEmpty()
+                                         ? nameItem->text()
+                                         : nameItem->data(Qt::UserRole).toString();
+                openCommitsForContributor(name);
+            });
 
     // Caption under the table: the span the activity bars cover, oldest to newest.
     m_insightsActivityAxis = new QLabel;
@@ -30249,16 +30264,20 @@ void MainWindow::filterCommits(const QString &query)
         bool match = needle.isEmpty();
         if (!match) {
             // The full hash lives on the summary item's UserRole; the visible
-            // Commit cell holds the short hash. Match either, plus the summary.
+            // Commit cell holds the short hash. Match either, plus the summary or
+            // the author (so clicking a contributor on Insights filters to them).
             const QTableWidgetItem *summary =
                 m_commitsTable->item(row, kCommitSummaryCol);
             const QTableWidgetItem *hash =
                 m_commitsTable->item(row, kCommitHashCol);
+            const QTableWidgetItem *author = m_commitsTable->item(row, 0);
             if (summary &&
                 (summary->text().toLower().contains(needle) ||
                  summary->data(Qt::UserRole).toString().toLower().contains(needle)))
                 match = true;
             else if (hash && hash->text().toLower().contains(needle))
+                match = true;
+            else if (author && author->text().toLower().contains(needle))
                 match = true;
         }
         m_commitsTable->setRowHidden(row, !match);
@@ -31822,12 +31841,16 @@ void MainWindow::loadRepoInsights()
             const int row = m_insightsContributors->rowCount();
             m_insightsContributors->insertRow(row);
 
+            const QString openHint =
+                QStringLiteral("Click to view %1's commits").arg(c.name);
             auto *nameItem = new QTableWidgetItem(c.name);
             nameItem->setData(Qt::UserRole, c.name); // read by the reassign menu
+            nameItem->setToolTip(openHint);
             m_insightsContributors->setItem(row, 0, nameItem);
 
             auto *countItem = new QTableWidgetItem;
             countItem->setData(Qt::DisplayRole, c.commits);
+            countItem->setToolTip(openHint);
             m_insightsContributors->setItem(row, 1, countItem);
 
             const double pct = contributorCommitTotal > 0
@@ -31866,8 +31889,8 @@ void MainWindow::loadRepoInsights()
                 QString::fromUtf8(
                     "<span style='color:#8b949e'>%1 &nbsp;&nbsp;\xE2\x86\x90 oldest "
                     "&nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; newest \xE2\x86\x92&nbsp;&nbsp; "
-                    "%2 &nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; right-click a contributor to "
-                    "reassign attribution</span>")
+                    "%2 &nbsp;&nbsp;\xC2\xB7&nbsp;&nbsp; click a contributor to view "
+                    "their commits, right-click to reassign attribution</span>")
                     .arg(QDateTime::fromSecsSinceEpoch(minTs).date().toString(
                              "MMM d, yyyy"),
                          QDateTime::fromSecsSinceEpoch(maxTs).date().toString(
@@ -31929,6 +31952,27 @@ void MainWindow::showInsightsContributorMenu(const QPoint &pos)
     QAction *chosen = menu.exec(m_insightsContributors->viewport()->mapToGlobal(pos));
     if (chosen == reassign)
         reassignContributorIdentity(name);
+}
+
+// Jump from an Insights contributor row to the Commits tab, filtered to that
+// author. Drives the existing commit search box (which deepens the list to the
+// whole history and re-applies on textChanged); filterCommits matches the author
+// column too, so the list narrows to that contributor's commits.
+void MainWindow::openCommitsForContributor(const QString &author)
+{
+    const QString name = author.trimmed();
+    if (name.isEmpty())
+        return;
+    // Switch to the Commits tab (m_repoDetailStack index 1). Setting the button
+    // checked alone won't fire idClicked, so move the stack explicitly too.
+    if (m_repoDetailTabs && m_repoDetailTabs->button(1))
+        m_repoDetailTabs->button(1)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(1);
+    if (m_commitSearch) {
+        m_commitSearch->setText(name);
+        m_commitSearch->setFocus();
+    }
 }
 
 // Rewrite history so every commit authored (or committed) by `oldName` is
