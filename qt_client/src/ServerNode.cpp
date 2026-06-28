@@ -286,16 +286,12 @@ void ServerNode::scheduleReconnect()
         });
     }
 
-    // Exponential backoff: ~1, 2, 4, 8, 16, 30 (capped) seconds, plus jitter so
-    // many nodes don't reconnect in lockstep.
-    const int base = 1000;
-    const int cap = 30000;
-    int delay = qMin(cap, base * (1 << qMin(m_reconnectAttempt, 5)));
-    delay += int(QRandomGenerator::global()->bounded(750));
-    ++m_reconnectAttempt;
+    // While offline, retry about once a second so the node reconnects promptly
+    // the moment the relay returns (adhoc #192). A little jitter keeps many nodes
+    // from reconnecting in lockstep and hammering the relay in sync.
+    const int delay = 1000 + int(QRandomGenerator::global()->bounded(250));
     emit statusChanged(
-        QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
-            .arg((delay + 999) / 1000));
+        QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting\xE2\x80\xA6"));
     m_reconnectTimer->start(delay);
 }
 
@@ -371,7 +367,6 @@ void ServerNode::onSocketReadyRead()
             return;
         }
         m_wsReady = true;
-        m_reconnectAttempt = 0; // healthy link: reset backoff
         if (m_pingTimer)
             m_pingTimer->start();
         if (m_presenceTimer)

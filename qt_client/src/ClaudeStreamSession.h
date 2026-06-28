@@ -21,9 +21,13 @@ public:
 
     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
     // '=' unsets that variable in the child (matches TerminalWidget semantics).
-    // The initial prompt is sent as the first user turn.
+    // The initial prompt is sent as the first user turn. When resumeSessionId is
+    // non-empty the CLI is launched with `--resume <id>`, so it picks up that
+    // prior conversation with full context instead of starting fresh — the
+    // initial prompt then becomes the next steering turn (adhoc #182).
     void start(const QString &cwd, const QStringList &extraEnv,
-               const QString &initialPrompt, bool skipPermissions = true);
+               const QString &initialPrompt, bool skipPermissions = true,
+               const QString &resumeSessionId = QString());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
     void stop();
