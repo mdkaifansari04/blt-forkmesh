@@ -2350,13 +2350,6 @@ private:
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
-    // Last HTML laid out in m_pullDiff, with the font it was rendered at. A
-    // periodic refreshOpenRepoDetail() re-runs renderPullDiff() for the same
-    // file; setHtml() re-lays-out the whole diff (seconds for a big patch and a
-    // GUI-thread stall), so skip it when nothing changed. Reset to the -1
-    // sentinel wherever the view is cleared outside renderPullDiff().
-    QString m_pullDiffRenderedHtml;
-    int m_pullDiffRenderedFontPt = -1;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
@@ -2637,6 +2630,12 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // sessionWorkdir() cache for *reloaded* sessions (not in m_streamWorktree):
+    // resolving their worktree shells `git worktree list`, which the Files-changed
+    // panel drove on every transcript turn — a per-event subprocess that stalled
+    // the GUI thread (adhoc #247). A session's branch->worktree binding is fixed
+    // for its lifetime, so cache it; re-resolve only if the path was since removed.
+    QHash<int, QString> m_sessionWorkdirCache;   // sessionId -> resolved worktree ("" = none)
     // A message typed into the composer for a session whose process isn't live:
     // it restarts the session and this is folded into the resumed run's prompt as
     // a steering instruction (the composer is always typeable — adhoc #177).
@@ -2803,6 +2802,13 @@ private:
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
     bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
+    // Shared re-entrancy guard for the two heavy periodic refreshes
+    // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git
+    // reads under a GitKeepAlive that pumps the event loop, so a second one firing
+    // during that pump would nest its git work and compound into a GUI stall
+    // (adhoc #247). The second one defers instead.
+    bool m_heavyRefreshInFlight = false;
+    bool m_repoListRefreshQueued = false; // a refreshRepositoryList deferred past a pump
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
