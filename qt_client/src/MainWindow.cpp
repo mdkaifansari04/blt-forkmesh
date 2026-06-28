@@ -15428,6 +15428,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullReopenButton = new QPushButton("Reopen");
+    m_pullSendToSourceButton = new QPushButton("Send to source of truth");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
@@ -15437,7 +15438,8 @@ QWidget *MainWindow::buildPullsTab()
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
-                           m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
+                           m_pullCloseButton, m_pullReopenButton,
+                           m_pullSendToSourceButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
                            m_pullPreviewButton,
                            m_pullLinkIssueButton, m_pullSplitButton}) {
@@ -15485,6 +15487,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
     m_pullReopenButton->hide(); // only shown when the PR is closed or merged
+    setOcticon(m_pullSendToSourceButton, "upload", 16);
+    m_pullSendToSourceButton->setToolTip(
+        "Deliver this pull request to the repository owner's inbox. The relay "
+        "holds it, so it reaches the source of truth even while that node is "
+        "offline.");
+    m_pullSendToSourceButton->hide(); // only shown on mirror nodes (can't merge here)
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -15554,6 +15562,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -15985,6 +15994,8 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::mergeAndDeleteCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     connect(m_pullReopenButton, &QPushButton::clicked, this, &MainWindow::reopenCurrentPull);
+    connect(m_pullSendToSourceButton, &QPushButton::clicked, this,
+            &MainWindow::sendCurrentPullToSource);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
     connect(m_pullDeleteBranchButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullAndBranch);
@@ -17789,6 +17800,14 @@ void MainWindow::updatePullActionState()
     if (m_pullReopenButton) {
         m_pullReopenButton->setVisible(writable && have && (closed || merged));
         m_pullReopenButton->setEnabled(writable && have && (closed || merged));
+    }
+    // "Send to source of truth" only makes sense on a mirror node (no working tree
+    // to merge in): the owner holds the real pulls/ tree, so re-deliver the open PR
+    // to their inbox where the relay queues it until they come online.
+    if (m_pullSendToSourceButton) {
+        const bool offerSend = !writable && have && open;
+        m_pullSendToSourceButton->setVisible(offerSend);
+        m_pullSendToSourceButton->setEnabled(offerSend);
     }
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
@@ -19700,6 +19719,44 @@ void MainWindow::reopenCurrentPull()
     if (!store.setStatus(m_currentPullNumber, "open", &error))
         QMessageBox::warning(this, "Reopen pull request", error);
     reloadPulls();
+}
+
+void MainWindow::sendCurrentPullToSource()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &candidate : std::as_const(m_currentPulls)) {
+        if (candidate.number == m_currentPullNumber) {
+            pr = &candidate;
+            break;
+        }
+    }
+    if (!pr)
+        return;
+    // The PR was synced from the mirror with its original author/signature intact;
+    // deliver it as-authored so the owner's inbox can verify it. Without a
+    // signature there's nothing the source of truth would accept.
+    if (pr->sig.isEmpty() || pr->author.isEmpty()) {
+        QMessageBox::warning(
+            this, "Send to source of truth",
+            "This pull request is missing its signature, so it can't be delivered "
+            "to the source of truth.");
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (QMessageBox::question(
+            this, "Send to source of truth",
+            QStringLiteral(
+                "Deliver pull request #%1 to %2/%3's inbox?\n\n"
+                "The relay queues it, so it reaches the source of truth even if "
+                "that node is currently offline.")
+                .arg(m_currentPullNumber)
+                .arg(repo.owner, repo.name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+    submitPullToInbox(*pr, repo);
 }
 
 // Toggle the pull-delete buttons together so none can launch a second history
