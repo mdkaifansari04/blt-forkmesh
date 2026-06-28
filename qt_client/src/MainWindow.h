@@ -515,6 +515,10 @@ private:
     void startDiagnostics();
     void updateFooterDiagnostics();
     void onUiStall(qint64 peakMs, const QString &backtrace);
+    // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
+    // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
+    // De-duped by backtrace so one recurring freeze files a single task.
+    void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
@@ -799,7 +803,11 @@ private:
     // agentSessionLandedInBase() answers the question for one session.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    bool agentSessionLandedInBase(const AgentSession &session) const;
+    // dir = the repo's git dir, base = its default branch — resolved once by the
+    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
+    // (etc.) per session.
+    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
+                                  const QString &base) const;
     void assignIssueToAgent(const QString &provider);
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -1950,6 +1958,9 @@ private:
     int m_stallCount = 0;
     QStringList m_stallLog;          // recent stalls, each with its backtrace
     QString m_stallLogPath;          // durable on-disk stall log
+    // Stall signatures already handed to an agent this session, so a recurring
+    // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
+    QSet<QString> m_autoFiledStallSignatures;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -2726,6 +2737,7 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
+    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
