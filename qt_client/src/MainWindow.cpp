@@ -10669,6 +10669,7 @@ void MainWindow::selectNode(const QString &node)
             clearRepoDetail();
         m_nodeSwitching = false;
         m_repoLoadActive = false;
+        finishLoadStepTiming(); // log the final step's duration
         // Stop the repo spinner first so updateRepoSwitcher (called from
         // stopRepoSwitchSpin, now that m_nodeSwitching is false) reveals the
         // freshly-opened first repo and its count.
@@ -26763,6 +26764,15 @@ void MainWindow::openRepoDetail(int repoIndex)
             m_issuesRepoCombo->setCurrentIndex(combo);
     }
     logStartup(QStringLiteral("  openRepo: info+branches+codeSize done"));
+    // Pulls load before agents on purpose: the Agents table annotates each
+    // session with its PR status (open/merged/closed) read from m_currentPulls,
+    // so loading pulls first lets a single reloadAgents() render the right state.
+    // (Previously pulls came last and the Agents tab paid for a second full
+    // reloadAgents() — the heaviest per-open step, a git probe per session.)
+    nodeSwitchStep(QStringLiteral("Loading pull requests…"));
+    m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    updateRepoPullCount();
+    logStartup(QStringLiteral("  openRepo: pulls loaded"));
     nodeSwitchStep(QStringLiteral("Loading issues & agents…"));
     reloadIssues();
     reloadAgents();
@@ -26771,10 +26781,6 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_currentDiscussions.clear();
     reloadDiscussions();
     updateRepoDiscussionCount();
-    nodeSwitchStep(QStringLiteral("Loading pull requests…"));
-    m_currentPulls = pullStoreForCurrentRepo().loadAll();
-    updateRepoPullCount();
-    logStartup(QStringLiteral("  openRepo: pulls loaded"));
 
     // Land on the user's preferred default tab (Settings → General; Agents by
     // default). Each candidate tab's data was eagerly loaded above, so we only
@@ -26784,10 +26790,6 @@ void MainWindow::openRepoDetail(int repoIndex)
         m_repoDetailTabs->button(defaultTab)->setChecked(true);
     if (m_repoDetailStack)
         m_repoDetailStack->setCurrentIndex(defaultTab);
-    // The Agents list annotates each session with its PR status from the pulls
-    // loaded just above; reloadAgents() ran before them, so refresh on landing.
-    if (defaultTab == 3)
-        reloadAgents();
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -26811,7 +26813,21 @@ void MainWindow::openRepoDetail(int repoIndex)
     loadAboutSidebar();
     logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
-    loadCommits();
+    // Building the commit table is the single heaviest piece of per-open UI work
+    // (up to 300 rows, each with cell widgets, plus several git reads). Most opens
+    // land on Agents/Code and never show it, so only build it when Commits is the
+    // landing tab; otherwise just refresh the cheap "Commits (N)" badge and let
+    // the tab-click handler build the table on demand. The previous repo's rows
+    // and cached tip are cleared so commitsListIsCurrent() forces a rebuild for
+    // this repo when its Commits tab is first opened.
+    if (defaultTab == 1) {
+        loadCommits();
+    } else {
+        updateRepoCommitCount();
+        if (m_commitsTable)
+            m_commitsTable->setRowCount(0);
+        m_commitsLoadedTip.clear();
+    }
     logStartup(QStringLiteral("  openRepo: commits loaded"));
     // Insights (contributor stats, git shortlog) are computed lazily when the
     // Insights tab is opened — see the tab-switch handler — so opening a repo
@@ -36414,6 +36430,7 @@ void MainWindow::openRepoDetailDeferred(int repoIndex)
         m_repoLoadActive = true;
         openRepoDetail(repoIndex);
         m_repoLoadActive = false;
+        finishLoadStepTiming(); // log the final step's duration
         stopRepoSwitchSpin();
         QApplication::restoreOverrideCursor();
         // Confirm the result where the user is looking: a brief toast for a slow
@@ -36440,11 +36457,33 @@ void MainWindow::nodeSwitchStep(const QString &what)
     // keeps animating and each step appears as the work happens.
     if (!m_nodeSwitching && !m_repoLoadActive)
         return;
+    // Close out the previous step in the log with how long it took, so the user
+    // gets a real-time, timed breakdown of where a switch spends its time (and
+    // the slow step is obvious at a glance) rather than a wall of equal-looking
+    // lines. The duration is appended to the just-finished step, not this one.
+    if (!m_loadStepName.isEmpty() && m_loadStepTimer.isValid())
+        logSystem(QStringLiteral("  - %1 (%2 ms)")
+                      .arg(m_loadStepName)
+                      .arg(m_loadStepTimer.elapsed()));
     showLoadStatus(what);
     QString plain = what;
     plain.replace(QChar(0x2026), QStringLiteral("..."));
-    logSystem(QStringLiteral("  - ") + plain);
+    m_loadStepName = plain;
+    m_loadStepTimer.restart();
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+// Flush the final (still-running) narration step to the log with its duration.
+// Called when a node switch / repo open finishes, since nodeSwitchStep only logs
+// a step's timing when the *next* step starts — the last step has no successor.
+void MainWindow::finishLoadStepTiming()
+{
+    if (!m_loadStepName.isEmpty() && m_loadStepTimer.isValid())
+        logSystem(QStringLiteral("  - %1 (%2 ms)")
+                      .arg(m_loadStepName)
+                      .arg(m_loadStepTimer.elapsed()));
+    m_loadStepName.clear();
+    m_loadStepTimer.invalidate();
 }
 
 void MainWindow::showLoadStatus(const QString &what)
