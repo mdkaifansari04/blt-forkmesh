@@ -22216,6 +22216,15 @@ void MainWindow::refreshAgentTable()
     }
 
     const int keep = m_selectedAgentSessionId;
+    // Remember where the list was scrolled so a rebuild doesn't snap it back to
+    // the top (adhoc #207): queueing a message to the selected agent reloads the
+    // table, and setRowCount(0) below resets the scroll. Without restoring it the
+    // user is yanked to the top of the list mid-session even though the selection
+    // is preserved. Captured here, reapplied after the rows + selection are back.
+    const int scrollPos =
+        m_agentTable->verticalScrollBar()
+            ? m_agentTable->verticalScrollBar()->value()
+            : 0;
     // Resolved once for every row's Diff cell (issue #170): the repo's git dir and
     // base branch the per-session ahead/behind probe measures against.
     const QString agentGitDir = repoGitDir();
@@ -22367,6 +22376,12 @@ void MainWindow::refreshAgentTable()
         m_agentTable->selectRow(selRow);
     else
         showAgentSession(-1);
+    // Reapply the saved scroll offset last (adhoc #207): selectRow() above only
+    // scrolls far enough to make the kept row visible, so on a reload it leaves
+    // the view pinned to the top. Restoring the prior offset keeps the user where
+    // they were in the list while staying on the active agent's detail.
+    if (m_agentTable->verticalScrollBar())
+        m_agentTable->verticalScrollBar()->setValue(scrollPos);
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
