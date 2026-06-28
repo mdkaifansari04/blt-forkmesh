@@ -2399,6 +2399,10 @@ private:
                                    const QString &repoPath,
                                    const QString &customPrompt = QString());
     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
+    // The Claude CLI stamps every stream-json event with the conversation's
+    // session_id. The most recent one identifies the conversation to `--resume`
+    // so a stopped agent is picked up with its full context (adhoc #182).
+    QString lastClaudeSessionId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
     // Refresh the edited-files panel. The in-memory tool-call files render
     // immediately; the working-tree `git diff` augmentation is coalesced and run
