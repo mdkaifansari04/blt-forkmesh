@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 257
 title: allow ohters to bid on issues to state their desired bounty others can bid higher or lower
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 47
 progress: 0
