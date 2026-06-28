@@ -16838,8 +16838,6 @@ void MainWindow::showPull(int number)
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
         m_pullDiff->clear();
-        m_pullDiffRenderedHtml.clear(); // view no longer shows a rendered diff
-        m_pullDiffRenderedFontPt = -1;
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -16949,11 +16947,8 @@ void MainWindow::showPull(int number)
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0)
         m_pullFiles->setCurrentRow(0);
-    else {
+    else
         m_pullDiff->setPlainText("(no changes)");
-        m_pullDiffRenderedHtml.clear(); // plain text, not a cached HTML diff
-        m_pullDiffRenderedFontPt = -1;
-    }
     renderPullCommits(*found);
     renderPullThread(*found);
     renderPullChecks(*found);
@@ -17105,21 +17100,10 @@ void MainWindow::renderPullDiff(const QString &filePath)
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
-    const QString shown =
-        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                       : html;
-    // setHtml() re-lays-out the entire diff document, which can block the GUI
-    // thread for seconds on a large patch. A periodic refresh (reloadPulls ->
-    // refreshPullList -> showPull -> renderPullDiff) hits this for the same file
-    // even when nothing changed, so skip the re-layout when the rendered HTML and
-    // font are identical to what's already on screen. This also preserves the
-    // reader's scroll position across refreshes.
-    if (shown == m_pullDiffRenderedHtml && m_diffFontPt == m_pullDiffRenderedFontPt)
-        return;
     m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-    m_pullDiff->setHtml(shown);
-    m_pullDiffRenderedHtml = shown;
-    m_pullDiffRenderedFontPt = m_diffFontPt;
+    m_pullDiff->setHtml(html.isEmpty()
+                            ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                            : html);
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)
@@ -32856,14 +32840,6 @@ void MainWindow::loadWorktreesPanel()
     // table is rebuilt before it returns.
     const int statusGen = ++m_worktreeStatusGen;
     int actionWidth = 0;
-    // Suspend painting while each row's action cell (a QWidget holding several
-    // QPushButtons) is built: setCellWidget() shows the cell widget, which
-    // activates its button layout and re-lays-out the whole table on *every*
-    // row. On a repo with several worktrees that per-row relayout/repaint
-    // cascade blocked the GUI thread for ~2s (the QPushButton::sizeHint stall in
-    // the backtrace). Disabling updates coalesces it into one repaint when
-    // re-enabled — the same fix the commits table already uses.
-    m_worktreesTable->setUpdatesEnabled(false);
     for (const WT &wt : wts) {
         const int row = m_worktreesTable->rowCount();
         m_worktreesTable->insertRow(row);
@@ -33062,7 +33038,6 @@ void MainWindow::loadWorktreesPanel()
     }
     if (actionWidth > 0)
         m_worktreesTable->setColumnWidth(4, actionWidth + 12);
-    m_worktreesTable->setUpdatesEnabled(true); // one repaint for the whole rebuild
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
