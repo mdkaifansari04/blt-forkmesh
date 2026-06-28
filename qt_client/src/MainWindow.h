@@ -2709,6 +2709,8 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
+    bool m_repoDetailRefreshing = false; // re-entrancy guard for refreshOpenRepoDetail
+    bool m_mirrorNodesPanelLoading = false; // re-entrancy guard for loadMirrorNodesPanel
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
