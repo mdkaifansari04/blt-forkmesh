@@ -1351,6 +1351,9 @@ private:
     // git filter-branch) to fix attribution.
     void showInsightsContributorMenu(const QPoint &pos);
     void reassignContributorIdentity(const QString &oldName);
+    // Clicking a contributor's name or commit count on the Insights tab jumps to
+    // the Commits tab with the list filtered to that author (drives m_commitSearch).
+    void openCommitsForContributor(const QString &author);
     void setRepoBranch(const QString &branch);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
