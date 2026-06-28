@@ -292,6 +292,9 @@ public:
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
+    // Branch names (column 0) in row order, so a test can prove the default branch
+    // is pinned to the top of the list regardless of commit recency (adhoc #185).
+    QStringList testBranchRowOrder() const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
