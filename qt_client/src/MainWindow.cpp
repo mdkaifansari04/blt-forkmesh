@@ -3276,18 +3276,18 @@ private:
     std::function<void()> m_onClick;
 };
 
-// A plain "busy" overlay: the same rotating refresh glyph used on the Refresh
-// buttons, optionally followed by a label, centred and painted over an opaque
-// backing so it can sit on top of a view that is being (re)loaded. Used as a
-// loading indicator over the commit diff while showCommit reads and renders it.
-// The animation timer only runs while the overlay is visible (see show/hideEvent)
-// so a hidden, idle overlay costs nothing.
+// A small self-animating "busy" spinner: the rotating refresh glyph used on the
+// Refresh buttons, sized to sit inline next to a section heading while that
+// section's content is being (re)loaded. The animation timer only runs while the
+// spinner is visible (see show/hideEvent) so a hidden, idle one costs nothing.
 class BusySpinner : public QWidget
 {
 public:
-    explicit BusySpinner(const QString &label, QWidget *parent = nullptr)
-        : QWidget(parent), m_label(label)
+    explicit BusySpinner(QWidget *parent = nullptr, int size = 16)
+        : QWidget(parent), m_size(size)
     {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
         m_timer = new QTimer(this);
         m_timer->setInterval(60);
         connect(m_timer, &QTimer::timeout, this, [this] {
@@ -3311,28 +3311,13 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        // Opaque backing matching the view so any stale content underneath is
-        // hidden while the new content is being prepared.
-        p.fillRect(rect(), qApp->palette().color(QPalette::Base));
-        const QColor c(Theme::kTextTertiary);
-        const int glyph = 28;
-        const int gap = 10;
-        const int textW =
-            m_label.isEmpty() ? 0 : fontMetrics().horizontalAdvance(m_label);
-        const int totalW = glyph + (textW ? gap + textW : 0);
-        const int x = (width() - totalW) / 2;
-        const int y = (height() - glyph) / 2;
-        p.drawPixmap(x, y, refreshPixmap(c, m_angle, glyph));
-        if (!m_label.isEmpty()) {
-            p.setPen(c);
-            p.drawText(QRect(x + glyph + gap, y, textW, glyph),
-                       Qt::AlignVCenter | Qt::AlignLeft, m_label);
-        }
+        p.drawPixmap(0, 0,
+                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
     }
 
 private:
-    QString m_label;
     QTimer *m_timer = nullptr;
+    int m_size;
     int m_angle = 0;
 };
 
@@ -12561,10 +12546,23 @@ QWidget *MainWindow::buildRepoCommitsTab()
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
+    // Small spinner that sits just after the "N files changed" heading while
+    // showCommit reads + renders the diff, so a slow commit shows progress here
+    // instead of freezing. Hidden until a load starts.
+    m_commitDiffSpinner = new BusySpinner(filesPane);
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *filesSummaryRow = new QHBoxLayout;
+    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
+    filesSummaryRow->setSpacing(6);
+    filesSummaryRow->addWidget(m_commitFilesSummary);
+    filesSummaryRow->addWidget(m_commitDiffSpinner);
+    filesSummaryRow->addStretch();
+
     auto *filesLayout = new QVBoxLayout(filesPane);
     filesLayout->setContentsMargins(0, 0, 8, 0);
     filesLayout->setSpacing(6);
-    filesLayout->addWidget(m_commitFilesSummary);
+    filesLayout->addLayout(filesSummaryRow);
     filesLayout->addWidget(m_commitFileList, 1);
 
     // Right: the unified diff for the whole commit.
@@ -35842,25 +35840,10 @@ void MainWindow::stopCommitsRefreshSpin()
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
 }
 
-void MainWindow::ensureCommitDiffSpinner()
-{
-    if (m_commitDiffSpinner || !m_commitDiffView)
-        return;
-    // Parent to the diff view so it overlays exactly that pane; startCommitDiffSpin
-    // sizes it to the view's current rect before showing.
-    m_commitDiffSpinner =
-        new BusySpinner(QString::fromUtf8("Loading diff\xE2\x80\xA6"), m_commitDiffView);
-    m_commitDiffSpinner->hide();
-}
-
 void MainWindow::startCommitDiffSpin()
 {
-    ensureCommitDiffSpinner();
-    if (!m_commitDiffSpinner || !m_commitDiffView)
-        return;
-    m_commitDiffSpinner->setGeometry(m_commitDiffView->rect());
-    m_commitDiffSpinner->show();
-    m_commitDiffSpinner->raise();
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->show();
 }
 
 void MainWindow::stopCommitDiffSpin()
