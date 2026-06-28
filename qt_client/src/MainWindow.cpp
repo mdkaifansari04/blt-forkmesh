@@ -16263,10 +16263,33 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
             else
                 m_pullConflictByNumber.remove(number);
             setPullConflictBadge(number, conflict);
+            // If this dry-run was for the PR currently on screen, refresh its
+            // merge UI now that the result is cached — updatePullActionState()
+            // deferred to us instead of blocking the GUI on the live check.
+            if (number == m_currentPullNumber)
+                updatePullActionState();
         }
     }
     if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
         QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+}
+
+void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
+{
+    // Already queued for this PR? The pending entry will produce a fresh result,
+    // so don't append a duplicate dry-run.
+    for (const QPair<int, QString> &p : std::as_const(m_pendingPullConflictChecks))
+        if (p.first == number)
+            return;
+    // Whenever the pending list is non-empty a drain is already running or
+    // scheduled (reloadPulls / processPendingPullConflicts keep that invariant),
+    // so only kick off a new pass when we're appending to an idle queue.
+    const bool wasIdle = m_pendingPullConflictChecks.isEmpty();
+    m_pendingPullConflictChecks.append(qMakePair(number, fingerprint));
+    if (wasIdle) {
+        const quint64 gen = m_pullConflictGen;
+        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    }
 }
 
 void MainWindow::setPullConflictBadge(int number, bool conflict)
@@ -17793,25 +17816,33 @@ void MainWindow::updatePullActionState()
     // Dry-run the patch so the reviewer sees conflicts before merging. reloadPulls()
     // already ran this apply for every open PR and cached the result, so reuse the
     // cached entry for the current PR instead of re-spawning `git apply --check`
-    // here (that synchronous re-check blocked the UI for ~1.6s on every selection).
-    // Fall back to a live check only when there's no matching cache entry.
+    // here (that synchronous re-check blocked the UI for ~2s on every selection).
+    // On a cache miss don't run the dry-run inline — that's the slow call that
+    // froze the GUI. Queue it for the async pass and show a neutral "checking"
+    // state; processPendingPullConflicts() re-runs us once the result lands.
     bool mergeClean = true;
+    bool conflictPending = false;
     QStringList conflictFiles;
     if (mergeable) {
+        const QString fingerprint = pullPatchFingerprint(patch);
         const auto cached = m_pullConflictCache.constFind(m_currentPullNumber);
         if (cached != m_pullConflictCache.constEnd() &&
-            cached->fingerprint == pullPatchFingerprint(patch)) {
+            cached->fingerprint == fingerprint) {
             mergeClean = !cached->conflict;
             conflictFiles = cached->conflictFiles;
         } else {
-            bool clean = false;
-            if (store.checkMergeable(m_currentPullNumber, &clean, &conflictFiles))
-                mergeClean = clean;
+            conflictPending = true;
+            queuePullConflictCheck(m_currentPullNumber, fingerprint);
         }
     }
     if (m_pullMergeStatus) {
         if (!mergeable) {
             m_pullMergeStatus->hide();
+        } else if (conflictPending) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#8b949e'>Checking for conflicts\xE2\x80\xA6"
+                "</span>"));
+            m_pullMergeStatus->show();
         } else if (mergeClean) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x93 No conflicts \xE2\x80\x94 "
@@ -17846,18 +17877,22 @@ void MainWindow::updatePullActionState()
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
     }
     if (m_pullMergeButton) {
-        m_pullMergeButton->setEnabled(mergeable && mergeClean);
+        m_pullMergeButton->setEnabled(mergeable && mergeClean && !conflictPending);
         m_pullMergeButton->setToolTip(
-            mergeable && !mergeClean
-                ? QStringLiteral("This pull request has conflicts — use "
-                                 "\"Resolve conflicts\" to commit a fix to its "
-                                 "branch, then merge.")
-                : QStringLiteral("Apply and merge this pull request"));
+            conflictPending
+                ? QStringLiteral("Checking whether this pull request still applies "
+                                 "cleanly…")
+                : mergeable && !mergeClean
+                      ? QStringLiteral("This pull request has conflicts — use "
+                                       "\"Resolve conflicts\" to commit a fix to its "
+                                       "branch, then merge.")
+                      : QStringLiteral("Apply and merge this pull request"));
     }
     // "Merge + delete branch" gates on the same merge-readiness as Merge (it
     // merges first), and on no delete worker already running.
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(mergeable && mergeClean &&
+                                            !conflictPending &&
                                             !m_pullDeleteInProgress);
     // "Build & preview" only makes sense when this repo's local checkout is a
     // ForkMesh source tree we know how to build (qt_client/CMakeLists.txt) and the
