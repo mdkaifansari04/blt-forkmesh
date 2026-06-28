@@ -1631,6 +1631,10 @@ const QString kLegacyClaudeCommand =
 // input) so it edits the worktree until done; ForkMesh then turns the diff into a
 // PR. Distinct from "Claude API" (the bundled python script) above.
 const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
+// Which Claude model the `claude` CLI runs as (passed through as `--model`):
+// empty = the CLI's own default, otherwise an alias like "opus"/"sonnet"/"haiku".
+// Surfaced as a chooser in the footer quick-add bar (adhoc #261).
+const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
@@ -7404,6 +7408,29 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
+    // Claude model chooser (adhoc #261): pick which model the `claude` CLI runs
+    // as. The values are the CLI's own `--model` aliases ("opus"/"sonnet"/…);
+    // an empty value leaves it on the CLI default. Persisted so the choice
+    // sticks across launches and feeds startClaudeCodeTranscript.
+    m_quickAddClaudeModel = new QComboBox;
+    m_quickAddClaudeModel->addItem(QStringLiteral("Default model"), QString());
+    m_quickAddClaudeModel->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+    m_quickAddClaudeModel->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+    m_quickAddClaudeModel->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    m_quickAddClaudeModel->setToolTip(
+        "Claude model the Claude Code agent runs as (passed to the CLI as "
+        "--model). 'Default model' leaves the CLI's choice untouched.");
+    {
+        const QString savedModel =
+            QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+        const int mi = m_quickAddClaudeModel->findData(savedModel);
+        m_quickAddClaudeModel->setCurrentIndex(mi >= 0 ? mi : 0);
+    }
+    connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                QSettings().setValue(kClaudeCodeModelSetting,
+                                     m_quickAddClaudeModel->currentData().toString());
+            });
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
@@ -7437,11 +7464,19 @@ QWidget *MainWindow::buildNetworkLogDock()
         const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
         m_quickAddAgentProvider->setEnabled(agentRuns);
         m_quickAddCreatePr->setEnabled(agentRuns);
+        // The model chooser only applies to the Claude Code CLI, so hide it for
+        // the API providers and grey it out when no agent will run (adhoc #261).
+        const bool claudeCode = m_quickAddAgentProvider->currentData().toString() ==
+                                QLatin1String("claude-code");
+        m_quickAddClaudeModel->setVisible(claudeCode);
+        m_quickAddClaudeModel->setEnabled(agentRuns);
     };
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
     connect(m_quickAddNoIssue, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
+    connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
     syncQuickAddAgentControls();
 
     auto *quickAddSendButton = new QPushButton("Send");
@@ -7504,6 +7539,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
     quickAddRow->addWidget(m_quickAddAgentProvider);
+    quickAddRow->addWidget(m_quickAddClaudeModel);
     quickAddRow->addWidget(m_quickAddCreatePr);
     // Two equal stretches keep the git identity centered between the quick-add
     // controls and the donate/social cluster pinned to the far right.
@@ -25251,7 +25287,13 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    auto launch = [this, sid, prompt, autoMode, branchName, resumeId](const QString &workdir) {
+    // Which model the CLI runs as, chosen in the footer quick-add bar (adhoc
+    // #261). Empty leaves the CLI on its own default; otherwise it's passed
+    // through as `--model`.
+    const QString claudeModel =
+        QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+    auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
+                   claudeModel](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -25266,7 +25308,8 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, resumeId);
+        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, resumeId,
+                    claudeModel);
         // Issue #84: launching with an initial prompt is a send too — refresh the
         // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
         // first turn's usage shows without waiting for the next minute tick.
