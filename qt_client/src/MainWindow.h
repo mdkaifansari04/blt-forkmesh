@@ -713,6 +713,10 @@ private:
     void linkAgentPullToIssue(const AgentSession &session, int prNumber);
     void closeCurrentPull();
     void reopenCurrentPull();
+    // Deliver the open PR on screen to the repo owner's inbox (the relay queues it
+    // so it lands even if the source-of-truth node is offline). Shown on mirror
+    // nodes, which can't merge locally.
+    void sendCurrentPullToSource();
     void deleteCurrentPull();
     void deleteCurrentPullAndBranch();
     // Merge the PR, then delete it and its head branch in one confirmed step
@@ -1388,6 +1392,11 @@ private:
     void queueQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Quick-add prompt history (adhoc #200): remember each sent prompt and let
+    // Up/Down walk back through them in the footer bar. direction < 0 is Up
+    // (older), > 0 is Down (newer); returns true when the key was consumed.
+    void recordQuickAddHistory(const QString &text);
+    bool navigateQuickAddHistory(int direction);
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -1907,6 +1916,13 @@ private:
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
+    // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
+    // recalls the last prompt sent so it can be fired again. Newest entry last;
+    // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1
+    // when editing the live draft (which is stashed in m_quickAddDraft).
+    QStringList m_quickAddHistory;
+    int m_quickAddHistoryIndex = -1;
+    QString m_quickAddDraft;
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
@@ -2257,6 +2273,9 @@ private:
     QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
     QPushButton *m_pullReopenButton = nullptr;
+    // Mirror-node-only: re-deliver this PR to the repo owner's inbox so it reaches
+    // the source of truth even while that node is offline (the relay holds it).
+    QPushButton *m_pullSendToSourceButton = nullptr;
     QPushButton *m_pullDeleteButton = nullptr;
     QPushButton *m_pullDeleteBranchButton = nullptr; // delete the PR and its head branch
     QPushButton *m_pullMergeDeleteButton = nullptr;  // merge, then delete the PR + branch
