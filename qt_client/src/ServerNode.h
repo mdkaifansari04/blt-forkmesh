@@ -123,10 +123,9 @@ private:
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
     QTimer *m_presenceTimer = nullptr; // periodic presence beat + stale-peer sweep
-    // Auto-reconnect: the node stays online across drops, retrying with
-    // exponential backoff until the user explicitly leaves.
+    // Auto-reconnect: the node stays online across drops, retrying about once a
+    // second until the relay returns or the user explicitly leaves (adhoc #192).
     QTimer *m_reconnectTimer = nullptr;
-    int m_reconnectAttempt = 0;
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
 

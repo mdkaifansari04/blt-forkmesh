@@ -6,6 +6,7 @@
         <file alias="broadcast.svg">icons/octicons/broadcast.svg</file>
         <file alias="check-circle.svg">icons/octicons/check-circle.svg</file>
         <file alias="chevron-down.svg">icons/octicons/chevron-down.svg</file>
+        <file alias="chevron-left.svg">icons/octicons/chevron-left.svg</file>
         <file alias="chevron-right.svg">icons/octicons/chevron-right.svg</file>
         <file alias="chevron-up.svg">icons/octicons/chevron-up.svg</file>
         <file alias="circle-slash.svg">icons/octicons/circle-slash.svg</file>

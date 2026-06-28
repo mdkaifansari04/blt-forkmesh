@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 266
 title: show a tiny token usage chart in the top right next to the earnings near the avatar super tiny just show a horizontal chart for 5 hour useage and wekly
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 55
-progress: 0
+progress: 50
 assignees: []
 createdAt: 1782432045606
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

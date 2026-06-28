@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 214
 title: add the ability on a pr to - build and preview so it builds the pr and launches the app
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 28
-progress: 0
+progress: 35
 assignees: []
 createdAt: 1782351170098
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
