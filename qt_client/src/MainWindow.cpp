@@ -32811,14 +32811,6 @@ void MainWindow::loadWorktreesPanel()
     // table is rebuilt before it returns.
     const int statusGen = ++m_worktreeStatusGen;
     int actionWidth = 0;
-    // Suspend painting while each row's action cell (a QWidget holding several
-    // QPushButtons) is built: setCellWidget() shows the cell widget, which
-    // activates its button layout and re-lays-out the whole table on *every*
-    // row. On a repo with several worktrees that per-row relayout/repaint
-    // cascade blocked the GUI thread for ~2s (the QPushButton::sizeHint stall in
-    // the backtrace). Disabling updates coalesces it into one repaint when
-    // re-enabled — the same fix the commits table already uses.
-    m_worktreesTable->setUpdatesEnabled(false);
     for (const WT &wt : wts) {
         const int row = m_worktreesTable->rowCount();
         m_worktreesTable->insertRow(row);
@@ -33017,7 +33009,6 @@ void MainWindow::loadWorktreesPanel()
     }
     if (actionWidth > 0)
         m_worktreesTable->setColumnWidth(4, actionWidth + 12);
-    m_worktreesTable->setUpdatesEnabled(true); // one repaint for the whole rebuild
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
