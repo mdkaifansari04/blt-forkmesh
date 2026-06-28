@@ -5,19 +5,19 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
+DASHBOARD = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
 CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
 def test_repo_tab_is_named_mirrors_and_has_table_shell():
-    assert 'id="tab-mirrors"' in INDEX
-    assert ">Mirrors" in INDEX
-    assert 'id="repo-mirrors"' in INDEX
-    assert 'id="mirror-summary"' in INDEX
-    assert 'id="mirror-list"' in INDEX
+    assert 'id="tab-mirrors"' in DASHBOARD
+    assert ">Mirrors" in DASHBOARD
+    assert 'id="repo-mirrors"' in DASHBOARD
+    assert 'id="mirror-summary"' in DASHBOARD
+    assert 'id="mirror-list"' in DASHBOARD
     for heading in ("Node", "Status", "Last seen", "Hosted since", "Sync age", "Clone available"):
-        assert heading in INDEX
+        assert heading in DASHBOARD
 
 
 def test_catalog_js_loads_mirrors_endpoint_lazily():
