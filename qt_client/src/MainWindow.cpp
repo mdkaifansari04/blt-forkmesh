@@ -7026,6 +7026,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_issueQuickAdd, &QLineEdit::textChanged, this,
             [updateQuickAddCharCount](const QString &) { updateQuickAddCharCount(); });
     updateQuickAddCharCount();
+    // Typing anything by hand drops out of history navigation, so the next Up
+    // starts again from the most recent prompt (adhoc #200). textEdited fires only
+    // on user edits, not the programmatic setText() the history walk does.
+    connect(m_issueQuickAdd, &QLineEdit::textEdited, this,
+            [this](const QString &) { m_quickAddHistoryIndex = -1; });
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -38089,6 +38094,9 @@ void MainWindow::quickAddIssue()
     const QString title = m_issueQuickAdd->text().trimmed();
     if (title.isEmpty())
         return;
+    // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
+    // before the field is cleared, covers every send path below.
+    recordQuickAddHistory(title);
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
@@ -38167,6 +38175,57 @@ void MainWindow::quickAddIssue()
             assignIssueToAgent(provider);
         }
     }
+}
+
+// Append a just-sent quick-add prompt to the recall history (adhoc #200). Skips
+// consecutive duplicates so Up doesn't step through repeats, caps the list, and
+// resets navigation so the next Up starts from this freshest entry.
+void MainWindow::recordQuickAddHistory(const QString &text)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty())
+        return;
+    if (m_quickAddHistory.isEmpty() || m_quickAddHistory.last() != t)
+        m_quickAddHistory.append(t);
+    constexpr int kMaxQuickAddHistory = 50;
+    while (m_quickAddHistory.size() > kMaxQuickAddHistory)
+        m_quickAddHistory.removeFirst();
+    m_quickAddHistoryIndex = -1;
+    m_quickAddDraft.clear();
+}
+
+// Walk the quick-add prompt history from the footer bar (adhoc #200). direction
+// < 0 is Up (older prompts), > 0 is Down (back toward the live draft). Returns
+// true when the key was consumed so the event filter swallows it.
+bool MainWindow::navigateQuickAddHistory(int direction)
+{
+    if (!m_issueQuickAdd || m_quickAddHistory.isEmpty())
+        return false;
+    const int count = m_quickAddHistory.size();
+    if (direction < 0) { // Up: step toward older prompts
+        if (m_quickAddHistoryIndex < 0) {
+            // Entering history: stash whatever was being typed, show the newest.
+            m_quickAddDraft = m_issueQuickAdd->text();
+            m_quickAddHistoryIndex = count - 1;
+        } else if (m_quickAddHistoryIndex > 0) {
+            --m_quickAddHistoryIndex;
+        } else {
+            return true; // already at the oldest entry; swallow the key
+        }
+        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+        return true;
+    }
+    // Down: step toward newer prompts, then back out to the stashed draft.
+    if (m_quickAddHistoryIndex < 0)
+        return false; // not navigating; let the field handle the key
+    if (m_quickAddHistoryIndex < count - 1) {
+        ++m_quickAddHistoryIndex;
+        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+    } else {
+        m_quickAddHistoryIndex = -1;
+        m_issueQuickAdd->setText(m_quickAddDraft);
+    }
+    return true;
 }
 
 // Footer quick-add "paperclip": pick one or more images to attach to the next
@@ -38775,6 +38834,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_issueQuickAdd && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
+            return true;
+        // Up/Down walk the quick-add prompt history (adhoc #200): Up recalls the
+        // last prompt sent so it can be fired again, Down returns toward the draft.
+        if (ke->key() == Qt::Key_Up && navigateQuickAddHistory(-1))
+            return true;
+        if (ke->key() == Qt::Key_Down && navigateQuickAddHistory(1))
             return true;
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
