@@ -48151,6 +48151,53 @@ void MainWindow::runSelectedWorkflowManually()
     processActionQueue();
 }
 
+// Build a unified diff between the previously approved workflow (`prior`, empty
+// if the workflow has never been approved) and the `incoming` content of a push,
+// so the approval view can render it with the shared diff renderer instead of
+// dumping both versions as plain text. `path` only labels the diff headers.
+static QString unifiedWorkflowDiff(const QString &prior, const QString &incoming,
+                                   const QString &path)
+{
+    QTemporaryDir temp;
+    if (!temp.isValid())
+        return QString();
+
+    const bool isNew = prior.isEmpty();
+    const QString oldFile = temp.path() + QStringLiteral("/old");
+    const QString newFile = temp.path() + QStringLiteral("/new");
+    if (!isNew) {
+        QFile f(oldFile);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(prior.toUtf8());
+    }
+    {
+        QFile f(newFile);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(incoming.toUtf8());
+    }
+
+    const QByteArray out = gitCaptureStdout(
+        temp.path(),
+        {"diff", "--no-index", "--",
+         isNew ? QStringLiteral("/dev/null") : oldFile, newFile});
+
+    // git labels the diff with the temp paths; rewrite the header lines so the
+    // renderer (and its file list) shows the real workflow path instead.
+    const QString shown = path.isEmpty() ? QStringLiteral("workflow") : path;
+    QStringList lines = QString::fromUtf8(out).split(QLatin1Char('\n'));
+    for (QString &line : lines) {
+        if (line.startsWith(QLatin1String("diff --git ")))
+            line = QStringLiteral("diff --git a/%1 b/%1").arg(shown);
+        else if (line.startsWith(QLatin1String("--- ")))
+            line = line.startsWith(QLatin1String("--- /dev/null"))
+                       ? QStringLiteral("--- /dev/null")
+                       : QStringLiteral("--- a/%1").arg(shown);
+        else if (line.startsWith(QLatin1String("+++ ")))
+            line = QStringLiteral("+++ b/%1").arg(shown);
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 void MainWindow::showRun(int runId)
 {
     m_selectedRunId = runId;
@@ -48197,18 +48244,29 @@ void MainWindow::showRun(int runId)
     if (m_actionLog)
         m_actionLog->setVisible(!pending);
 
+    if (pending && m_actionSplitButton) {
+        // The split/unified preference is shared with the other diff views, so
+        // reflect its current value before rendering.
+        m_actionSplitButton->setChecked(diffSplitPref());
+        updateDiffSplitButton(m_actionSplitButton);
+    }
     if (pending && m_actionDiff) {
         const QString prior =
             ActionStore::lastApprovedContent(run->repoKey(), run->workflowPath);
-        QString body;
-        body += QStringLiteral("# Previously approved (%1)\n").arg(run->workflowPath);
-        body += prior.isEmpty()
-                    ? QStringLiteral("(none — this workflow has never been approved)\n")
-                    : prior;
-        body += QStringLiteral("\n\n# Incoming from this push (%1)\n")
-                    .arg(run->commit.left(8));
-        body += run->workflowContent;
-        m_actionDiff->setPlainText(body);
+        const QString patch =
+            unifiedWorkflowDiff(prior, run->workflowContent, run->workflowPath);
+        QList<DiffFileEntry> files;
+        QString html = renderDiffHtml(patch, files, QString(), QString(), QString());
+        if (html.isEmpty())
+            html = prior.isEmpty()
+                       ? QStringLiteral(
+                             "<p style='color:#8b949e'>This workflow has never "
+                             "been approved.</p>")
+                       : QStringLiteral(
+                             "<p style='color:#8b949e'>No changes from the "
+                             "approved workflow.</p>");
+        m_actionDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+        m_actionDiff->setHtml(html);
     } else if (m_actionLog) {
         m_actionLog->setPlainText(m_actionStore->readLog(*run));
         m_actionLog->moveCursor(QTextCursor::End);
@@ -48402,12 +48460,27 @@ QWidget *MainWindow::buildRepoActionsTab()
             &MainWindow::approveSelectedRun);
     connect(m_actionRejectButton, &QPushButton::clicked, this,
             &MainWindow::rejectSelectedRun);
+    // Toggle the approval diff between side-by-side and unified, sharing the same
+    // persisted preference as the commit and pull-request diff views.
+    m_actionSplitButton = new QPushButton;
+    m_actionSplitButton->setObjectName("ghostButton");
+    m_actionSplitButton->setCursor(Qt::PointingHandCursor);
+    m_actionSplitButton->setCheckable(true);
+    m_actionSplitButton->setChecked(diffSplitPref());
+    setOcticon(m_actionSplitButton, "diff", 16);
+    updateDiffSplitButton(m_actionSplitButton);
+    connect(m_actionSplitButton, &QPushButton::clicked, this, [this](bool on) {
+        setDiffSplitPref(on);
+        updateDiffSplitButton(m_actionSplitButton);
+        showRun(m_selectedRunId); // re-render the diff in the new layout
+    });
     m_actionApprovalBar = new QWidget;
     auto *approvalRow = new QHBoxLayout(m_actionApprovalBar);
     approvalRow->setContentsMargins(0, 0, 0, 0);
     approvalRow->addWidget(m_actionApproveButton);
     approvalRow->addWidget(m_actionRejectButton);
     approvalRow->addStretch();
+    approvalRow->addWidget(m_actionSplitButton);
     m_actionApprovalBar->hide();
 
     m_actionLog = new QPlainTextEdit;

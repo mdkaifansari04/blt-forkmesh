@@ -2360,6 +2360,7 @@ private:
     QWidget *m_actionApprovalBar = nullptr;
     QPushButton *m_actionApproveButton = nullptr;
     QPushButton *m_actionRejectButton = nullptr;
+    QPushButton *m_actionSplitButton = nullptr;
     // Manual ("workflow_dispatch") run controls, shown atop the detail pane only
     // when the selected workflow opts in. The branch combo defaults to "main".
     QWidget *m_actionManualRunBar = nullptr;
