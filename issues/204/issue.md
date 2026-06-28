@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 204
 title: when we click on a branch anywhere open it up in branches
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 86
 progress: 0
