@@ -5931,11 +5931,10 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     return false;
 }
 
-// In-app join wizard — web parity with signup.html / signup.js. One modal
-// dialog with three stacked pages: (1) reserve a public node name, (2) donate
-// with Solana and poll for confirmation, (3) set the email + password that
-// unlock universal login. Each step is signed with the local identity so the
-// reserved name is bound to this key. Returns true once the account is active.
+// In-app join — joining the network is free. The only thing required is a public
+// node name: it's reserved against this device's Ed25519 key and immediately
+// activated (no donation, no email/password). Cross-device email/password login
+// can be added later. Returns true once the account is active.
 bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
 {
     Q_UNUSED(solana);
@@ -5954,523 +5953,153 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     outer->setContentsMargins(28, 24, 28, 24);
     outer->setSpacing(8);
 
-    auto *stepLabel = new QLabel;
-    stepLabel->setObjectName("wizardStep");
-    auto *titleLabel = new QLabel;
+    auto *titleLabel = new QLabel("Choose your public node name");
     titleLabel->setObjectName("wizardTitle");
     titleLabel->setWordWrap(true);
-    outer->addWidget(stepLabel);
     outer->addWidget(titleLabel);
-    outer->addSpacing(8);
+    outer->addSpacing(4);
 
-    auto *stack = new QStackedWidget;
-    outer->addWidget(stack);
+    auto *nameEdit = new QLineEdit;
+    nameEdit->setMaxLength(63);
+    nameEdit->setPlaceholderText("ada-lovelace");
+    nameEdit->setText(accountName);
+    auto *hint = new QLabel;
+    hint->setObjectName("modeHint");
+    hint->setWordWrap(true);
+    auto *joinBtn = new QPushButton("Join ForkMesh");
+    joinBtn->setObjectName("primaryButton");
+    joinBtn->setMinimumHeight(38);
+    outer->addWidget(nameEdit);
+    outer->addWidget(hint);
+    outer->addSpacing(4);
+    outer->addWidget(joinBtn);
 
-    QString reservedName = accountName;
-    bool finalized = false;
-    // The node name is chosen on the previous screen, so when it's already valid
-    // we reserve it silently and skip the redundant name page — the wizard then
-    // presents as a 2-step flow (donate, then login).
-    const bool haveName = isValidNodeName(accountName);
+    bool joined = false;
 
-    auto setStep = [&](int idx) {
-        static const char *titles[] = {
-            "Reserve your public node name",
-            "Donate to activate your node",
-            "Create your login",
-        };
-        // Page indices stay 0/1/2 internally; the visible "Step N of M" drops the
-        // hidden name page when the name was supplied up front.
-        const int total = haveName ? 2 : 3;
-        const int shown = haveName ? std::max(idx, 1) : idx + 1;
-        stepLabel->setText(QStringLiteral("Step %1 of %2").arg(shown).arg(total));
-        titleLabel->setText(QString::fromUtf8(titles[idx]));
-        stack->setCurrentIndex(idx);
+    auto styleHint = [](QLabel *h, const QString &text, const char *color) {
+        h->setText(text);
+        h->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
+                                     .arg(QString::fromUtf8(color))
+                               : QStringLiteral("background:transparent;"));
     };
-    auto styleHint = [](QLabel *hint, const QString &text, const char *color) {
-        hint->setText(text);
-        hint->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
-                                        .arg(QString::fromUtf8(color))
-                                  : QStringLiteral("background:transparent;"));
-    };
+    styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a letter. "
+                    "This name is public, and joining is free.", nullptr);
 
-    // Reserve a node name on the relay, binding it to this device key. Returns
-    // true on success; shared by the name page button and the silent auto-reserve
-    // that runs when the name is already known.
-    auto reserveName = [&](const QString &name) -> bool {
-        if (!isValidNodeName(name))
-            return false;
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-reserve-v1\n" + name + "\n" + ts).toUtf8();
+    // Debounced availability check so the Join button only lights up for a free
+    // name (the reserve below is still the authority, but this avoids a round-trip
+    // failure for obviously-taken names).
+    auto *availTimer = new QTimer(&dialog);
+    availTimer->setSingleShot(true);
+    availTimer->setInterval(350);
+    connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        joinBtn->setEnabled(false);
+        if (v.isEmpty()) {
+            styleHint(hint, "This name is public, and joining is free.", nullptr);
+            return;
+        }
+        if (!isValidNodeName(v)) {
+            styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
+                            "with a letter.", "#f85149");
+            return;
+        }
+        styleHint(hint, "Checking availability…", nullptr);
+        availTimer->start();
+    });
+    connect(availTimer, &QTimer::timeout, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(v))
+            return;
         int status = 0;
-        const QJsonObject resp = postAccountSync(
+        const QJsonObject look = getAccountSync(v, &status);
+        if (status == 0) { // relay unreachable: allow continuing
+            styleHint(hint, "Couldn't check availability — you can still continue.",
+                      nullptr);
+            joinBtn->setEnabled(true);
+            return;
+        }
+        if (look.value("exists").toBool() && !look.value("available").toBool()) {
+            styleHint(hint, "That name is already taken — try another.", "#f85149");
+            joinBtn->setEnabled(false);
+        } else {
+            styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
+                                .arg(v), "#3fb950");
+            joinBtn->setEnabled(true);
+        }
+    });
+
+    // Reserve the name (binding it to this device key), then activate it for free
+    // by finalizing with no email/password. Both calls are signed with the local
+    // identity; the finalize signature covers an empty email segment, matching the
+    // relay's canonical string for a key-bound, credential-less join.
+    auto doJoin = [&]() {
+        const QString name = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(name))
+            return;
+        joinBtn->setEnabled(false);
+        joinBtn->setText("Joining…");
+
+        const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray rcanon =
+            ("forkmesh-reserve-v1\n" + name + "\n" + rts).toUtf8();
+        int rstatus = 0;
+        const QJsonObject rresp = postAccountSync(
             "reserve",
             QJsonObject{{"nodeName", name},
                         {"pubkey", m_profileIdentity.publicKey()},
-                        {"ts", ts},
-                        {"sig", m_profileIdentity.signData(canonical)}},
-            &status);
-        if (!resp.value("ok").toBool())
-            return false;
-        reservedName = name;
-        return true;
+                        {"ts", rts},
+                        {"sig", m_profileIdentity.signData(rcanon)}},
+            &rstatus);
+        if (!rresp.value("ok").toBool()) {
+            joinBtn->setText("Join ForkMesh");
+            joinBtn->setEnabled(true);
+            styleHint(hint, "Could not reserve that name — it may be taken. "
+                            "Try another.", "#f85149");
+            return;
+        }
+
+        const QString fts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray fcanon =
+            ("forkmesh-finalize-v1\n" + name + "\n\n" + fts).toUtf8();
+        int fstatus = 0;
+        const QJsonObject fresp = postAccountSync(
+            "finalize",
+            QJsonObject{{"nodeName", name},
+                        {"email", QString()},
+                        {"password", QString()},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", fts},
+                        {"sig", m_profileIdentity.signData(fcanon)}},
+            &fstatus);
+        joinBtn->setText("Join ForkMesh");
+        joinBtn->setEnabled(true);
+        if (fstatus != 201 || !fresp.value("ok").toBool()) {
+            styleHint(hint, "Could not join right now. Please try again.", "#f85149");
+            return;
+        }
+        m_accountAuthenticated = true;
+        m_accountName = name;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true; // joined = active network member
+        QSettings().setValue(kAuthedAccountSetting, name);
+        joined = true;
+        dialog.accept();
     };
-
-    // Forward transitions between pages. Assigned after all pages exist so each
-    // page can trigger the next; only ever invoked from user actions once the
-    // dialog is already running, so the late binding is safe.
-    std::function<void()> enterDonation;
-
-    // ================= Page 1 — reserve =================
-    auto *reservePage = new QWidget;
-    {
-        auto *l = new QVBoxLayout(reservePage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        auto *nameEdit = new QLineEdit;
-        nameEdit->setMaxLength(63);
-        nameEdit->setPlaceholderText("ada-lovelace");
-        nameEdit->setText(accountName);
-        auto *hint = new QLabel;
-        hint->setObjectName("modeHint");
-        hint->setWordWrap(true);
-        auto *cont = new QPushButton("Continue");
-        cont->setObjectName("primaryButton");
-        cont->setMinimumHeight(38);
-        l->addWidget(nameEdit);
-        l->addWidget(hint);
-        l->addStretch();
-        l->addWidget(cont);
-        styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a "
-                        "letter. This name is public.", nullptr);
-
-        auto *availTimer = new QTimer(reservePage);
-        availTimer->setSingleShot(true);
-        availTimer->setInterval(350);
-
-        connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            cont->setEnabled(false);
-            if (v.isEmpty()) {
-                styleHint(hint, "This name is public.", nullptr);
-                return;
-            }
-            if (!isValidNodeName(v)) {
-                styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
-                                "with a letter.", "#f85149");
-                return;
-            }
-            styleHint(hint, "Checking availability…", nullptr);
-            availTimer->start();
-        });
-        connect(availTimer, &QTimer::timeout, this, [=]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            if (!isValidNodeName(v))
-                return;
-            int status = 0;
-            const QJsonObject look = getAccountSync(v, &status);
-            if (status == 0) { // relay unreachable: allow continuing
-                styleHint(hint, "Couldn't check availability — you can still continue.",
-                          nullptr);
-                cont->setEnabled(true);
-                return;
-            }
-            if (look.value("exists").toBool() && !look.value("available").toBool()) {
-                styleHint(hint, "That name is already taken — try another.", "#f85149");
-                cont->setEnabled(false);
-            } else {
-                styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
-                                    .arg(v), "#3fb950");
-                cont->setEnabled(true);
-            }
-        });
-
-        auto doReserve = [=, &enterDonation, &reserveName]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            if (!isValidNodeName(v))
-                return;
-            cont->setEnabled(false);
-            cont->setText("Reserving…");
-            const bool ok = reserveName(v);
-            cont->setText("Continue");
-            cont->setEnabled(true);
-            if (!ok) {
-                styleHint(hint, "Could not reserve that name — it may be taken. "
-                                "Try another.", "#f85149");
-                return;
-            }
-            enterDonation();
-        };
-        connect(cont, &QPushButton::clicked, this, doReserve);
-        connect(nameEdit, &QLineEdit::returnPressed, this, [=]() {
-            if (cont->isEnabled())
-                doReserve();
-        });
-    }
-    stack->addWidget(reservePage);
-
-    // ================= Page 2 — donate =================
-    auto *donatePage = new QWidget;
-    auto *payInfo = new QLabel;
-    auto *splitInfo = new QLabel;
-    auto *qrLabel = new QLabel;
-    auto *addrLabel = new QLabel;
-    auto *copyBtn = new QPushButton("Copy address");
-    // Shown only after the address expires (hidden by the relay after one hour):
-    // lets the user mint a fresh request instead of paying a dead address.
-    auto *renewBtn = new QPushButton("Generate a new request");
-    auto *payStatus = new QLabel;
-    // Shared Solana Pay URI: written when the address is fetched, read by the
-    // copy button. A shared pointer keeps it alive as long as either lambda and
-    // frees it automatically with the dialog.
-    auto payUriHolder = QSharedPointer<QString>::create();
-    {
-        auto *l = new QVBoxLayout(donatePage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        payInfo->setWordWrap(true);
-        payInfo->setTextFormat(Qt::RichText);
-        // Live breakdown of where the donation goes: half to ForkMesh's servers,
-        // half split evenly across the mirror nodes online right now. Filled in by
-        // enterDonation once the amount and node count are known.
-        splitInfo->setObjectName("modeHint");
-        splitInfo->setWordWrap(true);
-        splitInfo->setTextFormat(Qt::RichText);
-        qrLabel->setAlignment(Qt::AlignCenter);
-        // Reserve the QR's footprint so it can never be squeezed (and clipped)
-        // when the dialog is short — the page scrolls instead.
-        qrLabel->setMinimumSize(220, 220);
-        addrLabel->setWordWrap(true);
-        addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addrLabel->setStyleSheet("font-family:monospace; background:transparent;");
-        addrLabel->setAlignment(Qt::AlignCenter);
-        copyBtn->setObjectName("ghostButton");
-        copyBtn->setCursor(Qt::PointingHandCursor);
-        renewBtn->setObjectName("primaryButton");
-        renewBtn->setCursor(Qt::PointingHandCursor);
-        renewBtn->setVisible(false);
-        connect(renewBtn, &QPushButton::clicked, &dialog, [&]() { enterDonation(); });
-        payStatus->setObjectName("modeHint");
-        payStatus->setWordWrap(true);
-        // "New to crypto?" disclosure: most newcomers reach this page without any
-        // SOL to send, so offer a self-contained primer (wallets, exchanges, and a
-        // few region-specific picks) instead of leaving them stuck at the QR code.
-        // Collapsed by default to keep the donate page tidy for users who already
-        // hold SOL. Triangle glyphs go through fromUtf8 to dodge the QStringLiteral
-        // UTF-8 mojibake (see [[qstringliteral-utf8-mojibake]]).
-        auto *cryptoHelpToggle = new QToolButton;
-        cryptoHelpToggle->setObjectName("ghostButton");
-        cryptoHelpToggle->setCheckable(true);
-        cryptoHelpToggle->setCursor(Qt::PointingHandCursor);
-        cryptoHelpToggle->setText(
-            QString::fromUtf8("\xE2\x96\xB8 New to crypto? How to get SOL"));
-        auto *cryptoHelp = new QLabel;
-        cryptoHelp->setObjectName("modeHint");
-        cryptoHelp->setWordWrap(true);
-        cryptoHelp->setTextFormat(Qt::RichText);
-        cryptoHelp->setOpenExternalLinks(true);
-        cryptoHelp->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        cryptoHelp->setVisible(false);
-        cryptoHelp->setText(QStringLiteral(
-            "<p>SOL is the coin of the Solana network. Get a little of it, then "
-            "send it to the address above (always over the <b>Solana</b> network).</p>"
-            "<p><b>1.</b> Open a wallet or exchange account and verify it. "
-            "<b>2.</b> Buy a few dollars of SOL. "
-            "<b>3.</b> Withdraw / send it to the address above. "
-            "<b>4.</b> Wait for the confirmation here.</p>"
-            "<p><b>Wallets</b> (hold your own keys, buy SOL in-app):<br>"
-            "&bull; Phantom &mdash; Solana-native, desktop &amp; mobile: "
-            "<a href=\"https://phantom.com\">phantom.com</a><br>"
-            "&bull; Exodus &mdash; multi-chain with a built-in exchange: "
-            "<a href=\"https://www.exodus.com\">exodus.com</a></p>"
-            "<p><b>Common exchanges</b> (buy SOL, then withdraw to your address):<br>"
-            "&bull; Coinbase &mdash; <a href=\"https://www.coinbase.com\">coinbase.com</a><br>"
-            "&bull; Kraken &mdash; <a href=\"https://www.kraken.com\">kraken.com</a><br>"
-            "&bull; Binance &mdash; <a href=\"https://www.binance.com\">binance.com</a><br>"
-            "&bull; Crypto.com &mdash; <a href=\"https://crypto.com\">crypto.com</a><br>"
-            "&bull; Bybit &mdash; <a href=\"https://www.bybit.com\">bybit.com</a><br>"
-            "&bull; KuCoin &mdash; <a href=\"https://www.kucoin.com\">kucoin.com</a></p>"
-            "<p><b>Picks by region</b>:<br>"
-            "&bull; United States &mdash; Coinbase, Kraken, "
-            "<a href=\"https://www.binance.us\">Binance.US</a><br>"
-            "&bull; UK &amp; Europe &mdash; Kraken, Coinbase, "
-            "<a href=\"https://www.bitstamp.net\">Bitstamp</a><br>"
-            "&bull; Canada &mdash; Coinbase, Kraken, "
-            "<a href=\"https://www.newton.co\">Newton</a><br>"
-            "&bull; Australia &mdash; "
-            "<a href=\"https://www.coinspot.com.au\">CoinSpot</a>, Coinbase, Kraken<br>"
-            "&bull; India &mdash; <a href=\"https://coindcx.com\">CoinDCX</a>, "
-            "<a href=\"https://wazirx.com\">WazirX</a><br>"
-            "&bull; Brazil &amp; LatAm &mdash; Binance, "
-            "<a href=\"https://www.mercadobitcoin.com.br\">Mercado Bitcoin</a><br>"
-            "&bull; Africa &mdash; Binance, "
-            "<a href=\"https://www.luno.com\">Luno</a><br>"
-            "&bull; Southeast Asia &mdash; Binance, Coinbase</p>"
-            "<p style=\"color:#8b949e;\">Tip: Phantom and Exodus let you both buy "
-            "SOL and send it from the same app, which is usually the quickest path.</p>"));
-        connect(cryptoHelpToggle, &QToolButton::toggled, cryptoHelp,
-                [cryptoHelpToggle, cryptoHelp](bool on) {
-                    cryptoHelp->setVisible(on);
-                    cryptoHelpToggle->setText(QString::fromUtf8(
-                        on ? "\xE2\x96\xBE New to crypto? How to get SOL"
-                           : "\xE2\x96\xB8 New to crypto? How to get SOL"));
-                });
-        l->addWidget(payInfo);
-        l->addWidget(splitInfo);
-        l->addWidget(qrLabel);
-        l->addWidget(addrLabel);
-        l->addWidget(copyBtn, 0, Qt::AlignLeft);
-        l->addWidget(renewBtn, 0, Qt::AlignLeft);
-        l->addWidget(cryptoHelpToggle, 0, Qt::AlignLeft);
-        l->addWidget(cryptoHelp);
-        l->addStretch();
-        l->addWidget(payStatus);
-        connect(copyBtn, &QPushButton::clicked, this, [=]() {
-            if (payUriHolder->isEmpty())
-                return;
-            QApplication::clipboard()->setText(*payUriHolder);
-            copyBtn->setText("Copied");
-            QTimer::singleShot(1500, copyBtn, [copyBtn]() {
-                copyBtn->setText("Copy address");
-            });
-        });
-    }
-    // The donate page is the tallest (QR + address + crypto primer); on short
-    // screens host it in a scroll area so the QR can't be clipped.
-    auto *donateScroll = new QScrollArea;
-    donateScroll->setWidgetResizable(true);
-    donateScroll->setFrameShape(QFrame::NoFrame);
-    donateScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    donateScroll->setWidget(donatePage);
-    donateScroll->setMinimumHeight(440);
-    stack->addWidget(donateScroll);
-
-    auto *pollTimer = new QTimer(&dialog);
-    pollTimer->setInterval(4000);
-    connect(pollTimer, &QTimer::timeout, &dialog, [&, payStatus]() {
-        QUrl url = accountsApiUrl("donation-status");
-        url.setQuery("nodeName=" +
-                     QString::fromUtf8(QUrl::toPercentEncoding(reservedName)));
-        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-        QEventLoop loop;
-        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        loop.exec();
-        const QJsonObject st = QJsonDocument::fromJson(reply->readAll()).object();
-        reply->deleteLater();
-        if (st.value("paid").toBool()) {
-            pollTimer->stop();
-            payStatus->setText("Donation received!");
-            payStatus->setStyleSheet("color:#3fb950; background:transparent;");
-            QTimer::singleShot(500, &dialog, [&]() { setStep(2); });
-            return;
-        }
-        // The relay hides the address one hour after it's minted (and deletes it
-        // an hour after that), so it can't be paid to a stale request. Pull the
-        // QR + address and offer a fresh one instead.
-        if (st.value("hidden").toBool() || st.value("expired").toBool()) {
-            pollTimer->stop();
-            qrLabel->setVisible(false);
-            addrLabel->setVisible(false);
-            copyBtn->setVisible(false);
-            renewBtn->setVisible(true);
-            payStatus->setText("This payment request expired for your security. "
-                               "Generate a new one to donate.");
-            payStatus->setStyleSheet("color:#d29922; background:transparent;");
-            return;
-        }
-        const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
-        payStatus->setText(
-            QStringLiteral("Waiting for your donation… (received %1 SOL)")
-                .arg(got / 1000000000.0, 0, 'f', 9));
+    connect(joinBtn, &QPushButton::clicked, this, doJoin);
+    connect(nameEdit, &QLineEdit::returnPressed, this, [&]() {
+        if (joinBtn->isEnabled())
+            doJoin();
     });
 
-    enterDonation = [&, payInfo, splitInfo, qrLabel, addrLabel, payStatus,
-                     payUriHolder, pollTimer]() {
-        setStep(1);
-        // Restore the live request widgets (a renewal re-runs this after the old
-        // address was hidden).
-        qrLabel->setVisible(true);
-        addrLabel->setVisible(true);
-        copyBtn->setVisible(true);
-        renewBtn->setVisible(false);
-        payStatus->setText("Generating payment request…");
-        payStatus->setStyleSheet("background:transparent;");
-        int status = 0;
-        const QJsonObject addr = postAccountSync(
-            "donation-address", QJsonObject{{"nodeName", reservedName}}, &status);
-        if (!addr.value("ok").toBool()) {
-            payStatus->setText(
-                addr.value("error").toString() == "solana_rpc_unavailable"
-                    ? "Solana verification is temporarily offline. Please try again later."
-                    : "Could not generate a payment request. Please try again.");
-            payStatus->setStyleSheet("color:#f85149; background:transparent;");
-            return;
-        }
-        const QString address = addr.value("address").toString();
-        const QString uri = addr.value("uri").toString(address);
-        const QString amountSol = addr.value("amountSol").toString("0.005000000");
-        const double amountUsd = addr.value("amountUsd").toString("0").toDouble();
-        *payUriHolder = uri;
-        payInfo->setText(
-            QStringLiteral("Send <b>%1 SOL</b>%2 to the address below to activate your "
-                           "node. ForkMesh watches the payment reference and continues "
-                           "automatically once it confirms.")
-                .arg(amountSol,
-                     amountUsd > 0 ? QString::fromUtf8(" (\xE2\x89\x88 $%1)")
-                                         .arg(amountUsd, 0, 'f', 2)
-                                   : QString()));
-        // Show exactly how this donation is divided: half keeps ForkMesh's
-        // servers running, half is split evenly across the mirror nodes online
-        // right now (mirrors TREASURY_SPLIT_* in cloudflare_worker/src/entry.py).
-        const int nodesOnline = std::max(fetchNodesOnline(), 0);
-        const QString approx = QString::fromUtf8("\xE2\x89\x88");
-        if (amountUsd > 0) {
-            const double serversUsd = amountUsd * 0.5;
-            const double nodesUsd = amountUsd * 0.5;
-            const QString perNode = nodesOnline > 0
-                ? QStringLiteral("%1 $%2 each")
-                      .arg(approx).arg(nodesUsd / nodesOnline, 0, 'f', 2)
-                : QStringLiteral("held until nodes come online");
-            splitInfo->setText(
-                QStringLiteral("Your $%1 splits in two: <b>$%2</b> (50%) keeps "
-                               "ForkMesh's servers running, and <b>$%3</b> (50%) is "
-                               "shared across the <b>%4</b> mirror node%5 online now "
-                               "(%6).")
-                    .arg(amountUsd, 0, 'f', 2)
-                    .arg(serversUsd, 0, 'f', 2)
-                    .arg(nodesUsd, 0, 'f', 2)
-                    .arg(nodesOnline)
-                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s"))
-                    .arg(perNode));
-        } else {
-            splitInfo->setText(
-                QStringLiteral("Your donation splits in two: <b>50%</b> keeps "
-                               "ForkMesh's servers running, and <b>50%</b> is shared "
-                               "across the <b>%1</b> mirror node%2 online now.")
-                    .arg(nodesOnline)
-                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s")));
-        }
-        const QImage qr = QrCode::encodeToImage(uri, 5, 3);
-        if (!qr.isNull())
-            qrLabel->setPixmap(QPixmap::fromImage(qr));
-        addrLabel->setText(address);
-        payStatus->setText("Waiting for your donation…");
-        payStatus->setStyleSheet("color:#d29922; background:transparent;");
-        pollTimer->start();
-    };
+    // A valid name supplied on the previous screen can join straight away, so let
+    // the button start enabled instead of forcing the user to retype.
+    joinBtn->setEnabled(isValidNodeName(accountName));
 
-    // ================= Page 3 — email / password =================
-    auto *accountPage = new QWidget;
-    {
-        auto *l = new QVBoxLayout(accountPage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        auto *intro = new QLabel("Set the email and password that log you in from "
-                                 "any device.");
-        intro->setObjectName("modeHint");
-        intro->setWordWrap(true);
-        auto *emailEdit = new QLineEdit;
-        emailEdit->setPlaceholderText("you@example.com");
-        auto *passEdit = new QLineEdit;
-        passEdit->setEchoMode(QLineEdit::Password);
-        passEdit->setPlaceholderText("Password (at least 8 characters)");
-        auto *confirmEdit = new QLineEdit;
-        confirmEdit->setEchoMode(QLineEdit::Password);
-        confirmEdit->setPlaceholderText("Confirm password");
-        auto *hint = new QLabel;
-        hint->setObjectName("modeHint");
-        hint->setWordWrap(true);
-        auto *createBtn = new QPushButton("Create account");
-        createBtn->setObjectName("primaryButton");
-        createBtn->setMinimumHeight(38);
-        l->addWidget(intro);
-        l->addWidget(emailEdit);
-        l->addWidget(passEdit);
-        l->addWidget(confirmEdit);
-        l->addWidget(hint);
-        l->addStretch();
-        l->addWidget(createBtn);
-
-        auto doFinalize = [=, &reservedName, &finalized, &dialog]() {
-            const QString email = emailEdit->text().trimmed();
-            const QString password = passEdit->text();
-            if (!email.contains('@') || !email.contains('.')) {
-                styleHint(hint, "Enter a valid email address.", "#f85149");
-                return;
-            }
-            if (password.size() < 8) {
-                styleHint(hint, "Password must be at least 8 characters.", "#f85149");
-                return;
-            }
-            if (password != confirmEdit->text()) {
-                styleHint(hint, "Passwords do not match.", "#f85149");
-                return;
-            }
-            createBtn->setEnabled(false);
-            createBtn->setText("Creating…");
-            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-            const QByteArray canonical =
-                ("forkmesh-finalize-v1\n" + reservedName + "\n" + email + "\n" + ts)
-                    .toUtf8();
-            int status = 0;
-            const QJsonObject resp = postAccountSync(
-                "finalize",
-                QJsonObject{{"nodeName", reservedName}, {"email", email},
-                            {"password", password},
-                            {"pubkey", m_profileIdentity.publicKey()},
-                            {"ts", ts},
-                            {"sig", m_profileIdentity.signData(canonical)}},
-                &status);
-            createBtn->setEnabled(true);
-            createBtn->setText("Create account");
-            if (status != 201 || !resp.value("ok").toBool()) {
-                const QString err = resp.value("error").toString();
-                styleHint(hint,
-                          err == "email_taken"
-                              ? "That email is already registered."
-                              : err == "donation_required"
-                                    ? "We haven't confirmed your donation yet — please wait."
-                                    : "Could not create the account. Please try again.",
-                          "#f85149");
-                return;
-            }
-            m_accountAuthenticated = true;
-            m_accountName = reservedName;
-            m_accountTier = QStringLiteral("active");
-            m_accountSolanaVerified = true;
-            QSettings().setValue(kAuthedAccountSetting, reservedName);
-            finalized = true;
-            dialog.accept();
-        };
-        connect(createBtn, &QPushButton::clicked, this, doFinalize);
-        connect(confirmEdit, &QLineEdit::returnPressed, this, doFinalize);
-    }
-    stack->addWidget(accountPage);
-
-    // With the name already chosen on the previous screen, open directly on the
-    // donation step and reserve it silently on the next tick (so the dialog is
-    // already visible). Only fall back to the name page if the reservation fails
-    // — e.g. the name was just taken by someone else.
-    if (haveName) {
-        setStep(1);
-        QTimer::singleShot(0, &dialog, [&]() {
-            if (reserveName(accountName))
-                enterDonation();
-            else
-                setStep(0);
-        });
-    } else {
-        setStep(0);
-    }
     dialog.exec();
-    pollTimer->stop();
-    if (finalized) {
-        // Don't block the launch behind a modal "OK" — that click plus the
-        // app-bring-up work that runs after we return is exactly the lag the
-        // user feels. Return immediately so the caller can open the app, then
-        // flash the confirmation as a non-blocking toast on the next event-loop
-        // tick, by which point the main UI (and its top-bar toast) is shown.
+    if (joined) {
+        // Don't block the launch behind a modal "OK" — return immediately so the
+        // caller can open the app, then flash the confirmation as a non-blocking
+        // toast on the next event-loop tick.
         QTimer::singleShot(0, this, [this] {
             flashMessage(QString::fromUtf8(
                 "You\xE2\x80\x99re in \xE2\x80\x94 your node is registered."));
