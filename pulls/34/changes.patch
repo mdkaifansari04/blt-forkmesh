@@ -1,0 +1,233 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 0f4f4356..0f956dbd 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -18895,6 +18895,45 @@ QWidget *MainWindow::buildAgentsTab()
+     listLayout->addLayout(usageText);
+     listLayout->addWidget(m_agentTable, 1);
+ 
++    // Bottom-left composer (issue #273): type a prompt and start a brand-new
++    // Claude Code agent in the open repo — no issue required. Mirrors the look of
++    // the per-session steering composer on the detail pane.
++    auto *newAgentHeading = new QLabel(QStringLiteral("Start a new agent"));
++    newAgentHeading->setObjectName("agentFilesHeading");
++    m_agentNewPromptEdit = new QPlainTextEdit;
++    m_agentNewPromptEdit->setObjectName("agentComposerEdit");
++    m_agentNewPromptEdit->setPlaceholderText(QString::fromUtf8(
++        "Describe a task and start a Claude Code agent in this repo\xE2\x80\xA6"));
++    m_agentNewPromptEdit->setMaximumHeight(92);
++    m_agentNewPromptEdit->setFrameShape(QFrame::NoFrame);
++    m_agentNewPromptEdit->setStyleSheet(QStringLiteral(
++        "#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
++    m_agentStartButton = new QPushButton("Start agent");
++    m_agentStartButton->setObjectName("primaryButton");
++    m_agentStartButton->setCursor(Qt::PointingHandCursor);
++    m_agentStartButton->setToolTip(
++        "Start a Claude Code agent on this prompt in the open repository");
++    setOcticon(m_agentStartButton, "rocket", 16);
++    connect(m_agentStartButton, &QPushButton::clicked, this,
++            &MainWindow::startAdHocAgent);
++
++    auto *newAgentComposer = new QFrame;
++    newAgentComposer->setObjectName("agentNewComposer");
++    newAgentComposer->setStyleSheet(QStringLiteral(
++        "#agentNewComposer{background:#161b22;border:1px solid #30363d;border-radius:12px;}"));
++    auto *newAgentCol = new QVBoxLayout(newAgentComposer);
++    newAgentCol->setContentsMargins(12, 10, 10, 8);
++    newAgentCol->setSpacing(6);
++    newAgentCol->addWidget(m_agentNewPromptEdit);
++    auto *newAgentBtns = new QHBoxLayout;
++    newAgentBtns->setContentsMargins(0, 0, 0, 0);
++    newAgentBtns->setSpacing(6);
++    newAgentBtns->addStretch(1);
++    newAgentBtns->addWidget(m_agentStartButton);
++    newAgentCol->addLayout(newAgentBtns);
++    listLayout->addWidget(newAgentHeading);
++    listLayout->addWidget(newAgentComposer);
++
+     auto *detailPane = new QWidget;
+     m_agentTitle = new QLabel("Select a session");
+     m_agentTitle->setObjectName("channelTitle");
+@@ -20397,6 +20436,69 @@ void MainWindow::assignIssueToAgent(const QString &provider)
+     processAgentQueue();
+ }
+ 
++// Bottom-left composer (issue #273): start a brand-new Claude Code agent from a
++// free-form prompt in the open repository. Unlike the issue-assigned path this
++// has no issue to anchor to, so the session is issue-less (issueNumber 0) and
++// the typed prompt becomes the agent's task verbatim. It still runs in its own
++// worktree/branch and opens a pull request on finish, like every transcript run.
++void MainWindow::startAdHocAgent()
++{
++    if (!m_agentNewPromptEdit || !m_agentStore)
++        return;
++    const QString task = m_agentNewPromptEdit->toPlainText().trimmed();
++    if (task.isEmpty())
++        return;
++    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
++        flashMessage("Open a repository first to start an agent.", true);
++        return;
++    }
++    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
++    if (repo.localPath.isEmpty()) {
++        flashMessage("This repository has no local checkout to run the agent in.",
++                     true);
++        return;
++    }
++
++    AgentSession session;
++    session.owner = repo.owner;
++    session.name = repo.name;
++    session.issueNumber = 0; // ad-hoc: not tied to any issue
++    session.provider = QStringLiteral("claude-code");
++    session.createPr = true;
++    session.contextWindow =
++        qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
++    // A short title from the prompt's first line, for the list row and the PR.
++    QString title = task.section(QLatin1Char('\n'), 0, 0).simplified();
++    if (title.size() > 80)
++        title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
++    session.issueTitle =
++        title.isEmpty() ? QStringLiteral("Ad-hoc agent run") : title;
++    session = m_agentStore->createSession(session);
++    // Descriptive branch: agent/adhoc-<id>-<title-slug>.
++    QString slug;
++    for (QChar ch : session.issueTitle.toLower()) {
++        const char a = ch.toLatin1();
++        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
++            slug.append(ch);
++        else if (!slug.isEmpty() && !slug.endsWith(QLatin1Char('-')))
++            slug.append(QLatin1Char('-'));
++    }
++    slug = slug.left(48);
++    while (slug.endsWith(QLatin1Char('-')))
++        slug.chop(1);
++    if (slug.isEmpty())
++        slug = QStringLiteral("agent");
++    session.branchName =
++        QStringLiteral("agent/adhoc-%1-%2").arg(session.id).arg(slug);
++    m_agentStore->saveSession(session);
++    m_agentStore->appendLog(
++        session,
++        QStringLiteral("==> Started from a prompt on the Agents tab.\n"));
++
++    m_agentNewPromptEdit->clear();
++    startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
++}
++
+ // Composer "+" : pick files and insert them as @path references (resolved
+ // relative to the session's working directory, which Claude Code understands).
+ void MainWindow::addFilesToAgentPrompt()
+@@ -20828,7 +20930,8 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
+ // stream + event buffer so output never leaks across sessions; the raw stream
+ // stays reachable via the "Raw output" toggle, and a PR is opened on finish.
+ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+-                                           const QString &repoPath)
++                                           const QString &repoPath,
++                                           const QString &customPrompt)
+ {
+     if (!m_agentTranscript || !m_agentStore)
+         return;
+@@ -20856,22 +20959,39 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+ 
+     const QString baseName =
+         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
++    // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
++    // issue-assigned sessions point the agent at issues/<n>/issue.md. Both share
++    // the same worktree/commit/PR workflow tail so the run lands as a pull request.
++    const QString lead =
++        customPrompt.trimmed().isEmpty()
++            ? QStringLiteral(
++                  "Resolve ForkMesh issue #%1: %2\n\n"
++                  "You are working in a dedicated git worktree on branch `%3` "
++                  "(forked from `%4`). The full issue is in issues/%1/issue.md.")
++                  .arg(session.issueNumber)
++                  .arg(issue.title)
++                  .arg(session.branchName)
++                  .arg(baseName)
++            : QStringLiteral(
++                  "%1\n\n"
++                  "You are working in a dedicated git worktree on branch `%2` "
++                  "(forked from `%3`).")
++                  .arg(customPrompt.trimmed())
++                  .arg(session.branchName)
++                  .arg(baseName);
+     const QString prompt =
+         QStringLiteral(
+-            "Resolve ForkMesh issue #%1: %2\n\n"
+-            "You are working in a dedicated git worktree on branch `%3` (forked "
+-            "from `%4`). The full issue is in issues/%1/issue.md. Work end to end:\n"
++            "%1 Work end to end:\n"
+             "1. Implement the change, consistent with the surrounding code.\n"
+-            "2. If `%4` has advanced, rebase or merge it into your branch and "
++            "2. If `%2` has advanced, rebase or merge it into your branch and "
+             "resolve any conflicts.\n"
+             "3. Run the project's tests and linting, and fix any failures.\n"
+             "4. Commit everything to `%3` with a clear message.\n"
+             "ForkMesh will open the pull request from your branch. Finally, "
+             "summarize what you changed and how to verify it.\n")
+-            .arg(session.issueNumber)
+-            .arg(issue.title)
+-            .arg(session.branchName)
+-            .arg(baseName);
++            .arg(lead)
++            .arg(baseName)
++            .arg(session.branchName);
+ 
+     // Per-session buffers; tear down any prior stream for THIS session only. The
+     // stream object and the UI hand-off below are set up *before* the worktree is
+@@ -21529,12 +21649,21 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
+         return;
+     }
+     m_agentStore->writePatch(*s, patch);
++    // Issue-less ad-hoc runs (issue #273) have no issue number to cite, so title
++    // and body read off the session's prompt-derived title instead.
++    const QString prTitle =
++        s->issueNumber > 0
++            ? QStringLiteral("Agent: issue #%1 %2").arg(s->issueNumber).arg(s->issueTitle)
++            : QStringLiteral("Agent: %1").arg(s->issueTitle);
++    const QString prBody =
++        s->issueNumber > 0
++            ? QStringLiteral("Created from a Claude Code session for issue #%1.")
++                  .arg(s->issueNumber)
++            : QStringLiteral("Created from a Claude Code agent session.");
+     PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+     QString error;
+     const int pr = store.createPull(
+-        QStringLiteral("Agent: issue #%1 %2").arg(s->issueNumber).arg(s->issueTitle),
+-        QStringLiteral("Created from a Claude Code session for issue #%1.")
+-            .arg(s->issueNumber),
++        prTitle, prBody,
+         s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
+         QString(), &error);
+     if (pr > 0) {
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 8b524d6c..4c30660f 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -1971,8 +1971,12 @@ private:
+     void notifyAgentWaiting(int sessionId, bool needsPermission);
+     QHash<int, QStringList> m_streamFiles;
+     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
++    // customPrompt, when non-empty, is used as the agent's task verbatim (the
++    // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
++    // derived from `issue`.
+     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
+-                                   const QString &repoPath);
++                                   const QString &repoPath,
++                                   const QString &customPrompt = QString());
+     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
+     void renderTranscriptForSession(int sessionId);
+     void refreshAgentFilesPanel(int sessionId);
+@@ -2017,6 +2021,11 @@ private:
+     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
+     void addFilesToAgentPrompt();
+     void showAgentSlashMenu();
++    // Bottom-left composer on the Agents tab: type a prompt and start a brand-new
++    // Claude Code agent in the open repo, not tied to any issue (issue #273).
++    QPlainTextEdit *m_agentNewPromptEdit = nullptr;
++    QPushButton *m_agentStartButton = nullptr;
++    void startAdHocAgent();
+     QPushButton *m_agentStopButton = nullptr;
+     QPushButton *m_agentContinueButton = nullptr;
+     QPushButton *m_agentDeleteButton = nullptr;
