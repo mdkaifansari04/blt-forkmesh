@@ -1093,6 +1093,10 @@ private:
     // session's worktree folder from its branch.
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
+    // True if `branch` is a local branch in `repoPath`. Lets the delete paths skip
+    // a `git branch -D` (and its noisy "branch not found" error) when the branch was
+    // already gone — the desired end state either way.
+    bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch);
     // Render the branch diff for whichever scope is selected in m_branchScopeList
     // (whole branch vs base, the worktree's uncommitted changes, or one commit).
