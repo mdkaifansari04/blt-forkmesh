@@ -1403,6 +1403,10 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// When a new UI stall is detected, hand its backtrace to a coding agent so the
+// freeze gets fixed automatically. On by default (adhoc #205).
+const QString kAutoAgentOnStallSetting =
+    QStringLiteral("diagnostics/autoAgentOnStall");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
@@ -7361,6 +7365,66 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &backtrace)
                 .arg(when)
                 .arg(m_stallCount));
     updateFooterDiagnostics();
+    maybeAutoFileStallAgent(peakMs, backtrace);
+}
+
+// If the user has left the "auto-create an agent task for new stalls" setting on
+// (the default), hand this freeze straight to a coding agent so it gets fixed.
+// The backtrace already pinpoints the blocking call and carries the build's
+// source dir, so it's an actionable task on its own. De-duped by backtrace and
+// capped per session so a recurring freeze — or an agent run that itself stalls —
+// can't spawn an unbounded pile of tasks (adhoc #205).
+void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace)
+{
+    if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
+        return;
+    // No captured stack means nothing actionable to point an agent at.
+    const QString signature = backtrace.trimmed();
+    if (signature.isEmpty())
+        return;
+    if (m_autoFiledStallSignatures.contains(signature))
+        return; // already filed this exact freeze this session
+    // Safety cap: never spin up more than a handful of stall-fix agents in one
+    // session, even if every stall has a distinct backtrace.
+    constexpr int kMaxAutoStallAgents = 5;
+    if (m_autoFiledStallSignatures.size() >= kMaxAutoStallAgents)
+        return;
+
+    // Prefer ForkMesh's own checkout (the freeze is in this app's GUI thread);
+    // fall back to whatever repo the Issues tab is pointed at.
+    int repoIndex = -1;
+    const QString bakedSource = QStringLiteral(FORKMESH_SOURCE_DIR);
+    if (!bakedSource.isEmpty()) {
+        const QString selfSource = QDir(bakedSource).absolutePath();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const QString local = m_repositories.at(i).localPath;
+            if (!local.isEmpty() && QDir(local).absolutePath() == selfSource) {
+                repoIndex = i;
+                break;
+            }
+        }
+    }
+    if (repoIndex < 0)
+        repoIndex = issuesRepoIndex();
+    if (repoIndex < 0)
+        return; // no local checkout to run an agent in
+
+    const QString prompt =
+        QStringLiteral(
+            "ForkMesh's GUI thread stalled for ~%1 ms — the event loop was "
+            "blocked, which makes the window freeze. Find the blocking call in "
+            "the backtrace below and fix it so the UI stays responsive (move the "
+            "slow work off the main thread, or skip it when nothing changed). "
+            "Backtrace:\n\n%2")
+            .arg(peakMs)
+            .arg(backtrace);
+    if (startAdHocAgentForRepo(repoIndex, prompt, defaultAgentProvider(),
+                               /*createPr=*/true) > 0) {
+        m_autoFiledStallSignatures.insert(signature);
+        logSystem(QStringLiteral(
+            "Auto-started an agent to fix the UI stall (toggle in Settings > "
+            "Agents & IDE)."));
+    }
 }
 
 // Detail view for the diagnostics readout: the recorded UI stalls (with the
@@ -41504,6 +41568,21 @@ QWidget *MainWindow::buildSettingsSection()
                 selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
             });
 
+    // When the watchdog catches the GUI thread freezing, hand the captured
+    // backtrace to a coding agent so the freeze gets fixed without anyone filing
+    // it by hand. On by default (adhoc #205).
+    auto *autoStallAgentCheck =
+        new QCheckBox("Auto-create an agent task to fix new UI stalls");
+    autoStallAgentCheck->setChecked(
+        QSettings().value(kAutoAgentOnStallSetting, true).toBool());
+    autoStallAgentCheck->setToolTip(
+        "When the app detects the GUI thread freezing, start a coding agent on "
+        "the captured backtrace to fix the stall. Uses the default agent above. "
+        "On by default; de-duped so one recurring freeze files a single task.");
+    connect(autoStallAgentCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoAgentOnStallSetting, enabled);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -41977,6 +42056,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsLabel);
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
+    agentsCol->addWidget(autoStallAgentCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);

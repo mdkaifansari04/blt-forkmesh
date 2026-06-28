@@ -515,6 +515,10 @@ private:
     void startDiagnostics();
     void updateFooterDiagnostics();
     void onUiStall(qint64 peakMs, const QString &backtrace);
+    // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
+    // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
+    // De-duped by backtrace so one recurring freeze files a single task.
+    void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
@@ -1948,6 +1952,9 @@ private:
     int m_stallCount = 0;
     QStringList m_stallLog;          // recent stalls, each with its backtrace
     QString m_stallLogPath;          // durable on-disk stall log
+    // Stall signatures already handed to an agent this session, so a recurring
+    // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
+    QSet<QString> m_autoFiledStallSignatures;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
