@@ -5439,6 +5439,20 @@ QString MainWindow::testBranchAttachmentText(const QString &branch) const
     return QString();
 }
 
+bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
+                return !attach->icon().isNull();
+        }
+    }
+    return false;
+}
+
 QStringList MainWindow::testBranchRowOrder() const
 {
     QStringList names;
@@ -20956,6 +20970,34 @@ QColor agentStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
+// Octicon mirroring an agent session's lifecycle status, in the same glyphs/colors
+// the Agents tab's Status cell uses (applyAgentStatusCell). Unlike that cell —
+// which leaves finished states icon-less because the status word sits beside it —
+// this always returns a glyph, so a column showing only the icon (the Branches
+// tab's "Issue / Agent" cell, adhoc #251) reflects the status at a glance: a green
+// spinner while running, a green check on success, a red x on failure, a red stop
+// when halted, an orange hand while waiting, an orange clock while queued, and a
+// purple merge mark once the branch lands.
+QIcon agentStatusOcticon(const AgentSession &s, int px = 13)
+{
+    if (s.merged)
+        return themedOcticon("git-merge", QColor("#a371f7"), px);
+    if (s.status == AgentStatus::Running)
+        return themedOcticon("sync", QColor("#3fb950"), px);
+    if (s.status == AgentStatus::Success)
+        return themedOcticon("check-circle", QColor("#3fb950"), px);
+    if (s.status == AgentStatus::Failed)
+        return themedOcticon("x", QColor("#f85149"), px);
+    if (s.status == AgentStatus::Stopped)
+        return themedOcticon("stop", QColor("#f85149"), px);
+    if (s.status == AgentStatus::Waiting)
+        return themedOcticon("hand", QColor("#e3742f"), px);
+    if (s.status == AgentStatus::Queued)
+        return themedOcticon("history", QColor("#d29922"), px);
+    // Cleared / unknown.
+    return themedOcticon("circle-slash", QColor("#8b949e"), px);
+}
+
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
 QString agentMergeBase(const AgentSession &s)
@@ -26156,6 +26198,12 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
+    // Keep the Branches tab's per-branch agent-status icon (adhoc #251) current as
+    // the run progresses — but only while that tab is on screen, since rebuilding
+    // it probes git for every branch (ahead/behind + conflicts).
+    if (m_branchesTable && m_repoDetailStack &&
+        m_repoDetailStack->currentIndex() == m_branchesTabIndex)
+        loadBranchesPanel();
 }
 
 void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
@@ -34446,27 +34494,36 @@ void MainWindow::loadBranchesPanel()
         m_branchesTable->setItem(row, 3, worktree);
 
         // Issue / Agent this branch is attached to. When an agent session is
-        // working the branch, name its issue ("#N", title in the tooltip) or
-        // flag an ad-hoc run ("Agent", prompt in the tooltip) so the list shows
-        // what each branch is for (adhoc #191).
+        // working the branch, name its issue ("#N") or flag an ad-hoc run
+        // ("Agent") and stamp the session's status icon — a green spinner while
+        // running, a check on success, an x on failure, etc. — so the list shows
+        // both what each branch is for and how its agent is doing at a glance
+        // (adhoc #191, #251). The text says which it is; the tooltip leads with
+        // the status word and spells out the issue title / prompt.
         auto *attach = new QTableWidgetItem;
         if (const AgentSession *session = branchSessions.value(branch)) {
+            const QString statusWord =
+                session->merged ? QStringLiteral("merged")
+                                : agentStatusText(session->status);
+            QString detail;
             if (session->issueNumber > 0) {
                 attach->setText(QStringLiteral("#%1").arg(session->issueNumber));
-                attach->setIcon(themedOcticon("issue-opened", QColor("#3fb950"), 13));
-                attach->setToolTip(session->issueTitle.isEmpty()
-                                       ? QStringLiteral("Issue #%1")
-                                             .arg(session->issueNumber)
-                                       : QStringLiteral("Issue #%1: %2")
-                                             .arg(session->issueNumber)
-                                             .arg(session->issueTitle));
+                detail = session->issueTitle.isEmpty()
+                             ? QStringLiteral("Issue #%1").arg(session->issueNumber)
+                             : QStringLiteral("Issue #%1: %2")
+                                   .arg(session->issueNumber)
+                                   .arg(session->issueTitle);
             } else {
                 attach->setText(QStringLiteral("Agent"));
-                attach->setIcon(themedOcticon("terminal", QColor("#8b949e"), 13));
-                if (!session->prompt.isEmpty())
-                    attach->setToolTip(session->prompt);
+                detail = session->prompt;
             }
-            attach->setForeground(QColor("#8b949e"));
+            attach->setIcon(agentStatusOcticon(*session));
+            attach->setToolTip(detail.isEmpty()
+                                   ? statusWord
+                                   : QStringLiteral("%1 \xC2\xB7 %2")
+                                         .arg(statusWord, detail));
+            attach->setForeground(session->merged ? QColor("#a371f7")
+                                                  : agentStatusColor(session->status));
         }
         m_branchesTable->setItem(row, 4, attach);
 
