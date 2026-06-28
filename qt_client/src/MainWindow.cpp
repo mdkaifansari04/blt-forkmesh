@@ -5069,6 +5069,20 @@ QString MainWindow::testBranchWorktreePath(const QString &branch) const
     return QString();
 }
 
+QString MainWindow::testBranchAttachmentText(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
+                return attach->text();
+        }
+    }
+    return QString();
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -7730,6 +7744,15 @@ QWidget *MainWindow::buildBreadcrumb()
             resetRepoPin();
         else if (href == QLatin1String("fm:whypin"))
             showPinExplanation();
+        else if (href.startsWith(QLatin1String("fm:agent:"))) {
+            // "agent is waiting for you" toast: jump straight to that session.
+            bool ok = false;
+            const int sid = href.mid(9).toInt(&ok);
+            if (ok) {
+                switchToAgentsTab(sid);
+                dismissTopMessage();
+            }
+        }
     });
     m_topMessage->hide();
 
@@ -24498,7 +24521,10 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
         msg = QStringLiteral("%1 %2 has a question: %3").arg(robot, who, snippet);
     else
         msg = QStringLiteral("%1 %2 is waiting for your reply").arg(robot, who);
-    flashMessage(msg, /*error=*/false);
+    // Make the toast clickable straight through to the waiting session, so the user
+    // doesn't have to hunt for it in the agents list (adhoc #189).
+    flashMessage(msg, /*error=*/false,
+                 QStringLiteral("fm:agent:%1").arg(sessionId));
 }
 
 // Refresh just the Status cell for a session's row, in place — avoids the full
@@ -32765,11 +32791,11 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
 
-    m_branchesTable = new QTableWidget(0, 5);
+    m_branchesTable = new QTableWidget(0, 6);
     m_branchesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
-        {"Branch", "Status", "Updated", "Worktree", ""});
+        {"Branch", "Status", "Updated", "Worktree", "Issue / Agent", ""});
     m_branchesTable->verticalHeader()->setVisible(false);
     // Give each row enough height for the sm action buttons (max 28px tall) plus
     // breathing room, so the buttons don't crowd the row above/below.
@@ -32789,11 +32815,15 @@ QWidget *MainWindow::buildBranchesTab()
     // is checked out in, so the list surfaces an agent's isolated working tree
     // without a trip to the Worktrees tab. Sized to its content.
     bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    // Issue / Agent column: when an agent session is working this branch, name
+    // the issue it's attached to (or "Agent" for an ad-hoc run), so the list
+    // shows what each branch is for without opening the Agents tab (adhoc #191).
+    bh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     // The action column holds cell widgets (Pull / Create PR / delete
     // buttons). ResizeToContents only measures item delegates and ignores
     // cell widgets, so it would collapse this column and clip the buttons.
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
-    bh->setSectionResizeMode(4, QHeaderView::Fixed);
+    bh->setSectionResizeMode(5, QHeaderView::Fixed);
     makeColumnsResizable(m_branchesTable);
     connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) {
@@ -33048,6 +33078,26 @@ void MainWindow::loadBranchesPanel()
         }
     }
 
+    // Map each branch to the agent session working it (if any), scoped to the
+    // current repo, so the per-row "Issue / Agent" column can name the issue the
+    // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
+    // may carry more than one session over its life; prefer one bound to an issue
+    // and otherwise the most recent.
+    QHash<QString, const AgentSession *> branchSessions;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        for (const AgentSession &session : m_agentSessions) {
+            if (session.branchName.isEmpty() || session.owner != repo.owner ||
+                session.name != repo.name)
+                continue;
+            const AgentSession *existing = branchSessions.value(session.branchName);
+            if (!existing || (session.issueNumber > 0 && existing->issueNumber <= 0) ||
+                ((session.issueNumber > 0) == (existing->issueNumber > 0) &&
+                 session.id > existing->id))
+                branchSessions.insert(session.branchName, &session);
+        }
+    }
+
     // Map each branch to the worktree (other than the main checkout) it's checked
     // out in, in a single `git worktree list --porcelain` call so the per-row
     // Worktree column below doesn't spawn a git process each (issue #172).
@@ -33144,6 +33194,31 @@ void MainWindow::loadBranchesPanel()
         }
         m_branchesTable->setItem(row, 3, worktree);
 
+        // Issue / Agent this branch is attached to. When an agent session is
+        // working the branch, name its issue ("#N", title in the tooltip) or
+        // flag an ad-hoc run ("Agent", prompt in the tooltip) so the list shows
+        // what each branch is for (adhoc #191).
+        auto *attach = new QTableWidgetItem;
+        if (const AgentSession *session = branchSessions.value(branch)) {
+            if (session->issueNumber > 0) {
+                attach->setText(QStringLiteral("#%1").arg(session->issueNumber));
+                attach->setIcon(themedOcticon("issue-opened", QColor("#3fb950"), 13));
+                attach->setToolTip(session->issueTitle.isEmpty()
+                                       ? QStringLiteral("Issue #%1")
+                                             .arg(session->issueNumber)
+                                       : QStringLiteral("Issue #%1: %2")
+                                             .arg(session->issueNumber)
+                                             .arg(session->issueTitle));
+            } else {
+                attach->setText(QStringLiteral("Agent"));
+                attach->setIcon(themedOcticon("terminal", QColor("#8b949e"), 13));
+                if (!session->prompt.isEmpty())
+                    attach->setToolTip(session->prompt);
+            }
+            attach->setForeground(QColor("#8b949e"));
+        }
+        m_branchesTable->setItem(row, 4, attach);
+
         // Row actions: just delete here — the Pull / Fix with agent / Create PR /
         // Merge to main actions live in the detail-pane toolbar and act on the
         // selected branch (issue #116). The ahead/behind/conflict counts above
@@ -33182,7 +33257,7 @@ void MainWindow::loadBranchesPanel()
                 [this, branch] { deleteBranch(branch); });
         actionRow->addWidget(del);
 
-        m_branchesTable->setCellWidget(row, 4, actions);
+        m_branchesTable->setCellWidget(row, 5, actions);
         // Measure the true width the delete button needs:
         //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
         //    which sizeHint() ignores until the style is in effect;
@@ -33201,7 +33276,7 @@ void MainWindow::loadBranchesPanel()
     if (actionWidth > 0)
         // A little slack so the rightmost button never sits flush against the
         // column edge (the action row already carries an 8px right margin).
-        m_branchesTable->horizontalHeader()->resizeSection(4, actionWidth + 8);
+        m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
@@ -42272,8 +42347,16 @@ void MainWindow::renderTopMessage()
     m_topMessage->setWordWrap(false);
     // The base HTML carries the message; auto-dismissing successes append a
     // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+    // When a click target is set, the message text itself becomes an underlined
+    // link (routed by the m_topMessage linkActivated handler) so e.g. an "agent is
+    // waiting for you" toast is clickable straight through to that agent.
+    QString body = display.toHtmlEscaped();
+    if (!m_topMessageHref.isEmpty())
+        body = QStringLiteral(
+                   "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
+                   .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                               .arg(fg, glyph, display.toHtmlEscaped());
+                               .arg(fg, glyph, body);
     m_topMessage->setText(m_topMessageBaseHtml);
     // The expand toggle's glyph tracks the state: chevron-down to reveal more,
     // chevron-up to collapse back to the one-liner.
@@ -42329,10 +42412,15 @@ void MainWindow::resizeEvent(QResizeEvent *event)
         positionTopMessageOverlay();
 }
 
-void MainWindow::flashMessage(const QString &text, bool error)
+void MainWindow::flashMessage(const QString &text, bool error,
+                              const QString &clickHref)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
+    // Carry an optional click target so the whole toast can act as a link (e.g. an
+    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
+    // an ordinary toast is never left clickable from a previous message.
+    m_topMessageHref = clickHref;
     // Always keep a copy in the network log for history.
     logSystem(text);
     if (!m_topMessage)
@@ -42415,6 +42503,7 @@ void MainWindow::dismissTopMessage()
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
     m_topMessageExpanded = false;
+    m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessage) {

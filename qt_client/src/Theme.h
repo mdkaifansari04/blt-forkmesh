@@ -192,7 +192,8 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
-    border: none; border-bottom: 1px solid #21262d; font-weight: 600;
+    border: none; border-bottom: 1px solid #21262d;
+    border-right: 2px solid #010409; font-weight: 600;
 }
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
@@ -447,7 +448,8 @@ QPushButton#memberDeleteButton:hover {
 #issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22; color: #8b949e; padding: 6px 8px;
-    border: none; border-bottom: 1px solid #30363d; font-weight: 700;
+    border: none; border-bottom: 1px solid #30363d;
+    border-right: 2px solid #010409; font-weight: 700;
 }
 
 /* --- Kanban issue board --- */
@@ -890,6 +892,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     padding: 6px 8px;
     border: none;
     border-bottom: 1px solid #30363d;
+    border-right: 2px solid #010409;
     font-weight: 700;
 }
 #issueTable QTableCornerButton::section {
@@ -1151,7 +1154,8 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
-    border: none; border-bottom: 1px solid #d8dee4; font-weight: 600;
+    border: none; border-bottom: 1px solid #d8dee4;
+    border-right: 2px solid #afb8c1; font-weight: 600;
 }
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
@@ -1404,7 +1408,8 @@ QPushButton#memberDeleteButton:hover {
 #issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
-    border: none; border-bottom: 1px solid #d0d7de; font-weight: 700;
+    border: none; border-bottom: 1px solid #d0d7de;
+    border-right: 2px solid #afb8c1; font-weight: 700;
 }
 
 /* --- Kanban issue board --- */
@@ -1849,6 +1854,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     padding: 6px 8px;
     border: none;
     border-bottom: 1px solid #d0d7de;
+    border-right: 2px solid #afb8c1;
     font-weight: 700;
 }
 #issueTable QTableCornerButton::section {
