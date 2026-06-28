@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 205
 title: make the branches page load better with the table expanded to see everything
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 87
 progress: 0
