@@ -23946,11 +23946,6 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         customPreamble.isEmpty()
             ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
             : customPreamble + QStringLiteral("\n\n") + lead;
-    // A message queued from the always-on composer while this session was stopped
-    // or waiting (adhoc #177): a fresh `claude` process replays the prompt, so
-    // append the steer here rather than relying on the preserved transcript.
-    if (const QString steer = m_pendingSteerMessage.take(sid); !steer.isEmpty())
-        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -23971,6 +23966,29 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         m_streamRaw[sid].clear();
         m_streamFiles[sid].clear();
         m_agentStore->clearEvents(session);
+    }
+    // Pick up a stopped agent with its real conversation context: resume the
+    // Claude session by id rather than relaunching a fresh process that just
+    // replays the task prompt (adhoc #182). The queued composer message — which
+    // the Send handler already recorded as a user turn — becomes the next turn;
+    // a bare Continue with no message nudges the agent onward. Falls back to the
+    // full-prompt replay when there's no recoverable session id (e.g. a legacy
+    // transcript or a fresh run), so those still resume the way they used to.
+    const QString steer = m_pendingSteerMessage.take(sid);
+    const QString resumeId = resuming ? lastClaudeSessionId(sid) : QString();
+    if (!resumeId.isEmpty()) {
+        if (steer.isEmpty()) {
+            prompt = QStringLiteral("Continue where you left off.");
+            applyTranscriptEvent(
+                sid, QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                                 {QStringLiteral("text"), prompt}});
+        } else {
+            prompt = steer; // already shown in the transcript by the composer
+        }
+    } else if (!steer.isEmpty()) {
+        // No context to resume — fold the steer into the replayed prompt as before
+        // (this is the original always-on-composer restart behaviour, adhoc #177).
+        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
     }
     // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
@@ -24050,7 +24068,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+    auto launch = [this, sid, prompt, autoMode, branchName, resumeId](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -24065,7 +24083,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, resumeId);
         // Issue #84: launching with an initial prompt is a send too — refresh the
         // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
         // first turn's usage shows without waiting for the next minute tick.
@@ -24530,6 +24548,23 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         if (m_renderedTranscriptSession == sessionId)
             m_renderedTranscriptCount = m_streamEvents.value(sessionId).size();
     }
+}
+
+// Walk this session's stream-json events newest-first for the conversation id
+// the `claude` CLI stamps on each one. Returned id feeds `--resume` so a stopped
+// agent is picked up with its full context (adhoc #182). Events are held in
+// memory while a session is live and reloaded from disk on resume
+// (ensureStreamEventsLoaded), so this is the authoritative source after a
+// restart too. Synthetic `_local_user` turns carry no id and are skipped.
+QString MainWindow::lastClaudeSessionId(int sessionId) const
+{
+    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
+    for (auto it = events.crbegin(); it != events.crend(); ++it) {
+        const QString id = it->value(QStringLiteral("session_id")).toString();
+        if (!id.isEmpty())
+            return id;
+    }
+    return QString();
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
