@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 259
 title: on the claude code transcript please have a space between each json object
 status: open
-labels: []
+labels: [Complete]
 milestone: 
 priority: 49
 progress: 0
