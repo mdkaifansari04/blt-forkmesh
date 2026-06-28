@@ -4035,6 +4035,27 @@ namespace {
 // m_repoDetailLoading guard backstops anything that still slips through.
 int g_gitKeepAliveDepth = 0;
 
+// Process-wide monotonic clock + the time we last pumped the GUI under a
+// keep-alive scope. Shared across every git read so a burst of separate-but-fast
+// calls can be throttled as one stream (see waitForGit).
+QElapsedTimer &keepAliveClock()
+{
+    static QElapsedTimer c;
+    if (!c.isValid())
+        c.start();
+    return c;
+}
+qint64 g_lastKeepAlivePumpMs = 0;
+
+// Service the GUI (timers — incl. the stall-watchdog heartbeat — paints, queued
+// slots, but not user input) and record when. One place so the per-call throttle
+// and the in-wait poll share a single "last pumped" timestamp.
+void pumpKeepAlive()
+{
+    g_lastKeepAlivePumpMs = keepAliveClock().elapsed();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+}
+
 // Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
 // short slices and service the GUI between them so the window stays responsive
 // and spinners animate; otherwise block as before.
@@ -4048,6 +4069,14 @@ bool waitForGit(QProcess &process, QString *err)
             *err = QStringLiteral("git timed out");
         return false;
     }
+    // A burst of individually fast (<40ms) git reads — refreshAgentTable shells two
+    // per session, so a repo with many sessions runs dozens back-to-back — each
+    // returns from waitForFinished(40) on the first poll, so the loop below never
+    // pumps and the GUI (and the watchdog heartbeat) starves across the whole burst
+    // even though no single call is slow. Pump up front when enough wall time has
+    // elapsed since the last pump so the window keeps breathing between calls too.
+    if (keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
+        pumpKeepAlive();
     QElapsedTimer timer;
     timer.start();
     while (!process.waitForFinished(40)) {
@@ -4059,7 +4088,7 @@ bool waitForGit(QProcess &process, QString *err)
                 *err = QStringLiteral("git timed out");
             return false;
         }
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+        pumpKeepAlive();
     }
     return true;
 }
@@ -6104,18 +6133,14 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         QSettings().setValue(kAuthedAccountSetting, accountName);
         return true;
     }
-    // Previously authenticated on this machine — either by key (above) or by a
-    // password (cross-device) login, where this node key does NOT own the
-    // account so the pubkey check above can never pass. Trust the cached marker
-    // so those users aren't forced to re-enter credentials on every launch.
-    // When the relay is reachable we still require the account to exist and be
-    // active; when it's unreachable (status == 0) we trust the cache outright.
-    // Either way the relay re-verifies the signed token for any real hosting.
+    // If the relay is unreachable, trust a previously authenticated marker so a
+    // returning user can still open the app shell offline. When the relay is
+    // reachable, do not treat a password-login cache as signed hosting auth unless
+    // the server pubkey matched above. Publishing and heartbeat require this
+    // desktop's Ed25519 key, not just an email/password session.
     const bool cachedHere =
         QSettings().value(kAuthedAccountSetting).toString() == accountName;
-    const bool activeAccount = lookup.value("exists").toBool() &&
-                               lookup.value("status").toString() == "active";
-    if (cachedHere && (status == 0 || activeAccount)) {
+    if (cachedHere && status == 0) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
@@ -6134,7 +6159,8 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     const QJsonObject resp = postAccountSync(
         "login",
         QJsonObject{{"email", email}, {"password", password},
-                    {"totp", totp}},
+                    {"totp", totp},
+                    {"pubkey", m_profileIdentity.publicKey()}},
         &status);
     if (status == 200 && resp.value("ok").toBool()) {
         m_accountAuthenticated = true;
@@ -6161,6 +6187,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                              : err == "too_many_attempts"
                                    ? "Too many failed attempts. Wait a few minutes "
                                      "and try again."
+                             : err == "pubkey_mismatch"
+                                   ? "This account is already bound to another "
+                                     "desktop key. Use that device or rotate the "
+                                     "account key before publishing from here."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");
@@ -16829,6 +16859,8 @@ void MainWindow::showPull(int number)
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
         m_pullDiff->clear();
+        m_pullDiffRenderedHtml.clear(); // view no longer shows a rendered diff
+        m_pullDiffRenderedFontPt = -1;
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -16938,8 +16970,11 @@ void MainWindow::showPull(int number)
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0)
         m_pullFiles->setCurrentRow(0);
-    else
+    else {
         m_pullDiff->setPlainText("(no changes)");
+        m_pullDiffRenderedHtml.clear(); // plain text, not a cached HTML diff
+        m_pullDiffRenderedFontPt = -1;
+    }
     renderPullCommits(*found);
     renderPullThread(*found);
     renderPullChecks(*found);
@@ -17091,10 +17126,21 @@ void MainWindow::renderPullDiff(const QString &filePath)
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
+    const QString shown =
+        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                       : html;
+    // setHtml() re-lays-out the entire diff document, which can block the GUI
+    // thread for seconds on a large patch. A periodic refresh (reloadPulls ->
+    // refreshPullList -> showPull -> renderPullDiff) hits this for the same file
+    // even when nothing changed, so skip the re-layout when the rendered HTML and
+    // font are identical to what's already on screen. This also preserves the
+    // reader's scroll position across refreshes.
+    if (shown == m_pullDiffRenderedHtml && m_diffFontPt == m_pullDiffRenderedFontPt)
+        return;
     m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-    m_pullDiff->setHtml(html.isEmpty()
-                            ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                            : html);
+    m_pullDiff->setHtml(shown);
+    m_pullDiffRenderedHtml = shown;
+    m_pullDiffRenderedFontPt = m_diffFontPt;
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)
@@ -32847,6 +32893,14 @@ void MainWindow::loadWorktreesPanel()
     // table is rebuilt before it returns.
     const int statusGen = ++m_worktreeStatusGen;
     int actionWidth = 0;
+    // Suspend painting while each row's action cell (a QWidget holding several
+    // QPushButtons) is built: setCellWidget() shows the cell widget, which
+    // activates its button layout and re-lays-out the whole table on *every*
+    // row. On a repo with several worktrees that per-row relayout/repaint
+    // cascade blocked the GUI thread for ~2s (the QPushButton::sizeHint stall in
+    // the backtrace). Disabling updates coalesces it into one repaint when
+    // re-enabled — the same fix the commits table already uses.
+    m_worktreesTable->setUpdatesEnabled(false);
     for (const WT &wt : wts) {
         const int row = m_worktreesTable->rowCount();
         m_worktreesTable->insertRow(row);
@@ -33045,6 +33099,7 @@ void MainWindow::loadWorktreesPanel()
     }
     if (actionWidth > 0)
         m_worktreesTable->setColumnWidth(4, actionWidth + 12);
+    m_worktreesTable->setUpdatesEnabled(true); // one repaint for the whole rebuild
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));

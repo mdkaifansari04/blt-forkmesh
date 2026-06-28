@@ -2358,6 +2358,13 @@ private:
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
+    // Last HTML laid out in m_pullDiff, with the font it was rendered at. A
+    // periodic refreshOpenRepoDetail() re-runs renderPullDiff() for the same
+    // file; setHtml() re-lays-out the whole diff (seconds for a big patch and a
+    // GUI-thread stall), so skip it when nothing changed. Reset to the -1
+    // sentinel wherever the view is cleared outside renderPullDiff().
+    QString m_pullDiffRenderedHtml;
+    int m_pullDiffRenderedFontPt = -1;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
