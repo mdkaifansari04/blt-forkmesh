@@ -635,6 +635,10 @@ private:
     // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
     // `git apply --check` dry-runs never block the GUI thread in a single sweep.
     void processPendingPullConflicts(quint64 gen);
+    // Queue a single PR's dry-run apply for the async pass (deduped against any
+    // pending entry) and kick off the drain if it's idle. Lets the merge-status
+    // path defer a cold-cache check instead of blocking the GUI on it.
+    void queuePullConflictCheck(int number, const QString &fingerprint);
     // Set/clear the conflict badge on a single pull-list row, in place, so async
     // badge updates don't rebuild (and flicker) the whole table.
     void setPullConflictBadge(int number, bool conflict);
