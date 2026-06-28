@@ -139,6 +139,11 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
+    // the owner has switched off individually. Disabled workflows are skipped on
+    // push and can't be triggered manually, but stay listed so past runs remain
+    // visible and the switch can be flipped back on.
+    QStringList disabledWorkflows;
     // Temporary, browse-only cache for a repo hosted by another node. Preview
     // repos are not saved, advertised, published, hosted, or wired for actions.
     bool previewOnly = false;
@@ -1146,6 +1151,11 @@ private:
     void updateRepoSource();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
+    // Switch a single workflow (by path) on or off for the open repo, persist it,
+    // and refresh the manual-run bar so a disabled workflow can't be run by hand.
+    void setWorkflowDisabled(const QString &path, bool disabled);
+    // Whether `path` is switched off for the open repo.
+    bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
