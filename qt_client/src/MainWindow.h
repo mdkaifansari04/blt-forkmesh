@@ -2441,6 +2441,11 @@ private:
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
     QList<QPair<int, QString>> m_pendingPullConflictChecks;
+    // True while a conflict dry-run runs on a worker thread. The drain launches
+    // one `git apply --check` at a time off the GUI thread (the slow cold-cache
+    // run used to block the event loop for ~1.5s); this guard keeps a second
+    // drain from starting a concurrent worker before the first finishes.
+    bool m_pullConflictCheckInFlight = false;
     // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
     // the patch changes. Shared by reloadPulls() and updatePullActionState().
     static QString pullPatchFingerprint(const QString &patch);
