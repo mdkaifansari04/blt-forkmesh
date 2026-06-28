@@ -18,4 +18,3 @@ Split from local landing PR #43 into an independently reviewable signed patch.
 
 ## Tests
 - Original combined branch passed: python3 -m py_compile src/entry.py
-
