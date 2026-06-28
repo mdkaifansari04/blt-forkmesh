@@ -1001,6 +1001,36 @@ void installMarginResize(QHeaderView *header)
         });
 }
 
+// RAII guard that suspends a widget's repaints for a bulk table rebuild, so
+// clearing the rows and inserting/populating them fires a single repaint when
+// the guard goes out of scope instead of one per row. Without it, inserting
+// rows one at a time (often with the event loop pumped between them, as the
+// commit/branch loaders do) makes the list visibly fill "one row after another"
+// and feel slow. Restores the previous state even on an early return, and
+// nesting is safe because it remembers and restores whatever it found.
+class TableRepaintGuard
+{
+public:
+    explicit TableRepaintGuard(QWidget *w) : m_w(w)
+    {
+        if (m_w) {
+            m_was = m_w->updatesEnabled();
+            m_w->setUpdatesEnabled(false);
+        }
+    }
+    ~TableRepaintGuard()
+    {
+        if (m_w)
+            m_w->setUpdatesEnabled(m_was);
+    }
+    TableRepaintGuard(const TableRepaintGuard &) = delete;
+    TableRepaintGuard &operator=(const TableRepaintGuard &) = delete;
+
+private:
+    QWidget *m_w = nullptr;
+    bool m_was = true;
+};
+
 // Lets the user drag-resize a table's columns while keeping their content-fitted
 // starting widths. Qt's ResizeToContents header mode auto-sizes a column but
 // locks the divider so it can't be dragged; this leaves the existing per-column
@@ -14645,6 +14675,7 @@ void MainWindow::refreshRepoSecurity()
         delete item;
     }
 
+    TableRepaintGuard repaintGuard(m_securityFindingsTable);
     m_securityFindingsTable->setSortingEnabled(false);
     m_securityFindingsTable->setRowCount(0);
 
@@ -15192,6 +15223,7 @@ void MainWindow::reloadDiscussions()
     const int keep = m_currentDiscussionNumber;
 
     QSignalBlocker block(m_discussionTable);
+    TableRepaintGuard repaintGuard(m_discussionTable);
     m_discussionTable->setSortingEnabled(false);
     m_discussionTable->setRowCount(0);
     for (const Discussion &discussion : std::as_const(m_currentDiscussions)) {
@@ -16703,6 +16735,7 @@ void MainWindow::refreshPullList()
         return;
     const QString search = m_pullSearch ? m_pullSearch->text().trimmed() : QString();
     const int keep = m_currentPullNumber;
+    TableRepaintGuard repaintGuard(m_pullTable);
     m_pullTable->setSortingEnabled(false);
     m_pullTable->setRowCount(0);
     for (const PullRequest &pr : std::as_const(m_currentPulls)) {
@@ -17701,6 +17734,7 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
 {
     if (!m_pullChecksTable)
         return;
+    TableRepaintGuard repaintGuard(m_pullChecksTable);
     m_pullChecksTable->setRowCount(0);
     if (m_pullRunChecksButton)
         m_pullRunChecksButton->setEnabled(pr.number > 0 && pr.status == "open");
@@ -22942,6 +22976,7 @@ void MainWindow::refreshAgentTable()
     const QString query =
         m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
+    TableRepaintGuard repaintGuard(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
@@ -31616,6 +31651,7 @@ void MainWindow::loadRepoInsights()
     if (!m_insightsSummary)
         return;
 
+    TableRepaintGuard repaintGuard(m_insightsContributors);
     if (m_insightsContributors)
         m_insightsContributors->setRowCount(0);
     if (m_insightsLanguageBar)
@@ -32972,6 +33008,7 @@ void MainWindow::loadWorktreesPanel()
     // "Update from main"/merge) lands back on it instead of going blank — clearing
     // the table fires currentCellChanged(-1) which wipes the diff + selection (#272).
     const QString keepPath = m_worktreeSelectedPath;
+    TableRepaintGuard repaintGuard(m_worktreesTable);
     m_worktreesTable->setRowCount(0);
     QString repoPath, repoOwner, repoName;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -34345,6 +34382,7 @@ void MainWindow::loadBranchesPanel()
     // resets m_branchDiffBranch; we re-select this branch's row at the end so
     // the diff stays on screen (now reflecting any merge we just performed).
     const QString previouslyViewed = m_branchDiffBranch;
+    TableRepaintGuard repaintGuard(m_branchesTable);
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     QStringList branches = repoBranches();
@@ -36032,6 +36070,7 @@ void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
         return;
+    TableRepaintGuard repaintGuard(m_releasesTable);
     m_releasesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
@@ -36207,6 +36246,7 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
+    TableRepaintGuard repaintGuard(m_mirrorNodesTable);
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
 
@@ -37875,6 +37915,7 @@ void MainWindow::refreshIssueList()
     // Block signals during the full rebuild so that setRowCount(0),
     // insertRow, and setSortingEnabled(true) never fire itemSelectionChanged
     // and accidentally navigate to a different issue (issue #188).
+    TableRepaintGuard repaintGuard(m_issueTable);
     m_issueTable->blockSignals(true);
     m_issueTable->setSortingEnabled(false);
     m_issueTable->setRowCount(0);
@@ -38167,6 +38208,7 @@ void MainWindow::refreshIssueMilestones()
             ++c.open;
     }
 
+    TableRepaintGuard repaintGuard(m_issueMilestonesTable);
     m_issueMilestonesTable->setSortingEnabled(false);
     m_issueMilestonesTable->setRowCount(0);
     for (const QString &title : std::as_const(order)) {
@@ -38276,6 +38318,7 @@ void MainWindow::refreshIssueLabels()
     }
 
     const bool writable = issueStoreForCurrentRepo().canWrite();
+    TableRepaintGuard repaintGuard(m_issueLabelsTable);
     m_issueLabelsTable->setSortingEnabled(false);
     m_issueLabelsTable->setRowCount(0);
     for (const QString &name : std::as_const(order)) {
@@ -48686,6 +48729,7 @@ void MainWindow::refreshNotificationsTable()
     if (!m_notificationsTable)
         return;
     // Disable sorting while repopulating so rows aren't reordered mid-insert.
+    TableRepaintGuard repaintGuard(m_notificationsTable);
     m_notificationsTable->setSortingEnabled(false);
     m_notificationsTable->setRowCount(0);
 
@@ -48785,6 +48829,7 @@ void MainWindow::refreshActionsTable()
     }
 
     QSignalBlocker block(m_actionsTable);
+    TableRepaintGuard repaintGuard(m_actionsTable);
     m_actionsTable->setRowCount(0);
     for (const ActionRun &run : m_actionRuns) {
         if (run.owner != owner || run.name != name)
@@ -50223,6 +50268,7 @@ void MainWindow::reloadVariablesTable()
         return;
     const QMap<QString, QString> vars = ActionStore::variables();
     QSignalBlocker block(m_varsTable);
+    TableRepaintGuard repaintGuard(m_varsTable);
     m_varsTable->setRowCount(0);
     for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
         const int row = m_varsTable->rowCount();
