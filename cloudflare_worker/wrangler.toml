@@ -79,7 +79,7 @@ class_name = "ForkMeshHost"
 [[d1_databases]]
 binding = "DB"
 database_name = "forkmesh"
-database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
+database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
 migrations_dir = "migrations"
 
 [[migrations]]
