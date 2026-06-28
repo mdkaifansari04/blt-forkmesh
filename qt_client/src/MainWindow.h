@@ -973,6 +973,9 @@ private:
     void runSelectedWorkflowManually();
     // Re-queue the currently selected run (same workflow, commit and ref).
     void rerunSelectedRun();
+    // Delete every run currently shown in the Runs list (its meta + log on
+    // disk); skips any run that's still in flight. Prompts for confirmation.
+    void clearActionRuns();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
@@ -1158,8 +1161,10 @@ private:
     void openBranchMergeEditor(const QString &branch);
     // Merge the default branch into every branch that's behind it in one pass;
     // clean merges land via plumbing (no checkout), conflicts are reported so the
-    // list can surface them and offer "Fix with agent".
-    void pullBaseIntoAllBranches();
+    // list can surface them and offer "Fix with agent". `confirm` is false when
+    // run automatically after a merge (the "auto pull into all" toggle), so it
+    // skips the scope-confirmation prompt.
+    void pullBaseIntoAllBranches(bool confirm = true);
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
@@ -2078,6 +2083,9 @@ private:
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
+    // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
+    // so the remaining branches catch up with the merge (adhoc #250).
+    QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
@@ -2445,6 +2453,11 @@ private:
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
     QList<QPair<int, QString>> m_pendingPullConflictChecks;
+    // True while a conflict dry-run runs on a worker thread. The drain launches
+    // one `git apply --check` at a time off the GUI thread (the slow cold-cache
+    // run used to block the event loop for ~1.5s); this guard keeps a second
+    // drain from starting a concurrent worker before the first finishes.
+    bool m_pullConflictCheckInFlight = false;
     // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
     // the patch changes. Shared by reloadPulls() and updatePullActionState().
     static QString pullPatchFingerprint(const QString &patch);

@@ -248,6 +248,11 @@ inline QColor commitGraphLaneColor(int lane)
     return palette[((lane % n) + n) % n];
 }
 
+// Defined below: outlines a selected row in green instead of filling it solid.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index);
+
 // Paints the git-graph gutter: a vertical line for every lane passing through
 // the row plus a filled dot in this commit's lane. Topology is meaningful only
 // while the list is in git-log order (the default Date-descending sort), which
@@ -260,8 +265,12 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        // Draw the selection/background but no text (the item has none).
-        QStyledItemDelegate::paint(painter, option, index);
+        // Strip the selection flag so the solid green band isn't filled, then
+        // draw the row's green outline (issue #252). The item has no text.
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
         const QVariantList lanes = index.data(kGraphLanesRole).toList();
         const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
         if (lanes.isEmpty() && nodeLane < 0)
@@ -825,9 +834,16 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(option.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
+        // Mark the selected row with a green outline rather than a solid green
+        // band (issue #252, matching the agents list): strip the selection flag so
+        // neither the style nor the stylesheet fills the row, then draw the outline
+        // on top. enableHoverRowHighlight()'s blankSelectionBand() clears the band
+        // the view would otherwise still paint from selection-background-color.
+        opt.state &= ~QStyle::State_Selected;
         QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
     }
 
     // Item views shape (and, for elided columns, fully lay out) the ENTIRE
@@ -876,12 +892,33 @@ private:
     QPersistentModelIndex m_hovered;
 };
 
+// The delegates now outline a selected row in green rather than filling it solid,
+// but the view still paints a solid selection band from the app-wide stylesheet
+// (selection-background-color plus the ::item:selected background rule, keyed on
+// the view's object name). Blank both on this view, keyed on that same object name
+// so the per-widget rule overrides the app rule, leaving only the outline showing
+// (issue #252, mirroring the agents list).
+void blankSelectionBand(QAbstractItemView *view)
+{
+    const QString name = view->objectName();
+    if (name.isEmpty())
+        return; // no object-name rule to override
+    const QString sel = QStringLiteral("#") + name;
+    view->setStyleSheet(
+        view->styleSheet() + sel +
+        QStringLiteral(" { selection-background-color: transparent; }") + sel +
+        QStringLiteral("::item:selected { background: transparent; }"));
+}
+
 // Give a list-style view (table, list or tree) a full-row light-green hover
-// highlight that never shifts the row's contents.
+// highlight that never shifts the row's contents, plus the green selected-row
+// outline (issue #252) in place of the solid selection band.
 void enableHoverRowHighlight(QAbstractItemView *view)
 {
-    if (view)
-        view->setItemDelegate(new HoverRowDelegate(view));
+    if (!view)
+        return;
+    view->setItemDelegate(new HoverRowDelegate(view));
+    blankSelectionBand(view);
 }
 
 // Outlines the SELECTED row in green with a transparent fill, instead of the
@@ -925,10 +962,9 @@ inline void paintRowSelectionBorder(QPainter *painter,
     painter->restore();
 }
 
-// HoverRowDelegate variant that renders the selected row as a transparent band
-// inside a green outline rather than a solid green fill. The selection flag is
-// stripped before the base paint so neither the stylesheet nor the style fills
-// the row; paintRowSelectionBorder() then draws the outline on top.
+// HoverRowDelegate variant that drops the light-green mouse-hover row tint while
+// keeping the base's green selected-row outline (issue #184: the agents list wants
+// no hover fill). The outline itself is drawn by HoverRowDelegate::paint.
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
@@ -936,15 +972,6 @@ public:
         : HoverRowDelegate(view)
     {
         m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
-    }
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt(option);
-        opt.state &= ~QStyle::State_Selected;
-        HoverRowDelegate::paint(painter, opt, index);
-        paintRowSelectionBorder(painter, option, index);
     }
 };
 
@@ -1000,6 +1027,36 @@ void installMarginResize(QHeaderView *header)
             *busy = false;
         });
 }
+
+// RAII guard that suspends a widget's repaints for a bulk table rebuild, so
+// clearing the rows and inserting/populating them fires a single repaint when
+// the guard goes out of scope instead of one per row. Without it, inserting
+// rows one at a time (often with the event loop pumped between them, as the
+// commit/branch loaders do) makes the list visibly fill "one row after another"
+// and feel slow. Restores the previous state even on an early return, and
+// nesting is safe because it remembers and restores whatever it found.
+class TableRepaintGuard
+{
+public:
+    explicit TableRepaintGuard(QWidget *w) : m_w(w)
+    {
+        if (m_w) {
+            m_was = m_w->updatesEnabled();
+            m_w->setUpdatesEnabled(false);
+        }
+    }
+    ~TableRepaintGuard()
+    {
+        if (m_w)
+            m_w->setUpdatesEnabled(m_was);
+    }
+    TableRepaintGuard(const TableRepaintGuard &) = delete;
+    TableRepaintGuard &operator=(const TableRepaintGuard &) = delete;
+
+private:
+    QWidget *m_w = nullptr;
+    bool m_was = true;
+};
 
 // Lets the user drag-resize a table's columns while keeping their content-fitted
 // starting widths. Qt's ResizeToContents header mode auto-sizes a column but
@@ -1440,6 +1497,10 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
 // IDE integration: when on, the issue view gains "run in IDE" buttons that hand
 // the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
 const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
+// When on, a successful "Merge to main" automatically runs "Pull <base> into
+// all" so every other branch catches up with the just-merged work (adhoc #250).
+const QString kBranchAutoPullAllSetting =
+    QStringLiteral("branches/autoPullAllOnMerge");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
@@ -12558,6 +12619,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *listPage = new QWidget;
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
+    enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->setHorizontalHeaderLabels(
         {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
@@ -13228,6 +13290,7 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
+    enableHoverRowHighlight(m_scmTree); // green outline selection (issue #252)
     m_scmTree->setColumnCount(2);
     m_scmTree->setHeaderHidden(true);
     m_scmTree->setMinimumWidth(240);
@@ -14655,6 +14718,7 @@ void MainWindow::refreshRepoSecurity()
         delete item;
     }
 
+    TableRepaintGuard repaintGuard(m_securityFindingsTable);
     m_securityFindingsTable->setSortingEnabled(false);
     m_securityFindingsTable->setRowCount(0);
 
@@ -15202,6 +15266,7 @@ void MainWindow::reloadDiscussions()
     const int keep = m_currentDiscussionNumber;
 
     QSignalBlocker block(m_discussionTable);
+    TableRepaintGuard repaintGuard(m_discussionTable);
     m_discussionTable->setSortingEnabled(false);
     m_discussionTable->setRowCount(0);
     for (const Discussion &discussion : std::as_const(m_currentDiscussions)) {
@@ -16127,6 +16192,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullFiles); // green outline selection (issue #252)
     m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -16209,6 +16275,7 @@ QWidget *MainWindow::buildPullsTab()
     // it in the repo's commit view.
     m_pullCommitsList = new QListWidget;
     m_pullCommitsList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullCommitsList); // green outline selection (issue #252)
     connect(m_pullCommitsList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 const QString sha = item ? item->data(Qt::UserRole).toString()
@@ -16600,39 +16667,71 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // One dry-run runs off-thread at a time. A redundant drain (a double
+    // singleShot, or queuePullConflictCheck firing while a worker runs) just
+    // returns here — the in-flight worker reschedules us when it finishes, so the
+    // queue still drains in order.
+    if (m_pullConflictCheckInFlight)
+        return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
+    const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
-    if (store.canWrite()) {
-        bool clean = false;
-        QStringList conflictFiles;
-        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
-        // single cold `git apply --check` can run well over the 1.5s stall
-        // threshold — pump the event loop while it runs so the window stays
-        // responsive instead of freezing on one PR's dry-run.
-        const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
-                                 /*keepGuiAlive=*/true) &&
-            !clean;
-        // The gen check at entry already gates this turn; re-check defensively in
-        // case checkMergeable() ever pumps the event loop and lets a fresh
-        // reloadPulls() supersede this pass while git ran.
-        if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
-            if (conflict)
-                m_pullConflictByNumber.insert(number, true);
-            else
-                m_pullConflictByNumber.remove(number);
-            setPullConflictBadge(number, conflict);
-            // If this dry-run was for the PR currently on screen, refresh its
-            // merge UI now that the result is cached — updatePullActionState()
-            // deferred to us instead of blocking the GUI on the live check.
-            if (number == m_currentPullNumber)
-                updatePullActionState();
-        }
+    if (!store.canWrite()) {
+        // No working tree to test the patch against; skip and drain the rest.
+        if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+            QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+        return;
     }
-    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
-        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A single cold `git apply --check` can run well over the 1.5s stall
+    // threshold, so run it on a worker thread rather than on the GUI thread. The
+    // old keepGuiAlive path pumped the event loop in place, which could itself
+    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
+    // reports). PullStore is copied by value and only shells out to git, so the
+    // worker touches no shared Qt state; results come back via shared_ptr to the
+    // finished handler, which runs on the main thread.
+    m_pullConflictCheckInFlight = true;
+    auto clean = std::make_shared<bool>(false);
+    auto mergeable = std::make_shared<bool>(false);
+    auto conflictFiles = std::make_shared<QStringList>();
+    QThread *worker = QThread::create([store, number, clean, mergeable,
+                                       conflictFiles]() mutable {
+        *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
+                                          nullptr, /*keepGuiAlive=*/false);
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, gen, number, fingerprint, clean, mergeable,
+             conflictFiles]() {
+                m_pullConflictCheckInFlight = false;
+                worker->deleteLater();
+                const bool conflict = *mergeable && !*clean;
+                // Apply the result only if this repo/list is still current; a
+                // reloadPulls() may have bumped the generation while git ran.
+                if (gen == m_pullConflictGen) {
+                    m_pullConflictCache.insert(
+                        number, {fingerprint, conflict, *conflictFiles});
+                    if (conflict)
+                        m_pullConflictByNumber.insert(number, true);
+                    else
+                        m_pullConflictByNumber.remove(number);
+                    setPullConflictBadge(number, conflict);
+                    // If this dry-run was for the PR currently on screen, refresh
+                    // its merge UI now that the result is cached.
+                    if (number == m_currentPullNumber)
+                        updatePullActionState();
+                }
+                // Drain the next pending check under the *current* generation,
+                // whether or not this result was superseded: a superseding
+                // reloadPulls() rebuilt the queue and is waiting on this worker to
+                // release the in-flight guard.
+                if (!m_pendingPullConflictChecks.isEmpty()) {
+                    const quint64 current = m_pullConflictGen;
+                    QTimer::singleShot(0, this, [this, current] {
+                        processPendingPullConflicts(current);
+                    });
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
@@ -16681,6 +16780,7 @@ void MainWindow::refreshPullList()
         return;
     const QString search = m_pullSearch ? m_pullSearch->text().trimmed() : QString();
     const int keep = m_currentPullNumber;
+    TableRepaintGuard repaintGuard(m_pullTable);
     m_pullTable->setSortingEnabled(false);
     m_pullTable->setRowCount(0);
     for (const PullRequest &pr : std::as_const(m_currentPulls)) {
@@ -17679,6 +17779,7 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
 {
     if (!m_pullChecksTable)
         return;
+    TableRepaintGuard repaintGuard(m_pullChecksTable);
     m_pullChecksTable->setRowCount(0);
     if (m_pullRunChecksButton)
         m_pullRunChecksButton->setEnabled(pr.number > 0 && pr.status == "open");
@@ -18777,6 +18878,7 @@ bool MainWindow::runMergeConflictEditor(
 
     auto *fileList = new QListWidget;
     fileList->setObjectName("overviewList");
+    enableHoverRowHighlight(fileList); // green outline selection (issue #252)
     fileList->setMinimumWidth(220);
 
     auto *editor = new QPlainTextEdit;
@@ -22948,6 +23050,7 @@ void MainWindow::refreshAgentTable()
     const QString query =
         m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
+    TableRepaintGuard repaintGuard(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
@@ -31628,6 +31731,7 @@ void MainWindow::loadRepoInsights()
     if (!m_insightsSummary)
         return;
 
+    TableRepaintGuard repaintGuard(m_insightsContributors);
     if (m_insightsContributors)
         m_insightsContributors->setRowCount(0);
     if (m_insightsLanguageBar)
@@ -32789,6 +32893,7 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeFilesSummary->setTextFormat(Qt::RichText);
     m_worktreeFileList = new QListWidget;
     m_worktreeFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_worktreeFileList); // green outline selection (issue #252)
     m_worktreeFileList->setMinimumWidth(170);
     connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -32984,6 +33089,7 @@ void MainWindow::loadWorktreesPanel()
     // "Update from main"/merge) lands back on it instead of going blank — clearing
     // the table fires currentCellChanged(-1) which wipes the diff + selection (#272).
     const QString keepPath = m_worktreeSelectedPath;
+    TableRepaintGuard repaintGuard(m_worktreesTable);
     m_worktreesTable->setRowCount(0);
     QString repoPath, repoOwner, repoName;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -33537,6 +33643,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             refreshIssueList();
             updateIssueActionState();
         }
+        // adhoc #250: with the "Auto after merge" toggle on, bring every other
+        // branch up to date with the just-merged base in the same step. Run it
+        // without a confirmation prompt (the merge was already confirmed); it
+        // sets its own detail notice summarizing how many branches advanced.
+        if (m_branchAutoPullAllCheck && m_branchAutoPullAllCheck->isChecked())
+            pullBaseIntoAllBranches(/*confirm=*/false);
     } else {
         // Roll the failed merge back so the checkout is left clean, and keep the
         // worktree so its work isn't lost (issue #126).
@@ -34049,7 +34161,20 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchPullAllButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchPullAllButton, "download", 16);
     connect(m_branchPullAllButton, &QPushButton::clicked, this,
-            &MainWindow::pullBaseIntoAllBranches);
+            [this] { pullBaseIntoAllBranches(); });
+    // Opt-in: when checked, every successful "Merge to main" auto-runs the
+    // "Pull into all" above so the remaining branches catch up with the merge
+    // without a second click (adhoc #250). Persisted so it survives restart.
+    m_branchAutoPullAllCheck = new QCheckBox("Auto after merge");
+    m_branchAutoPullAllCheck->setCursor(Qt::PointingHandCursor);
+    m_branchAutoPullAllCheck->setToolTip(
+        "Automatically pull the default branch into every behind branch after a "
+        "merge to main succeeds.");
+    m_branchAutoPullAllCheck->setChecked(
+        QSettings().value(kBranchAutoPullAllSetting, false).toBool());
+    connect(m_branchAutoPullAllCheck, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kBranchAutoPullAllSetting, on);
+    });
     // Tidy up branches that are fully merged into the default branch (0 behind and
     // 0 ahead of it); enabled in loadBranchesPanel() once those counts are known.
     m_branchDeleteMergedButton = new QPushButton("Delete merged");
@@ -34062,6 +34187,7 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
     headerRow->addWidget(m_branchPullAllButton);
+    headerRow->addWidget(m_branchAutoPullAllCheck);
     headerRow->addWidget(refreshButton);
     // "Delete merged" prunes every branch that's 0 behind / 0 ahead of the
     // default branch; keep it right beside "New branch" so the create/cleanup
@@ -34145,6 +34271,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchScopeLabel->setTextFormat(Qt::RichText);
     m_branchScopeList = new QListWidget;
     m_branchScopeList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchScopeList); // green outline selection (issue #252)
     m_branchScopeList->setMinimumWidth(180);
     connect(m_branchScopeList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { renderBranchScopeDiff(); });
@@ -34156,6 +34283,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFilesSummary->setTextFormat(Qt::RichText);
     m_branchFileList = new QListWidget;
     m_branchFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchFileList); // green outline selection (issue #252)
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -34337,6 +34465,7 @@ void MainWindow::loadBranchesPanel()
     // resets m_branchDiffBranch; we re-select this branch's row at the end so
     // the diff stays on screen (now reflecting any merge we just performed).
     const QString previouslyViewed = m_branchDiffBranch;
+    TableRepaintGuard repaintGuard(m_branchesTable);
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     QStringList branches = repoBranches();
@@ -35575,7 +35704,7 @@ static QString branchMergeTree(const QString &dir, const QString &base,
     return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).value(0);
 }
 
-void MainWindow::pullBaseIntoAllBranches()
+void MainWindow::pullBaseIntoAllBranches(bool confirm)
 {
     const QString dir = repoGitDir();
     if (dir.isEmpty())
@@ -35628,7 +35757,8 @@ void MainWindow::pullBaseIntoAllBranches()
             QStringLiteral("Every branch is already up to date with %1.").arg(base));
         return;
     }
-    if (QMessageBox::question(
+    if (confirm &&
+        QMessageBox::question(
             this, QStringLiteral("Pull %1 into all branches").arg(base),
             QStringLiteral("Merge %1 into the %2 branch(es) that are behind it?\n\n"
                            "Clean merges are applied automatically; any branch "
@@ -36032,6 +36162,7 @@ void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
         return;
+    TableRepaintGuard repaintGuard(m_releasesTable);
     m_releasesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
@@ -36172,8 +36303,18 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
-        if (m_mirrorNodesTable->isVisible())
-            m_mirrorNodesTable->viewport()->update();
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Only the Synced column animates, so repaint just its cells rather than
+        // the whole viewport. A full viewport()->update() re-ran the row's
+        // HoverRowDelegate for every other column each second, painting cells
+        // nothing had changed and stalling the GUI thread on big node lists
+        // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
+        for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+            if (m_mirrorNodesTable->item(r, 2))
+                m_mirrorNodesTable->update(
+                    m_mirrorNodesTable->model()->index(r, 2));
+        }
     });
     pacmanTick->start();
     // Double-click a node row to open its profile.
@@ -36197,6 +36338,7 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
+    TableRepaintGuard repaintGuard(m_mirrorNodesTable);
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
 
@@ -37865,6 +38007,7 @@ void MainWindow::refreshIssueList()
     // Block signals during the full rebuild so that setRowCount(0),
     // insertRow, and setSortingEnabled(true) never fire itemSelectionChanged
     // and accidentally navigate to a different issue (issue #188).
+    TableRepaintGuard repaintGuard(m_issueTable);
     m_issueTable->blockSignals(true);
     m_issueTable->setSortingEnabled(false);
     m_issueTable->setRowCount(0);
@@ -38157,6 +38300,7 @@ void MainWindow::refreshIssueMilestones()
             ++c.open;
     }
 
+    TableRepaintGuard repaintGuard(m_issueMilestonesTable);
     m_issueMilestonesTable->setSortingEnabled(false);
     m_issueMilestonesTable->setRowCount(0);
     for (const QString &title : std::as_const(order)) {
@@ -38266,6 +38410,7 @@ void MainWindow::refreshIssueLabels()
     }
 
     const bool writable = issueStoreForCurrentRepo().canWrite();
+    TableRepaintGuard repaintGuard(m_issueLabelsTable);
     m_issueLabelsTable->setSortingEnabled(false);
     m_issueLabelsTable->setRowCount(0);
     for (const QString &name : std::as_const(order)) {
@@ -48676,6 +48821,7 @@ void MainWindow::refreshNotificationsTable()
     if (!m_notificationsTable)
         return;
     // Disable sorting while repopulating so rows aren't reordered mid-insert.
+    TableRepaintGuard repaintGuard(m_notificationsTable);
     m_notificationsTable->setSortingEnabled(false);
     m_notificationsTable->setRowCount(0);
 
@@ -48775,6 +48921,7 @@ void MainWindow::refreshActionsTable()
     }
 
     QSignalBlocker block(m_actionsTable);
+    TableRepaintGuard repaintGuard(m_actionsTable);
     m_actionsTable->setRowCount(0);
     for (const ActionRun &run : m_actionRuns) {
         if (run.owner != owner || run.name != name)
@@ -49892,15 +50039,65 @@ void MainWindow::rerunSelectedRun()
     processActionQueue();
 }
 
+void MainWindow::clearActionRuns()
+{
+    if (!m_actionStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString name = m_repositories.at(m_repoDetailIndex).name;
+
+    // Collect exactly the runs the list is showing (this repo, optionally
+    // narrowed to the selected workflow), skipping any still queued or running
+    // so we never delete a run out from under the runner.
+    QList<ActionRun> doomed;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (run.owner != owner || run.name != name)
+            continue;
+        if (!m_selectedWorkflowFilter.isEmpty() &&
+            run.workflowPath != m_selectedWorkflowFilter)
+            continue;
+        if (run.status == ActionStatus::Running ||
+            run.status == ActionStatus::Queued)
+            continue;
+        doomed.append(run);
+    }
+    if (doomed.isEmpty()) {
+        flashMessage(QStringLiteral("No finished runs to clear."));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("Clear runs"),
+            QStringLiteral("Delete %1 run%2 from this list, including their "
+                           "logs? This can't be undone.")
+                .arg(doomed.size())
+                .arg(doomed.size() == 1 ? QString() : QStringLiteral("s")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    for (const ActionRun &run : std::as_const(doomed))
+        m_actionStore->deleteRun(run);
+
+    m_actionRuns = m_actionStore->loadAllRuns();
+    if (!findRun(m_selectedRunId)) {
+        m_selectedRunId = -1;
+        showRun(-1);
+    }
+    refreshActionsTable();
+    updateNotificationButton();
+}
+
 QWidget *MainWindow::buildRepoActionsTab()
 {
     auto *page = new QWidget;
 
     // Far left: the actions available in this repo (.forkmesh/ workflows).
     auto *wfPane = new QWidget;
-    // Give the workflow-name column ~50% more room to open than before.
-    wfPane->setMinimumWidth(270);
-    wfPane->setMaximumWidth(390);
+    // Give the workflow-name column a bit more room to open than before.
+    wfPane->setMinimumWidth(320);
+    wfPane->setMaximumWidth(440);
     auto *wfHeading = new QLabel("Workflows");
     wfHeading->setObjectName("sectionLabel");
     auto *wfHint = new QLabel(
@@ -49953,6 +50150,21 @@ QWidget *MainWindow::buildRepoActionsTab()
     listPane->setMinimumWidth(375);
     auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
+    // Clear button on the Runs header row: wipes the run history shown below
+    // (meta + logs on disk), keeping any run that's still in flight.
+    auto *clearRunsButton = new QPushButton("Clear");
+    clearRunsButton->setObjectName("ghostButton");
+    clearRunsButton->setProperty("buttonSize", "sm");
+    clearRunsButton->setCursor(Qt::PointingHandCursor);
+    clearRunsButton->setToolTip("Delete the runs listed here, including their logs");
+    setOcticon(clearRunsButton, "trash", 16);
+    connect(clearRunsButton, &QPushButton::clicked, this,
+            &MainWindow::clearActionRuns);
+    auto *runsHeaderRow = new QHBoxLayout;
+    runsHeaderRow->setContentsMargins(0, 0, 0, 0);
+    runsHeaderRow->addWidget(heading);
+    runsHeaderRow->addStretch();
+    runsHeaderRow->addWidget(clearRunsButton);
     auto *subtitle = new QLabel(
         "Changed workflows wait for your approval before they run.");
     subtitle->setObjectName("statusLine");
@@ -49983,7 +50195,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(12, 22, 12, 22);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(runsHeaderRow);
     listLayout->addWidget(subtitle);
     listLayout->addWidget(m_actionsTable, 1);
 
@@ -50148,6 +50360,7 @@ void MainWindow::reloadVariablesTable()
         return;
     const QMap<QString, QString> vars = ActionStore::variables();
     QSignalBlocker block(m_varsTable);
+    TableRepaintGuard repaintGuard(m_varsTable);
     m_varsTable->setRowCount(0);
     for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
         const int row = m_varsTable->rowCount();
