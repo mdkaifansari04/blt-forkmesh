@@ -2002,6 +2002,10 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
+    // Live activity strip atop the Mirror nodes tab: a dot per active node that
+    // flashes green when it serves a clone, orange when it serves browsing. Held
+    // as a QWidget* (concrete MirrorActivityStrip is private to MainWindow.cpp).
+    QWidget *m_mirrorActivityStrip = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
