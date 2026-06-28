@@ -23286,14 +23286,19 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     const int idx = issuesRepoIndex();
     if (idx < 0 || idx >= m_repositories.size())
         return 0;
+    const RepositoryRecord &repo = m_repositories.at(idx);
     IssueStore issueStore = issueStoreForCurrentRepo();
-    if (!issueStore.canWrite()) {
+    // A node that only mirrors this repo (no working tree) can still run an
+    // agent: it builds the change in a throwaway worktree off the mirror and
+    // opens a pull request to the owner. So require a local copy to work from —
+    // a working tree when we host it, or the network mirror — rather than write
+    // access to the issue store, which only the host has (adhoc #191).
+    if (repoAgentGitDir(repo).isEmpty()) {
         if (!quiet)
-            setIssueInlineNotice("Only the host can assign coding agents.", true);
+            setIssueInlineNotice(
+                "No local copy of this repository to run a coding agent on.", true);
         return 0;
     }
-
-    const RepositoryRecord &repo = m_repositories.at(idx);
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
@@ -23325,17 +23330,24 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
         session,
         QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue.number));
 
-    QString error;
-    if (!issueStore.assignAgent(issue.number, provider, session.id, session.createPr,
-                                AgentStatus::Queued, &error)) {
-        session.status = AgentStatus::Failed;
-        session.lastError = error.isEmpty() ? QStringLiteral("Could not write issue event.")
-                                            : error;
-        m_agentStore->saveSession(session);
-        if (!quiet)
-            setIssueInlineNotice(session.lastError, true);
-        reloadAgents();
-        return 0;
+    // Record the assignment as a signed issue event so it syncs to other nodes —
+    // but only when we can write the issue store. On a mirror we can't (and it
+    // wouldn't reach the owner anyway), so the run is tracked locally only and
+    // still lands as a pull request when it finishes (adhoc #191).
+    if (issueStore.canWrite()) {
+        QString error;
+        if (!issueStore.assignAgent(issue.number, provider, session.id,
+                                    session.createPr, AgentStatus::Queued, &error)) {
+            session.status = AgentStatus::Failed;
+            session.lastError = error.isEmpty()
+                                    ? QStringLiteral("Could not write issue event.")
+                                    : error;
+            m_agentStore->saveSession(session);
+            if (!quiet)
+                setIssueInlineNotice(session.lastError, true);
+            reloadAgents();
+            return 0;
+        }
     }
 
     const int sessionId = session.id;
@@ -23374,14 +23386,18 @@ void MainWindow::toggleIssueLooper()
         updateIssueLooperButton();
         return;
     }
-    if (!issueStoreForCurrentRepo().canWrite()) {
-        setIssueInlineNotice("Only the host can run the issue looper.", true);
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    // Run wherever we can drive agents on this repo — our own working tree when we
+    // host it, or a bare mirror of someone else's repo, which loops through the
+    // backlog and opens pull requests back to the owner (adhoc #191).
+    if (repoAgentGitDir(repo).isEmpty()) {
+        setIssueInlineNotice(
+            "No local copy of this repository to run the issue looper on.", true);
         updateIssueLooperButton();
         return;
     }
     m_looperActive = true;
     m_looperProvider = defaultAgentProvider();
-    const RepositoryRecord &repo = m_repositories.at(idx);
     m_looperRepoSlug = repo.owner + QLatin1Char('/') + repo.name;
     updateIssueLooperButton();
     setIssueInlineNotice(
@@ -23808,7 +23824,12 @@ void MainWindow::processAgentQueue()
             continue;
         }
         const RepositoryRecord repo = m_repositories.at(repoIndex);
-        if (repo.localPath.isEmpty()) {
+        // The git dir agents run against: our working-tree checkout when we host
+        // the repo, otherwise the bare network mirror so a node that only mirrors
+        // it can still run agents (adhoc #191). Worktrees, diffs and PR patches
+        // are all built off this; the agent never edits it in place.
+        const QString agentGitDir = repoAgentGitDir(repo);
+        if (agentGitDir.isEmpty()) {
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("No local checkout is configured.");
             m_agentStore->saveSession(*session);
@@ -23841,7 +23862,7 @@ void MainWindow::processAgentQueue()
         // detail screen (with a Raw-output toggle), not headlessly through a
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTranscript(*session, issue, repo.localPath, session->prompt);
+            startClaudeCodeTranscript(*session, issue, agentGitDir, session->prompt);
             continue;
         }
         const AgentSession snapshot = *session;
@@ -23863,7 +23884,7 @@ void MainWindow::processAgentQueue()
                     ? steer
                     : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
         }
-        acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
+        acquireAgentRunner()->start(snapshot, issue, agentGitDir, config);
     }
     reloadAgents();
 }
@@ -25336,7 +25357,7 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     if (const AgentSession *s = findAgentSession(sessionId)) {
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri >= 0)
-            repoPath = m_repositories.at(ri).localPath;
+            repoPath = repoAgentGitDir(m_repositories.at(ri)); // mirror or checkout
     }
     // Removing a worktree shells out to `git worktree remove`/`prune` and then
     // recursively deletes a full source checkout — slow enough to freeze the UI for
@@ -33334,7 +33355,10 @@ QWidget *MainWindow::buildBranchesTab()
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
-    split->setSizes({620, 200, 880});
+    // Open the branches list to ~half the page so the (stretching) Branch column
+    // shows full branch titles plus every status/agent column without clipping;
+    // the first divider lands at ~50% (adhoc #193).
+    split->setSizes({850, 200, 650});
     layout->addWidget(split, 1);
     return page;
 }
@@ -36290,6 +36314,26 @@ const RepositoryRecord &MainWindow::writableRecordFor(
             return r;
     }
     return repo;
+}
+
+QString MainWindow::repoAgentGitDir(const RepositoryRecord &repo) const
+{
+    // Prefer a working-tree checkout we can run plumbing against directly.
+    const RepositoryRecord &writable = writableRecordFor(repo);
+    if (!writable.localPath.trimmed().isEmpty() &&
+        QFileInfo::exists(writable.localPath + QStringLiteral("/.git")))
+        return writable.localPath;
+    // A preview is a throwaway browse cache, not a repo we mirror to contribute
+    // to — don't run agents against it (mirror it first, like repoCanProposePull).
+    if (repo.previewOnly)
+        return QString();
+    // Otherwise fall back to the bare network mirror: `git worktree add` and
+    // `git diff` both work straight off it, so a node that only mirrors a repo
+    // can still run agents and open pull requests to the owner (adhoc #191).
+    const QString mirror = repo.mirrorPath.trimmed();
+    if (!mirror.isEmpty() && QDir(mirror).exists())
+        return mirror;
+    return QString();
 }
 
 IssueStore MainWindow::issueStoreForCurrentRepo() const
@@ -48070,8 +48114,8 @@ void MainWindow::maybeRestoreIssueLooper()
     const RepositoryRecord &repo = m_repositories.at(idx);
     if (slug != repo.owner + QLatin1Char('/') + repo.name)
         return;
-    if (!issueStoreForCurrentRepo().canWrite())
-        return; // only the host runs the looper
+    if (repoAgentGitDir(repo).isEmpty())
+        return; // need a working tree or mirror to run agents (adhoc #191)
     m_looperActive = true;
     m_looperProvider = settings.value(kLooperProviderSetting).toString();
     if (m_looperProvider.isEmpty())
