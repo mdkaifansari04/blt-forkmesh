@@ -139,6 +139,11 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
+    // the owner has switched off individually. Disabled workflows are skipped on
+    // push and can't be triggered manually, but stay listed so past runs remain
+    // visible and the switch can be flipped back on.
+    QStringList disabledWorkflows;
     // Temporary, browse-only cache for a repo hosted by another node. Preview
     // repos are not saved, advertised, published, hosted, or wired for actions.
     bool previewOnly = false;
@@ -510,6 +515,10 @@ private:
     void startDiagnostics();
     void updateFooterDiagnostics();
     void onUiStall(qint64 peakMs, const QString &backtrace);
+    // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
+    // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
+    // De-duped by backtrace so one recurring freeze files a single task.
+    void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
@@ -796,7 +805,11 @@ private:
     // agentSessionLandedInBase() answers the question for one session.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    bool agentSessionLandedInBase(const AgentSession &session) const;
+    // dir = the repo's git dir, base = its default branch — resolved once by the
+    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
+    // (etc.) per session.
+    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
+                                  const QString &base) const;
     void assignIssueToAgent(const QString &provider);
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -1152,6 +1165,11 @@ private:
     void updateRepoSource();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
+    // Switch a single workflow (by path) on or off for the open repo, persist it,
+    // and refresh the manual-run bar so a disabled workflow can't be run by hand.
+    void setWorkflowDisabled(const QString &path, bool disabled);
+    // Whether `path` is switched off for the open repo.
+    bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
@@ -1172,12 +1190,14 @@ private:
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
     // --- Browser-style back / forward navigation, sat just left of the search box.
-    // A history of "places" (section + open repo) is recorded as you move around;
-    // Back and Forward walk it without recording new entries.
+    // A history of "places" (section + open repo + repo tab) is recorded as you
+    // move around; Back and Forward walk it without recording new entries.
     QWidget *createNavHistoryButtons();        // build the Back / Forward pair
     void scheduleNavRecord();                  // queue a debounced location capture
     void recordNavLocation();                  // snapshot the current place onto the trail
     void restoreNavEntry(int index);           // navigate to a recorded place
+    struct NavPlace;
+    void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
     void navigateBack();
     void navigateForward();
     void updateNavHistoryButtons();            // enable/disable per trail position
@@ -1940,6 +1960,9 @@ private:
     int m_stallCount = 0;
     QStringList m_stallLog;          // recent stalls, each with its backtrace
     QString m_stallLogPath;          // durable on-disk stall log
+    // Stall signatures already handed to an agent this session, so a recurring
+    // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
+    QSet<QString> m_autoFiledStallSignatures;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -2092,14 +2115,18 @@ private:
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
     // Back / forward navigation trail (left of the search box). Each entry is a
-    // place we landed on: the top-level section index, plus the repo open in the
-    // detail panel (-1 = none) so returning to Code restores the right repo.
+    // place we landed on: the top-level section index, the repo open in the
+    // detail panel (-1 = none), and which repo tab (Code / Commits / Issues /
+    // Pulls / …) was showing, so a click onto any of them is its own step that
+    // Back / Forward can return to. detailTab is -1 outside the Code section.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
+        int detailTab = -1;
         bool operator==(const NavPlace &o) const
         {
-            return section == o.section && repoIndex == o.repoIndex;
+            return section == o.section && repoIndex == o.repoIndex &&
+                   detailTab == o.detailTab;
         }
     };
     QPushButton *m_navBackButton = nullptr;
@@ -2553,6 +2580,10 @@ private:
     // search-as-you-type refresh reuses them instead of re-shelling git per row.
     // Rebuilt from scratch on each reloadAgents() (the data-changed entry point).
     QHash<int, AgentDiffStat> m_agentDiffStats;
+    // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
+    // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
+    // and corrupt the half-built table unless we skip the nested rebuild.
+    bool m_agentTableRefreshing = false;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
@@ -2712,6 +2743,7 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
+    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
