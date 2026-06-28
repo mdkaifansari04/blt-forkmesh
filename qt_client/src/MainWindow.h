@@ -318,6 +318,10 @@ public:
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
+    // Whether the "Issue / Agent" cell (column 4) for `branch` carries an icon, so
+    // a test can prove the branches list stamps the agent's status icon on a branch
+    // an agent is working (adhoc #251).
+    bool testBranchAttachmentHasIcon(const QString &branch) const;
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
@@ -1352,6 +1356,9 @@ private:
     void updateAgentsTabIndicator();
     // Lazily build the spinner overlay and place it just above the Agents tab.
     void ensureAgentSpinnerOverlay();
+    // Paint the floating strip with an opaque, theme-matched surface so the
+    // running-agent spinners read clearly instead of washing out through it.
+    void styleAgentSpinnerOverlay();
     void positionAgentSpinnerOverlay();
     void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.

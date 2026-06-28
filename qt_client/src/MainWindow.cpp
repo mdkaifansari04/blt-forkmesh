@@ -202,8 +202,10 @@ constexpr int kCommitActionCol = 7;
 constexpr int kCommitGraphCol = 8;
 // Per-row graph data read by CommitGraphDelegate. Kept above kTableSortRole's
 // neighbours (UserRole+10) to avoid clashing with the sort key.
-constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
+constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> lanes at the row's top edge
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
+constexpr int kGraphBottomLanesRole =
+    Qt::UserRole + 22; // QVariantList<int> lanes at the row's bottom edge
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -235,7 +237,10 @@ const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
 constexpr int kGraphMargin = 9;
-constexpr int kGraphDotRadius = 4;
+// Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
+// matching the VS Code git-graph look.
+constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
+constexpr qreal kGraphNodeInner = 1.8; // centre-dot radius
 
 // Stable per-lane colour so a branch keeps its hue down the whole graph.
 inline QColor commitGraphLaneColor(int lane)
@@ -248,10 +253,20 @@ inline QColor commitGraphLaneColor(int lane)
     return palette[((lane % n) + n) % n];
 }
 
-// Paints the git-graph gutter: a vertical line for every lane passing through
-// the row plus a filled dot in this commit's lane. Topology is meaningful only
-// while the list is in git-log order (the default Date-descending sort), which
-// is why that ordering is pinned when the list loads.
+// Defined below: outlines a selected row in green instead of filling it solid.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index);
+
+// Paints the git-graph gutter the way the VS Code git-graph view does: lanes
+// that pass straight through a row are drawn as vertical lines, while a lane
+// that merges into the commit (or branches out of it) is a smooth bezier curve
+// into/out of the node. The node itself is a bullseye (a hollow ring with a
+// filled centre). Each row carries the lanes present at its top and bottom
+// edges; comparing the two boundaries tells us which lanes pass through, merge
+// in, or branch out. Topology is meaningful only while the list is in git-log
+// order (the default Date-descending sort), which is why that ordering is
+// pinned when the list loads.
 class CommitGraphDelegate : public QStyledItemDelegate
 {
 public:
@@ -260,29 +275,93 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        // Draw the selection/background but no text (the item has none).
-        QStyledItemDelegate::paint(painter, option, index);
-        const QVariantList lanes = index.data(kGraphLanesRole).toList();
+        // Strip the selection flag so the solid green band isn't filled, then
+        // draw the row's green outline (issue #252). The item has no text.
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
+        const QVariantList topLanes = index.data(kGraphLanesRole).toList();
+        const QVariantList botLanes = index.data(kGraphBottomLanesRole).toList();
         const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
-        if (lanes.isEmpty() && nodeLane < 0)
+        if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
             return;
         const QRect r = option.rect;
-        auto laneX = [&](int lane) {
+        const qreal yTop = r.top();
+        const qreal yBot = r.top() + r.height(); // meets the next row's top edge
+        const qreal yMid = r.center().y() + 0.5;
+        auto laneX = [&](int lane) -> qreal {
             return r.left() + kGraphMargin + lane * kGraphLaneWidth;
         };
+        // Which lane columns are occupied at each edge of the row.
+        QSet<int> topSet;
+        QSet<int> botSet;
+        int maxLane = nodeLane;
+        for (const QVariant &v : topLanes) {
+            const int l = v.toInt();
+            topSet.insert(l);
+            maxLane = std::max(maxLane, l);
+        }
+        for (const QVariant &v : botLanes) {
+            const int l = v.toInt();
+            botSet.insert(l);
+            maxLane = std::max(maxLane, l);
+        }
+
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        for (const QVariant &v : lanes) {
-            const int lane = v.toInt();
-            painter->setPen(QPen(commitGraphLaneColor(lane), 2));
-            painter->drawLine(laneX(lane), r.top(), laneX(lane), r.bottom());
+
+        // A smooth connector between two points that leaves and arrives
+        // vertically — a straight line when the columns match, otherwise an
+        // S-curve that bends across the middle (the git-graph house style).
+        auto connect = [&](qreal x0, qreal y0, qreal x1, qreal y1,
+                           const QColor &c) {
+            painter->setPen(QPen(c, 2));
+            if (qFuzzyCompare(x0, x1)) {
+                painter->setBrush(Qt::NoBrush);
+                painter->drawLine(QPointF(x0, y0), QPointF(x1, y1));
+                return;
+            }
+            QPainterPath path(QPointF(x0, y0));
+            const qreal cy = (y0 + y1) / 2.0;
+            path.cubicTo(QPointF(x0, cy), QPointF(x1, cy), QPointF(x1, y1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(path);
+        };
+
+        // Every lane other than the node's: straight through if present at both
+        // edges, a merge curve if it only enters from the top, a branch curve if
+        // it only leaves at the bottom.
+        for (int lane = 0; lane <= maxLane; ++lane) {
+            if (lane == nodeLane)
+                continue;
+            const bool inTop = topSet.contains(lane);
+            const bool inBot = botSet.contains(lane);
+            const QColor c = commitGraphLaneColor(lane);
+            if (inTop && inBot)
+                connect(laneX(lane), yTop, laneX(lane), yBot, c);
+            else if (inTop)
+                connect(laneX(lane), yTop, laneX(nodeLane), yMid, c);
+            else if (inBot)
+                connect(laneX(nodeLane), yMid, laneX(lane), yBot, c);
         }
+
         if (nodeLane >= 0) {
             const QColor c = commitGraphLaneColor(nodeLane);
-            painter->setPen(QPen(c, 2));
+            const qreal nx = laneX(nodeLane);
+            // The node's own lane: a straight stub above (it was reached from a
+            // child) and below (its first parent continues here).
+            if (topSet.contains(nodeLane))
+                connect(nx, yTop, nx, yMid, c);
+            if (botSet.contains(nodeLane))
+                connect(nx, yMid, nx, yBot, c);
+            // Bullseye node: hollow ring + filled centre, drawn over the lines.
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(c, 1.6));
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
+            painter->setPen(Qt::NoPen);
             painter->setBrush(c);
-            painter->drawEllipse(QPoint(laneX(nodeLane), r.center().y()),
-                                 kGraphDotRadius, kGraphDotRadius);
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
         }
         painter->restore();
     }
@@ -825,9 +904,16 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(option.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
+        // Mark the selected row with a green outline rather than a solid green
+        // band (issue #252, matching the agents list): strip the selection flag so
+        // neither the style nor the stylesheet fills the row, then draw the outline
+        // on top. enableHoverRowHighlight()'s blankSelectionBand() clears the band
+        // the view would otherwise still paint from selection-background-color.
+        opt.state &= ~QStyle::State_Selected;
         QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
     }
 
     // Item views shape (and, for elided columns, fully lay out) the ENTIRE
@@ -876,12 +962,33 @@ private:
     QPersistentModelIndex m_hovered;
 };
 
+// The delegates now outline a selected row in green rather than filling it solid,
+// but the view still paints a solid selection band from the app-wide stylesheet
+// (selection-background-color plus the ::item:selected background rule, keyed on
+// the view's object name). Blank both on this view, keyed on that same object name
+// so the per-widget rule overrides the app rule, leaving only the outline showing
+// (issue #252, mirroring the agents list).
+void blankSelectionBand(QAbstractItemView *view)
+{
+    const QString name = view->objectName();
+    if (name.isEmpty())
+        return; // no object-name rule to override
+    const QString sel = QStringLiteral("#") + name;
+    view->setStyleSheet(
+        view->styleSheet() + sel +
+        QStringLiteral(" { selection-background-color: transparent; }") + sel +
+        QStringLiteral("::item:selected { background: transparent; }"));
+}
+
 // Give a list-style view (table, list or tree) a full-row light-green hover
-// highlight that never shifts the row's contents.
+// highlight that never shifts the row's contents, plus the green selected-row
+// outline (issue #252) in place of the solid selection band.
 void enableHoverRowHighlight(QAbstractItemView *view)
 {
-    if (view)
-        view->setItemDelegate(new HoverRowDelegate(view));
+    if (!view)
+        return;
+    view->setItemDelegate(new HoverRowDelegate(view));
+    blankSelectionBand(view);
 }
 
 // Outlines the SELECTED row in green with a transparent fill, instead of the
@@ -925,10 +1032,9 @@ inline void paintRowSelectionBorder(QPainter *painter,
     painter->restore();
 }
 
-// HoverRowDelegate variant that renders the selected row as a transparent band
-// inside a green outline rather than a solid green fill. The selection flag is
-// stripped before the base paint so neither the stylesheet nor the style fills
-// the row; paintRowSelectionBorder() then draws the outline on top.
+// HoverRowDelegate variant that drops the light-green mouse-hover row tint while
+// keeping the base's green selected-row outline (issue #184: the agents list wants
+// no hover fill). The outline itself is drawn by HoverRowDelegate::paint.
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
@@ -936,15 +1042,6 @@ public:
         : HoverRowDelegate(view)
     {
         m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
-    }
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt(option);
-        opt.state &= ~QStyle::State_Selected;
-        HoverRowDelegate::paint(painter, opt, index);
-        paintRowSelectionBorder(painter, option, index);
     }
 };
 
@@ -1000,6 +1097,36 @@ void installMarginResize(QHeaderView *header)
             *busy = false;
         });
 }
+
+// RAII guard that suspends a widget's repaints for a bulk table rebuild, so
+// clearing the rows and inserting/populating them fires a single repaint when
+// the guard goes out of scope instead of one per row. Without it, inserting
+// rows one at a time (often with the event loop pumped between them, as the
+// commit/branch loaders do) makes the list visibly fill "one row after another"
+// and feel slow. Restores the previous state even on an early return, and
+// nesting is safe because it remembers and restores whatever it found.
+class TableRepaintGuard
+{
+public:
+    explicit TableRepaintGuard(QWidget *w) : m_w(w)
+    {
+        if (m_w) {
+            m_was = m_w->updatesEnabled();
+            m_w->setUpdatesEnabled(false);
+        }
+    }
+    ~TableRepaintGuard()
+    {
+        if (m_w)
+            m_w->setUpdatesEnabled(m_was);
+    }
+    TableRepaintGuard(const TableRepaintGuard &) = delete;
+    TableRepaintGuard &operator=(const TableRepaintGuard &) = delete;
+
+private:
+    QWidget *m_w = nullptr;
+    bool m_was = true;
+};
 
 // Lets the user drag-resize a table's columns while keeping their content-fitted
 // starting widths. Qt's ResizeToContents header mode auto-sizes a column but
@@ -4802,8 +4929,12 @@ void MainWindow::applyTheme()
     // Honour the user's override; otherwise follow the OS color scheme.
     qApp->setStyleSheet(Theme::styleSheetForDark(currentThemeIsDark()));
     for (QWidget *widget : QApplication::topLevelWidgets()) {
-        if (auto *window = qobject_cast<MainWindow *>(widget))
+        if (auto *window = qobject_cast<MainWindow *>(widget)) {
             window->refreshThemedIcons();
+            // The floating agent strip carries its own inline stylesheet (not the
+            // global sheet), so re-point it at the new theme's opaque surface.
+            window->styleAgentSpinnerOverlay();
+        }
     }
 }
 
@@ -5441,6 +5572,20 @@ QString MainWindow::testBranchAttachmentText(const QString &branch) const
         }
     }
     return QString();
+}
+
+bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
+                return !attach->icon().isNull();
+        }
+    }
+    return false;
 }
 
 QStringList MainWindow::testBranchRowOrder() const
@@ -12548,6 +12693,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *listPage = new QWidget;
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
+    enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->setHorizontalHeaderLabels(
         {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
@@ -13218,6 +13364,7 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
+    enableHoverRowHighlight(m_scmTree); // green outline selection (issue #252)
     m_scmTree->setColumnCount(2);
     m_scmTree->setHeaderHidden(true);
     m_scmTree->setMinimumWidth(240);
@@ -14645,6 +14792,7 @@ void MainWindow::refreshRepoSecurity()
         delete item;
     }
 
+    TableRepaintGuard repaintGuard(m_securityFindingsTable);
     m_securityFindingsTable->setSortingEnabled(false);
     m_securityFindingsTable->setRowCount(0);
 
@@ -15192,6 +15340,7 @@ void MainWindow::reloadDiscussions()
     const int keep = m_currentDiscussionNumber;
 
     QSignalBlocker block(m_discussionTable);
+    TableRepaintGuard repaintGuard(m_discussionTable);
     m_discussionTable->setSortingEnabled(false);
     m_discussionTable->setRowCount(0);
     for (const Discussion &discussion : std::as_const(m_currentDiscussions)) {
@@ -16117,6 +16266,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullFiles); // green outline selection (issue #252)
     m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -16199,6 +16349,7 @@ QWidget *MainWindow::buildPullsTab()
     // it in the repo's commit view.
     m_pullCommitsList = new QListWidget;
     m_pullCommitsList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullCommitsList); // green outline selection (issue #252)
     connect(m_pullCommitsList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 const QString sha = item ? item->data(Qt::UserRole).toString()
@@ -16703,6 +16854,7 @@ void MainWindow::refreshPullList()
         return;
     const QString search = m_pullSearch ? m_pullSearch->text().trimmed() : QString();
     const int keep = m_currentPullNumber;
+    TableRepaintGuard repaintGuard(m_pullTable);
     m_pullTable->setSortingEnabled(false);
     m_pullTable->setRowCount(0);
     for (const PullRequest &pr : std::as_const(m_currentPulls)) {
@@ -17701,6 +17853,7 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
 {
     if (!m_pullChecksTable)
         return;
+    TableRepaintGuard repaintGuard(m_pullChecksTable);
     m_pullChecksTable->setRowCount(0);
     if (m_pullRunChecksButton)
         m_pullRunChecksButton->setEnabled(pr.number > 0 && pr.status == "open");
@@ -18799,6 +18952,7 @@ bool MainWindow::runMergeConflictEditor(
 
     auto *fileList = new QListWidget;
     fileList->setObjectName("overviewList");
+    enableHoverRowHighlight(fileList); // green outline selection (issue #252)
     fileList->setMinimumWidth(220);
 
     auto *editor = new QPlainTextEdit;
@@ -20992,6 +21146,34 @@ QColor agentStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
+// Octicon mirroring an agent session's lifecycle status, in the same glyphs/colors
+// the Agents tab's Status cell uses (applyAgentStatusCell). Unlike that cell —
+// which leaves finished states icon-less because the status word sits beside it —
+// this always returns a glyph, so a column showing only the icon (the Branches
+// tab's "Issue / Agent" cell, adhoc #251) reflects the status at a glance: a green
+// spinner while running, a green check on success, a red x on failure, a red stop
+// when halted, an orange hand while waiting, an orange clock while queued, and a
+// purple merge mark once the branch lands.
+QIcon agentStatusOcticon(const AgentSession &s, int px = 13)
+{
+    if (s.merged)
+        return themedOcticon("git-merge", QColor("#a371f7"), px);
+    if (s.status == AgentStatus::Running)
+        return themedOcticon("sync", QColor("#3fb950"), px);
+    if (s.status == AgentStatus::Success)
+        return themedOcticon("check-circle", QColor("#3fb950"), px);
+    if (s.status == AgentStatus::Failed)
+        return themedOcticon("x", QColor("#f85149"), px);
+    if (s.status == AgentStatus::Stopped)
+        return themedOcticon("stop", QColor("#f85149"), px);
+    if (s.status == AgentStatus::Waiting)
+        return themedOcticon("hand", QColor("#e3742f"), px);
+    if (s.status == AgentStatus::Queued)
+        return themedOcticon("history", QColor("#d29922"), px);
+    // Cleared / unknown.
+    return themedOcticon("circle-slash", QColor("#8b949e"), px);
+}
+
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
 QString agentMergeBase(const AgentSession &s)
@@ -22942,6 +23124,7 @@ void MainWindow::refreshAgentTable()
     const QString query =
         m_agentSearch ? m_agentSearch->text().trimmed() : QString();
     QSignalBlocker block(m_agentTable);
+    TableRepaintGuard repaintGuard(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
     // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
@@ -26192,6 +26375,12 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
+    // Keep the Branches tab's per-branch agent-status icon (adhoc #251) current as
+    // the run progresses — but only while that tab is on screen, since rebuilding
+    // it probes git for every branch (ahead/behind + conflicts).
+    if (m_branchesTable && m_repoDetailStack &&
+        m_repoDetailStack->currentIndex() == m_branchesTabIndex)
+        loadBranchesPanel();
 }
 
 void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
@@ -28753,6 +28942,16 @@ void MainWindow::loadCommits()
         }
         while (!activeLanes.isEmpty() && activeLanes.last().isEmpty())
             activeLanes.removeLast(); // keep the gutter as narrow as the history
+        // Snapshot the lanes leaving the row (its bottom edge). The delegate
+        // compares this with the top edge to tell pass-through lanes from the
+        // merge/branch curves into and out of the node.
+        QVariantList botLaneCols;
+        for (int i = 0; i < activeLanes.size(); ++i) {
+            if (!activeLanes.at(i).isEmpty()) {
+                botLaneCols.append(i);
+                maxGraphLane = std::max(maxGraphLane, i);
+            }
+        }
 
         int files = 0;
         int adds = 0;
@@ -28778,6 +28977,7 @@ void MainWindow::loadCommits()
         graphItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         graphItem->setData(kGraphLanesRole, laneCols);
         graphItem->setData(kGraphNodeLaneRole, nodeLane);
+        graphItem->setData(kGraphBottomLanesRole, botLaneCols);
         m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
@@ -31616,6 +31816,7 @@ void MainWindow::loadRepoInsights()
     if (!m_insightsSummary)
         return;
 
+    TableRepaintGuard repaintGuard(m_insightsContributors);
     if (m_insightsContributors)
         m_insightsContributors->setRowCount(0);
     if (m_insightsLanguageBar)
@@ -32777,6 +32978,7 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeFilesSummary->setTextFormat(Qt::RichText);
     m_worktreeFileList = new QListWidget;
     m_worktreeFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_worktreeFileList); // green outline selection (issue #252)
     m_worktreeFileList->setMinimumWidth(170);
     connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -32972,6 +33174,7 @@ void MainWindow::loadWorktreesPanel()
     // "Update from main"/merge) lands back on it instead of going blank — clearing
     // the table fires currentCellChanged(-1) which wipes the diff + selection (#272).
     const QString keepPath = m_worktreeSelectedPath;
+    TableRepaintGuard repaintGuard(m_worktreesTable);
     m_worktreesTable->setRowCount(0);
     QString repoPath, repoOwner, repoName;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -34153,6 +34356,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchScopeLabel->setTextFormat(Qt::RichText);
     m_branchScopeList = new QListWidget;
     m_branchScopeList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchScopeList); // green outline selection (issue #252)
     m_branchScopeList->setMinimumWidth(180);
     connect(m_branchScopeList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { renderBranchScopeDiff(); });
@@ -34164,6 +34368,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFilesSummary->setTextFormat(Qt::RichText);
     m_branchFileList = new QListWidget;
     m_branchFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchFileList); // green outline selection (issue #252)
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -34345,6 +34550,7 @@ void MainWindow::loadBranchesPanel()
     // resets m_branchDiffBranch; we re-select this branch's row at the end so
     // the diff stays on screen (now reflecting any merge we just performed).
     const QString previouslyViewed = m_branchDiffBranch;
+    TableRepaintGuard repaintGuard(m_branchesTable);
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     QStringList branches = repoBranches();
@@ -34502,27 +34708,36 @@ void MainWindow::loadBranchesPanel()
         m_branchesTable->setItem(row, 3, worktree);
 
         // Issue / Agent this branch is attached to. When an agent session is
-        // working the branch, name its issue ("#N", title in the tooltip) or
-        // flag an ad-hoc run ("Agent", prompt in the tooltip) so the list shows
-        // what each branch is for (adhoc #191).
+        // working the branch, name its issue ("#N") or flag an ad-hoc run
+        // ("Agent") and stamp the session's status icon — a green spinner while
+        // running, a check on success, an x on failure, etc. — so the list shows
+        // both what each branch is for and how its agent is doing at a glance
+        // (adhoc #191, #251). The text says which it is; the tooltip leads with
+        // the status word and spells out the issue title / prompt.
         auto *attach = new QTableWidgetItem;
         if (const AgentSession *session = branchSessions.value(branch)) {
+            const QString statusWord =
+                session->merged ? QStringLiteral("merged")
+                                : agentStatusText(session->status);
+            QString detail;
             if (session->issueNumber > 0) {
                 attach->setText(QStringLiteral("#%1").arg(session->issueNumber));
-                attach->setIcon(themedOcticon("issue-opened", QColor("#3fb950"), 13));
-                attach->setToolTip(session->issueTitle.isEmpty()
-                                       ? QStringLiteral("Issue #%1")
-                                             .arg(session->issueNumber)
-                                       : QStringLiteral("Issue #%1: %2")
-                                             .arg(session->issueNumber)
-                                             .arg(session->issueTitle));
+                detail = session->issueTitle.isEmpty()
+                             ? QStringLiteral("Issue #%1").arg(session->issueNumber)
+                             : QStringLiteral("Issue #%1: %2")
+                                   .arg(session->issueNumber)
+                                   .arg(session->issueTitle);
             } else {
                 attach->setText(QStringLiteral("Agent"));
-                attach->setIcon(themedOcticon("terminal", QColor("#8b949e"), 13));
-                if (!session->prompt.isEmpty())
-                    attach->setToolTip(session->prompt);
+                detail = session->prompt;
             }
-            attach->setForeground(QColor("#8b949e"));
+            attach->setIcon(agentStatusOcticon(*session));
+            attach->setToolTip(detail.isEmpty()
+                                   ? statusWord
+                                   : QStringLiteral("%1 \xC2\xB7 %2")
+                                         .arg(statusWord, detail));
+            attach->setForeground(session->merged ? QColor("#a371f7")
+                                                  : agentStatusColor(session->status));
         }
         m_branchesTable->setItem(row, 4, attach);
 
@@ -36032,6 +36247,7 @@ void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
         return;
+    TableRepaintGuard repaintGuard(m_releasesTable);
     m_releasesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
@@ -36207,6 +36423,7 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
+    TableRepaintGuard repaintGuard(m_mirrorNodesTable);
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
 
@@ -37875,6 +38092,7 @@ void MainWindow::refreshIssueList()
     // Block signals during the full rebuild so that setRowCount(0),
     // insertRow, and setSortingEnabled(true) never fire itemSelectionChanged
     // and accidentally navigate to a different issue (issue #188).
+    TableRepaintGuard repaintGuard(m_issueTable);
     m_issueTable->blockSignals(true);
     m_issueTable->setSortingEnabled(false);
     m_issueTable->setRowCount(0);
@@ -38167,6 +38385,7 @@ void MainWindow::refreshIssueMilestones()
             ++c.open;
     }
 
+    TableRepaintGuard repaintGuard(m_issueMilestonesTable);
     m_issueMilestonesTable->setSortingEnabled(false);
     m_issueMilestonesTable->setRowCount(0);
     for (const QString &title : std::as_const(order)) {
@@ -38276,6 +38495,7 @@ void MainWindow::refreshIssueLabels()
     }
 
     const bool writable = issueStoreForCurrentRepo().canWrite();
+    TableRepaintGuard repaintGuard(m_issueLabelsTable);
     m_issueLabelsTable->setSortingEnabled(false);
     m_issueLabelsTable->setRowCount(0);
     for (const QString &name : std::as_const(order)) {
@@ -48686,6 +48906,7 @@ void MainWindow::refreshNotificationsTable()
     if (!m_notificationsTable)
         return;
     // Disable sorting while repopulating so rows aren't reordered mid-insert.
+    TableRepaintGuard repaintGuard(m_notificationsTable);
     m_notificationsTable->setSortingEnabled(false);
     m_notificationsTable->setRowCount(0);
 
@@ -48785,6 +49006,7 @@ void MainWindow::refreshActionsTable()
     }
 
     QSignalBlocker block(m_actionsTable);
+    TableRepaintGuard repaintGuard(m_actionsTable);
     m_actionsTable->setRowCount(0);
     for (const ActionRun &run : m_actionRuns) {
         if (run.owner != owner || run.name != name)
@@ -49162,8 +49384,7 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay = new QWidget(page);
     m_agentSpinnerOverlay->setObjectName("agentSpinnerOverlay");
     m_agentSpinnerOverlay->setAttribute(Qt::WA_StyledBackground, true);
-    m_agentSpinnerOverlay->setStyleSheet(
-        "#agentSpinnerOverlay{background:rgba(130,130,150,0.16);border-radius:13px;}");
+    styleAgentSpinnerOverlay();
     auto *outer = new QHBoxLayout(m_agentSpinnerOverlay);
     outer->setContentsMargins(5, 3, 5, 3);
     outer->setSpacing(0);
@@ -49184,6 +49405,22 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay->hide();
 }
 
+void MainWindow::styleAgentSpinnerOverlay()
+{
+    if (!m_agentSpinnerOverlay)
+        return;
+    // The strip floats over the meta band above the Agents tab. A near-transparent
+    // wash let the page (and the spinners themselves) bleed through and read as
+    // washed-out; back it with the opaque surface/border for the active theme so
+    // the running-agent spinners stand out clearly.
+    const bool dark = currentThemeIsDark();
+    m_agentSpinnerOverlay->setStyleSheet(
+        QStringLiteral("#agentSpinnerOverlay{background:%1;border:1px solid %2;"
+                       "border-radius:13px;}")
+            .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+                 dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de")));
+}
+
 void MainWindow::positionAgentSpinnerOverlay()
 {
     if (!m_agentSpinnerOverlay || !m_repoAgentsTab || !m_agentSpinnerRow)
@@ -49195,8 +49432,9 @@ void MainWindow::positionAgentSpinnerOverlay()
     const int visible = qMin(total, 5);
     const int spinnerW = 20, gap = 5;
     const int innerW = visible * spinnerW + (visible > 1 ? (visible - 1) * gap : 0);
-    const int w = innerW + 12;
-    const int h = 26 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
+    const int w = innerW + 14; // inner + h-margins + 1px border each side
+    // 28 keeps the 20px spinners clear of the margins and the 1px border.
+    const int h = 28 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
     const QPoint tl = m_repoAgentsTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1;
@@ -50223,6 +50461,7 @@ void MainWindow::reloadVariablesTable()
         return;
     const QMap<QString, QString> vars = ActionStore::variables();
     QSignalBlocker block(m_varsTable);
+    TableRepaintGuard repaintGuard(m_varsTable);
     m_varsTable->setRowCount(0);
     for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
         const int row = m_varsTable->rowCount();
