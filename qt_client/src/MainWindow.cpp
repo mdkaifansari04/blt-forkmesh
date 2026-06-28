@@ -77,6 +77,8 @@
 #include <QSslError>
 #include <QImage>
 #include <QKeyEvent>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QConicalGradient>
 #include <QLinearGradient>
 #include <QPainter>
@@ -602,6 +604,179 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+};
+
+// A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
+// active node mirroring this repo. A dot flashes green when its node serves a
+// clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
+// idle dots sit at a steady online green. Only this node generates live serve
+// events, so its own dot is the one that blinks in practice, but the strip is
+// keyed by node id so any node's activity can be surfaced as the mesh grows.
+class MirrorActivityStrip : public QWidget
+{
+public:
+    struct Dot
+    {
+        QString id;
+        QString name;
+        bool online = false;
+        bool self = false;
+    };
+
+    explicit MirrorActivityStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFixedHeight(18);
+        // Drives the fade while any dot is mid-blink; idle when nothing pulses.
+        m_anim = new QTimer(this);
+        m_anim->setInterval(40);
+        connect(m_anim, &QTimer::timeout, this, [this] {
+            if (!stepPulses())
+                m_anim->stop();
+            update();
+        });
+    }
+
+    void setNodes(const QVector<Dot> &dots)
+    {
+        m_dots = dots;
+        // Drop pulses for nodes no longer present; keep the rest so a roster
+        // refresh doesn't reset a blink already in flight.
+        QSet<QString> ids;
+        for (const Dot &d : dots)
+            ids.insert(d.id);
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            if (ids.contains(it.key()))
+                ++it;
+            else
+                it = m_pulse.erase(it);
+        }
+        update();
+    }
+
+    // Flash the dot for `nodeId`: green for a served clone, orange for browsing.
+    void pulse(const QString &nodeId, bool clone)
+    {
+        bool known = false;
+        for (const Dot &d : m_dots)
+            if (d.id == nodeId) {
+                known = true;
+                break;
+            }
+        if (!known)
+            return;
+        m_pulse.insert(nodeId, Pulse{1.0, clone});
+        if (!m_anim->isActive())
+            m_anim->start();
+        update();
+    }
+
+protected:
+    QSize sizeHint() const override { return QSize(160, 18); }
+
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(e);
+            if (const Dot *d = dotAt(he->pos())) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("%1%2 \xC2\xB7 %3")
+                        .arg(d->name,
+                             d->self ? QStringLiteral(" (you)") : QString(),
+                             d->online ? QStringLiteral("online")
+                                       : QStringLiteral("offline")),
+                    this);
+            } else {
+                QToolTip::hideText();
+            }
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const QColor base =
+                d.online ? QColor("#3fb950") : QColor("#484f58");
+            QColor col = base;
+            const Pulse ph = m_pulse.value(d.id, Pulse{});
+            if (ph.level > 0.0) {
+                const QColor flash =
+                    ph.clone ? QColor("#3fb950") : QColor("#d29922");
+                col = blend(base, flash, ph.level);
+                QColor halo = flash;
+                halo.setAlphaF(0.40 * ph.level);
+                p.setPen(Qt::NoPen);
+                p.setBrush(halo);
+                const qreal hr = kRadius + 4.0 * ph.level;
+                p.drawEllipse(QPointF(x, cy), hr, hr);
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
+            p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            x += kSpacing;
+            if (x > width() - kRadius)
+                break; // ran out of room; the table still lists every node
+        }
+    }
+
+private:
+    struct Pulse
+    {
+        double level = 0.0; // remaining brightness, fades 1 -> 0
+        bool clone = false; // green (clone) vs orange (browse)
+    };
+
+    static constexpr qreal kRadius = 5.0;
+    static constexpr qreal kSpacing = 15.0;
+
+    const Dot *dotAt(const QPoint &pos) const
+    {
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const qreal dx = pos.x() - x;
+            const qreal dy = pos.y() - cy;
+            if (dx * dx + dy * dy <= (kRadius + 3.0) * (kRadius + 3.0))
+                return &d;
+            x += kSpacing;
+        }
+        return nullptr;
+    }
+
+    // Advance every pulse one frame; true while any remain active.
+    bool stepPulses()
+    {
+        bool any = false;
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            it.value().level -= 0.06; // ~0.7s flash
+            if (it.value().level <= 0.0) {
+                it = m_pulse.erase(it);
+            } else {
+                any = true;
+                ++it;
+            }
+        }
+        return any;
+    }
+
+    static QColor blend(const QColor &a, const QColor &b, double t)
+    {
+        t = qBound(0.0, t, 1.0);
+        return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                                a.greenF() + (b.greenF() - a.greenF()) * t,
+                                a.blueF() + (b.blueF() - a.blueF()) * t);
+    }
+
+    QVector<Dot> m_dots;
+    QHash<QString, Pulse> m_pulse; // nodeId -> in-flight flash
+    QTimer *m_anim = nullptr;
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -34965,6 +35140,22 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
+    // Live activity row: a dot for every active node, flashing green when it
+    // serves a clone and orange when it serves codebase browsing/fetches.
+    auto *activityRow = new QHBoxLayout;
+    activityRow->setContentsMargins(0, 0, 0, 0);
+    activityRow->setSpacing(8);
+    auto *activityCaption = new QLabel(QString::fromUtf8("Live \xE2\x80\xBA"));
+    activityCaption->setObjectName("statusLine");
+    auto *strip = new MirrorActivityStrip;
+    strip->setToolTip(QStringLiteral(
+        "Active nodes mirroring this repo. A dot flashes green when its node "
+        "serves a clone, orange when it serves codebase browsing."));
+    m_mirrorActivityStrip = strip;
+    activityRow->addWidget(activityCaption);
+    activityRow->addWidget(strip, 1);
+    layout->addLayout(activityRow);
+
     m_mirrorNodesTable = new QTableWidget(0, 7);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
@@ -35026,6 +35217,8 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
+        if (m_mirrorActivityStrip)
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -35118,6 +35311,8 @@ void MainWindow::loadMirrorNodesPanel()
     // Names already shown from the live chat roster, so the catalog-backed merge
     // below (issue #223) doesn't list a node twice when it's also present in chat.
     QSet<QString> shownNames;
+    // One activity dot per active node, fed to the live strip atop the panel.
+    QVector<MirrorActivityStrip::Dot> activityDots;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -35135,6 +35330,8 @@ void MainWindow::loadMirrorNodesPanel()
 
         // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
+        if (online)
+            activityDots.append({node.id, node.name, true, node.self});
         auto *nameItem = new SortTableWidgetItem(
             node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
@@ -35265,6 +35462,9 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
             const bool online =
                 m.value("status").toString() == QLatin1String("online");
+            if (online)
+                activityDots.append(
+                    {m.value("id").toString(), nodeName, true, false});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             auto *nameItem = new SortTableWidgetItem(
@@ -35323,6 +35523,10 @@ void MainWindow::loadMirrorNodesPanel()
     }
 
     m_mirrorNodesTable->setSortingEnabled(true);
+
+    if (m_mirrorActivityStrip)
+        static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+            ->setNodes(activityDots);
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
@@ -45262,6 +45466,12 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         if (repo.owner == owner && repo.name == name)
             updateRepoDetailStatus();
+        // Flash our own dot on the Mirror nodes activity strip: green when we
+        // just served a clone, orange when we served codebase browsing/fetches.
+        if (m_mirrorActivityStrip && catalogOwner(repo) == owner &&
+            repo.name == name)
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+                ->pulse(m_profileIdentity.publicKey(), clone);
     }
     // Hosting stats now live in the node profile; keep them current while it is open.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
