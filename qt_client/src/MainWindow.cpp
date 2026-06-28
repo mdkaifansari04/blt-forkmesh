@@ -36148,7 +36148,10 @@ void MainWindow::pullBaseIntoAllBranches()
     if (!skipped.isEmpty())
         summary += QStringLiteral(" Skipped the checked-out branch %1.")
                        .arg(skipped.join(QStringLiteral(", ")));
-    setRepoDetailNotice(summary, !conflicts.isEmpty());
+    // Conflicts are an expected outcome here — branches that diverged from the
+    // base need an agent to reconcile them — so report the summary as an ordinary
+    // notice rather than a persistent red error toast.
+    setRepoDetailNotice(summary);
 }
 
 void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
