@@ -1844,10 +1844,12 @@ QString completenessPrompt()
         "issue is complete when it clearly states the problem or goal, gives "
         "enough detail for someone to start work, and implies how to tell it is "
         "done. Use the project's README for context. For EACH open issue, rate it "
-        "Complete, Partial or Incomplete and give one short sentence on what is "
-        "missing (or why it is ready). Respond in GitHub-flavoured markdown as a "
-        "list, one issue per line, e.g. \"- #12 **Partial** \xE2\x80\x94 no "
-        "acceptance criteria.\" Do not add any other commentary.");
+        "Complete, Partial or Incomplete, estimate a completeness percentage from "
+        "0 to 100, and give one short sentence on what is missing (or why it is "
+        "ready). Respond with ONLY a JSON array, one object per issue, exactly "
+        "like: [{\"number\":12,\"rating\":\"Partial\",\"completeness\":40,"
+        "\"reason\":\"no acceptance criteria\"}]. Do not add code fences or any "
+        "other commentary.");
 }
 
 QString codexCommandSetting()
@@ -11103,7 +11105,8 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueCompletenessButton->setCursor(Qt::PointingHandCursor);
     m_issueCompletenessButton->setToolTip(
         "Ask the picked agent to rate how complete each open issue is (clear "
-        "problem, enough detail, acceptance criteria) and show a report.");
+        "problem, enough detail, acceptance criteria), then label each issue "
+        "Complete/Partial/Incomplete and set its progress from the verdict.");
     setOcticon(m_issueCompletenessButton, "list-unordered", 16);
     connect(m_issueCompletenessButton, &QPushButton::clicked, this,
             &MainWindow::analyzeIssueCompleteness);
@@ -11155,13 +11158,13 @@ QWidget *MainWindow::buildIssuesSection()
     actionRow->addWidget(m_issueCreditsLabel);
     actionRow->addWidget(m_issueDetailToggle);
 
-    m_issueTable = new QTableWidget(0, 16);
+    m_issueTable = new QTableWidget(0, 17);
     m_issueTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
          "Created", "Updated", "Agent", "Author", "Progress", "Est. cost",
-         "Bounty", "Comments", "Files"});
+         "Bounty", "Comments", "Files", "Assignee"});
     m_issueTable->verticalHeader()->setVisible(false);
     m_issueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_issueTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -11196,6 +11199,7 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Bounty
     header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
     header->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Files
+    header->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Assignee
     makeColumnsResizable(m_issueTable);
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
     m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
@@ -23114,7 +23118,12 @@ void MainWindow::reloadAgents()
     seedSessionTokens(); // keep the live token counter from regressing on reload
     injectExternalSessions(); // append any surfaced external (watch-only) sessions
     refreshAgentMergeState();  // issue #291: note sessions landed in the base branch
-    m_agentDiffStats.clear();  // issue #170: recompute Diff cells against fresh data
+    // issue #170: recompute Diff cells against fresh data. But don't invalidate the
+    // cache when a refresh is already in flight — refreshAgentTable's keep-alive pump
+    // can re-enter here, and clearing mid-render would force the in-flight pass cold
+    // again and bring back the blink. The active refresh already covers current data.
+    if (!m_agentTableRefreshing)
+        m_agentDiffStats.clear();
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -23163,14 +23172,43 @@ void MainWindow::refreshAgentTable()
     // session's issue number/title, agent, status and PR number.
     const QString query =
         m_agentSearch ? m_agentSearch->text().trimmed() : QString();
-    QSignalBlocker block(m_agentTable);
-    TableRepaintGuard repaintGuard(m_agentTable);
-    m_agentTable->setSortingEnabled(false);
-    m_agentTable->setRowCount(0);
     // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
     // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
     // this iterator valid even if the member vector is replaced underneath us.
     const QList<AgentSession> sessions = m_agentSessions;
+    // Which rows this repo + search filter will show. Shared by the cache warm-up
+    // and the render loop so the two stay in lock-step.
+    auto passesFilter = [&](const AgentSession &session) {
+        if (session.owner != owner || session.name != name)
+            return false;
+        if (query.isEmpty())
+            return true;
+        QStringList haystack{session.issueTitle,
+                             agentProviderName(session.provider),
+                             agentStatusText(session.status)};
+        if (session.issueNumber > 0)
+            haystack << QStringLiteral("#%1").arg(session.issueNumber);
+        if (session.prNumber > 0)
+            haystack << QStringLiteral("#%1").arg(session.prNumber);
+        return haystack.join(QLatin1Char(' '))
+            .contains(query, Qt::CaseInsensitive);
+    };
+
+    // Anti-blink: warm each visible row's Diff stat *before* the table is cleared.
+    // agentDiffStat shells two git reads on a cold cache (reloadAgents() empties it
+    // on every refresh), and GitKeepAlive pumps the event loop across those waits.
+    // Doing that inside the rebuild left the list visibly blank/half-built across
+    // the pumps — the "blink". Pre-warming keeps the previous rows on screen while
+    // git runs, so the render loop below is cache-hot and never pumps, repainting in
+    // one atomic, flicker-free pass.
+    for (const AgentSession &session : sessions)
+        if (passesFilter(session))
+            agentDiffStat(session, agentGitDir, agentBase);
+
+    QSignalBlocker block(m_agentTable);
+    TableRepaintGuard repaintGuard(m_agentTable);
+    m_agentTable->setSortingEnabled(false);
+    m_agentTable->setRowCount(0);
     // Whether "Delete all merged" has anything to act on — counted across the whole
     // repo, before the search filter, since the batch ignores the filter (adhoc #235).
     int mergedDeletable = 0;
@@ -23180,18 +23218,8 @@ void MainWindow::refreshAgentTable()
         if (session.merged && !session.branchName.isEmpty()
             && !isExternalSession(session.id))
             ++mergedDeletable;
-        if (!query.isEmpty()) {
-            QStringList haystack{session.issueTitle,
-                                 agentProviderName(session.provider),
-                                 agentStatusText(session.status)};
-            if (session.issueNumber > 0)
-                haystack << QStringLiteral("#%1").arg(session.issueNumber);
-            if (session.prNumber > 0)
-                haystack << QStringLiteral("#%1").arg(session.prNumber);
-            if (!haystack.join(QLatin1Char(' '))
-                     .contains(query, Qt::CaseInsensitive))
-                continue;
-        }
+        if (!passesFilter(session))
+            continue;
         const int row = m_agentTable->rowCount();
         m_agentTable->insertRow(row);
 
@@ -38304,25 +38332,51 @@ void MainWindow::refreshIssueList()
         m_issueTable->setItem(row, 13, bountyItem);
 
         // Comment count: "comment" events minus any that were later deleted,
-        // matching what the detail thread renders. Sorted numerically.
+        // matching what the detail thread renders. Also track the most recent
+        // commenter so the column shows "N \xC2\xB7 author" at a glance.
         QSet<QString> deletedComments;
         for (const IssueEvent &ev : issue.events) {
             if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
                 deletedComments.insert(ev.target);
         }
         int commentCount = 0;
+        qint64 latestCommentTs = -1;
+        QString latestCommenter;
         for (const IssueEvent &ev : issue.events) {
-            if (ev.type == "comment" && !deletedComments.contains(ev.id))
-                ++commentCount;
+            if (ev.type != "comment" || deletedComments.contains(ev.id))
+                continue;
+            ++commentCount;
+            if (ev.ts >= latestCommentTs) {
+                latestCommentTs = ev.ts;
+                latestCommenter = ev.authorName.trimmed().isEmpty()
+                                      ? ev.author.left(8)
+                                      : ev.authorName.trimmed();
+            }
         }
-        auto *commentsItem = new QTableWidgetItem;
-        commentsItem->setData(Qt::DisplayRole, commentCount); // numeric sort
+        // "N \xC2\xB7 author"; the count still sorts numerically via kTableSortRole.
+        auto *commentsItem = new SortTableWidgetItem(
+            commentCount > 0 && !latestCommenter.isEmpty()
+                ? QString::fromUtf8("%1 \xC2\xB7 %2")
+                      .arg(commentCount)
+                      .arg(latestCommenter)
+                : QString::number(commentCount));
+        commentsItem->setData(kTableSortRole, commentCount);
+        if (!latestCommenter.isEmpty())
+            commentsItem->setToolTip(
+                QStringLiteral("Latest comment by %1").arg(latestCommenter));
         commentsItem->setTextAlignment(Qt::AlignCenter);
         m_issueTable->setItem(row, 14, commentsItem);
 
         // Files: an indicator + changed-file count for issues whose work lives in
         // a linked agent worktree branch or pull request (adhoc #151).
         populateIssueFilesCell(row, issue);
+
+        // Assignee(s): who has claimed the work (em dash when unassigned).
+        m_issueTable->setItem(
+            row, 16,
+            new QTableWidgetItem(issue.assignees.isEmpty()
+                                     ? QString::fromUtf8("\xE2\x80\x94")
+                                     : issue.assignees.join(QStringLiteral(", "))));
     }
     m_issueTable->setSortingEnabled(true);
     m_issueTable->blockSignals(false);
@@ -41365,8 +41419,15 @@ void MainWindow::analyzeIssueCompleteness()
     if (m_completenessInFlight || !m_networkAccess)
         return;
 
-    // Read-only review: we never write to the issue store, only report. Look at
-    // the open issues, since closed ones don't need completeness judged.
+    // The verdict is written back onto each issue (a completeness label plus a
+    // progress estimate), so the repo must be writable here.
+    if (!issueStoreForCurrentRepo().canWrite()) {
+        setIssueInlineNotice("This repo is read-only here; can't update issues.",
+                             true);
+        return;
+    }
+
+    // Judge the open issues; closed ones don't need completeness rated.
     QList<Issue> open;
     for (const Issue &issue : std::as_const(m_currentIssues))
         if (issue.status != QLatin1String("closed"))
@@ -41521,14 +41582,114 @@ void MainWindow::analyzeIssueCompleteness()
             return;
         }
 
-        // Show the agent's markdown verdict in a read-only report dialog.
+        // The reply should be a JSON array of verdicts. Slice out the first
+        // [...] so stray prose or code fences don't break parsing.
+        const int lb = text.indexOf('[');
+        const int rb = text.lastIndexOf(']');
+        const QJsonArray verdicts =
+            (lb >= 0 && rb > lb)
+                ? QJsonDocument::fromJson(text.mid(lb, rb - lb + 1).toUtf8())
+                      .array()
+                : QJsonArray();
+        if (verdicts.isEmpty()) {
+            setIssueInlineNotice(
+                "Could not read completeness verdicts from the agent's response.",
+                true);
+            return;
+        }
+
+        IssueStore writeStore = issueStoreForCurrentRepo();
+        if (!writeStore.canWrite()) {
+            setIssueInlineNotice(
+                "This repo is read-only here; can't update issues.", true);
+            return;
+        }
+
+        // Index the still-open issues so we apply only to current numbers and
+        // can fold each verdict's label into the issue's existing labels.
+        QHash<int, Issue> openByNumber;
+        for (const Issue &issue : std::as_const(m_currentIssues))
+            if (issue.status != QLatin1String("closed"))
+                openByNumber.insert(issue.number, issue);
+
+        // The mutually-exclusive completeness labels we manage; the chosen one
+        // replaces any previously applied so re-running re-labels cleanly.
+        static const QStringList kCompletenessLabels = {
+            QStringLiteral("Complete"), QStringLiteral("Partial"),
+            QStringLiteral("Incomplete")};
+
+        const QString dash = QString::fromUtf8(" \xE2\x80\x94 ");
+        int applied = 0, failed = 0;
+        QStringList reportLines;
+        for (const QJsonValue &v : verdicts) {
+            const QJsonObject o = v.toObject();
+            const int number = o.value("number").toInt(-1);
+            if (!openByNumber.contains(number))
+                continue;
+            // Normalise the rating; "incomplete" contains "complete", so test it
+            // first.
+            const QString rating = o.value("rating").toString().toLower();
+            QString label;
+            if (rating.contains(QLatin1String("incomplete")))
+                label = QStringLiteral("Incomplete");
+            else if (rating.contains(QLatin1String("complete")))
+                label = QStringLiteral("Complete");
+            else if (rating.contains(QLatin1String("partial")))
+                label = QStringLiteral("Partial");
+            const int pct = qBound(0, o.value("completeness").toInt(), 100);
+            const QString reason = o.value("reason").toString().trimmed();
+
+            QStringList labels = openByNumber.value(number).labels;
+            for (const QString &cl : kCompletenessLabels)
+                labels.removeAll(cl);
+            if (!label.isEmpty())
+                labels << label;
+
+            QString error;
+            const bool okLabels =
+                label.isEmpty() ? true
+                                : writeStore.setLabels(number, labels, &error);
+            const bool okProgress = writeStore.setProgress(number, pct, &error);
+            if (okLabels && okProgress)
+                ++applied;
+            else
+                ++failed;
+
+            reportLines
+                << QStringLiteral("- #%1 **%2**")
+                           .arg(number)
+                           .arg(label.isEmpty() ? QStringLiteral("?") : label) +
+                       dash + QStringLiteral("%1%").arg(pct) + dash +
+                       (reason.isEmpty() ? QStringLiteral("(no detail)")
+                                         : reason);
+        }
+
+        if (applied == 0) {
+            setIssueInlineNotice("No open issues matched the agent's verdicts.",
+                                 true);
+            return;
+        }
+
+        reloadIssues();
+        setIssueInlineNotice(
+            failed == 0
+                ? QStringLiteral(
+                      "Updated %1 issue(s) from the completeness analysis.")
+                      .arg(applied)
+                : QStringLiteral("Updated %1 issue(s) (%2 failed) from the "
+                                 "completeness analysis.")
+                      .arg(applied)
+                      .arg(failed),
+            failed != 0);
+
+        // Show what was applied, per issue, in a read-only report dialog.
         QDialog dialog(this);
         dialog.setWindowTitle(QStringLiteral("Issue completeness"));
         dialog.resize(560, 480);
         auto *layout = new QVBoxLayout(&dialog);
         auto *view = new QTextBrowser(&dialog);
         view->setOpenExternalLinks(true);
-        view->setMarkdown(text);
+        view->setMarkdown(reportLines.join('\n'));
         layout->addWidget(view);
         auto *buttons =
             new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
@@ -41537,7 +41698,6 @@ void MainWindow::analyzeIssueCompleteness()
         connect(buttons, &QDialogButtonBox::accepted, &dialog,
                 &QDialog::accept);
         layout->addWidget(buttons);
-        setIssueInlineNotice(QString());
         dialog.exec();
     });
 }
