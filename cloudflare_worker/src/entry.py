@@ -54,8 +54,9 @@ MAX_PENDING_ISSUES = 500
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
-# issue body but still bounded.
-MAX_PULL_BYTES = 1024 * 1024
+# issue body but still bounded. Raised to 100 MB so a PR with a large diff (e.g.
+# generated files or vendored code) isn't rejected at submission.
+MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
