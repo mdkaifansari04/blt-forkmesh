@@ -263,6 +263,20 @@ public:
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
+    // Rebuild the Branches panel, then read back the Worktree column (column 3)
+    // for `branch`, so a test can prove the branches list surfaces the worktree a
+    // branch is checked out in (issue #172).
+    void testReloadBranchesPanel() { loadBranchesPanel(); }
+    QString testBranchWorktreePath(const QString &branch) const;
+    // Inject an agent session so a test can prove the branches list surfaces the
+    // issue/agent a branch is attached to (adhoc #191).
+    void testAddAgentSession(const AgentSession &session)
+    {
+        m_agentSessions.append(session);
+    }
+    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
+    // the branches list names the issue/agent a branch is attached to (adhoc #191).
+    QString testBranchAttachmentText(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -1016,8 +1030,11 @@ private:
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
     void showBranchDiff(const QString &branch);
-    // Refresh the detail-pane action bar (Pull / Fix with agent / Create PR /
-    // Merge to main) for the currently selected branch.
+    // Open the selected branch's working directory in VSCodium: its dedicated
+    // worktree if it has one, otherwise the repo's main checkout.
+    void openBranchInCodium(const QString &branch);
+    // Refresh the detail-pane action bar (Open in Codium / Pull / Fix with agent /
+    // Create PR / Merge to main) for the currently selected branch.
     void updateBranchDetailActions(const QString &branch);
     void createPullFromBranch(const QString &branch);
     void onBranchDiffAnchorClicked(const QUrl &url);
@@ -1487,7 +1504,11 @@ private:
     QString m_lastLogRenderDate; // date of the last line rendered (for dividers)
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
-    void flashMessage(const QString &text, bool error = false);
+    // `clickHref` makes the whole toast a clickable link routed by the
+    // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
+    // waiting agent). Empty = a plain, non-clickable toast.
+    void flashMessage(const QString &text, bool error = false,
+                      const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
@@ -1687,6 +1708,7 @@ private:
     QLabel *m_topMessageOverlayText = nullptr; // wrapped full-message label inside the overlay
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
+    QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
@@ -1910,6 +1932,7 @@ private:
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
     QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QPushButton *m_branchOpenCodiumButton = nullptr; // "Open in Codium" (VSCodium)
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
