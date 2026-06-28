@@ -671,6 +671,19 @@ public:
         update();
     }
 
+    bool isEmpty() const { return m_dots.isEmpty(); }
+
+    // Width needed to show every dot, used to size the floating overlay above the
+    // Mirror nodes tab. Capped so a large mesh can't stretch the band; paintEvent
+    // already stops drawing once it runs out of room.
+    int preferredWidth() const
+    {
+        if (m_dots.isEmpty())
+            return 0;
+        const qreal last = (kRadius + 2.0) + (m_dots.size() - 1) * kSpacing;
+        return qMin(240, int(last + kRadius + 4.0));
+    }
+
 protected:
     QSize sizeHint() const override { return QSize(160, 18); }
 
@@ -12186,6 +12199,19 @@ QWidget *MainWindow::buildRepoDetailSection()
             switchToAgentsTab(sessionId);
     });
     m_looperToggle = looperToggle;
+
+    // Live mirror-activity dots floating just above the Mirror nodes tab (adhoc
+    // #197): one dot per active node, flashing green for a served clone and
+    // orange for codebase browsing. Like the looper toggle over Issues it's an
+    // overlay, so it shows from any tab and never reflows the page; the old
+    // in-page "Live ›" row was dropped in its favour. Created parented to the
+    // window; positionMirrorActivityStrip reparents it onto the page.
+    auto *mirrorStrip = new MirrorActivityStrip(this);
+    mirrorStrip->setToolTip(QStringLiteral(
+        "Active nodes mirroring this repo. A dot flashes green when its node "
+        "serves a clone, orange when it serves codebase browsing."));
+    mirrorStrip->hide();
+    m_mirrorActivityStrip = mirrorStrip;
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -35164,21 +35190,9 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
-    // Live activity row: a dot for every active node, flashing green when it
-    // serves a clone and orange when it serves codebase browsing/fetches.
-    auto *activityRow = new QHBoxLayout;
-    activityRow->setContentsMargins(0, 0, 0, 0);
-    activityRow->setSpacing(8);
-    auto *activityCaption = new QLabel(QString::fromUtf8("Live \xE2\x80\xBA"));
-    activityCaption->setObjectName("statusLine");
-    auto *strip = new MirrorActivityStrip;
-    strip->setToolTip(QStringLiteral(
-        "Active nodes mirroring this repo. A dot flashes green when its node "
-        "serves a clone, orange when it serves codebase browsing."));
-    m_mirrorActivityStrip = strip;
-    activityRow->addWidget(activityCaption);
-    activityRow->addWidget(strip, 1);
-    layout->addLayout(activityRow);
+    // The live activity dots no longer sit in this page as a "Live ›" row; they
+    // float just above the Mirror nodes tab instead (adhoc #197). The strip is
+    // created with the tab row and anchored by positionMirrorActivityStrip.
 
     m_mirrorNodesTable = new QTableWidget(0, 7);
     m_mirrorNodesTable->setObjectName("issueTable");
@@ -35241,8 +35255,10 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        if (m_mirrorActivityStrip)
+        if (m_mirrorActivityStrip) {
             static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
+            positionMirrorActivityStrip(); // hides the now-empty strip
+        }
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -35548,9 +35564,12 @@ void MainWindow::loadMirrorNodesPanel()
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    if (m_mirrorActivityStrip)
+    if (m_mirrorActivityStrip) {
         static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
             ->setNodes(activityDots);
+        // Re-anchor over the Mirror nodes tab and (re)size to the new dot count.
+        positionMirrorActivityStrip();
+    }
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
@@ -48081,6 +48100,47 @@ void MainWindow::positionLooperToggle()
         connect(m_looperToggleTimer, &QTimer::timeout, this,
                 &MainWindow::positionLooperToggle);
         m_looperToggleTimer->start(400);
+    }
+}
+
+// Anchor the live mirror-activity dot strip in the meta band just above the
+// Mirror nodes tab (adhoc #197), mirroring positionLooperToggle over Issues. It
+// shows only while a repo-detail page is open and at least one node is active;
+// loadMirrorNodesPanel feeds it the roster, the timer keeps it pinned.
+void MainWindow::positionMirrorActivityStrip()
+{
+    auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
+    if (!strip || !m_repoMirrorsTab)
+        return;
+    QWidget *tabBar = m_repoMirrorsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    if (strip->parentWidget() != page)
+        strip->setParent(page); // hides it; shown again just below
+    const int w = strip->preferredWidth();
+    const int h = strip->minimumHeight(); // its fixed strip height
+    const QPoint tl = m_repoMirrorsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    strip->setGeometry(x, y, w, h);
+    // Visible only on the repo-detail page and when there's at least one active
+    // node — an empty strip would just be a gap floating over the tab.
+    const bool onPage = page->isVisible() && !strip->isEmpty();
+    strip->setVisible(onPage);
+    if (onPage)
+        strip->raise();
+    // One low-rate timer re-anchors the strip as the window resizes or the tabs
+    // reflow, and reapplies the visibility check above; never needs stopping.
+    if (!m_mirrorActivityStripTimer) {
+        m_mirrorActivityStripTimer = new QTimer(this);
+        connect(m_mirrorActivityStripTimer, &QTimer::timeout, this,
+                &MainWindow::positionMirrorActivityStrip);
+        m_mirrorActivityStripTimer->start(400);
     }
 }
 
