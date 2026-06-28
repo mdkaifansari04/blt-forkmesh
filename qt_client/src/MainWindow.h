@@ -1556,6 +1556,15 @@ private:
     // logSystem append and the full rebuild in buildLogSection().
     void appendNetworkLogLine(const QString &storedLine);
     QString m_lastLogRenderDate; // date of the last line rendered (for dividers)
+    // Quick category filter + on-disk persistence for the network log so the
+    // history survives a restart and can be narrowed to one event type. Filter
+    // chips are rebuilt as new categories appear.
+    QString logBadgeFor(const QString &storedLine) const; // category of a line
+    void rebuildLogFilterButtons(); // (re)build the category chip row
+    void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
+    QString networkLogPath() const; // on-disk path for the persisted log
+    void loadNetworkLog();          // restore log history at startup
+    void saveNetworkLog();          // rewrite (and trim) the on-disk log
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     // `clickHref` makes the whole toast a clickable link routed by the
@@ -1856,6 +1865,9 @@ private:
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsAvatarPreview = nullptr;
     QPlainTextEdit *m_settingsLog = nullptr;
+    QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
+    QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
+    QString m_logFilter;                      // active category badge ("" = All)
     QPushButton *m_rebuildButton = nullptr;
     QLabel *m_rebuildStatus = nullptr;
     QLineEdit *m_mirrorRootEdit = nullptr;
@@ -2886,6 +2898,8 @@ private:
     QHash<QString, QString> m_dmNames;          // peerId -> display name
     QHash<QString, QHash<QString, QString>> m_typing; // conversation -> peerId -> name
     QStringList m_networkLog;
+    QSet<QString> m_logFilterCategories;        // badges that currently have a chip
+    int m_networkLogDiskLines = 0;              // lines written to the on-disk log
     QStringList m_openDms;                      // peerIds in sidebar order
     QSet<QString> m_unread;
     // Node ids (pubkeys) confirmed to be admins, so repeated moderation deletes
