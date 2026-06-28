@@ -1154,8 +1154,10 @@ private:
     void openBranchMergeEditor(const QString &branch);
     // Merge the default branch into every branch that's behind it in one pass;
     // clean merges land via plumbing (no checkout), conflicts are reported so the
-    // list can surface them and offer "Fix with agent".
-    void pullBaseIntoAllBranches();
+    // list can surface them and offer "Fix with agent". `confirm` is false when
+    // run automatically after a merge (the "auto pull into all" toggle), so it
+    // skips the scope-confirmation prompt.
+    void pullBaseIntoAllBranches(bool confirm = true);
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
@@ -2074,6 +2076,9 @@ private:
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
+    // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
+    // so the remaining branches catch up with the merge (adhoc #250).
+    QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
