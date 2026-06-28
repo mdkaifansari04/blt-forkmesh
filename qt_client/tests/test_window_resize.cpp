@@ -568,6 +568,18 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch with no agent session has an empty "
                              "Issue / Agent cell (adhoc #191)"));
 
+        // adhoc #251: a branch an agent is working must also carry the agent's
+        // status icon in that cell (a spinner while running, a check on success,
+        // …), so the list shows how each agent is doing at a glance. A plain
+        // branch with no session carries no icon.
+        check(window.testBranchAttachmentHasIcon(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("branches list stamps the agent's status icon on a "
+                             "branch an agent is working (adhoc #251)"));
+        check(!window.testBranchAttachmentHasIcon(QStringLiteral("main")),
+              QStringLiteral("a branch with no agent session carries no status "
+                             "icon (adhoc #251)"));
+
         // adhoc #185: the default branch must stay pinned to the top of the list.
         // feature/keep-selected was committed to more recently (it's a worktree one
         // commit ahead of main), so a plain committer-date sort would float it above
