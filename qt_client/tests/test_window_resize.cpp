@@ -674,6 +674,39 @@ int main(int argc, char *argv[])
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
     }
 
+    // adhoc #191: the issue looper (and per-issue agent assignment) must work on
+    // a node that only mirrors a repo it doesn't host. Such a repo has a bare
+    // network mirror and no working tree, so the gate now resolves the bare mirror
+    // as the git dir agents run against instead of refusing with "only the host".
+    {
+        QTemporaryDir mirrorDir;
+        const bool madeBare =
+            mirrorDir.isValid() &&
+            runGitChecked(mirrorDir.path(), {"init", "--bare", "-q"});
+        const int mirrorIdx =
+            window.testAddPublishedRepository("someone", "theirrepo", mirrorDir.path());
+        check(madeBare &&
+                  window.testRepoAgentGitDir(mirrorIdx) == mirrorDir.path(),
+              QStringLiteral("a mirror-only repo resolves its bare mirror as the "
+                             "agent/looper git dir (adhoc #191)"));
+
+        QTemporaryDir localRepo;
+        const bool madeLocal = initGitRepo(localRepo);
+        const int localIdx =
+            window.testAddLocalRepository("me", "minerepo", localRepo.path());
+        check(madeLocal &&
+                  window.testRepoAgentGitDir(localIdx) == localRepo.path(),
+              QStringLiteral("a hosted repo still resolves its working tree as the "
+                             "agent/looper git dir"));
+
+        QTemporaryDir emptyDir;
+        const int noneIdx = window.testAddPublishedRepository(
+            "someone", "uncached", emptyDir.path() + QStringLiteral("/missing.git"));
+        check(window.testRepoAgentGitDir(noneIdx).isEmpty(),
+              QStringLiteral("a repo with neither a working tree nor a cached "
+                             "mirror has no agent/looper git dir"));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }
