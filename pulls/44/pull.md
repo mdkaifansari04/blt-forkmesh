@@ -4,7 +4,7 @@ number: 44
 title: landing: refresh docs network and legal pages
 base: main
 head: feat/pr43-docs-network-legal-pages
-status: open
+status: merged
 ts: 1782673310452
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -19,4 +19,3 @@ Split from local landing PR #43 into an independently reviewable signed patch.
 ## Tests
 - Included targeted frontend/route coverage where relevant.
 - Original combined branch passed: python3 -m py_compile src/entry.py
-
