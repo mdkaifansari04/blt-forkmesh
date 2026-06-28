@@ -20992,12 +20992,22 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
         parts << QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
                      .arg(stat.ahead)
                      .arg(stat.behind);
+    // Conflict marker (adhoc #229): lead the cell with a warning-sign badge when
+    // the branch can no longer merge cleanly into base, so it stands out in the
+    // list. The whole Diff cell is tinted red below to reinforce it.
+    if (stat.conflicted)
+        parts.prepend(QString::fromUtf8("\xE2\x9A\xA0 conflict"));
     cell->setData(Qt::DisplayRole,
                   parts.isEmpty()
                       ? QStringLiteral("-")
                       : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
     cell->setData(kTableSortRole, stat.files);
+    if (stat.conflicted)
+        cell->setForeground(QColor(QStringLiteral("#f85149")));
     QStringList tip;
+    if (stat.conflicted)
+        tip << QStringLiteral("Conflicts with %1 — merge base in and resolve")
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
     if (stat.files >= 0)
         tip << QStringLiteral("%1 file%2 changed")
                    .arg(stat.files)
@@ -23085,6 +23095,16 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
                 stat.ahead = p.at(1).toInt();
             }
         }
+        // Conflict marker (adhoc #229): when the branch is behind base, an
+        // in-memory merge (merge-tree --write-tree, which never touches the tree
+        // or index) tells us whether re-merging base would conflict — a non-zero
+        // exit means it would. Skip already-merged sessions and branches that are
+        // up to date with base (no behind commits ⇒ a trivially clean merge).
+        if (stat.behind > 0 && !session.merged &&
+            !runGitCapture(gitDir,
+                           {"merge-tree", "--write-tree", session.branchName, base},
+                           nullptr, nullptr))
+            stat.conflicted = true;
     }
     m_agentDiffStats.insert(session.id, stat);
     return stat;
