@@ -803,7 +803,11 @@ private:
     // agentSessionLandedInBase() answers the question for one session.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    bool agentSessionLandedInBase(const AgentSession &session) const;
+    // dir = the repo's git dir, base = its default branch — resolved once by the
+    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
+    // (etc.) per session.
+    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
+                                  const QString &base) const;
     void assignIssueToAgent(const QString &provider);
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -2727,6 +2731,7 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
+    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
