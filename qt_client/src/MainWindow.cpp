@@ -202,8 +202,10 @@ constexpr int kCommitActionCol = 7;
 constexpr int kCommitGraphCol = 8;
 // Per-row graph data read by CommitGraphDelegate. Kept above kTableSortRole's
 // neighbours (UserRole+10) to avoid clashing with the sort key.
-constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> active lanes
+constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> lanes at the row's top edge
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
+constexpr int kGraphBottomLanesRole =
+    Qt::UserRole + 22; // QVariantList<int> lanes at the row's bottom edge
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -235,7 +237,10 @@ const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 14;
 constexpr int kGraphMargin = 9;
-constexpr int kGraphDotRadius = 4;
+// Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
+// matching the VS Code git-graph look.
+constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
+constexpr qreal kGraphNodeInner = 1.8; // centre-dot radius
 
 // Stable per-lane colour so a branch keeps its hue down the whole graph.
 inline QColor commitGraphLaneColor(int lane)
@@ -253,10 +258,15 @@ inline void paintRowSelectionBorder(QPainter *painter,
                                     const QStyleOptionViewItem &option,
                                     const QModelIndex &index);
 
-// Paints the git-graph gutter: a vertical line for every lane passing through
-// the row plus a filled dot in this commit's lane. Topology is meaningful only
-// while the list is in git-log order (the default Date-descending sort), which
-// is why that ordering is pinned when the list loads.
+// Paints the git-graph gutter the way the VS Code git-graph view does: lanes
+// that pass straight through a row are drawn as vertical lines, while a lane
+// that merges into the commit (or branches out of it) is a smooth bezier curve
+// into/out of the node. The node itself is a bullseye (a hollow ring with a
+// filled centre). Each row carries the lanes present at its top and bottom
+// edges; comparing the two boundaries tells us which lanes pass through, merge
+// in, or branch out. Topology is meaningful only while the list is in git-log
+// order (the default Date-descending sort), which is why that ordering is
+// pinned when the list loads.
 class CommitGraphDelegate : public QStyledItemDelegate
 {
 public:
@@ -271,27 +281,87 @@ public:
         opt.state &= ~QStyle::State_Selected;
         QStyledItemDelegate::paint(painter, opt, index);
         paintRowSelectionBorder(painter, option, index);
-        const QVariantList lanes = index.data(kGraphLanesRole).toList();
+        const QVariantList topLanes = index.data(kGraphLanesRole).toList();
+        const QVariantList botLanes = index.data(kGraphBottomLanesRole).toList();
         const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
-        if (lanes.isEmpty() && nodeLane < 0)
+        if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
             return;
         const QRect r = option.rect;
-        auto laneX = [&](int lane) {
+        const qreal yTop = r.top();
+        const qreal yBot = r.top() + r.height(); // meets the next row's top edge
+        const qreal yMid = r.center().y() + 0.5;
+        auto laneX = [&](int lane) -> qreal {
             return r.left() + kGraphMargin + lane * kGraphLaneWidth;
         };
+        // Which lane columns are occupied at each edge of the row.
+        QSet<int> topSet;
+        QSet<int> botSet;
+        int maxLane = nodeLane;
+        for (const QVariant &v : topLanes) {
+            const int l = v.toInt();
+            topSet.insert(l);
+            maxLane = std::max(maxLane, l);
+        }
+        for (const QVariant &v : botLanes) {
+            const int l = v.toInt();
+            botSet.insert(l);
+            maxLane = std::max(maxLane, l);
+        }
+
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        for (const QVariant &v : lanes) {
-            const int lane = v.toInt();
-            painter->setPen(QPen(commitGraphLaneColor(lane), 2));
-            painter->drawLine(laneX(lane), r.top(), laneX(lane), r.bottom());
+
+        // A smooth connector between two points that leaves and arrives
+        // vertically — a straight line when the columns match, otherwise an
+        // S-curve that bends across the middle (the git-graph house style).
+        auto connect = [&](qreal x0, qreal y0, qreal x1, qreal y1,
+                           const QColor &c) {
+            painter->setPen(QPen(c, 2));
+            if (qFuzzyCompare(x0, x1)) {
+                painter->setBrush(Qt::NoBrush);
+                painter->drawLine(QPointF(x0, y0), QPointF(x1, y1));
+                return;
+            }
+            QPainterPath path(QPointF(x0, y0));
+            const qreal cy = (y0 + y1) / 2.0;
+            path.cubicTo(QPointF(x0, cy), QPointF(x1, cy), QPointF(x1, y1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(path);
+        };
+
+        // Every lane other than the node's: straight through if present at both
+        // edges, a merge curve if it only enters from the top, a branch curve if
+        // it only leaves at the bottom.
+        for (int lane = 0; lane <= maxLane; ++lane) {
+            if (lane == nodeLane)
+                continue;
+            const bool inTop = topSet.contains(lane);
+            const bool inBot = botSet.contains(lane);
+            const QColor c = commitGraphLaneColor(lane);
+            if (inTop && inBot)
+                connect(laneX(lane), yTop, laneX(lane), yBot, c);
+            else if (inTop)
+                connect(laneX(lane), yTop, laneX(nodeLane), yMid, c);
+            else if (inBot)
+                connect(laneX(nodeLane), yMid, laneX(lane), yBot, c);
         }
+
         if (nodeLane >= 0) {
             const QColor c = commitGraphLaneColor(nodeLane);
-            painter->setPen(QPen(c, 2));
+            const qreal nx = laneX(nodeLane);
+            // The node's own lane: a straight stub above (it was reached from a
+            // child) and below (its first parent continues here).
+            if (topSet.contains(nodeLane))
+                connect(nx, yTop, nx, yMid, c);
+            if (botSet.contains(nodeLane))
+                connect(nx, yMid, nx, yBot, c);
+            // Bullseye node: hollow ring + filled centre, drawn over the lines.
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(c, 1.6));
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
+            painter->setPen(Qt::NoPen);
             painter->setBrush(c);
-            painter->drawEllipse(QPoint(laneX(nodeLane), r.center().y()),
-                                 kGraphDotRadius, kGraphDotRadius);
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
         }
         painter->restore();
     }
@@ -4859,8 +4929,12 @@ void MainWindow::applyTheme()
     // Honour the user's override; otherwise follow the OS color scheme.
     qApp->setStyleSheet(Theme::styleSheetForDark(currentThemeIsDark()));
     for (QWidget *widget : QApplication::topLevelWidgets()) {
-        if (auto *window = qobject_cast<MainWindow *>(widget))
+        if (auto *window = qobject_cast<MainWindow *>(widget)) {
             window->refreshThemedIcons();
+            // The floating agent strip carries its own inline stylesheet (not the
+            // global sheet), so re-point it at the new theme's opaque surface.
+            window->styleAgentSpinnerOverlay();
+        }
     }
 }
 
@@ -28908,6 +28982,16 @@ void MainWindow::loadCommits()
         }
         while (!activeLanes.isEmpty() && activeLanes.last().isEmpty())
             activeLanes.removeLast(); // keep the gutter as narrow as the history
+        // Snapshot the lanes leaving the row (its bottom edge). The delegate
+        // compares this with the top edge to tell pass-through lanes from the
+        // merge/branch curves into and out of the node.
+        QVariantList botLaneCols;
+        for (int i = 0; i < activeLanes.size(); ++i) {
+            if (!activeLanes.at(i).isEmpty()) {
+                botLaneCols.append(i);
+                maxGraphLane = std::max(maxGraphLane, i);
+            }
+        }
 
         int files = 0;
         int adds = 0;
@@ -28933,6 +29017,7 @@ void MainWindow::loadCommits()
         graphItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         graphItem->setData(kGraphLanesRole, laneCols);
         graphItem->setData(kGraphNodeLaneRole, nodeLane);
+        graphItem->setData(kGraphBottomLanesRole, botLaneCols);
         m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
@@ -49339,8 +49424,7 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay = new QWidget(page);
     m_agentSpinnerOverlay->setObjectName("agentSpinnerOverlay");
     m_agentSpinnerOverlay->setAttribute(Qt::WA_StyledBackground, true);
-    m_agentSpinnerOverlay->setStyleSheet(
-        "#agentSpinnerOverlay{background:rgba(130,130,150,0.16);border-radius:13px;}");
+    styleAgentSpinnerOverlay();
     auto *outer = new QHBoxLayout(m_agentSpinnerOverlay);
     outer->setContentsMargins(5, 3, 5, 3);
     outer->setSpacing(0);
@@ -49361,6 +49445,22 @@ void MainWindow::ensureAgentSpinnerOverlay()
     m_agentSpinnerOverlay->hide();
 }
 
+void MainWindow::styleAgentSpinnerOverlay()
+{
+    if (!m_agentSpinnerOverlay)
+        return;
+    // The strip floats over the meta band above the Agents tab. A near-transparent
+    // wash let the page (and the spinners themselves) bleed through and read as
+    // washed-out; back it with the opaque surface/border for the active theme so
+    // the running-agent spinners stand out clearly.
+    const bool dark = currentThemeIsDark();
+    m_agentSpinnerOverlay->setStyleSheet(
+        QStringLiteral("#agentSpinnerOverlay{background:%1;border:1px solid %2;"
+                       "border-radius:13px;}")
+            .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+                 dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de")));
+}
+
 void MainWindow::positionAgentSpinnerOverlay()
 {
     if (!m_agentSpinnerOverlay || !m_repoAgentsTab || !m_agentSpinnerRow)
@@ -49372,8 +49472,9 @@ void MainWindow::positionAgentSpinnerOverlay()
     const int visible = qMin(total, 5);
     const int spinnerW = 20, gap = 5;
     const int innerW = visible * spinnerW + (visible > 1 ? (visible - 1) * gap : 0);
-    const int w = innerW + 12;
-    const int h = 26 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
+    const int w = innerW + 14; // inner + h-margins + 1px border each side
+    // 28 keeps the 20px spinners clear of the margins and the 1px border.
+    const int h = 28 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
     const QPoint tl = m_repoAgentsTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1;
