@@ -16590,39 +16590,71 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // One dry-run runs off-thread at a time. A redundant drain (a double
+    // singleShot, or queuePullConflictCheck firing while a worker runs) just
+    // returns here — the in-flight worker reschedules us when it finishes, so the
+    // queue still drains in order.
+    if (m_pullConflictCheckInFlight)
+        return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
+    const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
-    if (store.canWrite()) {
-        bool clean = false;
-        QStringList conflictFiles;
-        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
-        // single cold `git apply --check` can run well over the 1.5s stall
-        // threshold — pump the event loop while it runs so the window stays
-        // responsive instead of freezing on one PR's dry-run.
-        const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
-                                 /*keepGuiAlive=*/true) &&
-            !clean;
-        // The gen check at entry already gates this turn; re-check defensively in
-        // case checkMergeable() ever pumps the event loop and lets a fresh
-        // reloadPulls() supersede this pass while git ran.
-        if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
-            if (conflict)
-                m_pullConflictByNumber.insert(number, true);
-            else
-                m_pullConflictByNumber.remove(number);
-            setPullConflictBadge(number, conflict);
-            // If this dry-run was for the PR currently on screen, refresh its
-            // merge UI now that the result is cached — updatePullActionState()
-            // deferred to us instead of blocking the GUI on the live check.
-            if (number == m_currentPullNumber)
-                updatePullActionState();
-        }
+    if (!store.canWrite()) {
+        // No working tree to test the patch against; skip and drain the rest.
+        if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+            QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+        return;
     }
-    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
-        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A single cold `git apply --check` can run well over the 1.5s stall
+    // threshold, so run it on a worker thread rather than on the GUI thread. The
+    // old keepGuiAlive path pumped the event loop in place, which could itself
+    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
+    // reports). PullStore is copied by value and only shells out to git, so the
+    // worker touches no shared Qt state; results come back via shared_ptr to the
+    // finished handler, which runs on the main thread.
+    m_pullConflictCheckInFlight = true;
+    auto clean = std::make_shared<bool>(false);
+    auto mergeable = std::make_shared<bool>(false);
+    auto conflictFiles = std::make_shared<QStringList>();
+    QThread *worker = QThread::create([store, number, clean, mergeable,
+                                       conflictFiles]() mutable {
+        *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
+                                          nullptr, /*keepGuiAlive=*/false);
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, gen, number, fingerprint, clean, mergeable,
+             conflictFiles]() {
+                m_pullConflictCheckInFlight = false;
+                worker->deleteLater();
+                const bool conflict = *mergeable && !*clean;
+                // Apply the result only if this repo/list is still current; a
+                // reloadPulls() may have bumped the generation while git ran.
+                if (gen == m_pullConflictGen) {
+                    m_pullConflictCache.insert(
+                        number, {fingerprint, conflict, *conflictFiles});
+                    if (conflict)
+                        m_pullConflictByNumber.insert(number, true);
+                    else
+                        m_pullConflictByNumber.remove(number);
+                    setPullConflictBadge(number, conflict);
+                    // If this dry-run was for the PR currently on screen, refresh
+                    // its merge UI now that the result is cached.
+                    if (number == m_currentPullNumber)
+                        updatePullActionState();
+                }
+                // Drain the next pending check under the *current* generation,
+                // whether or not this result was superseded: a superseding
+                // reloadPulls() rebuilt the queue and is waiting on this worker to
+                // release the in-flight guard.
+                if (!m_pendingPullConflictChecks.isEmpty()) {
+                    const quint64 current = m_pullConflictGen;
+                    QTimer::singleShot(0, this, [this, current] {
+                        processPendingPullConflicts(current);
+                    });
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
@@ -36140,8 +36172,18 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
-        if (m_mirrorNodesTable->isVisible())
-            m_mirrorNodesTable->viewport()->update();
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Only the Synced column animates, so repaint just its cells rather than
+        // the whole viewport. A full viewport()->update() re-ran the row's
+        // HoverRowDelegate for every other column each second, painting cells
+        // nothing had changed and stalling the GUI thread on big node lists
+        // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
+        for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+            if (m_mirrorNodesTable->item(r, 2))
+                m_mirrorNodesTable->update(
+                    m_mirrorNodesTable->model()->index(r, 2));
+        }
     });
     pacmanTick->start();
     // Double-click a node row to open its profile.
@@ -49860,15 +49902,65 @@ void MainWindow::rerunSelectedRun()
     processActionQueue();
 }
 
+void MainWindow::clearActionRuns()
+{
+    if (!m_actionStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString name = m_repositories.at(m_repoDetailIndex).name;
+
+    // Collect exactly the runs the list is showing (this repo, optionally
+    // narrowed to the selected workflow), skipping any still queued or running
+    // so we never delete a run out from under the runner.
+    QList<ActionRun> doomed;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (run.owner != owner || run.name != name)
+            continue;
+        if (!m_selectedWorkflowFilter.isEmpty() &&
+            run.workflowPath != m_selectedWorkflowFilter)
+            continue;
+        if (run.status == ActionStatus::Running ||
+            run.status == ActionStatus::Queued)
+            continue;
+        doomed.append(run);
+    }
+    if (doomed.isEmpty()) {
+        flashMessage(QStringLiteral("No finished runs to clear."));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("Clear runs"),
+            QStringLiteral("Delete %1 run%2 from this list, including their "
+                           "logs? This can't be undone.")
+                .arg(doomed.size())
+                .arg(doomed.size() == 1 ? QString() : QStringLiteral("s")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    for (const ActionRun &run : std::as_const(doomed))
+        m_actionStore->deleteRun(run);
+
+    m_actionRuns = m_actionStore->loadAllRuns();
+    if (!findRun(m_selectedRunId)) {
+        m_selectedRunId = -1;
+        showRun(-1);
+    }
+    refreshActionsTable();
+    updateNotificationButton();
+}
+
 QWidget *MainWindow::buildRepoActionsTab()
 {
     auto *page = new QWidget;
 
     // Far left: the actions available in this repo (.forkmesh/ workflows).
     auto *wfPane = new QWidget;
-    // Give the workflow-name column ~50% more room to open than before.
-    wfPane->setMinimumWidth(270);
-    wfPane->setMaximumWidth(390);
+    // Give the workflow-name column a bit more room to open than before.
+    wfPane->setMinimumWidth(320);
+    wfPane->setMaximumWidth(440);
     auto *wfHeading = new QLabel("Workflows");
     wfHeading->setObjectName("sectionLabel");
     auto *wfHint = new QLabel(
@@ -49921,6 +50013,21 @@ QWidget *MainWindow::buildRepoActionsTab()
     listPane->setMinimumWidth(375);
     auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
+    // Clear button on the Runs header row: wipes the run history shown below
+    // (meta + logs on disk), keeping any run that's still in flight.
+    auto *clearRunsButton = new QPushButton("Clear");
+    clearRunsButton->setObjectName("ghostButton");
+    clearRunsButton->setProperty("buttonSize", "sm");
+    clearRunsButton->setCursor(Qt::PointingHandCursor);
+    clearRunsButton->setToolTip("Delete the runs listed here, including their logs");
+    setOcticon(clearRunsButton, "trash", 16);
+    connect(clearRunsButton, &QPushButton::clicked, this,
+            &MainWindow::clearActionRuns);
+    auto *runsHeaderRow = new QHBoxLayout;
+    runsHeaderRow->setContentsMargins(0, 0, 0, 0);
+    runsHeaderRow->addWidget(heading);
+    runsHeaderRow->addStretch();
+    runsHeaderRow->addWidget(clearRunsButton);
     auto *subtitle = new QLabel(
         "Changed workflows wait for your approval before they run.");
     subtitle->setObjectName("statusLine");
@@ -49951,7 +50058,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(12, 22, 12, 22);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(runsHeaderRow);
     listLayout->addWidget(subtitle);
     listLayout->addWidget(m_actionsTable, 1);
 
