@@ -4,7 +4,7 @@ number: 52
 title: landing: add network demo media assets
 base: main
 head: feat/pr43-13-video-network
-status: open
+status: merged
 ts: 1782673430785
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -18,4 +18,3 @@ Split from local landing PR #43 into an independently reviewable signed patch.
 
 ## Tests
 - Original combined branch passed: python3 -m py_compile src/entry.py
-
