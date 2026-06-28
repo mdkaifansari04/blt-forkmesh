@@ -38,6 +38,7 @@ struct AgentDiffStat {
     int behind = -1;
 };
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -1353,6 +1354,7 @@ private:
     void startRepoSwitchSpin();
     void stopRepoSwitchSpin();
     void nodeSwitchStep(const QString &what);
+    void finishLoadStepTiming();
     // Live, visible progress for a repo/node load: a blue pill in the top bar
     // (where the breadcrumb is) naming the current step, e.g. "Loading commit
     // history…". Persistent until the next showLoadStatus / flashMessage clears it.
@@ -2769,6 +2771,11 @@ private:
     // True while the blue progress pill (showLoadStatus) owns the top-bar toast,
     // so the load can clear it on finish without stomping a real success/error.
     bool m_loadStatusShowing = false;
+    // Per-step timing for the node-switch / repo-open narration: when a new step
+    // starts, nodeSwitchStep logs how long the previous one took, so the system
+    // log shows a real-time breakdown of where a slow switch spends its time.
+    QElapsedTimer m_loadStepTimer;
+    QString m_loadStepName;
     QLabel *m_issueTitle = nullptr;
     QLineEdit *m_issueTitleEditor = nullptr;
     QPushButton *m_issueTitleEditButton = nullptr;
