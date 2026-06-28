@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 245
 title: show the time elapsed for each agent in the list as well as token count
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 41
 progress: 0
