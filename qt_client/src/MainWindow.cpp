@@ -12352,6 +12352,11 @@ QString agentCostText(double usd)
     return QStringLiteral("$%1").arg(usd, 0, 'f', 4);
 }
 
+// A status-coloured agent glyph (defined further down next to the agents table,
+// same anonymous namespace); forward-declared so the pull list can badge a PR
+// that has an agent attached (issue #257).
+QIcon agentStatusOcticon(const AgentSession &s, int px);
+
 // Turn "#123" references in an already-HTML-escaped commit message into links
 // the detail view resolves to the matching issue / pull request. Operating on
 // escaped text keeps the digits/'#' intact while leaving the rest untouched.
@@ -16887,7 +16892,8 @@ void MainWindow::refreshPullList()
         num->setData(Qt::DisplayRole, pr.number);
         num->setData(Qt::UserRole, pr.number);
         m_pullTable->setItem(row, 0, num);
-        m_pullTable->setItem(row, 1, new QTableWidgetItem(pr.title));
+        auto *titleItem = new QTableWidgetItem(pr.title);
+        m_pullTable->setItem(row, 1, titleItem);
         m_pullTable->setItem(row, 2,
                              new QTableWidgetItem(pr.base + QString::fromUtf8(" \xE2\x86\x90 ") +
                                                   pr.head));
@@ -16919,8 +16925,18 @@ void MainWindow::refreshPullList()
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(pr.author);
         m_pullTable->setItem(row, 6, authorItem);
-        // Cost of the agent task that produced this PR, when one is linked.
-        const AgentSession *agent = agentSessionForPull(pr.number);
+        // An agent attached to this PR — by recorded PR number, or through the
+        // head branch it ran on (issue #257). Badge the title so the list flags
+        // it at a glance, and surface the task's cost.
+        const AgentSession *agent = agentSessionForPull(pr.number, pr.head);
+        if (agent) {
+            titleItem->setIcon(agentStatusOcticon(*agent, 14));
+            titleItem->setToolTip(
+                QStringLiteral("Agent attached (%1)").arg(
+                    agent->prNumber == pr.number
+                        ? QStringLiteral("this PR")
+                        : QStringLiteral("branch %1").arg(pr.head)));
+        }
         auto *costItem = new QTableWidgetItem;
         if (agent) {
             costItem->setData(Qt::DisplayRole, agentCostText(agent->costUsd));
@@ -17119,9 +17135,11 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(m_pullMeta->text() +
                             QString::fromUtf8(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
-    // If an agent task produced this PR, link the header back to that session on
-    // the Agents tab (adhoc #78) and surface its estimated cost.
-    if (const AgentSession *agent = agentSessionForPull(found->number)) {
+    // If an agent task produced this PR — by recorded PR number or through its
+    // head branch (issue #257) — link the header back to that session on the
+    // Agents tab (adhoc #78) and surface its estimated cost.
+    if (const AgentSession *agent =
+            agentSessionForPull(found->number, found->head)) {
         const QString href = kAgentLinkScheme + QString::number(agent->id);
         const QString link =
             QStringLiteral("<a href=\"%1\" style=\"color:#58a6ff;"
@@ -18292,14 +18310,17 @@ void MainWindow::sendPullRevisionToAgent()
         return;
     }
 
-    // Find the agent session linked to this PR.
-    AgentSession *session = nullptr;
-    for (AgentSession &s : m_agentSessions) {
-        if (s.prNumber == m_currentPullNumber) {
-            session = &s;
+    // Find the agent session linked to this PR — by PR number or through its head
+    // branch (issue #257). Resolve via the shared helper, then re-find the mutable
+    // session so it can be re-queued.
+    QString head;
+    for (const PullRequest &pr : m_currentPulls)
+        if (pr.number == m_currentPullNumber) {
+            head = pr.head;
             break;
         }
-    }
+    const AgentSession *linked = agentSessionForPull(m_currentPullNumber, head);
+    AgentSession *session = linked ? findAgentSession(linked->id) : nullptr;
     if (!session) {
         flashMessage(QStringLiteral("No agent session found for this pull request."),
                      true);
@@ -18574,9 +18595,11 @@ void MainWindow::updatePullActionState()
         m_pullDeleteButton->setEnabled(writable && have);
     if (m_pullDeleteBranchButton)
         m_pullDeleteBranchButton->setEnabled(writable && have);
-    // Show the agent revision row only when this PR was produced by an agent session.
+    // Show the agent revision row only when this PR was produced by an agent
+    // session (by PR number or through its head branch — issue #257).
     if (m_pullAgentRevisionRow) {
-        const bool hasAgent = have && agentSessionForPull(m_currentPullNumber) != nullptr;
+        const bool hasAgent =
+            have && agentSessionForPull(m_currentPullNumber, head) != nullptr;
         m_pullAgentRevisionRow->setVisible(hasAgent);
         if (m_pullSendToAgentButton)
             m_pullSendToAgentButton->setEnabled(hasAgent && writable);
@@ -20048,8 +20071,9 @@ void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
 QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
 {
     QSet<int> linked;
-    // An agent-created PR carries the issue number directly.
-    if (const AgentSession *session = agentSessionForPull(pr.number))
+    // An agent-created PR carries the issue number directly (matched by PR number
+    // or through its head branch — issue #257).
+    if (const AgentSession *session = agentSessionForPull(pr.number, pr.head))
         if (session->issueNumber > 0)
             linked.insert(session->issueNumber);
     // Plus any "closes #N" style reference in the PR text.
@@ -23353,13 +23377,29 @@ const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) cons
     return nullptr;
 }
 
-const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
+const AgentSession *MainWindow::agentSessionForPull(int prNumber,
+                                                    const QString &headBranch) const
 {
-    if (prNumber <= 0)
-        return nullptr;
-    for (const AgentSession &session : m_agentSessions) {
-        if (session.prNumber == prNumber)
-            return &session;
+    if (prNumber > 0) {
+        for (const AgentSession &session : m_agentSessions) {
+            if (session.prNumber == prNumber)
+                return &session;
+        }
+    }
+    // No PR-number link: an agent may still be attached through the head branch
+    // it ran on (issue #257). Scope to the detail repo so a like-named branch in
+    // another repo can't false-match, skip sessions already bound to a different
+    // PR, and prefer the most recent matching session.
+    if (!headBranch.isEmpty() && m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        for (auto it = m_agentSessions.crbegin(); it != m_agentSessions.crend();
+             ++it) {
+            if (it->branchName == headBranch && it->owner == repo.owner &&
+                it->name == repo.name &&
+                (it->prNumber == 0 || it->prNumber == prNumber))
+                return &*it;
+        }
     }
     return nullptr;
 }
