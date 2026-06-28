@@ -1,3 +1,39 @@
+From 656f41cd9687fa9efb16afe7f598c1e56c188979 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM@forkmesh>
+Date: Sun, 28 Jun 2026 15:03:50 -0400
+Subject: [PATCH 1/2] landing: update home route shell
+
+## Summary
+- Home page, public routes, Worker route config, Qt dashboard link, and landing page route tests without large binary assets.
+
+Split from local landing PR #43 into an independently reviewable signed patch.
+
+## Tests
+- Original combined branch passed: python3 -m py_compile src/entry.py
+---
+ cloudflare_worker/public/404.html             |  242 +
+ cloudflare_worker/public/_redirects           |   27 +
+ cloudflare_worker/public/desktop.html         |   28 +
+ cloudflare_worker/public/index.html           | 4214 ++++++++++++++---
+ cloudflare_worker/src/entry.py                |   18 +-
+ cloudflare_worker/tests/test_404_frontend.py  |   61 +
+ .../tests/test_feature_pricing_section.py     |   76 +
+ .../tests/test_features_route.py              |   28 +
+ .../tests/test_index_pricing_section.py       |   72 +
+ .../tests/test_issue_filter_frontend.py       |   12 +-
+ cloudflare_worker/tests/test_public_logo.py   |   13 +-
+ .../tests/test_repo_mirrors_frontend.py       |   14 +-
+ cloudflare_worker/wrangler.toml               |   13 +-
+ qt_client/src/MainWindow.cpp                  |   23 +-
+ 14 files changed, 4197 insertions(+), 644 deletions(-)
+ create mode 100644 cloudflare_worker/public/404.html
+ create mode 100644 cloudflare_worker/public/_redirects
+ create mode 100644 cloudflare_worker/public/desktop.html
+ create mode 100644 cloudflare_worker/tests/test_404_frontend.py
+ create mode 100644 cloudflare_worker/tests/test_feature_pricing_section.py
+ create mode 100644 cloudflare_worker/tests/test_features_route.py
+ create mode 100644 cloudflare_worker/tests/test_index_pricing_section.py
+
 diff --git a/cloudflare_worker/public/404.html b/cloudflare_worker/public/404.html
 new file mode 100644
 index 00000000..684f3a2a
@@ -5020,7 +5056,7 @@ index 348587d2..8dbbeee2 100644
  
  def test_catalog_js_loads_mirrors_endpoint_lazily():
 diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index 3b697653..3790d7dc 100644
+index 3b697653..b72b44dd 100644
 --- a/cloudflare_worker/wrangler.toml
 +++ b/cloudflare_worker/wrangler.toml
 @@ -14,14 +14,13 @@ crons = ["* * * * *"]
@@ -5043,6 +5079,15 @@ index 3b697653..3790d7dc 100644
  
  [vars]
  NODE_NAME = "forkmesh-mainnode"
+@@ -80,7 +79,7 @@ class_name = "ForkMeshHost"
+ [[d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh"
+-database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
++database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
 diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
 index bfd09e92..29c71319 100644
 --- a/qt_client/src/MainWindow.cpp
@@ -5093,3 +5138,32 @@ index bfd09e92..29c71319 100644
                                           : "Login failed" +
                                                 (err.isEmpty() ? QString() : ": " + err) +
                                                 ".");
+-- 
+2.47.3
+
+
+From a79596ab3ab59216db1ee4d4c442e7a49681ac0e Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Sun, 28 Jun 2026 15:09:56 -0400
+Subject: [PATCH 2/2] pull #46: edit cloudflare_worker/wrangler.toml
+
+---
+ cloudflare_worker/wrangler.toml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index b72b44dd..3790d7dc 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -79,7 +79,7 @@ class_name = "ForkMeshHost"
+ [[d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh"
+-database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
++database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
+-- 
+2.47.3
+
