@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 300
 title: fix this forkmesh> This plugin does not support propagateSizeHints()
 status: open
-labels: []
+labels: [Incomplete]
 milestone: 
 priority: 0
 progress: 0
