@@ -21140,12 +21140,79 @@ QWidget *MainWindow::buildAgentsTab()
                     showAgentSession(m_selectedAgentSessionId);
             });
 
+    // Search the transcript (adhoc #201): a query box with a "3/12" match counter
+    // and prev/next steppers. Typing highlights every match in the transcript and
+    // jumps to the first; Enter / the steppers walk through the hits.
+    m_transcriptSearch = new QLineEdit;
+    m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
+    m_transcriptSearch->setPlaceholderText(
+        QString::fromUtf8("Search transcript\xE2\x80\xA6"));
+    m_transcriptSearch->setClearButtonEnabled(true);
+    m_transcriptSearch->setFixedWidth(190);
+    m_transcriptSearchCount = new QLabel;
+    m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
+    m_transcriptSearchPrev = new QPushButton;
+    m_transcriptSearchNext = new QPushButton;
+    for (QPushButton *b : {m_transcriptSearchPrev, m_transcriptSearchNext}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+        b->setEnabled(false);
+    }
+    setOcticon(m_transcriptSearchPrev, "chevron-up", 14);
+    setOcticon(m_transcriptSearchNext, "chevron-down", 14);
+    m_transcriptSearchPrev->setToolTip(QStringLiteral("Previous match"));
+    m_transcriptSearchNext->setToolTip(QStringLiteral("Next match"));
+    connect(m_transcriptSearch, &QLineEdit::textChanged, this,
+            [this](const QString &t) {
+                if (!m_agentTranscript)
+                    return;
+                const QString q = t.trimmed();
+                if (q.isEmpty())
+                    m_agentTranscript->clearSearch();
+                else
+                    m_agentTranscript->search(q);
+            });
+    connect(m_transcriptSearch, &QLineEdit::returnPressed, this, [this] {
+        if (m_agentTranscript)
+            m_agentTranscript->searchNext();
+    });
+    connect(m_transcriptSearchPrev, &QPushButton::clicked, this, [this] {
+        if (m_agentTranscript)
+            m_agentTranscript->searchPrev();
+    });
+    connect(m_transcriptSearchNext, &QPushButton::clicked, this, [this] {
+        if (m_agentTranscript)
+            m_agentTranscript->searchNext();
+    });
+    connect(m_agentTranscript, &ClaudeTranscriptView::searchResultsChanged, this,
+            [this](int current, int total) {
+                if (m_transcriptSearchCount) {
+                    const bool empty = !m_transcriptSearch
+                                       || m_transcriptSearch->text().trimmed().isEmpty();
+                    m_transcriptSearchCount->setText(
+                        empty ? QString()
+                              : QStringLiteral("%1/%2").arg(current).arg(total));
+                }
+                const bool any = total > 0;
+                if (m_transcriptSearchPrev)
+                    m_transcriptSearchPrev->setEnabled(any);
+                if (m_transcriptSearchNext)
+                    m_transcriptSearchNext->setEnabled(any);
+            });
+
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
     toggleRow->addStretch(1);
+    toggleRow->addWidget(m_transcriptSearch);
+    toggleRow->addSpacing(6);
+    toggleRow->addWidget(m_transcriptSearchCount);
+    toggleRow->addWidget(m_transcriptSearchPrev);
+    toggleRow->addWidget(m_transcriptSearchNext);
+    toggleRow->addSpacing(8);
     toggleRow->addWidget(m_agentDiffModeCombo);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
@@ -24314,6 +24381,8 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
             m_agentLog->moveCursor(QTextCursor::End);
         }
     }
+    if (full)
+        reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
 }
 
 // Buffer one event for a session and, if that session is the one on screen,
@@ -24761,6 +24830,20 @@ void MainWindow::renderTranscriptForSession(int sessionId)
     // skip a redundant rebuild on the next reload (see its stream branch).
     m_renderedTranscriptSession = sessionId;
     m_renderedTranscriptCount = events.size();
+    reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
+}
+
+// Re-run the search box's query so highlights persist across a session switch
+// or full re-render (the rebuild dropped them when it cleared the view).
+void MainWindow::reapplyTranscriptSearch()
+{
+    if (!m_agentTranscript || !m_transcriptSearch)
+        return;
+    const QString q = m_transcriptSearch->text().trimmed();
+    if (q.isEmpty())
+        m_agentTranscript->clearSearch();
+    else
+        m_agentTranscript->search(q);
 }
 
 // Fill the edited-files panel: the union of files seen in tool calls and the
