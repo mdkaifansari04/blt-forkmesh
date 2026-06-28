@@ -829,7 +829,27 @@ public:
         QStyledItemDelegate::paint(painter, opt, index);
     }
 
+    // Item views shape (and, for elided columns, fully lay out) the ENTIRE
+    // display string on every paint, even though only the first few dozen
+    // characters are ever visible in a list cell. An adhoc agent session stores
+    // its whole prompt as the row "title", so a single cell could carry a
+    // multi-thousand-character backtrace (issue #216) and block the GUI thread
+    // for >1.5 s HarfBuzz-shaping text nobody can see. Capping the handed-off
+    // string to a length far beyond any column's visible width keeps the drawn
+    // result pixel-identical while bounding the per-paint shaping cost.
+    QString displayText(const QVariant &value, const QLocale &locale) const override
+    {
+        QString text = QStyledItemDelegate::displayText(value, locale);
+        if (text.size() > kMaxCellDisplayChars) {
+            text.truncate(kMaxCellDisplayChars);
+            text += QChar(0x2026); // horizontal ellipsis
+        }
+        return text;
+    }
+
 protected:
+    static constexpr int kMaxCellDisplayChars = 512;
+
     bool eventFilter(QObject *obj, QEvent *event) override
     {
         if (event->type() == QEvent::Leave)
@@ -11989,6 +12009,12 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
+    // Record onto the Back / Forward trail whenever the visible repo tab changes,
+    // by click or programmatically (opening a pull/issue jumps to its tab), so
+    // every such move is a step the arrows can return to. Debounced and guarded
+    // against replays, so it coalesces a repo-open's tab churn into one entry.
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         if (id == 2) {
@@ -22339,6 +22365,20 @@ void MainWindow::refreshAgentTable()
 {
     if (!m_agentTable)
         return;
+    // UI-stall fix: each session whose Diff stat isn't memoised yet shells two git
+    // reads (agentDiffStat), so a cold refresh after reloadAgents() clears the cache
+    // can block the GUI thread for seconds. GitKeepAlive pumps the event loop across
+    // those waits so the window stays responsive; the guard stops a queued slot
+    // (e.g. a terminal-finished -> reloadAgents firing during the pump) from
+    // re-entering and corrupting the half-built table.
+    if (m_agentTableRefreshing)
+        return;
+    m_agentTableRefreshing = true;
+    struct RefreshGuard {
+        bool &flag;
+        ~RefreshGuard() { flag = false; }
+    } refreshGuard{m_agentTableRefreshing};
+    GitKeepAlive keepAlive;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
@@ -22357,7 +22397,11 @@ void MainWindow::refreshAgentTable()
     QSignalBlocker block(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+    // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
+    // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
+    // this iterator valid even if the member vector is replaced underneath us.
+    const QList<AgentSession> sessions = m_agentSessions;
+    for (const AgentSession &session : sessions) {
         if (session.owner != owner || session.name != name)
             continue;
         if (!query.isEmpty()) {
@@ -22557,17 +22601,17 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
 // branch still exists and that every commit the run added since its fork point
 // is now contained in the base branch — i.e. the work merged, not merely that an
 // empty branch trivially shares history.
-bool MainWindow::agentSessionLandedInBase(const AgentSession &session) const
+bool MainWindow::agentSessionLandedInBase(const AgentSession &session,
+                                          const QString &dir,
+                                          const QString &base) const
 {
     if (session.prNumber > 0) {
         for (const PullRequest &pr : m_currentPulls)
             if (pr.number == session.prNumber)
                 return pr.status == QLatin1String("merged");
     }
-    const QString dir = repoGitDir();
     if (dir.isEmpty() || session.branchName.isEmpty())
         return false;
-    const QString base = repoDefaultBranch(repoBranches());
     if (base.isEmpty() || session.branchName == base)
         return false;
     // The branch must still exist locally to reason about it.
@@ -22688,11 +22732,27 @@ void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
         return;
+    // Re-entrancy guard: the GitKeepAlive pump below services queued slots, and a
+    // reloadAgents() among them reassigns m_agentSessions — a second pass over the
+    // list mid-iteration would dangle the reference we're walking. (Mirrors the
+    // m_repoDetailLoading guard in openRepoDetail.)
+    if (m_agentMergeStateRefreshing)
+        return;
+    m_agentMergeStateRefreshing = true;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name = m_repositories.at(m_repoDetailIndex).name;
     }
+    // The git dir and default branch are the same for every session of this repo,
+    // so resolve them once instead of re-shelling `git branch` (and a possible
+    // `symbolic-ref`) inside the per-session check — that repeated work was the
+    // bulk of a multi-second GUI stall on repos with many sessions. The remaining
+    // per-session reads run under a GitKeepAlive so the event loop keeps pumping
+    // and the window stays responsive across the batch.
+    GitKeepAlive keepAlive;
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
     for (AgentSession &s : m_agentSessions) {
         if (s.merged || s.owner != owner || s.name != name)
             continue;
@@ -22700,7 +22760,7 @@ void MainWindow::refreshAgentMergeState()
         // checks until it has produced something.
         if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
             continue;
-        if (!agentSessionLandedInBase(s))
+        if (!agentSessionLandedInBase(s, dir, base))
             continue;
         s.merged = true;
         s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -22708,6 +22768,7 @@ void MainWindow::refreshAgentMergeState()
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
     }
+    m_agentMergeStateRefreshing = false;
 }
 
 // HTML for a branch name that, when clicked in the agent session header, opens
@@ -28625,6 +28686,11 @@ void MainWindow::recordNavLocation()
     // The repo only distinguishes a place inside the Code section; elsewhere the
     // detail panel isn't shown, so normalise it out to avoid phantom entries.
     here.repoIndex = (here.section == 0) ? m_repoDetailIndex : -1;
+    // Inside an open repo, the visible tab (Code / Commits / Issues / Pulls / …)
+    // is part of the place too, so switching tabs is a step Back can return to.
+    here.detailTab = (here.repoIndex >= 0 && m_repoDetailStack)
+                         ? m_repoDetailStack->currentIndex()
+                         : -1;
 
     if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() &&
         m_navHistory.at(m_navHistoryIndex) == here)
@@ -28654,11 +28720,36 @@ void MainWindow::restoreNavEntry(int index)
         place.repoIndex < m_repositories.size() &&
         place.repoIndex != m_repoDetailIndex) {
         openRepoDetailDeferred(place.repoIndex); // lands on the Code section itself
-    } else {
-        showSection(place.section);
+        // The open runs on the next event-loop turn and settles on its default
+        // tab; re-select the recorded tab (and only then drop the guard) once it
+        // has, so a single Back lands on the exact tab without recording a step.
+        const NavPlace target = place;
+        QTimer::singleShot(0, this, [this, target] {
+            applyNavDetailTab(target);
+            m_navRestoring = false;
+            updateNavHistoryButtons();
+        });
+        return;
     }
+    showSection(place.section);
+    applyNavDetailTab(place);
     m_navRestoring = false;
     updateNavHistoryButtons();
+}
+
+// Re-select the repo tab a recorded place was on, driving it through the same
+// click path so the tab's data load runs. No-op outside an open repo, or when
+// that tab is already showing.
+void MainWindow::applyNavDetailTab(const NavPlace &place)
+{
+    if (place.section != 0 || place.repoIndex < 0 || place.detailTab < 0)
+        return;
+    if (!m_repoDetailTabs || !m_repoDetailStack)
+        return;
+    if (m_repoDetailStack->currentIndex() == place.detailTab)
+        return; // already on this tab
+    if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab))
+        b->click(); // switches the tab and loads its data, like a real click
 }
 
 void MainWindow::navigateBack()
@@ -32571,8 +32662,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
     }
     loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
+    // the Branches panel — it runs a git command per branch (probing each for
+    // merge conflicts), which was slow and pointless here since "Merge into main"
+    // is driven from the Agents/Worktrees tabs, not the Branches tab.
+    // loadBranchesAndTags() repaints the panel only if it's the visible tab.
+    loadBranchesAndTags();
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
@@ -35629,6 +35724,15 @@ void MainWindow::loadFileSearchIndex()
 
 void MainWindow::loadAboutSidebar()
 {
+    // This panel fires several synchronous git reads back to back — `ls-tree`,
+    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
+    // that walks every commit. On a large history those add up to multiple
+    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
+    // so do the reads under a keep-alive scope: waitForGit() then polls in short
+    // slices and pumps the event loop, keeping the window responsive (and the
+    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
+    GitKeepAlive keepAlive;
+
     const QString dir = repoGitDir();
     const RepositoryRecord *repo =
         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
