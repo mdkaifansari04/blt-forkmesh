@@ -490,6 +490,32 @@ int main(int argc, char *argv[])
               QString("worktrees list shows the branch one commit ahead of main "
                       "(ahead/behind cell = %1)").arg(abText));
 
+        // Opening the Worktrees tab the way a user does (clicking its nav button)
+        // should hand keyboard focus to the table, so arrow keys work right away
+        // without first clicking a row.
+        window.testClickRepoDetailTab(window.testWorktreesTabIndex());
+        QApplication::processEvents();
+        check(window.testWorktreesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Worktrees tab focuses the table so the "
+                             "arrow keys can move through its rows"));
+
+        // With feature/keep-selected (the bottom row) selected, an Up arrow on the
+        // table should move the selection to the *other* worktree row; Down stays
+        // put because it's already the last row.
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterUp = window.testArrowOnWorktrees(false);
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterDown = window.testArrowOnWorktrees(true);
+        qInfo("arrow nav: up->%s down->%s",
+              qPrintable(afterUp), qPrintable(afterDown));
+        check(!afterUp.isEmpty() &&
+                  afterUp != QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow up moves the worktree selection to the row above"));
+        check(afterDown == QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow down on the last worktree row stays put"));
+
         // issue #172: the Branches list must also surface the worktree a branch
         // is checked out in, so an agent's isolated working tree is visible
         // without a trip to the Worktrees tab.
@@ -527,6 +553,31 @@ int main(int argc, char *argv[])
         check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
               QStringLiteral("a branch with no agent session has an empty "
                              "Issue / Agent cell (adhoc #191)"));
+    }
+
+    // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
+    // anchored to main and NOT follow the working tree's HEAD. Parking the
+    // checkout on a feature branch — what the commits-area branch switcher or a
+    // transient branches-page merge does — must never silently change the default
+    // branch out from under the merge editor.
+    {
+        QTemporaryDir defaultBranchRepo;
+        if (initGitRepo(defaultBranchRepo)) {
+            // Leave HEAD on a feature branch, exactly as if the user had switched
+            // to it in the commits area.
+            runGitChecked(defaultBranchRepo.path(),
+                          {"checkout", "-b", "feature/parked"});
+            runGitChecked(defaultBranchRepo.path(),
+                          {"commit", "--allow-empty", "-m", "work on feature"});
+            const int idx = window.testAddLocalRepository("me", "dbrepo",
+                                                          defaultBranchRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            check(window.testRepoDefaultBranch() == QStringLiteral("main"),
+                  QString("default branch stays main while HEAD is parked on a "
+                          "feature branch (got %1)")
+                      .arg(window.testRepoDefaultBranch()));
+        }
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
