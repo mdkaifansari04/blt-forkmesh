@@ -15046,15 +15046,31 @@ void MainWindow::updateDiscussionActionState()
                      : QStringLiteral("Only the owning node can sync this inbox"));
     }
     const bool haveDiscussion = m_currentDiscussionNumber > 0;
-    if (m_discussionComposer)
-        m_discussionComposer->setEnabled(haveRepo && haveDiscussion);
+    const bool canParticipate = haveRepo && (writable || m_networkAccess);
+    // Keep the composer live even with nothing selected so you can start a
+    // discussion just by typing; the title is derived from the first line.
+    if (m_discussionComposer) {
+        m_discussionComposer->setEnabled(canParticipate);
+        m_discussionComposer->setPlaceholderText(
+            haveDiscussion
+                ? QStringLiteral("Add to the discussion...")
+                : QStringLiteral("Start a discussion — just type, the title is "
+                                 "taken from your first line..."));
+    }
     if (m_discussionCommentButton) {
-        m_discussionCommentButton->setEnabled(
-            haveRepo && haveDiscussion && (writable || m_networkAccess));
+        m_discussionCommentButton->setEnabled(canParticipate);
+        m_discussionCommentButton->setText(
+            haveDiscussion ? QStringLiteral("Comment")
+                           : QStringLiteral("Start discussion"));
+        setOcticon(m_discussionCommentButton, haveDiscussion ? "comment" : "plus",
+                   16);
+        const QString noun =
+            haveDiscussion ? QStringLiteral("comment") : QStringLiteral("discussion");
         m_discussionCommentButton->setToolTip(
-            writable ? QStringLiteral("Add a comment")
+            writable ? (haveDiscussion ? QStringLiteral("Add a comment")
+                                       : QStringLiteral("Start a discussion"))
                      : m_networkAccess
-                           ? QStringLiteral("Send a signed comment to the owner")
+                           ? QStringLiteral("Send a signed %1 to the owner").arg(noun)
                            : QStringLiteral("Network access is unavailable"));
     }
 }
@@ -15134,10 +15150,86 @@ void MainWindow::createDiscussionDialog()
     submitDiscussionEventToInbox(0, ev, title);
 }
 
+QString MainWindow::discussionTitleFromBody(const QString &body)
+{
+    // Pull a readable title out of the first meaningful line of the body,
+    // dropping leading Markdown markers (headings, quotes, list bullets).
+    static const QRegularExpression prefix(
+        QStringLiteral("^(#{1,6}\\s+|>\\s*|[-*+]\\s+|\\d+[.)]\\s+)+"));
+    QString title;
+    const QStringList lines = body.split('\n');
+    for (const QString &raw : lines) {
+        QString line = raw.trimmed();
+        line.remove(prefix);
+        line = line.trimmed();
+        if (!line.isEmpty()) {
+            title = line;
+            break;
+        }
+    }
+    if (title.isEmpty())
+        title = QStringLiteral("Untitled discussion");
+
+    constexpr int maxLen = 80;
+    if (title.size() > maxLen) {
+        QString clipped = title.left(maxLen);
+        const int space = clipped.lastIndexOf(' ');
+        if (space > maxLen / 2)
+            clipped.truncate(space);
+        title = clipped.trimmed() + QStringLiteral("…");
+    }
+    return title;
+}
+
+void MainWindow::startDiscussionFromComposer()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+        !m_discussionComposer)
+        return;
+    const QString body = m_discussionComposer->markdown().trimmed();
+    if (body.isEmpty()) {
+        setDiscussionInlineNotice("Type something to start a discussion.", true);
+        return;
+    }
+    const QString title = discussionTitleFromBody(body);
+    const QString category =
+        DiscussionStore::normalizedCategory(QStringLiteral("Ideas"));
+
+    DiscussionStore store = discussionStoreForCurrentRepo();
+    if (store.canWrite()) {
+        QString error;
+        const int number = store.createDiscussion(title, body, category, &error);
+        if (number < 0) {
+            setDiscussionInlineNotice(
+                error.isEmpty() ? "Could not create the discussion." : error, true);
+            return;
+        }
+        m_discussionComposer->setMarkdown(QString());
+        m_currentDiscussionNumber = number;
+        reloadDiscussions();
+        showDiscussion(number);
+        propagateRepoUpdate(m_repoDetailIndex);
+        setDiscussionInlineNotice("Discussion created.");
+        return;
+    }
+
+    DiscussionEvent ev;
+    ev.type = QStringLiteral("open");
+    ev.title = title;
+    ev.category = category;
+    ev.body = body;
+    ev = store.makeSignedEvent(0, ev);
+    submitDiscussionEventToInbox(0, ev, title);
+}
+
 void MainWindow::postDiscussionComment()
 {
-    if (m_currentDiscussionNumber <= 0 || !m_discussionComposer)
+    if (!m_discussionComposer)
         return;
+    if (m_currentDiscussionNumber <= 0) {
+        startDiscussionFromComposer();
+        return;
+    }
     const QString body = m_discussionComposer->markdown().trimmed();
     if (body.isEmpty()) {
         setDiscussionInlineNotice("Write a comment first.", true);
