@@ -22339,6 +22339,20 @@ void MainWindow::refreshAgentTable()
 {
     if (!m_agentTable)
         return;
+    // UI-stall fix: each session whose Diff stat isn't memoised yet shells two git
+    // reads (agentDiffStat), so a cold refresh after reloadAgents() clears the cache
+    // can block the GUI thread for seconds. GitKeepAlive pumps the event loop across
+    // those waits so the window stays responsive; the guard stops a queued slot
+    // (e.g. a terminal-finished -> reloadAgents firing during the pump) from
+    // re-entering and corrupting the half-built table.
+    if (m_agentTableRefreshing)
+        return;
+    m_agentTableRefreshing = true;
+    struct RefreshGuard {
+        bool &flag;
+        ~RefreshGuard() { flag = false; }
+    } refreshGuard{m_agentTableRefreshing};
+    GitKeepAlive keepAlive;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
@@ -22357,7 +22371,11 @@ void MainWindow::refreshAgentTable()
     QSignalBlocker block(m_agentTable);
     m_agentTable->setSortingEnabled(false);
     m_agentTable->setRowCount(0);
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+    // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
+    // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
+    // this iterator valid even if the member vector is replaced underneath us.
+    const QList<AgentSession> sessions = m_agentSessions;
+    for (const AgentSession &session : sessions) {
         if (session.owner != owner || session.name != name)
             continue;
         if (!query.isEmpty()) {
