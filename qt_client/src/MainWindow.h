@@ -297,6 +297,13 @@ public:
     // window? (hasFocus() also requires the window to be active, which an
     // offscreen test window isn't.)
     bool testWorktreesTableHasKeyboardFocus() const;
+    // Same coverage for the Releases and Mirror-nodes tabs, whose list tables
+    // also grab keyboard focus on open so Up/Down arrows (and Enter to open)
+    // work without a click first (adhoc #183).
+    int testReleasesTabIndex() const { return m_releasesTabIndex; }
+    int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
+    bool testReleasesTableHasKeyboardFocus() const;
+    bool testMirrorNodesTableHasKeyboardFocus() const;
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
