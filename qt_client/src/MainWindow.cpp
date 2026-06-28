@@ -16586,39 +16586,71 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // One dry-run runs off-thread at a time. A redundant drain (a double
+    // singleShot, or queuePullConflictCheck firing while a worker runs) just
+    // returns here — the in-flight worker reschedules us when it finishes, so the
+    // queue still drains in order.
+    if (m_pullConflictCheckInFlight)
+        return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
+    const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
-    if (store.canWrite()) {
-        bool clean = false;
-        QStringList conflictFiles;
-        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
-        // single cold `git apply --check` can run well over the 1.5s stall
-        // threshold — pump the event loop while it runs so the window stays
-        // responsive instead of freezing on one PR's dry-run.
-        const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
-                                 /*keepGuiAlive=*/true) &&
-            !clean;
-        // The gen check at entry already gates this turn; re-check defensively in
-        // case checkMergeable() ever pumps the event loop and lets a fresh
-        // reloadPulls() supersede this pass while git ran.
-        if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
-            if (conflict)
-                m_pullConflictByNumber.insert(number, true);
-            else
-                m_pullConflictByNumber.remove(number);
-            setPullConflictBadge(number, conflict);
-            // If this dry-run was for the PR currently on screen, refresh its
-            // merge UI now that the result is cached — updatePullActionState()
-            // deferred to us instead of blocking the GUI on the live check.
-            if (number == m_currentPullNumber)
-                updatePullActionState();
-        }
+    if (!store.canWrite()) {
+        // No working tree to test the patch against; skip and drain the rest.
+        if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+            QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+        return;
     }
-    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
-        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A single cold `git apply --check` can run well over the 1.5s stall
+    // threshold, so run it on a worker thread rather than on the GUI thread. The
+    // old keepGuiAlive path pumped the event loop in place, which could itself
+    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
+    // reports). PullStore is copied by value and only shells out to git, so the
+    // worker touches no shared Qt state; results come back via shared_ptr to the
+    // finished handler, which runs on the main thread.
+    m_pullConflictCheckInFlight = true;
+    auto clean = std::make_shared<bool>(false);
+    auto mergeable = std::make_shared<bool>(false);
+    auto conflictFiles = std::make_shared<QStringList>();
+    QThread *worker = QThread::create([store, number, clean, mergeable,
+                                       conflictFiles]() mutable {
+        *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
+                                          nullptr, /*keepGuiAlive=*/false);
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, gen, number, fingerprint, clean, mergeable,
+             conflictFiles]() {
+                m_pullConflictCheckInFlight = false;
+                worker->deleteLater();
+                const bool conflict = *mergeable && !*clean;
+                // Apply the result only if this repo/list is still current; a
+                // reloadPulls() may have bumped the generation while git ran.
+                if (gen == m_pullConflictGen) {
+                    m_pullConflictCache.insert(
+                        number, {fingerprint, conflict, *conflictFiles});
+                    if (conflict)
+                        m_pullConflictByNumber.insert(number, true);
+                    else
+                        m_pullConflictByNumber.remove(number);
+                    setPullConflictBadge(number, conflict);
+                    // If this dry-run was for the PR currently on screen, refresh
+                    // its merge UI now that the result is cached.
+                    if (number == m_currentPullNumber)
+                        updatePullActionState();
+                }
+                // Drain the next pending check under the *current* generation,
+                // whether or not this result was superseded: a superseding
+                // reloadPulls() rebuilt the queue and is waiting on this worker to
+                // release the in-flight guard.
+                if (!m_pendingPullConflictChecks.isEmpty()) {
+                    const quint64 current = m_pullConflictGen;
+                    QTimer::singleShot(0, this, [this, current] {
+                        processPendingPullConflicts(current);
+                    });
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
