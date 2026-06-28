@@ -22577,17 +22577,17 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
 // branch still exists and that every commit the run added since its fork point
 // is now contained in the base branch — i.e. the work merged, not merely that an
 // empty branch trivially shares history.
-bool MainWindow::agentSessionLandedInBase(const AgentSession &session) const
+bool MainWindow::agentSessionLandedInBase(const AgentSession &session,
+                                          const QString &dir,
+                                          const QString &base) const
 {
     if (session.prNumber > 0) {
         for (const PullRequest &pr : m_currentPulls)
             if (pr.number == session.prNumber)
                 return pr.status == QLatin1String("merged");
     }
-    const QString dir = repoGitDir();
     if (dir.isEmpty() || session.branchName.isEmpty())
         return false;
-    const QString base = repoDefaultBranch(repoBranches());
     if (base.isEmpty() || session.branchName == base)
         return false;
     // The branch must still exist locally to reason about it.
@@ -22708,11 +22708,27 @@ void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
         return;
+    // Re-entrancy guard: the GitKeepAlive pump below services queued slots, and a
+    // reloadAgents() among them reassigns m_agentSessions — a second pass over the
+    // list mid-iteration would dangle the reference we're walking. (Mirrors the
+    // m_repoDetailLoading guard in openRepoDetail.)
+    if (m_agentMergeStateRefreshing)
+        return;
+    m_agentMergeStateRefreshing = true;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name = m_repositories.at(m_repoDetailIndex).name;
     }
+    // The git dir and default branch are the same for every session of this repo,
+    // so resolve them once instead of re-shelling `git branch` (and a possible
+    // `symbolic-ref`) inside the per-session check — that repeated work was the
+    // bulk of a multi-second GUI stall on repos with many sessions. The remaining
+    // per-session reads run under a GitKeepAlive so the event loop keeps pumping
+    // and the window stays responsive across the batch.
+    GitKeepAlive keepAlive;
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
     for (AgentSession &s : m_agentSessions) {
         if (s.merged || s.owner != owner || s.name != name)
             continue;
@@ -22720,7 +22736,7 @@ void MainWindow::refreshAgentMergeState()
         // checks until it has produced something.
         if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
             continue;
-        if (!agentSessionLandedInBase(s))
+        if (!agentSessionLandedInBase(s, dir, base))
             continue;
         s.merged = true;
         s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -22728,6 +22744,7 @@ void MainWindow::refreshAgentMergeState()
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
     }
+    m_agentMergeStateRefreshing = false;
 }
 
 // HTML for a branch name that, when clicked in the agent session header, opens
