@@ -77,6 +77,8 @@
 #include <QSslError>
 #include <QImage>
 #include <QKeyEvent>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QConicalGradient>
 #include <QLinearGradient>
 #include <QPainter>
@@ -602,6 +604,192 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+};
+
+// A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
+// active node mirroring this repo. A dot flashes green when its node serves a
+// clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
+// idle dots sit at a steady online green. Only this node generates live serve
+// events, so its own dot is the one that blinks in practice, but the strip is
+// keyed by node id so any node's activity can be surfaced as the mesh grows.
+class MirrorActivityStrip : public QWidget
+{
+public:
+    struct Dot
+    {
+        QString id;
+        QString name;
+        bool online = false;
+        bool self = false;
+    };
+
+    explicit MirrorActivityStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFixedHeight(18);
+        // Drives the fade while any dot is mid-blink; idle when nothing pulses.
+        m_anim = new QTimer(this);
+        m_anim->setInterval(40);
+        connect(m_anim, &QTimer::timeout, this, [this] {
+            if (!stepPulses())
+                m_anim->stop();
+            update();
+        });
+    }
+
+    void setNodes(const QVector<Dot> &dots)
+    {
+        m_dots = dots;
+        // Drop pulses for nodes no longer present; keep the rest so a roster
+        // refresh doesn't reset a blink already in flight.
+        QSet<QString> ids;
+        for (const Dot &d : dots)
+            ids.insert(d.id);
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            if (ids.contains(it.key()))
+                ++it;
+            else
+                it = m_pulse.erase(it);
+        }
+        update();
+    }
+
+    // Flash the dot for `nodeId`: green for a served clone, orange for browsing.
+    void pulse(const QString &nodeId, bool clone)
+    {
+        bool known = false;
+        for (const Dot &d : m_dots)
+            if (d.id == nodeId) {
+                known = true;
+                break;
+            }
+        if (!known)
+            return;
+        m_pulse.insert(nodeId, Pulse{1.0, clone});
+        if (!m_anim->isActive())
+            m_anim->start();
+        update();
+    }
+
+    bool isEmpty() const { return m_dots.isEmpty(); }
+
+    // Width needed to show every dot, used to size the floating overlay above the
+    // Mirror nodes tab. Capped so a large mesh can't stretch the band; paintEvent
+    // already stops drawing once it runs out of room.
+    int preferredWidth() const
+    {
+        if (m_dots.isEmpty())
+            return 0;
+        const qreal last = (kRadius + 2.0) + (m_dots.size() - 1) * kSpacing;
+        return qMin(240, int(last + kRadius + 4.0));
+    }
+
+protected:
+    QSize sizeHint() const override { return QSize(160, 18); }
+
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(e);
+            if (const Dot *d = dotAt(he->pos())) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("%1%2 \xC2\xB7 %3")
+                        .arg(d->name,
+                             d->self ? QStringLiteral(" (you)") : QString(),
+                             d->online ? QStringLiteral("online")
+                                       : QStringLiteral("offline")),
+                    this);
+            } else {
+                QToolTip::hideText();
+            }
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const QColor base =
+                d.online ? QColor("#3fb950") : QColor("#484f58");
+            QColor col = base;
+            const Pulse ph = m_pulse.value(d.id, Pulse{});
+            if (ph.level > 0.0) {
+                const QColor flash =
+                    ph.clone ? QColor("#3fb950") : QColor("#d29922");
+                col = blend(base, flash, ph.level);
+                QColor halo = flash;
+                halo.setAlphaF(0.40 * ph.level);
+                p.setPen(Qt::NoPen);
+                p.setBrush(halo);
+                const qreal hr = kRadius + 4.0 * ph.level;
+                p.drawEllipse(QPointF(x, cy), hr, hr);
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
+            p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            x += kSpacing;
+            if (x > width() - kRadius)
+                break; // ran out of room; the table still lists every node
+        }
+    }
+
+private:
+    struct Pulse
+    {
+        double level = 0.0; // remaining brightness, fades 1 -> 0
+        bool clone = false; // green (clone) vs orange (browse)
+    };
+
+    static constexpr qreal kRadius = 5.0;
+    static constexpr qreal kSpacing = 15.0;
+
+    const Dot *dotAt(const QPoint &pos) const
+    {
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const qreal dx = pos.x() - x;
+            const qreal dy = pos.y() - cy;
+            if (dx * dx + dy * dy <= (kRadius + 3.0) * (kRadius + 3.0))
+                return &d;
+            x += kSpacing;
+        }
+        return nullptr;
+    }
+
+    // Advance every pulse one frame; true while any remain active.
+    bool stepPulses()
+    {
+        bool any = false;
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            it.value().level -= 0.06; // ~0.7s flash
+            if (it.value().level <= 0.0) {
+                it = m_pulse.erase(it);
+            } else {
+                any = true;
+                ++it;
+            }
+        }
+        return any;
+    }
+
+    static QColor blend(const QColor &a, const QColor &b, double t)
+    {
+        t = qBound(0.0, t, 1.0);
+        return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                                a.greenF() + (b.greenF() - a.greenF()) * t,
+                                a.blueF() + (b.blueF() - a.blueF()) * t);
+    }
+
+    QVector<Dot> m_dots;
+    QHash<QString, Pulse> m_pulse; // nodeId -> in-flight flash
+    QTimer *m_anim = nullptr;
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -11640,6 +11828,19 @@ QWidget *MainWindow::buildRepoDetailSection()
             switchToAgentsTab(sessionId);
     });
     m_looperToggle = looperToggle;
+
+    // Live mirror-activity dots floating just above the Mirror nodes tab (adhoc
+    // #197): one dot per active node, flashing green for a served clone and
+    // orange for codebase browsing. Like the looper toggle over Issues it's an
+    // overlay, so it shows from any tab and never reflows the page; the old
+    // in-page "Live ›" row was dropped in its favour. Created parented to the
+    // window; positionMirrorActivityStrip reparents it onto the page.
+    auto *mirrorStrip = new MirrorActivityStrip(this);
+    mirrorStrip->setToolTip(QStringLiteral(
+        "Active nodes mirroring this repo. A dot flashes green when its node "
+        "serves a clone, orange when it serves codebase browsing."));
+    mirrorStrip->hide();
+    m_mirrorActivityStrip = mirrorStrip;
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -34618,6 +34819,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
+    // The live activity dots no longer sit in this page as a "Live ›" row; they
+    // float just above the Mirror nodes tab instead (adhoc #197). The strip is
+    // created with the tab row and anchored by positionMirrorActivityStrip.
+
     m_mirrorNodesTable = new QTableWidget(0, 7);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
@@ -34679,6 +34884,10 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
+        if (m_mirrorActivityStrip) {
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
+            positionMirrorActivityStrip(); // hides the now-empty strip
+        }
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -34771,6 +34980,8 @@ void MainWindow::loadMirrorNodesPanel()
     // Names already shown from the live chat roster, so the catalog-backed merge
     // below (issue #223) doesn't list a node twice when it's also present in chat.
     QSet<QString> shownNames;
+    // One activity dot per active node, fed to the live strip atop the panel.
+    QVector<MirrorActivityStrip::Dot> activityDots;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -34788,6 +34999,8 @@ void MainWindow::loadMirrorNodesPanel()
 
         // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
+        if (online)
+            activityDots.append({node.id, node.name, true, node.self});
         auto *nameItem = new SortTableWidgetItem(
             node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
@@ -34918,6 +35131,9 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
             const bool online =
                 m.value("status").toString() == QLatin1String("online");
+            if (online)
+                activityDots.append(
+                    {m.value("id").toString(), nodeName, true, false});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             auto *nameItem = new SortTableWidgetItem(
@@ -34976,6 +35192,13 @@ void MainWindow::loadMirrorNodesPanel()
     }
 
     m_mirrorNodesTable->setSortingEnabled(true);
+
+    if (m_mirrorActivityStrip) {
+        static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+            ->setNodes(activityDots);
+        // Re-anchor over the Mirror nodes tab and (re)size to the new dot count.
+        positionMirrorActivityStrip();
+    }
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
@@ -44935,6 +45158,12 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         if (repo.owner == owner && repo.name == name)
             updateRepoDetailStatus();
+        // Flash our own dot on the Mirror nodes activity strip: green when we
+        // just served a clone, orange when we served codebase browsing/fetches.
+        if (m_mirrorActivityStrip && catalogOwner(repo) == owner &&
+            repo.name == name)
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+                ->pulse(m_profileIdentity.publicKey(), clone);
     }
     // Hosting stats now live in the node profile; keep them current while it is open.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
@@ -47500,6 +47729,47 @@ void MainWindow::positionLooperToggle()
         connect(m_looperToggleTimer, &QTimer::timeout, this,
                 &MainWindow::positionLooperToggle);
         m_looperToggleTimer->start(400);
+    }
+}
+
+// Anchor the live mirror-activity dot strip in the meta band just above the
+// Mirror nodes tab (adhoc #197), mirroring positionLooperToggle over Issues. It
+// shows only while a repo-detail page is open and at least one node is active;
+// loadMirrorNodesPanel feeds it the roster, the timer keeps it pinned.
+void MainWindow::positionMirrorActivityStrip()
+{
+    auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
+    if (!strip || !m_repoMirrorsTab)
+        return;
+    QWidget *tabBar = m_repoMirrorsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    if (strip->parentWidget() != page)
+        strip->setParent(page); // hides it; shown again just below
+    const int w = strip->preferredWidth();
+    const int h = strip->minimumHeight(); // its fixed strip height
+    const QPoint tl = m_repoMirrorsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    strip->setGeometry(x, y, w, h);
+    // Visible only on the repo-detail page and when there's at least one active
+    // node — an empty strip would just be a gap floating over the tab.
+    const bool onPage = page->isVisible() && !strip->isEmpty();
+    strip->setVisible(onPage);
+    if (onPage)
+        strip->raise();
+    // One low-rate timer re-anchors the strip as the window resizes or the tabs
+    // reflow, and reapplies the visibility check above; never needs stopping.
+    if (!m_mirrorActivityStripTimer) {
+        m_mirrorActivityStripTimer = new QTimer(this);
+        connect(m_mirrorActivityStripTimer, &QTimer::timeout, this,
+                &MainWindow::positionMirrorActivityStrip);
+        m_mirrorActivityStripTimer->start(400);
     }
 }
 
