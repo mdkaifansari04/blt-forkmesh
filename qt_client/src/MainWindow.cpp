@@ -18206,6 +18206,31 @@ bool MainWindow::runMergeConflictEditor(
     oursBtn->setToolTip("Keep our version of this conflict");
     theirsBtn->setToolTip("Take their version of this conflict");
     bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
+    // Tint the accept buttons to echo ConflictHighlighter's side colours: blue
+    // for "ours", green for "theirs", so they read against the highlighted diff.
+    // Give them their own objectName: the per-widget stylesheet below targets
+    // that ID so it outranks the global "#ghostButton { background: transparent }"
+    // rule on specificity (an ID selector), otherwise the tint never shows.
+    oursBtn->setObjectName("conflictOursBtn");
+    theirsBtn->setObjectName("conflictTheirsBtn");
+    const bool darkConflict = currentThemeIsDark();
+    const auto tintConflictBtn = [](QPushButton *b, const QString &bg,
+                                    const QString &border, const QString &fg,
+                                    const QString &hoverBg) {
+        b->setStyleSheet(QStringLiteral(
+                             "QPushButton#%1 { background:%2; border:1px solid %3;"
+                             " color:%4; font-weight:600; padding:3px 10px;"
+                             " border-radius:6px; }"
+                             "QPushButton#%1:hover { background:%5; color:%4; }")
+                             .arg(b->objectName(), bg, border, fg, hoverBg));
+    };
+    if (darkConflict) {
+        tintConflictBtn(oursBtn, "#0b2a4a", "#1f6feb", "#cae3ff", "#10395f");
+        tintConflictBtn(theirsBtn, "#0b3a1e", "#238636", "#aff5b8", "#114a26");
+    } else {
+        tintConflictBtn(oursBtn, "#ddf4ff", "#54aeff", "#0969da", "#cae8ff");
+        tintConflictBtn(theirsBtn, "#e6ffec", "#4ac26b", "#1a7f37", "#d2f8d9");
+    }
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->addWidget(oursBtn);
