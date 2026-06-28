@@ -580,6 +580,19 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch with no agent session carries no status "
                              "icon (adhoc #251)"));
 
+        // adhoc #258: clicking the Issue / Agent cell must jump straight to the
+        // agent run working that branch. Probe the empty-cell case first: clicking
+        // a plain branch's cell navigates nowhere (the attached session id was just
+        // added and never opened, so the selection can't already be it).
+        check(window.testClickBranchAgentCell(QStringLiteral("main")) !=
+                  issueSession.id,
+              QStringLiteral("clicking a plain branch's empty Issue / Agent cell "
+                             "does not navigate to an agent (adhoc #258)"));
+        check(window.testClickBranchAgentCell(
+                  QStringLiteral("feature/keep-selected")) == issueSession.id,
+              QStringLiteral("clicking the Issue / Agent cell jumps to that "
+                             "branch's agent session (adhoc #258)"));
+
         // adhoc #185: the default branch must stay pinned to the top of the list.
         // feature/keep-selected was committed to more recently (it's a worktree one
         // commit ahead of main), so a plain committer-date sort would float it above
