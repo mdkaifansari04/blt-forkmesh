@@ -268,6 +268,15 @@ public:
     // branch is checked out in (issue #172).
     void testReloadBranchesPanel() { loadBranchesPanel(); }
     QString testBranchWorktreePath(const QString &branch) const;
+    // Inject an agent session so a test can prove the branches list surfaces the
+    // issue/agent a branch is attached to (adhoc #191).
+    void testAddAgentSession(const AgentSession &session)
+    {
+        m_agentSessions.append(session);
+    }
+    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
+    // the branches list names the issue/agent a branch is attached to (adhoc #191).
+    QString testBranchAttachmentText(const QString &branch) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -1507,7 +1516,11 @@ private:
     QString m_lastLogRenderDate; // date of the last line rendered (for dividers)
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
-    void flashMessage(const QString &text, bool error = false);
+    // `clickHref` makes the whole toast a clickable link routed by the
+    // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
+    // waiting agent). Empty = a plain, non-clickable toast.
+    void flashMessage(const QString &text, bool error = false,
+                      const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
@@ -1707,6 +1720,7 @@ private:
     QLabel *m_topMessageOverlayText = nullptr; // wrapped full-message label inside the overlay
     QString m_topMessageRaw;              // plain text of the current toast, for copy
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
+    QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)

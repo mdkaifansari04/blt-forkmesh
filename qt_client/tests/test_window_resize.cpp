@@ -504,6 +504,29 @@ int main(int argc, char *argv[])
         check(window.testBranchWorktreePath(QStringLiteral("main")).isEmpty(),
               QStringLiteral("a branch checked out in the main tree has an empty "
                              "Worktree cell (#172)"));
+
+        // adhoc #191: the Branches list must also surface the issue/agent a branch
+        // is attached to. An agent session bound to this repo's branch should
+        // name its issue ("#N") in the Issue / Agent column; an ad-hoc session
+        // (no issue) should read "Agent"; a plain branch stays empty.
+        AgentSession issueSession;
+        issueSession.id = 4242;
+        issueSession.owner = QStringLiteral("me");
+        issueSession.name = QStringLiteral("wtrepo");
+        issueSession.branchName = QStringLiteral("feature/keep-selected");
+        issueSession.issueNumber = 191;
+        issueSession.issueTitle = QStringLiteral("show attachment in branches list");
+        window.testAddAgentSession(issueSession);
+        window.testReloadBranchesPanel();
+        check(window.testBranchAttachmentText(
+                  QStringLiteral("feature/keep-selected")) == QStringLiteral("#191"),
+              QString("branches list names the issue a branch is attached to "
+                      "(adhoc #191, cell = %1)")
+                  .arg(window.testBranchAttachmentText(
+                      QStringLiteral("feature/keep-selected"))));
+        check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch with no agent session has an empty "
+                             "Issue / Agent cell (adhoc #191)"));
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
