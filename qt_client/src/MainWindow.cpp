@@ -25164,23 +25164,47 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     }
 
     if (sessionId == m_selectedAgentSessionId && m_agentTranscript) {
-        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
-            m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
-        else
-            m_agentTranscript->handleEvent(ev);
-        // Refresh the Files-changed panel on real turns only, never on the
-        // high-frequency `stream_event` partials. With --include-partial-messages
-        // those deltas arrive far faster than the diff debounce's 400ms interval, so
-        // refreshing on every one perpetually restarted (starved) the timer and the
-        // `git diff` never fired while the agent streamed — the panel only caught up
-        // once output paused. Partial deltas can't change the file set anyway.
-        if (type != QLatin1String("stream_event"))
+        // A modal dialog (e.g. the UI-stall diagnostics window) spins its own
+        // nested event loop. Building transcript rows into the view sitting behind
+        // it blocks the GUI thread for no benefit — the user can't see or scroll
+        // the transcript while the dialog is up, and the per-row widget
+        // reparenting/style-resolution is exactly what froze the loop for ~1.5s
+        // (sampled in addRow -> insertWidget -> setStyle_helper). Defer instead:
+        // leave the render guard behind so the events buffered while the dialog was
+        // open are flushed in a single rebuild the moment the view is live again.
+        const int rendered = m_renderedTranscriptSession == sessionId
+                                 ? m_renderedTranscriptCount
+                                 : -1;
+        const int have = m_streamEvents.value(sessionId).size();
+        if (QApplication::activeModalWidget()) {
+            // Skipped on purpose; the render guard stays at `rendered` (< have) so
+            // the next live event or showAgentSession() rebuilds from the buffer.
+        } else if (rendered == have - 1) {
+            // The view is in sync with the buffer: append just this newest event
+            // (the cheap incremental fast path).
+            if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+                m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
+            else
+                m_agentTranscript->handleEvent(ev);
+            // Refresh the Files-changed panel on real turns only, never on the
+            // high-frequency `stream_event` partials. With --include-partial-messages
+            // those deltas arrive far faster than the diff debounce's 400ms interval,
+            // so refreshing on every one perpetually restarted (starved) the timer and
+            // the `git diff` never fired while the agent streamed — the panel only
+            // caught up once output paused. Partial deltas can't change the file set.
+            if (type != QLatin1String("stream_event"))
+                refreshAgentFilesPanel(sessionId);
+            // The view was just kept in sync incrementally, so the render guard's
+            // count must track the append — otherwise the next reload would force a
+            // full rebuild of a transcript that's already up to date.
+            m_renderedTranscriptCount = have;
+        } else {
+            // We fell behind (a modal owned the loop, or the view was rebuilt for a
+            // different session): rebuild once from the buffer so no events are
+            // dropped, then resume the incremental fast path above.
+            renderTranscriptForSession(sessionId);
             refreshAgentFilesPanel(sessionId);
-        // The view was just kept in sync incrementally, so the render guard's
-        // count must track the append — otherwise the next reload would force a
-        // full rebuild of a transcript that's already up to date.
-        if (m_renderedTranscriptSession == sessionId)
-            m_renderedTranscriptCount = m_streamEvents.value(sessionId).size();
+        }
     }
 }
 
