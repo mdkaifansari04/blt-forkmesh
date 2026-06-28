@@ -101,6 +101,7 @@ class QTreeWidgetItem;
 class QProcess;
 class QVBoxLayout;
 class QHBoxLayout;
+class DiffFileNavigator; // file-list <-> diff-view sync on a "Files changed" tab
 
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
@@ -2575,6 +2576,7 @@ private:
     QTabWidget *m_agentDetailTabs = nullptr;
     int m_agentFilesTabIndex = -1;               // tab index of "Files changed"
     QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
+    DiffFileNavigator *m_agentDiffNav = nullptr; // sticky header + scroll<->select
     QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
@@ -2875,6 +2877,7 @@ private:
     int m_issueFilesTabIndex = -1;                // tab index of "Files changed"
     QListWidget *m_issueFilesList = nullptr;      // changed files in the linked diff
     QTextBrowser *m_issueDiffView = nullptr;      // diff viewer in the files tab
+    DiffFileNavigator *m_issueDiffNav = nullptr;  // sticky header + scroll<->select
     QLabel *m_issueFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
