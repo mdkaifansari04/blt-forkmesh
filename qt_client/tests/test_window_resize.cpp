@@ -489,6 +489,106 @@ int main(int argc, char *argv[])
         check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
               QString("worktrees list shows the branch one commit ahead of main "
                       "(ahead/behind cell = %1)").arg(abText));
+
+        // Opening the Worktrees tab the way a user does (clicking its nav button)
+        // should hand keyboard focus to the table, so arrow keys work right away
+        // without first clicking a row.
+        window.testClickRepoDetailTab(window.testWorktreesTabIndex());
+        QApplication::processEvents();
+        check(window.testWorktreesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Worktrees tab focuses the table so the "
+                             "arrow keys can move through its rows"));
+
+        // With feature/keep-selected (the bottom row) selected, an Up arrow on the
+        // table should move the selection to the *other* worktree row; Down stays
+        // put because it's already the last row.
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterUp = window.testArrowOnWorktrees(false);
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterDown = window.testArrowOnWorktrees(true);
+        qInfo("arrow nav: up->%s down->%s",
+              qPrintable(afterUp), qPrintable(afterDown));
+        check(!afterUp.isEmpty() &&
+                  afterUp != QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow up moves the worktree selection to the row above"));
+        check(afterDown == QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow down on the last worktree row stays put"));
+
+        // issue #172: the Branches list must also surface the worktree a branch
+        // is checked out in, so an agent's isolated working tree is visible
+        // without a trip to the Worktrees tab.
+        window.testReloadBranchesPanel();
+        const QString listedWt =
+            window.testBranchWorktreePath(QStringLiteral("feature/keep-selected"));
+        check(listedWt.contains(QStringLiteral("wt-keep")),
+              QString("branches list shows the worktree a branch is checked out "
+                      "in (#172, worktree cell = %1)").arg(listedWt));
+        // The default branch lives in the main checkout, not a linked worktree,
+        // so its Worktree cell stays empty rather than pointing at the main tree.
+        check(window.testBranchWorktreePath(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch checked out in the main tree has an empty "
+                             "Worktree cell (#172)"));
+
+        // adhoc #191: the Branches list must also surface the issue/agent a branch
+        // is attached to. An agent session bound to this repo's branch should
+        // name its issue ("#N") in the Issue / Agent column; an ad-hoc session
+        // (no issue) should read "Agent"; a plain branch stays empty.
+        AgentSession issueSession;
+        issueSession.id = 4242;
+        issueSession.owner = QStringLiteral("me");
+        issueSession.name = QStringLiteral("wtrepo");
+        issueSession.branchName = QStringLiteral("feature/keep-selected");
+        issueSession.issueNumber = 191;
+        issueSession.issueTitle = QStringLiteral("show attachment in branches list");
+        window.testAddAgentSession(issueSession);
+        window.testReloadBranchesPanel();
+        check(window.testBranchAttachmentText(
+                  QStringLiteral("feature/keep-selected")) == QStringLiteral("#191"),
+              QString("branches list names the issue a branch is attached to "
+                      "(adhoc #191, cell = %1)")
+                  .arg(window.testBranchAttachmentText(
+                      QStringLiteral("feature/keep-selected"))));
+        check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch with no agent session has an empty "
+                             "Issue / Agent cell (adhoc #191)"));
+
+        // adhoc #185: the default branch must stay pinned to the top of the list.
+        // feature/keep-selected was committed to more recently (it's a worktree one
+        // commit ahead of main), so a plain committer-date sort would float it above
+        // main; the panel must override that and list main first.
+        const QStringList order = window.testBranchRowOrder();
+        qInfo("branch row order: %s", qPrintable(order.join(QStringLiteral(", "))));
+        check(!order.isEmpty() && order.first() == QStringLiteral("main"),
+              QString("the default branch is pinned to the top of the branches "
+                      "list (adhoc #185, first row = %1)")
+                  .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
+    }
+
+    // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
+    // anchored to main and NOT follow the working tree's HEAD. Parking the
+    // checkout on a feature branch — what the commits-area branch switcher or a
+    // transient branches-page merge does — must never silently change the default
+    // branch out from under the merge editor.
+    {
+        QTemporaryDir defaultBranchRepo;
+        if (initGitRepo(defaultBranchRepo)) {
+            // Leave HEAD on a feature branch, exactly as if the user had switched
+            // to it in the commits area.
+            runGitChecked(defaultBranchRepo.path(),
+                          {"checkout", "-b", "feature/parked"});
+            runGitChecked(defaultBranchRepo.path(),
+                          {"commit", "--allow-empty", "-m", "work on feature"});
+            const int idx = window.testAddLocalRepository("me", "dbrepo",
+                                                          defaultBranchRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            check(window.testRepoDefaultBranch() == QStringLiteral("main"),
+                  QString("default branch stays main while HEAD is parked on a "
+                          "feature branch (got %1)")
+                      .arg(window.testRepoDefaultBranch()));
+        }
     }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
@@ -572,6 +672,39 @@ int main(int argc, char *argv[])
                   QStringLiteral("see forkmesh://pull/o/r/7.")) ==
                   QStringLiteral("see <forkmesh://pull/o/r/7>."),
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
+
+    // adhoc #191: the issue looper (and per-issue agent assignment) must work on
+    // a node that only mirrors a repo it doesn't host. Such a repo has a bare
+    // network mirror and no working tree, so the gate now resolves the bare mirror
+    // as the git dir agents run against instead of refusing with "only the host".
+    {
+        QTemporaryDir mirrorDir;
+        const bool madeBare =
+            mirrorDir.isValid() &&
+            runGitChecked(mirrorDir.path(), {"init", "--bare", "-q"});
+        const int mirrorIdx =
+            window.testAddPublishedRepository("someone", "theirrepo", mirrorDir.path());
+        check(madeBare &&
+                  window.testRepoAgentGitDir(mirrorIdx) == mirrorDir.path(),
+              QStringLiteral("a mirror-only repo resolves its bare mirror as the "
+                             "agent/looper git dir (adhoc #191)"));
+
+        QTemporaryDir localRepo;
+        const bool madeLocal = initGitRepo(localRepo);
+        const int localIdx =
+            window.testAddLocalRepository("me", "minerepo", localRepo.path());
+        check(madeLocal &&
+                  window.testRepoAgentGitDir(localIdx) == localRepo.path(),
+              QStringLiteral("a hosted repo still resolves its working tree as the "
+                             "agent/looper git dir"));
+
+        QTemporaryDir emptyDir;
+        const int noneIdx = window.testAddPublishedRepository(
+            "someone", "uncached", emptyDir.path() + QStringLiteral("/missing.git"));
+        check(window.testRepoAgentGitDir(noneIdx).isEmpty(),
+              QStringLiteral("a repo with neither a working tree nor a cached "
+                             "mirror has no agent/looper git dir"));
     }
 
     stopChildProcesses(window);
