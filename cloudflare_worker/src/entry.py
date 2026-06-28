@@ -2521,6 +2521,16 @@ def _clear_donation_address(rec):
         rec["status"] = "reserved"
 
 
+# A bare reservation only holds the name while a signup is genuinely in flight:
+# the holder has an open, unpaid, unexpired donation request. Once that lapses
+# (or never existed) the reservation is abandoned and the name is free again.
+def _donation_in_progress(rec):
+    if not rec.get("donation_address") or rec.get("donation_confirmed"):
+        return False
+    _, expires, _ = _donation_expiry_fields(rec, Date.now())
+    return Date.now() < expires
+
+
 # Step 1 of the funnel: claim a public node name. The desktop client signs the
 # claim with its Ed25519 identity (binding the name to a key); the website may
 # reserve without a key. A name is only "taken" once it is finalized/paid.
@@ -2541,8 +2551,18 @@ async def _account_reserve(env, request):
         ex_pub = existing.get("pubkey", "")
         if existing.get("status") == "active" or existing.get("donation_confirmed"):
             return json_response({"error": "node_name_taken"}, status=409)
-        if ex_pub and (not pubkey or ex_pub != pubkey):
+        held_by_other = bool(ex_pub) and (not pubkey or ex_pub != pubkey)
+        # A reservation bound to a different key only blocks the name while that
+        # holder's signup is still live (an open, unexpired donation). Otherwise
+        # it's an abandoned reservation — a fresh install on a new key (the common
+        # case) must be able to reclaim its own name instead of forever hitting
+        # "node_name_taken" for a name nobody actually paid for.
+        if held_by_other and _donation_in_progress(existing):
             return json_response({"error": "node_name_taken"}, status=409)
+        if held_by_other:
+            # Reclaiming an abandoned reservation: drop the previous holder's
+            # stale state so the new owner starts a clean, key-bound signup.
+            existing = None
         # else: a stale/own reservation — allow re-reserving it (idempotent).
 
     if pubkey:
