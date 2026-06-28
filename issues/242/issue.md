@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 242
 title: make it so we can restart Forkmesh and the agents keep running
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 39
 progress: 0
