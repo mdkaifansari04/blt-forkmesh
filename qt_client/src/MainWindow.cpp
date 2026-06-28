@@ -7646,6 +7646,15 @@ QWidget *MainWindow::buildBreadcrumb()
             resetRepoPin();
         else if (href == QLatin1String("fm:whypin"))
             showPinExplanation();
+        else if (href.startsWith(QLatin1String("fm:agent:"))) {
+            // "agent is waiting for you" toast: jump straight to that session.
+            bool ok = false;
+            const int sid = href.mid(9).toInt(&ok);
+            if (ok) {
+                switchToAgentsTab(sid);
+                dismissTopMessage();
+            }
+        }
     });
     m_topMessage->hide();
 
@@ -24414,7 +24423,10 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
         msg = QStringLiteral("%1 %2 has a question: %3").arg(robot, who, snippet);
     else
         msg = QStringLiteral("%1 %2 is waiting for your reply").arg(robot, who);
-    flashMessage(msg, /*error=*/false);
+    // Make the toast clickable straight through to the waiting session, so the user
+    // doesn't have to hunt for it in the agents list (adhoc #189).
+    flashMessage(msg, /*error=*/false,
+                 QStringLiteral("fm:agent:%1").arg(sessionId));
 }
 
 // Refresh just the Status cell for a session's row, in place — avoids the full
@@ -41883,8 +41895,16 @@ void MainWindow::renderTopMessage()
     m_topMessage->setWordWrap(false);
     // The base HTML carries the message; auto-dismissing successes append a
     // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+    // When a click target is set, the message text itself becomes an underlined
+    // link (routed by the m_topMessage linkActivated handler) so e.g. an "agent is
+    // waiting for you" toast is clickable straight through to that agent.
+    QString body = display.toHtmlEscaped();
+    if (!m_topMessageHref.isEmpty())
+        body = QStringLiteral(
+                   "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
+                   .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                               .arg(fg, glyph, display.toHtmlEscaped());
+                               .arg(fg, glyph, body);
     m_topMessage->setText(m_topMessageBaseHtml);
     // The expand toggle's glyph tracks the state: chevron-down to reveal more,
     // chevron-up to collapse back to the one-liner.
@@ -41940,10 +41960,15 @@ void MainWindow::resizeEvent(QResizeEvent *event)
         positionTopMessageOverlay();
 }
 
-void MainWindow::flashMessage(const QString &text, bool error)
+void MainWindow::flashMessage(const QString &text, bool error,
+                              const QString &clickHref)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
+    // Carry an optional click target so the whole toast can act as a link (e.g. an
+    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
+    // an ordinary toast is never left clickable from a previous message.
+    m_topMessageHref = clickHref;
     // Always keep a copy in the network log for history.
     logSystem(text);
     if (!m_topMessage)
@@ -42026,6 +42051,7 @@ void MainWindow::dismissTopMessage()
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
     m_topMessageExpanded = false;
+    m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessage) {
