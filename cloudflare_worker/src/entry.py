@@ -3144,34 +3144,44 @@ async def _account_finalize(env, request):
     name_bi, rec = await _account_row(env, name)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
-    if not rec.get("donation_confirmed"):
-        return json_response({"error": "donation_required"}, status=402)
-    if "@" not in email or len(email) < 3:
-        return json_response({"error": "valid_email_required"}, status=400)
-    if len(password) < 8:
-        return json_response({"error": "password_too_short"}, status=400)
 
-    # A key-bound (desktop) account must prove ownership to finalize.
-    if rec.get("pubkey"):
+    # A key-bound (desktop) account proves ownership with its Ed25519 signature and
+    # joins for free: no donation, and email/password are optional. All a desktop
+    # node needs to become active is its reserved name. Keyless (web) signups still
+    # pay first, where the donation is what proves a real human is behind the name.
+    key_bound = bool(rec.get("pubkey"))
+    if key_bound:
         if not _ts_ok(ts):
             return json_response({"error": "stale_request"}, status=401)
         canonical = ("forkmesh-finalize-v1\n" + name + "\n" + email + "\n" +
                      ts).encode()
         if not await ed25519_verify(rec["pubkey"], signature, canonical):
             return json_response({"error": "bad_signature"}, status=401)
-    elif pubkey:
-        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
+    else:
+        if not rec.get("donation_confirmed"):
+            return json_response({"error": "donation_required"}, status=402)
+        if pubkey:
+            rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
 
-    email_bi = await blind_index(env, email)
-    dup = await d1_first(
-        env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
-    if dup and dup.get("name_bi") != name_bi:
-        return json_response({"error": "email_taken"}, status=409)
-
-    salt, phash = await hash_password(password)
-    rec["email"] = email
-    rec["pass_salt"] = salt
-    rec["pass_hash"] = phash
+    # Email + password unlock cross-device (password) login. They're required for
+    # keyless signups and optional for key-bound ones (which log in by key); when
+    # either is supplied they're validated and the email is indexed for login.
+    set_credentials = bool(email) or bool(password) or not key_bound
+    email_bi = None
+    if set_credentials:
+        if "@" not in email or len(email) < 3:
+            return json_response({"error": "valid_email_required"}, status=400)
+        if len(password) < 8:
+            return json_response({"error": "password_too_short"}, status=400)
+        email_bi = await blind_index(env, email)
+        dup = await d1_first(
+            env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if dup and dup.get("name_bi") != name_bi:
+            return json_response({"error": "email_taken"}, status=409)
+        salt, phash = await hash_password(password)
+        rec["email"] = email
+        rec["pass_salt"] = salt
+        rec["pass_hash"] = phash
     rec["status"] = "active"
     # Optional payout address (where this node receives its share of the split).
     if solana and SOLANA_RE.match(solana):
@@ -3187,12 +3197,13 @@ async def _account_finalize(env, request):
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     # Until a real email service exists, an admin verifies the email by hand:
-    # enqueue the new account so admins are notified and can verify it.
-    if not rec["email_verified"]:
-        await _enqueue_verification(env, name_bi, name, email)
+    # enqueue the new account so admins are notified and can verify it. A free
+    # key-bound join with no email yet has nothing to verify, so skip the queue.
+    if rec.get("email") and not rec["email_verified"]:
+        await _enqueue_verification(env, name_bi, name, rec["email"])
     return json_response(
-        {"ok": True, "nodeName": name, "email": email, "status": "active",
-         "emailVerified": rec["email_verified"],
+        {"ok": True, "nodeName": name, "email": rec.get("email", ""),
+         "status": "active", "emailVerified": rec["email_verified"],
          "isAdmin": await _is_admin(env, name)},
         status=201)
 

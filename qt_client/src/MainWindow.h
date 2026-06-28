@@ -370,8 +370,9 @@ private:
     // Non-interactive auth used on launch: true only if this node key already
     // matches a registered active account (or was confirmed before, offline).
     bool authenticateSilently(const QString &accountName);
-    // In-app join wizard: reserve node name -> donate -> email/password, mirroring
-    // the website signup funnel (signup.html / signup.js) as one staged dialog.
+    // In-app join: pick a public node name and you're in. Joining is free — the
+    // name is reserved and activated against this device key (no donation, no
+    // email/password). Cross-device credentials can be added later.
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     QJsonArray fetchCatalogRepos();
