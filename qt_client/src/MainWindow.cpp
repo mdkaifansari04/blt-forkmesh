@@ -21181,6 +21181,19 @@ QWidget *MainWindow::buildAgentsTab()
             switchToPullTab(s->prNumber);
     });
 
+    // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
+    // issue from the run's prompt and links the two (adhoc #189). Hidden once the
+    // session already has a linked issue.
+    m_agentCreateIssueButton = new QPushButton("Create linked issue");
+    m_agentCreateIssueButton->setObjectName("primaryButton");
+    m_agentCreateIssueButton->setCursor(Qt::PointingHandCursor);
+    m_agentCreateIssueButton->setToolTip(
+        "Create a tracked issue from this run and link it to this session");
+    setOcticon(m_agentCreateIssueButton, "issue-opened", 16);
+    m_agentCreateIssueButton->hide();
+    connect(m_agentCreateIssueButton, &QPushButton::clicked, this,
+            &MainWindow::createLinkedIssueForSelectedSession);
+
     // Connected/working status pill next to the title.
     m_agentStatusPill = new QLabel;
     m_agentStatusPill->setObjectName("agentStatusPill");
@@ -21196,6 +21209,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->addLayout(titleCol, 1);
+    topRow->addWidget(m_agentCreateIssueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
@@ -22751,8 +22765,11 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
+        if (m_agentCreateIssueButton)
+            m_agentCreateIssueButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
+        m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
         return;
     }
@@ -22837,31 +22854,47 @@ void MainWindow::showAgentSession(int sessionId)
                 : (session->createPr ? QStringLiteral("PR opens on finish")
                                      : QStringLiteral("no PR"))
                       .toHtmlEscaped();
-        // Rich text so the branch name, worktree location and PR are links
-        // (issues #265, adhoc #53, adhoc #123); every other part is HTML-escaped
-        // to stay literal. Each part sits on its own line (adhoc #156).
+        // Rich text so the branch name, worktree location, PR and issue are links
+        // (issues #265, adhoc #53, adhoc #123, adhoc #138); every other part is
+        // HTML-escaped to stay literal. Each part sits on its own line (adhoc #156),
+        // captioned with a muted "Field:" label so the header reads as a key/value
+        // list rather than a bare stack of strings (adhoc #189).
         const QString sep = QStringLiteral("<br>");
-        QString branchPart = session->branchName.isEmpty()
-                                 ? QStringLiteral("(no branch)")
-                                 : branchLinkHtml(session->branchName);
+        auto labeled = [](const QString &label, const QString &valueHtml) {
+            return QStringLiteral("<span style='color:#8b949e'>%1:</span> %2")
+                .arg(label.toHtmlEscaped(), valueHtml);
+        };
+        // Linked issue line — always shown so the tracking state is explicit: a
+        // link to the issue when one exists, otherwise a hint pointing at the
+        // "Create linked issue" button in the header above (adhoc #189).
+        const QString issueValue =
+            session->issueNumber > 0
+                ? issueLinkHtml(session->issueNumber, session->issueTitle)
+                : QStringLiteral("<span style='color:#8b949e'>none yet</span>");
+        QStringList lines;
+        lines << labeled(QStringLiteral("Agent"),
+                         agentProviderName(session->provider).toHtmlEscaped());
+        lines << labeled(QStringLiteral("Repo"),
+                         QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
+                                                     session->name.toHtmlEscaped()));
+        lines << labeled(QStringLiteral("Status"),
+                         agentStatusText(session->status).toHtmlEscaped());
+        lines << labeled(QStringLiteral("Issue"), issueValue);
+        lines << labeled(QStringLiteral("Branch"),
+                         session->branchName.isEmpty()
+                             ? QStringLiteral("(no branch)")
+                             : branchLinkHtml(session->branchName));
         if (!worktreePath.isEmpty())
-            branchPart += sep + worktreeLinkHtml(session->branchName, worktreePath);
-        QString meta = agentProviderName(session->provider).toHtmlEscaped() + sep +
-                       QStringLiteral("%1/%2")
-                           .arg(session->owner.toHtmlEscaped(),
-                                session->name.toHtmlEscaped()) +
-                       sep + agentStatusText(session->status).toHtmlEscaped() + sep +
-                       branchPart + sep + pr;
-        // Started from an issue? Surface it at the top with a link straight to that
-        // issue's tab in the session's repo (adhoc #138).
-        if (session->issueNumber > 0)
-            meta += sep + issueLinkHtml(session->issueNumber, session->issueTitle);
+            lines << labeled(QStringLiteral("Worktree"),
+                             worktreeLinkHtml(session->branchName, worktreePath));
+        lines << labeled(QStringLiteral("PR"), pr);
         if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
-            meta += sep + QStringLiteral("%1s")
-                              .arg((session->finishedAtMs - session->startedAtMs) / 1000);
+            lines << labeled(QStringLiteral("Ran for"),
+                             QStringLiteral("%1s").arg(
+                                 (session->finishedAtMs - session->startedAtMs) / 1000));
         if (!mergedMeta.isEmpty())
-            meta += sep + mergedMeta;
-        m_agentMeta->setText(meta);
+            lines << mergedMeta;
+        m_agentMeta->setText(lines.join(sep));
     }
     setAgentUsageLabel(*session);
     // Connected / working status pill.
@@ -22901,6 +22934,20 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
     }
+    // "Create linked issue" only makes sense for an ad-hoc, owner-side session
+    // that isn't already tracked by one. External (watch-only) sessions and
+    // mirror checkouts can't write issue events, so hide it there (adhoc #189).
+    if (m_agentCreateIssueButton) {
+        const int repoIdx = repoIndexFor(session->owner, session->name);
+        const bool canTrack =
+            session->issueNumber == 0 && !isExternalSession(sessionId) &&
+            repoIdx >= 0 &&
+            IssueStore(m_repositories.at(repoIdx).localPath,
+                       m_repositories.at(repoIdx).mirrorPath, &m_profileIdentity,
+                       m_userName)
+                .canWrite();
+        m_agentCreateIssueButton->setVisible(canTrack);
+    }
 
     const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
     updateAgentNetworkPanel(log, session->status);
@@ -22939,8 +22986,17 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentDetailTabs && m_agentFilesTabIndex >= 0) {
         const bool filesOk = transcript && !external;
         m_agentDetailTabs->setTabVisible(m_agentFilesTabIndex, filesOk);
-        if (!filesOk && m_agentDetailTabs->currentIndex() == m_agentFilesTabIndex)
+        // Land on the Agent tab whenever a *different* session is opened, so the
+        // detail page always starts on the transcript rather than re-showing the
+        // last session's Files-changed tab (adhoc #189). A plain refresh of the
+        // same session leaves the user's current tab choice untouched.
+        if (m_agentDetailTabSession != sessionId) {
+            m_agentDetailTabSession = sessionId;
             m_agentDetailTabs->setCurrentIndex(0);
+        } else if (!filesOk &&
+                   m_agentDetailTabs->currentIndex() == m_agentFilesTabIndex) {
+            m_agentDetailTabs->setCurrentIndex(0);
+        }
     }
     updateAgentFilesTabState(sessionId);
     if (m_agentOutputStack) {
@@ -23164,6 +23220,67 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     }
     processAgentQueue();
     return sessionId;
+}
+
+void MainWindow::createLinkedIssueForSelectedSession()
+{
+    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (!session)
+        return;
+    if (session->issueNumber > 0) {
+        flashMessage("This session is already linked to an issue.");
+        return;
+    }
+    const int repoIndex = repoIndexFor(session->owner, session->name);
+    if (repoIndex < 0) {
+        flashMessage("Can't find this session's repository.", true);
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                          m_userName);
+    if (!issueStore.canWrite()) {
+        flashMessage("Only the host can create a linked issue.", true);
+        return;
+    }
+    // Title from the run's prompt-derived title; the full prompt (when one was
+    // captured for an ad-hoc run) becomes the issue body so the issue carries the
+    // task the agent was actually given.
+    const QString title =
+        session->issueTitle.isEmpty() ? QStringLiteral("Agent run #%1").arg(session->id)
+                                      : session->issueTitle;
+    const QString body =
+        session->prompt.trimmed() == title.trimmed() ? QString() : session->prompt;
+    QString error;
+    const int number = issueStore.createIssue(title, body, {}, QString(), 0, {}, {},
+                                              &error);
+    if (number < 0) {
+        flashMessage(error.isEmpty() ? QStringLiteral("Could not create the issue.")
+                                     : error,
+                     true);
+        return;
+    }
+    // Link both sides: stamp the session with the new issue, and record the agent
+    // assignment on the issue so it shows the session like an issue-started run.
+    session->issueNumber = number;
+    session->issueTitle = title;
+    m_agentStore->saveSession(*session);
+    if (!issueStore.assignAgent(number, session->provider, session->id,
+                                session->createPr, session->status, &error)) {
+        // The issue exists and the session is linked locally; the assignment event
+        // just couldn't be written. Surface it but don't roll back the link.
+        flashMessage(error.isEmpty()
+                         ? QStringLiteral("Linked issue #%1 created, but could not "
+                                          "record the agent on it.")
+                               .arg(number)
+                         : error,
+                     true);
+    }
+    reloadIssues();
+    propagateRepoUpdate(repoIndex);
+    reloadAgents();
+    showAgentSession(session->id);
+    flashMessage(QStringLiteral("Created and linked issue #%1.").arg(number));
 }
 
 // Toggle the issue looper (adhoc #92). On: capture the default agent and start

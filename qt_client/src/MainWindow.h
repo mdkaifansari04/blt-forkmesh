@@ -800,6 +800,9 @@ private:
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
     void deleteSelectedAgentSession();
+    // Promote the selected ad-hoc session (no issue) into a tracked issue, then
+    // link the two so the detail header shows the issue (adhoc #189).
+    void createLinkedIssueForSelectedSession();
     // Stop and remove one stored agent session (clear its issue assignment, drop
     // it from the run queue, delete it from the store). Returns true once it's
     // gone; false (after flashing why) when it can't go yet — a running agent
@@ -2385,6 +2388,11 @@ private:
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
     int m_selectedAgentSessionId = -1;
+    // The session whose detail page last reset the Agent|Files tab selection. Used
+    // so showAgentSession() lands on the Agent tab when a *different* session is
+    // opened, without yanking the user off Files changed on a plain refresh of the
+    // same session (adhoc #189).
+    int m_agentDetailTabSession = -1;
 
     // In-flight AI conflict resolution (see fixCurrentPullConflictsWithAi). The
     // PullStore carries the git-am session state across the async API calls, so it
@@ -2438,6 +2446,9 @@ private:
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
+    // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
+    // run can be promoted to a tracked issue from the detail header (adhoc #189).
+    QPushButton *m_agentCreateIssueButton = nullptr;
     QPlainTextEdit *m_agentLog = nullptr;
     QStackedWidget *m_agentOutputStack = nullptr; // log (0) | embedded terminal (1)
     TerminalWidget *m_agentTerminal = nullptr;  // Claude Code runs here
