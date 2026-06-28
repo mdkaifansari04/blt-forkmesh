@@ -1,11 +1,13 @@
 #include "PullStore.h"
 
 #include "ForkMeshIdentity.h"
-#include "GitKeepAlive.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -23,6 +25,31 @@ constexpr int kGitTimeoutMs = 15000;
 // than an ordinary git invocation.
 constexpr int kGitRewriteTimeoutMs = 120000;
 
+// Wait for `process` to finish. When `keepGuiAlive` is set the caller is on the
+// GUI thread and the command (a `git apply --check` dry-run) can take a second
+// or more, so poll in short slices and pump posted events between them — the
+// same approach as MainWindow's GitKeepAlive — to keep the window painted
+// instead of freezing the event loop. Returns false on timeout, after killing
+// the process. User input is excluded so a pump can't re-enter via clicks.
+bool waitForFinishedKeepAlive(QProcess &process, int timeoutMs, bool keepGuiAlive)
+{
+    if (!keepGuiAlive)
+        return process.waitForFinished(timeoutMs);
+    QElapsedTimer timer;
+    timer.start();
+    while (!process.waitForFinished(40)) {
+        if (process.state() == QProcess::NotRunning)
+            return true; // exited between polls; caller inspects the exit code
+        if (timer.hasExpired(timeoutMs)) {
+            process.kill();
+            process.waitForFinished(200);
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+    }
+    return true;
+}
+
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
             QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
 {
@@ -33,10 +60,7 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    // Pump the GUI loop while a GitKeepAlive scope is open (e.g. the pending-
-    // conflict scan on the PR list) so a slow read doesn't freeze the window;
-    // blocks as before otherwise.
-    if (!gitkeepalive::waitForFinished(process, timeoutMs)) {
+    if (!process.waitForFinished(timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;
@@ -1815,7 +1839,8 @@ void PullStore::abortConflictMerge()
 }
 
 bool PullStore::checkMergeable(int number, bool *clean,
-                               QStringList *conflictFiles, QString *error) const
+                               QStringList *conflictFiles, QString *error,
+                               bool keepGuiAlive) const
 {
     if (clean)
         *clean = false;
@@ -1855,10 +1880,7 @@ bool PullStore::checkMergeable(int number, bool *clean,
     QProcess git;
     git.start("git",
               {"-C", m_workTree, "apply", "--check", "--3way", patchPath});
-    // Pump the GUI loop while a GitKeepAlive scope is open (the PR list scans
-    // every open pull for mergeability) so the per-pull --check doesn't freeze
-    // the window; blocks as before otherwise.
-    const bool finished = gitkeepalive::waitForFinished(git, kGitTimeoutMs);
+    const bool finished = waitForFinishedKeepAlive(git, kGitTimeoutMs, keepGuiAlive);
     if (!tempFile.isEmpty())
         QFile::remove(tempFile);
     if (!finished) {
