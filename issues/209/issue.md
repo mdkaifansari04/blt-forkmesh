@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 209
 title: if I click on a working agent icon above the agents tab then show that active agent
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 27
 progress: 0
