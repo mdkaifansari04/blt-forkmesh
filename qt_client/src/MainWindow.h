@@ -139,6 +139,11 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
+    // the owner has switched off individually. Disabled workflows are skipped on
+    // push and can't be triggered manually, but stay listed so past runs remain
+    // visible and the switch can be flipped back on.
+    QStringList disabledWorkflows;
     // Temporary, browse-only cache for a repo hosted by another node. Preview
     // repos are not saved, advertised, published, hosted, or wired for actions.
     bool previewOnly = false;
@@ -510,6 +515,10 @@ private:
     void startDiagnostics();
     void updateFooterDiagnostics();
     void onUiStall(qint64 peakMs, const QString &backtrace);
+    // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
+    // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
+    // De-duped by backtrace so one recurring freeze files a single task.
+    void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
@@ -1150,6 +1159,11 @@ private:
     void updateRepoSource();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
+    // Switch a single workflow (by path) on or off for the open repo, persist it,
+    // and refresh the manual-run bar so a disabled workflow can't be run by hand.
+    void setWorkflowDisabled(const QString &path, bool disabled);
+    // Whether `path` is switched off for the open repo.
+    bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
@@ -1314,6 +1328,11 @@ private:
     // reload runs (kept visible briefly after, since the reload is near-instant).
     void startCommitsRefreshSpin();
     void stopCommitsRefreshSpin();
+    // Small inline spinner shown next to the commit's "files changed" heading
+    // while showCommit reads and renders the diff (a big commit can take a second
+    // or two), so the click shows progress instead of looking frozen.
+    void startCommitDiffSpin();
+    void stopCommitDiffSpin();
     // Generic click feedback for any Refresh button: briefly spins its icon, then
     // restores it. addRefreshSpin wires it onto a button's clicked signal.
     void spinRefreshButton(QPushButton *button);
@@ -1933,6 +1952,9 @@ private:
     int m_stallCount = 0;
     QStringList m_stallLog;          // recent stalls, each with its backtrace
     QString m_stallLogPath;          // durable on-disk stall log
+    // Stall signatures already handed to an agent this session, so a recurring
+    // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
+    QSet<QString> m_autoFiledStallSignatures;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -2166,6 +2188,8 @@ private:
     QLabel *m_commitFilesSummary = nullptr;
     QListWidget *m_commitFileList = nullptr;
     QTextBrowser *m_commitDiffView = nullptr;
+    QWidget *m_commitDiffSpinner = nullptr; // inline spinner by the files heading
+    bool m_commitDetailLoading = false;     // guards re-entrant showCommit loads
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
@@ -2602,12 +2626,6 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
-    // Drop every in-memory transcript buffer keyed by this session id. Session ids
-    // are recycled (nextId() = max on-disk id + 1), so a deleted session's leftover
-    // events/raw/steer state would otherwise be inherited by the next session that
-    // reuses the id — making a fresh "quick issue" resume another agent's context
-    // (adhoc #198). Called on delete so a recycled id always starts clean.
-    void forgetStreamSessionState(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
