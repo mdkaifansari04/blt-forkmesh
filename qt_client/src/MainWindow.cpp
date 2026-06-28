@@ -35609,6 +35609,15 @@ void MainWindow::loadFileSearchIndex()
 
 void MainWindow::loadAboutSidebar()
 {
+    // This panel fires several synchronous git reads back to back — `ls-tree`,
+    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
+    // that walks every commit. On a large history those add up to multiple
+    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
+    // so do the reads under a keep-alive scope: waitForGit() then polls in short
+    // slices and pumps the event loop, keeping the window responsive (and the
+    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
+    GitKeepAlive keepAlive;
+
     const QString dir = repoGitDir();
     const RepositoryRecord *repo =
         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
