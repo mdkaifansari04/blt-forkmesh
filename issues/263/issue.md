@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 263
 title: have all tables be adjustable width for the columns
 status: open
-labels: []
+labels: [Complete]
 milestone: 
 priority: 52
-progress: 0
+progress: 85
 assignees: []
 createdAt: 1782430766132
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

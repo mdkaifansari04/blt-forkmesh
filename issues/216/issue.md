@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 216
 title: add a feature on branches page to delete all branches with 0 behind and 0 ahead
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 29
