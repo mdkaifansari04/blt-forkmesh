@@ -3276,6 +3276,66 @@ private:
     std::function<void()> m_onClick;
 };
 
+// A plain "busy" overlay: the same rotating refresh glyph used on the Refresh
+// buttons, optionally followed by a label, centred and painted over an opaque
+// backing so it can sit on top of a view that is being (re)loaded. Used as a
+// loading indicator over the commit diff while showCommit reads and renders it.
+// The animation timer only runs while the overlay is visible (see show/hideEvent)
+// so a hidden, idle overlay costs nothing.
+class BusySpinner : public QWidget
+{
+public:
+    explicit BusySpinner(const QString &label, QWidget *parent = nullptr)
+        : QWidget(parent), m_label(label)
+    {
+        m_timer = new QTimer(this);
+        m_timer->setInterval(60);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 30) % 360;
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        // Opaque backing matching the view so any stale content underneath is
+        // hidden while the new content is being prepared.
+        p.fillRect(rect(), qApp->palette().color(QPalette::Base));
+        const QColor c(Theme::kTextTertiary);
+        const int glyph = 28;
+        const int gap = 10;
+        const int textW =
+            m_label.isEmpty() ? 0 : fontMetrics().horizontalAdvance(m_label);
+        const int totalW = glyph + (textW ? gap + textW : 0);
+        const int x = (width() - totalW) / 2;
+        const int y = (height() - glyph) / 2;
+        p.drawPixmap(x, y, refreshPixmap(c, m_angle, glyph));
+        if (!m_label.isEmpty()) {
+            p.setPen(c);
+            p.drawText(QRect(x + glyph + gap, y, textW, glyph),
+                       Qt::AlignVCenter | Qt::AlignLeft, m_label);
+        }
+    }
+
+private:
+    QString m_label;
+    QTimer *m_timer = nullptr;
+    int m_angle = 0;
+};
+
 // Compact "issue looper" toggle that floats just above the Issues tab (adhoc
 // #130). It is both the control and the indicator: a small on/off switch and
 // the open issue currently being worked ("#124") — clicking that "#N" jumps to
@@ -27502,6 +27562,11 @@ void MainWindow::refreshCommitMarkersIfStale()
 
 void MainWindow::loadCommits()
 {
+    // The reload fires several blocking git reads (status, log --numstat, the
+    // unpushed-set walk), any of which can take a second on a large repo. Keep the
+    // event loop breathing across them so the window stays painted (and the
+    // Refresh spinner keeps turning) instead of freezing. Nestable/RAII.
+    GitKeepAlive keepAlive;
     refreshSourceControl(); // keep the working-changes panel in sync with the tab
     if (!m_commitsTable)
         return;
@@ -30211,6 +30276,22 @@ void MainWindow::showCommit(const QString &hash)
         m_commitsTable->selectRow(m_currentCommitRow);
     }
 
+    // Re-entrancy guard: the keep-alive pump below services queued slots between
+    // git reads, so a second click (or a deferred reload) must not start a second
+    // diff load on top of this one. Set before the first event-loop turn below.
+    if (m_commitDetailLoading)
+        return;
+    m_commitDetailLoading = true;
+
+    // Land on the diff page and paint a spinner straight away, then yield one
+    // event-loop turn so it actually shows before the (possibly multi-second) git
+    // reads + diff render run. The GitKeepAlive scope keeps the window breathing —
+    // and the spinner turning — across those reads so the click never freezes.
+    m_commitsStack->setCurrentIndex(1);
+    startCommitDiffSpin();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    GitKeepAlive keepAlive;
+
     // --- Metadata (full hash, author, date, parents, subject, body).
     QByteArray meta;
     runGitCapture(dir,
@@ -30351,7 +30432,9 @@ void MainWindow::showCommit(const QString &hash)
     }
 
     renderCommitThread(m_currentCommitHash);
+    stopCommitDiffSpin();
     m_commitsStack->setCurrentIndex(1);
+    m_commitDetailLoading = false;
 }
 
 void MainWindow::renderCommitThread(const QString &sha)
@@ -35757,6 +35840,33 @@ void MainWindow::stopCommitsRefreshSpin()
     if (m_commitsRefreshButton)
         m_commitsRefreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+}
+
+void MainWindow::ensureCommitDiffSpinner()
+{
+    if (m_commitDiffSpinner || !m_commitDiffView)
+        return;
+    // Parent to the diff view so it overlays exactly that pane; startCommitDiffSpin
+    // sizes it to the view's current rect before showing.
+    m_commitDiffSpinner =
+        new BusySpinner(QString::fromUtf8("Loading diff\xE2\x80\xA6"), m_commitDiffView);
+    m_commitDiffSpinner->hide();
+}
+
+void MainWindow::startCommitDiffSpin()
+{
+    ensureCommitDiffSpinner();
+    if (!m_commitDiffSpinner || !m_commitDiffView)
+        return;
+    m_commitDiffSpinner->setGeometry(m_commitDiffView->rect());
+    m_commitDiffSpinner->show();
+    m_commitDiffSpinner->raise();
+}
+
+void MainWindow::stopCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->hide();
 }
 
 void MainWindow::startNodeSwitchSpin()
