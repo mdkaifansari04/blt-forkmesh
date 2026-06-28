@@ -232,6 +232,15 @@ public:
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
+    // adhoc #191: the git dir agents/looper would run against for a repo — a
+    // working-tree checkout, else a bare mirror, else empty. Lets a test prove a
+    // mirror-only node (no working tree) is now treated as able to run agents.
+    QString testRepoAgentGitDir(int index) const
+    {
+        return (index < 0 || index >= m_repositories.size())
+                   ? QString()
+                   : repoAgentGitDir(m_repositories.at(index));
+    }
     void testPublishRepository(int index) { publishRepository(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
@@ -1319,6 +1328,12 @@ private:
     // source-of-truth author issues/PRs even when a read-only preview of their own
     // repo is the one currently selected.
     const RepositoryRecord &writableRecordFor(const RepositoryRecord &repo) const;
+
+    // Git directory agents run against for `repo`: our working-tree checkout when
+    // we host it, otherwise the bare network mirror so a node that only mirrors a
+    // repo can still run agents on it (worktrees/diffs/PR patches build off this).
+    // Empty when neither exists. (adhoc #191)
+    QString repoAgentGitDir(const RepositoryRecord &repo) const;
 
     // Issues tab
     int issuesRepoIndex() const;                 // selected repo, or -1
