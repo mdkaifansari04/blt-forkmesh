@@ -4,7 +4,7 @@ number: 48
 title: landing: add blog pages
 base: main
 head: feat/pr43-09-blog-pages-no-images
-status: open
+status: merged
 ts: 1782673430717
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -18,4 +18,3 @@ Split from local landing PR #43 into an independently reviewable signed patch.
 
 ## Tests
 - Original combined branch passed: python3 -m py_compile src/entry.py
-
