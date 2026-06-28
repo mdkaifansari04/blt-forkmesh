@@ -33338,7 +33338,9 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
     // all — to go. Then refresh the panels that listed it.
     auto finish = [this, repoPath, worktreePath, branch, deleteBranch,
                    onDone = std::move(onDone)] {
-        if (deleteBranch) {
+        // The branch may already be gone (e.g. the agent or a merged PR removed it);
+        // that's the outcome we wanted, so don't surface a "branch not found" error.
+        if (deleteBranch && localBranchExists(repoPath, branch)) {
             QString err;
             if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
                 logSystem(
@@ -33438,6 +33440,19 @@ QString MainWindow::worktreePathForBranch(const QString &repoPath,
     return QString();
 }
 
+bool MainWindow::localBranchExists(const QString &repoPath,
+                                   const QString &branch) const
+{
+    if (repoPath.isEmpty() || branch.trimmed().isEmpty())
+        return false;
+    return runGitCapture(
+        repoPath,
+        {QStringLiteral("show-ref"), QStringLiteral("--verify"),
+         QStringLiteral("--quiet"),
+         QStringLiteral("refs/heads/%1").arg(branch)},
+        nullptr, nullptr);
+}
+
 // One action to wipe everything an agent left behind: its worktree folder, its
 // branch, and the stored agent session(s) that ran on it. Resolves the repo from
 // the open detail view; agent sessions are matched by branch.
@@ -33531,7 +33546,7 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
         // window stays clickable while it works (issue #95).
         removeWorktree(worktreePath, branch, /*confirm=*/false,
                        /*alsoDeleteBranch=*/willDeleteBranch, /*async=*/true);
-    } else if (willDeleteBranch) {
+    } else if (willDeleteBranch && localBranchExists(repoPath, branch)) {
         // No worktree left (the agent already cleaned it up) — just drop the branch.
         QString err;
         if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
