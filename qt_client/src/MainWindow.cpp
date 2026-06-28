@@ -7,6 +7,7 @@
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
+#include "GitKeepAlive.h"
 #include "ScrollJumpButtons.h"
 #include "CommitCommentStore.h"
 #include "StallWatchdog.h"
@@ -3949,53 +3950,22 @@ QString languageColor(const QString &lang)
 
 namespace {
 
-// While >0, the git wait below keeps the GUI event loop breathing instead of
-// blocking the main thread outright. A multi-second git read (a big ls-tree,
-// log --numstat, count-objects, …) would otherwise stop the app answering
-// window-manager pings and get flagged "Not Responding". User input is excluded
-// from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
-// m_repoDetailLoading guard backstops anything that still slips through.
-int g_gitKeepAliveDepth = 0;
-
-// Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
-// short slices and service the GUI between them so the window stays responsive
-// and spinners animate; otherwise block as before.
+// Wait up to 8s for a git subprocess, keeping the GUI responsive while a
+// GitKeepAlive scope is active (see GitKeepAlive.h). On timeout the process is
+// killed so it can't linger. A multi-second git read (a big ls-tree, log
+// --numstat, count-objects, …) under a scope no longer freezes the window or
+// gets the app flagged "Not Responding".
 bool waitForGit(QProcess &process, QString *err)
 {
-    if (g_gitKeepAliveDepth <= 0) {
-        if (process.waitForFinished(8000))
-            return true;
-        process.kill();
-        if (err)
-            *err = QStringLiteral("git timed out");
-        return false;
-    }
-    QElapsedTimer timer;
-    timer.start();
-    while (!process.waitForFinished(40)) {
-        if (process.state() == QProcess::NotRunning)
-            return true; // exited between polls; caller inspects the exit code
-        if (timer.hasExpired(8000)) {
-            process.kill();
-            if (err)
-                *err = QStringLiteral("git timed out");
-            return false;
-        }
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
-    }
-    return true;
+    if (gitkeepalive::waitForFinished(process, 8000))
+        return true;
+    process.kill();
+    if (err)
+        *err = QStringLiteral("git timed out");
+    return false;
 }
 
 } // namespace
-
-// RAII: keep the GUI responsive across the run of synchronous git reads in an
-// interactive load (a node switch or opening a repo). Nestable.
-struct GitKeepAlive {
-    GitKeepAlive() { ++g_gitKeepAliveDepth; }
-    ~GitKeepAlive() { --g_gitKeepAliveDepth; }
-    GitKeepAlive(const GitKeepAlive &) = delete;
-    GitKeepAlive &operator=(const GitKeepAlive &) = delete;
-};
 
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
@@ -16095,6 +16065,10 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // checkMergeable() below dry-runs a git apply per pull; keep the loop alive so
+    // a slow check doesn't freeze the window (the gen re-check after it guards the
+    // supersession this pumping can now let through).
+    GitKeepAlive keepAlive;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
     const PullStore store = pullStoreForCurrentRepo();
@@ -16333,6 +16307,7 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
 
 void MainWindow::showPull(int number)
 {
+    GitKeepAlive keepAlive; // renderPullReviewSummary -> runIdsForPull reads git
     const PullRequest *found = nullptr;
     for (const PullRequest &pr : m_currentPulls)
         if (pr.number == number)
@@ -32147,6 +32122,7 @@ void MainWindow::switchToWorktree(const QString &branch)
 // #123). Selecting the row fires currentCellChanged -> showBranchDiff.
 void MainWindow::switchToBranch(const QString &branch)
 {
+    GitKeepAlive keepAlive; // loadBranchesPanel + the diff below shell out to git
     if (m_repoDetailTabs && m_repoDetailTabs->button(m_branchesTabIndex))
         m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
     if (m_repoDetailStack && m_branchesTabIndex >= 0)
@@ -33739,6 +33715,7 @@ void MainWindow::showBranchDiff(const QString &branch)
 {
     if (!m_branchDiffView)
         return;
+    GitKeepAlive keepAlive; // updateBranchDetailActions + the diff read git
     m_branchDiffBranch = branch;
     updateBranchDetailActions(branch);
     m_branchDiffFileSpans.clear();
@@ -34048,6 +34025,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
 
 void MainWindow::updateBranchFromBase(const QString &branch)
 {
+    GitKeepAlive keepAlive; // merges the base in and reloads the branch panel
     const QString dir = repoGitDir();
     const QStringList branches = repoBranches();
     const QString base = repoDefaultBranch(branches);
@@ -34346,6 +34324,7 @@ static QString branchMergeTree(const QString &dir, const QString &base,
 
 void MainWindow::pullBaseIntoAllBranches()
 {
+    GitKeepAlive keepAlive; // merges base into every branch, then reloads — many git reads
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return;
@@ -34964,6 +34943,18 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
+    // Reached both from the periodic refresh and from the network roster signal
+    // (setRoster), so it owns its own keep-alive: the per-node git reads pump the
+    // loop instead of freezing the window. The guard skips a redundant rebuild if
+    // a roster update fires mid-pump (the in-flight pass already has fresh data).
+    if (m_mirrorNodesPanelLoading)
+        return;
+    m_mirrorNodesPanelLoading = true;
+    struct LoadGuard {
+        bool &flag;
+        ~LoadGuard() { flag = false; }
+    } loadGuard{m_mirrorNodesPanelLoading};
+    GitKeepAlive keepAlive;
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
 
@@ -46773,6 +46764,18 @@ void MainWindow::refreshOpenRepoDetail()
         m_openRepoRefreshTimer->stop(); // a direct refresh subsumes any pending one
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
+    // This fires a dozen blocking git reads; the keep-alive scope below pumps the
+    // event loop across them so the window stays responsive. That pump can
+    // re-enter this slot (a timer or QProcess::finished fires mid-refresh), so
+    // guard against a nested refresh stacking a second pass on top of this one.
+    if (m_repoDetailRefreshing)
+        return;
+    m_repoDetailRefreshing = true;
+    struct RefreshGuard {
+        bool &flag;
+        ~RefreshGuard() { flag = false; }
+    } refreshGuard{m_repoDetailRefreshing};
+    GitKeepAlive keepAlive;
     // Re-read the branch tip, commit list, About sidebar and the current file
     // view so a freshly pushed commit shows without reopening the repo.
     loadBranchesAndTags();

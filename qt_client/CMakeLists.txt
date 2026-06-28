@@ -21,6 +21,8 @@ set(FORKMESH_APP_SOURCES
     src/Theme.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
+    src/GitKeepAlive.h
+    src/GitKeepAlive.cpp
     src/ChatBackend.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
@@ -118,6 +120,8 @@ if(FORKMESH_BUILD_TESTS)
         resources/icons.qrc
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
+        src/GitKeepAlive.h
+        src/GitKeepAlive.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
         src/CoveCrypto.h

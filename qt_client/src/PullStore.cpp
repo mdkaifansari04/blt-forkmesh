@@ -1,6 +1,7 @@
 #include "PullStore.h"
 
 #include "ForkMeshIdentity.h"
+#include "GitKeepAlive.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -32,7 +33,10 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(timeoutMs)) {
+    // Pump the GUI loop while a GitKeepAlive scope is open (e.g. the pending-
+    // conflict scan on the PR list) so a slow read doesn't freeze the window;
+    // blocks as before otherwise.
+    if (!gitkeepalive::waitForFinished(process, timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;
@@ -1851,7 +1855,10 @@ bool PullStore::checkMergeable(int number, bool *clean,
     QProcess git;
     git.start("git",
               {"-C", m_workTree, "apply", "--check", "--3way", patchPath});
-    const bool finished = git.waitForFinished(kGitTimeoutMs);
+    // Pump the GUI loop while a GitKeepAlive scope is open (the PR list scans
+    // every open pull for mergeability) so the per-pull --check doesn't freeze
+    // the window; blocks as before otherwise.
+    const bool finished = gitkeepalive::waitForFinished(git, kGitTimeoutMs);
     if (!tempFile.isEmpty())
         QFile::remove(tempFile);
     if (!finished) {

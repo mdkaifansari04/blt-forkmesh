@@ -1,6 +1,7 @@
 #include "IssueStore.h"
 
 #include "ForkMeshIdentity.h"
+#include "GitKeepAlive.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -33,7 +34,10 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(timeoutMs)) {
+    // Pump the GUI loop while a GitKeepAlive scope is open (e.g. opening a repo
+    // or a periodic detail refresh) so a slow mirror read doesn't freeze the
+    // window; blocks as before otherwise.
+    if (!gitkeepalive::waitForFinished(process, timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;
