@@ -23375,6 +23375,7 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentCreateIssueButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
+        m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
         return;
@@ -23557,15 +23558,12 @@ void MainWindow::showAgentSession(int sessionId)
 
     const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
     updateAgentNetworkPanel(log, session->status);
-    if (m_agentLog) {
-        m_agentLog->setPlainText(log);
-        m_agentLog->moveCursor(QTextCursor::End);
-    }
     // Pick the right output surface. A Claude Code session renders its OWN
     // buffered transcript (so output never leaks between sessions); legacy
     // terminal sessions show the embedded terminal; everything else the log. The
     // Transcript|Raw toggle and the edited-files panel show only for transcript
-    // sessions.
+    // sessions. Each surface populates m_agentLog through setAgentLogText() so a
+    // re-show of the same unchanged session skips the costly re-layout (adhoc #245).
     const bool external = isExternalSession(sessionId);
     const bool transcript = external || isStreamTranscriptSession(sessionId);
     if (external) {
@@ -23579,10 +23577,10 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        if (m_agentLog) {
-            m_agentLog->setPlainText(m_streamRaw.value(sessionId));
-            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
-        }
+        setAgentLogText(sessionId, m_streamRaw.value(sessionId)); // raw view tail
+    } else {
+        // Legacy log/terminal session: m_agentLog is the visible surface.
+        setAgentLogText(sessionId, log);
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -23620,6 +23618,23 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     updateAgentActionState();
+}
+
+void MainWindow::setAgentLogText(int sessionId, const QString &text)
+{
+    if (!m_agentLog)
+        return;
+    // Skip the re-layout when the same session's log is already on screen with
+    // identical text. setPlainText()+moveCursor(End) forces QPlainTextEdit to lay
+    // out the whole document (cursorRect -> initCharAttributes over every block),
+    // which for a large transcript blocked the GUI thread for ~2.9 s every time
+    // refreshAgentTable() re-selected the open session (adhoc #245).
+    if (m_agentLogSession == sessionId && m_agentLogText == text)
+        return;
+    m_agentLogSession = sessionId;
+    m_agentLogText = text;
+    m_agentLog->setPlainText(text);
+    m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
 }
 
 void MainWindow::updateAgentNetworkPanel(const QString &log, const QString &status)
@@ -25218,8 +25233,7 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
             // Separate each JSON object with a blank line so the raw view is readable.
             const QStringList objs =
                 QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-            m_agentLog->setPlainText(objs.join(QStringLiteral("\n\n")));
-            m_agentLog->moveCursor(QTextCursor::End);
+            setAgentLogText(sessionId, objs.join(QStringLiteral("\n\n")));
         }
     }
     if (full)
@@ -26079,6 +26093,7 @@ void MainWindow::appendAgentRawLog(const QString &text)
     QTextCursor cursor(m_agentLog->document());
     cursor.movePosition(QTextCursor::End);
     cursor.insertText(text);
+    m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
     if (atBottom && sb)
         sb->setValue(sb->maximum()); // keep following the tail only if already pinned
 }
@@ -26093,6 +26108,7 @@ void MainWindow::showAgentRawOutput()
         return;
     if (m_streamRaw.contains(m_selectedAgentSessionId))
         m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
+    m_agentLogSession = -1; // set out-of-band; the dedup tracker is now stale
     m_agentOutputStack->setCurrentWidget(m_agentLog);
     m_agentLog->moveCursor(QTextCursor::End); // always land on the tail when shown
 }
@@ -26107,6 +26123,7 @@ void MainWindow::onAgentLog(int sessionId, const QString &text)
     if (!text.endsWith(QLatin1Char('\n')))
         m_agentLog->insertPlainText(QStringLiteral("\n"));
     m_agentLog->moveCursor(QTextCursor::End);
+    m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
     // Refresh the live traffic graphic when a network marker streams in.
     if (text.contains(QLatin1String("[net]")) && m_agentStore) {
         if (AgentSession *session = findAgentSession(sessionId))

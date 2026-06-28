@@ -796,6 +796,13 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
+    // actually changed. setPlainText()+moveCursor(End) forces a full document
+    // layout, which for a large transcript blocks the GUI thread for seconds
+    // (adhoc #245). refreshAgentTable() re-selects the open session on every
+    // reload/external tick, re-firing showAgentSession with identical text, so
+    // skip the re-layout when neither the session nor its log has changed.
+    void setAgentLogText(int sessionId, const QString &text);
     // Authoritative cumulative token total for a session: the live running
     // counter (m_sessionTokens) clamped to never fall below the value persisted
     // on the session. Reloading sessions from disk mid-run would otherwise reset
@@ -2633,6 +2640,10 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // Which session's raw log is currently laid into m_agentLog, and its text,
+    // so setAgentLogText() can skip the costly re-layout when nothing changed.
+    int m_agentLogSession = -1;
+    QString m_agentLogText;
     QHash<int, QString> m_streamRaw;
     QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
     // Night-rider scanner lights: per-session sweep state keyed by sessionId (so
