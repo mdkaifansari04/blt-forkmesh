@@ -2487,6 +2487,12 @@ private:
     QPushButton *m_terminalModeButton = nullptr;
     QComboBox *m_agentDiffModeCombo = nullptr; // unified vs split diff selector
     QWidget *m_agentOutputToggle = nullptr;
+    // adhoc #201: search-the-transcript box in the output toggle row, with a
+    // "3/12" match counter and prev/next steppers over the highlighted hits.
+    QLineEdit *m_transcriptSearch = nullptr;
+    QLabel *m_transcriptSearchCount = nullptr;
+    QPushButton *m_transcriptSearchPrev = nullptr;
+    QPushButton *m_transcriptSearchNext = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
     // Issue #131: the output area is split into two tabs — "Agent" (the
@@ -2549,6 +2555,9 @@ private:
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
+    // Re-run the transcript search box's query against the freshly-rebuilt view
+    // (adhoc #201), so highlights survive a session switch / re-render.
+    void reapplyTranscriptSearch();
     // Refresh the edited-files panel. The in-memory tool-call files render
     // immediately; the working-tree `git diff` augmentation is coalesced and run
     // off the event loop (see scheduleAgentFilesDiff) so a streaming agent can't
