@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 208
 title: when there are changes show a small numbedr above the comimts tab
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 90
 progress: 0
