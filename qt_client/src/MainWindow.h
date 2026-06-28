@@ -1314,6 +1314,11 @@ private:
     // reload runs (kept visible briefly after, since the reload is near-instant).
     void startCommitsRefreshSpin();
     void stopCommitsRefreshSpin();
+    // Small inline spinner shown next to the commit's "files changed" heading
+    // while showCommit reads and renders the diff (a big commit can take a second
+    // or two), so the click shows progress instead of looking frozen.
+    void startCommitDiffSpin();
+    void stopCommitDiffSpin();
     // Generic click feedback for any Refresh button: briefly spins its icon, then
     // restores it. addRefreshSpin wires it onto a button's clicked signal.
     void spinRefreshButton(QPushButton *button);
@@ -2166,6 +2171,8 @@ private:
     QLabel *m_commitFilesSummary = nullptr;
     QListWidget *m_commitFileList = nullptr;
     QTextBrowser *m_commitDiffView = nullptr;
+    QWidget *m_commitDiffSpinner = nullptr; // inline spinner by the files heading
+    bool m_commitDetailLoading = false;     // guards re-entrant showCommit loads
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
@@ -2602,12 +2609,6 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
-    // Drop every in-memory transcript buffer keyed by this session id. Session ids
-    // are recycled (nextId() = max on-disk id + 1), so a deleted session's leftover
-    // events/raw/steer state would otherwise be inherited by the next session that
-    // reuses the id — making a fresh "quick issue" resume another agent's context
-    // (adhoc #198). Called on delete so a recycled id always starts clean.
-    void forgetStreamSessionState(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are

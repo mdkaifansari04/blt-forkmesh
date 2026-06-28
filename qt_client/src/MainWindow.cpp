@@ -3284,6 +3284,51 @@ private:
     std::function<void()> m_onClick;
 };
 
+// A small self-animating "busy" spinner: the rotating refresh glyph used on the
+// Refresh buttons, sized to sit inline next to a section heading while that
+// section's content is being (re)loaded. The animation timer only runs while the
+// spinner is visible (see show/hideEvent) so a hidden, idle one costs nothing.
+class BusySpinner : public QWidget
+{
+public:
+    explicit BusySpinner(QWidget *parent = nullptr, int size = 16)
+        : QWidget(parent), m_size(size)
+    {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(60);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 30) % 360;
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.drawPixmap(0, 0,
+                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+    }
+
+private:
+    QTimer *m_timer = nullptr;
+    int m_size;
+    int m_angle = 0;
+};
+
 // Compact "issue looper" toggle that floats just above the Issues tab (adhoc
 // #130). It is both the control and the indicator: a small on/off switch and
 // the open issue currently being worked ("#124") — clicking that "#N" jumps to
@@ -12514,10 +12559,23 @@ QWidget *MainWindow::buildRepoCommitsTab()
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
+    // Small spinner that sits just after the "N files changed" heading while
+    // showCommit reads + renders the diff, so a slow commit shows progress here
+    // instead of freezing. Hidden until a load starts.
+    m_commitDiffSpinner = new BusySpinner(filesPane);
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *filesSummaryRow = new QHBoxLayout;
+    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
+    filesSummaryRow->setSpacing(6);
+    filesSummaryRow->addWidget(m_commitFilesSummary);
+    filesSummaryRow->addWidget(m_commitDiffSpinner);
+    filesSummaryRow->addStretch();
+
     auto *filesLayout = new QVBoxLayout(filesPane);
     filesLayout->setContentsMargins(0, 0, 8, 0);
     filesLayout->setSpacing(6);
-    filesLayout->addWidget(m_commitFilesSummary);
+    filesLayout->addLayout(filesSummaryRow);
     filesLayout->addWidget(m_commitFileList, 1);
 
     // Right: the unified diff for the whole commit.
@@ -23466,10 +23524,6 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         flashMessage("Could not delete the agent session.", true);
         return false;
     }
-    // The on-disk session is gone but its id will be handed to the next session
-    // created (nextId() = max id + 1). Forget every in-memory transcript buffer so
-    // that recycled id can't inherit this agent's context (adhoc #198).
-    forgetStreamSessionState(snapshot.id);
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     return true;
@@ -25108,28 +25162,6 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
-}
-
-// Purge every per-session in-memory buffer for a session that's going away. Ids
-// are recycled (nextId() = max on-disk id + 1), and startClaudeCodeTranscript
-// infers "resuming" from a non-empty m_streamEvents[sid] — so any leftover state
-// here would make the next session that reuses this id resume the deleted agent's
-// Claude conversation instead of starting fresh (adhoc #198). m_streamSessions and
-// m_streamWorktree are dropped by stopStreamSession()/cleanupStreamWorktree(); the
-// rest are cleared here.
-void MainWindow::forgetStreamSessionState(int sessionId)
-{
-    m_streamEvents.remove(sessionId);
-    m_streamRaw.remove(sessionId);
-    m_streamFiles.remove(sessionId);
-    m_streamSessionInfo.remove(sessionId);
-    m_pendingSteerMessage.remove(sessionId);
-    m_lastAssistantText.remove(sessionId);
-    m_sessionTokens.remove(sessionId);
-    m_scannerStates.remove(sessionId);
-    m_agentDiffStats.remove(sessionId);
-    if (m_renderedTranscriptSession == sessionId)
-        m_renderedTranscriptSession = -1;
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
@@ -27598,6 +27630,11 @@ void MainWindow::refreshCommitMarkersIfStale()
 
 void MainWindow::loadCommits()
 {
+    // The reload fires several blocking git reads (status, log --numstat, the
+    // unpushed-set walk), any of which can take a second on a large repo. Keep the
+    // event loop breathing across them so the window stays painted (and the
+    // Refresh spinner keeps turning) instead of freezing. Nestable/RAII.
+    GitKeepAlive keepAlive;
     refreshSourceControl(); // keep the working-changes panel in sync with the tab
     if (!m_commitsTable)
         return;
@@ -30307,6 +30344,22 @@ void MainWindow::showCommit(const QString &hash)
         m_commitsTable->selectRow(m_currentCommitRow);
     }
 
+    // Re-entrancy guard: the keep-alive pump below services queued slots between
+    // git reads, so a second click (or a deferred reload) must not start a second
+    // diff load on top of this one. Set before the first event-loop turn below.
+    if (m_commitDetailLoading)
+        return;
+    m_commitDetailLoading = true;
+
+    // Land on the diff page and paint a spinner straight away, then yield one
+    // event-loop turn so it actually shows before the (possibly multi-second) git
+    // reads + diff render run. The GitKeepAlive scope keeps the window breathing —
+    // and the spinner turning — across those reads so the click never freezes.
+    m_commitsStack->setCurrentIndex(1);
+    startCommitDiffSpin();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    GitKeepAlive keepAlive;
+
     // --- Metadata (full hash, author, date, parents, subject, body).
     QByteArray meta;
     runGitCapture(dir,
@@ -30447,7 +30500,9 @@ void MainWindow::showCommit(const QString &hash)
     }
 
     renderCommitThread(m_currentCommitHash);
+    stopCommitDiffSpin();
     m_commitsStack->setCurrentIndex(1);
+    m_commitDetailLoading = false;
 }
 
 void MainWindow::renderCommitThread(const QString &sha)
@@ -35853,6 +35908,18 @@ void MainWindow::stopCommitsRefreshSpin()
     if (m_commitsRefreshButton)
         m_commitsRefreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+}
+
+void MainWindow::startCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->show();
+}
+
+void MainWindow::stopCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->hide();
 }
 
 void MainWindow::startNodeSwitchSpin()
