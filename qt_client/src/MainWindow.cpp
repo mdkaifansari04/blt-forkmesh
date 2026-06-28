@@ -5399,6 +5399,18 @@ bool MainWindow::testWorktreesTableHasKeyboardFocus() const
            m_worktreesTable->window()->focusWidget() == m_worktreesTable;
 }
 
+bool MainWindow::testReleasesTableHasKeyboardFocus() const
+{
+    return m_releasesTable && m_releasesTable->window() &&
+           m_releasesTable->window()->focusWidget() == m_releasesTable;
+}
+
+bool MainWindow::testMirrorNodesTableHasKeyboardFocus() const
+{
+    return m_mirrorNodesTable && m_mirrorNodesTable->window() &&
+           m_mirrorNodesTable->window()->focusWidget() == m_mirrorNodesTable;
+}
+
 QString MainWindow::testBranchWorktreePath(const QString &branch) const
 {
     if (!m_branchesTable)
@@ -32824,8 +32836,8 @@ void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
 void MainWindow::focusRepoDetailTable(int id)
 {
     // The list table at the heart of each repo-detail tab. Tabs that aren't a
-    // single scrollable list (Code, Insights, Security, Releases, Settings, …)
-    // map to nullptr and are left alone.
+    // single scrollable list (Code, Insights, Security, Settings, …) map to
+    // nullptr and are left alone.
     QTableWidget *table = nullptr;
     if (id == 1)
         table = m_commitsTable;
@@ -32843,6 +32855,10 @@ void MainWindow::focusRepoDetailTable(int id)
         table = m_branchesTable;
     else if (id == m_worktreesTabIndex)
         table = m_worktreesTable;
+    else if (id == m_releasesTabIndex)
+        table = m_releasesTable;
+    else if (id == m_mirrorNodesTabIndex)
+        table = m_mirrorNodesTable;
     // Only grab focus for a table that's actually on screen (e.g. the Issues tab
     // hides m_issueTable while its Milestones/Labels sub-tab is showing).
     if (table && table->isVisible() && table->isEnabled())
@@ -35878,9 +35894,13 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(2, QHeaderView::Stretch);
     rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
-    connect(m_releasesTable, &QTableWidget::cellDoubleClicked, this,
-            [this](int row, int) {
-                QTableWidgetItem *it = m_releasesTable->item(row, 0);
+    // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
+    // keyboard-focused row opens the tag too, matching the arrow-key navigation
+    // the tab now supports (adhoc #183).
+    connect(m_releasesTable, &QTableWidget::itemActivated, this,
+            [this](QTableWidgetItem *item) {
+                QTableWidgetItem *it =
+                    item ? m_releasesTable->item(item->row(), 0) : nullptr;
                 if (it)
                     setRepoBranch(it->text()); // browse the repo at the tag
             });
@@ -36037,9 +36057,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     });
     pacmanTick->start();
     // Double-click a node row to open its profile.
-    connect(m_mirrorNodesTable, &QTableWidget::cellDoubleClicked, this,
-            [this](int row, int) {
-                QTableWidgetItem *it = m_mirrorNodesTable->item(row, 0);
+    // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
+    // node's profile, matching the tab's arrow-key navigation (adhoc #183).
+    connect(m_mirrorNodesTable, &QTableWidget::itemActivated, this,
+            [this](QTableWidgetItem *item) {
+                QTableWidgetItem *it =
+                    item ? m_mirrorNodesTable->item(item->row(), 0) : nullptr;
                 if (it) {
                     const QString nid = it->data(Qt::UserRole).toString();
                     if (!nid.isEmpty())
