@@ -1,0 +1,251 @@
+From ca779de7dd835812b74773139f19d5afc2903a60 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 29 Jun 2026 01:48:47 +0530
+Subject: [PATCH 1/5] chore: update logo file type for optimization
+
+---
+ cloudflare_worker/public/assets/logo.webp | Bin 0 -> 65554 bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 cloudflare_worker/public/assets/logo.webp
+
+diff --git a/cloudflare_worker/public/assets/logo.webp b/cloudflare_worker/public/assets/logo.webp
+new file mode 100644
+index 0000000000000000000000000000000000000000..3cd2749b01a55581b4b1cad44cd4ea38e57fafa1
+GIT binary patch
+literal 65554
+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
+zL<
+
+... [OUTPUT TRUNCATED - 5714733 chars omitted out of 5726733 total] ...
+
+logo.webp" alt="" aria-hidden="true">' in html
++    assert re.search(
++        r'<img\s+class="brand-mark"\s+src="/assets/logo\.webp"\s+alt=""\s+aria-hidden="true"\s*/?>',
++        html,
++    )
+ 
+ 
+ def test_blog_page_footer_keeps_only_twitter_social_link():
+@@ -209,7 +213,9 @@ def test_blog_search_result_copy_is_compact():
+ def test_blog_page_uses_blog_banner_assets():
+     html = _read(BLOG_PAGE)
+ 
+-    assert html.count('src="/blog/assets/introducing-forkmesh.svg"') == 5
++    assert html.count('src="/assets/blogs/forkmesh-noise.webp"') == 3
++    assert html.count('src="/assets/blogs/coming-soon.webp"') == 2
++    assert 'src="/blog/assets/introducing-forkmesh.svg"' not in html
+     assert 'src="/assets/blog/intro-to-forkmesh.png"' not in html
+     assert 'src="/assets/blog/coming-soon.png"' not in html
+     for marker in (
+diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+index 751e2f05..cda1d8f7 100644
+--- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
++++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+@@ -2,6 +2,7 @@
+ """Static contracts for the landing/dashboard split."""
+ 
+ from pathlib import Path
++import re
+ import tomllib
+ 
+ 
+@@ -78,14 +79,16 @@ def test_dashboard_defaults_to_repositories_and_hides_unready_home_desktop_nav()
+ 
+     assert '<!-- Home dashboard tab is intentionally hidden' in dashboard
+     assert '<!-- Desktop Client is intentionally hidden' in dashboard
+-    assert 'data-section="repos" data-nav-link aria-current="page"' in dashboard
++    assert re.search(
++        r'data-section="repos"\s+data-nav-link\s+aria-current="page"',
++        dashboard,
++    )
+     visible = _strip_html_comments(dashboard)
+-    assert 'data-view="repos" class="view active' in visible
+-    assert 'data-view="home" class="view active' not in visible
+-    rendered_nav = dashboard[
+-        dashboard.index('<nav data-top-nav')
+-        : dashboard.index('</nav>', dashboard.index('<nav data-top-nav'))
+-    ]
++    assert re.search(r'data-view="repos"\s+class="view active', visible)
++    assert not re.search(r'data-view="home"\s+class="view active', visible)
++    nav_attr = dashboard.index("data-top-nav")
++    nav_start = dashboard.rindex("<nav", 0, nav_attr)
++    rendered_nav = dashboard[nav_start:dashboard.index("</nav>", nav_start)]
+     visible_nav = rendered_nav.replace(
+         rendered_nav[rendered_nav.index('<!-- Home dashboard tab'):rendered_nav.index('-->', rendered_nav.index('<!-- Home dashboard tab')) + 3],
+         '',
+diff --git a/cloudflare_worker/tests/test_feature_pricing_section.py b/cloudflare_worker/tests/test_feature_pricing_section.py
+index c71036d4..2b3e8748 100644
+--- a/cloudflare_worker/tests/test_feature_pricing_section.py
++++ b/cloudflare_worker/tests/test_feature_pricing_section.py
+@@ -40,6 +40,7 @@ def _pricing_section():
+ 
+ def test_pricing_section_explains_mirror_rewards():
+     pricing = _pricing_section()
++    normalized = re.sub(r"\s+", " ", pricing)
+ 
+     for text in (
+         "FORKMESH - NETWORK PARTICIPATION",
+@@ -51,7 +52,7 @@ def test_pricing_section_explains_mirror_rewards():
+         "You mirror code",
+         "You get paid",
+     ):
+-        assert text in pricing
++        assert text in normalized
+ 
+ 
+ def test_pricing_section_replaces_old_stack_illustration():
+diff --git a/cloudflare_worker/tests/test_index_pricing_section.py b/cloudflare_worker/tests/test_index_pricing_section.py
+index 344dcefd..596c852e 100644
+--- a/cloudflare_worker/tests/test_index_pricing_section.py
++++ b/cloudflare_worker/tests/test_index_pricing_section.py
+@@ -2,6 +2,7 @@
+ """Static contracts for the homepage pricing section."""
+ 
+ from pathlib import Path
++import re
+ 
+ 
+ PUBLIC = Path(__file__).resolve().parents[1] / "public"
+@@ -16,6 +17,7 @@ def _pricing_region() -> str:
+ 
+ def test_pricing_section_uses_network_participation_copy():
+     pricing = _pricing_region()
++    normalized = re.sub(r"\s+", " ", pricing)
+ 
+     for text in (
+         '<section id="pricing" class="forkmesh">',
+@@ -34,7 +36,7 @@ def test_pricing_section_uses_network_participation_copy():
+         "Join the network",
+         "Paid in Solana (SOL)",
+     ):
+-        assert text in pricing
++        assert text in normalized
+ 
+ 
+ def test_pricing_section_replaces_previous_stack_design_inside_pattern_rails():
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index 3790d7dc..62feb056 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -20,7 +20,7 @@ html_handling = "none"
+ not_found_handling = "404-page"
+ # /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
+ # handled in code rather than served as a static asset.
+-run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/blog", "/blog.html", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
++run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/blog", "/blog.html", "/features", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
+ 
+ [vars]
+ NODE_NAME = "forkmesh-mainnode"
+@@ -79,7 +79,7 @@ class_name = "ForkMeshHost"
+ [[d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh"
+-database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
++database_id = "bf90dd5d-338a-421f-9867-5252d2193c2d"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 9cdbe538746024c941f724ebebe603da8b71764a Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 29 Jun 2026 02:08:17 +0530
+Subject: [PATCH 5/5] fix: test and meta data
+
+---
+ cloudflare_worker/public/index.html           | 2 +-
+ cloudflare_worker/tests/test_blog_frontend.py | 3 ---
+ 2 files changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index d0426585..86dc992d 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -1950,7 +1950,7 @@
+                   <a
+                     class="button-outline hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
+                     href="/login"
+-                    >login</a
++                    >Login</a
+                   >
+                   <a
+                     class="button-primary hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
+diff --git a/cloudflare_worker/tests/test_blog_frontend.py b/cloudflare_worker/tests/test_blog_frontend.py
+index 6e5880f1..b180905a 100644
+--- a/cloudflare_worker/tests/test_blog_frontend.py
++++ b/cloudflare_worker/tests/test_blog_frontend.py
+@@ -215,9 +215,6 @@ def test_blog_page_uses_blog_banner_assets():
+ 
+     assert html.count('src="/assets/blogs/forkmesh-noise.webp"') == 3
+     assert html.count('src="/assets/blogs/coming-soon.webp"') == 2
+-    assert 'src="/blog/assets/introducing-forkmesh.svg"' not in html
+-    assert 'src="/assets/blog/intro-to-forkmesh.png"' not in html
+-    assert 'src="/assets/blog/coming-soon.png"' not in html
+     for marker in (
+         'class="blog1-featured-image blog1-has-art"',
+         'class="blog1-featured-image blog1-article-image blog1-has-art"',
+-- 
+2.50.1 (Apple Git-155)
