@@ -100,6 +100,21 @@ function repoGroupKey(repo) {
   return root ? "root:" + root : "name:" + text(repo && repo.name).toLowerCase();
 }
 
+// Whether two catalog records mirror the same logical repo. They match on a
+// shared root (first) commit; when either side lacks a root we fall back to the
+// repo name. A mirror cloned from the relay can have an unset HEAD and so publish
+// an empty rootCommit (issue #243) — without the name fallback it would land in a
+// separate group and the source of truth's card would never list it. MUST mirror
+// the worker's repo_mirror_same_group so the website and the /mirrors API agree.
+function sameRepoGroup(a, b) {
+  const ra = text(a && a.rootCommit).toLowerCase();
+  const rb = text(b && b.rootCommit).toLowerCase();
+  if (ra && rb) return ra === rb;
+  const na = text(a && a.name).toLowerCase();
+  const nb = text(b && b.name).toLowerCase();
+  return !!na && na === nb;
+}
+
 // Group records into logical repos. Within each group the "primary" is a live
 // host if any (so Browse/Clone hit an online node), else the most recently synced.
 function groupRepositories(repos) {
@@ -108,6 +123,26 @@ function groupRepositories(repos) {
     const key = repoGroupKey(repo);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(repo);
+  }
+  // Fold each empty-root, name-keyed group into a rooted group of the same repo
+  // name so a relay-cloned mirror (unset HEAD -> empty rootCommit, issue #243)
+  // collapses onto its source of truth's card instead of a separate one. This is
+  // the name fallback the worker's repo_mirror_same_group already applies.
+  const rootedByName = new Map();
+  for (const [key, members] of groups) {
+    if (!key.startsWith("root:")) continue;
+    for (const m of members) {
+      const n = text(m.name).toLowerCase();
+      if (n && !rootedByName.has(n)) rootedByName.set(n, key);
+    }
+  }
+  for (const [key, members] of [...groups]) {
+    if (!key.startsWith("name:")) continue;
+    const target = rootedByName.get(key.slice("name:".length));
+    if (target && groups.has(target)) {
+      groups.get(target).push(...members);
+      groups.delete(key);
+    }
   }
   return [...groups.values()].map((members) => {
     const sorted = [...members].sort((a, b) => {
@@ -1811,9 +1846,10 @@ function renderMirrorNodes(owner, name, repo) {
   stopPacmanTicker();
   pacmanEntries = [];
   const ref = repo || repoIndex.get(`${owner}/${name}`) || { name };
-  const key = repoGroupKey(ref);
+  // Pairwise grouping (not an exact key match) so an empty-root mirror still
+  // lists alongside its rooted source of truth — see sameRepoGroup / issue #243.
   const members = allRepositories
-    .filter((r) => repoGroupKey(r) === key)
+    .filter((r) => sameRepoGroup(ref, r))
     .sort((a, b) =>
       (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0) ||
       Number(b.lastSync || 0) - Number(a.lastSync || 0));
