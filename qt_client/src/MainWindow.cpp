@@ -23396,6 +23396,10 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         flashMessage("Could not delete the agent session.", true);
         return false;
     }
+    // The on-disk session is gone but its id will be handed to the next session
+    // created (nextId() = max id + 1). Forget every in-memory transcript buffer so
+    // that recycled id can't inherit this agent's context (adhoc #198).
+    forgetStreamSessionState(snapshot.id);
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     return true;
@@ -25034,6 +25038,28 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
+}
+
+// Purge every per-session in-memory buffer for a session that's going away. Ids
+// are recycled (nextId() = max on-disk id + 1), and startClaudeCodeTranscript
+// infers "resuming" from a non-empty m_streamEvents[sid] — so any leftover state
+// here would make the next session that reuses this id resume the deleted agent's
+// Claude conversation instead of starting fresh (adhoc #198). m_streamSessions and
+// m_streamWorktree are dropped by stopStreamSession()/cleanupStreamWorktree(); the
+// rest are cleared here.
+void MainWindow::forgetStreamSessionState(int sessionId)
+{
+    m_streamEvents.remove(sessionId);
+    m_streamRaw.remove(sessionId);
+    m_streamFiles.remove(sessionId);
+    m_streamSessionInfo.remove(sessionId);
+    m_pendingSteerMessage.remove(sessionId);
+    m_lastAssistantText.remove(sessionId);
+    m_sessionTokens.remove(sessionId);
+    m_scannerStates.remove(sessionId);
+    m_agentDiffStats.remove(sessionId);
+    if (m_renderedTranscriptSession == sessionId)
+        m_renderedTranscriptSession = -1;
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
