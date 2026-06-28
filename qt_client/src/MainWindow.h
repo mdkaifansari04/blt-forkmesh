@@ -1030,6 +1030,18 @@ private:
     QString worktreePathForBranch(const QString &repoPath,
                                   const QString &branch) const;
     void showBranchDiff(const QString &branch);
+    // Render the branch diff for whichever scope is selected in m_branchScopeList
+    // (whole branch vs base, the worktree's uncommitted changes, or one commit).
+    void renderBranchScopeDiff();
+    // Filesystem path whose uncommitted changes belong to `branch`: its dedicated
+    // worktree, or the main checkout when `branch` is the one checked out there.
+    // Empty when the branch is checked out nowhere (so it can't be dirty).
+    QString branchWorkDir(const QString &branch) const;
+    // Render an already-captured patch into the branch diff view + changed-files
+    // list (shared by every scope above). `viewedContext` scopes the per-file
+    // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
+    void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
+                               const QString &viewedContext);
     // Open the selected branch's working directory in VSCodium: its dedicated
     // worktree if it has one, otherwise the repo's main checkout.
     void openBranchInCodium(const QString &branch);
@@ -1923,8 +1935,18 @@ private:
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
+    // Scope selector above the changed-files list: "All changes", the branch's
+    // uncommitted working-tree changes (when its checkout is dirty), and one row
+    // per commit the branch adds over base. Selecting a row re-renders the diff
+    // for just that scope (issue: show commits + uncommitted changes, diffable).
+    QListWidget *m_branchScopeList = nullptr;
+    QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // "viewed" key for whatever scope the diff pane currently shows (whole branch,
+    // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
+    // per-file Viewed toggle persists against the right scope, not always "all".
+    QString m_branchDiffViewedContext;
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
