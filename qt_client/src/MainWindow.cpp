@@ -824,7 +824,7 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
         QStyledItemDelegate::paint(painter, opt, index);
     }
@@ -836,6 +836,10 @@ protected:
             setHovered(QModelIndex());
         return QStyledItemDelegate::eventFilter(obj, event);
     }
+
+    // Subclasses can opt out of the light-green mouse-hover row fill while still
+    // tracking the hovered row (e.g. the agents list, which wants no hover tint).
+    bool m_hoverFill = true;
 
 private:
     void setHovered(const QModelIndex &index)
@@ -907,7 +911,11 @@ inline void paintRowSelectionBorder(QPainter *painter,
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
-    using HoverRowDelegate::HoverRowDelegate;
+    explicit SelectionBorderRowDelegate(QAbstractItemView *view)
+        : HoverRowDelegate(view)
+    {
+        m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
+    }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
