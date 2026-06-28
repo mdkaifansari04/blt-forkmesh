@@ -1356,6 +1356,9 @@ private:
     void updateAgentsTabIndicator();
     // Lazily build the spinner overlay and place it just above the Agents tab.
     void ensureAgentSpinnerOverlay();
+    // Paint the floating strip with an opaque, theme-matched surface so the
+    // running-agent spinners read clearly instead of washing out through it.
+    void styleAgentSpinnerOverlay();
     void positionAgentSpinnerOverlay();
     void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
