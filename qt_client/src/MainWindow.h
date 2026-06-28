@@ -942,6 +942,15 @@ private:
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder.
     void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // Open the shared merge editor over the worktree's currently-unmerged files
+    // (a conflicted merge in progress), letting the user resolve and commit them.
+    // Reused by "Update from main" when it conflicts and by the detail panel's
+    // "Resolve conflicts" button. On commit the merge is finished; on cancel the
+    // merge is aborted. Returns true iff the merge was committed.
+    bool editWorktreeConflicts(const QString &worktreePath, const QString &branch,
+                               const QString &base);
+    // Detail-panel action: resolve the conflicts in the selected worktree.
+    void resolveWorktreeConflicts();
     // Remove a worktree's folder (git worktree remove --force). confirm=true asks
     // first; the post-merge cleanup calls it silently. alsoDeleteBranch deletes the
     // now-orphaned branch too (the default for the Worktrees-tab "Remove" action and
@@ -1817,6 +1826,7 @@ private:
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
     QPushButton *m_worktreeUpdateButton = nullptr; // merge main into the selected worktree
+    QPushButton *m_worktreeResolveButton = nullptr; // resolve a conflicted merge in the worktree
     QPushButton *m_worktreeRemoveButton = nullptr; // remove the selected worktree
     QString m_worktreeSelectedBranch;              // branch behind the open worktree detail
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
