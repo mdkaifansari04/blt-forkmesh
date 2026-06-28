@@ -6,7 +6,7 @@ status: open
 labels: [Partial]
 milestone: 
 priority: 66
-progress: 0
+progress: 40
 assignees: []
 createdAt: 1782487143729
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
