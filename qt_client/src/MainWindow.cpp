@@ -77,6 +77,8 @@
 #include <QSslError>
 #include <QImage>
 #include <QKeyEvent>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QConicalGradient>
 #include <QLinearGradient>
 #include <QPainter>
@@ -602,6 +604,192 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+};
+
+// A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
+// active node mirroring this repo. A dot flashes green when its node serves a
+// clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
+// idle dots sit at a steady online green. Only this node generates live serve
+// events, so its own dot is the one that blinks in practice, but the strip is
+// keyed by node id so any node's activity can be surfaced as the mesh grows.
+class MirrorActivityStrip : public QWidget
+{
+public:
+    struct Dot
+    {
+        QString id;
+        QString name;
+        bool online = false;
+        bool self = false;
+    };
+
+    explicit MirrorActivityStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFixedHeight(18);
+        // Drives the fade while any dot is mid-blink; idle when nothing pulses.
+        m_anim = new QTimer(this);
+        m_anim->setInterval(40);
+        connect(m_anim, &QTimer::timeout, this, [this] {
+            if (!stepPulses())
+                m_anim->stop();
+            update();
+        });
+    }
+
+    void setNodes(const QVector<Dot> &dots)
+    {
+        m_dots = dots;
+        // Drop pulses for nodes no longer present; keep the rest so a roster
+        // refresh doesn't reset a blink already in flight.
+        QSet<QString> ids;
+        for (const Dot &d : dots)
+            ids.insert(d.id);
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            if (ids.contains(it.key()))
+                ++it;
+            else
+                it = m_pulse.erase(it);
+        }
+        update();
+    }
+
+    // Flash the dot for `nodeId`: green for a served clone, orange for browsing.
+    void pulse(const QString &nodeId, bool clone)
+    {
+        bool known = false;
+        for (const Dot &d : m_dots)
+            if (d.id == nodeId) {
+                known = true;
+                break;
+            }
+        if (!known)
+            return;
+        m_pulse.insert(nodeId, Pulse{1.0, clone});
+        if (!m_anim->isActive())
+            m_anim->start();
+        update();
+    }
+
+    bool isEmpty() const { return m_dots.isEmpty(); }
+
+    // Width needed to show every dot, used to size the floating overlay above the
+    // Mirror nodes tab. Capped so a large mesh can't stretch the band; paintEvent
+    // already stops drawing once it runs out of room.
+    int preferredWidth() const
+    {
+        if (m_dots.isEmpty())
+            return 0;
+        const qreal last = (kRadius + 2.0) + (m_dots.size() - 1) * kSpacing;
+        return qMin(240, int(last + kRadius + 4.0));
+    }
+
+protected:
+    QSize sizeHint() const override { return QSize(160, 18); }
+
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(e);
+            if (const Dot *d = dotAt(he->pos())) {
+                QToolTip::showText(
+                    he->globalPos(),
+                    QStringLiteral("%1%2 \xC2\xB7 %3")
+                        .arg(d->name,
+                             d->self ? QStringLiteral(" (you)") : QString(),
+                             d->online ? QStringLiteral("online")
+                                       : QStringLiteral("offline")),
+                    this);
+            } else {
+                QToolTip::hideText();
+            }
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const QColor base =
+                d.online ? QColor("#3fb950") : QColor("#484f58");
+            QColor col = base;
+            const Pulse ph = m_pulse.value(d.id, Pulse{});
+            if (ph.level > 0.0) {
+                const QColor flash =
+                    ph.clone ? QColor("#3fb950") : QColor("#d29922");
+                col = blend(base, flash, ph.level);
+                QColor halo = flash;
+                halo.setAlphaF(0.40 * ph.level);
+                p.setPen(Qt::NoPen);
+                p.setBrush(halo);
+                const qreal hr = kRadius + 4.0 * ph.level;
+                p.drawEllipse(QPointF(x, cy), hr, hr);
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
+            p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            x += kSpacing;
+            if (x > width() - kRadius)
+                break; // ran out of room; the table still lists every node
+        }
+    }
+
+private:
+    struct Pulse
+    {
+        double level = 0.0; // remaining brightness, fades 1 -> 0
+        bool clone = false; // green (clone) vs orange (browse)
+    };
+
+    static constexpr qreal kRadius = 5.0;
+    static constexpr qreal kSpacing = 15.0;
+
+    const Dot *dotAt(const QPoint &pos) const
+    {
+        const qreal cy = height() / 2.0;
+        qreal x = kRadius + 2.0;
+        for (const Dot &d : m_dots) {
+            const qreal dx = pos.x() - x;
+            const qreal dy = pos.y() - cy;
+            if (dx * dx + dy * dy <= (kRadius + 3.0) * (kRadius + 3.0))
+                return &d;
+            x += kSpacing;
+        }
+        return nullptr;
+    }
+
+    // Advance every pulse one frame; true while any remain active.
+    bool stepPulses()
+    {
+        bool any = false;
+        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
+            it.value().level -= 0.06; // ~0.7s flash
+            if (it.value().level <= 0.0) {
+                it = m_pulse.erase(it);
+            } else {
+                any = true;
+                ++it;
+            }
+        }
+        return any;
+    }
+
+    static QColor blend(const QColor &a, const QColor &b, double t)
+    {
+        t = qBound(0.0, t, 1.0);
+        return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                                a.greenF() + (b.greenF() - a.greenF()) * t,
+                                a.blueF() + (b.blueF() - a.blueF()) * t);
+    }
+
+    QVector<Dot> m_dots;
+    QHash<QString, Pulse> m_pulse; // nodeId -> in-flight flash
+    QTimer *m_anim = nullptr;
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -5113,6 +5301,18 @@ QString MainWindow::testBranchAttachmentText(const QString &branch) const
     return QString();
 }
 
+QStringList MainWindow::testBranchRowOrder() const
+{
+    QStringList names;
+    if (!m_branchesTable)
+        return names;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+            names << name->text();
+    }
+    return names;
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -5919,11 +6119,10 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     return false;
 }
 
-// In-app join wizard — web parity with signup.html / signup.js. One modal
-// dialog with three stacked pages: (1) reserve a public node name, (2) donate
-// with Solana and poll for confirmation, (3) set the email + password that
-// unlock universal login. Each step is signed with the local identity so the
-// reserved name is bound to this key. Returns true once the account is active.
+// In-app join — joining the network is free. The only thing required is a public
+// node name: it's reserved against this device's Ed25519 key and immediately
+// activated (no donation, no email/password). Cross-device email/password login
+// can be added later. Returns true once the account is active.
 bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
 {
     Q_UNUSED(solana);
@@ -5942,523 +6141,153 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     outer->setContentsMargins(28, 24, 28, 24);
     outer->setSpacing(8);
 
-    auto *stepLabel = new QLabel;
-    stepLabel->setObjectName("wizardStep");
-    auto *titleLabel = new QLabel;
+    auto *titleLabel = new QLabel("Choose your public node name");
     titleLabel->setObjectName("wizardTitle");
     titleLabel->setWordWrap(true);
-    outer->addWidget(stepLabel);
     outer->addWidget(titleLabel);
-    outer->addSpacing(8);
+    outer->addSpacing(4);
 
-    auto *stack = new QStackedWidget;
-    outer->addWidget(stack);
+    auto *nameEdit = new QLineEdit;
+    nameEdit->setMaxLength(63);
+    nameEdit->setPlaceholderText("ada-lovelace");
+    nameEdit->setText(accountName);
+    auto *hint = new QLabel;
+    hint->setObjectName("modeHint");
+    hint->setWordWrap(true);
+    auto *joinBtn = new QPushButton("Join ForkMesh");
+    joinBtn->setObjectName("primaryButton");
+    joinBtn->setMinimumHeight(38);
+    outer->addWidget(nameEdit);
+    outer->addWidget(hint);
+    outer->addSpacing(4);
+    outer->addWidget(joinBtn);
 
-    QString reservedName = accountName;
-    bool finalized = false;
-    // The node name is chosen on the previous screen, so when it's already valid
-    // we reserve it silently and skip the redundant name page — the wizard then
-    // presents as a 2-step flow (donate, then login).
-    const bool haveName = isValidNodeName(accountName);
+    bool joined = false;
 
-    auto setStep = [&](int idx) {
-        static const char *titles[] = {
-            "Reserve your public node name",
-            "Donate to activate your node",
-            "Create your login",
-        };
-        // Page indices stay 0/1/2 internally; the visible "Step N of M" drops the
-        // hidden name page when the name was supplied up front.
-        const int total = haveName ? 2 : 3;
-        const int shown = haveName ? std::max(idx, 1) : idx + 1;
-        stepLabel->setText(QStringLiteral("Step %1 of %2").arg(shown).arg(total));
-        titleLabel->setText(QString::fromUtf8(titles[idx]));
-        stack->setCurrentIndex(idx);
+    auto styleHint = [](QLabel *h, const QString &text, const char *color) {
+        h->setText(text);
+        h->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
+                                     .arg(QString::fromUtf8(color))
+                               : QStringLiteral("background:transparent;"));
     };
-    auto styleHint = [](QLabel *hint, const QString &text, const char *color) {
-        hint->setText(text);
-        hint->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
-                                        .arg(QString::fromUtf8(color))
-                                  : QStringLiteral("background:transparent;"));
-    };
+    styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a letter. "
+                    "This name is public, and joining is free.", nullptr);
 
-    // Reserve a node name on the relay, binding it to this device key. Returns
-    // true on success; shared by the name page button and the silent auto-reserve
-    // that runs when the name is already known.
-    auto reserveName = [&](const QString &name) -> bool {
-        if (!isValidNodeName(name))
-            return false;
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-reserve-v1\n" + name + "\n" + ts).toUtf8();
+    // Debounced availability check so the Join button only lights up for a free
+    // name (the reserve below is still the authority, but this avoids a round-trip
+    // failure for obviously-taken names).
+    auto *availTimer = new QTimer(&dialog);
+    availTimer->setSingleShot(true);
+    availTimer->setInterval(350);
+    connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        joinBtn->setEnabled(false);
+        if (v.isEmpty()) {
+            styleHint(hint, "This name is public, and joining is free.", nullptr);
+            return;
+        }
+        if (!isValidNodeName(v)) {
+            styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
+                            "with a letter.", "#f85149");
+            return;
+        }
+        styleHint(hint, "Checking availability…", nullptr);
+        availTimer->start();
+    });
+    connect(availTimer, &QTimer::timeout, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(v))
+            return;
         int status = 0;
-        const QJsonObject resp = postAccountSync(
+        const QJsonObject look = getAccountSync(v, &status);
+        if (status == 0) { // relay unreachable: allow continuing
+            styleHint(hint, "Couldn't check availability — you can still continue.",
+                      nullptr);
+            joinBtn->setEnabled(true);
+            return;
+        }
+        if (look.value("exists").toBool() && !look.value("available").toBool()) {
+            styleHint(hint, "That name is already taken — try another.", "#f85149");
+            joinBtn->setEnabled(false);
+        } else {
+            styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
+                                .arg(v), "#3fb950");
+            joinBtn->setEnabled(true);
+        }
+    });
+
+    // Reserve the name (binding it to this device key), then activate it for free
+    // by finalizing with no email/password. Both calls are signed with the local
+    // identity; the finalize signature covers an empty email segment, matching the
+    // relay's canonical string for a key-bound, credential-less join.
+    auto doJoin = [&]() {
+        const QString name = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(name))
+            return;
+        joinBtn->setEnabled(false);
+        joinBtn->setText("Joining…");
+
+        const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray rcanon =
+            ("forkmesh-reserve-v1\n" + name + "\n" + rts).toUtf8();
+        int rstatus = 0;
+        const QJsonObject rresp = postAccountSync(
             "reserve",
             QJsonObject{{"nodeName", name},
                         {"pubkey", m_profileIdentity.publicKey()},
-                        {"ts", ts},
-                        {"sig", m_profileIdentity.signData(canonical)}},
-            &status);
-        if (!resp.value("ok").toBool())
-            return false;
-        reservedName = name;
-        return true;
+                        {"ts", rts},
+                        {"sig", m_profileIdentity.signData(rcanon)}},
+            &rstatus);
+        if (!rresp.value("ok").toBool()) {
+            joinBtn->setText("Join ForkMesh");
+            joinBtn->setEnabled(true);
+            styleHint(hint, "Could not reserve that name — it may be taken. "
+                            "Try another.", "#f85149");
+            return;
+        }
+
+        const QString fts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray fcanon =
+            ("forkmesh-finalize-v1\n" + name + "\n\n" + fts).toUtf8();
+        int fstatus = 0;
+        const QJsonObject fresp = postAccountSync(
+            "finalize",
+            QJsonObject{{"nodeName", name},
+                        {"email", QString()},
+                        {"password", QString()},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", fts},
+                        {"sig", m_profileIdentity.signData(fcanon)}},
+            &fstatus);
+        joinBtn->setText("Join ForkMesh");
+        joinBtn->setEnabled(true);
+        if (fstatus != 201 || !fresp.value("ok").toBool()) {
+            styleHint(hint, "Could not join right now. Please try again.", "#f85149");
+            return;
+        }
+        m_accountAuthenticated = true;
+        m_accountName = name;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true; // joined = active network member
+        QSettings().setValue(kAuthedAccountSetting, name);
+        joined = true;
+        dialog.accept();
     };
-
-    // Forward transitions between pages. Assigned after all pages exist so each
-    // page can trigger the next; only ever invoked from user actions once the
-    // dialog is already running, so the late binding is safe.
-    std::function<void()> enterDonation;
-
-    // ================= Page 1 — reserve =================
-    auto *reservePage = new QWidget;
-    {
-        auto *l = new QVBoxLayout(reservePage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        auto *nameEdit = new QLineEdit;
-        nameEdit->setMaxLength(63);
-        nameEdit->setPlaceholderText("ada-lovelace");
-        nameEdit->setText(accountName);
-        auto *hint = new QLabel;
-        hint->setObjectName("modeHint");
-        hint->setWordWrap(true);
-        auto *cont = new QPushButton("Continue");
-        cont->setObjectName("primaryButton");
-        cont->setMinimumHeight(38);
-        l->addWidget(nameEdit);
-        l->addWidget(hint);
-        l->addStretch();
-        l->addWidget(cont);
-        styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a "
-                        "letter. This name is public.", nullptr);
-
-        auto *availTimer = new QTimer(reservePage);
-        availTimer->setSingleShot(true);
-        availTimer->setInterval(350);
-
-        connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            cont->setEnabled(false);
-            if (v.isEmpty()) {
-                styleHint(hint, "This name is public.", nullptr);
-                return;
-            }
-            if (!isValidNodeName(v)) {
-                styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
-                                "with a letter.", "#f85149");
-                return;
-            }
-            styleHint(hint, "Checking availability…", nullptr);
-            availTimer->start();
-        });
-        connect(availTimer, &QTimer::timeout, this, [=]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            if (!isValidNodeName(v))
-                return;
-            int status = 0;
-            const QJsonObject look = getAccountSync(v, &status);
-            if (status == 0) { // relay unreachable: allow continuing
-                styleHint(hint, "Couldn't check availability — you can still continue.",
-                          nullptr);
-                cont->setEnabled(true);
-                return;
-            }
-            if (look.value("exists").toBool() && !look.value("available").toBool()) {
-                styleHint(hint, "That name is already taken — try another.", "#f85149");
-                cont->setEnabled(false);
-            } else {
-                styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
-                                    .arg(v), "#3fb950");
-                cont->setEnabled(true);
-            }
-        });
-
-        auto doReserve = [=, &enterDonation, &reserveName]() {
-            const QString v = nameEdit->text().trimmed().toLower();
-            if (!isValidNodeName(v))
-                return;
-            cont->setEnabled(false);
-            cont->setText("Reserving…");
-            const bool ok = reserveName(v);
-            cont->setText("Continue");
-            cont->setEnabled(true);
-            if (!ok) {
-                styleHint(hint, "Could not reserve that name — it may be taken. "
-                                "Try another.", "#f85149");
-                return;
-            }
-            enterDonation();
-        };
-        connect(cont, &QPushButton::clicked, this, doReserve);
-        connect(nameEdit, &QLineEdit::returnPressed, this, [=]() {
-            if (cont->isEnabled())
-                doReserve();
-        });
-    }
-    stack->addWidget(reservePage);
-
-    // ================= Page 2 — donate =================
-    auto *donatePage = new QWidget;
-    auto *payInfo = new QLabel;
-    auto *splitInfo = new QLabel;
-    auto *qrLabel = new QLabel;
-    auto *addrLabel = new QLabel;
-    auto *copyBtn = new QPushButton("Copy address");
-    // Shown only after the address expires (hidden by the relay after one hour):
-    // lets the user mint a fresh request instead of paying a dead address.
-    auto *renewBtn = new QPushButton("Generate a new request");
-    auto *payStatus = new QLabel;
-    // Shared Solana Pay URI: written when the address is fetched, read by the
-    // copy button. A shared pointer keeps it alive as long as either lambda and
-    // frees it automatically with the dialog.
-    auto payUriHolder = QSharedPointer<QString>::create();
-    {
-        auto *l = new QVBoxLayout(donatePage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        payInfo->setWordWrap(true);
-        payInfo->setTextFormat(Qt::RichText);
-        // Live breakdown of where the donation goes: half to ForkMesh's servers,
-        // half split evenly across the mirror nodes online right now. Filled in by
-        // enterDonation once the amount and node count are known.
-        splitInfo->setObjectName("modeHint");
-        splitInfo->setWordWrap(true);
-        splitInfo->setTextFormat(Qt::RichText);
-        qrLabel->setAlignment(Qt::AlignCenter);
-        // Reserve the QR's footprint so it can never be squeezed (and clipped)
-        // when the dialog is short — the page scrolls instead.
-        qrLabel->setMinimumSize(220, 220);
-        addrLabel->setWordWrap(true);
-        addrLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addrLabel->setStyleSheet("font-family:monospace; background:transparent;");
-        addrLabel->setAlignment(Qt::AlignCenter);
-        copyBtn->setObjectName("ghostButton");
-        copyBtn->setCursor(Qt::PointingHandCursor);
-        renewBtn->setObjectName("primaryButton");
-        renewBtn->setCursor(Qt::PointingHandCursor);
-        renewBtn->setVisible(false);
-        connect(renewBtn, &QPushButton::clicked, &dialog, [&]() { enterDonation(); });
-        payStatus->setObjectName("modeHint");
-        payStatus->setWordWrap(true);
-        // "New to crypto?" disclosure: most newcomers reach this page without any
-        // SOL to send, so offer a self-contained primer (wallets, exchanges, and a
-        // few region-specific picks) instead of leaving them stuck at the QR code.
-        // Collapsed by default to keep the donate page tidy for users who already
-        // hold SOL. Triangle glyphs go through fromUtf8 to dodge the QStringLiteral
-        // UTF-8 mojibake (see [[qstringliteral-utf8-mojibake]]).
-        auto *cryptoHelpToggle = new QToolButton;
-        cryptoHelpToggle->setObjectName("ghostButton");
-        cryptoHelpToggle->setCheckable(true);
-        cryptoHelpToggle->setCursor(Qt::PointingHandCursor);
-        cryptoHelpToggle->setText(
-            QString::fromUtf8("\xE2\x96\xB8 New to crypto? How to get SOL"));
-        auto *cryptoHelp = new QLabel;
-        cryptoHelp->setObjectName("modeHint");
-        cryptoHelp->setWordWrap(true);
-        cryptoHelp->setTextFormat(Qt::RichText);
-        cryptoHelp->setOpenExternalLinks(true);
-        cryptoHelp->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        cryptoHelp->setVisible(false);
-        cryptoHelp->setText(QStringLiteral(
-            "<p>SOL is the coin of the Solana network. Get a little of it, then "
-            "send it to the address above (always over the <b>Solana</b> network).</p>"
-            "<p><b>1.</b> Open a wallet or exchange account and verify it. "
-            "<b>2.</b> Buy a few dollars of SOL. "
-            "<b>3.</b> Withdraw / send it to the address above. "
-            "<b>4.</b> Wait for the confirmation here.</p>"
-            "<p><b>Wallets</b> (hold your own keys, buy SOL in-app):<br>"
-            "&bull; Phantom &mdash; Solana-native, desktop &amp; mobile: "
-            "<a href=\"https://phantom.com\">phantom.com</a><br>"
-            "&bull; Exodus &mdash; multi-chain with a built-in exchange: "
-            "<a href=\"https://www.exodus.com\">exodus.com</a></p>"
-            "<p><b>Common exchanges</b> (buy SOL, then withdraw to your address):<br>"
-            "&bull; Coinbase &mdash; <a href=\"https://www.coinbase.com\">coinbase.com</a><br>"
-            "&bull; Kraken &mdash; <a href=\"https://www.kraken.com\">kraken.com</a><br>"
-            "&bull; Binance &mdash; <a href=\"https://www.binance.com\">binance.com</a><br>"
-            "&bull; Crypto.com &mdash; <a href=\"https://crypto.com\">crypto.com</a><br>"
-            "&bull; Bybit &mdash; <a href=\"https://www.bybit.com\">bybit.com</a><br>"
-            "&bull; KuCoin &mdash; <a href=\"https://www.kucoin.com\">kucoin.com</a></p>"
-            "<p><b>Picks by region</b>:<br>"
-            "&bull; United States &mdash; Coinbase, Kraken, "
-            "<a href=\"https://www.binance.us\">Binance.US</a><br>"
-            "&bull; UK &amp; Europe &mdash; Kraken, Coinbase, "
-            "<a href=\"https://www.bitstamp.net\">Bitstamp</a><br>"
-            "&bull; Canada &mdash; Coinbase, Kraken, "
-            "<a href=\"https://www.newton.co\">Newton</a><br>"
-            "&bull; Australia &mdash; "
-            "<a href=\"https://www.coinspot.com.au\">CoinSpot</a>, Coinbase, Kraken<br>"
-            "&bull; India &mdash; <a href=\"https://coindcx.com\">CoinDCX</a>, "
-            "<a href=\"https://wazirx.com\">WazirX</a><br>"
-            "&bull; Brazil &amp; LatAm &mdash; Binance, "
-            "<a href=\"https://www.mercadobitcoin.com.br\">Mercado Bitcoin</a><br>"
-            "&bull; Africa &mdash; Binance, "
-            "<a href=\"https://www.luno.com\">Luno</a><br>"
-            "&bull; Southeast Asia &mdash; Binance, Coinbase</p>"
-            "<p style=\"color:#8b949e;\">Tip: Phantom and Exodus let you both buy "
-            "SOL and send it from the same app, which is usually the quickest path.</p>"));
-        connect(cryptoHelpToggle, &QToolButton::toggled, cryptoHelp,
-                [cryptoHelpToggle, cryptoHelp](bool on) {
-                    cryptoHelp->setVisible(on);
-                    cryptoHelpToggle->setText(QString::fromUtf8(
-                        on ? "\xE2\x96\xBE New to crypto? How to get SOL"
-                           : "\xE2\x96\xB8 New to crypto? How to get SOL"));
-                });
-        l->addWidget(payInfo);
-        l->addWidget(splitInfo);
-        l->addWidget(qrLabel);
-        l->addWidget(addrLabel);
-        l->addWidget(copyBtn, 0, Qt::AlignLeft);
-        l->addWidget(renewBtn, 0, Qt::AlignLeft);
-        l->addWidget(cryptoHelpToggle, 0, Qt::AlignLeft);
-        l->addWidget(cryptoHelp);
-        l->addStretch();
-        l->addWidget(payStatus);
-        connect(copyBtn, &QPushButton::clicked, this, [=]() {
-            if (payUriHolder->isEmpty())
-                return;
-            QApplication::clipboard()->setText(*payUriHolder);
-            copyBtn->setText("Copied");
-            QTimer::singleShot(1500, copyBtn, [copyBtn]() {
-                copyBtn->setText("Copy address");
-            });
-        });
-    }
-    // The donate page is the tallest (QR + address + crypto primer); on short
-    // screens host it in a scroll area so the QR can't be clipped.
-    auto *donateScroll = new QScrollArea;
-    donateScroll->setWidgetResizable(true);
-    donateScroll->setFrameShape(QFrame::NoFrame);
-    donateScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    donateScroll->setWidget(donatePage);
-    donateScroll->setMinimumHeight(440);
-    stack->addWidget(donateScroll);
-
-    auto *pollTimer = new QTimer(&dialog);
-    pollTimer->setInterval(4000);
-    connect(pollTimer, &QTimer::timeout, &dialog, [&, payStatus]() {
-        QUrl url = accountsApiUrl("donation-status");
-        url.setQuery("nodeName=" +
-                     QString::fromUtf8(QUrl::toPercentEncoding(reservedName)));
-        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-        QEventLoop loop;
-        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        loop.exec();
-        const QJsonObject st = QJsonDocument::fromJson(reply->readAll()).object();
-        reply->deleteLater();
-        if (st.value("paid").toBool()) {
-            pollTimer->stop();
-            payStatus->setText("Donation received!");
-            payStatus->setStyleSheet("color:#3fb950; background:transparent;");
-            QTimer::singleShot(500, &dialog, [&]() { setStep(2); });
-            return;
-        }
-        // The relay hides the address one hour after it's minted (and deletes it
-        // an hour after that), so it can't be paid to a stale request. Pull the
-        // QR + address and offer a fresh one instead.
-        if (st.value("hidden").toBool() || st.value("expired").toBool()) {
-            pollTimer->stop();
-            qrLabel->setVisible(false);
-            addrLabel->setVisible(false);
-            copyBtn->setVisible(false);
-            renewBtn->setVisible(true);
-            payStatus->setText("This payment request expired for your security. "
-                               "Generate a new one to donate.");
-            payStatus->setStyleSheet("color:#d29922; background:transparent;");
-            return;
-        }
-        const qint64 got = st.value("receivedLamports").toVariant().toLongLong();
-        payStatus->setText(
-            QStringLiteral("Waiting for your donation… (received %1 SOL)")
-                .arg(got / 1000000000.0, 0, 'f', 9));
+    connect(joinBtn, &QPushButton::clicked, this, doJoin);
+    connect(nameEdit, &QLineEdit::returnPressed, this, [&]() {
+        if (joinBtn->isEnabled())
+            doJoin();
     });
 
-    enterDonation = [&, payInfo, splitInfo, qrLabel, addrLabel, payStatus,
-                     payUriHolder, pollTimer]() {
-        setStep(1);
-        // Restore the live request widgets (a renewal re-runs this after the old
-        // address was hidden).
-        qrLabel->setVisible(true);
-        addrLabel->setVisible(true);
-        copyBtn->setVisible(true);
-        renewBtn->setVisible(false);
-        payStatus->setText("Generating payment request…");
-        payStatus->setStyleSheet("background:transparent;");
-        int status = 0;
-        const QJsonObject addr = postAccountSync(
-            "donation-address", QJsonObject{{"nodeName", reservedName}}, &status);
-        if (!addr.value("ok").toBool()) {
-            payStatus->setText(
-                addr.value("error").toString() == "solana_rpc_unavailable"
-                    ? "Solana verification is temporarily offline. Please try again later."
-                    : "Could not generate a payment request. Please try again.");
-            payStatus->setStyleSheet("color:#f85149; background:transparent;");
-            return;
-        }
-        const QString address = addr.value("address").toString();
-        const QString uri = addr.value("uri").toString(address);
-        const QString amountSol = addr.value("amountSol").toString("0.005000000");
-        const double amountUsd = addr.value("amountUsd").toString("0").toDouble();
-        *payUriHolder = uri;
-        payInfo->setText(
-            QStringLiteral("Send <b>%1 SOL</b>%2 to the address below to activate your "
-                           "node. ForkMesh watches the payment reference and continues "
-                           "automatically once it confirms.")
-                .arg(amountSol,
-                     amountUsd > 0 ? QString::fromUtf8(" (\xE2\x89\x88 $%1)")
-                                         .arg(amountUsd, 0, 'f', 2)
-                                   : QString()));
-        // Show exactly how this donation is divided: half keeps ForkMesh's
-        // servers running, half is split evenly across the mirror nodes online
-        // right now (mirrors TREASURY_SPLIT_* in cloudflare_worker/src/entry.py).
-        const int nodesOnline = std::max(fetchNodesOnline(), 0);
-        const QString approx = QString::fromUtf8("\xE2\x89\x88");
-        if (amountUsd > 0) {
-            const double serversUsd = amountUsd * 0.5;
-            const double nodesUsd = amountUsd * 0.5;
-            const QString perNode = nodesOnline > 0
-                ? QStringLiteral("%1 $%2 each")
-                      .arg(approx).arg(nodesUsd / nodesOnline, 0, 'f', 2)
-                : QStringLiteral("held until nodes come online");
-            splitInfo->setText(
-                QStringLiteral("Your $%1 splits in two: <b>$%2</b> (50%) keeps "
-                               "ForkMesh's servers running, and <b>$%3</b> (50%) is "
-                               "shared across the <b>%4</b> mirror node%5 online now "
-                               "(%6).")
-                    .arg(amountUsd, 0, 'f', 2)
-                    .arg(serversUsd, 0, 'f', 2)
-                    .arg(nodesUsd, 0, 'f', 2)
-                    .arg(nodesOnline)
-                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s"))
-                    .arg(perNode));
-        } else {
-            splitInfo->setText(
-                QStringLiteral("Your donation splits in two: <b>50%</b> keeps "
-                               "ForkMesh's servers running, and <b>50%</b> is shared "
-                               "across the <b>%1</b> mirror node%2 online now.")
-                    .arg(nodesOnline)
-                    .arg(nodesOnline == 1 ? QString() : QStringLiteral("s")));
-        }
-        const QImage qr = QrCode::encodeToImage(uri, 5, 3);
-        if (!qr.isNull())
-            qrLabel->setPixmap(QPixmap::fromImage(qr));
-        addrLabel->setText(address);
-        payStatus->setText("Waiting for your donation…");
-        payStatus->setStyleSheet("color:#d29922; background:transparent;");
-        pollTimer->start();
-    };
+    // A valid name supplied on the previous screen can join straight away, so let
+    // the button start enabled instead of forcing the user to retype.
+    joinBtn->setEnabled(isValidNodeName(accountName));
 
-    // ================= Page 3 — email / password =================
-    auto *accountPage = new QWidget;
-    {
-        auto *l = new QVBoxLayout(accountPage);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(8);
-        auto *intro = new QLabel("Set the email and password that log you in from "
-                                 "any device.");
-        intro->setObjectName("modeHint");
-        intro->setWordWrap(true);
-        auto *emailEdit = new QLineEdit;
-        emailEdit->setPlaceholderText("you@example.com");
-        auto *passEdit = new QLineEdit;
-        passEdit->setEchoMode(QLineEdit::Password);
-        passEdit->setPlaceholderText("Password (at least 8 characters)");
-        auto *confirmEdit = new QLineEdit;
-        confirmEdit->setEchoMode(QLineEdit::Password);
-        confirmEdit->setPlaceholderText("Confirm password");
-        auto *hint = new QLabel;
-        hint->setObjectName("modeHint");
-        hint->setWordWrap(true);
-        auto *createBtn = new QPushButton("Create account");
-        createBtn->setObjectName("primaryButton");
-        createBtn->setMinimumHeight(38);
-        l->addWidget(intro);
-        l->addWidget(emailEdit);
-        l->addWidget(passEdit);
-        l->addWidget(confirmEdit);
-        l->addWidget(hint);
-        l->addStretch();
-        l->addWidget(createBtn);
-
-        auto doFinalize = [=, &reservedName, &finalized, &dialog]() {
-            const QString email = emailEdit->text().trimmed();
-            const QString password = passEdit->text();
-            if (!email.contains('@') || !email.contains('.')) {
-                styleHint(hint, "Enter a valid email address.", "#f85149");
-                return;
-            }
-            if (password.size() < 8) {
-                styleHint(hint, "Password must be at least 8 characters.", "#f85149");
-                return;
-            }
-            if (password != confirmEdit->text()) {
-                styleHint(hint, "Passwords do not match.", "#f85149");
-                return;
-            }
-            createBtn->setEnabled(false);
-            createBtn->setText("Creating…");
-            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-            const QByteArray canonical =
-                ("forkmesh-finalize-v1\n" + reservedName + "\n" + email + "\n" + ts)
-                    .toUtf8();
-            int status = 0;
-            const QJsonObject resp = postAccountSync(
-                "finalize",
-                QJsonObject{{"nodeName", reservedName}, {"email", email},
-                            {"password", password},
-                            {"pubkey", m_profileIdentity.publicKey()},
-                            {"ts", ts},
-                            {"sig", m_profileIdentity.signData(canonical)}},
-                &status);
-            createBtn->setEnabled(true);
-            createBtn->setText("Create account");
-            if (status != 201 || !resp.value("ok").toBool()) {
-                const QString err = resp.value("error").toString();
-                styleHint(hint,
-                          err == "email_taken"
-                              ? "That email is already registered."
-                              : err == "donation_required"
-                                    ? "We haven't confirmed your donation yet — please wait."
-                                    : "Could not create the account. Please try again.",
-                          "#f85149");
-                return;
-            }
-            m_accountAuthenticated = true;
-            m_accountName = reservedName;
-            m_accountTier = QStringLiteral("active");
-            m_accountSolanaVerified = true;
-            QSettings().setValue(kAuthedAccountSetting, reservedName);
-            finalized = true;
-            dialog.accept();
-        };
-        connect(createBtn, &QPushButton::clicked, this, doFinalize);
-        connect(confirmEdit, &QLineEdit::returnPressed, this, doFinalize);
-    }
-    stack->addWidget(accountPage);
-
-    // With the name already chosen on the previous screen, open directly on the
-    // donation step and reserve it silently on the next tick (so the dialog is
-    // already visible). Only fall back to the name page if the reservation fails
-    // — e.g. the name was just taken by someone else.
-    if (haveName) {
-        setStep(1);
-        QTimer::singleShot(0, &dialog, [&]() {
-            if (reserveName(accountName))
-                enterDonation();
-            else
-                setStep(0);
-        });
-    } else {
-        setStep(0);
-    }
     dialog.exec();
-    pollTimer->stop();
-    if (finalized) {
-        // Don't block the launch behind a modal "OK" — that click plus the
-        // app-bring-up work that runs after we return is exactly the lag the
-        // user feels. Return immediately so the caller can open the app, then
-        // flash the confirmation as a non-blocking toast on the next event-loop
-        // tick, by which point the main UI (and its top-bar toast) is shown.
+    if (joined) {
+        // Don't block the launch behind a modal "OK" — return immediately so the
+        // caller can open the app, then flash the confirmation as a non-blocking
+        // toast on the next event-loop tick.
         QTimer::singleShot(0, this, [this] {
             flashMessage(QString::fromUtf8(
                 "You\xE2\x80\x99re in \xE2\x80\x94 your node is registered."));
@@ -11999,6 +11828,19 @@ QWidget *MainWindow::buildRepoDetailSection()
             switchToAgentsTab(sessionId);
     });
     m_looperToggle = looperToggle;
+
+    // Live mirror-activity dots floating just above the Mirror nodes tab (adhoc
+    // #197): one dot per active node, flashing green for a served clone and
+    // orange for codebase browsing. Like the looper toggle over Issues it's an
+    // overlay, so it shows from any tab and never reflows the page; the old
+    // in-page "Live ›" row was dropped in its favour. Created parented to the
+    // window; positionMirrorActivityStrip reparents it onto the page.
+    auto *mirrorStrip = new MirrorActivityStrip(this);
+    mirrorStrip->setToolTip(QStringLiteral(
+        "Active nodes mirroring this repo. A dot flashes green when its node "
+        "serves a clone, orange when it serves codebase browsing."));
+    mirrorStrip->hide();
+    m_mirrorActivityStrip = mirrorStrip;
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
@@ -23099,14 +22941,19 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     const int idx = issuesRepoIndex();
     if (idx < 0 || idx >= m_repositories.size())
         return 0;
+    const RepositoryRecord &repo = m_repositories.at(idx);
     IssueStore issueStore = issueStoreForCurrentRepo();
-    if (!issueStore.canWrite()) {
+    // A node that only mirrors this repo (no working tree) can still run an
+    // agent: it builds the change in a throwaway worktree off the mirror and
+    // opens a pull request to the owner. So require a local copy to work from —
+    // a working tree when we host it, or the network mirror — rather than write
+    // access to the issue store, which only the host has (adhoc #191).
+    if (repoAgentGitDir(repo).isEmpty()) {
         if (!quiet)
-            setIssueInlineNotice("Only the host can assign coding agents.", true);
+            setIssueInlineNotice(
+                "No local copy of this repository to run a coding agent on.", true);
         return 0;
     }
-
-    const RepositoryRecord &repo = m_repositories.at(idx);
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
@@ -23138,17 +22985,24 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
         session,
         QStringLiteral("==> Assigned from ForkMesh issue #%1.").arg(issue.number));
 
-    QString error;
-    if (!issueStore.assignAgent(issue.number, provider, session.id, session.createPr,
-                                AgentStatus::Queued, &error)) {
-        session.status = AgentStatus::Failed;
-        session.lastError = error.isEmpty() ? QStringLiteral("Could not write issue event.")
-                                            : error;
-        m_agentStore->saveSession(session);
-        if (!quiet)
-            setIssueInlineNotice(session.lastError, true);
-        reloadAgents();
-        return 0;
+    // Record the assignment as a signed issue event so it syncs to other nodes —
+    // but only when we can write the issue store. On a mirror we can't (and it
+    // wouldn't reach the owner anyway), so the run is tracked locally only and
+    // still lands as a pull request when it finishes (adhoc #191).
+    if (issueStore.canWrite()) {
+        QString error;
+        if (!issueStore.assignAgent(issue.number, provider, session.id,
+                                    session.createPr, AgentStatus::Queued, &error)) {
+            session.status = AgentStatus::Failed;
+            session.lastError = error.isEmpty()
+                                    ? QStringLiteral("Could not write issue event.")
+                                    : error;
+            m_agentStore->saveSession(session);
+            if (!quiet)
+                setIssueInlineNotice(session.lastError, true);
+            reloadAgents();
+            return 0;
+        }
     }
 
     const int sessionId = session.id;
@@ -23187,14 +23041,18 @@ void MainWindow::toggleIssueLooper()
         updateIssueLooperButton();
         return;
     }
-    if (!issueStoreForCurrentRepo().canWrite()) {
-        setIssueInlineNotice("Only the host can run the issue looper.", true);
+    const RepositoryRecord &repo = m_repositories.at(idx);
+    // Run wherever we can drive agents on this repo — our own working tree when we
+    // host it, or a bare mirror of someone else's repo, which loops through the
+    // backlog and opens pull requests back to the owner (adhoc #191).
+    if (repoAgentGitDir(repo).isEmpty()) {
+        setIssueInlineNotice(
+            "No local copy of this repository to run the issue looper on.", true);
         updateIssueLooperButton();
         return;
     }
     m_looperActive = true;
     m_looperProvider = defaultAgentProvider();
-    const RepositoryRecord &repo = m_repositories.at(idx);
     m_looperRepoSlug = repo.owner + QLatin1Char('/') + repo.name;
     updateIssueLooperButton();
     setIssueInlineNotice(
@@ -23538,6 +23396,10 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         flashMessage("Could not delete the agent session.", true);
         return false;
     }
+    // The on-disk session is gone but its id will be handed to the next session
+    // created (nextId() = max id + 1). Forget every in-memory transcript buffer so
+    // that recycled id can't inherit this agent's context (adhoc #198).
+    forgetStreamSessionState(snapshot.id);
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     return true;
@@ -23621,7 +23483,12 @@ void MainWindow::processAgentQueue()
             continue;
         }
         const RepositoryRecord repo = m_repositories.at(repoIndex);
-        if (repo.localPath.isEmpty()) {
+        // The git dir agents run against: our working-tree checkout when we host
+        // the repo, otherwise the bare network mirror so a node that only mirrors
+        // it can still run agents (adhoc #191). Worktrees, diffs and PR patches
+        // are all built off this; the agent never edits it in place.
+        const QString agentGitDir = repoAgentGitDir(repo);
+        if (agentGitDir.isEmpty()) {
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("No local checkout is configured.");
             m_agentStore->saveSession(*session);
@@ -23654,7 +23521,7 @@ void MainWindow::processAgentQueue()
         // detail screen (with a Raw-output toggle), not headlessly through a
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTranscript(*session, issue, repo.localPath, session->prompt);
+            startClaudeCodeTranscript(*session, issue, agentGitDir, session->prompt);
             continue;
         }
         const AgentSession snapshot = *session;
@@ -23676,7 +23543,7 @@ void MainWindow::processAgentQueue()
                     ? steer
                     : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
         }
-        acquireAgentRunner()->start(snapshot, issue, repo.localPath, config);
+        acquireAgentRunner()->start(snapshot, issue, agentGitDir, config);
     }
     reloadAgents();
 }
@@ -23946,11 +23813,6 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         customPreamble.isEmpty()
             ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
             : customPreamble + QStringLiteral("\n\n") + lead;
-    // A message queued from the always-on composer while this session was stopped
-    // or waiting (adhoc #177): a fresh `claude` process replays the prompt, so
-    // append the steer here rather than relying on the preserved transcript.
-    if (const QString steer = m_pendingSteerMessage.take(sid); !steer.isEmpty())
-        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -23971,6 +23833,29 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         m_streamRaw[sid].clear();
         m_streamFiles[sid].clear();
         m_agentStore->clearEvents(session);
+    }
+    // Pick up a stopped agent with its real conversation context: resume the
+    // Claude session by id rather than relaunching a fresh process that just
+    // replays the task prompt (adhoc #182). The queued composer message — which
+    // the Send handler already recorded as a user turn — becomes the next turn;
+    // a bare Continue with no message nudges the agent onward. Falls back to the
+    // full-prompt replay when there's no recoverable session id (e.g. a legacy
+    // transcript or a fresh run), so those still resume the way they used to.
+    const QString steer = m_pendingSteerMessage.take(sid);
+    const QString resumeId = resuming ? lastClaudeSessionId(sid) : QString();
+    if (!resumeId.isEmpty()) {
+        if (steer.isEmpty()) {
+            prompt = QStringLiteral("Continue where you left off.");
+            applyTranscriptEvent(
+                sid, QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                                 {QStringLiteral("text"), prompt}});
+        } else {
+            prompt = steer; // already shown in the transcript by the composer
+        }
+    } else if (!steer.isEmpty()) {
+        // No context to resume — fold the steer into the replayed prompt as before
+        // (this is the original always-on-composer restart behaviour, adhoc #177).
+        prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
     }
     // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
@@ -24050,7 +23935,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
+    auto launch = [this, sid, prompt, autoMode, branchName, resumeId](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -24065,7 +23950,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
+        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, resumeId);
         // Issue #84: launching with an initial prompt is a send too — refresh the
         // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
         // first turn's usage shows without waiting for the next minute tick.
@@ -24530,6 +24415,23 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         if (m_renderedTranscriptSession == sessionId)
             m_renderedTranscriptCount = m_streamEvents.value(sessionId).size();
     }
+}
+
+// Walk this session's stream-json events newest-first for the conversation id
+// the `claude` CLI stamps on each one. Returned id feeds `--resume` so a stopped
+// agent is picked up with its full context (adhoc #182). Events are held in
+// memory while a session is live and reloaded from disk on resume
+// (ensureStreamEventsLoaded), so this is the authoritative source after a
+// restart too. Synthetic `_local_user` turns carry no id and are skipped.
+QString MainWindow::lastClaudeSessionId(int sessionId) const
+{
+    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
+    for (auto it = events.crbegin(); it != events.crend(); ++it) {
+        const QString id = it->value(QStringLiteral("session_id")).toString();
+        if (!id.isEmpty())
+            return id;
+    }
+    return QString();
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
@@ -25114,7 +25016,7 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     if (const AgentSession *s = findAgentSession(sessionId)) {
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri >= 0)
-            repoPath = m_repositories.at(ri).localPath;
+            repoPath = repoAgentGitDir(m_repositories.at(ri)); // mirror or checkout
     }
     // Removing a worktree shells out to `git worktree remove`/`prune` and then
     // recursively deletes a full source checkout — slow enough to freeze the UI for
@@ -25136,6 +25038,28 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
+}
+
+// Purge every per-session in-memory buffer for a session that's going away. Ids
+// are recycled (nextId() = max on-disk id + 1), and startClaudeCodeTranscript
+// infers "resuming" from a non-empty m_streamEvents[sid] — so any leftover state
+// here would make the next session that reuses this id resume the deleted agent's
+// Claude conversation instead of starting fresh (adhoc #198). m_streamSessions and
+// m_streamWorktree are dropped by stopStreamSession()/cleanupStreamWorktree(); the
+// rest are cleared here.
+void MainWindow::forgetStreamSessionState(int sessionId)
+{
+    m_streamEvents.remove(sessionId);
+    m_streamRaw.remove(sessionId);
+    m_streamFiles.remove(sessionId);
+    m_streamSessionInfo.remove(sessionId);
+    m_pendingSteerMessage.remove(sessionId);
+    m_lastAssistantText.remove(sessionId);
+    m_sessionTokens.remove(sessionId);
+    m_scannerStates.remove(sessionId);
+    m_agentDiffStats.remove(sessionId);
+    if (m_renderedTranscriptSession == sessionId)
+        m_renderedTranscriptSession = -1;
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
@@ -32175,6 +32099,15 @@ void MainWindow::switchToBranch(const QString &branch)
             return;
         }
     }
+    // Clicking an agent's branch link when that branch no longer exists here (it
+    // may have been merged and deleted, or never synced into this checkout) would
+    // otherwise land on the Branches tab with nothing selected. Tell the user why
+    // rather than leaving them on a silently empty selection (adhoc #185).
+    QMessageBox::information(
+        this, QStringLiteral("Branch not found"),
+        QStringLiteral("Branch '%1' was not found in this repository. "
+                       "It may have been merged and deleted.")
+            .arg(branch));
 }
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
@@ -33103,7 +33036,10 @@ QWidget *MainWindow::buildBranchesTab()
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
-    split->setSizes({620, 200, 880});
+    // Open the branches list to ~half the page so the (stretching) Branch column
+    // shows full branch titles plus every status/agent column without clipping;
+    // the first divider lands at ~50% (adhoc #193).
+    split->setSizes({850, 200, 650});
     layout->addWidget(split, 1);
     return page;
 }
@@ -33119,8 +33055,14 @@ void MainWindow::loadBranchesPanel()
     const QString previouslyViewed = m_branchDiffBranch;
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
-    const QStringList branches = repoBranches();
+    QStringList branches = repoBranches();
     const QString base = repoDefaultBranch(branches);
+    // Always pin the default branch ("main") to the top of the list, regardless
+    // of which feature branch was committed to most recently — repoBranches()
+    // sorts by committer date, so without this main sinks below active branches
+    // (adhoc #185).
+    if (!base.isEmpty() && branches.removeOne(base))
+        branches.prepend(base);
     const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
     const bool writable = repoHasWorkingTree();
 
@@ -34903,6 +34845,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
+    // The live activity dots no longer sit in this page as a "Live ›" row; they
+    // float just above the Mirror nodes tab instead (adhoc #197). The strip is
+    // created with the tab row and anchored by positionMirrorActivityStrip.
+
     m_mirrorNodesTable = new QTableWidget(0, 7);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
@@ -34964,6 +34910,10 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
+        if (m_mirrorActivityStrip) {
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
+            positionMirrorActivityStrip(); // hides the now-empty strip
+        }
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -35056,6 +35006,8 @@ void MainWindow::loadMirrorNodesPanel()
     // Names already shown from the live chat roster, so the catalog-backed merge
     // below (issue #223) doesn't list a node twice when it's also present in chat.
     QSet<QString> shownNames;
+    // One activity dot per active node, fed to the live strip atop the panel.
+    QVector<MirrorActivityStrip::Dot> activityDots;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -35073,6 +35025,8 @@ void MainWindow::loadMirrorNodesPanel()
 
         // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
+        if (online)
+            activityDots.append({node.id, node.name, true, node.self});
         auto *nameItem = new SortTableWidgetItem(
             node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
@@ -35203,6 +35157,9 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
             const bool online =
                 m.value("status").toString() == QLatin1String("online");
+            if (online)
+                activityDots.append(
+                    {m.value("id").toString(), nodeName, true, false});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             auto *nameItem = new SortTableWidgetItem(
@@ -35261,6 +35218,13 @@ void MainWindow::loadMirrorNodesPanel()
     }
 
     m_mirrorNodesTable->setSortingEnabled(true);
+
+    if (m_mirrorActivityStrip) {
+        static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+            ->setNodes(activityDots);
+        // Re-anchor over the Mirror nodes tab and (re)size to the new dot count.
+        positionMirrorActivityStrip();
+    }
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
@@ -36024,6 +35988,26 @@ const RepositoryRecord &MainWindow::writableRecordFor(
             return r;
     }
     return repo;
+}
+
+QString MainWindow::repoAgentGitDir(const RepositoryRecord &repo) const
+{
+    // Prefer a working-tree checkout we can run plumbing against directly.
+    const RepositoryRecord &writable = writableRecordFor(repo);
+    if (!writable.localPath.trimmed().isEmpty() &&
+        QFileInfo::exists(writable.localPath + QStringLiteral("/.git")))
+        return writable.localPath;
+    // A preview is a throwaway browse cache, not a repo we mirror to contribute
+    // to — don't run agents against it (mirror it first, like repoCanProposePull).
+    if (repo.previewOnly)
+        return QString();
+    // Otherwise fall back to the bare network mirror: `git worktree add` and
+    // `git diff` both work straight off it, so a node that only mirrors a repo
+    // can still run agents and open pull requests to the owner (adhoc #191).
+    const QString mirror = repo.mirrorPath.trimmed();
+    if (!mirror.isEmpty() && QDir(mirror).exists())
+        return mirror;
+    return QString();
 }
 
 IssueStore MainWindow::issueStoreForCurrentRepo() const
@@ -45200,6 +45184,12 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         if (repo.owner == owner && repo.name == name)
             updateRepoDetailStatus();
+        // Flash our own dot on the Mirror nodes activity strip: green when we
+        // just served a clone, orange when we served codebase browsing/fetches.
+        if (m_mirrorActivityStrip && catalogOwner(repo) == owner &&
+            repo.name == name)
+            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
+                ->pulse(m_profileIdentity.publicKey(), clone);
     }
     // Hosting stats now live in the node profile; keep them current while it is open.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
@@ -47768,6 +47758,47 @@ void MainWindow::positionLooperToggle()
     }
 }
 
+// Anchor the live mirror-activity dot strip in the meta band just above the
+// Mirror nodes tab (adhoc #197), mirroring positionLooperToggle over Issues. It
+// shows only while a repo-detail page is open and at least one node is active;
+// loadMirrorNodesPanel feeds it the roster, the timer keeps it pinned.
+void MainWindow::positionMirrorActivityStrip()
+{
+    auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
+    if (!strip || !m_repoMirrorsTab)
+        return;
+    QWidget *tabBar = m_repoMirrorsTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    if (strip->parentWidget() != page)
+        strip->setParent(page); // hides it; shown again just below
+    const int w = strip->preferredWidth();
+    const int h = strip->minimumHeight(); // its fixed strip height
+    const QPoint tl = m_repoMirrorsTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    strip->setGeometry(x, y, w, h);
+    // Visible only on the repo-detail page and when there's at least one active
+    // node — an empty strip would just be a gap floating over the tab.
+    const bool onPage = page->isVisible() && !strip->isEmpty();
+    strip->setVisible(onPage);
+    if (onPage)
+        strip->raise();
+    // One low-rate timer re-anchors the strip as the window resizes or the tabs
+    // reflow, and reapplies the visibility check above; never needs stopping.
+    if (!m_mirrorActivityStripTimer) {
+        m_mirrorActivityStripTimer = new QTimer(this);
+        connect(m_mirrorActivityStripTimer, &QTimer::timeout, this,
+                &MainWindow::positionMirrorActivityStrip);
+        m_mirrorActivityStripTimer->start(400);
+    }
+}
+
 // Persist the looper's running state so a restart resumes the loop on the same
 // repo with the same provider (adhoc #125). Called from updateIssueLooperButton,
 // the single funnel for every looper state change.
@@ -47798,8 +47829,8 @@ void MainWindow::maybeRestoreIssueLooper()
     const RepositoryRecord &repo = m_repositories.at(idx);
     if (slug != repo.owner + QLatin1Char('/') + repo.name)
         return;
-    if (!issueStoreForCurrentRepo().canWrite())
-        return; // only the host runs the looper
+    if (repoAgentGitDir(repo).isEmpty())
+        return; // need a working tree or mirror to run agents (adhoc #191)
     m_looperActive = true;
     m_looperProvider = settings.value(kLooperProviderSetting).toString();
     if (m_looperProvider.isEmpty())

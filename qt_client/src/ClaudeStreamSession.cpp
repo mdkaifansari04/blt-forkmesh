@@ -10,7 +10,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
 ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
-                                const QString &initialPrompt, bool skipPermissions)
+                                const QString &initialPrompt, bool skipPermissions,
+                                const QString &resumeSessionId)
 {
     stop();
     m_buf.clear();
@@ -44,6 +45,11 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
         "--verbose --include-partial-messages");
     if (skipPermissions)
         cmd += QStringLiteral(" --dangerously-skip-permissions");
+    // Resume a prior conversation so the agent picks up its full context (the
+    // files it touched, what it had figured out, what's left). The id is a UUID
+    // from the CLI's own stream, but single-quote it defensively all the same.
+    if (!resumeSessionId.isEmpty())
+        cmd += QStringLiteral(" --resume '%1'").arg(resumeSessionId);
     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
 
     if (!initialPrompt.isEmpty())
