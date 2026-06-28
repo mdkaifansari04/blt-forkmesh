@@ -132,6 +132,7 @@
 #include <QTreeWidget>
 #include <QSystemTrayIcon>
 #include <QSvgRenderer>
+#include <QScopeGuard>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -33813,11 +33814,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             updateIssueActionState();
         }
         // adhoc #250: with the "Auto after merge" toggle on, bring every other
-        // branch up to date with the just-merged base in the same step. Run it
-        // without a confirmation prompt (the merge was already confirmed); it
-        // sets its own detail notice summarizing how many branches advanced.
+        // branch up to date with the just-merged base in the same step. It runs
+        // without a confirmation prompt and sets its own detail notice
+        // summarizing how many branches advanced.
         if (m_branchAutoPullAllCheck && m_branchAutoPullAllCheck->isChecked())
-            pullBaseIntoAllBranches(/*confirm=*/false);
+            pullBaseIntoAllBranches();
     } else {
         // Roll the failed merge back so the checkout is left clean, and keep the
         // worktree so its work isn't lost (issue #126).
@@ -34330,7 +34331,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchPullAllButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchPullAllButton, "download", 16);
     connect(m_branchPullAllButton, &QPushButton::clicked, this,
-            [this] { pullBaseIntoAllBranches(); });
+            &MainWindow::pullBaseIntoAllBranches);
     // Opt-in: when checked, every successful "Merge to main" auto-runs the
     // "Pull into all" above so the remaining branches catch up with the merge
     // without a second click (adhoc #250). Persisted so it survives restart.
@@ -35897,7 +35898,7 @@ static QString branchMergeTree(const QString &dir, const QString &base,
     return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).value(0);
 }
 
-void MainWindow::pullBaseIntoAllBranches(bool confirm)
+void MainWindow::pullBaseIntoAllBranches()
 {
     const QString dir = repoGitDir();
     if (dir.isEmpty())
@@ -35912,6 +35913,17 @@ void MainWindow::pullBaseIntoAllBranches(bool confirm)
     if (base.isEmpty())
         return;
 
+    // Acknowledge the click with a spinner on the button instead of a modal
+    // confirmation (adhoc #259). The per-branch git work runs synchronously, so
+    // a GitKeepAlive scope pumps the event loop across it to keep the spinner
+    // turning; the scope guard restores the button on every exit path below.
+    startButtonSpin(m_branchPullAllButton);
+    GitKeepAlive keepAlive;
+    QPushButton *const spinButton = m_branchPullAllButton;
+    const auto spinGuard = qScopeGuard([this, spinButton] {
+        stopButtonSpin(spinButton);
+    });
+
     // The checked-out branch can't be advanced by a bare ref update without
     // desyncing its working tree, so the batch skips it (it's usually the base);
     // the user can still update it individually with its row's "Pull" button.
@@ -35920,8 +35932,8 @@ void MainWindow::pullBaseIntoAllBranches(bool confirm)
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
         currentBranch = QString::fromUtf8(headOut).trimmed();
 
-    // First pass: how many branches are actually behind, so the confirmation can
-    // state the scope (and we can bail early when there's nothing to do).
+    // First pass: how many branches are actually behind, so we can bail early
+    // when there's nothing to do.
     const auto behindOf = [&](const QString &branch, int *ahead) -> int {
         QByteArray counts;
         if (!runGitCapture(dir,
@@ -35950,18 +35962,6 @@ void MainWindow::pullBaseIntoAllBranches(bool confirm)
             QStringLiteral("Every branch is already up to date with %1.").arg(base));
         return;
     }
-    if (confirm &&
-        QMessageBox::question(
-            this, QStringLiteral("Pull %1 into all branches").arg(base),
-            QStringLiteral("Merge %1 into the %2 branch(es) that are behind it?\n\n"
-                           "Clean merges are applied automatically; any branch "
-                           "with conflicts is left untouched and flagged in the "
-                           "list so you can fix it.")
-                .arg(base)
-                .arg(behindCount),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
-        return;
-
     int updated = 0;
     QStringList conflicts, skipped;
     for (const QString &branch : branches) {
@@ -37372,6 +37372,36 @@ void MainWindow::addRefreshSpin(QPushButton *button)
         return;
     connect(button, &QPushButton::clicked, this,
             [this, button] { spinRefreshButton(button); });
+}
+
+void MainWindow::startButtonSpin(QPushButton *button)
+{
+    if (!button || button->property("fmSpinning").toBool())
+        return;
+    button->setProperty("fmSpinning", true);
+    button->setProperty("fmSpinIcon", QVariant::fromValue(button->icon()));
+    const int size = button->iconSize().width() > 0 ? button->iconSize().width() : 16;
+    auto *timer = new QTimer(button);
+    timer->setObjectName(QStringLiteral("fmSpinTimer"));
+    auto angle = std::make_shared<int>(0);
+    connect(timer, &QTimer::timeout, button, [button, angle, size] {
+        *angle = (*angle + 30) % 360;
+        button->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+    });
+    timer->start(60);
+}
+
+void MainWindow::stopButtonSpin(QPushButton *button)
+{
+    if (!button || !button->property("fmSpinning").toBool())
+        return;
+    if (auto *timer = button->findChild<QTimer *>(QStringLiteral("fmSpinTimer"))) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    button->setIcon(button->property("fmSpinIcon").value<QIcon>());
+    button->setProperty("fmSpinning", false);
 }
 
 void MainWindow::startRefreshSpin()
