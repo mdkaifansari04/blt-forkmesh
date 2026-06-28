@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 262
 title: there is a delay when I assign to claude code from the quick issue, plesae make it snappy
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 51
-progress: 0
+progress: 50
 assignees: []
 createdAt: 1782430551228
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

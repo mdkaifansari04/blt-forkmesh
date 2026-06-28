@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 197
 title: when on the file browser screen of the code tab and we are on a file next to commit direct and save as pr show a button to show history and then show it
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 83
-progress: 0
+progress: 45
 assignees: []
 createdAt: 1782348147268
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
