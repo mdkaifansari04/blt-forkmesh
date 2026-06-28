@@ -1392,6 +1392,11 @@ private:
     void queueQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Quick-add prompt history (adhoc #200): remember each sent prompt and let
+    // Up/Down walk back through them in the footer bar. direction < 0 is Up
+    // (older), > 0 is Down (newer); returns true when the key was consumed.
+    void recordQuickAddHistory(const QString &text);
+    bool navigateQuickAddHistory(int direction);
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -1911,6 +1916,13 @@ private:
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
+    // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
+    // recalls the last prompt sent so it can be fired again. Newest entry last;
+    // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1
+    // when editing the live draft (which is stashed in m_quickAddDraft).
+    QStringList m_quickAddHistory;
+    int m_quickAddHistoryIndex = -1;
+    QString m_quickAddDraft;
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
