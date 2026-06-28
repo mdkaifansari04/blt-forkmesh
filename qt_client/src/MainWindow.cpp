@@ -21492,7 +21492,24 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSearch->setClearButtonEnabled(true);
     connect(m_agentSearch, &QLineEdit::textChanged, this,
             [this] { refreshAgentTable(); });
-    listLayout->addWidget(m_agentSearch);
+
+    // "Delete all merged" sits on top of the list and wipes every merged session's
+    // worktree, branch and agent in one batch (adhoc #235). It shares the search
+    // row to keep the toolbar compact and stays disabled until something is merged.
+    m_agentDeleteMergedButton = new QPushButton("Delete all merged");
+    m_agentDeleteMergedButton->setObjectName("dangerButton");
+    m_agentDeleteMergedButton->setCursor(Qt::PointingHandCursor);
+    m_agentDeleteMergedButton->setToolTip(
+        "Delete the worktree, branch and session of every merged agent");
+    setOcticon(m_agentDeleteMergedButton, "trash", 16);
+    connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
+            &MainWindow::deleteAllMergedAgentSessions);
+    auto *agentListToolbar = new QHBoxLayout;
+    agentListToolbar->setContentsMargins(0, 0, 0, 0);
+    agentListToolbar->setSpacing(8);
+    agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
+    listLayout->addLayout(agentListToolbar);
 
     listLayout->addWidget(m_agentTable, 1);
 
@@ -22839,9 +22856,15 @@ void MainWindow::refreshAgentTable()
     // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
     // this iterator valid even if the member vector is replaced underneath us.
     const QList<AgentSession> sessions = m_agentSessions;
+    // Whether "Delete all merged" has anything to act on — counted across the whole
+    // repo, before the search filter, since the batch ignores the filter (adhoc #235).
+    int mergedDeletable = 0;
     for (const AgentSession &session : sessions) {
         if (session.owner != owner || session.name != name)
             continue;
+        if (session.merged && !session.branchName.isEmpty()
+            && !isExternalSession(session.id))
+            ++mergedDeletable;
         if (!query.isEmpty()) {
             QStringList haystack{session.issueTitle,
                                  agentProviderName(session.provider),
@@ -22965,6 +22988,17 @@ void MainWindow::refreshAgentTable()
     }
     m_agentTable->setSortingEnabled(true);
     block.unblock();
+
+    if (m_agentDeleteMergedButton) {
+        m_agentDeleteMergedButton->setEnabled(mergedDeletable > 0);
+        m_agentDeleteMergedButton->setToolTip(
+            mergedDeletable > 0
+                ? QStringLiteral("Delete the worktree, branch and session of %1 "
+                                 "merged agent%2")
+                      .arg(mergedDeletable)
+                      .arg(mergedDeletable == 1 ? QString() : QStringLiteral("s"))
+                : QStringLiteral("No merged agent sessions to delete"));
+    }
 
     int selRow = -1;
     for (int row = 0; row < m_agentTable->rowCount(); ++row) {
@@ -33516,7 +33550,8 @@ bool MainWindow::localBranchExists(const QString &repoPath,
 // branch, and the stored agent session(s) that ran on it. Resolves the repo from
 // the open detail view; agent sessions are matched by branch.
 void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
-                                              const QString &branch)
+                                              const QString &branch, bool confirm,
+                                              bool async)
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -33577,9 +33612,11 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                             .arg(*issueNumbers.cbegin())
                       : QStringLiteral("\n\nThe %1 linked issues will be closed.")
                             .arg(issueNumbers.size());
-    if (QMessageBox::question(this, QStringLiteral("Delete worktree, branch & agent"),
-                              prompt)
-        != QMessageBox::Yes)
+    if (confirm
+        && QMessageBox::question(this,
+                                 QStringLiteral("Delete worktree, branch & agent"),
+                                 prompt)
+               != QMessageBox::Yes)
         return;
 
     // The recursive worktree folder delete is already off the UI thread (async
@@ -33602,9 +33639,10 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     if (!worktreePath.isEmpty()) {
         // removeWorktree handles the folder + branch and refreshes the panels.
         // async=true so the recursive folder delete runs off the UI thread and the
-        // window stays clickable while it works (issue #95).
+        // window stays clickable while it works (issue #95). The "Delete all merged"
+        // batch passes async=false so its sequential removes don't race each other.
         removeWorktree(worktreePath, branch, /*confirm=*/false,
-                       /*alsoDeleteBranch=*/willDeleteBranch, /*async=*/true);
+                       /*alsoDeleteBranch=*/willDeleteBranch, async);
     } else if (willDeleteBranch && localBranchExists(repoPath, branch)) {
         // No worktree left (the agent already cleaned it up) — just drop the branch.
         QString err;
@@ -33665,6 +33703,65 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                          ? QStringLiteral("Closed the linked issue.")
                          : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
     }
+}
+
+// Batch "Delete all merged": for every merged agent session in the open repo, wipe
+// its worktree folder, branch and stored session — the same cleanup the per-session
+// "Delete all" does, but for the whole merged backlog after one confirmation (adhoc
+// #235). Sessions are grouped by branch so a branch with several sessions is handled
+// once; deleteWorktreeBranchAndAgent removes all of that branch's sessions together.
+void MainWindow::deleteAllMergedAgentSessions()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoPath = repo.localPath;
+    if (repoPath.isEmpty())
+        return;
+
+    QStringList branches;
+    QSet<QString> seen;
+    int sessionCount = 0;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner != repo.owner || s.name != repo.name)
+            continue;
+        // Only landed work, with a real branch, that we actually own (external
+        // watch-only sessions have no worktree/branch to remove).
+        if (!s.merged || s.branchName.isEmpty() || isExternalSession(s.id))
+            continue;
+        ++sessionCount;
+        if (!seen.contains(s.branchName)) {
+            seen.insert(s.branchName);
+            branches << s.branchName;
+        }
+    }
+    if (branches.isEmpty()) {
+        flashMessage(QStringLiteral("No merged agent sessions to delete."));
+        return;
+    }
+
+    const QString prompt =
+        QStringLiteral("Delete %1 merged agent session%2 along with their worktrees "
+                       "and branches?\n\nUncommitted changes in those worktrees will "
+                       "be lost. This cannot be undone.")
+            .arg(sessionCount)
+            .arg(sessionCount == 1 ? QString() : QStringLiteral("s"));
+    if (QMessageBox::question(this, QStringLiteral("Delete all merged"), prompt)
+        != QMessageBox::Yes)
+        return;
+
+    // Resolve every worktree path up front against the live worktree list, then
+    // delete: each call below reloads m_agentSessions, but we iterate the branch
+    // snapshot captured here, so that churn can't disturb the loop. confirm=false —
+    // the user already approved the whole batch above; async=false so the removes
+    // run one at a time instead of racing concurrent `git worktree remove`s.
+    for (const QString &branch : std::as_const(branches)) {
+        const QString wt = worktreePathForBranch(repoPath, branch);
+        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false, /*async=*/false);
+    }
+    flashMessage(QStringLiteral("Deleted %1 merged agent session%2.")
+                     .arg(sessionCount)
+                     .arg(sessionCount == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
