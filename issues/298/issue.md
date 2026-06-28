@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 298
 title: on the command line version add a command to update and restart and another called daemon to go into daemon mode (we can exit)
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 0
-progress: 0
+progress: 60
 assignees: []
 createdAt: 1782526315492
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

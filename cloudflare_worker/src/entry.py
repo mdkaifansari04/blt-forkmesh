@@ -54,8 +54,9 @@ MAX_PENDING_ISSUES = 500
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
-# issue body but still bounded.
-MAX_PULL_BYTES = 1024 * 1024
+# issue body but still bounded. Raised to 100 MB so a PR with a large diff (e.g.
+# generated files or vendored code) isn't rejected at submission.
+MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
@@ -2521,6 +2522,16 @@ def _clear_donation_address(rec):
         rec["status"] = "reserved"
 
 
+# A bare reservation only holds the name while a signup is genuinely in flight:
+# the holder has an open, unpaid, unexpired donation request. Once that lapses
+# (or never existed) the reservation is abandoned and the name is free again.
+def _donation_in_progress(rec):
+    if not rec.get("donation_address") or rec.get("donation_confirmed"):
+        return False
+    _, expires, _ = _donation_expiry_fields(rec, Date.now())
+    return Date.now() < expires
+
+
 # Step 1 of the funnel: claim a public node name. The desktop client signs the
 # claim with its Ed25519 identity (binding the name to a key); the website may
 # reserve without a key. A name is only "taken" once it is finalized/paid.
@@ -2541,8 +2552,18 @@ async def _account_reserve(env, request):
         ex_pub = existing.get("pubkey", "")
         if existing.get("status") == "active" or existing.get("donation_confirmed"):
             return json_response({"error": "node_name_taken"}, status=409)
-        if ex_pub and (not pubkey or ex_pub != pubkey):
+        held_by_other = bool(ex_pub) and (not pubkey or ex_pub != pubkey)
+        # A reservation bound to a different key only blocks the name while that
+        # holder's signup is still live (an open, unexpired donation). Otherwise
+        # it's an abandoned reservation — a fresh install on a new key (the common
+        # case) must be able to reclaim its own name instead of forever hitting
+        # "node_name_taken" for a name nobody actually paid for.
+        if held_by_other and _donation_in_progress(existing):
             return json_response({"error": "node_name_taken"}, status=409)
+        if held_by_other:
+            # Reclaiming an abandoned reservation: drop the previous holder's
+            # stale state so the new owner starts a clean, key-bound signup.
+            existing = None
         # else: a stale/own reservation — allow re-reserving it (idempotent).
 
     if pubkey:
@@ -3124,34 +3145,44 @@ async def _account_finalize(env, request):
     name_bi, rec = await _account_row(env, name)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
-    if not rec.get("donation_confirmed"):
-        return json_response({"error": "donation_required"}, status=402)
-    if "@" not in email or len(email) < 3:
-        return json_response({"error": "valid_email_required"}, status=400)
-    if len(password) < 8:
-        return json_response({"error": "password_too_short"}, status=400)
 
-    # A key-bound (desktop) account must prove ownership to finalize.
-    if rec.get("pubkey"):
+    # A key-bound (desktop) account proves ownership with its Ed25519 signature and
+    # joins for free: no donation, and email/password are optional. All a desktop
+    # node needs to become active is its reserved name. Keyless (web) signups still
+    # pay first, where the donation is what proves a real human is behind the name.
+    key_bound = bool(rec.get("pubkey"))
+    if key_bound:
         if not _ts_ok(ts):
             return json_response({"error": "stale_request"}, status=401)
         canonical = ("forkmesh-finalize-v1\n" + name + "\n" + email + "\n" +
                      ts).encode()
         if not await ed25519_verify(rec["pubkey"], signature, canonical):
             return json_response({"error": "bad_signature"}, status=401)
-    elif pubkey:
-        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
+    else:
+        if not rec.get("donation_confirmed"):
+            return json_response({"error": "donation_required"}, status=402)
+        if pubkey:
+            rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
 
-    email_bi = await blind_index(env, email)
-    dup = await d1_first(
-        env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
-    if dup and dup.get("name_bi") != name_bi:
-        return json_response({"error": "email_taken"}, status=409)
-
-    salt, phash = await hash_password(password)
-    rec["email"] = email
-    rec["pass_salt"] = salt
-    rec["pass_hash"] = phash
+    # Email + password unlock cross-device (password) login. They're required for
+    # keyless signups and optional for key-bound ones (which log in by key); when
+    # either is supplied they're validated and the email is indexed for login.
+    set_credentials = bool(email) or bool(password) or not key_bound
+    email_bi = None
+    if set_credentials:
+        if "@" not in email or len(email) < 3:
+            return json_response({"error": "valid_email_required"}, status=400)
+        if len(password) < 8:
+            return json_response({"error": "password_too_short"}, status=400)
+        email_bi = await blind_index(env, email)
+        dup = await d1_first(
+            env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if dup and dup.get("name_bi") != name_bi:
+            return json_response({"error": "email_taken"}, status=409)
+        salt, phash = await hash_password(password)
+        rec["email"] = email
+        rec["pass_salt"] = salt
+        rec["pass_hash"] = phash
     rec["status"] = "active"
     # Optional payout address (where this node receives its share of the split).
     if solana and SOLANA_RE.match(solana):
@@ -3167,12 +3198,13 @@ async def _account_finalize(env, request):
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     # Until a real email service exists, an admin verifies the email by hand:
-    # enqueue the new account so admins are notified and can verify it.
-    if not rec["email_verified"]:
-        await _enqueue_verification(env, name_bi, name, email)
+    # enqueue the new account so admins are notified and can verify it. A free
+    # key-bound join with no email yet has nothing to verify, so skip the queue.
+    if rec.get("email") and not rec["email_verified"]:
+        await _enqueue_verification(env, name_bi, name, rec["email"])
     return json_response(
-        {"ok": True, "nodeName": name, "email": email, "status": "active",
-         "emailVerified": rec["email_verified"],
+        {"ok": True, "nodeName": name, "email": rec.get("email", ""),
+         "status": "active", "emailVerified": rec["email_verified"],
          "isAdmin": await _is_admin(env, name)},
         status=201)
 
@@ -3234,6 +3266,7 @@ async def _account_login(env, request):
         data.get("email", ""), 254).strip().lower()
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
+    pubkey = clean_string(data.get("pubkey", ""), 120)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -3271,6 +3304,18 @@ async def _account_login(env, request):
             await _login_record_fail(env, id_bi)
             return json_response({"error": "bad_totp"}, status=401)
     await _login_clear(env, id_bi)
+
+    # A web-created account can be active before any desktop node key is bound.
+    # When the desktop app logs in with the correct password, bind its Ed25519
+    # key exactly once so signed heartbeat, hosting, and catalog publishes work.
+    # Never silently replace an existing key. Rotation needs an explicit flow.
+    if not rec.get("pubkey") and pubkey:
+        rec["pubkey"] = pubkey
+        name_bi = await blind_index(env, rec.get("name", ""))
+        await _save_account(env, name_bi, rec)
+    elif pubkey and rec.get("pubkey") != pubkey:
+        return json_response({"error": "pubkey_mismatch"}, status=409)
+
     return json_response({
         "ok": True, "nodeName": rec.get("name", ""),
         "email": rec.get("email", ""), "status": rec.get("status", "active"),
@@ -5833,9 +5878,10 @@ class Default(WorkerEntrypoint):
             return Response("", status=308, headers={"location": "/network/"})
         if url.path == "/docs":
             return Response("", status=308, headers={"location": "/docs/"})
-
         if url.path == "/blog":
-            return Response("", status=308, headers={"location": "/blog/"})
+            return Response("", status=308, headers={"location": "/blogs"})
+        if url.path == "/blog.html":
+            return Response("", status=308, headers={"location": "/blogs"})
 
         if url.path == "/features":
             return Response("", status=308, headers={"location": "/features/"})

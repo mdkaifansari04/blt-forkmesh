@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 284
 title: show the time on releases list and allow to click to see detail notes of the release and see diffs
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 70
-progress: 0
+progress: 55
 assignees: []
 createdAt: 1782487517730
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 194
 title: Split MainWindow.cpp (34.8k lines) into feature-grouped files for faster rebuilds
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 2
