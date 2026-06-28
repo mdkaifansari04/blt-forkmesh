@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 248
 title: make the merge graph look nicer
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 42
 progress: 0
