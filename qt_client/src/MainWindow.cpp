@@ -248,6 +248,11 @@ inline QColor commitGraphLaneColor(int lane)
     return palette[((lane % n) + n) % n];
 }
 
+// Defined below: outlines a selected row in green instead of filling it solid.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index);
+
 // Paints the git-graph gutter: a vertical line for every lane passing through
 // the row plus a filled dot in this commit's lane. Topology is meaningful only
 // while the list is in git-log order (the default Date-descending sort), which
@@ -260,8 +265,12 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        // Draw the selection/background but no text (the item has none).
-        QStyledItemDelegate::paint(painter, option, index);
+        // Strip the selection flag so the solid green band isn't filled, then
+        // draw the row's green outline (issue #252). The item has no text.
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_Selected;
+        QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
         const QVariantList lanes = index.data(kGraphLanesRole).toList();
         const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
         if (lanes.isEmpty() && nodeLane < 0)
@@ -825,9 +834,16 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(option.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
+        // Mark the selected row with a green outline rather than a solid green
+        // band (issue #252, matching the agents list): strip the selection flag so
+        // neither the style nor the stylesheet fills the row, then draw the outline
+        // on top. enableHoverRowHighlight()'s blankSelectionBand() clears the band
+        // the view would otherwise still paint from selection-background-color.
+        opt.state &= ~QStyle::State_Selected;
         QStyledItemDelegate::paint(painter, opt, index);
+        paintRowSelectionBorder(painter, option, index);
     }
 
     // Item views shape (and, for elided columns, fully lay out) the ENTIRE
@@ -876,12 +892,33 @@ private:
     QPersistentModelIndex m_hovered;
 };
 
+// The delegates now outline a selected row in green rather than filling it solid,
+// but the view still paints a solid selection band from the app-wide stylesheet
+// (selection-background-color plus the ::item:selected background rule, keyed on
+// the view's object name). Blank both on this view, keyed on that same object name
+// so the per-widget rule overrides the app rule, leaving only the outline showing
+// (issue #252, mirroring the agents list).
+void blankSelectionBand(QAbstractItemView *view)
+{
+    const QString name = view->objectName();
+    if (name.isEmpty())
+        return; // no object-name rule to override
+    const QString sel = QStringLiteral("#") + name;
+    view->setStyleSheet(
+        view->styleSheet() + sel +
+        QStringLiteral(" { selection-background-color: transparent; }") + sel +
+        QStringLiteral("::item:selected { background: transparent; }"));
+}
+
 // Give a list-style view (table, list or tree) a full-row light-green hover
-// highlight that never shifts the row's contents.
+// highlight that never shifts the row's contents, plus the green selected-row
+// outline (issue #252) in place of the solid selection band.
 void enableHoverRowHighlight(QAbstractItemView *view)
 {
-    if (view)
-        view->setItemDelegate(new HoverRowDelegate(view));
+    if (!view)
+        return;
+    view->setItemDelegate(new HoverRowDelegate(view));
+    blankSelectionBand(view);
 }
 
 // Outlines the SELECTED row in green with a transparent fill, instead of the
@@ -925,10 +962,9 @@ inline void paintRowSelectionBorder(QPainter *painter,
     painter->restore();
 }
 
-// HoverRowDelegate variant that renders the selected row as a transparent band
-// inside a green outline rather than a solid green fill. The selection flag is
-// stripped before the base paint so neither the stylesheet nor the style fills
-// the row; paintRowSelectionBorder() then draws the outline on top.
+// HoverRowDelegate variant that drops the light-green mouse-hover row tint while
+// keeping the base's green selected-row outline (issue #184: the agents list wants
+// no hover fill). The outline itself is drawn by HoverRowDelegate::paint.
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
@@ -936,15 +972,6 @@ public:
         : HoverRowDelegate(view)
     {
         m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
-    }
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt(option);
-        opt.state &= ~QStyle::State_Selected;
-        HoverRowDelegate::paint(painter, opt, index);
-        paintRowSelectionBorder(painter, option, index);
     }
 };
 
@@ -12548,6 +12575,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *listPage = new QWidget;
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
+    enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->setHorizontalHeaderLabels(
         {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
     m_commitsTable->verticalHeader()->setVisible(false);
@@ -13218,6 +13246,7 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
+    enableHoverRowHighlight(m_scmTree); // green outline selection (issue #252)
     m_scmTree->setColumnCount(2);
     m_scmTree->setHeaderHidden(true);
     m_scmTree->setMinimumWidth(240);
@@ -16117,6 +16146,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullFiles); // green outline selection (issue #252)
     m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -16199,6 +16229,7 @@ QWidget *MainWindow::buildPullsTab()
     // it in the repo's commit view.
     m_pullCommitsList = new QListWidget;
     m_pullCommitsList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_pullCommitsList); // green outline selection (issue #252)
     connect(m_pullCommitsList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 const QString sha = item ? item->data(Qt::UserRole).toString()
@@ -18799,6 +18830,7 @@ bool MainWindow::runMergeConflictEditor(
 
     auto *fileList = new QListWidget;
     fileList->setObjectName("overviewList");
+    enableHoverRowHighlight(fileList); // green outline selection (issue #252)
     fileList->setMinimumWidth(220);
 
     auto *editor = new QPlainTextEdit;
@@ -32777,6 +32809,7 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeFilesSummary->setTextFormat(Qt::RichText);
     m_worktreeFileList = new QListWidget;
     m_worktreeFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_worktreeFileList); // green outline selection (issue #252)
     m_worktreeFileList->setMinimumWidth(170);
     connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
@@ -34153,6 +34186,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchScopeLabel->setTextFormat(Qt::RichText);
     m_branchScopeList = new QListWidget;
     m_branchScopeList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchScopeList); // green outline selection (issue #252)
     m_branchScopeList->setMinimumWidth(180);
     connect(m_branchScopeList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { renderBranchScopeDiff(); });
@@ -34164,6 +34198,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFilesSummary->setTextFormat(Qt::RichText);
     m_branchFileList = new QListWidget;
     m_branchFileList->setObjectName("overviewList");
+    enableHoverRowHighlight(m_branchFileList); // green outline selection (issue #252)
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
