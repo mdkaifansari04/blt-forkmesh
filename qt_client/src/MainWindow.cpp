@@ -829,7 +829,27 @@ public:
         QStyledItemDelegate::paint(painter, opt, index);
     }
 
+    // Item views shape (and, for elided columns, fully lay out) the ENTIRE
+    // display string on every paint, even though only the first few dozen
+    // characters are ever visible in a list cell. An adhoc agent session stores
+    // its whole prompt as the row "title", so a single cell could carry a
+    // multi-thousand-character backtrace (issue #216) and block the GUI thread
+    // for >1.5 s HarfBuzz-shaping text nobody can see. Capping the handed-off
+    // string to a length far beyond any column's visible width keeps the drawn
+    // result pixel-identical while bounding the per-paint shaping cost.
+    QString displayText(const QVariant &value, const QLocale &locale) const override
+    {
+        QString text = QStyledItemDelegate::displayText(value, locale);
+        if (text.size() > kMaxCellDisplayChars) {
+            text.truncate(kMaxCellDisplayChars);
+            text += QChar(0x2026); // horizontal ellipsis
+        }
+        return text;
+    }
+
 protected:
+    static constexpr int kMaxCellDisplayChars = 512;
+
     bool eventFilter(QObject *obj, QEvent *event) override
     {
         if (event->type() == QEvent::Leave)
@@ -1403,6 +1423,10 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// When a new UI stall is detected, hand its backtrace to a coding agent so the
+// freeze gets fixed automatically. On by default (adhoc #205).
+const QString kAutoAgentOnStallSetting =
+    QStringLiteral("diagnostics/autoAgentOnStall");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
@@ -7361,6 +7385,66 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &backtrace)
                 .arg(when)
                 .arg(m_stallCount));
     updateFooterDiagnostics();
+    maybeAutoFileStallAgent(peakMs, backtrace);
+}
+
+// If the user has left the "auto-create an agent task for new stalls" setting on
+// (the default), hand this freeze straight to a coding agent so it gets fixed.
+// The backtrace already pinpoints the blocking call and carries the build's
+// source dir, so it's an actionable task on its own. De-duped by backtrace and
+// capped per session so a recurring freeze — or an agent run that itself stalls —
+// can't spawn an unbounded pile of tasks (adhoc #205).
+void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace)
+{
+    if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
+        return;
+    // No captured stack means nothing actionable to point an agent at.
+    const QString signature = backtrace.trimmed();
+    if (signature.isEmpty())
+        return;
+    if (m_autoFiledStallSignatures.contains(signature))
+        return; // already filed this exact freeze this session
+    // Safety cap: never spin up more than a handful of stall-fix agents in one
+    // session, even if every stall has a distinct backtrace.
+    constexpr int kMaxAutoStallAgents = 5;
+    if (m_autoFiledStallSignatures.size() >= kMaxAutoStallAgents)
+        return;
+
+    // Prefer ForkMesh's own checkout (the freeze is in this app's GUI thread);
+    // fall back to whatever repo the Issues tab is pointed at.
+    int repoIndex = -1;
+    const QString bakedSource = QStringLiteral(FORKMESH_SOURCE_DIR);
+    if (!bakedSource.isEmpty()) {
+        const QString selfSource = QDir(bakedSource).absolutePath();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const QString local = m_repositories.at(i).localPath;
+            if (!local.isEmpty() && QDir(local).absolutePath() == selfSource) {
+                repoIndex = i;
+                break;
+            }
+        }
+    }
+    if (repoIndex < 0)
+        repoIndex = issuesRepoIndex();
+    if (repoIndex < 0)
+        return; // no local checkout to run an agent in
+
+    const QString prompt =
+        QStringLiteral(
+            "ForkMesh's GUI thread stalled for ~%1 ms — the event loop was "
+            "blocked, which makes the window freeze. Find the blocking call in "
+            "the backtrace below and fix it so the UI stays responsive (move the "
+            "slow work off the main thread, or skip it when nothing changed). "
+            "Backtrace:\n\n%2")
+            .arg(peakMs)
+            .arg(backtrace);
+    if (startAdHocAgentForRepo(repoIndex, prompt, defaultAgentProvider(),
+                               /*createPr=*/true) > 0) {
+        m_autoFiledStallSignatures.insert(signature);
+        logSystem(QStringLiteral(
+            "Auto-started an agent to fix the UI stall (toggle in Settings > "
+            "Agents & IDE)."));
+    }
 }
 
 // Detail view for the diagnostics readout: the recorded UI stalls (with the
@@ -22499,17 +22583,17 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber) const
 // branch still exists and that every commit the run added since its fork point
 // is now contained in the base branch — i.e. the work merged, not merely that an
 // empty branch trivially shares history.
-bool MainWindow::agentSessionLandedInBase(const AgentSession &session) const
+bool MainWindow::agentSessionLandedInBase(const AgentSession &session,
+                                          const QString &dir,
+                                          const QString &base) const
 {
     if (session.prNumber > 0) {
         for (const PullRequest &pr : m_currentPulls)
             if (pr.number == session.prNumber)
                 return pr.status == QLatin1String("merged");
     }
-    const QString dir = repoGitDir();
     if (dir.isEmpty() || session.branchName.isEmpty())
         return false;
-    const QString base = repoDefaultBranch(repoBranches());
     if (base.isEmpty() || session.branchName == base)
         return false;
     // The branch must still exist locally to reason about it.
@@ -22630,11 +22714,27 @@ void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
         return;
+    // Re-entrancy guard: the GitKeepAlive pump below services queued slots, and a
+    // reloadAgents() among them reassigns m_agentSessions — a second pass over the
+    // list mid-iteration would dangle the reference we're walking. (Mirrors the
+    // m_repoDetailLoading guard in openRepoDetail.)
+    if (m_agentMergeStateRefreshing)
+        return;
+    m_agentMergeStateRefreshing = true;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name = m_repositories.at(m_repoDetailIndex).name;
     }
+    // The git dir and default branch are the same for every session of this repo,
+    // so resolve them once instead of re-shelling `git branch` (and a possible
+    // `symbolic-ref`) inside the per-session check — that repeated work was the
+    // bulk of a multi-second GUI stall on repos with many sessions. The remaining
+    // per-session reads run under a GitKeepAlive so the event loop keeps pumping
+    // and the window stays responsive across the batch.
+    GitKeepAlive keepAlive;
+    const QString dir = repoGitDir();
+    const QString base = repoDefaultBranch(repoBranches());
     for (AgentSession &s : m_agentSessions) {
         if (s.merged || s.owner != owner || s.name != name)
             continue;
@@ -22642,7 +22742,7 @@ void MainWindow::refreshAgentMergeState()
         // checks until it has produced something.
         if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
             continue;
-        if (!agentSessionLandedInBase(s))
+        if (!agentSessionLandedInBase(s, dir, base))
             continue;
         s.merged = true;
         s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -22650,6 +22750,7 @@ void MainWindow::refreshAgentMergeState()
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
     }
+    m_agentMergeStateRefreshing = false;
 }
 
 // HTML for a branch name that, when clicked in the agent session header, opens
@@ -32519,8 +32620,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
     }
     loadWorktreesPanel();
-    if (m_branchesTable)
-        loadBranchesPanel();
+    // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
+    // the Branches panel — it runs a git command per branch (probing each for
+    // merge conflicts), which was slow and pointless here since "Merge into main"
+    // is driven from the Agents/Worktrees tabs, not the Branches tab.
+    // loadBranchesAndTags() repaints the panel only if it's the visible tab.
+    loadBranchesAndTags();
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
@@ -35577,6 +35682,15 @@ void MainWindow::loadFileSearchIndex()
 
 void MainWindow::loadAboutSidebar()
 {
+    // This panel fires several synchronous git reads back to back — `ls-tree`,
+    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
+    // that walks every commit. On a large history those add up to multiple
+    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
+    // so do the reads under a keep-alive scope: waitForGit() then polls in short
+    // slices and pumps the event loop, keeping the window responsive (and the
+    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
+    GitKeepAlive keepAlive;
+
     const QString dir = repoGitDir();
     const RepositoryRecord *repo =
         (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
@@ -41540,6 +41654,21 @@ QWidget *MainWindow::buildSettingsSection()
                 selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
             });
 
+    // When the watchdog catches the GUI thread freezing, hand the captured
+    // backtrace to a coding agent so the freeze gets fixed without anyone filing
+    // it by hand. On by default (adhoc #205).
+    auto *autoStallAgentCheck =
+        new QCheckBox("Auto-create an agent task to fix new UI stalls");
+    autoStallAgentCheck->setChecked(
+        QSettings().value(kAutoAgentOnStallSetting, true).toBool());
+    autoStallAgentCheck->setToolTip(
+        "When the app detects the GUI thread freezing, start a coding agent on "
+        "the captured backtrace to fix the stall. Uses the default agent above. "
+        "On by default; de-duped so one recurring freeze files a single task.");
+    connect(autoStallAgentCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoAgentOnStallSetting, enabled);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -42013,6 +42142,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsLabel);
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
+    agentsCol->addWidget(autoStallAgentCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);
