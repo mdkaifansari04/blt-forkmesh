@@ -824,7 +824,7 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
         QStyledItemDelegate::paint(painter, opt, index);
     }
@@ -836,6 +836,10 @@ protected:
             setHovered(QModelIndex());
         return QStyledItemDelegate::eventFilter(obj, event);
     }
+
+    // Subclasses can opt out of the light-green mouse-hover row fill while still
+    // tracking the hovered row (e.g. the agents list, which wants no hover tint).
+    bool m_hoverFill = true;
 
 private:
     void setHovered(const QModelIndex &index)
@@ -907,7 +911,11 @@ inline void paintRowSelectionBorder(QPainter *painter,
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
-    using HoverRowDelegate::HoverRowDelegate;
+    explicit SelectionBorderRowDelegate(QAbstractItemView *view)
+        : HoverRowDelegate(view)
+    {
+        m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
+    }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
@@ -3274,6 +3282,51 @@ private:
     bool m_external = false;
     bool m_hover = false;
     std::function<void()> m_onClick;
+};
+
+// A small self-animating "busy" spinner: the rotating refresh glyph used on the
+// Refresh buttons, sized to sit inline next to a section heading while that
+// section's content is being (re)loaded. The animation timer only runs while the
+// spinner is visible (see show/hideEvent) so a hidden, idle one costs nothing.
+class BusySpinner : public QWidget
+{
+public:
+    explicit BusySpinner(QWidget *parent = nullptr, int size = 16)
+        : QWidget(parent), m_size(size)
+    {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(60);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 30) % 360;
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.drawPixmap(0, 0,
+                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+    }
+
+private:
+    QTimer *m_timer = nullptr;
+    int m_size;
+    int m_angle = 0;
 };
 
 // Compact "issue looper" toggle that floats just above the Issues tab (adhoc
@@ -12506,10 +12559,23 @@ QWidget *MainWindow::buildRepoCommitsTab()
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
+    // Small spinner that sits just after the "N files changed" heading while
+    // showCommit reads + renders the diff, so a slow commit shows progress here
+    // instead of freezing. Hidden until a load starts.
+    m_commitDiffSpinner = new BusySpinner(filesPane);
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *filesSummaryRow = new QHBoxLayout;
+    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
+    filesSummaryRow->setSpacing(6);
+    filesSummaryRow->addWidget(m_commitFilesSummary);
+    filesSummaryRow->addWidget(m_commitDiffSpinner);
+    filesSummaryRow->addStretch();
+
     auto *filesLayout = new QVBoxLayout(filesPane);
     filesLayout->setContentsMargins(0, 0, 8, 0);
     filesLayout->setSpacing(6);
-    filesLayout->addWidget(m_commitFilesSummary);
+    filesLayout->addLayout(filesSummaryRow);
     filesLayout->addWidget(m_commitFileList, 1);
 
     // Right: the unified diff for the whole commit.
@@ -15433,6 +15499,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullReopenButton = new QPushButton("Reopen");
+    m_pullSendToSourceButton = new QPushButton("Send to source of truth");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
@@ -15442,7 +15509,8 @@ QWidget *MainWindow::buildPullsTab()
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
-                           m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
+                           m_pullCloseButton, m_pullReopenButton,
+                           m_pullSendToSourceButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
                            m_pullPreviewButton,
                            m_pullLinkIssueButton, m_pullSplitButton}) {
@@ -15490,6 +15558,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
     m_pullReopenButton->hide(); // only shown when the PR is closed or merged
+    setOcticon(m_pullSendToSourceButton, "upload", 16);
+    m_pullSendToSourceButton->setToolTip(
+        "Deliver this pull request to the repository owner's inbox. The relay "
+        "holds it, so it reaches the source of truth even while that node is "
+        "offline.");
+    m_pullSendToSourceButton->hide(); // only shown on mirror nodes (can't merge here)
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -15559,6 +15633,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -15990,6 +16065,8 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::mergeAndDeleteCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     connect(m_pullReopenButton, &QPushButton::clicked, this, &MainWindow::reopenCurrentPull);
+    connect(m_pullSendToSourceButton, &QPushButton::clicked, this,
+            &MainWindow::sendCurrentPullToSource);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
     connect(m_pullDeleteBranchButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullAndBranch);
@@ -17794,6 +17871,14 @@ void MainWindow::updatePullActionState()
     if (m_pullReopenButton) {
         m_pullReopenButton->setVisible(writable && have && (closed || merged));
         m_pullReopenButton->setEnabled(writable && have && (closed || merged));
+    }
+    // "Send to source of truth" only makes sense on a mirror node (no working tree
+    // to merge in): the owner holds the real pulls/ tree, so re-deliver the open PR
+    // to their inbox where the relay queues it until they come online.
+    if (m_pullSendToSourceButton) {
+        const bool offerSend = !writable && have && open;
+        m_pullSendToSourceButton->setVisible(offerSend);
+        m_pullSendToSourceButton->setEnabled(offerSend);
     }
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
@@ -19705,6 +19790,44 @@ void MainWindow::reopenCurrentPull()
     if (!store.setStatus(m_currentPullNumber, "open", &error))
         QMessageBox::warning(this, "Reopen pull request", error);
     reloadPulls();
+}
+
+void MainWindow::sendCurrentPullToSource()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &candidate : std::as_const(m_currentPulls)) {
+        if (candidate.number == m_currentPullNumber) {
+            pr = &candidate;
+            break;
+        }
+    }
+    if (!pr)
+        return;
+    // The PR was synced from the mirror with its original author/signature intact;
+    // deliver it as-authored so the owner's inbox can verify it. Without a
+    // signature there's nothing the source of truth would accept.
+    if (pr->sig.isEmpty() || pr->author.isEmpty()) {
+        QMessageBox::warning(
+            this, "Send to source of truth",
+            "This pull request is missing its signature, so it can't be delivered "
+            "to the source of truth.");
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (QMessageBox::question(
+            this, "Send to source of truth",
+            QStringLiteral(
+                "Deliver pull request #%1 to %2/%3's inbox?\n\n"
+                "The relay queues it, so it reaches the source of truth even if "
+                "that node is currently offline.")
+                .arg(m_currentPullNumber)
+                .arg(repo.owner, repo.name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+    submitPullToInbox(*pr, repo);
 }
 
 // Toggle the pull-delete buttons together so none can launch a second history
@@ -23401,10 +23524,6 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         flashMessage("Could not delete the agent session.", true);
         return false;
     }
-    // The on-disk session is gone but its id will be handed to the next session
-    // created (nextId() = max id + 1). Forget every in-memory transcript buffer so
-    // that recycled id can't inherit this agent's context (adhoc #198).
-    forgetStreamSessionState(snapshot.id);
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     return true;
@@ -25043,28 +25162,6 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
-}
-
-// Purge every per-session in-memory buffer for a session that's going away. Ids
-// are recycled (nextId() = max on-disk id + 1), and startClaudeCodeTranscript
-// infers "resuming" from a non-empty m_streamEvents[sid] — so any leftover state
-// here would make the next session that reuses this id resume the deleted agent's
-// Claude conversation instead of starting fresh (adhoc #198). m_streamSessions and
-// m_streamWorktree are dropped by stopStreamSession()/cleanupStreamWorktree(); the
-// rest are cleared here.
-void MainWindow::forgetStreamSessionState(int sessionId)
-{
-    m_streamEvents.remove(sessionId);
-    m_streamRaw.remove(sessionId);
-    m_streamFiles.remove(sessionId);
-    m_streamSessionInfo.remove(sessionId);
-    m_pendingSteerMessage.remove(sessionId);
-    m_lastAssistantText.remove(sessionId);
-    m_sessionTokens.remove(sessionId);
-    m_scannerStates.remove(sessionId);
-    m_agentDiffStats.remove(sessionId);
-    if (m_renderedTranscriptSession == sessionId)
-        m_renderedTranscriptSession = -1;
 }
 
 // Append to the raw-output edit only when it's the surface actually on screen.
@@ -27534,6 +27631,11 @@ void MainWindow::refreshCommitMarkersIfStale()
 
 void MainWindow::loadCommits()
 {
+    // The reload fires several blocking git reads (status, log --numstat, the
+    // unpushed-set walk), any of which can take a second on a large repo. Keep the
+    // event loop breathing across them so the window stays painted (and the
+    // Refresh spinner keeps turning) instead of freezing. Nestable/RAII.
+    GitKeepAlive keepAlive;
     refreshSourceControl(); // keep the working-changes panel in sync with the tab
     if (!m_commitsTable)
         return;
@@ -30243,6 +30345,22 @@ void MainWindow::showCommit(const QString &hash)
         m_commitsTable->selectRow(m_currentCommitRow);
     }
 
+    // Re-entrancy guard: the keep-alive pump below services queued slots between
+    // git reads, so a second click (or a deferred reload) must not start a second
+    // diff load on top of this one. Set before the first event-loop turn below.
+    if (m_commitDetailLoading)
+        return;
+    m_commitDetailLoading = true;
+
+    // Land on the diff page and paint a spinner straight away, then yield one
+    // event-loop turn so it actually shows before the (possibly multi-second) git
+    // reads + diff render run. The GitKeepAlive scope keeps the window breathing —
+    // and the spinner turning — across those reads so the click never freezes.
+    m_commitsStack->setCurrentIndex(1);
+    startCommitDiffSpin();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    GitKeepAlive keepAlive;
+
     // --- Metadata (full hash, author, date, parents, subject, body).
     QByteArray meta;
     runGitCapture(dir,
@@ -30383,7 +30501,9 @@ void MainWindow::showCommit(const QString &hash)
     }
 
     renderCommitThread(m_currentCommitHash);
+    stopCommitDiffSpin();
     m_commitsStack->setCurrentIndex(1);
+    m_commitDetailLoading = false;
 }
 
 void MainWindow::renderCommitThread(const QString &sha)
@@ -35789,6 +35909,18 @@ void MainWindow::stopCommitsRefreshSpin()
     if (m_commitsRefreshButton)
         m_commitsRefreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+}
+
+void MainWindow::startCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->show();
+}
+
+void MainWindow::stopCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->hide();
 }
 
 void MainWindow::startNodeSwitchSpin()
