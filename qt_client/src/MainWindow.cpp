@@ -16826,6 +16826,7 @@ void MainWindow::showPull(int number)
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
         m_pullDiff->clear();
+        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -16935,8 +16936,10 @@ void MainWindow::showPull(int number)
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0)
         m_pullFiles->setCurrentRow(0);
-    else
+    else {
         m_pullDiff->setPlainText("(no changes)");
+        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+    }
     renderPullCommits(*found);
     renderPullThread(*found);
     renderPullChecks(*found);
@@ -17088,10 +17091,26 @@ void MainWindow::renderPullDiff(const QString &filePath)
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
-    m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-    m_pullDiff->setHtml(html.isEmpty()
-                            ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                            : html);
+    const QString styleSheet = diffStyleSheet(m_diffFontPt);
+    const QString body =
+        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                       : html;
+
+    // Laying out a large diff's HTML table in QTextDocument can block the GUI
+    // thread for a second or more. A background PR refresh re-runs showPull(),
+    // which repopulates the file list and re-selects row 0, firing this render
+    // again for the file already on screen. Skip the re-layout when nothing the
+    // document depends on (file, theme/font via the stylesheet, split toggle,
+    // review notes and viewed state via the html) has changed.
+    const QString key = QString::number(m_currentPullNumber) +
+                        QLatin1Char('\x1f') + filePath + QLatin1Char('\x1f') +
+                        styleSheet + QLatin1Char('\x1f') + body;
+    if (key == m_pullDiffRenderKey)
+        return;
+    m_pullDiffRenderKey = key;
+
+    m_pullDiff->document()->setDefaultStyleSheet(styleSheet);
+    m_pullDiff->setHtml(body);
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)
