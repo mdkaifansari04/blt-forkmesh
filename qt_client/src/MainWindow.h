@@ -325,6 +325,10 @@ public:
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
+    // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
+    // session the app navigated to (m_selectedAgentSessionId), so a test can prove
+    // clicking the cell jumps to that branch's agent (adhoc #258).
+    int testClickBranchAgentCell(const QString &branch);
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -824,7 +828,14 @@ private:
     void updateAgentNetworkPanel(const QString &log, const QString &status);
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
-    const AgentSession *agentSessionForPull(int prNumber) const;
+    // The agent session attached to a PR, if any. Matches the PR number first
+    // (an agent that recorded the PR it produced), then — when a head branch is
+    // given — falls back to a session run on that same branch (issue #257: an
+    // agent attached "through the branch" even though it never recorded a PR
+    // number). The branch fallback is scoped to the detail repo to avoid matching
+    // a like-named branch in another repo.
+    const AgentSession *agentSessionForPull(int prNumber,
+                                            const QString &headBranch = QString()) const;
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
