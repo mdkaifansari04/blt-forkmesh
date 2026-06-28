@@ -6682,10 +6682,11 @@ void MainWindow::showUpdateLog()
         lay->addLayout(row);
     }
     m_updateLog->clear();
+    // The full window no longer pops up on its own: progress streams onto the
+    // footer one-liner (appendUpdateLog mirrors each line there). The user can
+    // click that line to open this window, and a failure re-opens it
+    // automatically (see setUpdateStatus) so the error is never missed.
     appendUpdateLog(QStringLiteral("==> ForkMesh update started\n"));
-    m_updateLogDialog->show();
-    m_updateLogDialog->raise();
-    m_updateLogDialog->activateWindow();
 }
 
 void MainWindow::appendUpdateLog(const QString &text)
@@ -6695,6 +6696,49 @@ void MainWindow::appendUpdateLog(const QString &text)
     m_updateLog->moveCursor(QTextCursor::End);
     m_updateLog->insertPlainText(text);
     m_updateLog->moveCursor(QTextCursor::End);
+    // Mirror the newest meaningful line onto the footer one-liner. Walk back from
+    // the last block so partial chunks (which can end mid-line) still surface a
+    // complete, non-empty line of live output.
+    for (QTextBlock b = m_updateLog->document()->lastBlock(); b.isValid();
+         b = b.previous()) {
+        const QString line = b.text().trimmed();
+        if (!line.isEmpty()) {
+            setFooterUpdateLine(line);
+            break;
+        }
+    }
+}
+
+void MainWindow::setFooterUpdateLine(const QString &line)
+{
+    if (!m_footerUpdateLog)
+        return;
+    const QString clean = line.trimmed();
+    if (clean.isEmpty())
+        return;
+    m_footerUpdateLineRaw = clean;
+    m_footerUpdateLog->show();
+    // Colour the strip to match the log's narrative markers: red for failures
+    // ("!!"/"ERROR"), the accent blue for phase headers ("==>"), grey otherwise.
+    QString colour = QStringLiteral("#8b949e");
+    if (clean.startsWith(QStringLiteral("!!")) ||
+        clean.startsWith(QStringLiteral("ERROR")))
+        colour = QStringLiteral("#ff6b6b");
+    else if (clean.startsWith(QStringLiteral("==>")) ||
+             clean.startsWith(QStringLiteral("$ ")))
+        colour = QStringLiteral("#58a6ff");
+    m_footerUpdateLog->setStyleSheet(
+        QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
+                       "border-top:1px solid #21262d;background:#0d1117;"
+                       "font-family:monospace;font-size:11px;padding:3px 12px;"
+                       "text-align:left;}"
+                       "QPushButton#footerUpdateLog:hover{color:#e6edf3;}")
+            .arg(colour));
+    // Elide to a single line that fits the current width so a long compiler line
+    // never stretches the window.
+    const QFontMetrics fm(m_footerUpdateLog->font());
+    const int avail = qMax(40, m_footerUpdateLog->width() - 28);
+    m_footerUpdateLog->setText(fm.elidedText(clean, Qt::ElideRight, avail));
 }
 
 void MainWindow::setUpdateStatus(const QString &status, bool isError)
@@ -6704,6 +6748,13 @@ void MainWindow::setUpdateStatus(const QString &status, bool isError)
     // which AgentLogHighlighter colourises.
     appendUpdateLog((isError ? QStringLiteral("!! ") : QStringLiteral("==> ")) + status +
                     QStringLiteral("\n"));
+    // A failure is the one case the footer one-liner isn't enough for: re-open the
+    // full window so the user can read exactly what went wrong.
+    if (isError && m_updateLogDialog) {
+        m_updateLogDialog->show();
+        m_updateLogDialog->raise();
+        m_updateLogDialog->activateWindow();
+    }
     QLabel *label = m_buildStatusLabel ? m_buildStatusLabel : m_updateStatus;
     if (!label)
         return;
@@ -7464,9 +7515,34 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(redditButton);
     quickAddRow->addWidget(twitterButton);
 
-    auto *dockRow = new QHBoxLayout(dock);
-    dockRow->setContentsMargins(0, 0, 0, 0);
-    dockRow->addWidget(card);
+    // A thin single-line strip below the quick-add bar: the live restart/update
+    // log. Hidden until an update runs, it streams the newest log line so progress
+    // is visible at the bottom of the app; clicking it opens the full log window.
+    m_footerUpdateLog = new QPushButton;
+    m_footerUpdateLog->setObjectName("footerUpdateLog");
+    m_footerUpdateLog->setFlat(true);
+    m_footerUpdateLog->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_footerUpdateLog->setToolTip("Live update/restart log. Click to open the full log.");
+    m_footerUpdateLog->setStyleSheet(
+        "QPushButton#footerUpdateLog{color:#8b949e;border:none;"
+        "border-top:1px solid #21262d;background:#0d1117;"
+        "font-family:monospace;font-size:11px;padding:3px 12px;text-align:left;}"
+        "QPushButton#footerUpdateLog:hover{color:#e6edf3;}");
+    m_footerUpdateLog->hide();
+    connect(m_footerUpdateLog, &QPushButton::clicked, this, [this] {
+        if (!m_updateLogDialog)
+            return;
+        m_updateLogDialog->show();
+        m_updateLogDialog->raise();
+        m_updateLogDialog->activateWindow();
+    });
+
+    auto *dockCol = new QVBoxLayout(dock);
+    dockCol->setContentsMargins(0, 0, 0, 0);
+    dockCol->setSpacing(0);
+    dockCol->addWidget(card);
+    dockCol->addWidget(m_footerUpdateLog);
 
     connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
             &MainWindow::quickAddIssue);
@@ -44518,6 +44594,10 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
+    // Re-elide the footer restart-log line for the new width.
+    if (m_footerUpdateLog && m_footerUpdateLog->isVisible() &&
+        !m_footerUpdateLineRaw.isEmpty())
+        setFooterUpdateLine(m_footerUpdateLineRaw);
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
