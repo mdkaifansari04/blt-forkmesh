@@ -16586,39 +16586,71 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
+    // One dry-run runs off-thread at a time. A redundant drain (a double
+    // singleShot, or queuePullConflictCheck firing while a worker runs) just
+    // returns here — the in-flight worker reschedules us when it finishes, so the
+    // queue still drains in order.
+    if (m_pullConflictCheckInFlight)
+        return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
     const int number = item.first;
+    const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
-    if (store.canWrite()) {
-        bool clean = false;
-        QStringList conflictFiles;
-        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
-        // single cold `git apply --check` can run well over the 1.5s stall
-        // threshold — pump the event loop while it runs so the window stays
-        // responsive instead of freezing on one PR's dry-run.
-        const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
-                                 /*keepGuiAlive=*/true) &&
-            !clean;
-        // The gen check at entry already gates this turn; re-check defensively in
-        // case checkMergeable() ever pumps the event loop and lets a fresh
-        // reloadPulls() supersede this pass while git ran.
-        if (gen == m_pullConflictGen) {
-            m_pullConflictCache.insert(number, {item.second, conflict, conflictFiles});
-            if (conflict)
-                m_pullConflictByNumber.insert(number, true);
-            else
-                m_pullConflictByNumber.remove(number);
-            setPullConflictBadge(number, conflict);
-            // If this dry-run was for the PR currently on screen, refresh its
-            // merge UI now that the result is cached — updatePullActionState()
-            // deferred to us instead of blocking the GUI on the live check.
-            if (number == m_currentPullNumber)
-                updatePullActionState();
-        }
+    if (!store.canWrite()) {
+        // No working tree to test the patch against; skip and drain the rest.
+        if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
+            QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+        return;
     }
-    if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
-        QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
+    // A single cold `git apply --check` can run well over the 1.5s stall
+    // threshold, so run it on a worker thread rather than on the GUI thread. The
+    // old keepGuiAlive path pumped the event loop in place, which could itself
+    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
+    // reports). PullStore is copied by value and only shells out to git, so the
+    // worker touches no shared Qt state; results come back via shared_ptr to the
+    // finished handler, which runs on the main thread.
+    m_pullConflictCheckInFlight = true;
+    auto clean = std::make_shared<bool>(false);
+    auto mergeable = std::make_shared<bool>(false);
+    auto conflictFiles = std::make_shared<QStringList>();
+    QThread *worker = QThread::create([store, number, clean, mergeable,
+                                       conflictFiles]() mutable {
+        *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
+                                          nullptr, /*keepGuiAlive=*/false);
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, gen, number, fingerprint, clean, mergeable,
+             conflictFiles]() {
+                m_pullConflictCheckInFlight = false;
+                worker->deleteLater();
+                const bool conflict = *mergeable && !*clean;
+                // Apply the result only if this repo/list is still current; a
+                // reloadPulls() may have bumped the generation while git ran.
+                if (gen == m_pullConflictGen) {
+                    m_pullConflictCache.insert(
+                        number, {fingerprint, conflict, *conflictFiles});
+                    if (conflict)
+                        m_pullConflictByNumber.insert(number, true);
+                    else
+                        m_pullConflictByNumber.remove(number);
+                    setPullConflictBadge(number, conflict);
+                    // If this dry-run was for the PR currently on screen, refresh
+                    // its merge UI now that the result is cached.
+                    if (number == m_currentPullNumber)
+                        updatePullActionState();
+                }
+                // Drain the next pending check under the *current* generation,
+                // whether or not this result was superseded: a superseding
+                // reloadPulls() rebuilt the queue and is waiting on this worker to
+                // release the in-flight guard.
+                if (!m_pendingPullConflictChecks.isEmpty()) {
+                    const quint64 current = m_pullConflictGen;
+                    QTimer::singleShot(0, this, [this, current] {
+                        processPendingPullConflicts(current);
+                    });
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
@@ -16865,6 +16897,7 @@ void MainWindow::showPull(int number)
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
         m_pullDiff->clear();
+        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -16974,8 +17007,10 @@ void MainWindow::showPull(int number)
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0)
         m_pullFiles->setCurrentRow(0);
-    else
+    else {
         m_pullDiff->setPlainText("(no changes)");
+        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+    }
     renderPullCommits(*found);
     renderPullThread(*found);
     renderPullChecks(*found);
@@ -17127,10 +17162,26 @@ void MainWindow::renderPullDiff(const QString &filePath)
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
-    m_pullDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-    m_pullDiff->setHtml(html.isEmpty()
-                            ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                            : html);
+    const QString styleSheet = diffStyleSheet(m_diffFontPt);
+    const QString body =
+        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                       : html;
+
+    // Laying out a large diff's HTML table in QTextDocument can block the GUI
+    // thread for a second or more. A background PR refresh re-runs showPull(),
+    // which repopulates the file list and re-selects row 0, firing this render
+    // again for the file already on screen. Skip the re-layout when nothing the
+    // document depends on (file, theme/font via the stylesheet, split toggle,
+    // review notes and viewed state via the html) has changed.
+    const QString key = QString::number(m_currentPullNumber) +
+                        QLatin1Char('\x1f') + filePath + QLatin1Char('\x1f') +
+                        styleSheet + QLatin1Char('\x1f') + body;
+    if (key == m_pullDiffRenderKey)
+        return;
+    m_pullDiffRenderKey = key;
+
+    m_pullDiff->document()->setDefaultStyleSheet(styleSheet);
+    m_pullDiff->setHtml(body);
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)
@@ -23375,6 +23426,7 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentCreateIssueButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
+        m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
         m_agentDetailTabSession = -1; // next opened session re-starts on the Agent tab
         updateAgentActionState();
         return;
@@ -23557,15 +23609,12 @@ void MainWindow::showAgentSession(int sessionId)
 
     const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
     updateAgentNetworkPanel(log, session->status);
-    if (m_agentLog) {
-        m_agentLog->setPlainText(log);
-        m_agentLog->moveCursor(QTextCursor::End);
-    }
     // Pick the right output surface. A Claude Code session renders its OWN
     // buffered transcript (so output never leaks between sessions); legacy
     // terminal sessions show the embedded terminal; everything else the log. The
     // Transcript|Raw toggle and the edited-files panel show only for transcript
-    // sessions.
+    // sessions. Each surface populates m_agentLog through setAgentLogText() so a
+    // re-show of the same unchanged session skips the costly re-layout (adhoc #245).
     const bool external = isExternalSession(sessionId);
     const bool transcript = external || isStreamTranscriptSession(sessionId);
     if (external) {
@@ -23579,10 +23628,10 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        if (m_agentLog) {
-            m_agentLog->setPlainText(m_streamRaw.value(sessionId));
-            m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
-        }
+        setAgentLogText(sessionId, m_streamRaw.value(sessionId)); // raw view tail
+    } else {
+        // Legacy log/terminal session: m_agentLog is the visible surface.
+        setAgentLogText(sessionId, log);
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -23620,6 +23669,23 @@ void MainWindow::showAgentSession(int sessionId)
         }
     }
     updateAgentActionState();
+}
+
+void MainWindow::setAgentLogText(int sessionId, const QString &text)
+{
+    if (!m_agentLog)
+        return;
+    // Skip the re-layout when the same session's log is already on screen with
+    // identical text. setPlainText()+moveCursor(End) forces QPlainTextEdit to lay
+    // out the whole document (cursorRect -> initCharAttributes over every block),
+    // which for a large transcript blocked the GUI thread for ~2.9 s every time
+    // refreshAgentTable() re-selected the open session (adhoc #245).
+    if (m_agentLogSession == sessionId && m_agentLogText == text)
+        return;
+    m_agentLogSession = sessionId;
+    m_agentLogText = text;
+    m_agentLog->setPlainText(text);
+    m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
 }
 
 void MainWindow::updateAgentNetworkPanel(const QString &log, const QString &status)
@@ -25218,8 +25284,7 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
             // Separate each JSON object with a blank line so the raw view is readable.
             const QStringList objs =
                 QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-            m_agentLog->setPlainText(objs.join(QStringLiteral("\n\n")));
-            m_agentLog->moveCursor(QTextCursor::End);
+            setAgentLogText(sessionId, objs.join(QStringLiteral("\n\n")));
         }
     }
     if (full)
@@ -26079,6 +26144,7 @@ void MainWindow::appendAgentRawLog(const QString &text)
     QTextCursor cursor(m_agentLog->document());
     cursor.movePosition(QTextCursor::End);
     cursor.insertText(text);
+    m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
     if (atBottom && sb)
         sb->setValue(sb->maximum()); // keep following the tail only if already pinned
 }
@@ -26093,6 +26159,7 @@ void MainWindow::showAgentRawOutput()
         return;
     if (m_streamRaw.contains(m_selectedAgentSessionId))
         m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
+    m_agentLogSession = -1; // set out-of-band; the dedup tracker is now stale
     m_agentOutputStack->setCurrentWidget(m_agentLog);
     m_agentLog->moveCursor(QTextCursor::End); // always land on the tail when shown
 }
@@ -26107,6 +26174,7 @@ void MainWindow::onAgentLog(int sessionId, const QString &text)
     if (!text.endsWith(QLatin1Char('\n')))
         m_agentLog->insertPlainText(QStringLiteral("\n"));
     m_agentLog->moveCursor(QTextCursor::End);
+    m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
     // Refresh the live traffic graphic when a network marker streams in.
     if (text.contains(QLatin1String("[net]")) && m_agentStore) {
         if (AgentSession *session = findAgentSession(sessionId))
@@ -36079,8 +36147,18 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
-        if (m_mirrorNodesTable->isVisible())
-            m_mirrorNodesTable->viewport()->update();
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Only the Synced column animates, so repaint just its cells rather than
+        // the whole viewport. A full viewport()->update() re-ran the row's
+        // HoverRowDelegate for every other column each second, painting cells
+        // nothing had changed and stalling the GUI thread on big node lists
+        // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
+        for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+            if (m_mirrorNodesTable->item(r, 2))
+                m_mirrorNodesTable->update(
+                    m_mirrorNodesTable->model()->index(r, 2));
+        }
     });
     pacmanTick->start();
     // Double-click a node row to open its profile.

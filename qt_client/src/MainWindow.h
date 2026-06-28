@@ -796,6 +796,13 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
+    // actually changed. setPlainText()+moveCursor(End) forces a full document
+    // layout, which for a large transcript blocks the GUI thread for seconds
+    // (adhoc #245). refreshAgentTable() re-selects the open session on every
+    // reload/external tick, re-firing showAgentSession with identical text, so
+    // skip the re-layout when neither the session nor its log has changed.
+    void setAgentLogText(int sessionId, const QString &text);
     // Authoritative cumulative token total for a session: the live running
     // counter (m_sessionTokens) clamped to never fall below the value persisted
     // on the session. Reloading sessions from disk mid-run would otherwise reset
@@ -2373,6 +2380,11 @@ private:
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
+    // Signature (stylesheet + html) of what m_pullDiff currently shows, so
+    // renderPullDiff can skip the costly QTextDocument table re-layout when a
+    // refresh/poll re-renders the same file with unchanged content. Cleared
+    // whenever the widget is set to something other than a rendered diff.
+    QString m_pullDiffRenderKey;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
@@ -2432,6 +2444,11 @@ private:
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
     QList<QPair<int, QString>> m_pendingPullConflictChecks;
+    // True while a conflict dry-run runs on a worker thread. The drain launches
+    // one `git apply --check` at a time off the GUI thread (the slow cold-cache
+    // run used to block the event loop for ~1.5s); this guard keeps a second
+    // drain from starting a concurrent worker before the first finishes.
+    bool m_pullConflictCheckInFlight = false;
     // size:hash of a PR patch, used to invalidate a cached PullConflictEntry when
     // the patch changes. Shared by reloadPulls() and updatePullActionState().
     static QString pullPatchFingerprint(const QString &patch);
@@ -2636,6 +2653,10 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // Which session's raw log is currently laid into m_agentLog, and its text,
+    // so setAgentLogText() can skip the costly re-layout when nothing changed.
+    int m_agentLogSession = -1;
+    QString m_agentLogText;
     QHash<int, QString> m_streamRaw;
     QHash<int, qint64> m_sessionTokens; // live token total per session, for the list
     // Night-rider scanner lights: per-session sweep state keyed by sessionId (so
