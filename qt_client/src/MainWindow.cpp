@@ -26190,6 +26190,7 @@ void MainWindow::forkCurrentRepo()
     fork.solanaAddress = savedSolanaAddress();
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
+    fork.disabledWorkflows = src.disabledWorkflows;
     fork.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
@@ -43878,6 +43879,7 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
@@ -43913,6 +43915,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("disabledWorkflows", repo.disabledWorkflows);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
         settings.setValue("lastSyncMs", repo.lastSyncMs);
         settings.setValue("publishedAtMs", repo.publishedAtMs);
@@ -45073,6 +45076,35 @@ void MainWindow::setRepoActionsEnabled(bool on)
         QSignalBlocker block(m_settingsActionsCheck);
         m_settingsActionsCheck->setChecked(on);
     }
+}
+
+bool MainWindow::isWorkflowDisabled(const QString &path) const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    return m_repositories.at(m_repoDetailIndex).disabledWorkflows.contains(path);
+}
+
+void MainWindow::setWorkflowDisabled(const QString &path, bool disabled)
+{
+    if (path.isEmpty() || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    QStringList &off = m_repositories[m_repoDetailIndex].disabledWorkflows;
+    if (disabled == off.contains(path))
+        return; // already in the desired state
+    if (disabled)
+        off.append(path);
+    else
+        off.removeAll(path);
+    saveRepositories();
+    logSystem(QStringLiteral("Actions: workflow %1 %2 for %3/%4.")
+                  .arg(path, disabled ? QStringLiteral("disabled")
+                                      : QStringLiteral("enabled"),
+                       m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
+    // A disabled workflow can't be triggered by hand either.
+    updateManualRunBar();
 }
 
 void MainWindow::refreshRepoSettings()
@@ -46785,6 +46817,12 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         const ActionWorkflow wf = ActionFile::parse(path, content);
         if (!wf.valid || !wf.triggersOnPush())
             continue;
+        if (repo.disabledWorkflows.contains(path)) {
+            logSystem(QString::fromUtf8("Actions: \xE2\x80\x9C%1\xE2\x80\x9D is "
+                                        "disabled for %2/%3 \xE2\x80\x94 skipping.")
+                          .arg(wf.name, owner, name));
+            continue;
+        }
 
         ActionRun run;
         run.owner = owner;
@@ -48112,12 +48150,21 @@ void MainWindow::refreshRepoActions()
             triggers << QStringLiteral("on: push");
         if (wf.allowsManualRun())
             triggers << QStringLiteral("manual");
+        // Valid workflows get a checkbox so the owner can switch each one off
+        // individually; unchecking skips it on push and hides its manual-run bar.
+        if (wf.valid) {
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(repo.disabledWorkflows.contains(wf.path)
+                                    ? Qt::Unchecked
+                                    : Qt::Checked);
+        }
         item->setToolTip(wf.valid
                              ? wf.path + (triggers.isEmpty()
                                               ? QString()
                                               : QStringLiteral("  (") +
                                                     triggers.join(QStringLiteral(", ")) +
-                                                    QStringLiteral(")"))
+                                                    QStringLiteral(")")) +
+                                   QStringLiteral("\nUntick to disable this workflow.")
                              : wf.path + QStringLiteral("  — ") + wf.error);
         m_actionWorkflowList->addItem(item);
     }
@@ -48151,7 +48198,8 @@ void MainWindow::updateManualRunBar()
             break;
         }
     }
-    const bool show = wf && wf->allowsManualRun();
+    const bool show =
+        wf && wf->allowsManualRun() && !isWorkflowDisabled(wf->path);
     m_actionManualRunBar->setVisible(show);
     if (!show)
         return;
@@ -48413,8 +48461,9 @@ QWidget *MainWindow::buildRepoActionsTab()
 
     // Far left: the actions available in this repo (.forkmesh/ workflows).
     auto *wfPane = new QWidget;
-    wfPane->setMinimumWidth(180);
-    wfPane->setMaximumWidth(260);
+    // Give the workflow-name column ~50% more room to open than before.
+    wfPane->setMinimumWidth(270);
+    wfPane->setMaximumWidth(390);
     auto *wfHeading = new QLabel("Workflows");
     wfHeading->setObjectName("sectionLabel");
     auto *wfHint = new QLabel(
@@ -48433,6 +48482,15 @@ QWidget *MainWindow::buildRepoActionsTab()
                 refreshActionsTable();
                 showLatestVisibleActionRun();
                 updateManualRunBar();
+            });
+    // Ticking/unticking a workflow's checkbox switches it on/off for this repo.
+    // Refreshes block this signal, so it only fires on real user toggles.
+    connect(m_actionWorkflowList, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem *item) {
+                if (!item || !(item->flags() & Qt::ItemIsUserCheckable))
+                    return;
+                const QString path = item->data(Qt::UserRole).toString();
+                setWorkflowDisabled(path, item->checkState() != Qt::Checked);
             });
 
     // Enable/disable actions for this repo, right here on the Actions tab.
@@ -48454,7 +48512,8 @@ QWidget *MainWindow::buildRepoActionsTab()
 
     // Middle: the run list for the selected workflow (or all).
     auto *listPane = new QWidget;
-    listPane->setMinimumWidth(300);
+    // ~25% more room for the runs table before the right splitter handle stops.
+    listPane->setMinimumWidth(375);
     auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
