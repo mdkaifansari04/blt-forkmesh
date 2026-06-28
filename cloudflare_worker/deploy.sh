@@ -150,6 +150,73 @@ verify_deploy() {
     return 1
 }
 
+# After verify_deploy confirms the Worker is live, prove the public static assets
+# are actually served (correct HTTP status + content-type). A broken assets upload
+# or a misrouted path silently serves the 404 page (text/html) in place of an
+# image, so we check a representative set and FAIL LOUDLY rather than ship a
+# landing page with missing logo/video. Override the origin with DEPLOY_VERIFY_URL.
+verify_public_assets() {
+    local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
+    base="${base%/}"
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "note: curl not found — skipping public asset verification." >&2
+        return 0
+    fi
+
+    # "<path> <expected-content-type-prefix>". The .webmanifest entry is matched
+    # leniently below because Cloudflare may serve it as application/json.
+    local checks=(
+        "/assets/logo.png image/png"
+        "/favicon/favicon-32x32.png image/png"
+        "/favicon/site.webmanifest application/manifest+json"
+        "/assets/video/network.jpg image/jpeg"
+        "/assets/video/network.mp4 video/mp4"
+    )
+
+    echo "Verifying public static assets on $base ..."
+    local check path expected url headers status content_type ok failed=0
+    for check in "${checks[@]}"; do
+        path="${check%% *}"
+        expected="${check#* }"
+        url="$base$path"
+        headers="$(curl -sSI --max-time 15 "$url" 2>/dev/null || true)"
+        status="$(
+            printf '%s\n' "$headers" |
+                awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }'
+        )"
+        content_type="$(
+            printf '%s\n' "$headers" |
+                awk -F': *' 'tolower($1) == "content-type" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
+        )"
+
+        if [ "$status" != "200" ]; then
+            echo "ERROR: $url returned HTTP ${status:-<none>} (expected 200)." >&2
+            failed=1
+            continue
+        fi
+        ok=0
+        case "$content_type" in
+            "$expected"*) ok=1 ;;
+        esac
+        if [ "$ok" = 0 ] && [ "$path" = "/favicon/site.webmanifest" ]; then
+            case "$content_type" in
+                application/json*|application/manifest+json*) ok=1 ;;
+            esac
+        fi
+        if [ "$ok" = 0 ]; then
+            echo "ERROR: $url returned content-type '${content_type:-<none>}' (expected $expected)." >&2
+            failed=1
+        fi
+    done
+
+    if [ "$failed" != "0" ]; then
+        echo "       Static assets did not publish correctly. Check the Worker assets" >&2
+        echo "       upload (and not_found_handling routing) and redeploy." >&2
+        return 1
+    fi
+    echo "Verified: public static assets are serving expected content types."
+}
+
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
 # Idempotent (re-running updates values) and persists across redeploys. Requires
 # the Worker to already exist, so run it after `pywrangler deploy`.
@@ -247,6 +314,7 @@ case "${1:-deploy}" in
         # failed/no-op/wrong-account deploy now aborts here instead of printing a
         # phantom success.
         verify_deploy "$BUILD_REV"
+        verify_public_assets
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
         ;;
     secrets)
