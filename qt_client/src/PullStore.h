@@ -118,9 +118,13 @@ public:
     // whether it will merge cleanly. Returns false only on a hard error
     // (no working tree, PR/patch missing); on success sets *clean and, when not
     // clean, fills *conflictFiles with the conflicting paths.
+    // When `keepGuiAlive` is set the (potentially slow) `git apply --check` is
+    // waited on by pumping posted events in short slices instead of blocking, so
+    // a GUI-thread caller keeps the window responsive while the dry-run runs.
     bool checkMergeable(int number, bool *clean,
                         QStringList *conflictFiles = nullptr,
-                        QString *error = nullptr) const;
+                        QString *error = nullptr,
+                        bool keepGuiAlive = false) const;
     // The working tree's current HEAD commit, or empty when unavailable. Cheap
     // (one `git rev-parse`); used to fingerprint the base a checkMergeable()
     // result was computed against so callers can cache the dry-run apply and skip
