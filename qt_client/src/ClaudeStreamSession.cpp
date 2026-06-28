@@ -11,7 +11,7 @@ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
-                                const QString &resumeSessionId)
+                                const QString &resumeSessionId, const QString &model)
 {
     stop();
     m_buf.clear();
@@ -45,6 +45,11 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
         "--verbose --include-partial-messages");
     if (skipPermissions)
         cmd += QStringLiteral(" --dangerously-skip-permissions");
+    // Run as the model the user picked in the quick-add bar (adhoc #261). The
+    // value is a CLI alias ("opus"/"sonnet"/…) or a full model id; single-quote
+    // it defensively like the resume id below.
+    if (!model.trimmed().isEmpty())
+        cmd += QStringLiteral(" --model '%1'").arg(model.trimmed());
     // Resume a prior conversation so the agent picks up its full context (the
     // files it touched, what it had figured out, what's left). The id is a UUID
     // from the CLI's own stream, but single-quote it defensively all the same.
