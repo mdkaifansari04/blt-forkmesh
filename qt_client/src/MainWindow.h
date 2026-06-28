@@ -2533,6 +2533,12 @@ private:
     void renderAgentDiff(int sessionId, const QByteArray &patch);
     void updateAgentFilesTabState(int sessionId);
     QString sessionBaseRef(int sessionId);
+    QString sessionBaseBranch(int sessionId);
+    // The commit a session's diff is measured *from*: the merge-base of the base
+    // branch and the worktree HEAD (so files that arrived by merging the base
+    // branch *into* the agent branch don't count), falling back to the captured
+    // base commit. `dir` is the worktree the git probes run in.
+    QString sessionDiffBase(int sessionId, const QString &dir);
     QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
     void maybeCreatePullForStreamSession(int sessionId);
     bool isStreamTranscriptSession(int sessionId) const;

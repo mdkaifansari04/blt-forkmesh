@@ -24966,10 +24966,12 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             const QString dir = sessionWorkdir(sid);
             if (sid <= 0 || dir.isEmpty())
                 return;
-            // Diff against the session's base commit so committed work counts too
-            // (agents auto-commit mid-run): this is the same range the PR is built
-            // from, so the Files-changed tab shows exactly what the PR will carry.
-            const QString base = sessionBaseRef(sid);
+            // Diff against the merge-base of the base branch and HEAD so committed
+            // work counts too (agents auto-commit mid-run) *without* counting files
+            // that only arrived by merging the base branch into this one — that
+            // over-count is what made a one-file session read as "14 files changed"
+            // (issue #183).
+            const QString base = sessionDiffBase(sid, dir);
             QStringList args{QStringLiteral("diff")};
             if (!base.isEmpty())
                 args << base;
@@ -24993,6 +24995,41 @@ QString MainWindow::sessionBaseRef(int sessionId)
     return QString();
 }
 
+// The branch a session's PR targets (e.g. main), captured at run start.
+QString MainWindow::sessionBaseBranch(int sessionId)
+{
+    if (const AgentSession *s = findAgentSession(sessionId); s && !s->baseBranch.isEmpty())
+        return s->baseBranch;
+    if (m_streamSessionInfo.contains(sessionId))
+        return m_streamSessionInfo.value(sessionId).baseBranch;
+    return QString();
+}
+
+// Resolve the commit a session's diff is measured *from*. Diffing against the
+// raw base commit captured at run start over-counts: agents routinely merge the
+// base branch *into* their branch (the "Update from main" action, or a fork that
+// already carried recent main), and then `git diff <baseRef>` reports every file
+// that landed on main since the fork as a change of *this* session. The branch's
+// real net change is its diff from the merge-base of the base branch and HEAD, so
+// prefer that and fall back to the captured base commit when the base branch is
+// unknown or unresolvable (issue #183).
+QString MainWindow::sessionDiffBase(int sessionId, const QString &dir)
+{
+    const QString baseRef = sessionBaseRef(sessionId);
+    const QString baseBranch = sessionBaseBranch(sessionId);
+    if (!dir.isEmpty() && !baseBranch.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(dir, {QStringLiteral("merge-base"), baseBranch,
+                                QStringLiteral("HEAD")},
+                          &out, nullptr)) {
+            const QString mb = QString::fromUtf8(out).trimmed();
+            if (!mb.isEmpty())
+                return mb;
+        }
+    }
+    return baseRef;
+}
+
 // Render the session's diff into the Files-changed tab's viewer, rebuild the file
 // list with per-file +/- counts and scroll anchors, and stamp the changed-file
 // count onto the tab header (issue #131). A no-op for a stale/other session so a
@@ -25002,7 +25039,7 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
     if (!m_agentDiffView || sessionId != m_selectedAgentSessionId)
         return;
     const QString dir = sessionWorkdir(sessionId);
-    const QString base = sessionBaseRef(sessionId);
+    const QString base = sessionDiffBase(sessionId, dir);
     m_agentDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     QList<DiffFileEntry> files;
     const QString html =
@@ -25041,9 +25078,44 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
             m_agentFilesTabIndex,
             n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
                   : QStringLiteral("Files changed"));
-    if (m_agentFilesChangedSummary)
-        m_agentFilesChangedSummary->setText(
-            QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
+    if (m_agentFilesChangedSummary) {
+        // Lead with the (now merge-base-accurate) file count, then surface the
+        // wider "what's going on" picture the bare count hid: total +/- lines, how
+        // many commits this branch adds, and how far it trails the base branch
+        // (issue #183). Each clause is omitted when it's zero/unknown so a clean
+        // session reads tidily.
+        int adds = 0, dels = 0;
+        for (const DiffFileEntry &f : files) { adds += f.adds; dels += f.dels; }
+        QStringList parts;
+        parts << QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s");
+        if (adds > 0 || dels > 0)
+            parts << QString::fromUtf8("+%1 \xE2\x88\x92%2").arg(adds).arg(dels);
+        // Commits the branch carries (ahead) and how far it trails base (behind),
+        // measured against the base branch's live tip — same probe the agents
+        // table's Diff cell uses (base...branch → left=behind, right=ahead).
+        const QString baseBranch = sessionBaseBranch(sessionId);
+        if (!dir.isEmpty() && !baseBranch.isEmpty()) {
+            QByteArray counts;
+            if (runGitCapture(dir,
+                              {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
+                               QStringLiteral("--count"),
+                               baseBranch + QStringLiteral("...HEAD")},
+                              &counts, nullptr)) {
+                const QStringList lr = QString::fromUtf8(counts).trimmed().split(
+                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                if (lr.size() >= 2) {
+                    const int behind = lr.at(0).toInt();
+                    const int ahead = lr.at(1).toInt();
+                    if (ahead > 0)
+                        parts << QStringLiteral("%1 commit%2")
+                                     .arg(ahead).arg(ahead == 1 ? "" : "s");
+                    if (behind > 0)
+                        parts << QStringLiteral("%1 behind %2").arg(behind).arg(baseBranch);
+                }
+            }
+        }
+        m_agentFilesChangedSummary->setText(parts.join(QString::fromUtf8("  \xC2\xB7  ")));
+    }
 }
 
 // Enable the per-session worktree actions (merge / update / delete) only for a
