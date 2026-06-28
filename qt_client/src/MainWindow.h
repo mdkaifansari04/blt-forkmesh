@@ -2377,6 +2377,11 @@ private:
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
+    // Signature (stylesheet + html) of what m_pullDiff currently shows, so
+    // renderPullDiff can skip the costly QTextDocument table re-layout when a
+    // refresh/poll re-renders the same file with unchanged content. Cleared
+    // whenever the widget is set to something other than a rendered diff.
+    QString m_pullDiffRenderKey;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
