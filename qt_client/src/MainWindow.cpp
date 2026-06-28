@@ -5154,6 +5154,11 @@ bool MainWindow::testOpenRepository(int index)
     return true;
 }
 
+QString MainWindow::testRepoDefaultBranch() const
+{
+    return repoDefaultBranch(repoBranches());
+}
+
 bool MainWindow::testShowRepoIssuesTab()
 {
     if (!m_repoDetailStack || m_repoDetailStack->count() <= 2)
@@ -31472,9 +31477,20 @@ QStringList MainWindow::repoBranches() const
 
 QString MainWindow::repoDefaultBranch(const QStringList &branches) const
 {
+    // The default branch is the stable base every other branch is measured and
+    // merged against — it must NOT drift just because the working tree happens to
+    // be parked on a feature branch. An explicitly configured default always wins,
+    // then the conventional main/master names. Only when none of those exist do we
+    // fall back to the checked-out HEAD; otherwise switching branches in the
+    // commits area (or a transient checkout during a branches-page merge) would
+    // silently change the default branch, which we never want to do on its own.
     const QString configured = m_repoInfo.defaultBranch.trimmed();
     if (!configured.isEmpty() && branches.contains(configured))
         return configured;
+    if (branches.contains(QStringLiteral("main")))
+        return QStringLiteral("main");
+    if (branches.contains(QStringLiteral("master")))
+        return QStringLiteral("master");
 
     QByteArray head;
     const QString dir = repoGitDir();
@@ -31485,10 +31501,6 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
         if (branches.contains(branch))
             return branch;
     }
-    if (branches.contains(QStringLiteral("main")))
-        return QStringLiteral("main");
-    if (branches.contains(QStringLiteral("master")))
-        return QStringLiteral("master");
     if (!m_repoBranch.isEmpty() && branches.contains(m_repoBranch))
         return m_repoBranch;
     return branches.isEmpty() ? QString() : branches.first();

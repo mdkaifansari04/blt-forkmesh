@@ -555,6 +555,31 @@ int main(int argc, char *argv[])
                              "Issue / Agent cell (adhoc #191)"));
     }
 
+    // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
+    // anchored to main and NOT follow the working tree's HEAD. Parking the
+    // checkout on a feature branch — what the commits-area branch switcher or a
+    // transient branches-page merge does — must never silently change the default
+    // branch out from under the merge editor.
+    {
+        QTemporaryDir defaultBranchRepo;
+        if (initGitRepo(defaultBranchRepo)) {
+            // Leave HEAD on a feature branch, exactly as if the user had switched
+            // to it in the commits area.
+            runGitChecked(defaultBranchRepo.path(),
+                          {"checkout", "-b", "feature/parked"});
+            runGitChecked(defaultBranchRepo.path(),
+                          {"commit", "--allow-empty", "-m", "work on feature"});
+            const int idx = window.testAddLocalRepository("me", "dbrepo",
+                                                          defaultBranchRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            check(window.testRepoDefaultBranch() == QStringLiteral("main"),
+                  QString("default branch stays main while HEAD is parked on a "
+                          "feature branch (got %1)")
+                      .arg(window.testRepoDefaultBranch()));
+        }
+    }
+
     // issue #251: the Settings "Default agent" choice should seed the agent
     // pickers. A window built while the default is Claude Code must start both
     // the quick-add and issue-detail pickers there (not the OpenAI fallback),
