@@ -853,8 +853,16 @@ private:
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
     // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
+    // once up front); async=false removes the worktree synchronously so a batch of
+    // deletes runs one git worktree-remove at a time rather than racing.
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
-                                      const QString &branch);
+                                      const QString &branch, bool confirm = true,
+                                      bool async = true);
+    // Batch counterpart to "Delete all": wipe the worktree, branch and session of
+    // every merged agent session in the open repo after one confirmation (adhoc
+    // #235).
+    void deleteAllMergedAgentSessions();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
@@ -2739,6 +2747,9 @@ private:
     QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
+    // Above the session list: wipe every merged session's worktree, branch and
+    // agent in one batch (adhoc #235).
+    QPushButton *m_agentDeleteMergedButton = nullptr;
     QPushButton *m_agentTestApiKeyButton = nullptr;
     QLabel *m_agentOpenAiSpend = nullptr;
     QLabel *m_agentApiKeyStatus = nullptr;
