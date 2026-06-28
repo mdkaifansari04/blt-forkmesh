@@ -5588,6 +5588,22 @@ bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
     return false;
 }
 
+int MainWindow::testClickBranchAgentCell(const QString &branch)
+{
+    if (!m_branchesTable)
+        return -1;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            // Fire the same signal a real click on the Issue / Agent cell would,
+            // so the production cellClicked handler runs (adhoc #258).
+            emit m_branchesTable->cellClicked(row, 4);
+            break;
+        }
+    }
+    return m_selectedAgentSessionId;
+}
+
 QStringList MainWindow::testBranchRowOrder() const
 {
     QStringList names;
@@ -34328,6 +34344,20 @@ QWidget *MainWindow::buildBranchesTab()
                 QTableWidgetItem *it = m_branchesTable->item(row, 0);
                 showBranchDiff(it ? it->text() : QString());
             });
+    // Clicking the Issue / Agent cell jumps to the agent run working that branch,
+    // so the list links straight to its session (adhoc #258). Other columns fall
+    // through to the normal row-select preview above.
+    connect(m_branchesTable, &QTableWidget::cellClicked, this,
+            [this](int row, int column) {
+                if (column != 4)
+                    return;
+                QTableWidgetItem *it = m_branchesTable->item(row, 4);
+                if (!it)
+                    return;
+                const QVariant sid = it->data(Qt::UserRole);
+                if (sid.isValid())
+                    switchToAgentsTab(sid.toInt());
+            });
 
     m_branchDiffView = new QTextBrowser;
     m_branchDiffView->setObjectName("diffView");
@@ -34732,10 +34762,20 @@ void MainWindow::loadBranchesPanel()
                 detail = session->prompt;
             }
             attach->setIcon(agentStatusOcticon(*session));
-            attach->setToolTip(detail.isEmpty()
-                                   ? statusWord
-                                   : QStringLiteral("%1 \xC2\xB7 %2")
-                                         .arg(statusWord, detail));
+            // Stash the session id so a click on this cell can jump straight to
+            // the agent run working the branch (adhoc #258).
+            attach->setData(Qt::UserRole, session->id);
+            // Underline the text so the cell reads as the clickable link it now
+            // is (the tooltip below spells out the action).
+            QFont linkFont = attach->font();
+            linkFont.setUnderline(true);
+            attach->setFont(linkFont);
+            const QString tip =
+                detail.isEmpty()
+                    ? statusWord
+                    : QStringLiteral("%1 \xC2\xB7 %2").arg(statusWord, detail);
+            attach->setToolTip(
+                QString::fromUtf8("%1 \xE2\x80\x94 click to open agent").arg(tip));
             attach->setForeground(session->merged ? QColor("#a371f7")
                                                   : agentStatusColor(session->status));
         }
