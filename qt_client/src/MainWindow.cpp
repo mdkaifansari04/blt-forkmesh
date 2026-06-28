@@ -5055,6 +5055,36 @@ QString MainWindow::testWorktreeBranchLabel() const
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
 }
 
+QString MainWindow::testArrowOnWorktrees(bool down)
+{
+    if (!m_worktreesTable)
+        return QString();
+    m_worktreesTable->setFocus();
+    const Qt::Key key = down ? Qt::Key_Down : Qt::Key_Up;
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QApplication::sendEvent(m_worktreesTable, &press);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QApplication::sendEvent(m_worktreesTable, &release);
+    QApplication::processEvents();
+    const int row = m_worktreesTable->currentRow();
+    QTableWidgetItem *b = row >= 0 ? m_worktreesTable->item(row, 0) : nullptr;
+    return b ? b->data(Qt::UserRole).toString() : QString();
+}
+
+void MainWindow::testClickRepoDetailTab(int id)
+{
+    if (!m_repoDetailTabs)
+        return;
+    if (QAbstractButton *b = m_repoDetailTabs->button(id))
+        b->click(); // emits idClicked(id) -> the same path a real click takes
+}
+
+bool MainWindow::testWorktreesTableHasKeyboardFocus() const
+{
+    return m_worktreesTable && m_worktreesTable->window() &&
+           m_worktreesTable->window()->focusWidget() == m_worktreesTable;
+}
+
 QString MainWindow::testBranchWorktreePath(const QString &branch) const
 {
     if (!m_branchesTable)
@@ -5122,6 +5152,11 @@ bool MainWindow::testOpenRepository(int index)
         return false;
     openRepoDetail(index);
     return true;
+}
+
+QString MainWindow::testRepoDefaultBranch() const
+{
+    return repoDefaultBranch(repoBranches());
 }
 
 bool MainWindow::testShowRepoIssuesTab()
@@ -12048,6 +12083,9 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadMirrorNodesPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
+        // Hand keyboard focus to the new tab's list so the user can arrow through
+        // its rows right away instead of having to click a row first.
+        focusRepoDetailTable(id);
     });
 
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
@@ -31439,9 +31477,20 @@ QStringList MainWindow::repoBranches() const
 
 QString MainWindow::repoDefaultBranch(const QStringList &branches) const
 {
+    // The default branch is the stable base every other branch is measured and
+    // merged against — it must NOT drift just because the working tree happens to
+    // be parked on a feature branch. An explicitly configured default always wins,
+    // then the conventional main/master names. Only when none of those exist do we
+    // fall back to the checked-out HEAD; otherwise switching branches in the
+    // commits area (or a transient checkout during a branches-page merge) would
+    // silently change the default branch, which we never want to do on its own.
     const QString configured = m_repoInfo.defaultBranch.trimmed();
     if (!configured.isEmpty() && branches.contains(configured))
         return configured;
+    if (branches.contains(QStringLiteral("main")))
+        return QStringLiteral("main");
+    if (branches.contains(QStringLiteral("master")))
+        return QStringLiteral("master");
 
     QByteArray head;
     const QString dir = repoGitDir();
@@ -31452,10 +31501,6 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
         if (branches.contains(branch))
             return branch;
     }
-    if (branches.contains(QStringLiteral("main")))
-        return QStringLiteral("main");
-    if (branches.contains(QStringLiteral("master")))
-        return QStringLiteral("master");
     if (!m_repoBranch.isEmpty() && branches.contains(m_repoBranch))
         return m_repoBranch;
     return branches.isEmpty() ? QString() : branches.first();
@@ -31786,6 +31831,34 @@ void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
     connect(git, &QProcess::errorOccurred, this,
             [finish](QProcess::ProcessError) { finish(false); });
     git->start(QStringLiteral("git"), args);
+}
+
+void MainWindow::focusRepoDetailTable(int id)
+{
+    // The list table at the heart of each repo-detail tab. Tabs that aren't a
+    // single scrollable list (Code, Insights, Security, Releases, Settings, …)
+    // map to nullptr and are left alone.
+    QTableWidget *table = nullptr;
+    if (id == 1)
+        table = m_commitsTable;
+    else if (id == 2)
+        table = m_issueTable;
+    else if (id == 3)
+        table = m_agentTable;
+    else if (id == 4)
+        table = m_pullTable;
+    else if (id == 5)
+        table = m_discussionTable;
+    else if (id == 6)
+        table = m_actionsTable;
+    else if (id == m_branchesTabIndex)
+        table = m_branchesTable;
+    else if (id == m_worktreesTabIndex)
+        table = m_worktreesTable;
+    // Only grab focus for a table that's actually on screen (e.g. the Issues tab
+    // hides m_issueTable while its Milestones/Labels sub-tab is showing).
+    if (table && table->isVisible() && table->isEnabled())
+        table->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::loadWorktreesPanel()
