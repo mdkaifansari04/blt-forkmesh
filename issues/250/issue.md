@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 250
 title: have the pr view scroll through all of the files have the next  and prev change there on the files chnaged view on the right
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 44
 progress: 0
