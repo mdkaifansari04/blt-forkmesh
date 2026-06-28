@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 254
 title: have a text size increase / decrease on the diff views on commits prs woktrees
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 46
 progress: 0
