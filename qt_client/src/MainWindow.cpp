@@ -1440,6 +1440,10 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
 // IDE integration: when on, the issue view gains "run in IDE" buttons that hand
 // the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
 const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
+// When on, a successful "Merge to main" automatically runs "Pull <base> into
+// all" so every other branch catches up with the just-merged work (adhoc #250).
+const QString kBranchAutoPullAllSetting =
+    QStringLiteral("branches/autoPullAllOnMerge");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
@@ -33521,6 +33525,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             refreshIssueList();
             updateIssueActionState();
         }
+        // adhoc #250: with the "Auto after merge" toggle on, bring every other
+        // branch up to date with the just-merged base in the same step. Run it
+        // without a confirmation prompt (the merge was already confirmed); it
+        // sets its own detail notice summarizing how many branches advanced.
+        if (m_branchAutoPullAllCheck && m_branchAutoPullAllCheck->isChecked())
+            pullBaseIntoAllBranches(/*confirm=*/false);
     } else {
         // Roll the failed merge back so the checkout is left clean, and keep the
         // worktree so its work isn't lost (issue #126).
@@ -34033,7 +34043,20 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchPullAllButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchPullAllButton, "download", 16);
     connect(m_branchPullAllButton, &QPushButton::clicked, this,
-            &MainWindow::pullBaseIntoAllBranches);
+            [this] { pullBaseIntoAllBranches(); });
+    // Opt-in: when checked, every successful "Merge to main" auto-runs the
+    // "Pull into all" above so the remaining branches catch up with the merge
+    // without a second click (adhoc #250). Persisted so it survives restart.
+    m_branchAutoPullAllCheck = new QCheckBox("Auto after merge");
+    m_branchAutoPullAllCheck->setCursor(Qt::PointingHandCursor);
+    m_branchAutoPullAllCheck->setToolTip(
+        "Automatically pull the default branch into every behind branch after a "
+        "merge to main succeeds.");
+    m_branchAutoPullAllCheck->setChecked(
+        QSettings().value(kBranchAutoPullAllSetting, false).toBool());
+    connect(m_branchAutoPullAllCheck, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kBranchAutoPullAllSetting, on);
+    });
     // Tidy up branches that are fully merged into the default branch (0 behind and
     // 0 ahead of it); enabled in loadBranchesPanel() once those counts are known.
     m_branchDeleteMergedButton = new QPushButton("Delete merged");
@@ -34046,6 +34069,7 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
     headerRow->addWidget(m_branchPullAllButton);
+    headerRow->addWidget(m_branchAutoPullAllCheck);
     headerRow->addWidget(refreshButton);
     // "Delete merged" prunes every branch that's 0 behind / 0 ahead of the
     // default branch; keep it right beside "New branch" so the create/cleanup
@@ -35550,7 +35574,7 @@ static QString branchMergeTree(const QString &dir, const QString &base,
     return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).value(0);
 }
 
-void MainWindow::pullBaseIntoAllBranches()
+void MainWindow::pullBaseIntoAllBranches(bool confirm)
 {
     const QString dir = repoGitDir();
     if (dir.isEmpty())
@@ -35603,7 +35627,8 @@ void MainWindow::pullBaseIntoAllBranches()
             QStringLiteral("Every branch is already up to date with %1.").arg(base));
         return;
     }
-    if (QMessageBox::question(
+    if (confirm &&
+        QMessageBox::question(
             this, QStringLiteral("Pull %1 into all branches").arg(base),
             QStringLiteral("Merge %1 into the %2 branch(es) that are behind it?\n\n"
                            "Clean merges are applied automatically; any branch "
