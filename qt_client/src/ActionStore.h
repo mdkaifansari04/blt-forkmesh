@@ -50,6 +50,7 @@ public:
     QList<ActionRun> loadAllRuns() const;    // newest first
     ActionRun createRun(ActionRun run);      // assigns id + timestamps, persists
     bool saveRun(const ActionRun &run) const; // rewrite meta.json
+    bool deleteRun(const ActionRun &run) const; // remove the run's dir (meta+log)
     void appendLog(const ActionRun &run, const QString &text) const;
     QString readLog(const ActionRun &run) const;
 

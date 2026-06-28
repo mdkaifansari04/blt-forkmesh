@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QEasingCurve>
+#include <QEvent>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
@@ -26,11 +27,56 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QStyleHints>
+#include <QTextCharFormat>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
 QString esc(const QString &s) { return s.toHtmlEscaped(); }
+
+// Search-match highlight colours, fixed rather than theme-derived so they read
+// clearly on both light and dark canvases (dark text on a warm fill). The
+// currently-selected match gets a stronger orange.
+const QString kMatchBg = QStringLiteral("#ffd33d");
+const QString kMatchFg = QStringLiteral("#1f2328");
+const QString kCurMatchBg = QStringLiteral("#ff8c42");
+
+// Count case-insensitive occurrences of needle in haystack.
+int countOccurrences(const QString &hay, const QString &needle)
+{
+    int n = 0, from = 0;
+    while (true) {
+        const int i = hay.indexOf(needle, from, Qt::CaseInsensitive);
+        if (i < 0)
+            break;
+        ++n;
+        from = i + needle.size();
+    }
+    return n;
+}
+
+// How many times query appears in a label's rendered text. Plain/auto labels are
+// searched directly; markdown/rich labels are searched through a QTextDocument so
+// the count matches what the user actually sees (markup excluded). A cheap reject
+// on the raw source first avoids building a document for the common no-match case.
+int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query)
+{
+    if (query.isEmpty() || orig.indexOf(query, 0, Qt::CaseInsensitive) < 0)
+        return 0;
+    if (fmt != Qt::MarkdownText && fmt != Qt::RichText)
+        return countOccurrences(orig, query);
+    QTextDocument d;
+    if (fmt == Qt::MarkdownText)
+        d.setMarkdown(orig);
+    else
+        d.setHtml(orig);
+    int n = 0;
+    for (QTextCursor c = d.find(query); !c.isNull(); c = d.find(query, c))
+        ++n;
+    return n;
+}
 } // namespace
 
 // A foldable section: a clickable header (▸/▾) over a body. Instead of a heavy
@@ -155,6 +201,57 @@ private:
     QString m_label;
     QPropertyAnimation *m_anim = nullptr;  // body fold animation
     QPropertyAnimation *m_pulse = nullptr; // live "breathing" while streaming
+};
+
+// A word-wrapped QLabel that caches heightForWidth. A long transcript stacks
+// hundreds of word-wrapped Markdown/RichText labels inside a widget-resizable
+// QScrollArea, and Qt's layout re-runs heightForWidth — which re-lays-out each
+// label's QTextDocument — for *every* row each time a row is added or the view
+// is resized, calling it repeatedly within a single pass. With a big transcript
+// that O(rows) text relayout froze the GUI thread for seconds (issue #234).
+//
+// The height of a word-wrapped label only changes when its width, font, or text
+// changes. We key the cache on (width, text length): any content change a user
+// can see (a streamed delta, a search-highlight span) shifts the text length, so
+// a stale height can't survive a real reflow; font/style changes invalidate it
+// explicitly. Unchanged rows then answer in O(1) instead of re-laying-out.
+class CacheLabel : public QLabel
+{
+public:
+    using QLabel::QLabel;
+
+    int heightForWidth(int w) const override
+    {
+        const int len = text().size();
+        if (m_valid && w == m_w && len == m_len)
+            return m_h;
+        m_w = w;
+        m_len = len;
+        m_h = QLabel::heightForWidth(w);
+        m_valid = true;
+        return m_h;
+    }
+
+protected:
+    void changeEvent(QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::FontChange:
+        case QEvent::ApplicationFontChange:
+        case QEvent::StyleChange:
+            m_valid = false; // metrics may have shifted; recompute on next query
+            break;
+        default:
+            break;
+        }
+        QLabel::changeEvent(e);
+    }
+
+private:
+    mutable int m_w = -1;
+    mutable int m_len = -1;
+    mutable int m_h = 0;
+    mutable bool m_valid = false;
 };
 
 // One row on the transcript's timeline: a left rail (a vertical connecting line
@@ -395,6 +492,13 @@ void ClaudeTranscriptView::applyScheme()
 void ClaudeTranscriptView::clear()
 {
     clearActivity();
+    // Drop search state without touching the labels (they are about to be
+    // deleted below); the host re-applies the query against the rebuilt tree.
+    m_searchLabels.clear();
+    m_searchQuery.clear();
+    m_searchTotal = 0;
+    m_searchCurrent = -1;
+    emit searchResultsChanged(0, 0);
     m_toolCards.clear();
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
@@ -608,7 +712,7 @@ void ClaudeTranscriptView::ensureLiveThinking()
     m_thinkingText.clear();
     m_thinkingTokens = 0;
     m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
-    m_thinkingBody = new QLabel(QStringLiteral("…"));
+    m_thinkingBody = new CacheLabel(QStringLiteral("…"));
     m_thinkingBody->setWordWrap(true);
     m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
@@ -681,7 +785,7 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
         h->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;border:none;").arg(accent));
         v->addWidget(h);
     }
-    auto *body = new QLabel(markdown);
+    auto *body = new CacheLabel(markdown);
     body->setTextFormat(Qt::MarkdownText);
     body->setWordWrap(true);
     body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
@@ -695,7 +799,7 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
 // Claude Code conversation view where only the user's turns are boxed.
 void ClaudeTranscriptView::addAssistantText(const QString &markdown)
 {
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::MarkdownText);
     l->setText(markdown);
     l->setWordWrap(true);
@@ -736,7 +840,7 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 
     const QString bodyText = prose.join(QLatin1Char('\n')).trimmed();
     if (!bodyText.isEmpty()) {
-        auto *body = new QLabel(bodyText);
+        auto *body = new CacheLabel(bodyText);
         body->setWordWrap(true);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse);
         body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
@@ -886,7 +990,7 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
 // "Name  subtitle" — the timeline rail supplies the coloured node dot.
 QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
 {
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -949,8 +1053,12 @@ static QString capLabelText(const QString &text, bool collapseLines)
 // Monospace content with no panel background — it sits inside a tool card box.
 QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLong)
 {
+    // capLabelText caps the *display* string: it elides a single pathologically
+    // long logical line (a minified bundle / base64 blob) that QTextLine lays out
+    // synchronously, on top of the line-count collapse — and CacheLabel caches the
+    // resulting size so repaints stay cheap.
     const QString shown = capLabelText(text, collapsedIfLong);
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
     l->setWordWrap(true);
@@ -965,8 +1073,12 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
 // shell metacharacters like " and > show literally instead of as entities.
 QWidget *ClaudeTranscriptView::makeCode(const QString &text, bool collapsedIfLong)
 {
+    // capLabelText caps the *display* string: it elides a single pathologically
+    // long logical line (a minified bundle / base64 blob) that QTextLine lays out
+    // synchronously, on top of the line-count collapse — and CacheLabel caches the
+    // resulting size so repaints stay cheap.
     const QString shown = capLabelText(text, collapsedIfLong);
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
     l->setWordWrap(true);
@@ -1037,7 +1149,7 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
         html += QStringLiteral("</div>");
     }
 
-    auto *l = new QLabel(html);
+    auto *l = new CacheLabel(html);
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1045,3 +1157,172 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
                          .arg(m_p.canvas));
     return l;
 }
+
+// ---- transcript search (adhoc #201) ----------------------------------------
+
+// Build the highlighted HTML for one label from its pristine text. Plain/auto
+// labels are escaped and wrapped (preserving whitespace) so matches can be
+// spanned; markdown/rich labels are re-rendered through a QTextDocument with a
+// background applied to each match, preserving their formatting. currentLocalOcc
+// is the 0-based index (within this label) of the selected match, or -1.
+QString ClaudeTranscriptView::highlightedTextFor(const QString &orig,
+                                                 Qt::TextFormat fmt,
+                                                 int currentLocalOcc) const
+{
+    const QString normalSpan =
+        QStringLiteral("background:%1;color:%2;").arg(kMatchBg, kMatchFg);
+    const QString currentSpan =
+        QStringLiteral("background:%1;color:%2;").arg(kCurMatchBg, kMatchFg);
+
+    if (fmt != Qt::MarkdownText && fmt != Qt::RichText) {
+        QString out;
+        int from = 0, occ = 0;
+        const int qlen = m_searchQuery.size();
+        while (true) {
+            const int i = orig.indexOf(m_searchQuery, from, Qt::CaseInsensitive);
+            if (i < 0) {
+                out += esc(orig.mid(from));
+                break;
+            }
+            out += esc(orig.mid(from, i - from));
+            out += QStringLiteral("<span style='%1'>%2</span>")
+                       .arg(occ == currentLocalOcc ? currentSpan : normalSpan,
+                            esc(orig.mid(i, qlen)));
+            from = i + qlen;
+            ++occ;
+        }
+        // pre-wrap keeps newlines/indentation of mono blocks while still wrapping.
+        return QStringLiteral("<div style='white-space:pre-wrap'>%1</div>").arg(out);
+    }
+
+    QTextDocument d;
+    if (fmt == Qt::MarkdownText)
+        d.setMarkdown(orig);
+    else
+        d.setHtml(orig);
+    QTextCharFormat normal;
+    normal.setBackground(QColor(kMatchBg));
+    normal.setForeground(QColor(kMatchFg));
+    QTextCharFormat current;
+    current.setBackground(QColor(kCurMatchBg));
+    current.setForeground(QColor(kMatchFg));
+    int occ = 0;
+    for (QTextCursor c = d.find(m_searchQuery); !c.isNull();
+         c = d.find(m_searchQuery, c)) {
+        c.mergeCharFormat(occ == currentLocalOcc ? current : normal);
+        ++occ;
+    }
+    return d.toHtml();
+}
+
+void ClaudeTranscriptView::rebuildSearchMatches()
+{
+    m_searchLabels.clear();
+    m_searchTotal = 0;
+    if (m_searchQuery.isEmpty() || !m_container)
+        return;
+    // findChildren walks the tree in child order, which is the order rows were
+    // added — i.e. top to bottom — so matches read in transcript order.
+    const QList<QLabel *> labels = m_container->findChildren<QLabel *>();
+    for (QLabel *l : labels) {
+        if (!l)
+            continue;
+        const Qt::TextFormat fmt = l->textFormat();
+        const int c = countMatchesIn(l->text(), fmt, m_searchQuery);
+        if (c > 0) {
+            m_searchLabels.push_back({l, fmt, l->text(), c});
+            m_searchTotal += c;
+        }
+    }
+}
+
+void ClaudeTranscriptView::renderSearchHighlights()
+{
+    int base = 0;
+    for (LabelHit &h : m_searchLabels) {
+        if (!h.label) {
+            base += h.count;
+            continue;
+        }
+        const int curLocal = (m_searchCurrent >= base
+                              && m_searchCurrent < base + h.count)
+                                 ? m_searchCurrent - base
+                                 : -1;
+        h.label->setTextFormat(Qt::RichText);
+        h.label->setText(highlightedTextFor(h.orig, h.fmt, curLocal));
+        base += h.count;
+    }
+}
+
+void ClaudeTranscriptView::restoreSearchOriginals()
+{
+    for (LabelHit &h : m_searchLabels) {
+        if (!h.label)
+            continue;
+        h.label->setTextFormat(h.fmt);
+        h.label->setText(h.orig);
+    }
+}
+
+QLabel *ClaudeTranscriptView::currentMatchLabel() const
+{
+    if (m_searchCurrent < 0)
+        return nullptr;
+    int base = 0;
+    for (const LabelHit &h : m_searchLabels) {
+        if (m_searchCurrent < base + h.count)
+            return h.label;
+        base += h.count;
+    }
+    return nullptr;
+}
+
+void ClaudeTranscriptView::scrollToCurrentMatch()
+{
+    QLabel *l = currentMatchLabel();
+    if (!l)
+        return;
+    // Reveal the match if it sits inside a folded section (e.g. a "Thought" card).
+    for (QWidget *w = l->parentWidget(); w; w = w->parentWidget())
+        if (auto *c = dynamic_cast<Collapsible *>(w))
+            c->setExpanded(true);
+    m_stickBottom = false; // jumping to a match takes us off the live tail
+    ensureWidgetVisible(l, 40, 80);
+}
+
+int ClaudeTranscriptView::search(const QString &query)
+{
+    restoreSearchOriginals();
+    m_searchQuery = query;
+    rebuildSearchMatches();
+    m_searchCurrent = m_searchTotal > 0 ? 0 : -1;
+    renderSearchHighlights();
+    scrollToCurrentMatch();
+    emit searchResultsChanged(m_searchTotal > 0 ? m_searchCurrent + 1 : 0,
+                              m_searchTotal);
+    return m_searchTotal;
+}
+
+void ClaudeTranscriptView::clearSearch()
+{
+    restoreSearchOriginals();
+    m_searchLabels.clear();
+    m_searchQuery.clear();
+    m_searchTotal = 0;
+    m_searchCurrent = -1;
+    emit searchResultsChanged(0, 0);
+}
+
+void ClaudeTranscriptView::stepMatch(int delta)
+{
+    if (m_searchTotal <= 0)
+        return;
+    m_searchCurrent =
+        ((m_searchCurrent + delta) % m_searchTotal + m_searchTotal) % m_searchTotal;
+    renderSearchHighlights();
+    scrollToCurrentMatch();
+    emit searchResultsChanged(m_searchCurrent + 1, m_searchTotal);
+}
+
+void ClaudeTranscriptView::searchNext() { stepMatch(+1); }
+void ClaudeTranscriptView::searchPrev() { stepMatch(-1); }

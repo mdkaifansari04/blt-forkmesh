@@ -1,18 +1,21 @@
 #include "IssueStore.h"
 
 #include "ForkMeshIdentity.h"
-#include "GitKeepAlive.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
+#include <QPair>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QUuid>
 
 #include <algorithm>
@@ -34,10 +37,35 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    // Pump the GUI loop while a GitKeepAlive scope is open (e.g. opening a repo
-    // or a periodic detail refresh) so a slow mirror read doesn't freeze the
-    // window; blocks as before otherwise.
-    if (!gitkeepalive::waitForFinished(process, timeoutMs)) {
+    if (!process.waitForFinished(timeoutMs)) {
+        if (errText)
+            *errText = QStringLiteral("git timed out");
+        return false;
+    }
+    if (output)
+        *output = process.readAllStandardOutput();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (errText)
+            *errText =
+                QString::fromUtf8(process.readAllStandardError()).trimmed().left(200);
+        return false;
+    }
+    return true;
+}
+
+// Like runGit, but feeds `input` to the process's stdin. Used for batched reads
+// (`git cat-file --batch`) so a whole tree of blobs is fetched in one process
+// instead of one `git show` per file. waitForFinished services both channels, so
+// large input/output won't deadlock the pipes.
+bool runGitInput(const QString &dir, const QStringList &args, const QByteArray &input,
+                 QByteArray *output, QString *errText = nullptr,
+                 int timeoutMs = kGitTimeoutMs)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    process.write(input);
+    process.closeWriteChannel();
+    if (!process.waitForFinished(timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;
@@ -599,18 +627,24 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
 
 QString IssueStore::mirrorRef() const
 {
+    // The mirror doesn't change while a single store reads it, but mirrorRef() is
+    // hit once per blob fetched from the mirror. Resolving it via git every time
+    // spawns hundreds of subprocesses on the GUI thread; memoize for our lifetime.
+    if (m_mirrorRefResolved)
+        return m_cachedMirrorRef;
+    m_mirrorRefResolved = true;
+
     QByteArray output;
     if (runGit(m_mirror, {"rev-parse", "--verify", "-q", "HEAD"}, &output) &&
-        !output.trimmed().isEmpty())
-        return QStringLiteral("HEAD");
-    if (runGit(m_mirror,
-               {"for-each-ref", "--format=%(refname)", "--count=1", "refs/heads/"},
-               &output)) {
-        const QString ref = QString::fromUtf8(output).trimmed();
-        if (!ref.isEmpty())
-            return ref;
+        !output.trimmed().isEmpty()) {
+        m_cachedMirrorRef = QStringLiteral("HEAD");
+    } else if (runGit(m_mirror,
+                      {"for-each-ref", "--format=%(refname)", "--count=1",
+                       "refs/heads/"},
+                      &output)) {
+        m_cachedMirrorRef = QString::fromUtf8(output).trimmed();
     }
-    return QString();
+    return m_cachedMirrorRef;
 }
 
 QByteArray IssueStore::showFromMirror(const QString &repoRelPath, bool *ok) const
@@ -636,28 +670,87 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
     if (ref.isEmpty())
         return issues;
 
+    // Read the whole issues/ subtree in one recursive listing, then fetch every
+    // needed blob in a single `git cat-file --batch`. The old code spawned a
+    // `git show` per file (plus a per-issue `ls-tree`), which stalled the GUI
+    // thread for seconds on repos with many issues/events.
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "issues/"}, &listing))
+    if (!runGit(m_mirror, {"ls-tree", "-r", ref, "issues/"}, &listing))
         return issues;
+
+    struct MirrorIssue {
+        QString issueOid;                          // blob oid of issue.md
+        QList<QPair<QString, QString>> eventBlobs; // (filename, oid)
+    };
+    QMap<int, MirrorIssue> byNumber; // keyed (and thus sorted) by issue number
+    QSet<QString> wantedOids;
     for (const QString &line :
          QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
         const int tab = line.indexOf('\t');
-        if (tab < 0 || !line.contains(" tree "))
+        if (tab < 0)
             continue;
-        const QString base = line.mid(tab + 1).section('/', -1); // <n>
+        const QStringList meta = line.left(tab).split(' ', Qt::SkipEmptyParts);
+        if (meta.size() < 3 || meta.at(1) != QStringLiteral("blob"))
+            continue;
+        const QString oid = meta.at(2);
+        // path is "issues/<n>/<file>"; ignore top-level files (labels.json …)
+        // and anything nested deeper (attachments/…).
+        const QString rel = line.mid(tab + 1).section('/', 1); // strip "issues/"
+        const int slash = rel.indexOf('/');
+        if (slash < 0)
+            continue;
         bool numeric = false;
-        const int number = base.toInt(&numeric);
+        const int number = rel.left(slash).toInt(&numeric);
         if (!numeric)
             continue;
-
-        bool ok = false;
-        const QByteArray issueMd =
-            showFromMirror("issues/" + base + "/issue.md", &ok);
-        if (!ok)
+        const QString fname = rel.mid(slash + 1);
+        if (fname.contains('/'))
             continue;
-        const FrontMatter fm = parseFrontMatter(issueMd);
+        if (fname == QStringLiteral("issue.md")) {
+            byNumber[number].issueOid = oid;
+            wantedOids.insert(oid);
+        } else if (eventFileRe().match(fname).hasMatch()) {
+            byNumber[number].eventBlobs.append({fname, oid});
+            wantedOids.insert(oid);
+        }
+    }
+    if (byNumber.isEmpty())
+        return issues;
+
+    // Batch-fetch every blob in one process. Output framing per object is
+    // "<oid> <type> <size>\n<size bytes>\n".
+    QByteArray batchInput;
+    for (const QString &oid : wantedOids)
+        batchInput += oid.toUtf8() + '\n';
+    QByteArray batch;
+    if (!runGitInput(m_mirror, {"cat-file", "--batch"}, batchInput, &batch))
+        return issues;
+
+    QHash<QString, QByteArray> contentByOid;
+    contentByOid.reserve(wantedOids.size());
+    for (int pos = 0; pos < batch.size();) {
+        const int nl = batch.indexOf('\n', pos);
+        if (nl < 0)
+            break;
+        const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
+        pos = nl + 1;
+        if (header.size() < 3) // "<oid> missing" or malformed — no body follows
+            continue;
+        bool sizeOk = false;
+        const int size = header.at(2).toInt(&sizeOk);
+        if (!sizeOk || pos + size > batch.size())
+            break;
+        contentByOid.insert(QString::fromUtf8(header.at(0)), batch.mid(pos, size));
+        pos += size + 1; // skip body and its trailing newline
+    }
+
+    for (auto it = byNumber.constBegin(); it != byNumber.constEnd(); ++it) {
+        const MirrorIssue &files = it.value();
+        if (files.issueOid.isEmpty() || !contentByOid.contains(files.issueOid))
+            continue;
+        const FrontMatter fm = parseFrontMatter(contentByOid.value(files.issueOid));
         Issue issue;
-        issue.number = number;
+        issue.number = it.key();
         issue.title = fm.get("title");
         issue.status = fm.values.contains("status") ? fm.get("status")
                                                     : QStringLiteral("open");
@@ -677,34 +770,21 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
         open.title = issue.title;
         issue.events.append(open);
 
-        // Enumerate this issue's event files from the mirror.
-        QByteArray dirListing;
-        if (runGit(m_mirror, {"ls-tree", ref, "issues/" + base + "/"}, &dirListing)) {
-            QStringList names;
-            for (const QString &l :
-                 QString::fromUtf8(dirListing).split('\n', Qt::SkipEmptyParts)) {
-                const int t = l.indexOf('\t');
-                if (t < 0 || !l.contains(" blob "))
-                    continue;
-                const QString fname = l.mid(t + 1).section('/', -1);
-                if (eventFileRe().match(fname).hasMatch())
-                    names << fname;
-            }
-            names.sort();
-            for (const QString &name : names) {
-                bool eok = false;
-                const QByteArray ev =
-                    showFromMirror("issues/" + base + "/" + name, &eok);
-                if (eok)
-                    issue.events.append(eventFromFrontMatter(parseFrontMatter(ev)));
-            }
+        // Subsequent events in filename (chronological) order.
+        QList<QPair<QString, QString>> events = files.eventBlobs;
+        std::sort(events.begin(), events.end(),
+                  [](const QPair<QString, QString> &a,
+                     const QPair<QString, QString> &b) { return a.first < b.first; });
+        for (const QPair<QString, QString> &ev : events) {
+            if (contentByOid.contains(ev.second))
+                issue.events.append(
+                    eventFromFrontMatter(parseFrontMatter(contentByOid.value(ev.second))));
         }
         recomputeMetadata(issue); // tally votes (and fold event metadata)
         if (!issue.isDeleted())
             issues.append(issue);
     }
-    std::sort(issues.begin(), issues.end(),
-              [](const Issue &a, const Issue &b) { return a.number < b.number; });
+    // byNumber iterates in ascending key order, so issues is already sorted.
     return issues;
 }
 

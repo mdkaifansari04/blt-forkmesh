@@ -54,8 +54,9 @@ MAX_PENDING_ISSUES = 500
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
-# issue body but still bounded.
-MAX_PULL_BYTES = 1024 * 1024
+# issue body but still bounded. Raised to 100 MB so a PR with a large diff (e.g.
+# generated files or vendored code) isn't rejected at submission.
+MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
@@ -3265,6 +3266,7 @@ async def _account_login(env, request):
         data.get("email", ""), 254).strip().lower()
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
+    pubkey = clean_string(data.get("pubkey", ""), 120)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -3302,6 +3304,18 @@ async def _account_login(env, request):
             await _login_record_fail(env, id_bi)
             return json_response({"error": "bad_totp"}, status=401)
     await _login_clear(env, id_bi)
+
+    # A web-created account can be active before any desktop node key is bound.
+    # When the desktop app logs in with the correct password, bind its Ed25519
+    # key exactly once so signed heartbeat, hosting, and catalog publishes work.
+    # Never silently replace an existing key. Rotation needs an explicit flow.
+    if not rec.get("pubkey") and pubkey:
+        rec["pubkey"] = pubkey
+        name_bi = await blind_index(env, rec.get("name", ""))
+        await _save_account(env, name_bi, rec)
+    elif pubkey and rec.get("pubkey") != pubkey:
+        return json_response({"error": "pubkey_mismatch"}, status=409)
+
     return json_response({
         "ok": True, "nodeName": rec.get("name", ""),
         "email": rec.get("email", ""), "status": rec.get("status", "active"),
@@ -5864,9 +5878,10 @@ class Default(WorkerEntrypoint):
             return Response("", status=308, headers={"location": "/network/"})
         if url.path == "/docs":
             return Response("", status=308, headers={"location": "/docs/"})
-
         if url.path == "/blog":
-            return Response("", status=308, headers={"location": "/blog/"})
+            return Response("", status=308, headers={"location": "/blogs"})
+        if url.path == "/blog.html":
+            return Response("", status=308, headers={"location": "/blogs"})
 
         if url.path == "/features":
             return Response("", status=308, headers={"location": "/features/"})
