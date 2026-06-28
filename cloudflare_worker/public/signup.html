@@ -3,94 +3,165 @@
   <head>
     <meta charset="utf-8" />
     <script src="/posthog.js"></script>
-    <link rel="icon" href="/assets/forkmesh-mark.svg" type="image/svg+xml" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Join ForkMesh</title>
     <meta
       name="description"
-      content="Join the ForkMesh network — pick your public node name, donate to bootstrap a resilient Git mirror network, and create your account."
+      content="Join the ForkMesh network - pick your public node name, donate to bootstrap a resilient Git mirror network, and create your account."
     />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
-    <script src="static-page.js" defer></script>
     <script src="qr.js" defer></script>
-    <script src="signup.js" defer></script>
+    <script src="/signup.js?v=auth-simple-1" defer></script>
     <style>
-      /* Funnel-specific styling — the dark, green "get paid to mirror" look. */
-      .join-wrap { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
+      body {
+        min-height: 100vh;
+        color: #f5f5f5;
+        background:
+          radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 32rem),
+          #050505;
+      }
+
+      .auth-shell {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px 16px;
+      }
+
+      .auth-card {
+        width: min(100%, 520px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        background: rgba(8, 8, 8, 0.88);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+        padding: 22px;
+      }
+
+      .auth-card .brand {
+        width: fit-content;
+        margin: 0 auto 18px;
+      }
+
+      .auth-button-primary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 2.25rem;
+        border-radius: 0.75rem;
+        border: 0;
+        background: #f5f5f5;
+        color: #050505;
+        font-size: 13px;
+        font-weight: 750;
+        cursor: pointer;
+        transition: transform 150ms ease, background-color 150ms ease, color 150ms ease;
+      }
+
+      .auth-button-primary:hover {
+        background: #d9d9d9;
+        color: #050505;
+      }
+
+      .auth-button-primary:active {
+        transform: translateY(1px);
+      }
+
+      .auth-button-primary:focus-visible {
+        outline: 0;
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+      }
+
+      .auth-input-sm {}
+
+      /* Funnel-specific styling for the compact auth funnel. */
+      .join-wrap { max-width: 100%; margin: 0; padding: 0; }
       .join-eyebrow {
         display: inline-flex; align-items: center; gap: 8px;
-        color: var(--accent-bright); font-weight: 600; font-size: 15px;
+        color: rgba(255, 255, 255, 0.7); font-weight: 650; font-size: 12px;
         justify-content: center; width: 100%;
       }
       .join-title {
-        font-size: clamp(34px, 6vw, 56px); font-weight: 800; line-height: 1.05;
-        text-align: center; margin: 10px 0 14px;
+        font-size: clamp(26px, 6vw, 38px); font-weight: 800; line-height: 1.04;
+        text-align: center; margin: 8px 0 10px; color: #ffffff;
       }
-      .join-sub { color: var(--muted); text-align: center; max-width: 520px;
-        margin: 0 auto 26px; line-height: 1.5; }
+      .join-sub { color: rgba(255, 255, 255, 0.62); text-align: center; max-width: 460px;
+        margin: 0 auto 16px; line-height: 1.5; font-size: 13px; }
       .join-banner {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 12px; padding: 18px; text-align: center; margin: 0 0 26px;
+        border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.04);
+        border-radius: 12px; padding: 12px; text-align: center; margin: 0 0 16px;
       }
-      .join-banner strong { color: var(--accent-bright); font-size: 19px; }
-      .join-banner span { display: block; color: var(--muted); margin-top: 4px; }
-      .stat-grid {
-        display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 12px; margin-bottom: 26px;
+      .join-banner strong { color: #ffffff; font-size: 14px; }
+      .join-banner span { display: block; color: rgba(255, 255, 255, 0.62); margin-top: 4px; font-size: 12px; }
+      .signup-donation-note {
+        display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.035);
+        border-radius: 12px; padding: 9px 10px; margin: 0 0 16px;
+        color: rgba(255, 255, 255, 0.68); font-size: 12px; text-align: center;
       }
-      .stat-card {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 12px; padding: 14px 16px;
-      }
-      .stat-card .label { color: var(--muted-2); font-size: 11px;
-        text-transform: uppercase; letter-spacing: .06em; }
-      .stat-card .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
-      .usd { color: var(--muted-2); font-weight: 400; font-size: 0.8em; }
-      .stat-card .value .usd { display: block; margin-top: 2px; }
+      .signup-donation-note strong { color: #ffffff; font-size: 12px; }
+      .usd { color: rgba(255, 255, 255, 0.52); font-weight: 400; font-size: 0.9em; }
       .calc {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 14px; padding: 20px; margin-bottom: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.035);
+        border-radius: 14px; padding: 14px; margin-bottom: 16px;
       }
-      .calc h3 { color: var(--accent-bright); margin: 0 0 16px; font-size: 16px; }
+      .calc h3 { color: #ffffff; margin: 0 0 12px; font-size: 14px; }
       .calc-row {
         display: grid; grid-template-columns: 1fr auto 1fr auto 1fr;
         align-items: center; gap: 10px;
       }
-      .calc-row .op { font-size: 22px; color: var(--muted); text-align: center; }
+      .calc-row .op { font-size: 18px; color: rgba(255, 255, 255, 0.52); text-align: center; }
       .calc-cell { text-align: center; }
-      .calc-cell .cap { color: var(--muted-2); font-size: 12px; margin-bottom: 6px; }
-      .calc-cell .big { font-size: 24px; font-weight: 700; }
-      .calc-cell .small { color: var(--muted-2); font-size: 12px; margin-top: 4px; }
-      .calc-note { color: var(--muted-2); font-size: 12px; text-align: center;
+      .calc-cell .cap { color: rgba(255, 255, 255, 0.52); font-size: 12px; margin-bottom: 6px; }
+      .calc-cell .big { font-size: 18px; font-weight: 700; }
+      .calc-cell .small { color: rgba(255, 255, 255, 0.52); font-size: 12px; margin-top: 4px; }
+      .calc-note { color: rgba(255, 255, 255, 0.52); font-size: 12px; text-align: center;
         margin-top: 14px; }
       .step { display: none; }
       .step.active { display: block; }
-      .field { margin: 0 0 16px; }
-      .field label { display: block; font-weight: 600; margin-bottom: 6px; }
+      .field { margin: 0 0 12px; }
+      .field label { display: block; font-weight: 650; margin-bottom: 6px; font-size: 12px; color: rgba(255, 255, 255, 0.82); }
       .field input {
-        width: 100%; padding: 12px 14px; border-radius: 10px;
-        border: 1px solid var(--border); background: var(--card-soft);
-        color: var(--foreground); font: inherit;
+        width: 100%; height: 2.25rem; padding: 0 0.7rem; border-radius: 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.055);
+        color: #f5f5f5; font: inherit; font-size: 13px;
       }
-      .field input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
-      .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+      .field input:focus {
+        outline: 0;
+        border-color: rgba(255, 255, 255, 0.34);
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+      }
+      .hint { font-size: 12px; color: rgba(255, 255, 255, 0.62); margin-top: 6px; }
       .hint.bad { color: var(--danger); }
-      .hint.good { color: var(--accent-bright); }
+      .hint.good { color: rgba(255, 255, 255, 0.82); }
       .btn-primary {
         display: inline-flex; align-items: center; justify-content: center;
-        width: 100%; padding: 13px 18px; border-radius: 10px; border: 0;
-        background: var(--accent-bright); color: #04130a; font-weight: 700;
-        font-size: 16px; cursor: pointer;
+        width: 100%; height: 2.25rem; padding: 0 1rem; border-radius: 0.75rem; border: 0;
+        background: #f5f5f5; color: #050505; font-weight: 750;
+        font-size: 13px; cursor: pointer;
       }
-      .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+      .btn-primary:disabled {
+        background: #e6e6e6;
+        color: #050505;
+        cursor: not-allowed;
+      }
       .pay-box {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 14px; padding: 20px; text-align: center; margin-bottom: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.035);
+        border-radius: 14px; padding: 14px; text-align: center; margin-bottom: 16px;
       }
       .pay-addr {
-        font-family: var(--mono); font-size: 14px; word-break: break-all;
-        background: var(--card-soft); border: 1px solid var(--border-subtle);
-        border-radius: 10px; padding: 12px; margin: 12px 0;
+        font-family: var(--mono); font-size: 12px; word-break: break-all;
+        background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 0.75rem; padding: 10px; margin: 10px 0;
       }
       .pay-qr canvas {
         width: min(220px, 82vw); height: min(220px, 82vw);
@@ -102,106 +173,85 @@
       }
       .btn-secondary {
         display: inline-flex; align-items: center; justify-content: center;
-        padding: 9px 14px; border-radius: 10px; border: 1px solid var(--border);
-        background: var(--card-soft); color: var(--foreground); font-weight: 700;
-        font-size: 14px; cursor: pointer;
+        height: 2.25rem; padding: 0 0.9rem; border-radius: 0.75rem; border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04); color: #f5f5f5; font-weight: 700;
+        font-size: 13px; cursor: pointer;
       }
-      .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
+      .btn-secondary:focus-visible {
+        outline: 0;
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+      }
+      .btn-secondary:disabled {
+        opacity: .65;
+        cursor: not-allowed;
+      }
       .pay-expiry {
-        color: var(--muted); font-size: 13px; margin: 10px 0 0;
+        color: rgba(255, 255, 255, 0.62); font-size: 13px; margin: 10px 0 0;
       }
       .pay-expiry.warn { color: var(--warning); font-weight: 600; }
       .pay-expiry.danger { color: var(--danger); font-weight: 700; }
       .pay-status { font-weight: 600; }
       .pay-status.waiting { color: var(--warning); }
-      .pay-status.paid { color: var(--accent-bright); }
-      .row-links { text-align: center; margin-top: 20px; color: var(--muted); }
-      .row-links a { color: var(--accent-bright); }
-      .diagram { text-align: center; margin: 8px 0 22px; }
-      .diagram img { max-width: 320px; width: 60%; opacity: .9; }
+      .pay-status.paid { color: #ffffff; }
+      .row-links { text-align: center; margin-top: 14px; color: rgba(255, 255, 255, 0.58); font-size: 13px; }
+      .row-links a { color: #ffffff; }
+      .diagram { display: none; }
       .flow {
-        display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
-        color: var(--muted); margin-bottom: 8px;
+        display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+        color: rgba(255, 255, 255, 0.62); margin-bottom: 12px;
       }
-      .flow div { max-width: 220px; }
-      .flow strong { color: var(--accent-bright); display: block; margin-bottom: 4px; }
+      .flow div {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .flow strong { color: #ffffff; display: block; margin-bottom: 4px; }
+
+      @media (max-width: 620px) {
+        .auth-card { padding: 18px; }
+        .calc-row { grid-template-columns: 1fr; }
+        .calc-row .op { display: none; }
+        .flow { grid-template-columns: 1fr; }
+      }
     </style>
   </head>
   <body>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="brand" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-          <span>ForkMesh</span>
-        </a>
-        <nav class="global-nav" aria-label="Global">
-          <a href="/#catalog">Repositories</a>
-          <a href="/network/">Network</a>
-          <a href="/docs/">Docs</a>
-          <a href="/login.html">Log in</a>
-        </nav>
-        <div class="header-actions">
-          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path>
-            </svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="4"></circle>
-              <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-    </header>
-
-    <main class="join-wrap">
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="signup-title">
+      <a class="brand" href="/" aria-label="ForkMesh home">
+        <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+      </a>
       <span class="join-eyebrow">⬡ Get paid to mirror code</span>
-      <h1 class="join-title">Preserve code for just $1</h1>
+      <h1 id="signup-title" class="join-title">Preserve code for just $1</h1>
       <p class="join-sub">
         Join the first wave of ForkMesh nodes and help bootstrap a resilient Git
         network. Your node mirrors source code, serves live clone data, and keeps
         projects discoverable even when centralized platforms go offline.
       </p>
 
-      <div class="join-banner">
-        <strong>You earn a share every time someone joins</strong>
-        <span>Paid in Solana (SOL) · estimate only — reward system in progress</span>
-      </div>
-
-      <div class="stat-grid">
-        <div class="stat-card">
-          <div class="label">Nodes online</div>
-          <div class="value" id="stat-nodes">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Repos in catalog</div>
-          <div class="value" id="stat-repos">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Clients online</div>
-          <div class="value" id="stat-clients">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Min. donation</div>
-          <div class="value"><span id="min-donation-sol">—</span> <span class="usd" id="min-donation-usd"></span></div>
-        </div>
+      <div class="signup-donation-note">
+        <span>Minimum donation</span>
+        <strong id="min-donation-sol">≈ $1 in SOL</strong>
+        <span class="usd" id="min-donation-usd"></span>
+        <span>Small donation reserves your public node name.</span>
       </div>
 
       <!-- Step 1: node name -->
       <section class="step active" id="step-name" aria-label="Choose your node name">
         <div class="field">
           <label for="node-name">Choose your public node name</label>
-          <input id="node-name" type="text" inputmode="latin" autocomplete="off"
+          <input class="auth-input-sm" id="node-name" type="text" inputmode="latin" autocomplete="off"
             spellcheck="false" placeholder="e.g. ada-lovelace" maxlength="63" />
           <div class="hint" id="name-hint">
             Lowercase letters, numbers and hyphens. Start with a letter, end with a
             letter or number. Up to 63 characters. This name is public.
           </div>
         </div>
-        <button class="btn-primary" id="name-continue" disabled>Continue</button>
+        <button class="auth-button-primary btn-primary" id="name-continue" disabled>Continue</button>
         <p class="row-links">
-          By continuing, you agree to the <a href="/terms.html">Terms</a> and
-          <a href="/privacy.html">Privacy</a>.
+          By continuing, you agree to the <a href="/terms">Terms</a> and
+          <a href="/privacy">Privacy</a>.
         </p>
         <p class="row-links">Already have an account? <a href="/login.html">Log in</a></p>
       </section>
@@ -213,7 +263,7 @@
           <div class="calc-row">
             <div class="calc-cell">
               <div class="cap">Nodes online</div>
-              <div class="big" id="calc-nodes">—</div>
+              <div class="big" id="calc-nodes">...</div>
             </div>
             <div class="op">×</div>
             <div class="calc-cell">
@@ -224,7 +274,7 @@
             <div class="op">=</div>
             <div class="calc-cell">
               <div class="cap">Est. earnings</div>
-              <div class="big" id="calc-earn">—</div>
+              <div class="big" id="calc-earn">...</div>
               <div class="small">estimate only</div>
             </div>
           </div>
@@ -245,20 +295,20 @@
             </div>
             <div class="op">+</div>
             <div class="calc-cell">
-              <div class="cap">Mirror nodes (<span id="split-node-count">—</span> online)</div>
+              <div class="cap">Mirror nodes (<span id="split-node-count">...</span> online)</div>
               <div class="big" id="split-nodes-pct">50%</div>
               <div class="small" id="split-nodes-usd">shared by uptime &amp; data</div>
             </div>
             <div class="op">=</div>
             <div class="calc-cell">
               <div class="cap">Per online node</div>
-              <div class="big" id="split-per-node">—</div>
+              <div class="big" id="split-per-node">...</div>
               <div class="small">≈ each, evenly</div>
             </div>
           </div>
           <p class="calc-note">
             Half of every join donation keeps ForkMesh's servers running; the other
-            half is split evenly across the <span id="split-node-count-2">—</span> nodes
+            half is split evenly across the <span id="split-node-count-2">...</span> nodes
             online right now, weighted over time by data mirrored and uptime.
           </p>
         </div>
@@ -266,7 +316,7 @@
         <p class="row-links">
           Need a Solana wallet? We suggest
           <a href="https://www.exodus.com/" target="_blank" rel="noopener noreferrer">Exodus</a>
-          — it holds SOL on desktop and mobile.
+          - it holds SOL on desktop and mobile.
         </p>
 
         <div class="flow">
@@ -283,7 +333,7 @@
             <div class="pay-addr" id="pay-addr">generating…</div>
             <div class="pay-qr" id="pay-qr" style="margin: 10px auto;" aria-label="Payment QR code"></div>
             <div class="pay-actions">
-              <button class="btn-primary" id="pay-copy" style="width:auto;padding:8px 16px;font-size:14px;">Copy payment link</button>
+              <button class="auth-button-primary btn-primary" id="pay-copy" style="width:auto;padding:0 1rem;font-size:13px;">Copy payment link</button>
             </div>
           </div>
           <p style="margin-top:14px;">
@@ -298,19 +348,19 @@
       <!-- Step 3: create account -->
       <section class="step" id="step-account" aria-label="Create your account">
         <div class="join-banner">
-          <strong>Donation received — welcome aboard!</strong>
+          <strong>Donation received - welcome aboard!</strong>
           <span>Set your email and password for universal login.</span>
         </div>
         <div class="field">
           <label for="acct-email">Email</label>
-          <input id="acct-email" type="email" autocomplete="email" placeholder="you@example.com" />
+          <input class="auth-input-sm" id="acct-email" type="email" autocomplete="email" placeholder="you@example.com" />
         </div>
         <div class="field">
           <label for="acct-pass">Password</label>
-          <input id="acct-pass" type="password" autocomplete="new-password" placeholder="At least 8 characters" />
+          <input class="auth-input-sm" id="acct-pass" type="password" autocomplete="new-password" placeholder="At least 8 characters" />
         </div>
         <div class="hint" id="acct-hint"></div>
-        <button class="btn-primary" id="acct-create">Create account</button>
+        <button class="auth-button-primary btn-primary" id="acct-create">Create account</button>
       </section>
 
       <!-- Done -->
@@ -319,7 +369,8 @@
           <strong>You're in.</strong>
           <span id="done-name">Your node is registered.</span>
         </div>
-        <a class="btn-primary" href="/" style="text-decoration:none;">Go to ForkMesh</a>
+        <a class="auth-button-primary btn-primary" href="/" style="text-decoration:none;">Go to ForkMesh</a>
+      </section>
       </section>
     </main>
   </body>

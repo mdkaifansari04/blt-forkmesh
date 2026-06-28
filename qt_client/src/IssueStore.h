@@ -203,4 +203,9 @@ private:
     QString m_mirror;
     const ForkMeshIdentity *m_identity;
     QString m_authorName;
+
+    // mirrorRef() is hit once per blob read from the mirror; cache it for the
+    // store's lifetime so we resolve the ref via git at most once.
+    mutable bool m_mirrorRefResolved = false;
+    mutable QString m_cachedMirrorRef;
 };
