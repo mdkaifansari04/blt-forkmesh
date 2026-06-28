@@ -2595,6 +2595,12 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
+    // Drop every in-memory transcript buffer keyed by this session id. Session ids
+    // are recycled (nextId() = max on-disk id + 1), so a deleted session's leftover
+    // events/raw/steer state would otherwise be inherited by the next session that
+    // reuses the id — making a fresh "quick issue" resume another agent's context
+    // (adhoc #198). Called on delete so a recycled id always starts clean.
+    void forgetStreamSessionState(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
