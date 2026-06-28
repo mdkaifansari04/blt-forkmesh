@@ -232,6 +232,15 @@ public:
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
+    // adhoc #191: the git dir agents/looper would run against for a repo — a
+    // working-tree checkout, else a bare mirror, else empty. Lets a test prove a
+    // mirror-only node (no working tree) is now treated as able to run agents.
+    QString testRepoAgentGitDir(int index) const
+    {
+        return (index < 0 || index >= m_repositories.size())
+                   ? QString()
+                   : repoAgentGitDir(m_repositories.at(index));
+    }
     void testPublishRepository(int index) { publishRepository(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
@@ -292,6 +301,9 @@ public:
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
+    // Branch names (column 0) in row order, so a test can prove the default branch
+    // is pinned to the top of the list regardless of commit recency (adhoc #185).
+    QStringList testBranchRowOrder() const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -358,8 +370,9 @@ private:
     // Non-interactive auth used on launch: true only if this node key already
     // matches a registered active account (or was confirmed before, offline).
     bool authenticateSilently(const QString &accountName);
-    // In-app join wizard: reserve node name -> donate -> email/password, mirroring
-    // the website signup funnel (signup.html / signup.js) as one staged dialog.
+    // In-app join: pick a public node name and you're in. Joining is free — the
+    // name is reserved and activated against this device key (no donation, no
+    // email/password). Cross-device credentials can be added later.
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     QJsonArray fetchCatalogRepos();
@@ -796,6 +809,9 @@ private:
     // restart (adhoc #130, #125).
     void updateIssueLooperButton();
     void positionLooperToggle();
+    // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
+    // (adhoc #197), mirroring positionLooperToggle over Issues.
+    void positionMirrorActivityStrip();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -1316,6 +1332,12 @@ private:
     // source-of-truth author issues/PRs even when a read-only preview of their own
     // repo is the one currently selected.
     const RepositoryRecord &writableRecordFor(const RepositoryRecord &repo) const;
+
+    // Git directory agents run against for `repo`: our working-tree checkout when
+    // we host it, otherwise the bare network mirror so a node that only mirrors a
+    // repo can still run agents on it (worktrees/diffs/PR patches build off this).
+    // Empty when neither exists. (adhoc #191)
+    QString repoAgentGitDir(const RepositoryRecord &repo) const;
 
     // Issues tab
     int issuesRepoIndex() const;                 // selected repo, or -1
@@ -1984,6 +2006,13 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
+    // Live activity strip floating just above the Mirror nodes tab: a dot per
+    // active node that flashes green when it serves a clone, orange when it
+    // serves browsing. Held as a QWidget* (concrete MirrorActivityStrip is
+    // private to MainWindow.cpp). m_mirrorActivityStripTimer keeps it anchored
+    // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
+    QWidget *m_mirrorActivityStrip = nullptr;
+    QTimer *m_mirrorActivityStripTimer = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
@@ -2560,6 +2589,12 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
+    // Drop every in-memory transcript buffer keyed by this session id. Session ids
+    // are recycled (nextId() = max on-disk id + 1), so a deleted session's leftover
+    // events/raw/steer state would otherwise be inherited by the next session that
+    // reuses the id — making a fresh "quick issue" resume another agent's context
+    // (adhoc #198). Called on delete so a recycled id always starts clean.
+    void forgetStreamSessionState(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
