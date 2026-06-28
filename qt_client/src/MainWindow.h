@@ -608,6 +608,8 @@ private:
     void updateDiscussionActionState();
     void createDiscussionDialog();
     void postDiscussionComment();
+    void startDiscussionFromComposer();
+    static QString discussionTitleFromBody(const QString &body);
     void submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
                                       const QString &titleIfNew = QString());
     QUrl discussionsApiUrl(const RepositoryRecord &repo) const;
