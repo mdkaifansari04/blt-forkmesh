@@ -36,6 +36,9 @@ struct AgentDiffStat {
     int files = -1;
     int ahead = -1;
     int behind = -1;
+    // True when re-merging the base branch into this session's branch would
+    // conflict (adhoc #229) — surfaced as a conflict marker in the agents list.
+    bool conflicted = false;
 };
 
 #include <QElapsedTimer>
