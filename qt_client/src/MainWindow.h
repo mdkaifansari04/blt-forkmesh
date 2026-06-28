@@ -2568,6 +2568,10 @@ private:
     // search-as-you-type refresh reuses them instead of re-shelling git per row.
     // Rebuilt from scratch on each reloadAgents() (the data-changed entry point).
     QHash<int, AgentDiffStat> m_agentDiffStats;
+    // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
+    // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
+    // and corrupt the half-built table unless we skip the nested rebuild.
+    bool m_agentTableRefreshing = false;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
