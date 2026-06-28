@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 195
 title: globally if you click on a commit hash it should bring you to that commit
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 82
-progress: 0
+progress: 50
 assignees: []
 createdAt: 1782347014981
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

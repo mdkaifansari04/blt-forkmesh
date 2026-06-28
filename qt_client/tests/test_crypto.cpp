@@ -9,6 +9,7 @@
 #include "../src/IssueStore.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
+#include "../src/ReferenceLinks.h"
 #include "../src/RoomCrypto.h"
 
 #include <QByteArray>
@@ -74,6 +75,42 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     app.setApplicationName("ForkMeshCryptoTest");
     app.setOrganizationName("ForkMesh");
+
+    {
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(
+            "See #154, PR #7, pull request #8, abcdef1, and "
+            "forkmesh://pull/owner/repo/7#open.");
+        check(linked.contains("[#154](fm-issue:154)"),
+              "plain # references render as issue links");
+        check(linked.contains("[PR #7](fm-pull:7)"),
+              "explicit PR references render as pull links");
+        check(linked.contains("[pull request #8](fm-pull:8)"),
+              "explicit pull request references render as pull links");
+        check(linked.contains("[abcdef1](fm-commit:abcdef1)"),
+              "pasted commit hashes render as commit links");
+        check(linked.contains("[forkmesh://pull/owner/repo/7#open]"
+                              "(forkmesh://pull/owner/repo/7#open)"),
+              "pasted ForkMesh deep links render as clickable links");
+    }
+
+    {
+        const QString input =
+            "Already [#154](https://example.test/issues/154), `#155`, "
+            "https://example.test/#156\n```\n#157 abcdef1\n```";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        const QString input =
+            "Already [#154][issue], ``#155 abcdef1``, and a definition.\n"
+            "\n"
+            "[issue]: forkmesh://issue/owner/repo/154";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips reference-style links and multi-backtick code");
+    }
 
     ForkMeshIdentity identity;
     check(identity.load(), "Ed25519 identity loads or generates");
@@ -552,7 +589,7 @@ int main(int argc, char *argv[])
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
             "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n",
-            QString(), &err);
+            QString(), /*branchBacked=*/false, &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
@@ -749,7 +786,8 @@ int main(int argc, char *argv[])
             git({"checkout", "-q", baseBranch});
 
             const int dn = pulls.createPull("Three files", "body", baseBranch,
-                                            "feat-258", delPatch, delMbox, &err);
+                                            "feat-258", delPatch, delMbox,
+                                            /*branchBacked=*/false, &err);
             check(dn > 0, "createPull stores a multi-file PR with a commit series");
             check(pulls.deletePullFile(dn, "beta.txt", &err),
                   "deletePullFile removes one file from the PR");
@@ -779,6 +817,76 @@ int main(int argc, char *argv[])
                       QFile::exists(tmp.path() + "/gamma.txt") &&
                       !QFile::exists(tmp.path() + "/beta.txt"),
                   "merging applies the kept files and not the deleted one");
+        }
+
+        // --- PullStore branch-backed PRs keep the diff out of the repo -------
+        // A PR whose head is a real branch stores only the signed pull.md
+        // pointer; its diff and full commit series are reconstructed from
+        // base..head, and the branch's own commits (with authorship) drive the
+        // merge — nothing about the diff is committed into the repo.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            git({"checkout", "-q", "-b", "feat-bb"});
+            writeFile("bb1.txt", "one\n");
+            git({"add", "bb1.txt"});
+            git({"commit", "-q", "-m", "bb: add one"});
+            writeFile("bb2.txt", "two\n");
+            git({"add", "bb2.txt"});
+            git({"commit", "-q", "-m", "bb: add two"});
+            git({"checkout", "-q", baseBranch});
+
+            const int bn =
+                pulls.createPull("Branch backed", "body", baseBranch, "feat-bb",
+                                 QString(), QString(), /*branchBacked=*/true, &err);
+            check(bn > 0, "createPull stores a branch-backed PR");
+            const QString bdir = tmp.path() + "/pulls/" + QString::number(bn);
+            check(!QFile::exists(bdir + "/changes.patch"),
+                  "a branch-backed PR writes no changes.patch into the repo");
+            check(QFile::exists(bdir + "/pull.md"),
+                  "a branch-backed PR still records its signed pull.md pointer");
+            const QString tracked = QString::fromUtf8(gitOutput(
+                {"ls-tree", "-r", "--name-only", "HEAD",
+                 "pulls/" + QString::number(bn)}));
+            check(tracked.contains("pull.md") &&
+                      !tracked.contains("changes.patch") &&
+                      !tracked.contains("commits.mbox"),
+                  "git tracks only pull.md for a branch-backed PR");
+
+            PullRequest bb;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == bn)
+                    bb = p;
+            check(bb.patch.contains("bb1.txt") && bb.patch.contains("bb2.txt"),
+                  "a branch-backed PR's diff is reconstructed from the refs");
+            check(bb.commits.contains("bb: add one") &&
+                      bb.commits.contains("bb: add two"),
+                  "a branch-backed PR's full commit series is reconstructed");
+            check(bb.filesChanged == 2,
+                  "branch-backed stats come from the reconstructed diff");
+
+            check(pulls.mergePull(bn, &err),
+                  "a branch-backed PR merges by replaying its commits");
+            check(QFile::exists(tmp.path() + "/bb1.txt") &&
+                      QFile::exists(tmp.path() + "/bb2.txt"),
+                  "merging a branch-backed PR applies its files");
+            const QString log = QString::fromUtf8(gitOutput({"log", "--format=%s"}));
+            check(log.contains("bb: add one") && log.contains("bb: add two"),
+                  "merging a branch-backed PR preserves every authored commit");
+            PullRequest merged;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == bn)
+                    merged = p;
+            check(merged.status == "merged",
+                  "the branch-backed PR is marked merged");
+            check(merged.patch.contains("bb1.txt"),
+                  "a merged branch-backed PR's diff stays viewable via the snapshot");
         }
 
         // --- CommitCommentStore round-trip -------------------------------

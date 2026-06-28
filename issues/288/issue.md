@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 288
 title: the claude code transcript seems to be gone after it's done - please make it stay till deleted
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 73
-progress: 0
+progress: 60
 assignees: []
 createdAt: 1782497450811
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

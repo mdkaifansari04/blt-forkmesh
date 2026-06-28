@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 154
 title: make sure to link to other issues if the #123 is mentioned in a PR or comment also link to PRs and Comits if they are pasted - have a way to copy paste the link
-status: open
+status: closed
 labels: [Phase 2]
 milestone: Phase 2
 priority: 6

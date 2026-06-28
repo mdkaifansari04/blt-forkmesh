@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 297
 title: when a node serves a request or clone request show it in it's logs please
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 0
-progress: 0
+progress: 55
 assignees: []
 createdAt: 1782525869625
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

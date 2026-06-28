@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 34
 title: Make it so you can download the app and mirror on your phone
-status: open
+status: closed
 labels: [feature]
 milestone: Phase 2
 priority: 23

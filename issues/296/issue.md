@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 296
 title: on the agent list when the agent is finished it says somethin glike done 71 turns 828s $4.59 make sure that is shown in the list and stored
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 81

@@ -2,9 +2,12 @@
 
 #include "ForkMeshIdentity.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -21,6 +24,31 @@ constexpr int kGitTimeoutMs = 15000;
 // History rewrites (filter-branch) replay every commit, so they need far longer
 // than an ordinary git invocation.
 constexpr int kGitRewriteTimeoutMs = 120000;
+
+// Wait for `process` to finish. When `keepGuiAlive` is set the caller is on the
+// GUI thread and the command (a `git apply --check` dry-run) can take a second
+// or more, so poll in short slices and pump posted events between them — the
+// same approach as MainWindow's GitKeepAlive — to keep the window painted
+// instead of freezing the event loop. Returns false on timeout, after killing
+// the process. User input is excluded so a pump can't re-enter via clicks.
+bool waitForFinishedKeepAlive(QProcess &process, int timeoutMs, bool keepGuiAlive)
+{
+    if (!keepGuiAlive)
+        return process.waitForFinished(timeoutMs);
+    QElapsedTimer timer;
+    timer.start();
+    while (!process.waitForFinished(40)) {
+        if (process.state() == QProcess::NotRunning)
+            return true; // exited between polls; caller inspects the exit code
+        if (timer.hasExpired(timeoutMs)) {
+            process.kill();
+            process.waitForFinished(200);
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
+    }
+    return true;
+}
 
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
             QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
@@ -44,6 +72,35 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
             *errText =
                 QString::fromUtf8(process.readAllStandardError()).trimmed().left(300);
         return false;
+    }
+    return true;
+}
+
+// Reconstruct a branch-backed PR's diff and commit series from the synced
+// base/head refs instead of from committed patch blobs. `dir` may be a working
+// tree or a bare mirror — both carry refs/heads/* after a sync. The diff uses
+// merge-base (three-dot) so it stays the PR's net change as the base advances;
+// the commit series uses two-dot so it is exactly the commits unique to head.
+// Returns false (leaving the outputs untouched) when either ref is missing or
+// `head` is a cross-node "<node>:<branch>" label that does not resolve locally.
+bool deriveFromRefs(const QString &dir, const QString &base, const QString &head,
+                    QString *patch, QString *commits)
+{
+    if (dir.isEmpty() || base.isEmpty() || head.isEmpty() ||
+        head.contains(QLatin1Char(':')))
+        return false;
+    if (!runGit(dir, {"rev-parse", "--verify", "--quiet", base + "^{commit}"}) ||
+        !runGit(dir, {"rev-parse", "--verify", "--quiet", head + "^{commit}"}))
+        return false;
+    if (patch) {
+        QByteArray diff;
+        runGit(dir, {"diff", base + "..." + head}, &diff);
+        *patch = QString::fromUtf8(diff);
+    }
+    if (commits) {
+        QByteArray mbox;
+        runGit(dir, {"format-patch", "--stdout", base + ".." + head}, &mbox);
+        *commits = QString::fromUtf8(mbox);
     }
     return true;
 }
@@ -550,15 +607,27 @@ QString PullStore::pullDir(int number) const
 void PullStore::computeStats(PullRequest &pr)
 {
     int files = 0, add = 0, del = 0;
-    for (const QString &line : pr.patch.split('\n')) {
-        if (line.startsWith("diff --git "))
+    // Walk the patch line-by-line over a view instead of pr.patch.split('\n'):
+    // a large patch otherwise materialises a QStringList holding one heap-allocated
+    // QString per line, and building + destroying that list blocked the UI thread
+    // for ~1.6s (the QString destructor was the stall hot spot, issue #152).
+    const QStringView patch(pr.patch);
+    for (qsizetype start = 0; start <= patch.size();) {
+        const qsizetype nl = patch.indexOf(u'\n', start);
+        const QStringView line =
+            patch.sliced(start, (nl < 0 ? patch.size() : nl) - start);
+        if (line.startsWith(QLatin1String("diff --git ")))
             ++files;
-        else if (line.startsWith("+++") || line.startsWith("---"))
-            continue;
-        else if (line.startsWith('+'))
+        else if (line.startsWith(QLatin1String("+++")) ||
+                 line.startsWith(QLatin1String("---"))) {
+            // file-header line, not a +/- content line
+        } else if (line.startsWith(u'+'))
             ++add;
-        else if (line.startsWith('-'))
+        else if (line.startsWith(u'-'))
             ++del;
+        if (nl < 0)
+            break;
+        start = nl + 1;
     }
     pr.filesChanged = files;
     pr.additions = add;
@@ -914,6 +983,12 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
     lines << "base: " + pr.base;
     lines << "head: " + pr.head;
     lines << "status: " + pr.status;
+    if (pr.branchBacked)
+        lines << "derive: branch";
+    if (!pr.mergeBase.isEmpty())
+        lines << "mergeBase: " + pr.mergeBase;
+    if (!pr.mergeHead.isEmpty())
+        lines << "mergeHead: " + pr.mergeHead;
     lines << "ts: " + QString::number(pr.ts);
     lines << "author: " + pr.author;
     lines << "authorName: " + pr.authorName;
@@ -923,6 +998,14 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
     if (!writeTextFile(pullDir(pr.number) + "/pull.md",
                        lines.join('\n') + "\n" + pr.description + "\n", error))
         return false;
+    if (pr.branchBacked) {
+        // Keep the diff out of the repo: it is reconstructed from base..head on
+        // read. Drop any stale blobs (e.g. a PR converted to branch-backed) so a
+        // reader never picks up an outdated committed copy.
+        QFile::remove(pullDir(pr.number) + "/changes.patch");
+        QFile::remove(pullDir(pr.number) + "/commits.mbox");
+        return true;
+    }
     if (!writeTextFile(pullDir(pr.number) + "/changes.patch", pr.patch, error))
         return false;
     // Authored commit series, when present, so merge can replay it with `git am`.
@@ -947,13 +1030,29 @@ bool PullStore::readPull(int number, PullRequest &out) const
     out.author = fm.get("author");
     out.authorName = fm.get("authorName");
     out.sig = fm.get("sig");
+    out.branchBacked = fm.get("derive") == QLatin1String("branch");
+    out.mergeBase = fm.get("mergeBase");
+    out.mergeHead = fm.get("mergeHead");
     out.description = fm.body;
-    QFile patch(pullDir(number) + "/changes.patch");
-    if (patch.open(QIODevice::ReadOnly))
-        out.patch = QString::fromUtf8(patch.readAll());
-    QFile mbox(pullDir(number) + "/commits.mbox");
-    if (mbox.open(QIODevice::ReadOnly))
-        out.commits = QString::fromUtf8(mbox.readAll());
+    // A branch-backed PR carries no committed diff: reconstruct it from the refs.
+    // A merged one resolves against the snapshot taken at merge (the live range
+    // would be empty once the base absorbed the commits). Fall through to any
+    // on-disk blobs if the refs are gone (degraded, but never crashes).
+    const bool derived =
+        out.branchBacked &&
+        (!out.mergeBase.isEmpty() && !out.mergeHead.isEmpty()
+             ? deriveFromRefs(m_workTree, out.mergeBase, out.mergeHead, &out.patch,
+                              &out.commits)
+             : deriveFromRefs(m_workTree, out.base, out.head, &out.patch,
+                              &out.commits));
+    if (!derived) {
+        QFile patch(pullDir(number) + "/changes.patch");
+        if (patch.open(QIODevice::ReadOnly))
+            out.patch = QString::fromUtf8(patch.readAll());
+        QFile mbox(pullDir(number) + "/commits.mbox");
+        if (mbox.open(QIODevice::ReadOnly))
+            out.commits = QString::fromUtf8(mbox.readAll());
+    }
     computeStats(out);
     out.events = readEvents(number);
     return true;
@@ -982,7 +1081,7 @@ QList<PullRequest> PullStore::loadAll(QString *error) const
 int PullStore::createPull(const QString &title, const QString &description,
                           const QString &base, const QString &head,
                           const QString &patch, const QString &commits,
-                          QString *error)
+                          bool branchBacked, QString *error)
 {
     if (!canWrite()) {
         if (error)
@@ -1005,6 +1104,23 @@ int PullStore::createPull(const QString &title, const QString &description,
     pr.head = head;
     pr.patch = patch;
     pr.commits = commits;
+    // Branch-backed: the head branch ref carries the change as real commits, so
+    // store only the signed pointer and reconstruct the diff from base..head.
+    // Recompute patch/commits from the refs now so the signature (and any later
+    // cross-node submission) matches exactly what readers will derive.
+    if (branchBacked) {
+        QString dpatch, dcommits;
+        // Only go branch-backed when the committed range actually reproduces the
+        // change. If the refs are missing or the range is empty (e.g. the work is
+        // still uncommitted in a worktree), keep the passed patch as a stored PR
+        // so nothing is dropped.
+        if (deriveFromRefs(m_workTree, base, head, &dpatch, &dcommits) &&
+            !dpatch.trimmed().isEmpty()) {
+            pr.branchBacked = true;
+            pr.patch = dpatch;
+            pr.commits = dcommits;
+        }
+    }
     pr = makeSignedPull(pr);
     pr.number = nextNumber();
     if (!writePull(pr, error))
@@ -1170,25 +1286,68 @@ bool PullStore::mergePull(int number, QString *error)
         return false;
     }
     QString err;
-    const QString patchPath = pullDir(number) + "/changes.patch";
-    const QString mboxPath = pullDir(number) + "/commits.mbox";
-    if (!pr.commits.isEmpty() && QFileInfo::exists(mboxPath)) {
+    // Snapshot the exact commits the merge is about to apply *before* it runs:
+    // `git am`/apply advances the checked-out base, so reading these afterwards
+    // would no longer give the PR's pre-merge range. Used below to keep a merged
+    // branch-backed PR's diff viewable once the base absorbs the commits.
+    QString preBase, preHead;
+    if (pr.branchBacked) {
+        QByteArray bsha, hsha;
+        if (runGit(m_workTree, {"rev-parse", "--verify", pr.base + "^{commit}"},
+                   &bsha) &&
+            runGit(m_workTree, {"rev-parse", "--verify", pr.head + "^{commit}"},
+                   &hsha)) {
+            preBase = QString::fromUtf8(bsha).trimmed();
+            preHead = QString::fromUtf8(hsha).trimmed();
+        }
+    }
+    // A branch-backed PR has no committed blobs; readPull derived its patch and
+    // commit series from the refs. Replay them through a temp file so the rest of
+    // the merge is identical whether the diff was stored or reconstructed.
+    const QString storedPatch = pullDir(number) + "/changes.patch";
+    const QString storedMbox = pullDir(number) + "/commits.mbox";
+    QString tempFile;
+    auto materialize = [&](const QString &onDisk, const QString &content,
+                           const char *suffix) -> QString {
+        if (QFileInfo::exists(onDisk))
+            return onDisk;
+        tempFile = QDir::temp().filePath(
+            QStringLiteral("forkmesh-merge-%1.%2").arg(number).arg(suffix));
+        return writeTextFile(tempFile, content, error) ? tempFile : QString();
+    };
+    bool applied = false;
+    if (!pr.commits.isEmpty()) {
         // Replay the author's commits so their name/email/date/message survive.
         // 3-way lets `git am` resolve against the current base; on any failure we
         // abort so the working tree is left clean for the reviewer to retry.
-        if (!runGit(m_workTree, {"am", "--3way", mboxPath}, nullptr, &err)) {
+        const QString mbox = materialize(storedMbox, pr.commits, "mbox");
+        if (mbox.isEmpty())
+            return false;
+        applied = runGit(m_workTree, {"am", "--3way", mbox}, nullptr, &err);
+        if (!applied) {
             runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
             if (error)
                 *error = "Could not replay the pull request's commits cleanly: " + err;
-            return false;
         }
-    } else if (!runGit(m_workTree, {"apply", "--index", "--3way", patchPath},
-                       nullptr, &err)) {
-        if (error)
+    } else {
+        const QString patch = materialize(storedPatch, pr.patch, "patch");
+        if (patch.isEmpty())
+            return false;
+        applied = runGit(m_workTree, {"apply", "--index", "--3way", patch}, nullptr,
+                         &err);
+        if (!applied && error)
             *error = "Could not apply the patch cleanly: " + err;
-        return false;
     }
+    if (!tempFile.isEmpty())
+        QFile::remove(tempFile);
+    if (!applied)
+        return false;
     pr.status = "merged";
+    // Freeze the snapshot taken above so the merged PR's diff stays viewable.
+    if (pr.branchBacked && !preBase.isEmpty() && !preHead.isEmpty()) {
+        pr.mergeBase = preBase;
+        pr.mergeHead = preHead;
+    }
     if (!writePull(pr, error))
         return false;
     // Commit both the applied changes and the status update.
@@ -1369,8 +1528,10 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
         return false;
     }
 
-    // Source mbox: the authored series when present, else a synthesized one. A
-    // synthesized mbox goes in a temp file (read once by `git am`, then removed).
+    // Source mbox: the authored series when present (committed blob, or the one
+    // readPull reconstructed for a branch-backed PR), else a single synthesized
+    // commit from the flat patch. A temp mbox is read once by `git am`, then
+    // removed. Preferring pr.commits keeps every authored commit on the branch.
     const QString realMbox = pullDir(number) + "/commits.mbox";
     QString mboxPath;
     QString tempMbox;
@@ -1379,7 +1540,9 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
     } else {
         tempMbox = QDir::temp().filePath(
             QStringLiteral("forkmesh-pull-%1.mbox").arg(number));
-        if (!writeTextFile(tempMbox, syntheticMbox(pr), error)) {
+        if (!writeTextFile(tempMbox, pr.commits.isEmpty() ? syntheticMbox(pr)
+                                                          : pr.commits,
+                           error)) {
             abortConflictMerge();
             return false;
         }
@@ -1548,6 +1711,12 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
         pr.commits = removeFileFromMbox(pr.commits, relPath);
     computeStats(pr); // refresh files/additions/deletions from the trimmed patch
 
+    // The trimmed diff no longer matches base..head, so it can no longer be
+    // reconstructed from the branch — persist it as a stored-patch PR (writePull
+    // then writes the blobs, which become the source of truth on read).
+    pr.branchBacked = false;
+    pr.mergeBase.clear();
+    pr.mergeHead.clear();
     if (!writePull(pr, error))
         return false;
     // writePull only (re)writes commits.mbox when it's non-empty; if every
@@ -1670,7 +1839,8 @@ void PullStore::abortConflictMerge()
 }
 
 bool PullStore::checkMergeable(int number, bool *clean,
-                               QStringList *conflictFiles, QString *error) const
+                               QStringList *conflictFiles, QString *error,
+                               bool keepGuiAlive) const
 {
     if (clean)
         *clean = false;
@@ -1687,11 +1857,21 @@ bool PullStore::checkMergeable(int number, bool *clean,
             *error = QStringLiteral("Pull request #%1 not found.").arg(number);
         return false;
     }
-    const QString patchPath = pullDir(number) + "/changes.patch";
+    // A branch-backed PR's diff is reconstructed (readPull filled pr.patch); dry-
+    // run it through a temp file. A stored-patch PR uses its committed blob.
+    QString patchPath = pullDir(number) + "/changes.patch";
+    QString tempFile;
     if (!QFileInfo::exists(patchPath)) {
-        if (error)
-            *error = QStringLiteral("This pull request has no patch to merge.");
-        return false;
+        if (pr.patch.trimmed().isEmpty()) {
+            if (error)
+                *error = QStringLiteral("This pull request has no patch to merge.");
+            return false;
+        }
+        tempFile = QDir::temp().filePath(
+            QStringLiteral("forkmesh-check-%1.patch").arg(number));
+        if (!writeTextFile(tempFile, pr.patch, error))
+            return false;
+        patchPath = tempFile;
     }
 
     // --check dry-runs the same 3-way apply mergePull performs, without
@@ -1700,7 +1880,10 @@ bool PullStore::checkMergeable(int number, bool *clean,
     QProcess git;
     git.start("git",
               {"-C", m_workTree, "apply", "--check", "--3way", patchPath});
-    if (!git.waitForFinished(kGitTimeoutMs)) {
+    const bool finished = waitForFinishedKeepAlive(git, kGitTimeoutMs, keepGuiAlive);
+    if (!tempFile.isEmpty())
+        QFile::remove(tempFile);
+    if (!finished) {
         if (error)
             *error = QStringLiteral("git timed out checking the merge.");
         return false;
@@ -1932,13 +2115,30 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error) const
         pr.author = fm.get("author");
         pr.authorName = fm.get("authorName");
         pr.sig = fm.get("sig");
+        pr.branchBacked = fm.get("derive") == QLatin1String("branch");
+        pr.mergeBase = fm.get("mergeBase");
+        pr.mergeHead = fm.get("mergeHead");
         pr.description = fm.body;
-        bool pok = false;
-        pr.patch = QString::fromUtf8(showFromMirror("pulls/" + base + "/changes.patch", &pok));
-        bool mok = false;
-        const QByteArray mbox = showFromMirror("pulls/" + base + "/commits.mbox", &mok);
-        if (mok)
-            pr.commits = QString::fromUtf8(mbox);
+        // Branch-backed PRs carry no committed diff — reconstruct it from the
+        // base/head refs the mirror already syncs (the merge snapshot for a
+        // merged one). Fall back to committed blobs for legacy/portable PRs.
+        const bool derived =
+            pr.branchBacked &&
+            (!pr.mergeBase.isEmpty() && !pr.mergeHead.isEmpty()
+                 ? deriveFromRefs(m_mirror, pr.mergeBase, pr.mergeHead, &pr.patch,
+                                  &pr.commits)
+                 : deriveFromRefs(m_mirror, pr.base, pr.head, &pr.patch,
+                                  &pr.commits));
+        if (!derived) {
+            bool pok = false;
+            pr.patch = QString::fromUtf8(
+                showFromMirror("pulls/" + base + "/changes.patch", &pok));
+            bool mok = false;
+            const QByteArray mbox =
+                showFromMirror("pulls/" + base + "/commits.mbox", &mok);
+            if (mok)
+                pr.commits = QString::fromUtf8(mbox);
+        }
         computeStats(pr);
         // Enumerate this PR's conversation event files from the mirror.
         QByteArray dirListing;
