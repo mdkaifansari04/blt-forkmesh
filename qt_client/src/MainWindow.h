@@ -219,6 +219,9 @@ public:
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
+    // The branch the open repo treats as its default/merge base, so a test can
+    // prove it stays main even when the working tree is parked on a feature branch.
+    Q_INVOKABLE QString testRepoDefaultBranch() const;
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
