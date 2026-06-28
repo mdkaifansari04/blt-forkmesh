@@ -2,8 +2,10 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QPointer>
 #include <QScrollArea>
 #include <QString>
+#include <QVector>
 
 class QVBoxLayout;
 class QWidget;
@@ -60,6 +62,21 @@ public:
     void jumpToBottom();
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
+
+    // ---- transcript search (adhoc #201) ------------------------------------
+    // Find query (case-insensitive) across the rendered transcript, highlighting
+    // every match, selecting the first and scrolling it into view; returns the
+    // total number of matches. clearSearch() removes all highlighting.
+    // searchNext()/searchPrev() step through the matches (wrapping at the ends).
+    // searchResultsChanged() reports "current of total" (current is 1-based, 0
+    // when there are no matches) so the host can show a counter.
+    int search(const QString &query);
+    void searchNext();
+    void searchPrev();
+    void clearSearch();
+
+signals:
+    void searchResultsChanged(int current, int total);
 
 private:
     void applyScheme();
@@ -133,4 +150,26 @@ private:
     QPropertyAnimation *m_scrollAnim = nullptr; // smooth scrolling
     qint64 m_totalTokens = 0;
     double m_totalCost = 0.0;
+
+    // ---- transcript search state ------------------------------------------
+    // Each label that contains at least one match, in top-to-bottom order, with
+    // its pristine (un-highlighted) text/format so highlighting is reversible.
+    struct LabelHit {
+        QPointer<QLabel> label;
+        Qt::TextFormat fmt;
+        QString orig;
+        int count; // matches in this label
+    };
+    void rebuildSearchMatches();   // recompute m_searchLabels from m_searchQuery
+    void renderSearchHighlights(); // (re)apply highlights, marking the current one
+    void restoreSearchOriginals(); // put every modified label back as it was
+    void scrollToCurrentMatch();
+    void stepMatch(int delta);
+    QLabel *currentMatchLabel() const;
+    QString highlightedTextFor(const QString &orig, Qt::TextFormat fmt,
+                               int currentLocalOcc) const;
+    QString m_searchQuery;
+    QVector<LabelHit> m_searchLabels;
+    int m_searchTotal = 0;    // sum of all per-label counts
+    int m_searchCurrent = -1; // global match index, -1 = none selected
 };
