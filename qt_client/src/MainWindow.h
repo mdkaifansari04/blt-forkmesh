@@ -2020,6 +2020,10 @@ private:
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
+    // Claude model chooser (adhoc #261): pick opus/sonnet/etc. for Claude Code
+    // quick-add runs. Only meaningful for the "Claude Code" provider, so it's
+    // shown/hidden as the provider selection changes.
+    QComboBox *m_quickAddClaudeModel = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
