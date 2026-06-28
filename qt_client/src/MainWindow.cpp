@@ -4104,6 +4104,17 @@ struct GitKeepAlive {
     GitKeepAlive &operator=(const GitKeepAlive &) = delete;
 };
 
+// RAII: hold a bool true for the scope's lifetime. Used as a re-entrancy guard so
+// a heavy slot serviced by GitKeepAlive's event-loop pump can't re-enter and stack
+// its synchronous git work mid-flight.
+struct ScopedFlag {
+    bool &flag;
+    explicit ScopedFlag(bool &f) : flag(f) { flag = true; }
+    ~ScopedFlag() { flag = false; }
+    ScopedFlag(const ScopedFlag &) = delete;
+    ScopedFlag &operator=(const ScopedFlag &) = delete;
+};
+
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
 bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
@@ -24788,7 +24799,24 @@ QString MainWindow::sessionWorkdir(int sessionId)
             // finished earlier) resolve its worktree from the branch via git, so
             // the Files-changed diff runs in the session's own tree rather than
             // the main checkout — otherwise the tab shows the wrong files.
-            const QString wt = worktreePathForBranch(repoLocal, s->branchName);
+            //
+            // worktreePathForBranch() shells `git worktree list`, and this is on
+            // the hot path: refreshAgentFilesPanel() calls us on every transcript
+            // turn (twice — also via scheduleAgentFilesDiff), so a streaming
+            // reloaded session fired a git subprocess per event on the GUI thread
+            // and stalled it for seconds (adhoc #247). The branch->worktree binding
+            // is fixed for a session's lifetime, so cache the resolved path and
+            // re-resolve only if a previously found worktree was since removed
+            // (a cheap filesystem check, no subprocess).
+            auto cached = m_sessionWorkdirCache.constFind(sessionId);
+            QString wt;
+            if (cached != m_sessionWorkdirCache.constEnd()
+                && (cached->isEmpty() || QDir(*cached).exists())) {
+                wt = *cached;
+            } else {
+                wt = worktreePathForBranch(repoLocal, s->branchName);
+                m_sessionWorkdirCache.insert(sessionId, wt);
+            }
             if (!wt.isEmpty() && QDir(wt).exists())
                 return wt;
             return repoLocal;
@@ -25921,6 +25949,7 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
 // frees the branch while keeping the branch ref, so the PR still resolves.
 void MainWindow::cleanupStreamWorktree(int sessionId)
 {
+    m_sessionWorkdirCache.remove(sessionId); // worktree about to vanish — don't cache it
     const QString wtPath = m_streamWorktree.take(sessionId);
     if (wtPath.isEmpty())
         return;
@@ -45006,6 +45035,24 @@ QStringList MainWindow::mentionCandidateNames() const
 
 void MainWindow::refreshRepositoryList()
 {
+    // Re-entrancy guard (adhoc #247): the periodic m_homeStatsTimer fires this once
+    // a minute, which can land inside another heavy refresh's GitKeepAlive pump.
+    // Running the per-repo git reads (mirror head/commit/size) plus
+    // updateRepoPushButton nested in that pump stacks synchronous git work and
+    // stalls the GUI. Coalesce + defer to a fresh event-loop turn instead; the
+    // deferred call re-checks the guard and re-arms if the pump is still active.
+    if (m_heavyRefreshInFlight) {
+        if (!m_repoListRefreshQueued) {
+            m_repoListRefreshQueued = true;
+            QTimer::singleShot(250, this, [this] {
+                m_repoListRefreshQueued = false;
+                refreshRepositoryList();
+            });
+        }
+        return;
+    }
+    const ScopedFlag refreshGuard(m_heavyRefreshInFlight);
+
     m_repoMenuEntries.clear();
     m_nodeMenuEntries.clear();
 
@@ -47930,6 +47977,17 @@ void MainWindow::refreshOpenRepoDetail()
         m_openRepoRefreshTimer->stop(); // a direct refresh subsumes any pending one
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
+    // Re-entrancy guard (adhoc #247): this fires on a debounce timer and from many
+    // push/sync paths, each running synchronous git reads under a GitKeepAlive that
+    // pumps the event loop. A second heavy refresh firing *during* that pump (the
+    // periodic refreshRepositoryList, or this timer again) would nest its git work
+    // inside the first one's pump and compound into a multi-second stall. Re-arm the
+    // debounce so it runs on a fresh event-loop turn once the in-flight one unwinds.
+    if (m_heavyRefreshInFlight) {
+        scheduleOpenRepoDetailRefresh();
+        return;
+    }
+    const ScopedFlag refreshGuard(m_heavyRefreshInFlight);
     // Re-read the branch tip, commit list, About sidebar and the current file
     // view so a freshly pushed commit shows without reopening the repo.
     loadBranchesAndTags();
