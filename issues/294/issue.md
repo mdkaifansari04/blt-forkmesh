@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 294
 title: have prioritise from readme button use the defautl agent please
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 79
-progress: 0
+progress: 50
 assignees: []
 createdAt: 1782512635428
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 217
 title: show the source of truth node as the name in the website repo list
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 91
-progress: 0
+progress: 55
 assignees: []
 createdAt: 1782353825811
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

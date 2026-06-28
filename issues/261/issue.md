@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 261
 title: have an option on pr detail to "merge, delete pr + branch"
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 20
-progress: 0
+progress: 70
 assignees: []
 createdAt: 1782430497821
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

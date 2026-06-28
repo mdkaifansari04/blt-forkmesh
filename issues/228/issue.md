@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 228
 title: add a security.md file
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 35
-progress: 0
+progress: 30
 assignees: []
 createdAt: 1782354993210
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

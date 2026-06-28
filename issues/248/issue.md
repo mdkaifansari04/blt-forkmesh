@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 248
 title: make the merge graph look nicer
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 42
-progress: 0
+progress: 40
 assignees: []
 createdAt: 1782363526448
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
