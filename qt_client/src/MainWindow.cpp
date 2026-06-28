@@ -32878,6 +32878,20 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDetailLabel->setObjectName("sectionLabel");
     m_branchDetailLabel->setTextFormat(Qt::RichText);
 
+    // Open in Codium: launch VSCodium on the selected branch's working directory
+    // (its worktree, or the main checkout) so the branch can be edited in the IDE
+    // without dropping to a terminal. Disabled when no local checkout exists.
+    m_branchOpenCodiumButton = new QPushButton("Open in Codium");
+    m_branchOpenCodiumButton->setObjectName("ghostButton");
+    m_branchOpenCodiumButton->setProperty("buttonSize", "sm");
+    m_branchOpenCodiumButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchOpenCodiumButton, "code", 14);
+    m_branchOpenCodiumButton->setEnabled(false);
+    connect(m_branchOpenCodiumButton, &QPushButton::clicked, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            openBranchInCodium(m_branchDiffBranch);
+    });
+
     // Merge editor: the hands-on path to bring the branch up to date with base,
     // opening the interactive conflict editor so conflicts can be resolved by
     // hand (the manual counterpart to "Fix with agent"). Sits left of "Pull
@@ -32969,6 +32983,7 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_branchDetailLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_branchOpenCodiumButton);
     detailBar->addWidget(m_branchMergeEditorButton);
     detailBar->addWidget(m_branchPullButton);
     detailBar->addWidget(m_branchFixButton);
@@ -33476,6 +33491,16 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
         m_branchDetailLabel->setText(text);
     }
 
+    // Open in Codium: available whenever there's a local checkout to open. Works
+    // for the base branch too (opens the main checkout), unlike the merge actions.
+    if (m_branchOpenCodiumButton) {
+        const bool canOpen = !branch.isEmpty() && !dir.isEmpty();
+        m_branchOpenCodiumButton->setEnabled(canOpen);
+        m_branchOpenCodiumButton->setToolTip(
+            canOpen ? QStringLiteral("Open %1 in VSCodium").arg(branch)
+                    : QStringLiteral("No local checkout to open"));
+    }
+
     // Pull <base> into this branch (only when it's actually behind).
     m_branchPullButton->setText(base.isEmpty() ? QStringLiteral("Pull main")
                                                : QStringLiteral("Pull %1").arg(base));
@@ -33542,6 +33567,46 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
         canMerge ? QStringLiteral("Merge %1 into %2").arg(branch, base)
                  : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
                            : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
+}
+
+void MainWindow::openBranchInCodium(const QString &branch)
+{
+    const QString repoPath = repoGitDir();
+    if (branch.isEmpty() || repoPath.isEmpty()) {
+        setRepoDetailNotice("No local checkout to open.", true);
+        return;
+    }
+    // Prefer the branch's own worktree; fall back to the main checkout for the
+    // default branch (or any branch without a dedicated worktree).
+    QString dir = worktreePathForBranch(repoPath, branch);
+    if (dir.isEmpty())
+        dir = repoPath;
+
+    // Resolve the VSCodium launcher. "codium" is the Linux/Homebrew CLI name;
+    // "vscodium" is the alternative shim some distros ship.
+    QString codium = QStandardPaths::findExecutable(QStringLiteral("codium"));
+    if (codium.isEmpty())
+        codium = QStandardPaths::findExecutable(QStringLiteral("vscodium"));
+#ifdef Q_OS_MACOS
+    if (codium.isEmpty()) {
+        const QString cli =
+            QStringLiteral("/Applications/VSCodium.app/Contents/Resources/app/bin/codium");
+        if (QFileInfo::exists(cli))
+            codium = cli;
+    }
+#endif
+    if (codium.isEmpty()) {
+        setRepoDetailNotice(
+            "VSCodium not found \xE2\x80\x94 install it and ensure \"codium\" is on PATH.",
+            true);
+        return;
+    }
+
+    if (QProcess::startDetached(codium, {dir}))
+        setRepoDetailNotice(QStringLiteral("Opening %1 in VSCodium\xE2\x80\xA6").arg(branch),
+                            false);
+    else
+        setRepoDetailNotice("Could not launch VSCodium.", true);
 }
 
 void MainWindow::showBranchDiff(const QString &branch)
