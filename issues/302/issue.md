@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 302
 title: remove create pr from the quick issue add
 status: open
-labels: []
+labels: [Complete]
 milestone: 
 priority: 0
 progress: 0
