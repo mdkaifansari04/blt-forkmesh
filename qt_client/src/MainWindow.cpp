@@ -824,7 +824,7 @@ public:
         const bool sameRow = m_hovered.isValid() &&
                              index.row() == m_hovered.row() &&
                              index.parent() == m_hovered.parent();
-        if (sameRow && !(opt.state & QStyle::State_Selected))
+        if (m_hoverFill && sameRow && !(opt.state & QStyle::State_Selected))
             painter->fillRect(option.rect, QColor(46, 160, 67, 55)); // light green
         QStyledItemDelegate::paint(painter, opt, index);
     }
@@ -836,6 +836,10 @@ protected:
             setHovered(QModelIndex());
         return QStyledItemDelegate::eventFilter(obj, event);
     }
+
+    // Subclasses can opt out of the light-green mouse-hover row fill while still
+    // tracking the hovered row (e.g. the agents list, which wants no hover tint).
+    bool m_hoverFill = true;
 
 private:
     void setHovered(const QModelIndex &index)
@@ -907,7 +911,11 @@ inline void paintRowSelectionBorder(QPainter *painter,
 class SelectionBorderRowDelegate : public HoverRowDelegate
 {
 public:
-    using HoverRowDelegate::HoverRowDelegate;
+    explicit SelectionBorderRowDelegate(QAbstractItemView *view)
+        : HoverRowDelegate(view)
+    {
+        m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
+    }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
@@ -7026,6 +7034,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_issueQuickAdd, &QLineEdit::textChanged, this,
             [updateQuickAddCharCount](const QString &) { updateQuickAddCharCount(); });
     updateQuickAddCharCount();
+    // Typing anything by hand drops out of history navigation, so the next Up
+    // starts again from the most recent prompt (adhoc #200). textEdited fires only
+    // on user edits, not the programmatic setText() the history walk does.
+    connect(m_issueQuickAdd, &QLineEdit::textEdited, this,
+            [this](const QString &) { m_quickAddHistoryIndex = -1; });
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -15428,6 +15441,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
     m_pullReopenButton = new QPushButton("Reopen");
+    m_pullSendToSourceButton = new QPushButton("Send to source of truth");
     m_pullDeleteButton = new QPushButton("Delete");
     m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
     m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
@@ -15437,7 +15451,8 @@ QWidget *MainWindow::buildPullsTab()
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
                            m_pullFixButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
-                           m_pullCloseButton, m_pullReopenButton, m_pullDeleteButton,
+                           m_pullCloseButton, m_pullReopenButton,
+                           m_pullSendToSourceButton, m_pullDeleteButton,
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
                            m_pullPreviewButton,
                            m_pullLinkIssueButton, m_pullSplitButton}) {
@@ -15485,6 +15500,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
     m_pullReopenButton->hide(); // only shown when the PR is closed or merged
+    setOcticon(m_pullSendToSourceButton, "upload", 16);
+    m_pullSendToSourceButton->setToolTip(
+        "Deliver this pull request to the repository owner's inbox. The relay "
+        "holds it, so it reaches the source of truth even while that node is "
+        "offline.");
+    m_pullSendToSourceButton->hide(); // only shown on mirror nodes (can't merge here)
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -15554,6 +15575,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullMergeButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullMergeDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -15985,6 +16007,8 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::mergeAndDeleteCurrentPull);
     connect(m_pullCloseButton, &QPushButton::clicked, this, &MainWindow::closeCurrentPull);
     connect(m_pullReopenButton, &QPushButton::clicked, this, &MainWindow::reopenCurrentPull);
+    connect(m_pullSendToSourceButton, &QPushButton::clicked, this,
+            &MainWindow::sendCurrentPullToSource);
     connect(m_pullDeleteButton, &QPushButton::clicked, this, &MainWindow::deleteCurrentPull);
     connect(m_pullDeleteBranchButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullAndBranch);
@@ -17789,6 +17813,14 @@ void MainWindow::updatePullActionState()
     if (m_pullReopenButton) {
         m_pullReopenButton->setVisible(writable && have && (closed || merged));
         m_pullReopenButton->setEnabled(writable && have && (closed || merged));
+    }
+    // "Send to source of truth" only makes sense on a mirror node (no working tree
+    // to merge in): the owner holds the real pulls/ tree, so re-deliver the open PR
+    // to their inbox where the relay queues it until they come online.
+    if (m_pullSendToSourceButton) {
+        const bool offerSend = !writable && have && open;
+        m_pullSendToSourceButton->setVisible(offerSend);
+        m_pullSendToSourceButton->setEnabled(offerSend);
     }
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
@@ -19700,6 +19732,44 @@ void MainWindow::reopenCurrentPull()
     if (!store.setStatus(m_currentPullNumber, "open", &error))
         QMessageBox::warning(this, "Reopen pull request", error);
     reloadPulls();
+}
+
+void MainWindow::sendCurrentPullToSource()
+{
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &candidate : std::as_const(m_currentPulls)) {
+        if (candidate.number == m_currentPullNumber) {
+            pr = &candidate;
+            break;
+        }
+    }
+    if (!pr)
+        return;
+    // The PR was synced from the mirror with its original author/signature intact;
+    // deliver it as-authored so the owner's inbox can verify it. Without a
+    // signature there's nothing the source of truth would accept.
+    if (pr->sig.isEmpty() || pr->author.isEmpty()) {
+        QMessageBox::warning(
+            this, "Send to source of truth",
+            "This pull request is missing its signature, so it can't be delivered "
+            "to the source of truth.");
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (QMessageBox::question(
+            this, "Send to source of truth",
+            QStringLiteral(
+                "Deliver pull request #%1 to %2/%3's inbox?\n\n"
+                "The relay queues it, so it reaches the source of truth even if "
+                "that node is currently offline.")
+                .arg(m_currentPullNumber)
+                .arg(repo.owner, repo.name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+    submitPullToInbox(*pr, repo);
 }
 
 // Toggle the pull-delete buttons together so none can launch a second history
@@ -38115,6 +38185,9 @@ void MainWindow::quickAddIssue()
     const QString title = m_issueQuickAdd->text().trimmed();
     if (title.isEmpty())
         return;
+    // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
+    // before the field is cleared, covers every send path below.
+    recordQuickAddHistory(title);
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
@@ -38193,6 +38266,57 @@ void MainWindow::quickAddIssue()
             assignIssueToAgent(provider);
         }
     }
+}
+
+// Append a just-sent quick-add prompt to the recall history (adhoc #200). Skips
+// consecutive duplicates so Up doesn't step through repeats, caps the list, and
+// resets navigation so the next Up starts from this freshest entry.
+void MainWindow::recordQuickAddHistory(const QString &text)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty())
+        return;
+    if (m_quickAddHistory.isEmpty() || m_quickAddHistory.last() != t)
+        m_quickAddHistory.append(t);
+    constexpr int kMaxQuickAddHistory = 50;
+    while (m_quickAddHistory.size() > kMaxQuickAddHistory)
+        m_quickAddHistory.removeFirst();
+    m_quickAddHistoryIndex = -1;
+    m_quickAddDraft.clear();
+}
+
+// Walk the quick-add prompt history from the footer bar (adhoc #200). direction
+// < 0 is Up (older prompts), > 0 is Down (back toward the live draft). Returns
+// true when the key was consumed so the event filter swallows it.
+bool MainWindow::navigateQuickAddHistory(int direction)
+{
+    if (!m_issueQuickAdd || m_quickAddHistory.isEmpty())
+        return false;
+    const int count = m_quickAddHistory.size();
+    if (direction < 0) { // Up: step toward older prompts
+        if (m_quickAddHistoryIndex < 0) {
+            // Entering history: stash whatever was being typed, show the newest.
+            m_quickAddDraft = m_issueQuickAdd->text();
+            m_quickAddHistoryIndex = count - 1;
+        } else if (m_quickAddHistoryIndex > 0) {
+            --m_quickAddHistoryIndex;
+        } else {
+            return true; // already at the oldest entry; swallow the key
+        }
+        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+        return true;
+    }
+    // Down: step toward newer prompts, then back out to the stashed draft.
+    if (m_quickAddHistoryIndex < 0)
+        return false; // not navigating; let the field handle the key
+    if (m_quickAddHistoryIndex < count - 1) {
+        ++m_quickAddHistoryIndex;
+        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+    } else {
+        m_quickAddHistoryIndex = -1;
+        m_issueQuickAdd->setText(m_quickAddDraft);
+    }
+    return true;
 }
 
 // Footer quick-add "paperclip": pick one or more images to attach to the next
@@ -38801,6 +38925,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == m_issueQuickAdd && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
+            return true;
+        // Up/Down walk the quick-add prompt history (adhoc #200): Up recalls the
+        // last prompt sent so it can be fired again, Down returns toward the draft.
+        if (ke->key() == Qt::Key_Up && navigateQuickAddHistory(-1))
+            return true;
+        if (ke->key() == Qt::Key_Down && navigateQuickAddHistory(1))
             return true;
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
