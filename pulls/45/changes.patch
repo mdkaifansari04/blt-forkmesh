@@ -1,0 +1,3756 @@
+diff --git a/cloudflare_worker/public/dashboard-chat.js b/cloudflare_worker/public/dashboard-chat.js
+new file mode 100644
+index 00000000..9759a9c9
+--- /dev/null
++++ b/cloudflare_worker/public/dashboard-chat.js
+@@ -0,0 +1,436 @@
++// Dashboard ForkMesh room chat integration.
++// Keeps the current dashboard UI, but uses the same encrypted room protocol as
++// the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
++
++(() => {
++  const ROOM_NAME = "general";
++  const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
++  const CHANNEL = "#general";
++  const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
++  const MAX_TEXT = 16000;
++  const MAX_NAME = 32;
++  const MAX_SIDE_MESSAGES = 3;
++
++  const fullLog = document.querySelector("#fullChatMessages");
++  const sideLog = document.querySelector("#sideChatMessages");
++  const fullInput = document.querySelector("#fullChatInput");
++  const sideInput = document.querySelector("#sideChatInput");
++  const fullSend = document.querySelector("#fullChatSend");
++  const sideSend = document.querySelector("#sideChatSend");
++
++  if (!fullLog && !sideLog) return;
++
++  const enc = new TextEncoder();
++  const dec = new TextDecoder();
++  const selfId =
++    (crypto.randomUUID && crypto.randomUUID()) ||
++    `${Math.random()}`.slice(2) + Date.now();
++
++  let roomKey = null;
++  let socket = null;
++  let connecting = false;
++  let openCallbacks = [];
++  const seen = new Set();
++  const rows = new Map();
++  const sideEntries = [];
++
++  function bytesToB64(bytes) {
++    const arr = new Uint8Array(bytes);
++    let bin = "";
++    for (let i = 0; i < arr.length; i += 1) bin += String.fromCharCode(arr[i]);
++    return btoa(bin);
++  }
++
++  function b64ToBytes(value) {
++    const bin = atob(value);
++    const out = new Uint8Array(bin.length);
++    for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
++    return out;
++  }
++
++  function b64urlToBytes(value) {
++    let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
++    while (s.length % 4) s += "=";
++    return b64ToBytes(s);
++  }
++
++  async function ed25519Verify(pubB64url, sigB64url, dataStr) {
++    try {
++      const key = await crypto.subtle.importKey(
++        "raw",
++        b64urlToBytes(pubB64url),
++        { name: "Ed25519" },
++        false,
++        ["verify"]
++      );
++      return await crypto.subtle.verify(
++        { name: "Ed25519" },
++        key,
++        b64urlToBytes(sigB64url),
++        enc.encode(dataStr)
++      );
++    } catch (_) {
++      return false;
++    }
++  }
++
++  async function deriveRoomKey() {
++    const saltDigest = new Uint8Array(
++      await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
++    );
++    const salt = saltDigest.slice(0, 16);
++    const baseKey = await crypto.subtle.importKey(
++      "raw",
++      enc.encode(ROOM_PASSPHRASE),
++      "PBKDF2",
++      false,
++      ["deriveKey"]
++    );
++    return crypto.subtle.deriveKey(
++      { name: "PBKDF2", salt, iterations: 210000, hash: "SHA-256" },
++      baseKey,
++      { name: "AES-GCM", length: 256 },
++      false,
++      ["encrypt", "decrypt"]
++    );
++  }
++
++  async function encryptObject(obj) {
++    const nonce = crypto.getRandomValues(new Uint8Array(12));
++    const combined = new Uint8Array(
++      await crypto.subtle.encrypt(
++        { name: "AES-GCM", iv: nonce, tagLength: 128 },
++        roomKey,
++        enc.encode(JSON.stringify(obj))
++      )
++    );
++    const body = combined.slice(0, combined.length - 16);
++    const tag = combined.slice(combined.length - 16);
++    return {
++      kind: "cipher",
++      v: 1,
++      nonce: bytesToB64(nonce),
++      tag: bytesToB64(tag),
++      body: bytesToB64(body),
++    };
++  }
++
++  async function decryptObject(envelope) {
++    if (!envelope || envelope.kind !== "cipher") return null;
++    try {
++      const nonce = b64ToBytes(envelope.nonce);
++      const body = b64ToBytes(envelope.body);
++      const tag = b64ToBytes(envelope.tag);
++      const combined = new Uint8Array(body.length + tag.length);
++      combined.set(body, 0);
++      combined.set(tag, body.length);
++      const plain = await crypto.subtle.decrypt(
++        { name: "AES-GCM", iv: nonce, tagLength: 128 },
++        roomKey,
++        combined
++      );
++      return JSON.parse(dec.decode(plain));
++    } catch (_) {
++      return null;
++    }
++  }
++
++  function readSession() {
++    try {
++      return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
++    } catch (_) {
++      return null;
++    }
++  }
++
++  function displayName() {
++    const session = readSession();
++    const value = session?.nodeName || session?.email || "web-guest";
++    return String(value).trim().slice(0, MAX_NAME) || "web-guest";
++  }
++
++  function escapeHtml(value) {
++    return String(value || "").replace(/[&<>"']/g, (char) => ({
++      "&": "&amp;",
++      "<": "&lt;",
++      ">": "&gt;",
++      '"': "&quot;",
++      "'": "&#039;",
++    })[char]);
++  }
++
++  function setStatus(text) {
++    document.querySelectorAll("[data-dashboard-chat-status]").forEach((el) => {
++      el.textContent = text;
++    });
++  }
++
++  function fullEmptyHtml() {
++    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Type below to join the encrypted #general room.</div>';
++  }
++
++  function sideEmptyHtml() {
++    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join #general.</div>';
++  }
++
++  function ensureEmptyState() {
++    if (fullLog && !fullLog.children.length) fullLog.innerHTML = fullEmptyHtml();
++    if (sideLog && !sideLog.children.length) sideLog.innerHTML = sideEmptyHtml();
++  }
++
++  function clearEmptyState() {
++    [fullLog, sideLog].forEach((log) => {
++      if (!log) return;
++      const text = log.textContent || "";
++      if (text.includes("Type below to join") || text.includes("Type to join")) {
++        log.textContent = "";
++      }
++    });
++  }
++
++  function avatarLetter(handle) {
++    return escapeHtml((handle || "?").slice(0, 1).toUpperCase());
++  }
++
++  function appendFullMessage(kind, who, text, id, senderId, ts) {
++    if (!fullLog) return;
++    clearEmptyState();
++    const self = kind === "self";
++    const row = document.createElement("div");
++    row.className = "flex items-start gap-3 group rounded-lg px-2 py-1 hover:bg-secondary/40 transition-colors mt-3";
++    row.innerHTML = `
++      <span class="avatar flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(who)}</span>
++      <div class="min-w-0 flex-1">
++        <div class="mb-0.5 flex items-baseline gap-2">
++          <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
++          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(ts || "")}</span>
++        </div>
++        <p class="text-sm text-muted-foreground leading-relaxed break-words">${escapeHtml(text)}</p>
++      </div>`;
++    fullLog.append(row);
++    fullLog.scrollTop = fullLog.scrollHeight;
++    if (id) rows.set(id, { el: row, senderId: senderId || "", textEl: row.querySelector("p") });
++  }
++
++  function renderSideMessages() {
++    if (!sideLog) return;
++    if (!sideEntries.length) {
++      sideLog.innerHTML = sideEmptyHtml();
++      return;
++    }
++    sideLog.innerHTML = sideEntries.slice(-MAX_SIDE_MESSAGES).map((message) => `
++      <div class="flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2">
++        <span class="avatar flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-secondary font-mono text-[9px] font-semibold text-foreground">${avatarLetter(message.who)}</span>
++        <div class="min-w-0 flex-1">
++          <span class="text-[10px] font-semibold ${message.kind === "self" ? "text-primary" : "text-foreground"} mr-1.5">${escapeHtml(message.who)}</span>
++          <p class="text-xs text-muted-foreground leading-relaxed break-words">${escapeHtml(message.text)}</p>
++        </div>
++      </div>
++    `).join("") + '<div data-chat-bottom></div>';
++    sideLog.querySelector("[data-chat-bottom]")?.scrollIntoView({ behavior: "smooth" });
++  }
++
++  function appendSideMessage(kind, who, text, id, senderId) {
++    sideEntries.push({ kind, who, text, id, senderId });
++    renderSideMessages();
++  }
++
++  function appendMessage(kind, who, text, id, senderId, ts) {
++    appendFullMessage(kind, who, text, id, senderId, ts);
++    appendSideMessage(kind, who, text, id, senderId);
++  }
++
++  function appendSystem(text) {
++    if (fullLog) {
++      clearEmptyState();
++      const row = document.createElement("div");
++      row.className = "my-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground";
++      row.textContent = text;
++      fullLog.append(row);
++      fullLog.scrollTop = fullLog.scrollHeight;
++    }
++  }
++
++  function removeMessage(id) {
++    const rec = rows.get(id);
++    if (rec?.el?.parentNode) rec.el.parentNode.removeChild(rec.el);
++    rows.delete(id);
++    const idx = sideEntries.findIndex((entry) => entry.id === id);
++    if (idx >= 0) sideEntries.splice(idx, 1);
++    renderSideMessages();
++  }
++
++  function makePlain(type, extra) {
++    return Object.assign(
++      {
++        type,
++        id:
++          (crypto.randomUUID && crypto.randomUUID()) ||
++          `${Math.random()}`.slice(2) + Date.now(),
++        senderId: selfId,
++        sender: displayName(),
++        ts: Date.now(),
++      },
++      extra || {}
++    );
++  }
++
++  function once(id) {
++    if (!id || seen.has(id)) return false;
++    seen.add(id);
++    return true;
++  }
++
++  function renderChatEntry(entry, kind) {
++    if (!once(entry.id)) return;
++    const who = String(entry.sender || "peer").slice(0, MAX_NAME);
++    const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
++    if (!text) return;
++    const ts = entry.ts ? new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
++    appendMessage(kind, who, text, entry.id, entry.senderId, ts);
++  }
++
++  async function verifyAdminDelete(plain) {
++    const target = plain.target;
++    const adminId = plain.senderId;
++    const sig = plain.sig;
++    if (!target || !sig || !adminId) return false;
++    const canonical =
++      "forkmesh-admin-delete-v1\n" +
++      (plain.conversation || "") +
++      "\n" +
++      target +
++      "\n" +
++      adminId +
++      "\n" +
++      String(plain.ts);
++    if (!(await ed25519Verify(adminId, sig, canonical))) return false;
++    try {
++      const name = String(plain.sender || "").trim().toLowerCase();
++      if (!name) return false;
++      const res = await fetch("/api/accounts/" + encodeURIComponent(name));
++      const rec = await res.json();
++      return rec && rec.isAdmin === true && rec.pubkey === adminId;
++    } catch (_) {
++      return false;
++    }
++  }
++
++  function handlePlain(plain) {
++    const type = plain.type;
++    const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
++    if (type === "chat") {
++      renderChatEntry(plain, "peer");
++    } else if (type === "history") {
++      for (const entry of plain.entries || []) {
++        if (entry && (entry.channel || entry.text || entry.fileName)) renderChatEntry(entry, "peer");
++      }
++    } else if (type === "edit") {
++      const rec = rows.get(plain.target);
++      if (rec && rec.senderId === plain.senderId && rec.textEl) rec.textEl.textContent = plain.text || "";
++    } else if (type === "delete") {
++      const rec = rows.get(plain.target);
++      if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
++    } else if (type === "admin-delete") {
++      verifyAdminDelete(plain).then((ok) => {
++        if (!ok) return;
++        seen.add(plain.target);
++        removeMessage(plain.target);
++      });
++    } else if (type === "hello" && !plain.to) {
++      appendSystem(sender + " joined");
++    } else if (type === "bye") {
++      appendSystem(sender + " left");
++    }
++  }
++
++  async function onFrame(event) {
++    if (typeof event.data !== "string") return;
++    let envelope;
++    try {
++      envelope = JSON.parse(event.data);
++    } catch (_) {
++      return;
++    }
++    const plain = await decryptObject(envelope);
++    if (!plain || plain.senderId === selfId) return;
++    handlePlain(plain);
++  }
++
++  function send(plain) {
++    return encryptObject(plain).then((envelope) => {
++      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope));
++    });
++  }
++
++  async function connect() {
++    if (socket || connecting) return;
++    connecting = true;
++    setStatus("Connecting...");
++    try {
++      if (!roomKey) roomKey = await deriveRoomKey();
++    } catch (_) {
++      connecting = false;
++      setStatus("Encryption unavailable");
++      return;
++    }
++    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
++    socket = new WebSocket(`${scheme}//${location.host}${CHAT_WS_PATH}`);
++    socket.addEventListener("open", () => {
++      connecting = false;
++      setStatus("Connected · end-to-end encrypted");
++      send(makePlain("hello", { channels: [CHANNEL] }));
++      const callbacks = openCallbacks;
++      openCallbacks = [];
++      callbacks.forEach((cb) => cb());
++    });
++    socket.addEventListener("message", onFrame);
++    socket.addEventListener("close", () => {
++      socket = null;
++      connecting = false;
++      setStatus("Disconnected · send to rejoin");
++    });
++    socket.addEventListener("error", () => {
++      if (socket) socket.close();
++    });
++  }
++
++  function runWhenConnected(callback) {
++    if (socket && socket.readyState === WebSocket.OPEN) {
++      callback();
++      return;
++    }
++    openCallbacks.push(callback);
++    connect();
++  }
++
++  function sendFrom(inputEl) {
++    const text = (inputEl?.value || "").trim();
++    if (!text) return;
++    if (inputEl) inputEl.value = "";
++    runWhenConnected(() => {
++      const plain = makePlain("chat", { channel: CHANNEL, text: text.slice(0, MAX_TEXT) });
++      send(plain);
++      seen.add(plain.id);
++      const ts = new Date(plain.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
++      appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, ts);
++    });
++  }
++
++  function wireInput(inputEl, sendEl) {
++    if (!inputEl || !sendEl) return;
++    inputEl.addEventListener("focus", connect);
++    sendEl.addEventListener("click", () => sendFrom(inputEl));
++    inputEl.addEventListener("keydown", (event) => {
++      if (event.key === "Enter") {
++        event.preventDefault();
++        sendFrom(inputEl);
++      }
++    });
++  }
++
++  ensureEmptyState();
++  setStatus("Not connected");
++  wireInput(fullInput, fullSend);
++  wireInput(sideInput, sideSend);
++})();
+diff --git a/cloudflare_worker/public/dashboard.html b/cloudflare_worker/public/dashboard.html
+new file mode 100644
+index 00000000..9783286e
+--- /dev/null
++++ b/cloudflare_worker/public/dashboard.html
+@@ -0,0 +1,1204 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>ForkMesh Dashboard</title>
++    <meta name="description" content="Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard." />
++    <meta name="application-name" content="ForkMesh" />
++    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
++    <meta name="theme-color" content="#090909" />
++    <meta name="color-scheme" content="dark" />
++    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
++    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
++    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
++    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
++    <link rel="manifest" href="/favicon/site.webmanifest" />
++    <link rel="preconnect" href="https://fonts.googleapis.com" />
++    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
++    <link
++      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
++      rel="stylesheet"
++    />
++    <script src="https://cdn.tailwindcss.com"></script>
++    <script>
++      tailwind.config = {
++        theme: {
++          extend: {
++            fontFamily: {
++              sans: ["Outfit", "system-ui", "sans-serif"],
++              mono: ["Geist Mono", "ui-monospace", "SFMono-Regular", "monospace"],
++            },
++            colors: {
++              background: "rgb(9 9 11 / <alpha-value>)",
++              foreground: "rgb(244 244 245 / <alpha-value>)",
++              card: "rgb(17 17 19 / <alpha-value>)",
++              "card-foreground": "rgb(244 244 245 / <alpha-value>)",
++              popover: "rgb(24 24 27 / <alpha-value>)",
++              "popover-foreground": "rgb(244 244 245 / <alpha-value>)",
++              primary: "rgb(74 222 128 / <alpha-value>)",
++              "primary-foreground": "rgb(5 46 22 / <alpha-value>)",
++              secondary: "rgb(28 28 31 / <alpha-value>)",
++              "secondary-foreground": "rgb(161 161 170 / <alpha-value>)",
++              muted: "rgb(28 28 31 / <alpha-value>)",
++              "muted-foreground": "rgb(113 113 122 / <alpha-value>)",
++              accent: "rgb(74 222 128 / <alpha-value>)",
++              "accent-foreground": "rgb(5 46 22 / <alpha-value>)",
++              destructive: "rgb(239 68 68 / <alpha-value>)",
++              border: "rgb(255 255 255 / 0.07)",
++              input: "transparent",
++              ring: "rgb(244 244 245 / <alpha-value>)",
++            },
++          },
++        },
++      };
++    </script>
++    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
++    <style>
++      :root {
++        --font-size: 15px;
++        --background: #09090b;
++        --foreground: #f4f4f5;
++        --card: #111113;
++        --primary: #4ade80;
++        --primary-foreground: #052e16;
++        --secondary: #1c1c1f;
++        --muted-foreground: #71717a;
++        --border: rgba(255, 255, 255, 0.07);
++      }
++
++      * {
++        border-color: var(--border);
++        box-sizing: border-box;
++      }
++
++      html {
++        font-size: var(--font-size);
++      }
++
++      body {
++        margin: 0;
++        background: var(--background);
++        color: var(--foreground);
++        font-family: "Outfit", system-ui, sans-serif;
++      }
++
++      button,
++      input {
++        font: inherit;
++      }
++
++      button {
++        font-weight: 500;
++        line-height: 1.5;
++      }
++
++      input {
++        font-weight: 400;
++        line-height: 1.5;
++      }
++
++      .view {
++        display: none;
++      }
++
++      .view.active {
++        display: block;
++      }
++
++      .view.active.flex-view {
++        display: flex;
++      }
++
++      .copy-check {
++        display: none;
++      }
++
++      .copy-button.copied .copy-icon {
++        display: none;
++      }
++
++      .copy-button.copied .copy-check {
++        display: block;
++      }
++
++      .repo-card.is-hidden {
++        display: none;
++      }
++
++      .repo-list {
++        transition: opacity 160ms ease;
++      }
++
++      .repo-list.is-fetching {
++        opacity: 0.45;
++        pointer-events: none;
++      }
++
++      .repo-list.grid-mode {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++        gap: 0.75rem;
++        padding: 0.75rem;
++      }
++
++      .repo-list.grid-mode .repo-card {
++        border: 1px solid var(--border);
++        border-radius: 0.5rem;
++      }
++
++	      .repo-list.grid-mode .repo-layout {
++	        min-height: 13rem;
++	      }
++
++	      .browse-repo-arrow {
++	        transition: transform 160ms ease;
++	      }
++
++	      .browse-repo-button:hover .browse-repo-arrow {
++	        transform: translateX(0.125rem);
++	      }
++
++	      .network-toggle-open {
++	        display: none;
++	      }
++
++      .network-rail-collapsed #networkRail {
++        display: none;
++      }
++
++      .network-rail-collapsed .network-toggle-open {
++        display: block;
++      }
++
++      .network-rail-collapsed .network-toggle-close {
++        display: none;
++      }
++
++      ::selection {
++        background: rgb(74 222 128 / 0.28);
++      }
++
++      ::-webkit-scrollbar {
++        width: 10px;
++        height: 10px;
++      }
++
++      ::-webkit-scrollbar-track {
++        background: transparent;
++      }
++
++      ::-webkit-scrollbar-thumb {
++        background: rgb(255 255 255 / 0.1);
++        border: 3px solid transparent;
++        border-radius: 999px;
++        background-clip: padding-box;
++      }
++
++      ::-webkit-scrollbar-thumb:hover {
++        background: rgb(255 255 255 / 0.16);
++        background-clip: padding-box;
++      }
++    </style>
++    <script src="/dashboard.js" defer></script>
++    <script src="/dashboard-chat.js" defer></script>
++  </head>
++  <body class="bg-background text-foreground">
++    <div class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
++      <header data-app-header class="relative h-14 border-b border-border bg-card flex items-center gap-6 px-4 shrink-0">
++        <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
++          <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
++        </a>
++
++        <nav data-top-nav class="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0">
++          <!-- Home dashboard tab is intentionally hidden until the activity feed is functional.
++          <button data-section="home" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Home
++          </button>
++          -->
++          <button data-section="repos" data-nav-link aria-current="page" class="inline-flex text-sm text-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Repositories
++          </button>
++          <button data-section="network" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Network
++          </button>
++          <a href="/docs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Docs
++          </a>
++          <!-- Desktop Client is intentionally hidden until that flow is ready.
++          <a href="/desktop" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Desktop Client
++          </a>
++          -->
++          <a href="/blogs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Blogs
++          </a>
++        </nav>
++
++        <div class="ml-auto flex items-center gap-2">
++          <!-- Notifications are intentionally hidden until the next dashboard phase.
++          <div class="relative">
++            <button
++              id="notificationToggle"
++              type="button"
++              aria-label="Open notifications"
++              aria-expanded="false"
++              class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors"
++            >
++              <i data-lucide="bell" class="w-4 h-4"></i>
++            </button>
++            <div
++              id="notificationDropdown"
++              class="hidden absolute right-0 top-full mt-2 w-72 rounded-lg border border-border bg-card shadow-2xl shadow-background/40 overflow-hidden z-50"
++	            >
++	              <div class="px-3 py-2 border-b border-border flex items-center justify-between">
++	                <span class="text-xs font-medium text-foreground">Notifications</span>
++	                <span data-notification-count class="text-[10px] text-muted-foreground font-mono">3 new</span>
++	              </div>
++	              <div data-notification-preview-list class="py-1"></div>
++	              <div class="border-t border-border p-2">
++	                <button data-show-all-notifications type="button" class="w-full rounded-md px-3 py-2 text-center text-xs font-medium text-primary hover:bg-secondary transition-colors">
++	                  Show all notifications
++	                </button>
++	              </div>
++	            </div>
++	          </div>
++          -->
++          <button
++            id="networkRailToggle"
++            data-network-rail-toggle
++            type="button"
++            aria-label="Close network panel"
++            aria-expanded="true"
++            class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors hidden lg:inline-flex"
++          >
++            <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
++            <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
++          </button>
++        </div>
++      </header>
++
++      <div class="flex flex-1 min-h-0 overflow-hidden">
++      <aside class="w-56 shrink-0 flex flex-col border-r border-border bg-card h-full overflow-y-auto">
++        <div data-sidebar-repos class="px-3 py-3 flex-1 min-h-0 overflow-y-auto">
++          <div class="flex items-center justify-between mb-2 px-2">
++            <span class="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Your repos</span>
++            <span data-sidebar-repo-count class="text-[10px] text-foreground font-mono">Loading</span>
++          </div>
++          <div data-sidebar-repo-list class="grid gap-1">
++            <button data-section="repos" class="nav-jump w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
++              <i data-lucide="loader-circle" class="w-3 h-3 shrink-0 animate-spin"></i>
++              <span class="truncate">Loading repositories</span>
++            </button>
++          </div>
++        </div>
++
++        <div data-sidebar-profile class="mt-auto px-3 py-3 border-t border-border">
++          <div class="relative">
++            <div
++              data-profile-popover
++              role="menu"
++              class="hidden absolute left-0 right-0 bottom-full mb-2 rounded-lg border border-border bg-card p-1.5 shadow-2xl shadow-background/50 z-50"
++            >
++              <button
++                data-logout-button
++                type="button"
++                role="menuitem"
++                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
++              >
++                <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
++                Logout
++              </button>
++            </div>
++
++            <button
++              data-profile-toggle
++              type="button"
++              aria-haspopup="menu"
++              aria-expanded="false"
++              class="w-full flex items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-secondary transition-colors focus:outline-none focus:ring-1 focus:ring-foreground/20"
++            >
++              <span
++                data-dashboard-profile-avatar
++                class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
++                style="width: 26px; height: 26px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 9.88px"
++              >Y</span>
++              <span class="min-w-0">
++                <span data-dashboard-profile-name class="block text-xs font-medium text-foreground truncate">My Profile</span>
++                <span class="flex items-center gap-1 mt-0.5">
++                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
++                  <span data-dashboard-profile-status class="text-[10px] text-muted-foreground">The node is online</span>
++                </span>
++              </span>
++            </button>
++          </div>
++        </div>
++      </aside>
++
++      <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
++        <div id="content" class="flex-1 min-h-0 overflow-hidden">
++	          <!-- Home dashboard view is intentionally hidden until the activity feed is functional.
++          <section data-view="home" class="view active h-full overflow-y-auto">
++	            <div class="p-6 max-w-5xl mx-auto">
++	              <div class="flex items-center justify-between mb-6">
++	                  <h1 class="text-base font-semibold text-foreground">Home</h1>
++	                  <button class="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-md px-3 py-1.5 hover:bg-secondary transition-colors">
++	                    <i data-lucide="filter" class="w-3 h-3"></i>
++	                    Filter
++	                  </button>
++                </div>
++
++                <div class="mb-3 flex items-center justify-between">
++                  <span class="text-xs font-medium text-foreground">Activity feed</span>
++                  <span class="text-xs text-muted-foreground font-mono">last 7 days</span>
++                </div>
++
++                <div class="flex flex-col gap-1">
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">you</span> <span class="text-muted-foreground">3 commits to main</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 2h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #fbbf2412; border: 1px solid #fbbf2425">
++                    <i data-lucide="star" class="w-3.5 h-3.5" style="color: #fbbf24"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">starred your repo</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 4h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">alice-node</span> <span class="text-muted-foreground">1 commit to feat/relay-v2</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">alice-node/forkmesh &middot; 6h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #38bdf812; border: 1px solid #38bdf825">
++                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5" style="color: #38bdf8"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">devbox-kr</span> <span class="text-muted-foreground">started mirroring your node</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">devbox-kr/fmesh-py &middot; 12h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #f472b612; border: 1px solid #f472b625">
++                    <i data-lucide="git-pull-request" class="w-3.5 h-3.5" style="color: #f472b6"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">sysop-eu</span> <span class="text-muted-foreground">opened PR #14 - fix tunnel keepalive</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 1d ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #818cf812; border: 1px solid #818cf825">
++                    <i data-lucide="git-fork" class="w-3.5 h-3.5" style="color: #818cf8"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">infra-wg</span> <span class="text-muted-foreground">forked to infra-wg/mesh-ui</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 2d ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">tagged v0.4.1</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">relay-eu-1/relay-monitor &middot; 3d ago</p>
++	                  </div>
++	                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++	                </div>
++	                </div>
++
++		              <section data-home-contributions class="mt-10">
++	                <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_7rem]">
++	                  <div class="min-w-0">
++	                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
++                      <h2 class="text-base font-semibold text-foreground">
++                        <span data-contribution-count>1,563</span> contributions in the last year
++                      </h2>
++                      <button class="inline-flex items-center gap-1.5 self-start text-xs text-muted-foreground hover:text-foreground transition-colors">
++                        Contribution settings
++                        <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
++                      </button>
++                    </div>
++
++                    <div class="mt-3 rounded-lg border border-border bg-card p-4">
++                      <div class="overflow-x-auto pb-1">
++                        <div class="min-w-[720px]">
++                          <div class="ml-10 grid grid-cols-12 gap-3 text-xs text-foreground">
++                            <span>Jun</span>
++                            <span>Jul</span>
++                            <span>Aug</span>
++                            <span>Sep</span>
++                            <span>Oct</span>
++                            <span>Nov</span>
++                            <span>Dec</span>
++                            <span>Jan</span>
++                            <span>Feb</span>
++                            <span>Mar</span>
++                            <span>Apr</span>
++                            <span>May</span>
++                          </div>
++
++                          <div class="mt-2 flex gap-3">
++                            <div class="grid grid-rows-7 gap-1 text-xs text-foreground shrink-0" style="grid-template-rows: repeat(7, 10px)">
++                              <span></span>
++                              <span class="leading-[10px]">Mon</span>
++                              <span></span>
++                              <span class="leading-[10px]">Wed</span>
++                              <span></span>
++                              <span class="leading-[10px]">Fri</span>
++                              <span></span>
++                            </div>
++                            <div
++                              data-contribution-grid
++                              role="img"
++                              aria-label="Contribution activity heatmap"
++                              class="shrink-0"
++                              style="display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 10px); grid-auto-columns: 10px; gap: 4px"
++                            ></div>
++                          </div>
++                        </div>
++                      </div>
++
++                      <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
++                        <button class="text-xs text-muted-foreground hover:text-primary transition-colors self-start">Learn how we count contributions</button>
++                        <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
++                          <span>Less</span>
++                          <span class="h-2.5 w-2.5 rounded-[2px] bg-secondary"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #14532d"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #166534"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #22c55e"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #4ade80"></span>
++                          <span>More</span>
++                        </div>
++                      </div>
++                    </div>
++                  </div>
++
++                  <div class="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-visible">
++                    <button data-contribution-year="2026" data-count="1,563" class="shrink-0 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors">2026</button>
++                    <button data-contribution-year="2025" data-count="1,102" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2025</button>
++                    <button data-contribution-year="2024" data-count="842" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2024</button>
++                    <button data-contribution-year="2023" data-count="519" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2023</button>
++                    <button data-contribution-year="2022" data-count="286" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2022</button>
++                  </div>
++                </div>
++
++                <div class="mt-8">
++                  <h2 class="text-base font-semibold text-foreground">Contribution activity</h2>
++
++                  <div class="mt-6 flex items-center gap-4">
++                    <span class="shrink-0 text-sm font-semibold text-foreground">June 2026</span>
++                    <span class="h-px flex-1 bg-border"></span>
++                  </div>
++
++                  <div class="relative mt-5 pl-12">
++                    <span class="absolute left-5 top-0 bottom-0 w-px bg-border"></span>
++
++                    <div class="relative grid gap-8">
++                      <article class="relative">
++                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                          <i data-lucide="git-commit" class="w-4 h-4"></i>
++                        </span>
++                        <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
++                          <div class="min-w-0">
++                            <h3 class="text-base font-semibold text-foreground">Created 8 commits in 2 repositories</h3>
++                            <div class="mt-3 grid gap-2 text-sm">
++                              <div class="flex flex-wrap items-center gap-2">
++                                <button class="text-primary hover:underline">you/meshcore</button>
++                                <span class="text-xs text-muted-foreground">7 commits</span>
++                              </div>
++                              <div class="flex flex-wrap items-center gap-2">
++                                <button class="text-primary hover:underline">you/mesh-ui</button>
++                                <span class="text-xs text-muted-foreground">1 commit</span>
++                              </div>
++                            </div>
++                          </div>
++                          <div class="grid content-center gap-3">
++                            <span class="h-2 rounded-full bg-primary/50 w-full"></span>
++                            <span class="h-2 rounded-full bg-primary/70 w-8"></span>
++                          </div>
++                        </div>
++                      </article>
++
++                      <article class="relative">
++                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                          <i data-lucide="git-branch" class="w-4 h-4"></i>
++                        </span>
++                        <h3 class="text-base font-semibold text-foreground">Created 2 repositories</h3>
++                        <div class="mt-4 grid gap-3">
++                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
++                            <div class="flex items-center gap-2 min-w-0">
++                              <i data-lucide="lock" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
++                              <button class="truncate text-primary hover:underline">you/forkmesh-landing</button>
++                            </div>
++                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
++                            <span class="text-xs text-muted-foreground sm:text-right">Jun 19</span>
++                          </div>
++                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
++                            <div class="flex items-center gap-2 min-w-0">
++                              <i data-lucide="git-branch" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
++                              <button class="truncate text-primary hover:underline">you/pi</button>
++                            </div>
++                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
++                            <span class="text-xs text-muted-foreground sm:text-right">Jun 14</span>
++                          </div>
++                        </div>
++                      </article>
++
++                      <div data-more-activity class="hidden grid gap-8">
++                        <article class="relative">
++                          <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                            <i data-lucide="star" class="w-4 h-4"></i>
++                          </span>
++                          <h3 class="text-base font-semibold text-foreground">Maintained 3 mirrored projects</h3>
++                          <p class="mt-2 text-sm text-muted-foreground">meshcore, mesh-ui, and relay-monitor stayed active across local nodes.</p>
++                        </article>
++                      </div>
++                    </div>
++                  </div>
++
++                  <button data-show-more-activity class="mt-8 w-full rounded-md border border-border bg-card px-4 py-3 text-sm font-semibold text-primary hover:bg-secondary transition-colors">
++                    Show more activity
++                  </button>
++
++                  <p class="mt-6 text-sm text-muted-foreground">
++                    Seeing something unexpected? Take a look at the
++                    <button class="text-primary hover:underline">ForkMesh profile guide.</button>
++                  </p>
++                </div>
++              </section>
++            </div>
++          </section>
++
++          -->
++
++          <section data-view="repos" class="view active h-full overflow-y-auto">
++            <div class="p-3 sm:p-6 w-full">
++              <div data-repo-panel class="w-full rounded-lg border border-border bg-card overflow-hidden">
++                <div class="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
++                  <div class="min-w-0">
++                    <h1 class="text-base font-semibold text-foreground">Repositories</h1>
++                    <p class="mt-1 text-sm text-muted-foreground">Mirrors published by ForkMesh desktop nodes. Open a repo to browse files live from its host.</p>
++                  </div>
++                  <span data-repo-count class="shrink-0 self-start text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
++                </div>
++
++                <div class="px-4 sm:px-5 py-3 border-b border-border flex items-center gap-3">
++                  <div class="relative flex-1 min-w-0">
++                    <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"></i>
++                    <input
++                      id="repoSearch"
++                      type="text"
++                      placeholder="Filter repositories..."
++                      class="w-full pl-9 pr-4 py-2 text-sm bg-background border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20 transition"
++                    />
++                  </div>
++                  <div class="shrink-0 flex items-center rounded-md border border-border overflow-hidden">
++                    <button
++                      data-view-mode="list"
++                      type="button"
++                      aria-label="Show repositories as a list"
++                      aria-pressed="true"
++                      class="repo-view-button bg-secondary text-foreground p-2 transition-colors"
++                    >
++                      <i data-lucide="list" class="w-4 h-4"></i>
++                    </button>
++                    <button
++                      data-view-mode="grid"
++                      type="button"
++                      aria-label="Show repositories as a grid"
++                      aria-pressed="false"
++                      class="repo-view-button text-muted-foreground hover:text-foreground p-2 border-l border-border transition-colors"
++                    >
++                      <i data-lucide="layout-grid" class="w-4 h-4"></i>
++                    </button>
++                  </div>
++                </div>
++
++                <div id="repoList" class="repo-list divide-y divide-border" aria-live="polite">
++                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repository catalog...</div>
++                </div>
++
++                <div data-repo-pagination class="border-t border-border px-4 sm:px-5 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
++                  <div class="flex flex-col gap-1">
++                    <span data-repo-summary class="text-xs text-muted-foreground font-mono">Showing 1-5 of 12 mirrored repositories</span>
++                    <span data-repo-loading class="hidden text-xs text-muted-foreground">Fetching repositories...</span>
++                  </div>
++                  <div class="flex items-center gap-2 overflow-x-auto">
++                    <button data-repo-prev type="button" class="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                      <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
++                      Previous
++                    </button>
++                    <div data-repo-pages class="flex items-center gap-1"></div>
++                    <button data-repo-next type="button" class="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                      Next
++                      <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
++                    </button>
++                  </div>
++                </div>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="chat" class="view flex-view h-full flex-col">
++            <div class="px-5 py-3.5 border-b border-border flex items-center gap-2 shrink-0">
++              <i data-lucide="hash" class="w-4 h-4 text-muted-foreground"></i>
++              <span class="text-sm font-semibold text-foreground">general</span>
++              <i data-lucide="lock" class="w-3 h-3 text-muted-foreground ml-1"></i>
++              <span class="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
++                <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
++                <span data-dashboard-chat-status class="font-mono">Not connected</span>
++              </span>
++            </div>
++
++            <div class="mx-4 mt-4 mb-2 px-4 py-3 rounded-lg border border-border bg-card flex items-start gap-2.5 shrink-0">
++              <i data-lucide="lock" class="w-3.5 h-3.5 text-primary mt-0.5 shrink-0"></i>
++              <p class="text-xs text-muted-foreground leading-relaxed">
++                Public <strong class="text-foreground">#general</strong> - messages are encrypted in your browser before reaching the relay. The server never sees plaintext.
++              </p>
++            </div>
++
++            <div id="fullChatMessages" class="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1 min-h-0"></div>
++
++            <div class="px-4 pb-4 pt-2 shrink-0 border-t border-border">
++              <div class="flex items-center gap-2 bg-secondary border border-border rounded-lg px-3 py-2 focus-within:ring-1 focus-within:ring-foreground/20 transition">
++                <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
++                <input
++                  id="fullChatInput"
++                  class="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
++                  placeholder="Message #general..."
++                />
++                <button id="fullChatSend" class="shrink-0 w-7 h-7 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center hover:bg-primary/20 transition-colors">
++                  <i data-lucide="send" class="w-3 h-3 text-primary"></i>
++                </button>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="network" class="view h-full overflow-y-auto">
++            <div class="p-6 max-w-5xl mx-auto">
++              <div class="flex items-center justify-between mb-6">
++                <h1 class="text-base font-semibold text-foreground">Network</h1>
++	                <span class="flex items-center gap-1.5 text-xs text-foreground font-mono">
++	                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
++	                  relay healthy
++                </span>
++              </div>
++
++              <div data-network-summary class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-hosts class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Nodes</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-repos class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Repos mirrored</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-clients class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Active relays</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-uptime class="text-xl font-semibold text-foreground mb-1 font-mono">Live</p>
++                  <p class="text-xs text-muted-foreground">Relay uptime</p>
++                </div>
++              </div>
++
++              <div class="rounded-lg border border-border bg-card overflow-hidden mb-6">
++                <div class="px-4 py-3 border-b border-border flex items-center justify-between">
++                  <span class="text-xs font-medium text-foreground">Connected nodes</span>
++                  <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
++                </div>
++                <div data-network-node-list class="divide-y divide-border">
++                  <div class="px-4 py-3 text-sm text-muted-foreground">Loading recent network...</div>
++                </div>
++              </div>
++
++              <div class="rounded-lg border border-border bg-card p-5">
++                <h3 class="text-xs font-medium text-foreground mb-4">Protocol</h3>
++                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="shield" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Relay role: Control plane</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="zap" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Data plane: Live host tunnel</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="lock" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">All traffic encrypted E2E</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Git upload-pack via relay</span>
++                  </div>
++                </div>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="explore" class="view h-full overflow-y-auto">
++            <div class="p-6 max-w-5xl mx-auto">
++              <div class="flex items-center justify-between gap-3 mb-5">
++                <h1 class="text-base font-semibold text-foreground">Repository</h1>
++                <button data-section="repos" type="button" class="nav-jump inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                  <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
++                  Back to repositories
++                </button>
++              </div>
++              <div data-repo-detail class="rounded-lg border border-border bg-card p-5">
++                <p class="text-sm text-muted-foreground">Choose a repository to inspect it.</p>
++              </div>
++              <template id="dashboard-repo-feature-template">
++                <div class="panel-header-aside">
++                  <div class="issue-filter" role="group" aria-label="Issue state">
++                    <button id="issue-filter-open" type="button" data-state="open" class="is-active" aria-pressed="true">Open</button>
++                    <button id="issue-filter-closed" type="button" data-state="closed" aria-pressed="false">Closed</button>
++                    <button id="issue-filter-all" type="button" data-state="all" aria-pressed="false">All</button>
++                  </div>
++                </div>
++                <button id="tab-mirrors" type="button">Mirrors</button>
++                <section id="repo-mirrors" hidden aria-labelledby="mirrors-title">
++                  <h2 id="mirrors-title">Mirrors</h2>
++                  <div id="mirror-summary"></div>
++                  <div class="mirror-table-wrap">
++                    <table class="mirror-health-table">
++                      <thead>
++                        <tr>
++                          <th>Node</th>
++                          <th>Status</th>
++                          <th>Last seen</th>
++                          <th>Hosted since</th>
++                          <th>Sync age</th>
++                          <th>Clone available</th>
++                        </tr>
++                      </thead>
++                      <tbody id="mirror-list"></tbody>
++                    </table>
++                  </div>
++                </section>
++              </template>
++            </div>
++          </section>
++        </div>
++      </main>
++
++      <aside id="networkRail" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
++        <div class="border-b border-border px-4 py-3 shrink-0">
++          <div class="flex items-center justify-between mb-3">
++            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
++              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
++              Network
++            </span>
++            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
++              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
++              live
++            </span>
++          </div>
++
++          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
++            </div>
++          </div>
++
++          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
++            <div class="text-xs text-muted-foreground">Loading recent network...</div>
++          </div>
++        </div>
++
++        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
++          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
++            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
++            general
++          </span>
++          <div class="flex items-center gap-1.5">
++            <i data-lucide="lock" class="w-3 h-3 text-muted-foreground"></i>
++            <button data-section="chat" class="nav-jump text-xs text-primary hover:underline">expand</button>
++          </div>
++        </div>
++
++        <div id="sideChatMessages" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-0.5 min-h-0"></div>
++
++        <div class="px-3 pb-3 pt-2 shrink-0">
++          <div class="flex items-center gap-2 bg-background border border-border rounded-lg px-3 py-2 focus-within:ring-1 focus-within:ring-foreground/20 transition">
++            <input
++              id="sideChatInput"
++              class="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
++              placeholder="Message #general..."
++            />
++            <button id="sideChatSend" class="shrink-0">
++              <i data-lucide="send" class="w-3 h-3 text-muted-foreground hover:text-primary transition-colors"></i>
++            </button>
++          </div>
++        </div>
++	      </aside>
++	    </div>
++	    </div>
++
++	    <!-- Notification reader modal is intentionally hidden until the next dashboard phase.
++	    <div
++	      id="notificationModal"
++	      class="hidden fixed inset-0 z-[80] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
++	      role="dialog"
++	      aria-modal="true"
++	      aria-labelledby="notificationModalTitle"
++	    >
++	      <button data-notification-modal-backdrop type="button" aria-label="Close notifications" class="absolute inset-0 cursor-default"></button>
++	      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
++	        <div class="flex items-center justify-between border-b border-border px-4 py-3">
++	          <div class="min-w-0">
++	            <h2 id="notificationModalTitle" class="text-sm font-semibold text-foreground">Notifications</h2>
++	            <p class="mt-0.5 text-xs text-muted-foreground">Read node, repository, and network updates.</p>
++	          </div>
++	          <button data-close-notification-modal type="button" aria-label="Close notifications" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++	            <i data-lucide="x" class="h-4 w-4"></i>
++	          </button>
++	        </div>
++
++	        <div class="grid min-h-0 flex-1 md:grid-cols-[19rem_minmax(0,1fr)]">
++	          <div data-notification-modal-list class="max-h-80 overflow-y-auto border-b border-border p-2 md:max-h-none md:border-b-0 md:border-r"></div>
++	          <article data-notification-modal-detail class="min-h-0 overflow-y-auto p-5"></article>
++	        </div>
++	      </div>
++	    </div>
++
++	    -->
++	    <script>
++      const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
++	      // Notifications are intentionally disabled until the next dashboard phase.
++	      const notifications = [];
++
++	      // Notification logic is intentionally disabled until notification data is wired to real APIs.
++
++	      function setProfilePopoverOpen(open) {
++	        const toggle = document.querySelector("[data-profile-toggle]");
++	        const popover = document.querySelector("[data-profile-popover]");
++	        if (!toggle || !popover) return;
++
++	        popover.classList.toggle("hidden", !open);
++	        toggle.setAttribute("aria-expanded", open ? "true" : "false");
++		      }
++
++	      function handleLogout() {
++	        try {
++	          localStorage.removeItem("forkmesh.session");
++	        } catch (_) {}
++
++	        document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
++	        setProfilePopoverOpen(false);
++	        window.location.href = window.location.protocol === "file:" ? "index.html" : "/";
++	      }
++
++	      function initProfileMenu() {
++	        const toggle = document.querySelector("[data-profile-toggle]");
++	        const popover = document.querySelector("[data-profile-popover]");
++	        const logout = document.querySelector("[data-logout-button]");
++	        if (!toggle || !popover || !logout) return;
++
++	        toggle.addEventListener("click", (event) => {
++	          event.stopPropagation();
++	          setProfilePopoverOpen(popover.classList.contains("hidden"));
++	        });
++
++	        popover.addEventListener("click", (event) => {
++	          event.stopPropagation();
++	        });
++
++	        logout.addEventListener("click", handleLogout);
++	        document.addEventListener("click", () => setProfilePopoverOpen(false));
++	        document.addEventListener("keydown", (event) => {
++	          if (event.key === "Escape") setProfilePopoverOpen(false);
++	        });
++	      }
++
++	      const contributionColors = ["#1c1c1f", "#14532d", "#166534", "#22c55e", "#4ade80"];
++
++      function contributionLevel(index, year) {
++        const seed = Number(year) || 2026;
++        const value = (index * 17 + seed * 11 + Math.floor(index / 7) * 5) % 23;
++        if (value < 4) return 0;
++        if (value < 9) return 1;
++        if (value < 15) return 2;
++        if (value < 20) return 3;
++        return 4;
++      }
++
++      function renderContributionGrid(year = "2026") {
++        const grid = document.querySelector("[data-contribution-grid]");
++        if (!grid) return;
++        grid.innerHTML = "";
++
++        for (let index = 0; index < 364; index += 1) {
++          const level = contributionLevel(index, year);
++          const cell = document.createElement("span");
++          cell.setAttribute("aria-hidden", "true");
++          cell.title = `${level} contributions`;
++          cell.style.width = "10px";
++          cell.style.height = "10px";
++          cell.style.borderRadius = "2px";
++          cell.style.background = contributionColors[level];
++          grid.appendChild(cell);
++        }
++      }
++
++      function setContributionYear(button) {
++        document.querySelectorAll("[data-contribution-year]").forEach((yearButton) => {
++          const active = yearButton === button;
++          yearButton.classList.toggle("bg-primary", active);
++          yearButton.classList.toggle("text-primary-foreground", active);
++          yearButton.classList.toggle("font-semibold", active);
++          yearButton.classList.toggle("text-muted-foreground", !active);
++          yearButton.classList.toggle("hover:bg-secondary", !active);
++          yearButton.classList.toggle("hover:text-foreground", !active);
++        });
++
++        const count = document.querySelector("[data-contribution-count]");
++        if (count) count.textContent = button.dataset.count;
++        renderContributionGrid(button.dataset.contributionYear);
++      }
++
++      function initContributionActivity() {
++        const yearButtons = document.querySelectorAll("[data-contribution-year]");
++        yearButtons.forEach((button) => {
++          button.addEventListener("click", () => setContributionYear(button));
++        });
++
++        const activeYear = document.querySelector("[data-contribution-year].bg-primary") || yearButtons[0];
++        if (activeYear) setContributionYear(activeYear);
++
++        const showMoreButton = document.querySelector("[data-show-more-activity]");
++        const moreActivity = document.querySelector("[data-more-activity]");
++        if (showMoreButton && moreActivity) {
++          showMoreButton.addEventListener("click", () => {
++            const expanded = moreActivity.classList.toggle("hidden");
++            showMoreButton.textContent = expanded ? "Show more activity" : "Show less activity";
++          });
++        }
++      }
++
++      function setSection(section) {
++        document.querySelectorAll("[data-view]").forEach((view) => {
++          view.classList.toggle("active", view.dataset.view === section);
++        });
++        document.querySelectorAll("[data-nav-link]").forEach((button) => {
++          const active = button.dataset.section === section;
++          button.setAttribute("aria-current", active ? "page" : "false");
++          button.classList.toggle("text-foreground", active);
++          button.classList.toggle("text-muted-foreground", !active);
++          button.classList.toggle("hover:text-foreground", !active);
++        });
++      }
++
++      function setNetworkRail(open) {
++        document.body.classList.toggle("network-rail-collapsed", !open);
++        document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
++          button.setAttribute("aria-expanded", open ? "true" : "false");
++          button.setAttribute("aria-label", open ? "Close network panel" : "Open network panel");
++        });
++      }
++
++      document.querySelectorAll("[data-section]").forEach((button) => {
++        button.addEventListener("click", () => setSection(button.dataset.section));
++      });
++
++      document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
++        button.addEventListener("click", () => {
++          setNetworkRail(document.body.classList.contains("network-rail-collapsed"));
++        });
++      });
++
++      document.addEventListener("keydown", (event) => {
++        if (event.key === "Escape") setProfilePopoverOpen(false);
++      });
++
++      const repoPageSize = 5;
++      let repoCurrentPage = 1;
++      let repoIsFetching = false;
++      let repoFetchTimer;
++
++      function repoCards() {
++        return [...document.querySelectorAll(".repo-card")];
++      }
++
++      function repoQuery() {
++        return document.getElementById("repoSearch").value.trim().toLowerCase();
++      }
++
++      function filteredRepoCards() {
++        const query = repoQuery();
++        return repoCards().filter((card) => !query || card.dataset.repo.includes(query));
++      }
++
++      function setRepoButtonDisabled(button, disabled) {
++        if (!button) return;
++        button.disabled = disabled;
++        button.classList.toggle("opacity-40", disabled);
++        button.classList.toggle("pointer-events-none", disabled);
++      }
++
++      function renderRepoPageButtons(totalPages) {
++        const pages = document.querySelector("[data-repo-pages]");
++        if (!pages) return;
++        pages.innerHTML = "";
++
++        for (let page = 1; page <= totalPages; page += 1) {
++          const button = document.createElement("button");
++          const active = page === repoCurrentPage;
++          button.type = "button";
++          button.setAttribute("data-repo-page-button", String(page));
++          button.textContent = String(page);
++          button.setAttribute("aria-label", `Show repository page ${page}`);
++          button.setAttribute("aria-current", active ? "page" : "false");
++          button.className = [
++            "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
++            active
++              ? "border-border bg-secondary text-foreground"
++              : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
++          ].join(" ");
++          button.disabled = repoIsFetching;
++          button.addEventListener("click", () => setRepoPage(page));
++          pages.appendChild(button);
++        }
++      }
++
++      function applyRepoVisibility() {
++        const list = document.getElementById("repoList");
++        const cards = repoCards();
++        const matchedCards = filteredRepoCards();
++        const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
++        repoCurrentPage = Math.min(repoCurrentPage, totalPages);
++
++        const start = (repoCurrentPage - 1) * repoPageSize;
++        const end = Math.min(start + repoPageSize, matchedCards.length);
++        const visibleCards = new Set(matchedCards.slice(start, end));
++
++        cards.forEach((card) => {
++          card.classList.toggle("is-hidden", !visibleCards.has(card));
++        });
++
++        list.classList.toggle("is-fetching", repoIsFetching);
++        document.querySelector("[data-repo-loading]")?.classList.toggle("hidden", !repoIsFetching);
++
++        const summary = document.querySelector("[data-repo-summary]");
++        if (summary) {
++          summary.textContent = matchedCards.length
++            ? `Showing ${start + 1}-${end} of ${matchedCards.length} mirrored repositories`
++            : "No repositories match this filter";
++        }
++
++        renderRepoPageButtons(totalPages);
++        setRepoButtonDisabled(document.querySelector("[data-repo-prev]"), repoIsFetching || repoCurrentPage === 1);
++        setRepoButtonDisabled(document.querySelector("[data-repo-next]"), repoIsFetching || repoCurrentPage === totalPages);
++      }
++
++      function setRepoPage(page, options = {}) {
++        const totalPages = Math.max(1, Math.ceil(filteredRepoCards().length / repoPageSize));
++        const targetPage = Math.min(Math.max(page, 1), totalPages);
++        if (targetPage === repoCurrentPage && !options.force) return;
++
++        window.clearTimeout(repoFetchTimer);
++        if (options.instant) {
++          repoCurrentPage = targetPage;
++          repoIsFetching = false;
++          applyRepoVisibility();
++          return;
++        }
++
++        repoIsFetching = true;
++        applyRepoVisibility();
++        repoFetchTimer = window.setTimeout(() => {
++          repoCurrentPage = targetPage;
++          repoIsFetching = false;
++          applyRepoVisibility();
++        }, 220);
++      }
++
++      document.getElementById("repoSearch").addEventListener("input", () => {
++        window.clearTimeout(repoFetchTimer);
++        repoCurrentPage = 1;
++        repoIsFetching = false;
++        applyRepoVisibility();
++      });
++
++      document.querySelector("[data-repo-prev]")?.addEventListener("click", () => setRepoPage(repoCurrentPage - 1));
++      document.querySelector("[data-repo-next]")?.addEventListener("click", () => setRepoPage(repoCurrentPage + 1));
++      applyRepoVisibility();
++
++      document.querySelectorAll("[data-view-mode]").forEach((button) => {
++        button.addEventListener("click", () => {
++          const mode = button.dataset.viewMode;
++          const gridMode = mode === "grid";
++          document.getElementById("repoList").classList.toggle("grid-mode", gridMode);
++          document.querySelectorAll("[data-view-mode]").forEach((control) => {
++            const active = control.dataset.viewMode === mode;
++            control.setAttribute("aria-pressed", active ? "true" : "false");
++            control.classList.toggle("bg-secondary", active);
++            control.classList.toggle("text-foreground", active);
++            control.classList.toggle("text-muted-foreground", !active);
++          });
++        });
++      });
++
++      document.querySelectorAll(".copy-button").forEach((button) => {
++        button.addEventListener("click", async () => {
++          const text = button.dataset.copy;
++          try {
++            await navigator.clipboard.writeText(text);
++          } catch (error) {
++            const temp = document.createElement("textarea");
++            temp.value = text;
++            temp.setAttribute("readonly", "");
++            temp.style.position = "fixed";
++            temp.style.opacity = "0";
++            document.body.appendChild(temp);
++            temp.select();
++            document.execCommand("copy");
++            temp.remove();
++          }
++          button.classList.add("copied");
++          window.setTimeout(() => button.classList.remove("copied"), 1600);
++        });
++      });
++
++      // Chat is wired by /dashboard-chat.js.
++	      // Notifications disabled until notification data is wired to real APIs.
++	      initProfileMenu();
++	      initContributionActivity();
++	      lucide.createIcons();
++    </script>
++  </body>
++</html>
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+new file mode 100644
+index 00000000..5d292fa7
+--- /dev/null
++++ b/cloudflare_worker/public/dashboard.js
+@@ -0,0 +1,669 @@
++(() => {
++  const state = {
++    repositories: [],
++    filteredRepositories: [],
++    page: 1,
++    pageSize: 5,
++    selectedRepo: null,
++  };
++
++  const $ = (selector) => document.querySelector(selector);
++  const $$ = (selector) => Array.from(document.querySelectorAll(selector));
++
++  function readSession() {
++    try {
++      return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
++    } catch (_) {
++      return null;
++    }
++  }
++
++  function logout() {
++    try {
++      localStorage.removeItem("forkmesh.session");
++      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
++    } catch (_) {}
++    location.replace("/");
++  }
++
++  function escapeHtml(value) {
++    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
++      "&": "&amp;",
++      "<": "&lt;",
++      ">": "&gt;",
++      '"': "&quot;",
++      "'": "&#039;",
++    })[char]);
++  }
++
++  function formatCount(value) {
++    const number = Number(value) || 0;
++    return new Intl.NumberFormat().format(number);
++  }
++
++  function formatDate(value) {
++    if (!value) return "unknown";
++    const date = new Date(value);
++    if (Number.isNaN(date.getTime())) return "unknown";
++    return date.toLocaleDateString(undefined, {
++      month: "short",
++      day: "numeric",
++      year: "numeric",
++    });
++  }
++
++  function formatSize(bytes) {
++    let value = Number(bytes) || 0;
++    const units = ["B", "KB", "MB", "GB", "TB"];
++    let unit = 0;
++    while (value >= 1024 && unit < units.length - 1) {
++      value /= 1024;
++      unit += 1;
++    }
++    return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
++  }
++
++  function cloneUrl(repo) {
++    const owner = encodeURIComponent(repo.owner || "");
++    const name = encodeURIComponent(repo.name || "");
++    return `${location.origin}/${owner}/${name}`;
++  }
++
++  function repoKey(repo) {
++    return `${repo.owner || ""}/${repo.name || ""}`;
++  }
++
++  function repoApiBase(repo) {
++    return `/api/repo/${encodeURIComponent(repo.owner || "")}/${encodeURIComponent(repo.name || "")}`;
++  }
++
++  function repoPathUrl(repo, kind = "tree", path = "") {
++    const owner = encodeURIComponent(repo.owner || "");
++    const name = encodeURIComponent(repo.name || "");
++    const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
++    return `/${owner}/${name}${suffix}`;
++  }
++
++  function requestedRepoKey() {
++    const params = new URLSearchParams(location.search);
++    const value = params.get("repo");
++    if (value && value.includes("/")) return decodeURIComponent(value);
++    const parts = location.pathname.split("/").filter(Boolean);
++    if (parts.length >= 2 && !["api", "assets", "dashboard", "docs", "blogs", "blog", "login", "signup", "network", "desktop", "about", "careers", "changelog", "privacy", "terms"].includes(parts[0])) {
++      return `${decodeURIComponent(parts[0])}/${decodeURIComponent(parts[1])}`;
++    }
++    return "";
++  }
++
++  async function fetchJson(path) {
++    const response = await fetch(path, {
++      headers: { accept: "application/json" },
++    });
++    const data = await response.json().catch(() => ({}));
++    if (!response.ok || data.ok === false) {
++      throw new Error(data.error || `HTTP ${response.status}`);
++    }
++    return data;
++  }
++
++  function setSection(section) {
++    $$("[data-view]").forEach((view) => {
++      view.classList.toggle("active", view.dataset.view === section);
++    });
++    $$("[data-nav-link]").forEach((button) => {
++      const active = button.dataset.section === section;
++      button.setAttribute("aria-current", active ? "page" : "false");
++      button.classList.toggle("text-foreground", active);
++      button.classList.toggle("text-muted-foreground", !active);
++      button.classList.toggle("hover:text-foreground", !active);
++    });
++  }
++
++  function renderProfile(session) {
++    const name = session?.nodeName || session?.email || "My Profile";
++    const initial = (name[0] || "F").toUpperCase();
++    const nameEl = $("[data-dashboard-profile-name]");
++    const statusEl = $("[data-dashboard-profile-status]");
++    const avatar = $("[data-dashboard-profile-avatar]");
++
++    if (nameEl) nameEl.textContent = name;
++    if (statusEl) {
++      statusEl.textContent = session?.nodeName
++        ? "The node is online"
++        : "Signed in";
++    }
++    if (avatar) avatar.textContent = initial;
++  }
++
++  function renderSidebarRepositories(session) {
++    const list = $("[data-sidebar-repo-list]");
++    const count = $("[data-sidebar-repo-count]");
++    if (!list) return;
++
++    const owner = String(session?.nodeName || "").toLowerCase();
++    const ownRepos = owner
++      ? state.repositories.filter((repo) => String(repo.owner || "").toLowerCase() === owner)
++      : [];
++    const repos = ownRepos.slice(0, 8);
++
++    if (count) {
++      count.textContent = ownRepos.length
++        ? `${ownRepos.length} active`
++        : "0 active";
++    }
++    if (!repos.length) {
++      list.innerHTML = `
++        <button data-section="repos" class="nav-jump w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
++          <i data-lucide="git-branch" class="w-3 h-3 shrink-0"></i>
++          <span class="truncate">No owned repos yet</span>
++        </button>
++      `;
++      return;
++    }
++
++    list.innerHTML = repos.map((repo) => `
++      <button data-dashboard-open-repo="${escapeHtml(repoKey(repo))}" class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
++        <i data-lucide="git-branch" class="w-3 h-3 shrink-0"></i>
++        <span class="truncate">${escapeHtml(repo.name || "repository")}</span>
++        <i data-lucide="circle" class="w-1.5 h-1.5 ml-auto fill-current shrink-0 ${repo.liveHost ? "text-primary" : "text-muted-foreground"}"></i>
++      </button>
++    `).join("");
++  }
++
++  function repositoryMatchesQuery(repo, query) {
++    if (!query) return true;
++    const haystack = [
++      repo.owner,
++      repo.name,
++      repo.description,
++      repo.channel,
++      repo.source,
++    ].join(" ").toLowerCase();
++    return haystack.includes(query);
++  }
++
++  function repositoryCard(repo) {
++    const key = repoKey(repo);
++    const live = Boolean(repo.liveHost);
++    const visibility = repo.isPrivate ? "private" : "public";
++    const statusClass = live ? "text-primary" : "text-muted-foreground";
++    const statusText = live ? "online" : "offline";
++    return `
++      <div data-repo="${escapeHtml(key.toLowerCase())}" class="repo-card group px-4 sm:px-5 py-5 hover:bg-secondary/40 transition-colors">
++        <div class="repo-layout flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
++          <div class="min-w-0">
++            <p class="text-sm font-medium text-foreground truncate">
++              <span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span>${escapeHtml(repo.name || "repository")}
++            </p>
++            <p class="mt-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
++            <div class="mt-4 flex items-center gap-x-5 gap-y-2 flex-wrap">
++              <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
++                <span class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(visibility)}
++              </span>
++              <span class="flex items-center gap-1 text-xs text-muted-foreground">
++                <i data-lucide="radio" class="w-3 h-3"></i>${live ? "live host" : "host offline"}
++              </span>
++              <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
++            </div>
++            <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" class="copy-button mt-5 inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-secondary text-xs text-foreground hover:bg-secondary/80 transition-colors">
++              <i data-lucide="copy" class="copy-icon w-3.5 h-3.5"></i>
++              <i data-lucide="check" class="copy-check w-3.5 h-3.5 text-primary"></i>
++              Copy clone
++            </button>
++          </div>
++          <div class="flex flex-col justify-between items-start lg:items-end gap-5 lg:min-w-48">
++            <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-border font-medium font-mono ${statusClass}">
++              <i data-lucide="circle" class="w-1.5 h-1.5 fill-current"></i>
++              ${statusText}
++            </span>
++            <button data-dashboard-open-repo="${escapeHtml(key)}" class="browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors">
++              Browse repository
++              <i data-lucide="arrow-right" class="browse-repo-arrow w-3.5 h-3.5"></i>
++            </button>
++          </div>
++        </div>
++      </div>
++    `;
++  }
++
++  function updateRepositoryPagination() {
++    const total = state.filteredRepositories.length;
++    const pages = Math.max(1, Math.ceil(total / state.pageSize));
++    state.page = Math.min(Math.max(1, state.page), pages);
++
++    const start = (state.page - 1) * state.pageSize;
++    const end = Math.min(start + state.pageSize, total);
++    const visible = state.filteredRepositories.slice(start, end);
++    const list = $("#repoList");
++    const summary = $("[data-repo-summary]");
++    const prev = $("[data-repo-prev]");
++    const next = $("[data-repo-next]");
++    const pageList = $("[data-repo-pages]");
++
++    if (list) {
++      list.innerHTML = visible.length
++        ? visible.map(repositoryCard).join("")
++        : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
++    }
++    if (summary) {
++      summary.textContent = total
++        ? `Showing ${start + 1}-${end} of ${total} mirrored repositories`
++        : "No repositories match this filter";
++    }
++    if (prev) {
++      prev.disabled = state.page <= 1;
++      prev.classList.toggle("opacity-40", prev.disabled);
++    }
++    if (next) {
++      next.disabled = state.page >= pages;
++      next.classList.toggle("opacity-40", next.disabled);
++    }
++    if (pageList) {
++      pageList.innerHTML = "";
++      for (let page = 1; page <= pages; page += 1) {
++        const button = document.createElement("button");
++        const active = page === state.page;
++        button.type = "button";
++        button.textContent = String(page);
++        button.dataset.dashboardRepoPage = String(page);
++        button.className = [
++          "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
++          active
++            ? "border-border bg-secondary text-foreground"
++            : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
++        ].join(" ");
++        pageList.append(button);
++      }
++    }
++
++    window.lucide?.createIcons();
++  }
++
++  function applyRepositoryFilter() {
++    const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
++    state.filteredRepositories = state.repositories.filter((repo) =>
++      repositoryMatchesQuery(repo, query));
++    updateRepositoryPagination();
++  }
++
++  function renderRepositories(repositories, session) {
++    state.repositories = Array.isArray(repositories) ? repositories : [];
++    state.filteredRepositories = state.repositories.slice();
++    state.page = 1;
++
++    const count = $("[data-repo-count]");
++    if (count) count.textContent = `${formatCount(state.repositories.length)} mirrored`;
++
++    renderSidebarRepositories(session);
++    applyRepositoryFilter();
++  }
++
++  function setRepoTab(tab) {
++    const detail = $(`[data-dashboard-repo-tab-panel="${tab}"]`)?.closest("[data-repo-detail]") || $("[data-repo-detail]");
++    if (!detail) return;
++    detail.querySelectorAll("[data-dashboard-repo-tab]").forEach((button) => {
++      const active = button.dataset.dashboardRepoTab === tab;
++      button.setAttribute("aria-selected", active ? "true" : "false");
++      button.classList.toggle("bg-secondary", active);
++      button.classList.toggle("text-foreground", active);
++      button.classList.toggle("text-muted-foreground", !active);
++    });
++    detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
++      panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
++    });
++  }
++
++  async function loadRepositoryTree(repo, path = "") {
++    const detail = $("[data-repo-detail]");
++    if (!detail) return;
++    const treeBody = detail.querySelector("[data-repo-tree]");
++    const crumb = detail.querySelector("[data-repo-breadcrumb]");
++    if (!treeBody) return;
++
++    if (crumb) {
++      const parts = path ? path.split("/").filter(Boolean) : [];
++      let acc = "";
++      crumb.innerHTML = [`<button data-dashboard-tree-path="" class="text-primary hover:underline">root</button>`]
++        .concat(parts.map((part) => {
++          acc = acc ? `${acc}/${part}` : part;
++          return `<span class="text-muted-foreground">/</span><button data-dashboard-tree-path="${escapeHtml(acc)}" class="text-primary hover:underline">${escapeHtml(part)}</button>`;
++        })).join(" ");
++    }
++
++    treeBody.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading tree...</div>';
++    try {
++      const data = await fetchJson(`${repoApiBase(repo)}/tree?path=${encodeURIComponent(path)}`);
++      const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
++      if (!entries.length) {
++        treeBody.innerHTML = '<div class="py-3 text-sm text-muted-foreground">This directory is empty.</div>';
++        return;
++      }
++      entries.sort((a, b) => {
++        if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
++        return String(a.name || "").localeCompare(String(b.name || ""));
++      });
++      treeBody.innerHTML = entries.map((entry) => {
++        const childPath = path ? `${path}/${entry.name || ""}` : String(entry.name || "");
++        const isTree = entry.type === "tree";
++        return `
++          <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="flex w-full items-center gap-2 border-t border-border py-2 text-left text-sm hover:bg-secondary/40 transition-colors">
++            <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
++            <span class="min-w-0 flex-1 truncate text-foreground">${escapeHtml(entry.name || "entry")}</span>
++            <span class="shrink-0 text-xs text-muted-foreground font-mono">${isTree ? "dir" : escapeHtml(formatSize(entry.size))}</span>
++          </button>`;
++      }).join("");
++      window.history.replaceState(null, "", repoPathUrl(repo, "tree", path));
++      window.lucide?.createIcons();
++    } catch (_) {
++      treeBody.innerHTML = '<div class="py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
++    }
++  }
++
++  async function loadRepositoryBlob(repo, path) {
++    const detail = $("[data-repo-detail]");
++    const viewer = detail?.querySelector("[data-repo-blob]");
++    if (!viewer) return;
++    setRepoTab("code");
++    viewer.classList.remove("hidden");
++    viewer.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading file...</div>';
++    try {
++      const data = await fetchJson(`${repoApiBase(repo)}/blob?path=${encodeURIComponent(path)}`);
++      const content = data.content || data.text || "";
++      viewer.innerHTML = `
++        <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
++          <div class="flex items-center justify-between border-b border-border px-4 py-2">
++            <span class="min-w-0 truncate text-xs font-mono text-foreground">${escapeHtml(path)}</span>
++            <span class="text-[10px] font-mono text-muted-foreground">${escapeHtml(formatSize(content.length))}</span>
++          </div>
++          <pre class="max-h-[32rem] overflow-auto p-4 text-xs leading-5 text-muted-foreground"><code>${escapeHtml(content)}</code></pre>
++        </div>`;
++      window.history.replaceState(null, "", repoPathUrl(repo, "blob", path));
++    } catch (_) {
++      viewer.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Could not load this file from a live host.</div>';
++    }
++  }
++
++  async function loadRepoCollection(repo, kind, containerSelector) {
++    const container = $(containerSelector);
++    if (!container) return;
++    container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading...</div>';
++    try {
++      const data = await fetchJson(`${repoApiBase(repo)}/${kind}`);
++      const items = data[kind] || data.items || data.entries || [];
++      if (!Array.isArray(items) || !items.length) {
++        container.innerHTML = `<div class="py-3 text-sm text-muted-foreground">No ${kind} published for this repository yet.</div>`;
++        return;
++      }
++      container.innerHTML = items.slice(0, 25).map((item) => `
++        <div class="border-t border-border py-3">
++          <div class="flex items-center justify-between gap-3">
++            <p class="min-w-0 truncate text-sm font-medium text-foreground">${escapeHtml(item.title || item.subject || item.name || item.id || `${kind.slice(0, -1)} item`)}</p>
++            <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(item.status || item.state || item.type || kind.slice(0, -1))}</span>
++          </div>
++          <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(item.author || item.source || item.sender || "unknown")}</p>
++        </div>`).join("");
++    } catch (_) {
++      container.innerHTML = `<div class="py-3 text-sm text-muted-foreground">${kind} are unavailable right now.</div>`;
++    }
++  }
++
++  async function loadRepoMirrors(repo) {
++    const container = $("[data-repo-mirrors]");
++    if (!container) return;
++    container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
++    try {
++      const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
++      const mirrors = data.mirrors || [];
++      if (!mirrors.length) {
++        container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
++        return;
++      }
++      container.innerHTML = mirrors.map((mirror) => `
++        <div class="grid grid-cols-[1fr_auto] gap-3 border-t border-border py-3 text-sm">
++          <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
++          <span class="text-xs font-mono ${mirror.status === "online" ? "text-primary" : "text-muted-foreground"}">${escapeHtml(mirror.status || "unknown")}</span>
++        </div>`).join("");
++    } catch (_) {
++      container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
++    }
++  }
++
++  function loadRepoFeaturePanels(repo) {
++    loadRepoCollection(repo, "issues", "[data-repo-issues]");
++    loadRepoCollection(repo, "pulls", "[data-repo-pulls]");
++    loadRepoCollection(repo, "discussions", "[data-repo-discussions]");
++    loadRepoMirrors(repo);
++  }
++
++  function renderRepoDetail(repo) {
++    const detail = $("[data-repo-detail]");
++    if (!detail || !repo) return;
++    state.selectedRepo = repo;
++    detail.innerHTML = `
++      <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
++        <div class="min-w-0">
++          <div class="flex flex-wrap items-center gap-2">
++            <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span>${escapeHtml(repo.name || "repository")}</h2>
++            <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
++            <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${repo.liveHost ? "text-primary" : "text-muted-foreground"}">${repo.liveHost ? "host online" : "host offline"}</span>
++          </div>
++          <p class="mt-3 text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
++          <div class="mt-5 flex flex-wrap gap-2">
++            <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" class="copy-button inline-flex items-center gap-2 rounded-md border border-border bg-secondary px-3 py-2 text-xs text-foreground hover:bg-secondary/80 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5 text-primary"></i>Copy clone</button>
++            <a href="${escapeHtml(cloneUrl(repo))}" class="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">Open clean URL<i data-lucide="external-link" class="h-3.5 w-3.5"></i></a>
++          </div>
++          <div class="mt-6 flex flex-wrap gap-2 border-b border-border pb-2" role="tablist">
++            ${["code", "issues", "pulls", "discussions", "mirrors"].map((tab) => `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${tab === "code" ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}">${tab === "pulls" ? "Pulls" : tab[0].toUpperCase() + tab.slice(1)}</button>`).join("")}
++          </div>
++          <section data-dashboard-repo-tab-panel="code">
++            <div class="mt-4 text-xs text-muted-foreground" data-repo-breadcrumb></div>
++            <div class="mt-3 rounded-lg border border-border bg-background px-4"><div class="flex items-center justify-between py-3"><span class="text-xs font-medium text-foreground">Code</span><span class="text-[10px] text-muted-foreground font-mono">live host</span></div><div data-repo-tree></div></div>
++            <div data-repo-blob class="hidden"></div>
++          </section>
++          <section data-dashboard-repo-tab-panel="issues" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Issues</div><div data-repo-issues></div></div></section>
++          <section data-dashboard-repo-tab-panel="pulls" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Pull requests</div><div data-repo-pulls></div></div></section>
++          <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Discussions and comments</div><div data-repo-discussions></div></div></section>
++          <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Mirrors</div><div data-repo-mirrors></div></div></section>
++        </div>
++        <aside class="rounded-lg border border-border bg-background p-4">
++          <h3 class="text-xs font-medium text-foreground">Repository metadata</h3>
++          <dl class="mt-4 grid gap-3 text-xs">
++            <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Channel</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.channel || "general")}</dd></div>
++            <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Source</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.source || "desktop")}</dd></div>
++            <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Maintainer</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.maintainer || repo.owner || "unknown")}</dd></div>
++            <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Updated</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</dd></div>
++          </dl>
++        </aside>
++      </div>`;
++    setSection("explore");
++    window.lucide?.createIcons();
++    const parts = location.pathname.split("/").filter(Boolean);
++    const kind = parts[2];
++    const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
++    loadRepositoryTree(repo, kind === "tree" ? path : "");
++    if (kind === "blob" && path) loadRepositoryBlob(repo, path);
++    loadRepoFeaturePanels(repo);
++  }
++
++  function findRepository(key) {
++    return state.repositories.find((repo) => repoKey(repo) === key);
++  }
++
++  function renderNetworkRows(rows) {
++    const list = $("[data-network-node-list]");
++    const rail = $("[data-network-rail-nodes]");
++    const count = $("[data-network-node-count]");
++    const recent = rows.slice(0, 6);
++
++    if (count) count.textContent = `${recent.length} recent`;
++    if (list) {
++      list.innerHTML = recent.length
++        ? recent.map((row) => `
++          <div class="px-4 py-3 flex items-center gap-4 hover:bg-secondary/50 transition-colors">
++            <div class="flex items-center gap-2 flex-1 min-w-0">
++              <i data-lucide="circle" class="w-2 h-2 fill-primary text-primary shrink-0"></i>
++              <span class="text-sm text-foreground font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
++            </div>
++            <span class="text-xs text-muted-foreground w-20 text-right font-mono">${formatCount(row.minutes || row.repos || row.total || 0)}</span>
++          </div>
++        `).join("")
++        : '<div class="px-4 py-3 text-sm text-muted-foreground">No recent network activity yet.</div>';
++    }
++    if (rail) {
++      rail.innerHTML = recent.slice(0, 3).length
++        ? recent.slice(0, 3).map((row) => `
++          <div class="flex items-center gap-2">
++            <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary shrink-0"></i>
++            <span class="text-xs text-muted-foreground truncate flex-1 font-mono">${escapeHtml(row.name || "node")}</span>
++            <span class="text-[10px] text-muted-foreground font-mono">${formatCount(row.minutes || row.repos || row.total || 0)}</span>
++          </div>
++        `).join("")
++        : '<div class="text-xs text-muted-foreground">No recent network activity.</div>';
++    }
++  }
++
++  async function renderNetwork() {
++    try {
++      const [stats, leaderboards, history] = await Promise.all([
++        fetchJson("/api/network/stats"),
++        fetchJson("/api/network/leaderboards"),
++        fetchJson("/api/network/online-history"),
++      ]);
++      const hosts = Number(stats.hosts) || 0;
++      const repos = Number(stats.repos) || 0;
++      const clients = Number(stats.clients) || 0;
++      const uptime = Array.isArray(leaderboards.uptime)
++        ? leaderboards.uptime
++        : [];
++      const activityHours = Array.isArray(history.hours)
++        ? history.hours
++        : [];
++      const activeMinutes = activityHours.reduce(
++        (sum, hour) => sum + (Number(hour.nodeMinutes) || 0),
++        0,
++      );
++
++      $("[data-network-hosts]") && ($("[data-network-hosts]").textContent = formatCount(hosts));
++      $("[data-network-repos]") && ($("[data-network-repos]").textContent = formatCount(repos));
++      $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
++      $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
++      $("[data-network-rail-hosts]") && ($("[data-network-rail-hosts]").textContent = formatCount(hosts));
++      $("[data-network-rail-repos]") && ($("[data-network-rail-repos]").textContent = formatCount(repos));
++      $("[data-network-rail-clients]") && ($("[data-network-rail-clients]").textContent = formatCount(clients));
++      $("[data-network-rail-uptime]") && ($("[data-network-rail-uptime]").textContent = activeMinutes ? "Active" : "Idle");
++
++      renderNetworkRows(uptime);
++    } catch (_) {
++      $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
++        '<div class="px-4 py-3 text-sm text-muted-foreground">Network data is unavailable right now.</div>');
++      $("[data-network-rail-nodes]") && ($("[data-network-rail-nodes]").innerHTML =
++        '<div class="text-xs text-muted-foreground">Network data unavailable.</div>');
++    } finally {
++      window.lucide?.createIcons();
++    }
++  }
++
++  async function init() {
++    const session = readSession();
++    const requested = requestedRepoKey();
++    if (!session || (!session.nodeName && !session.email)) {
++      if (!requested) {
++        location.replace("/");
++        return;
++      }
++    }
++
++    renderProfile(session || { nodeName: "guest" });
++    try {
++      const data = await fetchJson("/api/repositories");
++      renderRepositories(data.repositories, session);
++      if (requested) {
++        const repo = findRepository(requested);
++        if (repo) renderRepoDetail(repo);
++      }
++    } catch (_) {
++      const list = $("#repoList");
++      const count = $("[data-repo-count]");
++      if (count) count.textContent = "Unavailable";
++      if (list) {
++        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
++      }
++      renderSidebarRepositories(session);
++    }
++    renderNetwork();
++  }
++
++  document.addEventListener("click", async (event) => {
++    const profileToggle = event.target.closest("[data-profile-toggle]");
++    if (profileToggle) {
++      const popover = $("[data-profile-popover]");
++      const open = popover?.classList.contains("hidden");
++      popover?.classList.toggle("hidden", !open);
++      profileToggle.setAttribute("aria-expanded", open ? "true" : "false");
++      return;
++    }
++
++    const logoutButton = event.target.closest("[data-logout-button]");
++    if (logoutButton) {
++      logout();
++      return;
++    }
++
++    if (!event.target.closest("[data-sidebar-profile]")) {
++      $("[data-profile-popover]")?.classList.add("hidden");
++      $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
++    }
++
++    const sectionButton = event.target.closest("[data-section]");
++    if (sectionButton) {
++      setSection(sectionButton.dataset.section);
++    }
++
++    const pageButton = event.target.closest("[data-dashboard-repo-page]");
++    if (pageButton) {
++      state.page = Number(pageButton.dataset.dashboardRepoPage) || 1;
++      updateRepositoryPagination();
++    }
++
++    const openButton = event.target.closest("[data-dashboard-open-repo]");
++    if (openButton) {
++      const repo = findRepository(openButton.dataset.dashboardOpenRepo);
++      if (repo) renderRepoDetail(repo);
++    }
++
++    const copyButton = event.target.closest("[data-dashboard-copy]");
++    if (copyButton) {
++      const text = copyButton.dataset.dashboardCopy || "";
++      try {
++        await navigator.clipboard.writeText(text);
++      } catch (_) {
++        const temp = document.createElement("textarea");
++        temp.value = text;
++        temp.setAttribute("readonly", "");
++        temp.style.position = "fixed";
++        temp.style.opacity = "0";
++        document.body.appendChild(temp);
++        temp.select();
++        document.execCommand("copy");
++        temp.remove();
++      }
++      copyButton.classList.add("copied");
++      window.setTimeout(() => copyButton.classList.remove("copied"), 1600);
++    }
++  });
++
++  $("#repoSearch")?.addEventListener("input", () => {
++    state.page = 1;
++    applyRepositoryFilter();
++  });
++  $("[data-repo-prev]")?.addEventListener("click", () => {
++    state.page -= 1;
++    updateRepositoryPagination();
++  });
++  $("[data-repo-next]")?.addEventListener("click", () => {
++    state.page += 1;
++    updateRepositoryPagination();
++  });
++
++  init();
++})();
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+new file mode 100644
+index 00000000..9783286e
+--- /dev/null
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -0,0 +1,1204 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>ForkMesh Dashboard</title>
++    <meta name="description" content="Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard." />
++    <meta name="application-name" content="ForkMesh" />
++    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
++    <meta name="theme-color" content="#090909" />
++    <meta name="color-scheme" content="dark" />
++    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
++    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
++    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
++    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
++    <link rel="manifest" href="/favicon/site.webmanifest" />
++    <link rel="preconnect" href="https://fonts.googleapis.com" />
++    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
++    <link
++      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
++      rel="stylesheet"
++    />
++    <script src="https://cdn.tailwindcss.com"></script>
++    <script>
++      tailwind.config = {
++        theme: {
++          extend: {
++            fontFamily: {
++              sans: ["Outfit", "system-ui", "sans-serif"],
++              mono: ["Geist Mono", "ui-monospace", "SFMono-Regular", "monospace"],
++            },
++            colors: {
++              background: "rgb(9 9 11 / <alpha-value>)",
++              foreground: "rgb(244 244 245 / <alpha-value>)",
++              card: "rgb(17 17 19 / <alpha-value>)",
++              "card-foreground": "rgb(244 244 245 / <alpha-value>)",
++              popover: "rgb(24 24 27 / <alpha-value>)",
++              "popover-foreground": "rgb(244 244 245 / <alpha-value>)",
++              primary: "rgb(74 222 128 / <alpha-value>)",
++              "primary-foreground": "rgb(5 46 22 / <alpha-value>)",
++              secondary: "rgb(28 28 31 / <alpha-value>)",
++              "secondary-foreground": "rgb(161 161 170 / <alpha-value>)",
++              muted: "rgb(28 28 31 / <alpha-value>)",
++              "muted-foreground": "rgb(113 113 122 / <alpha-value>)",
++              accent: "rgb(74 222 128 / <alpha-value>)",
++              "accent-foreground": "rgb(5 46 22 / <alpha-value>)",
++              destructive: "rgb(239 68 68 / <alpha-value>)",
++              border: "rgb(255 255 255 / 0.07)",
++              input: "transparent",
++              ring: "rgb(244 244 245 / <alpha-value>)",
++            },
++          },
++        },
++      };
++    </script>
++    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
++    <style>
++      :root {
++        --font-size: 15px;
++        --background: #09090b;
++        --foreground: #f4f4f5;
++        --card: #111113;
++        --primary: #4ade80;
++        --primary-foreground: #052e16;
++        --secondary: #1c1c1f;
++        --muted-foreground: #71717a;
++        --border: rgba(255, 255, 255, 0.07);
++      }
++
++      * {
++        border-color: var(--border);
++        box-sizing: border-box;
++      }
++
++      html {
++        font-size: var(--font-size);
++      }
++
++      body {
++        margin: 0;
++        background: var(--background);
++        color: var(--foreground);
++        font-family: "Outfit", system-ui, sans-serif;
++      }
++
++      button,
++      input {
++        font: inherit;
++      }
++
++      button {
++        font-weight: 500;
++        line-height: 1.5;
++      }
++
++      input {
++        font-weight: 400;
++        line-height: 1.5;
++      }
++
++      .view {
++        display: none;
++      }
++
++      .view.active {
++        display: block;
++      }
++
++      .view.active.flex-view {
++        display: flex;
++      }
++
++      .copy-check {
++        display: none;
++      }
++
++      .copy-button.copied .copy-icon {
++        display: none;
++      }
++
++      .copy-button.copied .copy-check {
++        display: block;
++      }
++
++      .repo-card.is-hidden {
++        display: none;
++      }
++
++      .repo-list {
++        transition: opacity 160ms ease;
++      }
++
++      .repo-list.is-fetching {
++        opacity: 0.45;
++        pointer-events: none;
++      }
++
++      .repo-list.grid-mode {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++        gap: 0.75rem;
++        padding: 0.75rem;
++      }
++
++      .repo-list.grid-mode .repo-card {
++        border: 1px solid var(--border);
++        border-radius: 0.5rem;
++      }
++
++	      .repo-list.grid-mode .repo-layout {
++	        min-height: 13rem;
++	      }
++
++	      .browse-repo-arrow {
++	        transition: transform 160ms ease;
++	      }
++
++	      .browse-repo-button:hover .browse-repo-arrow {
++	        transform: translateX(0.125rem);
++	      }
++
++	      .network-toggle-open {
++	        display: none;
++	      }
++
++      .network-rail-collapsed #networkRail {
++        display: none;
++      }
++
++      .network-rail-collapsed .network-toggle-open {
++        display: block;
++      }
++
++      .network-rail-collapsed .network-toggle-close {
++        display: none;
++      }
++
++      ::selection {
++        background: rgb(74 222 128 / 0.28);
++      }
++
++      ::-webkit-scrollbar {
++        width: 10px;
++        height: 10px;
++      }
++
++      ::-webkit-scrollbar-track {
++        background: transparent;
++      }
++
++      ::-webkit-scrollbar-thumb {
++        background: rgb(255 255 255 / 0.1);
++        border: 3px solid transparent;
++        border-radius: 999px;
++        background-clip: padding-box;
++      }
++
++      ::-webkit-scrollbar-thumb:hover {
++        background: rgb(255 255 255 / 0.16);
++        background-clip: padding-box;
++      }
++    </style>
++    <script src="/dashboard.js" defer></script>
++    <script src="/dashboard-chat.js" defer></script>
++  </head>
++  <body class="bg-background text-foreground">
++    <div class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
++      <header data-app-header class="relative h-14 border-b border-border bg-card flex items-center gap-6 px-4 shrink-0">
++        <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
++          <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
++        </a>
++
++        <nav data-top-nav class="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0">
++          <!-- Home dashboard tab is intentionally hidden until the activity feed is functional.
++          <button data-section="home" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Home
++          </button>
++          -->
++          <button data-section="repos" data-nav-link aria-current="page" class="inline-flex text-sm text-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Repositories
++          </button>
++          <button data-section="network" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Network
++          </button>
++          <a href="/docs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Docs
++          </a>
++          <!-- Desktop Client is intentionally hidden until that flow is ready.
++          <a href="/desktop" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Desktop Client
++          </a>
++          -->
++          <a href="/blogs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
++            Blogs
++          </a>
++        </nav>
++
++        <div class="ml-auto flex items-center gap-2">
++          <!-- Notifications are intentionally hidden until the next dashboard phase.
++          <div class="relative">
++            <button
++              id="notificationToggle"
++              type="button"
++              aria-label="Open notifications"
++              aria-expanded="false"
++              class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors"
++            >
++              <i data-lucide="bell" class="w-4 h-4"></i>
++            </button>
++            <div
++              id="notificationDropdown"
++              class="hidden absolute right-0 top-full mt-2 w-72 rounded-lg border border-border bg-card shadow-2xl shadow-background/40 overflow-hidden z-50"
++	            >
++	              <div class="px-3 py-2 border-b border-border flex items-center justify-between">
++	                <span class="text-xs font-medium text-foreground">Notifications</span>
++	                <span data-notification-count class="text-[10px] text-muted-foreground font-mono">3 new</span>
++	              </div>
++	              <div data-notification-preview-list class="py-1"></div>
++	              <div class="border-t border-border p-2">
++	                <button data-show-all-notifications type="button" class="w-full rounded-md px-3 py-2 text-center text-xs font-medium text-primary hover:bg-secondary transition-colors">
++	                  Show all notifications
++	                </button>
++	              </div>
++	            </div>
++	          </div>
++          -->
++          <button
++            id="networkRailToggle"
++            data-network-rail-toggle
++            type="button"
++            aria-label="Close network panel"
++            aria-expanded="true"
++            class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors hidden lg:inline-flex"
++          >
++            <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
++            <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
++          </button>
++        </div>
++      </header>
++
++      <div class="flex flex-1 min-h-0 overflow-hidden">
++      <aside class="w-56 shrink-0 flex flex-col border-r border-border bg-card h-full overflow-y-auto">
++        <div data-sidebar-repos class="px-3 py-3 flex-1 min-h-0 overflow-y-auto">
++          <div class="flex items-center justify-between mb-2 px-2">
++            <span class="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Your repos</span>
++            <span data-sidebar-repo-count class="text-[10px] text-foreground font-mono">Loading</span>
++          </div>
++          <div data-sidebar-repo-list class="grid gap-1">
++            <button data-section="repos" class="nav-jump w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
++              <i data-lucide="loader-circle" class="w-3 h-3 shrink-0 animate-spin"></i>
++              <span class="truncate">Loading repositories</span>
++            </button>
++          </div>
++        </div>
++
++        <div data-sidebar-profile class="mt-auto px-3 py-3 border-t border-border">
++          <div class="relative">
++            <div
++              data-profile-popover
++              role="menu"
++              class="hidden absolute left-0 right-0 bottom-full mb-2 rounded-lg border border-border bg-card p-1.5 shadow-2xl shadow-background/50 z-50"
++            >
++              <button
++                data-logout-button
++                type="button"
++                role="menuitem"
++                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
++              >
++                <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
++                Logout
++              </button>
++            </div>
++
++            <button
++              data-profile-toggle
++              type="button"
++              aria-haspopup="menu"
++              aria-expanded="false"
++              class="w-full flex items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-secondary transition-colors focus:outline-none focus:ring-1 focus:ring-foreground/20"
++            >
++              <span
++                data-dashboard-profile-avatar
++                class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
++                style="width: 26px; height: 26px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 9.88px"
++              >Y</span>
++              <span class="min-w-0">
++                <span data-dashboard-profile-name class="block text-xs font-medium text-foreground truncate">My Profile</span>
++                <span class="flex items-center gap-1 mt-0.5">
++                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
++                  <span data-dashboard-profile-status class="text-[10px] text-muted-foreground">The node is online</span>
++                </span>
++              </span>
++            </button>
++          </div>
++        </div>
++      </aside>
++
++      <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
++        <div id="content" class="flex-1 min-h-0 overflow-hidden">
++	          <!-- Home dashboard view is intentionally hidden until the activity feed is functional.
++          <section data-view="home" class="view active h-full overflow-y-auto">
++	            <div class="p-6 max-w-5xl mx-auto">
++	              <div class="flex items-center justify-between mb-6">
++	                  <h1 class="text-base font-semibold text-foreground">Home</h1>
++	                  <button class="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-md px-3 py-1.5 hover:bg-secondary transition-colors">
++	                    <i data-lucide="filter" class="w-3 h-3"></i>
++	                    Filter
++	                  </button>
++                </div>
++
++                <div class="mb-3 flex items-center justify-between">
++                  <span class="text-xs font-medium text-foreground">Activity feed</span>
++                  <span class="text-xs text-muted-foreground font-mono">last 7 days</span>
++                </div>
++
++                <div class="flex flex-col gap-1">
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">you</span> <span class="text-muted-foreground">3 commits to main</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 2h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #fbbf2412; border: 1px solid #fbbf2425">
++                    <i data-lucide="star" class="w-3.5 h-3.5" style="color: #fbbf24"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">starred your repo</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 4h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">alice-node</span> <span class="text-muted-foreground">1 commit to feat/relay-v2</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">alice-node/forkmesh &middot; 6h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #38bdf812; border: 1px solid #38bdf825">
++                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5" style="color: #38bdf8"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">devbox-kr</span> <span class="text-muted-foreground">started mirroring your node</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">devbox-kr/fmesh-py &middot; 12h ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #f472b612; border: 1px solid #f472b625">
++                    <i data-lucide="git-pull-request" class="w-3.5 h-3.5" style="color: #f472b6"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">sysop-eu</span> <span class="text-muted-foreground">opened PR #14 - fix tunnel keepalive</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 1d ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #818cf812; border: 1px solid #818cf825">
++                    <i data-lucide="git-fork" class="w-3.5 h-3.5" style="color: #818cf8"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">infra-wg</span> <span class="text-muted-foreground">forked to infra-wg/mesh-ui</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 2d ago</p>
++                  </div>
++                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++                </div>
++                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
++                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
++                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
++                  </div>
++                  <div class="flex-1 min-w-0">
++                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">tagged v0.4.1</span></p>
++                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">relay-eu-1/relay-monitor &middot; 3d ago</p>
++	                  </div>
++	                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
++	                </div>
++	                </div>
++
++		              <section data-home-contributions class="mt-10">
++	                <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_7rem]">
++	                  <div class="min-w-0">
++	                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
++                      <h2 class="text-base font-semibold text-foreground">
++                        <span data-contribution-count>1,563</span> contributions in the last year
++                      </h2>
++                      <button class="inline-flex items-center gap-1.5 self-start text-xs text-muted-foreground hover:text-foreground transition-colors">
++                        Contribution settings
++                        <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
++                      </button>
++                    </div>
++
++                    <div class="mt-3 rounded-lg border border-border bg-card p-4">
++                      <div class="overflow-x-auto pb-1">
++                        <div class="min-w-[720px]">
++                          <div class="ml-10 grid grid-cols-12 gap-3 text-xs text-foreground">
++                            <span>Jun</span>
++                            <span>Jul</span>
++                            <span>Aug</span>
++                            <span>Sep</span>
++                            <span>Oct</span>
++                            <span>Nov</span>
++                            <span>Dec</span>
++                            <span>Jan</span>
++                            <span>Feb</span>
++                            <span>Mar</span>
++                            <span>Apr</span>
++                            <span>May</span>
++                          </div>
++
++                          <div class="mt-2 flex gap-3">
++                            <div class="grid grid-rows-7 gap-1 text-xs text-foreground shrink-0" style="grid-template-rows: repeat(7, 10px)">
++                              <span></span>
++                              <span class="leading-[10px]">Mon</span>
++                              <span></span>
++                              <span class="leading-[10px]">Wed</span>
++                              <span></span>
++                              <span class="leading-[10px]">Fri</span>
++                              <span></span>
++                            </div>
++                            <div
++                              data-contribution-grid
++                              role="img"
++                              aria-label="Contribution activity heatmap"
++                              class="shrink-0"
++                              style="display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 10px); grid-auto-columns: 10px; gap: 4px"
++                            ></div>
++                          </div>
++                        </div>
++                      </div>
++
++                      <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
++                        <button class="text-xs text-muted-foreground hover:text-primary transition-colors self-start">Learn how we count contributions</button>
++                        <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
++                          <span>Less</span>
++                          <span class="h-2.5 w-2.5 rounded-[2px] bg-secondary"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #14532d"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #166534"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #22c55e"></span>
++                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #4ade80"></span>
++                          <span>More</span>
++                        </div>
++                      </div>
++                    </div>
++                  </div>
++
++                  <div class="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-visible">
++                    <button data-contribution-year="2026" data-count="1,563" class="shrink-0 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors">2026</button>
++                    <button data-contribution-year="2025" data-count="1,102" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2025</button>
++                    <button data-contribution-year="2024" data-count="842" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2024</button>
++                    <button data-contribution-year="2023" data-count="519" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2023</button>
++                    <button data-contribution-year="2022" data-count="286" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2022</button>
++                  </div>
++                </div>
++
++                <div class="mt-8">
++                  <h2 class="text-base font-semibold text-foreground">Contribution activity</h2>
++
++                  <div class="mt-6 flex items-center gap-4">
++                    <span class="shrink-0 text-sm font-semibold text-foreground">June 2026</span>
++                    <span class="h-px flex-1 bg-border"></span>
++                  </div>
++
++                  <div class="relative mt-5 pl-12">
++                    <span class="absolute left-5 top-0 bottom-0 w-px bg-border"></span>
++
++                    <div class="relative grid gap-8">
++                      <article class="relative">
++                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                          <i data-lucide="git-commit" class="w-4 h-4"></i>
++                        </span>
++                        <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
++                          <div class="min-w-0">
++                            <h3 class="text-base font-semibold text-foreground">Created 8 commits in 2 repositories</h3>
++                            <div class="mt-3 grid gap-2 text-sm">
++                              <div class="flex flex-wrap items-center gap-2">
++                                <button class="text-primary hover:underline">you/meshcore</button>
++                                <span class="text-xs text-muted-foreground">7 commits</span>
++                              </div>
++                              <div class="flex flex-wrap items-center gap-2">
++                                <button class="text-primary hover:underline">you/mesh-ui</button>
++                                <span class="text-xs text-muted-foreground">1 commit</span>
++                              </div>
++                            </div>
++                          </div>
++                          <div class="grid content-center gap-3">
++                            <span class="h-2 rounded-full bg-primary/50 w-full"></span>
++                            <span class="h-2 rounded-full bg-primary/70 w-8"></span>
++                          </div>
++                        </div>
++                      </article>
++
++                      <article class="relative">
++                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                          <i data-lucide="git-branch" class="w-4 h-4"></i>
++                        </span>
++                        <h3 class="text-base font-semibold text-foreground">Created 2 repositories</h3>
++                        <div class="mt-4 grid gap-3">
++                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
++                            <div class="flex items-center gap-2 min-w-0">
++                              <i data-lucide="lock" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
++                              <button class="truncate text-primary hover:underline">you/forkmesh-landing</button>
++                            </div>
++                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
++                            <span class="text-xs text-muted-foreground sm:text-right">Jun 19</span>
++                          </div>
++                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
++                            <div class="flex items-center gap-2 min-w-0">
++                              <i data-lucide="git-branch" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
++                              <button class="truncate text-primary hover:underline">you/pi</button>
++                            </div>
++                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
++                            <span class="text-xs text-muted-foreground sm:text-right">Jun 14</span>
++                          </div>
++                        </div>
++                      </article>
++
++                      <div data-more-activity class="hidden grid gap-8">
++                        <article class="relative">
++                          <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
++                            <i data-lucide="star" class="w-4 h-4"></i>
++                          </span>
++                          <h3 class="text-base font-semibold text-foreground">Maintained 3 mirrored projects</h3>
++                          <p class="mt-2 text-sm text-muted-foreground">meshcore, mesh-ui, and relay-monitor stayed active across local nodes.</p>
++                        </article>
++                      </div>
++                    </div>
++                  </div>
++
++                  <button data-show-more-activity class="mt-8 w-full rounded-md border border-border bg-card px-4 py-3 text-sm font-semibold text-primary hover:bg-secondary transition-colors">
++                    Show more activity
++                  </button>
++
++                  <p class="mt-6 text-sm text-muted-foreground">
++                    Seeing something unexpected? Take a look at the
++                    <button class="text-primary hover:underline">ForkMesh profile guide.</button>
++                  </p>
++                </div>
++              </section>
++            </div>
++          </section>
++
++          -->
++
++          <section data-view="repos" class="view active h-full overflow-y-auto">
++            <div class="p-3 sm:p-6 w-full">
++              <div data-repo-panel class="w-full rounded-lg border border-border bg-card overflow-hidden">
++                <div class="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
++                  <div class="min-w-0">
++                    <h1 class="text-base font-semibold text-foreground">Repositories</h1>
++                    <p class="mt-1 text-sm text-muted-foreground">Mirrors published by ForkMesh desktop nodes. Open a repo to browse files live from its host.</p>
++                  </div>
++                  <span data-repo-count class="shrink-0 self-start text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
++                </div>
++
++                <div class="px-4 sm:px-5 py-3 border-b border-border flex items-center gap-3">
++                  <div class="relative flex-1 min-w-0">
++                    <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"></i>
++                    <input
++                      id="repoSearch"
++                      type="text"
++                      placeholder="Filter repositories..."
++                      class="w-full pl-9 pr-4 py-2 text-sm bg-background border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20 transition"
++                    />
++                  </div>
++                  <div class="shrink-0 flex items-center rounded-md border border-border overflow-hidden">
++                    <button
++                      data-view-mode="list"
++                      type="button"
++                      aria-label="Show repositories as a list"
++                      aria-pressed="true"
++                      class="repo-view-button bg-secondary text-foreground p-2 transition-colors"
++                    >
++                      <i data-lucide="list" class="w-4 h-4"></i>
++                    </button>
++                    <button
++                      data-view-mode="grid"
++                      type="button"
++                      aria-label="Show repositories as a grid"
++                      aria-pressed="false"
++                      class="repo-view-button text-muted-foreground hover:text-foreground p-2 border-l border-border transition-colors"
++                    >
++                      <i data-lucide="layout-grid" class="w-4 h-4"></i>
++                    </button>
++                  </div>
++                </div>
++
++                <div id="repoList" class="repo-list divide-y divide-border" aria-live="polite">
++                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repository catalog...</div>
++                </div>
++
++                <div data-repo-pagination class="border-t border-border px-4 sm:px-5 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
++                  <div class="flex flex-col gap-1">
++                    <span data-repo-summary class="text-xs text-muted-foreground font-mono">Showing 1-5 of 12 mirrored repositories</span>
++                    <span data-repo-loading class="hidden text-xs text-muted-foreground">Fetching repositories...</span>
++                  </div>
++                  <div class="flex items-center gap-2 overflow-x-auto">
++                    <button data-repo-prev type="button" class="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                      <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
++                      Previous
++                    </button>
++                    <div data-repo-pages class="flex items-center gap-1"></div>
++                    <button data-repo-next type="button" class="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                      Next
++                      <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
++                    </button>
++                  </div>
++                </div>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="chat" class="view flex-view h-full flex-col">
++            <div class="px-5 py-3.5 border-b border-border flex items-center gap-2 shrink-0">
++              <i data-lucide="hash" class="w-4 h-4 text-muted-foreground"></i>
++              <span class="text-sm font-semibold text-foreground">general</span>
++              <i data-lucide="lock" class="w-3 h-3 text-muted-foreground ml-1"></i>
++              <span class="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
++                <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
++                <span data-dashboard-chat-status class="font-mono">Not connected</span>
++              </span>
++            </div>
++
++            <div class="mx-4 mt-4 mb-2 px-4 py-3 rounded-lg border border-border bg-card flex items-start gap-2.5 shrink-0">
++              <i data-lucide="lock" class="w-3.5 h-3.5 text-primary mt-0.5 shrink-0"></i>
++              <p class="text-xs text-muted-foreground leading-relaxed">
++                Public <strong class="text-foreground">#general</strong> - messages are encrypted in your browser before reaching the relay. The server never sees plaintext.
++              </p>
++            </div>
++
++            <div id="fullChatMessages" class="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1 min-h-0"></div>
++
++            <div class="px-4 pb-4 pt-2 shrink-0 border-t border-border">
++              <div class="flex items-center gap-2 bg-secondary border border-border rounded-lg px-3 py-2 focus-within:ring-1 focus-within:ring-foreground/20 transition">
++                <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
++                <input
++                  id="fullChatInput"
++                  class="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
++                  placeholder="Message #general..."
++                />
++                <button id="fullChatSend" class="shrink-0 w-7 h-7 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center hover:bg-primary/20 transition-colors">
++                  <i data-lucide="send" class="w-3 h-3 text-primary"></i>
++                </button>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="network" class="view h-full overflow-y-auto">
++            <div class="p-6 max-w-5xl mx-auto">
++              <div class="flex items-center justify-between mb-6">
++                <h1 class="text-base font-semibold text-foreground">Network</h1>
++	                <span class="flex items-center gap-1.5 text-xs text-foreground font-mono">
++	                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
++	                  relay healthy
++                </span>
++              </div>
++
++              <div data-network-summary class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-hosts class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Nodes</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-repos class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Repos mirrored</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-clients class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
++                  <p class="text-xs text-muted-foreground">Active relays</p>
++                </div>
++                <div class="rounded-lg border border-border bg-card p-4">
++                  <p data-network-uptime class="text-xl font-semibold text-foreground mb-1 font-mono">Live</p>
++                  <p class="text-xs text-muted-foreground">Relay uptime</p>
++                </div>
++              </div>
++
++              <div class="rounded-lg border border-border bg-card overflow-hidden mb-6">
++                <div class="px-4 py-3 border-b border-border flex items-center justify-between">
++                  <span class="text-xs font-medium text-foreground">Connected nodes</span>
++                  <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
++                </div>
++                <div data-network-node-list class="divide-y divide-border">
++                  <div class="px-4 py-3 text-sm text-muted-foreground">Loading recent network...</div>
++                </div>
++              </div>
++
++              <div class="rounded-lg border border-border bg-card p-5">
++                <h3 class="text-xs font-medium text-foreground mb-4">Protocol</h3>
++                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="shield" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Relay role: Control plane</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="zap" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Data plane: Live host tunnel</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="lock" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">All traffic encrypted E2E</span>
++                  </div>
++                  <div class="flex items-center gap-2.5">
++                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-primary shrink-0"></i>
++                    <span class="text-xs text-muted-foreground">Git upload-pack via relay</span>
++                  </div>
++                </div>
++              </div>
++            </div>
++          </section>
++
++          <section data-view="explore" class="view h-full overflow-y-auto">
++            <div class="p-6 max-w-5xl mx-auto">
++              <div class="flex items-center justify-between gap-3 mb-5">
++                <h1 class="text-base font-semibold text-foreground">Repository</h1>
++                <button data-section="repos" type="button" class="nav-jump inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++                  <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
++                  Back to repositories
++                </button>
++              </div>
++              <div data-repo-detail class="rounded-lg border border-border bg-card p-5">
++                <p class="text-sm text-muted-foreground">Choose a repository to inspect it.</p>
++              </div>
++              <template id="dashboard-repo-feature-template">
++                <div class="panel-header-aside">
++                  <div class="issue-filter" role="group" aria-label="Issue state">
++                    <button id="issue-filter-open" type="button" data-state="open" class="is-active" aria-pressed="true">Open</button>
++                    <button id="issue-filter-closed" type="button" data-state="closed" aria-pressed="false">Closed</button>
++                    <button id="issue-filter-all" type="button" data-state="all" aria-pressed="false">All</button>
++                  </div>
++                </div>
++                <button id="tab-mirrors" type="button">Mirrors</button>
++                <section id="repo-mirrors" hidden aria-labelledby="mirrors-title">
++                  <h2 id="mirrors-title">Mirrors</h2>
++                  <div id="mirror-summary"></div>
++                  <div class="mirror-table-wrap">
++                    <table class="mirror-health-table">
++                      <thead>
++                        <tr>
++                          <th>Node</th>
++                          <th>Status</th>
++                          <th>Last seen</th>
++                          <th>Hosted since</th>
++                          <th>Sync age</th>
++                          <th>Clone available</th>
++                        </tr>
++                      </thead>
++                      <tbody id="mirror-list"></tbody>
++                    </table>
++                  </div>
++                </section>
++              </template>
++            </div>
++          </section>
++        </div>
++      </main>
++
++      <aside id="networkRail" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
++        <div class="border-b border-border px-4 py-3 shrink-0">
++          <div class="flex items-center justify-between mb-3">
++            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
++              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
++              Network
++            </span>
++            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
++              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
++              live
++            </span>
++          </div>
++
++          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
++            </div>
++            <div class="rounded-md bg-background border border-border px-3 py-2">
++              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
++              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
++            </div>
++          </div>
++
++          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
++            <div class="text-xs text-muted-foreground">Loading recent network...</div>
++          </div>
++        </div>
++
++        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
++          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
++            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
++            general
++          </span>
++          <div class="flex items-center gap-1.5">
++            <i data-lucide="lock" class="w-3 h-3 text-muted-foreground"></i>
++            <button data-section="chat" class="nav-jump text-xs text-primary hover:underline">expand</button>
++          </div>
++        </div>
++
++        <div id="sideChatMessages" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-0.5 min-h-0"></div>
++
++        <div class="px-3 pb-3 pt-2 shrink-0">
++          <div class="flex items-center gap-2 bg-background border border-border rounded-lg px-3 py-2 focus-within:ring-1 focus-within:ring-foreground/20 transition">
++            <input
++              id="sideChatInput"
++              class="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
++              placeholder="Message #general..."
++            />
++            <button id="sideChatSend" class="shrink-0">
++              <i data-lucide="send" class="w-3 h-3 text-muted-foreground hover:text-primary transition-colors"></i>
++            </button>
++          </div>
++        </div>
++	      </aside>
++	    </div>
++	    </div>
++
++	    <!-- Notification reader modal is intentionally hidden until the next dashboard phase.
++	    <div
++	      id="notificationModal"
++	      class="hidden fixed inset-0 z-[80] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
++	      role="dialog"
++	      aria-modal="true"
++	      aria-labelledby="notificationModalTitle"
++	    >
++	      <button data-notification-modal-backdrop type="button" aria-label="Close notifications" class="absolute inset-0 cursor-default"></button>
++	      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
++	        <div class="flex items-center justify-between border-b border-border px-4 py-3">
++	          <div class="min-w-0">
++	            <h2 id="notificationModalTitle" class="text-sm font-semibold text-foreground">Notifications</h2>
++	            <p class="mt-0.5 text-xs text-muted-foreground">Read node, repository, and network updates.</p>
++	          </div>
++	          <button data-close-notification-modal type="button" aria-label="Close notifications" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
++	            <i data-lucide="x" class="h-4 w-4"></i>
++	          </button>
++	        </div>
++
++	        <div class="grid min-h-0 flex-1 md:grid-cols-[19rem_minmax(0,1fr)]">
++	          <div data-notification-modal-list class="max-h-80 overflow-y-auto border-b border-border p-2 md:max-h-none md:border-b-0 md:border-r"></div>
++	          <article data-notification-modal-detail class="min-h-0 overflow-y-auto p-5"></article>
++	        </div>
++	      </div>
++	    </div>
++
++	    -->
++	    <script>
++      const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
++	      // Notifications are intentionally disabled until the next dashboard phase.
++	      const notifications = [];
++
++	      // Notification logic is intentionally disabled until notification data is wired to real APIs.
++
++	      function setProfilePopoverOpen(open) {
++	        const toggle = document.querySelector("[data-profile-toggle]");
++	        const popover = document.querySelector("[data-profile-popover]");
++	        if (!toggle || !popover) return;
++
++	        popover.classList.toggle("hidden", !open);
++	        toggle.setAttribute("aria-expanded", open ? "true" : "false");
++		      }
++
++	      function handleLogout() {
++	        try {
++	          localStorage.removeItem("forkmesh.session");
++	        } catch (_) {}
++
++	        document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
++	        setProfilePopoverOpen(false);
++	        window.location.href = window.location.protocol === "file:" ? "index.html" : "/";
++	      }
++
++	      function initProfileMenu() {
++	        const toggle = document.querySelector("[data-profile-toggle]");
++	        const popover = document.querySelector("[data-profile-popover]");
++	        const logout = document.querySelector("[data-logout-button]");
++	        if (!toggle || !popover || !logout) return;
++
++	        toggle.addEventListener("click", (event) => {
++	          event.stopPropagation();
++	          setProfilePopoverOpen(popover.classList.contains("hidden"));
++	        });
++
++	        popover.addEventListener("click", (event) => {
++	          event.stopPropagation();
++	        });
++
++	        logout.addEventListener("click", handleLogout);
++	        document.addEventListener("click", () => setProfilePopoverOpen(false));
++	        document.addEventListener("keydown", (event) => {
++	          if (event.key === "Escape") setProfilePopoverOpen(false);
++	        });
++	      }
++
++	      const contributionColors = ["#1c1c1f", "#14532d", "#166534", "#22c55e", "#4ade80"];
++
++      function contributionLevel(index, year) {
++        const seed = Number(year) || 2026;
++        const value = (index * 17 + seed * 11 + Math.floor(index / 7) * 5) % 23;
++        if (value < 4) return 0;
++        if (value < 9) return 1;
++        if (value < 15) return 2;
++        if (value < 20) return 3;
++        return 4;
++      }
++
++      function renderContributionGrid(year = "2026") {
++        const grid = document.querySelector("[data-contribution-grid]");
++        if (!grid) return;
++        grid.innerHTML = "";
++
++        for (let index = 0; index < 364; index += 1) {
++          const level = contributionLevel(index, year);
++          const cell = document.createElement("span");
++          cell.setAttribute("aria-hidden", "true");
++          cell.title = `${level} contributions`;
++          cell.style.width = "10px";
++          cell.style.height = "10px";
++          cell.style.borderRadius = "2px";
++          cell.style.background = contributionColors[level];
++          grid.appendChild(cell);
++        }
++      }
++
++      function setContributionYear(button) {
++        document.querySelectorAll("[data-contribution-year]").forEach((yearButton) => {
++          const active = yearButton === button;
++          yearButton.classList.toggle("bg-primary", active);
++          yearButton.classList.toggle("text-primary-foreground", active);
++          yearButton.classList.toggle("font-semibold", active);
++          yearButton.classList.toggle("text-muted-foreground", !active);
++          yearButton.classList.toggle("hover:bg-secondary", !active);
++          yearButton.classList.toggle("hover:text-foreground", !active);
++        });
++
++        const count = document.querySelector("[data-contribution-count]");
++        if (count) count.textContent = button.dataset.count;
++        renderContributionGrid(button.dataset.contributionYear);
++      }
++
++      function initContributionActivity() {
++        const yearButtons = document.querySelectorAll("[data-contribution-year]");
++        yearButtons.forEach((button) => {
++          button.addEventListener("click", () => setContributionYear(button));
++        });
++
++        const activeYear = document.querySelector("[data-contribution-year].bg-primary") || yearButtons[0];
++        if (activeYear) setContributionYear(activeYear);
++
++        const showMoreButton = document.querySelector("[data-show-more-activity]");
++        const moreActivity = document.querySelector("[data-more-activity]");
++        if (showMoreButton && moreActivity) {
++          showMoreButton.addEventListener("click", () => {
++            const expanded = moreActivity.classList.toggle("hidden");
++            showMoreButton.textContent = expanded ? "Show more activity" : "Show less activity";
++          });
++        }
++      }
++
++      function setSection(section) {
++        document.querySelectorAll("[data-view]").forEach((view) => {
++          view.classList.toggle("active", view.dataset.view === section);
++        });
++        document.querySelectorAll("[data-nav-link]").forEach((button) => {
++          const active = button.dataset.section === section;
++          button.setAttribute("aria-current", active ? "page" : "false");
++          button.classList.toggle("text-foreground", active);
++          button.classList.toggle("text-muted-foreground", !active);
++          button.classList.toggle("hover:text-foreground", !active);
++        });
++      }
++
++      function setNetworkRail(open) {
++        document.body.classList.toggle("network-rail-collapsed", !open);
++        document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
++          button.setAttribute("aria-expanded", open ? "true" : "false");
++          button.setAttribute("aria-label", open ? "Close network panel" : "Open network panel");
++        });
++      }
++
++      document.querySelectorAll("[data-section]").forEach((button) => {
++        button.addEventListener("click", () => setSection(button.dataset.section));
++      });
++
++      document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
++        button.addEventListener("click", () => {
++          setNetworkRail(document.body.classList.contains("network-rail-collapsed"));
++        });
++      });
++
++      document.addEventListener("keydown", (event) => {
++        if (event.key === "Escape") setProfilePopoverOpen(false);
++      });
++
++      const repoPageSize = 5;
++      let repoCurrentPage = 1;
++      let repoIsFetching = false;
++      let repoFetchTimer;
++
++      function repoCards() {
++        return [...document.querySelectorAll(".repo-card")];
++      }
++
++      function repoQuery() {
++        return document.getElementById("repoSearch").value.trim().toLowerCase();
++      }
++
++      function filteredRepoCards() {
++        const query = repoQuery();
++        return repoCards().filter((card) => !query || card.dataset.repo.includes(query));
++      }
++
++      function setRepoButtonDisabled(button, disabled) {
++        if (!button) return;
++        button.disabled = disabled;
++        button.classList.toggle("opacity-40", disabled);
++        button.classList.toggle("pointer-events-none", disabled);
++      }
++
++      function renderRepoPageButtons(totalPages) {
++        const pages = document.querySelector("[data-repo-pages]");
++        if (!pages) return;
++        pages.innerHTML = "";
++
++        for (let page = 1; page <= totalPages; page += 1) {
++          const button = document.createElement("button");
++          const active = page === repoCurrentPage;
++          button.type = "button";
++          button.setAttribute("data-repo-page-button", String(page));
++          button.textContent = String(page);
++          button.setAttribute("aria-label", `Show repository page ${page}`);
++          button.setAttribute("aria-current", active ? "page" : "false");
++          button.className = [
++            "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
++            active
++              ? "border-border bg-secondary text-foreground"
++              : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
++          ].join(" ");
++          button.disabled = repoIsFetching;
++          button.addEventListener("click", () => setRepoPage(page));
++          pages.appendChild(button);
++        }
++      }
++
++      function applyRepoVisibility() {
++        const list = document.getElementById("repoList");
++        const cards = repoCards();
++        const matchedCards = filteredRepoCards();
++        const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
++        repoCurrentPage = Math.min(repoCurrentPage, totalPages);
++
++        const start = (repoCurrentPage - 1) * repoPageSize;
++        const end = Math.min(start + repoPageSize, matchedCards.length);
++        const visibleCards = new Set(matchedCards.slice(start, end));
++
++        cards.forEach((card) => {
++          card.classList.toggle("is-hidden", !visibleCards.has(card));
++        });
++
++        list.classList.toggle("is-fetching", repoIsFetching);
++        document.querySelector("[data-repo-loading]")?.classList.toggle("hidden", !repoIsFetching);
++
++        const summary = document.querySelector("[data-repo-summary]");
++        if (summary) {
++          summary.textContent = matchedCards.length
++            ? `Showing ${start + 1}-${end} of ${matchedCards.length} mirrored repositories`
++            : "No repositories match this filter";
++        }
++
++        renderRepoPageButtons(totalPages);
++        setRepoButtonDisabled(document.querySelector("[data-repo-prev]"), repoIsFetching || repoCurrentPage === 1);
++        setRepoButtonDisabled(document.querySelector("[data-repo-next]"), repoIsFetching || repoCurrentPage === totalPages);
++      }
++
++      function setRepoPage(page, options = {}) {
++        const totalPages = Math.max(1, Math.ceil(filteredRepoCards().length / repoPageSize));
++        const targetPage = Math.min(Math.max(page, 1), totalPages);
++        if (targetPage === repoCurrentPage && !options.force) return;
++
++        window.clearTimeout(repoFetchTimer);
++        if (options.instant) {
++          repoCurrentPage = targetPage;
++          repoIsFetching = false;
++          applyRepoVisibility();
++          return;
++        }
++
++        repoIsFetching = true;
++        applyRepoVisibility();
++        repoFetchTimer = window.setTimeout(() => {
++          repoCurrentPage = targetPage;
++          repoIsFetching = false;
++          applyRepoVisibility();
++        }, 220);
++      }
++
++      document.getElementById("repoSearch").addEventListener("input", () => {
++        window.clearTimeout(repoFetchTimer);
++        repoCurrentPage = 1;
++        repoIsFetching = false;
++        applyRepoVisibility();
++      });
++
++      document.querySelector("[data-repo-prev]")?.addEventListener("click", () => setRepoPage(repoCurrentPage - 1));
++      document.querySelector("[data-repo-next]")?.addEventListener("click", () => setRepoPage(repoCurrentPage + 1));
++      applyRepoVisibility();
++
++      document.querySelectorAll("[data-view-mode]").forEach((button) => {
++        button.addEventListener("click", () => {
++          const mode = button.dataset.viewMode;
++          const gridMode = mode === "grid";
++          document.getElementById("repoList").classList.toggle("grid-mode", gridMode);
++          document.querySelectorAll("[data-view-mode]").forEach((control) => {
++            const active = control.dataset.viewMode === mode;
++            control.setAttribute("aria-pressed", active ? "true" : "false");
++            control.classList.toggle("bg-secondary", active);
++            control.classList.toggle("text-foreground", active);
++            control.classList.toggle("text-muted-foreground", !active);
++          });
++        });
++      });
++
++      document.querySelectorAll(".copy-button").forEach((button) => {
++        button.addEventListener("click", async () => {
++          const text = button.dataset.copy;
++          try {
++            await navigator.clipboard.writeText(text);
++          } catch (error) {
++            const temp = document.createElement("textarea");
++            temp.value = text;
++            temp.setAttribute("readonly", "");
++            temp.style.position = "fixed";
++            temp.style.opacity = "0";
++            document.body.appendChild(temp);
++            temp.select();
++            document.execCommand("copy");
++            temp.remove();
++          }
++          button.classList.add("copied");
++          window.setTimeout(() => button.classList.remove("copied"), 1600);
++        });
++      });
++
++      // Chat is wired by /dashboard-chat.js.
++	      // Notifications disabled until notification data is wired to real APIs.
++	      initProfileMenu();
++	      initContributionActivity();
++	      lucide.createIcons();
++    </script>
++  </body>
++</html>
+diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+new file mode 100644
+index 00000000..751e2f05
+--- /dev/null
++++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+@@ -0,0 +1,213 @@
++#!/usr/bin/env python3
++"""Static contracts for the landing/dashboard split."""
++
++from pathlib import Path
++import tomllib
++
++
++ROOT = Path(__file__).resolve().parents[1]
++PUBLIC = ROOT / "public"
++ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
++WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
++REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
++
++
++def _read(path: Path) -> str:
++    return path.read_text(encoding="utf-8")
++
++
++def test_feature_landing_is_promoted_to_index_with_signed_in_redirect():
++    index = _read(PUBLIC / "index.html")
++
++    assert "Keep source code alive across the mesh" in index
++    assert "forkmesh.session" in index
++    assert 'location.replace("/dashboard")' in index
++    assert 'location.replace("/dashboard.html")' not in index
++    assert "Code hosting that lives on the network." not in index
++
++
++def test_dashboard_exposes_live_hydration_targets():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++
++    assert dashboard == _read(PUBLIC / "dashboard.html")
++    assert 'src="/dashboard.js"' in dashboard
++    assert 'src="/dashboard-chat.js"' in dashboard
++    for marker in (
++        "data-dashboard-profile-name",
++        "data-sidebar-repo-list",
++        "data-sidebar-repo-count",
++        "data-logout-button",
++        "data-repo-count",
++        "data-network-node-list",
++        "data-network-summary",
++        "data-network-rail-summary",
++    ):
++        assert marker in dashboard
++
++    for placeholder in (
++        'data-repo="you/meshcore"',
++        'data-repo="relay-eu-1/relay-monitor"',
++        "1,204",
++    ):
++        assert placeholder not in dashboard
++
++
++def test_dashboard_hydrator_uses_existing_worker_apis():
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++
++    for endpoint in (
++        "/api/repositories",
++        "/api/network/stats",
++        "/api/network/leaderboards",
++        "/api/network/online-history",
++    ):
++        assert endpoint in dashboard_js
++
++    assert "forkmesh.session" in dashboard_js
++    assert "renderRepositories" in dashboard_js
++    assert "renderNetwork" in dashboard_js
++    assert "requestedRepoKey()" in dashboard_js
++    assert "if (!requested)" in dashboard_js
++    assert 'renderProfile(session || { nodeName: "guest" })' in dashboard_js
++    assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
++    assert "forkmesh_session=; Path=/; Max-Age=0" in dashboard_js
++
++
++def test_dashboard_defaults_to_repositories_and_hides_unready_home_desktop_nav():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++
++    assert '<!-- Home dashboard tab is intentionally hidden' in dashboard
++    assert '<!-- Desktop Client is intentionally hidden' in dashboard
++    assert 'data-section="repos" data-nav-link aria-current="page"' in dashboard
++    visible = _strip_html_comments(dashboard)
++    assert 'data-view="repos" class="view active' in visible
++    assert 'data-view="home" class="view active' not in visible
++    rendered_nav = dashboard[
++        dashboard.index('<nav data-top-nav')
++        : dashboard.index('</nav>', dashboard.index('<nav data-top-nav'))
++    ]
++    visible_nav = rendered_nav.replace(
++        rendered_nav[rendered_nav.index('<!-- Home dashboard tab'):rendered_nav.index('-->', rendered_nav.index('<!-- Home dashboard tab')) + 3],
++        '',
++    ).replace(
++        rendered_nav[rendered_nav.index('<!-- Desktop Client'):rendered_nav.index('-->', rendered_nav.index('<!-- Desktop Client')) + 3],
++        '',
++    )
++    assert "Home" not in visible_nav
++    assert "Desktop Client" not in visible_nav
++
++
++def _strip_html_comments(html: str) -> str:
++    while "<!--" in html:
++        start = html.index("<!--")
++        end = html.index("-->", start) + 3
++        html = html[:start] + html[end:]
++    return html
++
++
++def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++
++    for marker in (
++        'data-view="repos"',
++        'data-view="explore"',
++        'data-repo-detail',
++        'id="dashboard-repo-feature-template"',
++        'data-state="open"',
++        'data-state="closed"',
++        'data-state="all"',
++    ):
++        assert marker in dashboard
++    for marker in (
++        "function repositoryCard",
++        "function renderRepoDetail",
++        "loadRepositoryTree(repo",
++        "loadRepositoryBlob(repo",
++        "loadRepoCollection(repo, \"issues\"",
++        "loadRepoCollection(repo, \"pulls\"",
++        "loadRepoCollection(repo, \"discussions\"",
++        "loadRepoMirrors(repo)",
++        "Copy clone",
++        "Open clean URL",
++        "data-dashboard-repo-tab=\"${tab}\"",
++        '"code", "issues", "pulls", "discussions", "mirrors"',
++    ):
++        assert marker in dashboard_js
++
++
++def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++    chat_js = _read(PUBLIC / "dashboard-chat.js")
++    visible = _strip_html_comments(dashboard)
++
++    assert 'src="/dashboard-chat.js"' in dashboard
++    assert 'CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws"' in chat_js
++    assert 'ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1"' in chat_js
++    assert "deriveRoomKey" in chat_js
++    assert "encryptObject" in chat_js
++    assert "decryptObject" in chat_js
++    assert "WebSocket" in chat_js
++    assert "Chat mock data removed" not in dashboard
++    assert "const fullMessages" not in dashboard
++    assert "const sideMessages" not in dashboard
++    assert "notificationToggle" not in visible
++    assert "notificationModal" not in visible
++    assert "data-notification-count" not in visible
++    for mock in (
++        "alice-node",
++        "relay-eu-1",
++        "devbox-kr",
++        "sysop-eu",
++        "morning - anyone else seeing",
++        "Cloudflare had a blip",
++    ):
++        assert mock not in visible
++        assert mock not in chat_js
++
++
++def test_clean_marketing_routes_target_static_pages():
++    for redirect in (
++        "/dashboard /dashboard/index.html 200",
++        "/dashboard.html /dashboard 308",
++        "/desktop /desktop.html 200",
++        "/docs /docs/index.html 200",
++        "/blog /blogs 308",
++        "/:owner/:repo /dashboard?repo=:owner/:repo 308",
++        "/:owner/:repo/tree/:splat /dashboard?repo=:owner/:repo 308",
++        "/:owner/:repo/blob/:splat /dashboard?repo=:owner/:repo 308",
++    ):
++        assert redirect in REDIRECTS
++
++    run_worker_first = WRANGLER["assets"]["run_worker_first"]
++    for route in ("/blog", "/docs"):
++        assert route in run_worker_first
++    for route in ("/desktop", "/blogs"):
++        assert route not in run_worker_first
++
++
++def test_desktop_client_stub_exists():
++    html = _read(PUBLIC / "desktop.html")
++
++    assert "<title>Desktop Client" in html
++
++
++def test_homepage_network_selector_hides_mobile_beam_and_bars():
++    index = _read(PUBLIC / "index.html")
++    network = index[
++        index.index('<section\n        id="network"')
++        : index.index('<section\n        id="solution"')
++    ]
++
++    assert "hidden lg:block" in network
++    assert "ForkMesh interactive node selector" in network
++    assert "top-[-0.5px] h-px" in network
++
++
++def test_homepage_mobile_mockups_do_not_overflow_by_default():
++    index = _read(PUBLIC / "index.html")
++
++    assert "-mr-56" not in index
++    assert "relative top-6 w-full" in index
++    assert "relative -right-8 top-11" not in index
++    assert ".fm-tabs .fm-tab:nth-child(n + 6)" in index
