@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QEasingCurve>
+#include <QEvent>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
@@ -200,6 +201,57 @@ private:
     QString m_label;
     QPropertyAnimation *m_anim = nullptr;  // body fold animation
     QPropertyAnimation *m_pulse = nullptr; // live "breathing" while streaming
+};
+
+// A word-wrapped QLabel that caches heightForWidth. A long transcript stacks
+// hundreds of word-wrapped Markdown/RichText labels inside a widget-resizable
+// QScrollArea, and Qt's layout re-runs heightForWidth — which re-lays-out each
+// label's QTextDocument — for *every* row each time a row is added or the view
+// is resized, calling it repeatedly within a single pass. With a big transcript
+// that O(rows) text relayout froze the GUI thread for seconds (issue #234).
+//
+// The height of a word-wrapped label only changes when its width, font, or text
+// changes. We key the cache on (width, text length): any content change a user
+// can see (a streamed delta, a search-highlight span) shifts the text length, so
+// a stale height can't survive a real reflow; font/style changes invalidate it
+// explicitly. Unchanged rows then answer in O(1) instead of re-laying-out.
+class CacheLabel : public QLabel
+{
+public:
+    using QLabel::QLabel;
+
+    int heightForWidth(int w) const override
+    {
+        const int len = text().size();
+        if (m_valid && w == m_w && len == m_len)
+            return m_h;
+        m_w = w;
+        m_len = len;
+        m_h = QLabel::heightForWidth(w);
+        m_valid = true;
+        return m_h;
+    }
+
+protected:
+    void changeEvent(QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::FontChange:
+        case QEvent::ApplicationFontChange:
+        case QEvent::StyleChange:
+            m_valid = false; // metrics may have shifted; recompute on next query
+            break;
+        default:
+            break;
+        }
+        QLabel::changeEvent(e);
+    }
+
+private:
+    mutable int m_w = -1;
+    mutable int m_len = -1;
+    mutable int m_h = 0;
+    mutable bool m_valid = false;
 };
 
 // One row on the transcript's timeline: a left rail (a vertical connecting line
@@ -660,7 +712,7 @@ void ClaudeTranscriptView::ensureLiveThinking()
     m_thinkingText.clear();
     m_thinkingTokens = 0;
     m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
-    m_thinkingBody = new QLabel(QStringLiteral("…"));
+    m_thinkingBody = new CacheLabel(QStringLiteral("…"));
     m_thinkingBody->setWordWrap(true);
     m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
@@ -733,7 +785,7 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
         h->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;border:none;").arg(accent));
         v->addWidget(h);
     }
-    auto *body = new QLabel(markdown);
+    auto *body = new CacheLabel(markdown);
     body->setTextFormat(Qt::MarkdownText);
     body->setWordWrap(true);
     body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
@@ -747,7 +799,7 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
 // Claude Code conversation view where only the user's turns are boxed.
 void ClaudeTranscriptView::addAssistantText(const QString &markdown)
 {
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::MarkdownText);
     l->setText(markdown);
     l->setWordWrap(true);
@@ -788,7 +840,7 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 
     const QString bodyText = prose.join(QLatin1Char('\n')).trimmed();
     if (!bodyText.isEmpty()) {
-        auto *body = new QLabel(bodyText);
+        auto *body = new CacheLabel(bodyText);
         body->setWordWrap(true);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse);
         body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
@@ -938,7 +990,7 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
 // "Name  subtitle" — the timeline rail supplies the coloured node dot.
 QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
 {
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -981,7 +1033,7 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
         ? lines.mid(0, 16).join(QLatin1Char('\n'))
           + QStringLiteral("\n… (%1 more lines)").arg(lines.size() - 16)
         : text;
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
     l->setWordWrap(true);
@@ -1002,7 +1054,7 @@ QWidget *ClaudeTranscriptView::makeCode(const QString &text, bool collapsedIfLon
         ? lines.mid(0, 16).join(QLatin1Char('\n'))
           + QStringLiteral("\n… (%1 more lines)").arg(lines.size() - 16)
         : text;
-    auto *l = new QLabel;
+    auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
     l->setText(shown);
     l->setWordWrap(true);
@@ -1073,7 +1125,7 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
         html += QStringLiteral("</div>");
     }
 
-    auto *l = new QLabel(html);
+    auto *l = new CacheLabel(html);
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
