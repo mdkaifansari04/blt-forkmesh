@@ -553,6 +553,17 @@ int main(int argc, char *argv[])
         check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
               QStringLiteral("a branch with no agent session has an empty "
                              "Issue / Agent cell (adhoc #191)"));
+
+        // adhoc #185: the default branch must stay pinned to the top of the list.
+        // feature/keep-selected was committed to more recently (it's a worktree one
+        // commit ahead of main), so a plain committer-date sort would float it above
+        // main; the panel must override that and list main first.
+        const QStringList order = window.testBranchRowOrder();
+        qInfo("branch row order: %s", qPrintable(order.join(QStringLiteral(", "))));
+        check(!order.isEmpty() && order.first() == QStringLiteral("main"),
+              QString("the default branch is pinned to the top of the branches "
+                      "list (adhoc #185, first row = %1)")
+                  .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay

@@ -5113,6 +5113,18 @@ QString MainWindow::testBranchAttachmentText(const QString &branch) const
     return QString();
 }
 
+QStringList MainWindow::testBranchRowOrder() const
+{
+    QStringList names;
+    if (!m_branchesTable)
+        return names;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+            names << name->text();
+    }
+    return names;
+}
+
 void MainWindow::testSetDefaultAgentProvider(const QString &provider)
 {
     if (!m_defaultAgentProviderCombo)
@@ -32210,6 +32222,15 @@ void MainWindow::switchToBranch(const QString &branch)
             return;
         }
     }
+    // Clicking an agent's branch link when that branch no longer exists here (it
+    // may have been merged and deleted, or never synced into this checkout) would
+    // otherwise land on the Branches tab with nothing selected. Tell the user why
+    // rather than leaving them on a silently empty selection (adhoc #185).
+    QMessageBox::information(
+        this, QStringLiteral("Branch not found"),
+        QStringLiteral("Branch '%1' was not found in this repository. "
+                       "It may have been merged and deleted.")
+            .arg(branch));
 }
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
@@ -33154,8 +33175,14 @@ void MainWindow::loadBranchesPanel()
     const QString previouslyViewed = m_branchDiffBranch;
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
-    const QStringList branches = repoBranches();
+    QStringList branches = repoBranches();
     const QString base = repoDefaultBranch(branches);
+    // Always pin the default branch ("main") to the top of the list, regardless
+    // of which feature branch was committed to most recently — repoBranches()
+    // sorts by committer date, so without this main sinks below active branches
+    // (adhoc #185).
+    if (!base.isEmpty() && branches.removeOne(base))
+        branches.prepend(base);
     const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
     const bool writable = repoHasWorkingTree();
 
