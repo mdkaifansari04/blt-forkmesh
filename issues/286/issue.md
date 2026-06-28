@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 286
 title: have a button on the issues that prioritizes the issues based on the readme it will use the default agent and have an editible prompt in the settings
 status: open
-labels: []
+labels: [Partial]
 milestone: 
 priority: 72
 progress: 0
