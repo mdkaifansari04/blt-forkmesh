@@ -458,6 +458,9 @@ private:
     // Open (or reset) the live update/rebuild log window and append to it.
     void showUpdateLog();
     void appendUpdateLog(const QString &text);
+    // Mirror the newest update/rebuild log line onto the footer one-liner so the
+    // live progress is visible at the bottom of the app without the full window.
+    void setFooterUpdateLine(const QString &line);
     void persistProfile();
 
     // Chat page
@@ -1896,6 +1899,10 @@ private:
     // git/cmake output, and phase headers so the user sees exactly what's running.
     QDialog *m_updateLogDialog = nullptr;
     QPlainTextEdit *m_updateLog = nullptr;
+    // Single-line live restart/update log pinned to the bottom of the window. Shows
+    // the newest log line while an update runs; click it to open the full window.
+    QPushButton *m_footerUpdateLog = nullptr;
+    QString m_footerUpdateLineRaw; // full text behind the elided footer line
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
