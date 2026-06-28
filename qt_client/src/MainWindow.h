@@ -969,6 +969,9 @@ private:
     void runSelectedWorkflowManually();
     // Re-queue the currently selected run (same workflow, commit and ref).
     void rerunSelectedRun();
+    // Delete every run currently shown in the Runs list (its meta + log on
+    // disk); skips any run that's still in flight. Prompts for confirmation.
+    void clearActionRuns();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;

@@ -49877,15 +49877,65 @@ void MainWindow::rerunSelectedRun()
     processActionQueue();
 }
 
+void MainWindow::clearActionRuns()
+{
+    if (!m_actionStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString name = m_repositories.at(m_repoDetailIndex).name;
+
+    // Collect exactly the runs the list is showing (this repo, optionally
+    // narrowed to the selected workflow), skipping any still queued or running
+    // so we never delete a run out from under the runner.
+    QList<ActionRun> doomed;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (run.owner != owner || run.name != name)
+            continue;
+        if (!m_selectedWorkflowFilter.isEmpty() &&
+            run.workflowPath != m_selectedWorkflowFilter)
+            continue;
+        if (run.status == ActionStatus::Running ||
+            run.status == ActionStatus::Queued)
+            continue;
+        doomed.append(run);
+    }
+    if (doomed.isEmpty()) {
+        flashMessage(QStringLiteral("No finished runs to clear."));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("Clear runs"),
+            QStringLiteral("Delete %1 run%2 from this list, including their "
+                           "logs? This can't be undone.")
+                .arg(doomed.size())
+                .arg(doomed.size() == 1 ? QString() : QStringLiteral("s")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    for (const ActionRun &run : std::as_const(doomed))
+        m_actionStore->deleteRun(run);
+
+    m_actionRuns = m_actionStore->loadAllRuns();
+    if (!findRun(m_selectedRunId)) {
+        m_selectedRunId = -1;
+        showRun(-1);
+    }
+    refreshActionsTable();
+    updateNotificationButton();
+}
+
 QWidget *MainWindow::buildRepoActionsTab()
 {
     auto *page = new QWidget;
 
     // Far left: the actions available in this repo (.forkmesh/ workflows).
     auto *wfPane = new QWidget;
-    // Give the workflow-name column ~50% more room to open than before.
-    wfPane->setMinimumWidth(270);
-    wfPane->setMaximumWidth(390);
+    // Give the workflow-name column a bit more room to open than before.
+    wfPane->setMinimumWidth(320);
+    wfPane->setMaximumWidth(440);
     auto *wfHeading = new QLabel("Workflows");
     wfHeading->setObjectName("sectionLabel");
     auto *wfHint = new QLabel(
@@ -49938,6 +49988,21 @@ QWidget *MainWindow::buildRepoActionsTab()
     listPane->setMinimumWidth(375);
     auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
+    // Clear button on the Runs header row: wipes the run history shown below
+    // (meta + logs on disk), keeping any run that's still in flight.
+    auto *clearRunsButton = new QPushButton("Clear");
+    clearRunsButton->setObjectName("ghostButton");
+    clearRunsButton->setProperty("buttonSize", "sm");
+    clearRunsButton->setCursor(Qt::PointingHandCursor);
+    clearRunsButton->setToolTip("Delete the runs listed here, including their logs");
+    setOcticon(clearRunsButton, "trash", 16);
+    connect(clearRunsButton, &QPushButton::clicked, this,
+            &MainWindow::clearActionRuns);
+    auto *runsHeaderRow = new QHBoxLayout;
+    runsHeaderRow->setContentsMargins(0, 0, 0, 0);
+    runsHeaderRow->addWidget(heading);
+    runsHeaderRow->addStretch();
+    runsHeaderRow->addWidget(clearRunsButton);
     auto *subtitle = new QLabel(
         "Changed workflows wait for your approval before they run.");
     subtitle->setObjectName("statusLine");
@@ -49968,7 +50033,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(12, 22, 12, 22);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(runsHeaderRow);
     listLayout->addWidget(subtitle);
     listLayout->addWidget(m_actionsTable, 1);
 

@@ -111,6 +111,14 @@ bool ActionStore::saveRun(const ActionRun &run) const
     return true;
 }
 
+bool ActionStore::deleteRun(const ActionRun &run) const
+{
+    QDir dir(runDir(run));
+    if (!dir.exists())
+        return true;
+    return dir.removeRecursively();
+}
+
 void ActionStore::appendLog(const ActionRun &run, const QString &text) const
 {
     QDir().mkpath(runDir(run));
