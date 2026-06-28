@@ -16257,8 +16257,14 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     if (store.canWrite()) {
         bool clean = false;
         QStringList conflictFiles;
+        // keepGuiAlive: this drains on the GUI thread (QTimer::singleShot), and a
+        // single cold `git apply --check` can run well over the 1.5s stall
+        // threshold — pump the event loop while it runs so the window stays
+        // responsive instead of freezing on one PR's dry-run.
         const bool conflict =
-            store.checkMergeable(number, &clean, &conflictFiles) && !clean;
+            store.checkMergeable(number, &clean, &conflictFiles, nullptr,
+                                 /*keepGuiAlive=*/true) &&
+            !clean;
         // The gen check at entry already gates this turn; re-check defensively in
         // case checkMergeable() ever pumps the event loop and lets a fresh
         // reloadPulls() supersede this pass while git ran.
