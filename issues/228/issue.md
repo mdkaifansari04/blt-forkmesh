@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 228
 title: add a security.md file
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 35
