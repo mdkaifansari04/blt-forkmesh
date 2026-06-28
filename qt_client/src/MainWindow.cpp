@@ -11598,19 +11598,15 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueFilesList = new QListWidget;
     m_issueFilesList->setObjectName("agentFilesList");
     m_issueFilesList->setMinimumWidth(190);
+    // Green-outline selection (like the agents list) so the selected file stays
+    // legible; click-to-scroll / scroll-to-select handled by DiffFileNavigator.
+    m_issueFilesList->setItemDelegate(
+        new SelectionBorderRowDelegate(m_issueFilesList));
     connect(m_issueFilesList, &QListWidget::itemActivated, this,
             [](QListWidgetItem *it) {
                 const QString path = it->data(Qt::UserRole).toString();
                 if (!path.isEmpty() && QFileInfo::exists(path))
                     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-            });
-    connect(m_issueFilesList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *it, QListWidgetItem *) {
-                if (!it || !m_issueDiffView)
-                    return;
-                const QString anchor = it->data(Qt::UserRole + 1).toString();
-                if (!anchor.isEmpty())
-                    m_issueDiffView->scrollToAnchor(anchor);
             });
     m_issueFilesChangedSummary = new QLabel;
     m_issueFilesChangedSummary->setObjectName("agentFilesHeading");
@@ -11626,6 +11622,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDiffView->setObjectName("diffView");
     m_issueDiffView->setOpenExternalLinks(false);
     m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    // DiffFileNavigator is created lazily on first render (complete type in scope).
 
     auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
     issueFilesSplit->setChildrenCollapsible(false);
@@ -12295,6 +12292,150 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
 } // namespace
+
+// --- "Files changed" tab: sticky file header + file-list <-> diff sync ----------
+// (issue #188) The floating header that names the file scrolled to the top of a
+// diff view, styled to read as the diff's own ".fileheader" row rather than a
+// separate bar. Shared by every sticky header so they look identical.
+static QString diffStickyStyleSheet(int fontPt)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    return QStringLiteral("background:%1; border:1px solid %2; padding:6px 10px;"
+                          " font-family:monospace; font-size:%3px;")
+        .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+             dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de"))
+        .arg(qBound(8, fontPt, 28));
+}
+
+// Render a path with the directory dimmed and the basename bold, matching the
+// diff's .fdir / .fname spans.
+static QString diffStickyPathHtml(const QString &path)
+{
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString dirFg = dark ? QStringLiteral("#8b949e") : QStringLiteral("#6e7781");
+    const QString nameFg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    const int slash = path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        return QStringLiteral("<span style='color:%1'>%2</span>"
+                              "<span style='color:%3; font-weight:600'>%4</span>")
+            .arg(dirFg, path.left(slash + 1).toHtmlEscaped(), nameFg,
+                 path.mid(slash + 1).toHtmlEscaped());
+    return QStringLiteral("<span style='color:%1; font-weight:600'>%2</span>")
+        .arg(nameFg, path.toHtmlEscaped());
+}
+
+// Wires a "Files changed" tab's file list to its diff view: clicking a file
+// scrolls its hunk to the top of the diff; scrolling the diff selects (and names,
+// via the sticky header) the file now at the top. The scroll-driven re-select is
+// guarded so it never fights a click that scrolled a short trailing file as far
+// up as it can go.
+class DiffFileNavigator : public QObject
+{
+public:
+    DiffFileNavigator(QTextBrowser *diff, QListWidget *list, int anchorRole,
+                      QObject *parent)
+        : QObject(parent), m_diff(diff), m_list(list), m_anchorRole(anchorRole)
+    {
+        m_sticky = new QLabel(m_diff->viewport());
+        m_sticky->setObjectName(QStringLiteral("diffStickyHeader"));
+        m_sticky->setTextFormat(Qt::RichText);
+        m_sticky->hide();
+        QObject::connect(m_diff->verticalScrollBar(), &QScrollBar::valueChanged,
+                         this, [this] {
+                             if (!m_ignoreScroll)
+                                 refresh(/*syncSelection=*/true);
+                         });
+        QObject::connect(m_list, &QListWidget::currentItemChanged, this,
+                         [this](QListWidgetItem *it, QListWidgetItem *) {
+                             if (!it)
+                                 return;
+                             const QString anchor = it->data(m_anchorRole).toString();
+                             if (anchor.isEmpty())
+                                 return;
+                             // Jump the diff to the file's header, aligned to the top.
+                             // Suppress the scroll that fires so it can't re-select.
+                             m_ignoreScroll = true;
+                             m_diff->scrollToAnchor(anchor);
+                             m_ignoreScroll = false;
+                             refresh(/*syncSelection=*/false);
+                         });
+    }
+
+    // Recompute the file-header positions after the diff HTML was (re)rendered.
+    // `files` is the same in-order list used to fill the file list, so anchors map
+    // a span back to its row.
+    void rebuild(const QList<DiffFileEntry> &files, int fontPt)
+    {
+        m_sticky->setStyleSheet(diffStickyStyleSheet(fontPt));
+        m_spans.clear();
+        QTextDocument *doc = m_diff->document();
+        int idx = 0;
+        for (QTextBlock b = doc->begin(); b.isValid() && idx < files.size();
+             b = b.next()) {
+            const int at = b.text().indexOf(files.at(idx).path);
+            if (at >= 0) {
+                m_spans.append({b.position() + at, files.at(idx).path,
+                                files.at(idx).anchor});
+                ++idx;
+            }
+        }
+        refresh(/*syncSelection=*/false);
+    }
+
+private:
+    struct Span {
+        int pos;
+        QString path;
+        QString anchor;
+    };
+
+    void refresh(bool syncSelection)
+    {
+        if (m_spans.isEmpty() || m_diff->verticalScrollBar()->value() <= 0) {
+            m_sticky->hide();
+            return;
+        }
+        const int top = m_diff->cursorForPosition(QPoint(2, 2)).position();
+        const Span *cur = nullptr;
+        for (const Span &s : m_spans) {
+            if (s.pos <= top)
+                cur = &s;
+            else
+                break;
+        }
+        if (!cur) {
+            m_sticky->hide();
+            return;
+        }
+        if (syncSelection)
+            selectByAnchor(cur->anchor);
+        m_sticky->setText(diffStickyPathHtml(cur->path));
+        m_sticky->setGeometry(0, 0, m_diff->viewport()->width(),
+                              m_sticky->sizeHint().height());
+        m_sticky->show();
+        m_sticky->raise();
+    }
+
+    void selectByAnchor(const QString &anchor)
+    {
+        for (int i = 0; i < m_list->count(); ++i) {
+            if (m_list->item(i)->data(m_anchorRole).toString() != anchor)
+                continue;
+            if (m_list->currentRow() != i) {
+                QSignalBlocker block(m_list);
+                m_list->setCurrentRow(i);
+            }
+            return;
+        }
+    }
+
+    QTextBrowser *m_diff = nullptr;
+    QListWidget *m_list = nullptr;
+    QLabel *m_sticky = nullptr;
+    int m_anchorRole = Qt::UserRole;
+    bool m_ignoreScroll = false;
+    QList<Span> m_spans;
+};
 
 namespace {
 // Models offered for inline commit-message / X-post generation, with per-million
@@ -21316,20 +21457,17 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentFilesList = new QListWidget;
     m_agentFilesList->setObjectName("agentFilesList");
     m_agentFilesList->setMinimumWidth(190);
+    // Selected file: green outline (no solid fill) like the agents list, so it
+    // stays legible instead of vanishing into a default white highlight (#188).
+    m_agentFilesList->setItemDelegate(
+        new SelectionBorderRowDelegate(m_agentFilesList));
     connect(m_agentFilesList, &QListWidget::itemActivated, this,
             [](QListWidgetItem *it) {
                 const QString path = it->data(Qt::UserRole).toString();
                 if (!path.isEmpty())
                     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             });
-    connect(m_agentFilesList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *it, QListWidgetItem *) {
-                if (!it || !m_agentDiffView)
-                    return;
-                const QString anchor = it->data(Qt::UserRole + 1).toString();
-                if (!anchor.isEmpty())
-                    m_agentDiffView->scrollToAnchor(anchor);
-            });
+    // Click-to-scroll and scroll-to-select are driven by DiffFileNavigator below.
     auto *filesV = new QVBoxLayout;
     filesV->setContentsMargins(0, 0, 0, 0);
     filesV->setSpacing(4);
@@ -21345,6 +21483,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDiffView->setObjectName("diffView");
     m_agentDiffView->setOpenExternalLinks(false);
     m_agentDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    // The DiffFileNavigator (sticky header + scroll<->select wiring) is created
+    // lazily on first render, where its complete type is in scope.
 
     // Per-session worktree actions, mirroring the Worktrees tab's detail bar but
     // acting on this session's branch (issue #131: "add the worktree functions
@@ -25034,6 +25174,11 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
         }
         fitFileListToWidestEntry(m_agentFilesList);
     }
+    if (!m_agentDiffNav && m_agentFilesList)
+        m_agentDiffNav = new DiffFileNavigator(m_agentDiffView, m_agentFilesList,
+                                               Qt::UserRole + 1, this);
+    if (m_agentDiffNav)
+        m_agentDiffNav->rebuild(files, m_diffFontPt);
 
     const int n = files.size();
     if (m_agentDetailTabs && m_agentFilesTabIndex >= 0)
@@ -25564,6 +25709,11 @@ void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
         }
         fitFileListToWidestEntry(m_issueFilesList);
     }
+    if (!m_issueDiffNav && m_issueFilesList)
+        m_issueDiffNav = new DiffFileNavigator(m_issueDiffView, m_issueFilesList,
+                                               Qt::UserRole + 1, this);
+    if (m_issueDiffNav)
+        m_issueDiffNav->rebuild(files, m_diffFontPt);
 
     const int n = files.size();
     if (m_issueDetailTabs && m_issueFilesTabIndex >= 0)
@@ -32957,9 +33107,7 @@ QWidget *MainWindow::buildBranchesTab()
     // Sticky header naming the file currently scrolled into view.
     m_branchDiffSticky = new QLabel(m_branchDiffView->viewport());
     m_branchDiffSticky->setObjectName("diffStickyHeader");
-    m_branchDiffSticky->setStyleSheet(
-        "background:#161b22; color:#e6edf3; border-bottom:1px solid #30363d;"
-        "padding:6px 12px; font-family:monospace; font-weight:600;");
+    m_branchDiffSticky->setStyleSheet(diffStickyStyleSheet(m_diffFontPt));
     m_branchDiffSticky->setTextFormat(Qt::RichText);
     m_branchDiffSticky->setOpenExternalLinks(false);
     connect(m_branchDiffSticky, &QLabel::linkActivated, this,
@@ -34714,12 +34862,7 @@ void MainWindow::updateBranchDiffSticky()
                                       : m_branchDiffViewedContext;
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
     const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(cur));
-    const int slash = cur.lastIndexOf(QLatin1Char('/'));
-    const QString pathHtml =
-        slash >= 0 ? QStringLiteral("<span style='color:#8b949e'>%1</span>%2")
-                         .arg(cur.left(slash + 1).toHtmlEscaped(),
-                              cur.mid(slash + 1).toHtmlEscaped())
-                   : cur.toHtmlEscaped();
+    const QString pathHtml = diffStickyPathHtml(cur);
     m_branchDiffSticky->setText(
         QStringLiteral("<table width='100%' cellspacing='0' cellpadding='0'><tr><td>%1"
                        "</td><td align='right'>"
