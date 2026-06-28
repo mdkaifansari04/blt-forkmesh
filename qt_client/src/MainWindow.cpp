@@ -36147,8 +36147,18 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
-        if (m_mirrorNodesTable->isVisible())
-            m_mirrorNodesTable->viewport()->update();
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Only the Synced column animates, so repaint just its cells rather than
+        // the whole viewport. A full viewport()->update() re-ran the row's
+        // HoverRowDelegate for every other column each second, painting cells
+        // nothing had changed and stalling the GUI thread on big node lists
+        // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
+        for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+            if (m_mirrorNodesTable->item(r, 2))
+                m_mirrorNodesTable->update(
+                    m_mirrorNodesTable->model()->index(r, 2));
+        }
     });
     pacmanTick->start();
     // Double-click a node row to open its profile.
