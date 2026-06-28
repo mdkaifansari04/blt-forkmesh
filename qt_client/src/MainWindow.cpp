@@ -104,6 +104,7 @@
 #include <QRegularExpressionValidator>
 #include <QSaveFile>
 #include <QScreen>
+#include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QSet>
 #include <QScrollBar>
@@ -33561,6 +33562,19 @@ void MainWindow::loadBranchesPanel()
 {
     if (!m_branchesTable)
         return;
+    // Re-entrancy guard: the GitKeepAlive below pumps the event loop between the
+    // per-branch git reads, so a queued reload (a network/roster callback) must
+    // not start a second pass that clears the half-built table out from under us.
+    // (Mirrors the m_repoDetailLoading guard in openRepoDetail.)
+    if (m_branchesPanelLoading)
+        return;
+    QScopedValueRollback<bool> loadingGuard(m_branchesPanelLoading, true);
+    // Each row's ahead/behind count and in-memory merge-conflict probe shells out
+    // to git serially below; on a repo with many branches that blocked the GUI
+    // thread for ~2s and tripped the stall watchdog (adhoc #222). Keep the event
+    // loop pumping across the batch so the window stays responsive (waitForGit
+    // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
+    GitKeepAlive keepAlive;
     // Remember which branch's diff is on screen. Clearing the rows below fires
     // currentCellChanged with no current item, which blanks the diff pane and
     // resets m_branchDiffBranch; we re-select this branch's row at the end so
