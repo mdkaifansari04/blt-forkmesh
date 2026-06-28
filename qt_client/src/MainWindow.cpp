@@ -4473,6 +4473,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
     loadServers();
     loadCachedFavicons();
+    // Restore the network log from disk *before* the log section is built so the
+    // history (and prior sessions' start/stop markers) renders on the first
+    // frame, then record this session's start time.
+    loadNetworkLog();
+    logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logStartup(QStringLiteral("servers + favicons loaded"));
 
     // Load the persisted profile state (custom avatar + node name) *before* the
@@ -4691,6 +4696,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     saveChatHistory();
+    // Record this session's stop time, then flush+trim the persisted log.
+    logSystem(QStringLiteral("Session ended."));
+    saveNetworkLog();
     QMainWindow::closeEvent(event);
 }
 
@@ -7420,16 +7428,39 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
-    // Re-render the buffered history as colored HTML (with date dividers).
-    m_lastLogRenderDate.clear();
+
+    // Quick-filter chips that narrow the log to a single event category. The row
+    // scrolls horizontally so a long set of categories never clips the log.
+    auto *filterRowWidget = new QWidget;
+    m_logFilterRow = new QHBoxLayout(filterRowWidget);
+    m_logFilterRow->setContentsMargins(0, 0, 0, 0);
+    m_logFilterRow->setSpacing(6);
+    auto *filterScroll = new QScrollArea;
+    filterScroll->setObjectName("logFilterScroll");
+    filterScroll->setWidget(filterRowWidget);
+    filterScroll->setWidgetResizable(true);
+    filterScroll->setFrameShape(QFrame::NoFrame);
+    filterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    filterScroll->setFixedHeight(34);
+
+    // Discover which categories the buffered history contains, build the chips,
+    // then render the (initially unfiltered) history as colored HTML.
+    m_logFilterCategories.clear();
     for (const QString &line : std::as_const(m_networkLog))
-        appendNetworkLogLine(line);
+        m_logFilterCategories.insert(logBadgeFor(line));
+    rebuildLogFilterButtons();
+    rebuildNetworkLogView();
 
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_networkLog.clear();
         m_lastLogRenderDate.clear();
+        m_logFilter.clear();
+        m_logFilterCategories.clear();
         if (m_settingsLog)
             m_settingsLog->clear();
+        saveNetworkLog();          // truncate the on-disk log too
+        rebuildLogFilterButtons(); // drop the category chips, re-check "All"
     });
 
     auto *headerRow = new QHBoxLayout;
@@ -7442,6 +7473,7 @@ QWidget *MainWindow::buildLogSection()
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
     return page;
 }
@@ -42271,6 +42303,10 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         const char *badge;
     };
     static const Rule rules[] = {
+        // App start/stop markers — keep above "fork" so "ForkMesh" in the
+        // start line doesn't get tagged FORK.
+        {"session started", "#f2cc60", "SESSION"},
+        {"session ended", "#f2cc60", "SESSION"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -42365,6 +42401,115 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     m_settingsLog->appendHtml(html);
 }
 
+QString MainWindow::logBadgeFor(const QString &storedLine) const
+{
+    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
+    const QString message =
+        (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
+            ? storedLine.mid(21)
+            : storedLine;
+    return networkLogStyleFor(message).badge;
+}
+
+void MainWindow::rebuildLogFilterButtons()
+{
+    if (!m_logFilterRow)
+        return;
+    // Tear down the previous chips (and their exclusive group).
+    QLayoutItem *item = nullptr;
+    while ((item = m_logFilterRow->takeAt(0)) != nullptr) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    if (m_logFilterGroup)
+        m_logFilterGroup->deleteLater();
+    m_logFilterGroup = new QButtonGroup(this);
+    m_logFilterGroup->setExclusive(true);
+
+    auto addChip = [this](const QString &label, const QString &category) {
+        auto *chip = new QPushButton(label);
+        chip->setObjectName("logFilterChip");
+        chip->setCheckable(true);
+        chip->setChecked(m_logFilter == category);
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setToolTip(category.isEmpty()
+                             ? QStringLiteral("Show every event")
+                             : QStringLiteral("Show only %1 events").arg(label));
+        m_logFilterGroup->addButton(chip);
+        m_logFilterRow->addWidget(chip);
+        connect(chip, &QPushButton::clicked, this, [this, category] {
+            m_logFilter = category;
+            rebuildNetworkLogView();
+        });
+    };
+
+    addChip(QStringLiteral("All"), QString());
+    // Show present categories in a stable, readable order.
+    static const char *order[] = {
+        "SESSION", "NODE",   "FORK",  "MIRROR",   "SYNC",  "GIT",
+        "PUBLISH", "PULL",   "MERGE", "ISSUE",    "BOUNTY", "WALLET",
+        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "ERROR",
+        "INFO",
+    };
+    for (const char *b : order) {
+        const QString badge = QString::fromLatin1(b);
+        if (m_logFilterCategories.contains(badge))
+            addChip(badge, badge);
+    }
+    m_logFilterRow->addStretch();
+}
+
+void MainWindow::rebuildNetworkLogView()
+{
+    if (!m_settingsLog)
+        return;
+    m_settingsLog->clear();
+    m_lastLogRenderDate.clear();
+    for (const QString &line : std::as_const(m_networkLog)) {
+        if (!m_logFilter.isEmpty() && logBadgeFor(line) != m_logFilter)
+            continue;
+        appendNetworkLogLine(line);
+    }
+}
+
+QString MainWindow::networkLogPath() const
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/network_log.txt";
+}
+
+void MainWindow::loadNetworkLog()
+{
+    const QString path = networkLogPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    const QStringList lines = QString::fromUtf8(f.readAll())
+                                  .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    f.close();
+    m_networkLogDiskLines = lines.size();
+    m_networkLog = lines;
+    while (m_networkLog.size() > kNetworkLogLimit)
+        m_networkLog.removeFirst();
+}
+
+void MainWindow::saveNetworkLog()
+{
+    const QString path = networkLogPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return;
+    if (!m_networkLog.isEmpty()) {
+        f.write(m_networkLog.join(QLatin1Char('\n')).toUtf8());
+        f.write("\n");
+    }
+    f.close();
+    m_networkLogDiskLines = m_networkLog.size();
+}
+
 void MainWindow::logSystem(const QString &text)
 {
     const QString time =
@@ -42376,7 +42521,27 @@ void MainWindow::logSystem(const QString &text)
     m_networkLog.append(line);
     while (m_networkLog.size() > kNetworkLogLimit)
         m_networkLog.removeFirst();
-    appendNetworkLogLine(line);
+
+    // A category we haven't seen yet earns its own quick-filter chip.
+    const QString badge = networkLogStyleFor(plain).badge;
+    if (!m_logFilterCategories.contains(badge)) {
+        m_logFilterCategories.insert(badge);
+        rebuildLogFilterButtons(); // no-ops until the log section is built
+    }
+    // Only render the line if it passes the active filter.
+    if (m_logFilter.isEmpty() || m_logFilter == badge)
+        appendNetworkLogLine(line);
+
+    // Persist incrementally so the history survives a restart (even an unclean
+    // one). Periodically rewrite the file to trim it back to the in-memory cap.
+    QFile lf(networkLogPath());
+    if (lf.open(QIODevice::Append | QIODevice::Text)) {
+        lf.write(line.toUtf8());
+        lf.write("\n");
+        lf.close();
+        if (++m_networkLogDiskLines > kNetworkLogLimit * 2)
+            saveNetworkLog();
+    }
 }
 
 // Toast pill caps the inline message at this many characters; longer text is

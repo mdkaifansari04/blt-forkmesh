@@ -108,6 +108,19 @@ QPushButton#ghostButton {
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
 
+/* --- Network-log quick-filter chips --- */
+#logFilterScroll, #logFilterScroll > QWidget,
+#logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+QPushButton#logFilterChip {
+    background: transparent; border: 1px solid #30363d; color: #8b949e;
+    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
+    min-height: 20px; max-height: 24px;
+}
+QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
+QPushButton#logFilterChip:checked {
+    background-color: #21262d; color: #e6edf3; border-color: #2ea043;
+}
+
 /* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
 #quickAddCard {
     background-color: #0d1117;
@@ -1088,6 +1101,19 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
+
+/* --- Network-log quick-filter chips --- */
+#logFilterScroll, #logFilterScroll > QWidget,
+#logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+QPushButton#logFilterChip {
+    background: transparent; border: 1px solid #d0d7de; color: #656d76;
+    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
+    min-height: 20px; max-height: 24px;
+}
+QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
+QPushButton#logFilterChip:checked {
+    background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
+}
 
 /* --- Nav rail --- */
 #navRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
