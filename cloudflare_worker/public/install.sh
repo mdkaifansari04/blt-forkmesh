@@ -13,7 +13,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.1 (2026-06-29)"
+INSTALLER_VERSION="0.12.2 (2026-06-29)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -961,7 +961,16 @@ launch_forkmesh() {
       # so the fresh node adopts it and auto-connects.
       LAUNCH_MODE="daemon"
       local args="" log
-      [ "$(id -u)" -eq 0 ] && args="--allow-root"
+      if [ "$(id -u)" -eq 0 ]; then
+        # Clear the built-in root refusal both for this launch (the arg) AND for
+        # any process the node later relaunches as itself — an in-app update does
+        # QProcess::startDetached(forkmesh) with NO args, which would otherwise hit
+        # the refusal and silently kill the root daemon. Exporting the env override
+        # makes that relaunched child inherit the allowance; the bare arg would not
+        # survive it.
+        args="--allow-root"
+        export FORKMESH_ALLOW_ROOT=1
+      fi
       log="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
       mkdir -p "$(dirname "$log")" 2>/dev/null || true
       if command -v setsid >/dev/null 2>&1; then
