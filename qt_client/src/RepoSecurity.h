@@ -24,6 +24,10 @@ struct RepoSecuritySignal {
     QString detail;
     QString actionLabel;
     QString actionTarget;
+    // Optional itemised list rendered beneath the summary. Each entry is a
+    // repo-relative path the UI turns into a "check" link (e.g. dependency
+    // manifests). Empty for signals that only need summary/detail text.
+    QStringList items;
 };
 
 struct RepoSecurityFinding {
