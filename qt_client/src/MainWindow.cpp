@@ -231,6 +231,10 @@ const QLatin1String kPullLinkScheme("forkmesh-pull:");
 // session's repo (adhoc #138). Shared by the link builder and its handler.
 const QLatin1String kIssueLinkScheme("forkmesh-issue:");
 
+// Per-repository about/catalog metadata lives under ForkMesh's own metadata dir
+// instead of the project root.
+const QLatin1String kRepoInfoPath(".forkmesh/info.json");
+
 // "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
 // session produced a pull request, the header links back to that session on the
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
@@ -10686,22 +10690,27 @@ QWidget *MainWindow::buildHostsSection()
     bodyCol->addWidget(hostsLabel);
 
     auto *hostsHint = new QLabel(QString::fromUtf8(
-        "Double-click a saved host to reload it into the form above, then enter "
-        "the SSH password and run the installer again."));
+        "Click Update on a saved host to re-run the installer and bring it up to "
+        "the latest ForkMesh release. Double-click a host instead to reload it "
+        "into the form above for editing."));
     hostsHint->setObjectName("mutedLabel");
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
 
-    m_hostsTable = new QTableWidget(0, 4);
+    m_hostsTable = new QTableWidget(0, 5);
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
-         QStringLiteral("User"), QStringLiteral("Status")});
+         QStringLiteral("User"), QStringLiteral("Status"), QString()});
     m_hostsTable->verticalHeader()->setVisible(false);
     m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
-    m_hostsTable->horizontalHeader()->setStretchLastSection(true);
+    // Stretch the Status column and let the trailing Update-button column size to
+    // its contents.
+    m_hostsTable->horizontalHeader()->setStretchLastSection(false);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. The password is never stored on
     // disk, so it is left blank for the user to re-enter.
@@ -10734,6 +10743,28 @@ void MainWindow::refreshHostsTable()
         m_hostsTable->setItem(i, 2,
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+
+        // Per-row Update button: reload the saved host into the install form and
+        // re-run the hosted installer against it. The installer is idempotent, so
+        // re-running it pulls the latest ForkMesh release onto that host.
+        auto *cell = new QWidget;
+        auto *cellRow = new QHBoxLayout(cell);
+        cellRow->setContentsMargins(4, 2, 4, 2);
+        cellRow->setSpacing(0);
+        auto *updateBtn = new QPushButton(QStringLiteral("Update"));
+        updateBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(updateBtn, "sync", 12);
+        // Defer to the next event-loop turn: re-running the installer rebuilds
+        // this table (and deletes this very button), so let the click signal
+        // fully unwind first.
+        connect(updateBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                loadHostIntoForm(i, 0);
+                runHostInstall();
+            });
+        });
+        cellRow->addWidget(updateBtn);
+        m_hostsTable->setCellWidget(i, 4, cell);
     }
 }
 
@@ -24486,12 +24517,15 @@ void MainWindow::reloadAgents()
     seedSessionTokens(); // keep the live token counter from regressing on reload
     injectExternalSessions(); // append any surfaced external (watch-only) sessions
     refreshAgentMergeState();  // issue #291: note sessions landed in the base branch
-    // issue #170: recompute Diff cells against fresh data. But don't invalidate the
-    // cache when a refresh is already in flight — refreshAgentTable's keep-alive pump
-    // can re-enter here, and clearing mid-render would force the in-flight pass cold
-    // again and bring back the blink. The active refresh already covers current data.
+    // issue #170/#289: recompute Diff cells against fresh data. Rather than wiping
+    // the whole cache (which made every Agents-tab visit re-shell git for *every*
+    // session — the "slight lag" switching from Issues), just arm the refresh:
+    // the next refreshAgentTable() re-validates per-session fingerprints and drops
+    // only the rows that actually changed. Skipped while a refresh is already in
+    // flight — refreshAgentTable's keep-alive pump can re-enter here, and the
+    // active pass already covers current data.
     if (!m_agentTableRefreshing)
-        m_agentDiffStats.clear();
+        m_agentDiffRefreshPending = true;
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -24562,13 +24596,75 @@ void MainWindow::refreshAgentTable()
             .contains(query, Qt::CaseInsensitive);
     };
 
+    // issue #289: when this refresh follows a reloadAgents() (data may have moved),
+    // re-validate the Diff cache instead of having reloadAgents() wipe it wholesale.
+    // Only entries whose fingerprint changed — the session's own status/branch/merge/
+    // finish fields, or the base tip every ahead/behind count is measured against —
+    // are dropped, so agentDiffStat() below re-shells git for *those rows only*. An
+    // idle Issues→Agents switch leaves every fingerprint unchanged and runs zero git,
+    // which is the lag the user reported. A search-as-you-type refresh leaves the
+    // flag clear and reuses the cache untouched, exactly as before.
+    if (m_agentDiffRefreshPending) {
+        m_agentDiffRefreshPending = false;
+        // Base tip: one cheap probe (not per-session) since a move here shifts every
+        // session's ahead/behind/conflict result.
+        QByteArray tipOut;
+        if (!agentGitDir.isEmpty() && !agentBase.isEmpty())
+            runGitCapture(agentGitDir,
+                          {"rev-parse", "--verify", "--quiet",
+                           QStringLiteral("refs/heads/%1").arg(agentBase)},
+                          &tipOut, nullptr);
+        const QString baseTip = QString::fromUtf8(tipOut).trimmed();
+        QSet<int> liveIds;
+        for (const AgentSession &session : sessions) {
+            if (session.owner != owner || session.name != name)
+                continue;
+            liveIds.insert(session.id);
+            // A running/queued session's branch head can advance between refreshes
+            // with none of the fields below changing, so always re-shell those — the
+            // handful that are active, never the whole list.
+            const bool active = session.status == AgentStatus::Running ||
+                                session.status == AgentStatus::Waiting ||
+                                session.status == AgentStatus::Queued;
+            const QString sig =
+                active ? QString()
+                       : QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
+                             .arg(session.status, session.branchName,
+                                  session.baseBranch, baseTip)
+                             .arg(session.merged ? 1 : 0)
+                             .arg(session.finishedAtMs)
+                             .arg(session.prNumber);
+            if (active || m_agentDiffSig.value(session.id) != sig) {
+                m_agentDiffStats.remove(session.id);
+                if (active)
+                    m_agentDiffSig.remove(session.id);
+                else
+                    m_agentDiffSig.insert(session.id, sig);
+            }
+        }
+        // Forget entries for sessions no longer shown here (deleted, or we switched
+        // repos) so neither map grows without bound across a long session.
+        for (auto it = m_agentDiffStats.begin(); it != m_agentDiffStats.end();) {
+            if (liveIds.contains(it.key()))
+                ++it;
+            else
+                it = m_agentDiffStats.erase(it);
+        }
+        for (auto it = m_agentDiffSig.begin(); it != m_agentDiffSig.end();) {
+            if (liveIds.contains(it.key()))
+                ++it;
+            else
+                it = m_agentDiffSig.erase(it);
+        }
+    }
+
     // Anti-blink: warm each visible row's Diff stat *before* the table is cleared.
-    // agentDiffStat shells two git reads on a cold cache (reloadAgents() empties it
-    // on every refresh), and GitKeepAlive pumps the event loop across those waits.
-    // Doing that inside the rebuild left the list visibly blank/half-built across
-    // the pumps — the "blink". Pre-warming keeps the previous rows on screen while
-    // git runs, so the render loop below is cache-hot and never pumps, repainting in
-    // one atomic, flicker-free pass.
+    // agentDiffStat shells two git reads on a cold cache, and GitKeepAlive pumps the
+    // event loop across those waits. Doing that inside the rebuild left the list
+    // visibly blank/half-built across the pumps — the "blink". Pre-warming keeps the
+    // previous rows on screen while git runs, so the render loop below is cache-hot
+    // and never pumps, repainting in one atomic, flicker-free pass. After the
+    // re-validation above this is a no-op for unchanged rows.
     for (const AgentSession &session : sessions)
         if (passesFilter(session))
             agentDiffStat(session, agentGitDir, agentBase);
@@ -29209,7 +29305,8 @@ void MainWindow::openRepoDetail(int repoIndex)
                 .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
     setRepoDetailNotice(QString());
 
-    // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
+    // Per-repo metadata (.forkmesh/info.json) + the branch we view; both feed
+    // the loaders.
     m_repoInfo = RepoInfo();
     m_repoBranch.clear();
     loadRepoInfo();
@@ -34434,7 +34531,7 @@ void MainWindow::loadRepoInfo()
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
 
     QByteArray raw;
-    const QString local = repo.localPath + "/info.json";
+    const QString local = QDir(repo.localPath).filePath(kRepoInfoPath);
     if (!repo.localPath.isEmpty() && QFileInfo::exists(local)) {
         QFile file(local);
         if (file.open(QIODevice::ReadOnly))
@@ -34442,7 +34539,8 @@ void MainWindow::loadRepoInfo()
     } else {
         const QString dir = repoGitDir();
         if (!dir.isEmpty())
-            runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw, nullptr);
+            runGitCapture(dir, {"show", currentRef() + ":" + kRepoInfoPath}, &raw,
+                          nullptr);
     }
     if (raw.isEmpty())
         return;
@@ -34544,20 +34642,21 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
 
     const int index = m_repoDetailIndex;
     RepositoryRecord &repo = m_repositories[index];
-    const QString infoPath = QDir(repo.localPath).filePath("info.json");
+    const QDir repoDir(repo.localPath);
+    const QString infoPath = repoDir.filePath(kRepoInfoPath);
     QJsonObject obj;
     if (QFileInfo::exists(infoPath)) {
         QFile file(infoPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
-                *error = QStringLiteral("Could not read info.json.");
+                *error = QStringLiteral("Could not read .forkmesh/info.json.");
             return false;
         }
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
             if (error)
-                *error = QStringLiteral("info.json is not valid JSON.");
+                *error = QStringLiteral(".forkmesh/info.json is not valid JSON.");
             return false;
         }
         obj = doc.object();
@@ -34574,15 +34673,20 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
         obj.insert(QStringLiteral("website"), website);
 
     const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    if (!repoDir.mkpath(QStringLiteral(".forkmesh"))) {
+        if (error)
+            *error = QStringLiteral("Could not create .forkmesh directory.");
+        return false;
+    }
     QSaveFile file(infoPath);
     if (!file.open(QIODevice::WriteOnly)) {
         if (error)
-            *error = QStringLiteral("Could not write info.json.");
+            *error = QStringLiteral("Could not write .forkmesh/info.json.");
         return false;
     }
     if (file.write(data) != data.size() || !file.commit()) {
         if (error)
-            *error = QStringLiteral("Could not save info.json.");
+            *error = QStringLiteral("Could not save .forkmesh/info.json.");
         return false;
     }
 
@@ -44486,8 +44590,17 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
-    const QImage qr = QrCode::encodeToImage(uri, 6, 3);
-    if (!qr.isNull()) {
+    // The Solana Pay URI bakes in the amount, so it's long and yields a
+    // high-version (many-module) QR. At a fixed scale that overflows the dialog
+    // and gets clipped, so size each module to the largest integer that keeps
+    // the whole code within the dialog width (and crisp).
+    const auto modules = QrCode::encode(uri.toUtf8());
+    if (!modules.empty()) {
+        constexpr int kMargin = 3;
+        constexpr int kMaxQrPx = 300;
+        const int span = static_cast<int>(modules.size()) + 2 * kMargin;
+        const int scale = qMax(2, kMaxQrPx / span);
+        const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
         auto *qrLabel = new QLabel;
         qrLabel->setPixmap(QPixmap::fromImage(qr));
         qrLabel->setAlignment(Qt::AlignCenter);
@@ -49905,7 +50018,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
     QString publishedWebsite;
     if (!repo.localPath.trimmed().isEmpty()) {
-        QFile file(QDir(repo.localPath).filePath("info.json"));
+        QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();
