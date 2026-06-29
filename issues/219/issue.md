@@ -7,7 +7,7 @@ labels: [Partial]
 milestone: 
 priority: 17
 progress: 30
-assignees: []
+assignees: [newnewnode]
 createdAt: 1782353910582
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
