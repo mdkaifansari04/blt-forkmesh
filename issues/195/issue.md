@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 195
 title: globally if you click on a commit hash it should bring you to that commit
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 28
 progress: 50
