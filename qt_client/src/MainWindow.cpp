@@ -44314,8 +44314,17 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
-    const QImage qr = QrCode::encodeToImage(uri, 6, 3);
-    if (!qr.isNull()) {
+    // The Solana Pay URI bakes in the amount, so it's long and yields a
+    // high-version (many-module) QR. At a fixed scale that overflows the dialog
+    // and gets clipped, so size each module to the largest integer that keeps
+    // the whole code within the dialog width (and crisp).
+    const auto modules = QrCode::encode(uri.toUtf8());
+    if (!modules.empty()) {
+        constexpr int kMargin = 3;
+        constexpr int kMaxQrPx = 300;
+        const int span = static_cast<int>(modules.size()) + 2 * kMargin;
+        const int scale = qMax(2, kMaxQrPx / span);
+        const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
         auto *qrLabel = new QLabel;
         qrLabel->setPixmap(QPixmap::fromImage(qr));
         qrLabel->setAlignment(Qt::AlignCenter);
