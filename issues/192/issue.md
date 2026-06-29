@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 192
 title: make a welcome room and announce new users to it
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 40
-progress: 0
+priority: 24
+progress: 40
 assignees: []
 createdAt: 1782339135267
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -11,10 +11,12 @@ class QStackedWidget;
 class QTextBrowser;
 
 // A markdown source editor with a live rendered preview, a small formatting
-// toolbar, and image drag-and-drop. Dropped (or toolbar-inserted) images are
-// recorded as pending attachments: the caller passes pendingAttachments() to the
-// IssueStore, which copies them into the issue's attachments/ folder. The editor
-// inserts an ![name](attachments/name) reference at the cursor for each image.
+// toolbar, and image drag-and-drop/paste. Dropped, pasted, or toolbar-inserted
+// images are recorded as pending attachments. The editor inserts temporary
+// forkmesh-pending-image:N markdown URLs; the caller passes both
+// pendingAttachments() and pendingAttachmentPlaceholders() to IssueStore, which
+// copies the images into the issue folder and rewrites the temporary URLs before
+// signing.
 class MarkdownEditor : public QWidget
 {
     Q_OBJECT
@@ -24,11 +26,12 @@ public:
     void setMarkdown(const QString &text);
     QString markdown() const;
 
-    // Absolute source paths of images added via drop or the toolbar (de-duped).
+    // Absolute source paths of images added via drop, paste, or the toolbar (de-duped).
     QStringList pendingAttachments() const { return m_attachments; }
+    QStringList pendingAttachmentPlaceholders() const { return m_attachmentPlaceholders; }
 
-    // Directory whose attachments/ subfolder holds already-saved images, so the
-    // preview can render existing ![](attachments/...) references.
+    // Directory that holds already-saved issue images, so the preview can render
+    // existing issue-relative ![](<filename>) references.
     void setPreviewBasePath(const QString &dir);
 
     void setPlaceholderText(const QString &text);
@@ -49,6 +52,7 @@ private:
     void showPreview();
     void wrapSelection(const QString &left, const QString &right);
     void chooseImage();
+    bool pasteImageFromClipboard();
     void updatePreview();
 
     // @-mention autocomplete. updateMentionPopup re-detects the @token under the
@@ -65,6 +69,7 @@ private:
     QPushButton *m_writeTab = nullptr;
     QPushButton *m_previewTab = nullptr;
     QStringList m_attachments;
+    QStringList m_attachmentPlaceholders;
     QString m_basePath;
 
     QStringList m_mentionCandidates;

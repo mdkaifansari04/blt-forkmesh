@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 238
 title: Branch port/private-repo-sharing-ui — needs merge into main
-status: open
+status: closed
 labels: [feature]
 milestone: 
-priority: 37
+priority: 13
 progress: 0
 assignees: []
 createdAt: 1782356525099

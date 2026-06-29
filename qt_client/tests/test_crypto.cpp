@@ -1,16 +1,22 @@
+#include "../src/ActionFile.h"
+#include "../src/AgentStore.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
+#include "../src/DiscussionInboxBackoff.h"
+#include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
+#include "../src/ReferenceLinks.h"
 #include "../src/RoomCrypto.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFile>
 #include <QJsonObject>
 #include <QProcess>
 #include <QTemporaryDir>
@@ -70,6 +76,42 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     app.setApplicationName("ForkMeshCryptoTest");
     app.setOrganizationName("ForkMesh");
+
+    {
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(
+            "See #154, PR #7, pull request #8, abcdef1, and "
+            "forkmesh://pull/owner/repo/7#open.");
+        check(linked.contains("[#154](fm-issue:154)"),
+              "plain # references render as issue links");
+        check(linked.contains("[PR #7](fm-pull:7)"),
+              "explicit PR references render as pull links");
+        check(linked.contains("[pull request #8](fm-pull:8)"),
+              "explicit pull request references render as pull links");
+        check(linked.contains("[abcdef1](fm-commit:abcdef1)"),
+              "pasted commit hashes render as commit links");
+        check(linked.contains("[forkmesh://pull/owner/repo/7#open]"
+                              "(forkmesh://pull/owner/repo/7#open)"),
+              "pasted ForkMesh deep links render as clickable links");
+    }
+
+    {
+        const QString input =
+            "Already [#154](https://example.test/issues/154), `#155`, "
+            "https://example.test/#156\n```\n#157 abcdef1\n```";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        const QString input =
+            "Already [#154][issue], ``#155 abcdef1``, and a definition.\n"
+            "\n"
+            "[issue]: forkmesh://issue/owner/repo/154";
+        const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
+        check(linked == input,
+              "reference linker skips reference-style links and multi-backtick code");
+    }
 
     ForkMeshIdentity identity;
     check(identity.load(), "Ed25519 identity loads or generates");
@@ -305,6 +347,58 @@ int main(int argc, char *argv[])
               expectedPullSuggestionState,
           "pull suggestion-state canonical string matches the cross-language vector");
 
+    // --- Discussion event signing ---------------------------------------
+    // Pin the canonical byte format so the C++ client and worker verifier
+    // stay byte-identical. The discussion number is bound.
+    DiscussionEvent openDiscussion;
+    openDiscussion.type = "open";
+    openDiscussion.author = "TESTPUB";
+    openDiscussion.ts = 1000;
+    openDiscussion.title = "Welcome";
+    openDiscussion.category = "Announcements";
+    openDiscussion.body = "Hello discussion";
+    const QByteArray expectedDiscussionOpen =
+        "forkmesh-discussion-event-v1\nopen\n1\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2";
+    check(DiscussionStore::canonicalString(1, openDiscussion) ==
+              expectedDiscussionOpen,
+          "discussion open canonical string matches the worker vector");
+    const QByteArray expectedDiscussionInboxOpen =
+        "forkmesh-discussion-event-v1\nopen\n0\nTESTPUB\n1000\n"
+        "8e31495ce2e5559ce11564b67a45710aac9654c0f70b0fcfd0ab08dc51c83ab2";
+    check(DiscussionStore::canonicalString(0, openDiscussion) ==
+              expectedDiscussionInboxOpen,
+          "discussion inbox-open canonical string matches the worker vector");
+
+    DiscussionEvent discussionComment;
+    discussionComment.type = "comment";
+    discussionComment.author = "TESTPUB";
+    discussionComment.ts = 2000;
+    discussionComment.body = "Reply body";
+    const QByteArray expectedDiscussionComment =
+        "forkmesh-discussion-event-v1\ncomment\n1\nTESTPUB\n2000\n"
+        "b87e74db2baf019fb26d1a764aa329723024c6be7f13e5a92a60690b301bc3e9";
+    check(DiscussionStore::canonicalString(1, discussionComment) ==
+              expectedDiscussionComment,
+          "discussion comment canonical string matches the worker vector");
+
+    DiscussionInboxBackoff inboxBackoff;
+    const QString discussionInboxKey =
+        "https://forkmesh.com/api/repo/alice/project/discussions";
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 1000),
+          "discussion inbox sync starts without a capability backoff");
+    inboxBackoff.markUnsupported(discussionInboxKey, 1000);
+    check(inboxBackoff.shouldBackOff(discussionInboxKey, 1000),
+          "discussion inbox 404 backs off repeated sync attempts");
+    check(inboxBackoff.shouldBackOff(discussionInboxKey, 1000 + 599999),
+          "discussion inbox backoff lasts for the cooldown window");
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 1000 + 600000),
+          "discussion inbox backoff expires after the cooldown window");
+    inboxBackoff.markUnsupported(discussionInboxKey, 2000);
+    inboxBackoff.clear(discussionInboxKey);
+    check(!inboxBackoff.shouldBackOff(discussionInboxKey, 2000),
+          "successful discussion inbox sync clears the unsupported backoff");
+
     // --- Commit comment signing ------------------------------------------
     CommitComment commitVec;
     commitVec.author = "TESTPUB";
@@ -496,7 +590,7 @@ int main(int argc, char *argv[])
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
             "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n",
-            QString(), &err);
+            QString(), /*branchBacked=*/false, &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
@@ -563,6 +657,28 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
+
+        // --- DiscussionStore round-trip ---------------------------------
+        DiscussionStore discussions(tmp.path(), QString(), &identity, "tester");
+        const int dn = discussions.createDiscussion(
+            "Welcome", "Hello **discussion**", "Announcements", &err);
+        check(dn == 1, "createDiscussion returns the first discussion number");
+        check(discussions.addComment(dn, "first reply", &err),
+              "discussion addComment succeeds");
+        QList<Discussion> loadedDiscussions = discussions.loadAll();
+        check(!loadedDiscussions.isEmpty() &&
+                  loadedDiscussions.first().title == "Welcome" &&
+                  loadedDiscussions.first().category == "Announcements" &&
+                  loadedDiscussions.first().events.size() == 2,
+              "discussion loads back with title, category and comments");
+        DiscussionEvent remoteComment;
+        remoteComment.type = "comment";
+        remoteComment.body = "remote reply";
+        remoteComment = discussions.makeSignedEvent(dn, remoteComment);
+        check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
+              "discussion remote comment applies");
+        check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
+              "discussion remote comment reapply is idempotent");
 
         PullRequest reviewPr;
         reviewPr.number = 99;
@@ -639,6 +755,141 @@ int main(int argc, char *argv[])
                   snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
               "review model treats legacy line-comments as unresolved threads");
 
+        // --- PullStore deletePullFile excises one file, keeps the rest -------
+        // Regression for issue #258: deleting a file used to rebuild the PR by
+        // replaying its commits onto the current base with `git am`, which drops
+        // commits already present on the base and so could wipe most of the PR.
+        // The delete now edits the stored diff/commits in place.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            git({"checkout", "-q", "-b", "feat-258"});
+            writeFile("alpha.txt", "alpha-1\n");
+            writeFile("beta.txt", "beta-1\n");
+            git({"add", "alpha.txt", "beta.txt"});
+            git({"commit", "-q", "-m", "add alpha and beta"});
+            writeFile("beta.txt", "beta-2\n"); // a commit that touches only beta
+            git({"add", "beta.txt"});
+            git({"commit", "-q", "-m", "tweak beta"});
+            writeFile("gamma.txt", "gamma-1\n");
+            git({"add", "gamma.txt"});
+            git({"commit", "-q", "-m", "add gamma"});
+            const QString delPatch =
+                QString::fromUtf8(gitOutput({"diff", baseBranch + "..feat-258"}));
+            const QString delMbox = QString::fromUtf8(
+                gitOutput({"format-patch", "--stdout", baseBranch + "..feat-258"}));
+            git({"checkout", "-q", baseBranch});
+
+            const int dn = pulls.createPull("Three files", "body", baseBranch,
+                                            "feat-258", delPatch, delMbox,
+                                            /*branchBacked=*/false, &err);
+            check(dn > 0, "createPull stores a multi-file PR with a commit series");
+            check(pulls.deletePullFile(dn, "beta.txt", &err),
+                  "deletePullFile removes one file from the PR");
+
+            PullRequest afterDel;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == dn)
+                    afterDel = p;
+            check(afterDel.patch.contains("alpha.txt") &&
+                      afterDel.patch.contains("gamma.txt"),
+                  "deleting one file leaves the other files in the patch (#258)");
+            check(!afterDel.patch.contains("beta.txt"),
+                  "the deleted file is gone from the patch");
+            check(afterDel.filesChanged == 2,
+                  "stats drop by exactly the one deleted file");
+            check(afterDel.commits.contains("add alpha and beta") &&
+                      afterDel.commits.contains("add gamma"),
+                  "multi-file commits survive with their other changes intact");
+            check(!afterDel.commits.contains("tweak beta") &&
+                      !afterDel.commits.contains("beta.txt"),
+                  "a commit touching only the deleted file is dropped from the series");
+
+            // The trimmed commit series must still be a valid, appliable patch.
+            check(pulls.mergePull(dn, &err),
+                  "the PR still merges cleanly after a file was deleted from it");
+            check(QFile::exists(tmp.path() + "/alpha.txt") &&
+                      QFile::exists(tmp.path() + "/gamma.txt") &&
+                      !QFile::exists(tmp.path() + "/beta.txt"),
+                  "merging applies the kept files and not the deleted one");
+        }
+
+        // --- PullStore branch-backed PRs keep the diff out of the repo -------
+        // A PR whose head is a real branch stores only the signed pull.md
+        // pointer; its diff and full commit series are reconstructed from
+        // base..head, and the branch's own commits (with authorship) drive the
+        // merge — nothing about the diff is committed into the repo.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            git({"checkout", "-q", "-b", "feat-bb"});
+            writeFile("bb1.txt", "one\n");
+            git({"add", "bb1.txt"});
+            git({"commit", "-q", "-m", "bb: add one"});
+            writeFile("bb2.txt", "two\n");
+            git({"add", "bb2.txt"});
+            git({"commit", "-q", "-m", "bb: add two"});
+            git({"checkout", "-q", baseBranch});
+
+            const int bn =
+                pulls.createPull("Branch backed", "body", baseBranch, "feat-bb",
+                                 QString(), QString(), /*branchBacked=*/true, &err);
+            check(bn > 0, "createPull stores a branch-backed PR");
+            const QString bdir = tmp.path() + "/pulls/" + QString::number(bn);
+            check(!QFile::exists(bdir + "/changes.patch"),
+                  "a branch-backed PR writes no changes.patch into the repo");
+            check(QFile::exists(bdir + "/pull.md"),
+                  "a branch-backed PR still records its signed pull.md pointer");
+            const QString tracked = QString::fromUtf8(gitOutput(
+                {"ls-tree", "-r", "--name-only", "HEAD",
+                 "pulls/" + QString::number(bn)}));
+            check(tracked.contains("pull.md") &&
+                      !tracked.contains("changes.patch") &&
+                      !tracked.contains("commits.mbox"),
+                  "git tracks only pull.md for a branch-backed PR");
+
+            PullRequest bb;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == bn)
+                    bb = p;
+            check(bb.patch.contains("bb1.txt") && bb.patch.contains("bb2.txt"),
+                  "a branch-backed PR's diff is reconstructed from the refs");
+            check(bb.commits.contains("bb: add one") &&
+                      bb.commits.contains("bb: add two"),
+                  "a branch-backed PR's full commit series is reconstructed");
+            check(bb.filesChanged == 2,
+                  "branch-backed stats come from the reconstructed diff");
+
+            check(pulls.mergePull(bn, &err),
+                  "a branch-backed PR merges by replaying its commits");
+            check(QFile::exists(tmp.path() + "/bb1.txt") &&
+                      QFile::exists(tmp.path() + "/bb2.txt"),
+                  "merging a branch-backed PR applies its files");
+            const QString log = QString::fromUtf8(gitOutput({"log", "--format=%s"}));
+            check(log.contains("bb: add one") && log.contains("bb: add two"),
+                  "merging a branch-backed PR preserves every authored commit");
+            PullRequest merged;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == bn)
+                    merged = p;
+            check(merged.status == "merged",
+                  "the branch-backed PR is marked merged");
+            check(merged.patch.contains("bb1.txt"),
+                  "a merged branch-backed PR's diff stays viewable via the snapshot");
+        }
+
         // --- CommitCommentStore round-trip -------------------------------
         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
         CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
@@ -705,6 +956,97 @@ int main(int argc, char *argv[])
         const QList<Cove> listed = coves.listCoves();
         check(listed.size() == 1 && listed.first().name == "Launch plans",
               "listCoves enumerates the repo's cove envelopes");
+    }
+
+    // AgentStore persists a Claude Code session's stream-json transcript so it
+    // survives an app restart (issue #41): events append one per line, reload in
+    // order, and clearEvents starts a fresh run.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "agent store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.loadEvents(session).isEmpty(),
+              "a fresh agent session has no persisted transcript events");
+
+        store.appendEvent(session, QJsonObject{{"type", "_local_user"},
+                                               {"text", "do the thing"}});
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"}, {"seq", 2}});
+        const QList<QJsonObject> events = store.loadEvents(session);
+        check(events.size() == 2, "appended transcript events reload from disk");
+        check(!events.isEmpty() &&
+                  events.first().value("type").toString() == "_local_user" &&
+                  events.first().value("text").toString() == "do the thing",
+              "the first reloaded event is the initial user prompt, intact");
+        check(events.size() == 2 && events.at(1).value("seq").toInt() == 2,
+              "transcript events reload in append order");
+
+        // Reopening the store mimics an app restart: the transcript is still there.
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 &&
+                  reopened.loadEvents(sessions.first()).size() == 2,
+              "transcript events survive reopening the store (app restart)");
+
+        store.clearEvents(session);
+        check(store.loadEvents(session).isEmpty(),
+              "clearEvents starts the next run with a clean transcript");
+    }
+
+    // The Claude Code run summary the CLI reports on finish ("done · N turns ·
+    // Ms · $X") is stored on the session and survives a restart (issue #296).
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "run-summary store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+        session.numTurns = 71;
+        session.durationMs = 828000;
+        session.costUsd = 4.59;
+        check(store.saveSession(session), "saving a session with a run summary succeeds");
+
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 && sessions.first().numTurns == 71 &&
+                  sessions.first().durationMs == 828000 &&
+                  qAbs(sessions.first().costUsd - 4.59) < 1e-9,
+              "turns, duration and cost reload intact after restart");
+    }
+
+    {
+        // Workflow variable substitution must expand the explicit
+        // ${{ vars.NAME }} context form and any declared ${NAME} variables, but
+        // must NOT touch a workflow's own shell variables — otherwise a release
+        // step building "releases/${channel}/forkmesh-${os}-${arch}" from shell
+        // variables collapses to "releases//forkmesh--" (the reported bug).
+        QMap<QString, QString> vars;
+        vars.insert(QStringLiteral("TOKEN"), QStringLiteral("s3cr3t"));
+
+        const QString shellScript =
+            QStringLiteral("channel=\"${RELEASE_CHANNEL:-latest}\"\n"
+                           "os=linux; arch=x86_64\n"
+                           "dest=\"releases/${channel}/forkmesh-${os}-${arch}\"");
+        const QString out = ActionFile::substitute(shellScript, vars);
+        check(out == shellScript,
+              "substitute leaves unknown ${NAME} shell variables untouched");
+
+        check(ActionFile::substitute(
+                  QStringLiteral("auth ${{ vars.TOKEN }} and ${TOKEN}"), vars) ==
+                  QStringLiteral("auth s3cr3t and s3cr3t"),
+              "substitute expands declared vars via both ${{ vars.X }} and ${X}");
+
+        check(ActionFile::substitute(
+                  QStringLiteral("x=${{ vars.MISSING }}-end"), vars) ==
+                  QStringLiteral("x=-end"),
+              "substitute blanks unknown ${{ vars.X }} context references");
     }
 
     if (failures) {

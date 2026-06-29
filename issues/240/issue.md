@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 240
 title: Branch port/clipboard-image-paste — needs merge into main
-status: open
+status: closed
 labels: [enhancement]
 milestone: 
-priority: 39
+priority: 14
 progress: 0
 assignees: []
 createdAt: 1782356525339

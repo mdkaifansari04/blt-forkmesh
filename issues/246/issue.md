@@ -2,11 +2,11 @@
 schema: forkmesh-issue-v1
 number: 246
 title: when we restart make sure we are on the node and repo in the top menu from what we were on before and don't show the username screen if we already have one
-status: open
-labels: []
+status: closed
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 17
+progress: 65
 assignees: []
 createdAt: 1782363064053
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

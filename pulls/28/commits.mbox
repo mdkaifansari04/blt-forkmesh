@@ -1,0 +1,266 @@
+From da5c3d6619ec425f62525f47f81bc4854ddf64c2 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 24 Jun 2026 16:40:25 +0530
+Subject: [PATCH] feat: add repository auto-publish setting
+
+(cherry picked from commit ab44ab3086629df439267b5706cbdcaec730f680)
+---
+ qt_client/src/MainWindow.cpp           | 59 ++++++++++++++++++++++----
+ qt_client/src/MainWindow.h             | 28 +++++++++++-
+ qt_client/tests/test_window_resize.cpp | 40 +++++++++++++++++
+ 3 files changed, 117 insertions(+), 10 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 5fc59af..d534ca1 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -624,6 +624,8 @@ const QString kActiveServerSetting = QStringLiteral("servers/active");
+ const QString kDefaultRoomName = QStringLiteral("general");
+ const QString kRepositoriesArray = QStringLiteral("repositories/items");
+ const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
++const QString kAutoPublishUpdatesSetting =
++    QStringLiteral("repositories/autoPublishUpdates");
+ const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+ 
+ QString savedSolanaAddress()
+@@ -24653,6 +24655,15 @@ QWidget *MainWindow::buildSettingsSection()
+     repoButtonRow->addWidget(addLocalRepoButton);
+     repoButtonRow->addStretch();
+ 
++    auto *autoPublishUpdatesCheck =
++        new QCheckBox("Automatically publish repository updates");
++    autoPublishUpdatesCheck->setChecked(autoPublishUpdatesEnabled());
++    autoPublishUpdatesCheck->setToolTip(
++        "When off, ForkMesh still mirrors and hosts repositories, but will not "
++        "automatically refresh the catalog after syncs or local pushes.");
++    connect(autoPublishUpdatesCheck, &QCheckBox::toggled, this,
++            &MainWindow::setAutoPublishUpdatesEnabled);
++
+     // Import a repo from GitHub/GitLab: clone it into a local working copy, then
+     // mirror + publish it under this node like any local repo. An optional access
+     // token per host authenticates the clone to dodge unauthenticated rate limits.
+@@ -24855,6 +24866,7 @@ QWidget *MainWindow::buildSettingsSection()
+     leftCol->addWidget(repositoriesLabel);
+     leftCol->addWidget(repositoriesHint);
+     leftCol->addLayout(repoButtonRow);
++    leftCol->addWidget(autoPublishUpdatesCheck);
+     leftCol->addSpacing(6);
+     leftCol->addWidget(importLabel);
+     leftCol->addWidget(importHint);
+@@ -26237,6 +26249,28 @@ QString MainWindow::repositoryPreviewRoot() const
+            "/repo-preview-cache";
+ }
+ 
++bool MainWindow::autoPublishUpdatesEnabled() const
++{
++    return QSettings().value(kAutoPublishUpdatesSetting, true).toBool();
++}
++
++void MainWindow::setAutoPublishUpdatesEnabled(bool enabled)
++{
++    QSettings().setValue(kAutoPublishUpdatesSetting, enabled);
++}
++
++bool MainWindow::shouldAutoPublishRepository(const RepositoryRecord &repo) const
++{
++    return shouldPublishRepositoryAfterSync(repo, true);
++}
++
++bool MainWindow::shouldPublishRepositoryAfterSync(
++    const RepositoryRecord &repo, bool honorAutoPublishSetting) const
++{
++    return !repo.previewOnly && repo.publishToNetwork &&
++           (!honorAutoPublishSetting || autoPublishUpdatesEnabled());
++}
++
+ QString MainWindow::repositoryPreviewPath(const QString &owner,
+                                           const QString &name) const
+ {
+@@ -28127,7 +28161,8 @@ void MainWindow::autoSyncMirrors()
+         if (!m_syncingRepos.contains(i) &&
+             !m_repositories.at(i).previewOnly &&
+             !repositorySource(m_repositories.at(i)).isEmpty())
+-            syncRepository(i, /*quiet=*/true);
++            syncRepository(i, /*quiet=*/true,
++                           /*honorAutoPublishSetting=*/true);
+     }
+ }
+ 
+@@ -28178,7 +28213,8 @@ void MainWindow::syncMirrorsBehindRoster()
+                 break;
+         }
+         if (behind)
+-            syncRepository(i, /*quiet=*/true);
++            syncRepository(i, /*quiet=*/true,
++                           /*honorAutoPublishSetting=*/true);
+     }
+ }
+ 
+@@ -28198,7 +28234,8 @@ void MainWindow::propagateRepoUpdate(int index)
+     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
+     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
+     // converging everyone in seconds rather than at the next 5-minute tick.
+-    syncRepository(index, /*quiet=*/true);
++    syncRepository(index, /*quiet=*/true,
++                   /*honorAutoPublishSetting=*/true);
+     // The mirror fetch above is asynchronous; until it finishes our working copy
+     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
+     // it surfaces the pending "↑N to push" state the instant the comment/commit
+@@ -28242,7 +28279,8 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
+     // refs/tags/*, so issues and pull requests (which live on refs/heads) come
+     // along with the code. Quiet so it doesn't spam unless something changed.
+     if (!m_syncingRepos.contains(matchIndex))
+-        syncRepository(matchIndex, /*quiet=*/true);
++        syncRepository(matchIndex, /*quiet=*/true,
++                       /*honorAutoPublishSetting=*/true);
+     if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
+         QSystemTrayIcon::supportsMessages())
+         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
+@@ -28362,7 +28400,8 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
+     }
+ }
+ 
+-void MainWindow::syncRepository(int index, bool quiet)
++void MainWindow::syncRepository(int index, bool quiet,
++                                bool honorAutoPublishSetting)
+ {
+     if (index < 0 || index >= m_repositories.size() ||
+         m_syncingRepos.contains(index))
+@@ -28441,8 +28480,8 @@ void MainWindow::syncRepository(int index, bool quiet)
+ 
+     auto *process = new QProcess(this);
+     connect(process, &QProcess::finished, this,
+-            [this, process, index, quiet, beforeDigest, beforeHeadCommit,
+-             hasMirror](
++            [this, process, index, quiet, honorAutoPublishSetting, beforeDigest,
++             beforeHeadCommit, hasMirror](
+                 int exitCode, QProcess::ExitStatus) {
+                 const QString errors =
+                     QString::fromUtf8(process->readAllStandardError()).trimmed();
+@@ -28518,7 +28557,9 @@ void MainWindow::syncRepository(int index, bool quiet)
+                     }
+                     if (!stillPreview && repo.publishToNetwork &&
+                         (changed || !quiet)) {
+-                        publishRepository(index, false);
++                        if (shouldPublishRepositoryAfterSync(
++                                repo, honorAutoPublishSetting))
++                            publishRepository(index, false);
+                         // Serve this repo's files live to the web now that a
+                         // mirror exists (pure live tunnel, nothing uploaded).
+                         startRepoHosts();
+@@ -28976,7 +29017,7 @@ void MainWindow::scanActionSpool()
+             if (idx >= 0 && !reattested.contains(idx)) {
+                 reattested.insert(idx);
+                 const RepositoryRecord &r = m_repositories.at(idx);
+-                if (!r.previewOnly && r.publishToNetwork &&
++                if (shouldAutoPublishRepository(r) &&
+                     !r.mirrorPath.trimmed().isEmpty())
+                     publishRepository(idx, false);
+             }
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index ba7f561..50696c1 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -139,6 +139,26 @@ public:
+     QString testAccountTier() const { return m_accountTier; }
+     int testAddPublishedRepository(const QString &owner, const QString &name,
+                                    const QString &mirrorPath);
++    bool testAutoPublishUpdatesEnabled() const
++    {
++        return autoPublishUpdatesEnabled();
++    }
++    void testSetAutoPublishUpdatesEnabled(bool enabled)
++    {
++        setAutoPublishUpdatesEnabled(enabled);
++    }
++    bool testShouldAutoPublishRepository(int index) const
++    {
++        return index >= 0 && index < m_repositories.size() &&
++               shouldAutoPublishRepository(m_repositories.at(index));
++    }
++    bool testShouldPublishRepositoryAfterSync(int index,
++                                              bool honorAutoPublishSetting) const
++    {
++        return index >= 0 && index < m_repositories.size() &&
++               shouldPublishRepositoryAfterSync(m_repositories.at(index),
++                                                honorAutoPublishSetting);
++    }
+     void testPublishRepository(int index) { publishRepository(index, false); }
+     void testStartRepoHosts() { startRepoHosts(); }
+     void testStopRepoHosts() { stopRepoHosts(); }
+@@ -907,7 +927,8 @@ private:
+     void previewAdvertisedRepo(const QString &ownerName);
+     void mirrorAdvertisedRepo(const QString &ownerName);
+     void mirrorPreviewRepository(int index);
+-    void syncRepository(int index, bool quiet = false);
++    void syncRepository(int index, bool quiet = false,
++                        bool honorAutoPublishSetting = false);
+     void autoSyncMirrors();
+     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
+     // pull it immediately instead of waiting for the next auto-sync tick.
+@@ -922,6 +943,11 @@ private:
+     void quickRebuildRestart();
+     void changeMirrorLocation();
+     void changePreviewCacheLocation();
++    bool autoPublishUpdatesEnabled() const;
++    void setAutoPublishUpdatesEnabled(bool enabled);
++    bool shouldAutoPublishRepository(const RepositoryRecord &repo) const;
++    bool shouldPublishRepositoryAfterSync(const RepositoryRecord &repo,
++                                          bool honorAutoPublishSetting) const;
+     void publishRepository(int index, bool showDialogOnError = true);
+     void updateRepoActionMenus();
+     void deleteCurrentMirror();
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index d20e848..691a38b 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -272,6 +272,46 @@ int main(int argc, char *argv[])
+               QStringLiteral("node-connect system alert checkbox is unchecked by default"));
+     }
+ 
++    QCheckBox *autoPublishUpdatesCheck =
++        findCheckBox(window,
++                     QStringLiteral("Automatically publish repository updates"));
++    check(autoPublishUpdatesCheck != nullptr,
++          QStringLiteral("auto-publish updates checkbox exists"));
++    if (autoPublishUpdatesCheck) {
++        check(autoPublishUpdatesCheck->isChecked(),
++              QStringLiteral("auto-publish updates checkbox is checked by default"));
++        autoPublishUpdatesCheck->setChecked(false);
++        check(!QSettings()
++                   .value(QStringLiteral("repositories/autoPublishUpdates"), true)
++                   .toBool(),
++              QStringLiteral("auto-publish updates checkbox persists disabled state"));
++        autoPublishUpdatesCheck->setChecked(true);
++        check(QSettings()
++                  .value(QStringLiteral("repositories/autoPublishUpdates"), false)
++                  .toBool(),
++              QStringLiteral("auto-publish updates checkbox persists enabled state"));
++    }
++
++    const int publishedRepoIndex = window.testAddPublishedRepository(
++        QStringLiteral("alice-node"), QStringLiteral("published-repo"),
++        QStringLiteral("/tmp/forkmesh-test-published-repo.git"));
++    check(window.testAutoPublishUpdatesEnabled(),
++          QStringLiteral("auto-publish updates setting defaults enabled"));
++    check(window.testShouldAutoPublishRepository(publishedRepoIndex),
++          QStringLiteral("published repository can auto-publish when setting is enabled"));
++    window.testSetAutoPublishUpdatesEnabled(false);
++    check(!window.testAutoPublishUpdatesEnabled(),
++          QStringLiteral("auto-publish updates setting can be disabled"));
++    check(!window.testShouldAutoPublishRepository(publishedRepoIndex),
++          QStringLiteral("published repository cannot auto-publish when setting is disabled"));
++    check(!window.testShouldPublishRepositoryAfterSync(
++              publishedRepoIndex, /*honorAutoPublishSetting=*/true),
++          QStringLiteral("background sync honors disabled auto-publish setting"));
++    check(window.testShouldPublishRepositoryAfterSync(
++              publishedRepoIndex, /*honorAutoPublishSetting=*/false),
++          QStringLiteral("explicit sync can still publish when auto-publish is disabled"));
++    window.testSetAutoPublishUpdatesEnabled(true);
++
+     QSettings().setValue(QStringLiteral("notifications/nodeConnect"), false);
+     window.testSetNodeAlertGraceUntilMs(0);
+     QList<MemberInfo> initialRoster;
+-- 
+2.50.1 (Apple Git-155)
+

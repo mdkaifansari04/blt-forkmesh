@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 94
 title: when deciding payment split only calculate the repos that are mirrored from other nodes don't count single repos with no mirrors
-status: open
+status: closed
 labels: [bug]
 milestone: Phase 2
 priority: 2

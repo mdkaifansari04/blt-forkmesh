@@ -50,8 +50,11 @@ public:
     // Find and parse every .forkmesh/*.yml|*.yaml under checkoutDir.
     static QList<ActionWorkflow> parseWorkflowsInDir(const QString &checkoutDir);
 
-    // Replace ${{ vars.NAME }} and ${NAME} with values from vars (unknown names
-    // become empty strings, matching CI conventions).
+    // Substitute variable references with values from vars. The explicit
+    // ${{ vars.NAME }} context form is always expanded (unknown names become
+    // empty strings, matching CI conventions). The bare ${NAME} form is only
+    // expanded for declared variables; unknown ${NAME} is left untouched so a
+    // workflow's own shell parameter expansions survive into the shell.
     static QString substitute(const QString &input,
                               const QMap<QString, QString> &vars);
 };

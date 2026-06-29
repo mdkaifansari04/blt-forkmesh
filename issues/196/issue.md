@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 196
 title: make sure avatars show up correctly on the issue descripption section
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 11
