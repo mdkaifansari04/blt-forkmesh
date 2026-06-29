@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 264
 title: clicking between PRs in the list is a bit laggy, please fix
-status: open
+status: closed
 labels: [Partial]
 milestone: 
-priority: 53
+priority: 8
 progress: 45
 assignees: []
 createdAt: 1782430970460

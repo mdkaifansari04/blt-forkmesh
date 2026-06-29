@@ -5,7 +5,7 @@ title: please make the headless mode stay running until we explicitly shut it do
 status: open
 labels: [Partial]
 milestone: 
-priority: 22
+priority: 1
 progress: 40
 assignees: []
 createdAt: 1782497401761

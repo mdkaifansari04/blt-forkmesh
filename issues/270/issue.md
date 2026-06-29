@@ -5,7 +5,7 @@ title: on the website only show open issues by default
 status: open
 labels: [Partial]
 milestone: 
-priority: 58
+priority: 35
 progress: 75
 assignees: []
 createdAt: 1782482034249
