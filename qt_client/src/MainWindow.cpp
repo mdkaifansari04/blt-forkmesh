@@ -16782,9 +16782,11 @@ QWidget *MainWindow::buildPullsTab()
         "branch (the PR stays open, ready to merge)");
     connect(m_pullDeleteFileButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullFile);
+    // The title gets its own line above the action buttons (issue #261): with this
+    // many buttons a single shared row squeezed the title into a sliver. The button
+    // row below packs left (trailing stretch) so it reads as a toolbar.
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
-    pullHeaderRow->addWidget(m_pullTitle, 1);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullPreviewButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
@@ -16800,6 +16802,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteBranchButton, 0, Qt::AlignTop);
+    pullHeaderRow->addStretch(1);
     m_pullMeta = new QLabel;
     m_pullMeta->setObjectName("statusLine");
     m_pullMeta->setTextFormat(Qt::RichText);
@@ -17185,6 +17188,7 @@ QWidget *MainWindow::buildPullsTab()
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
     detailLayout->setContentsMargins(18, 18, 18, 18);
     detailLayout->setSpacing(8);
+    detailLayout->addWidget(m_pullTitle);
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullMergeStatus);
