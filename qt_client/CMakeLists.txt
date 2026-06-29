@@ -18,6 +18,8 @@ find_package(OpenSSL REQUIRED)
 
 set(FORKMESH_APP_SOURCES
     resources/icons.qrc
+    src/PlatformLogFilter.h
+    src/PlatformLogFilter.cpp
     src/Theme.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
