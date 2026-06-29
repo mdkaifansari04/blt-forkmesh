@@ -254,6 +254,99 @@ private:
     mutable bool m_valid = false;
 };
 
+// Defined further down; used by the peek block below to bound a pathological
+// single line / sheer volume before it reaches a word-wrapped label.
+static QString capLabelText(const QString &text, bool collapseLines);
+
+// A monospace, no-background label for a slice of tool output (matches makeMono).
+static CacheLabel *monoSlice(const QString &text, const QString &fg, bool capCollapse)
+{
+    auto *l = new CacheLabel;
+    l->setTextFormat(Qt::PlainText);
+    l->setText(capLabelText(text, capCollapse));
+    l->setWordWrap(true);
+    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    l->setStyleSheet(
+        QStringLiteral("color:%1;background:transparent;border:none;").arg(fg));
+    return l;
+}
+
+// A long tool-output block shown "peeked": the first two and last two lines stay
+// visible with a small clickable divider in between saying how many lines are
+// hidden (▸ ⋯ N lines); clicking it reveals — or re-hides — the middle. Output
+// short enough that nothing would be hidden renders as a plain block, no toggle.
+class OutputPeek : public QWidget
+{
+public:
+    static constexpr int kHead = 2;
+    static constexpr int kTail = 2;
+
+    OutputPeek(const QString &text, const QString &fg,
+               const ClaudeTranscriptView::Palette &p, QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        auto *v = new QVBoxLayout(this);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(2);
+
+        const QStringList lines = text.split(QLatin1Char('\n'));
+        m_hidden = lines.size() - kHead - kTail;
+        if (m_hidden <= 0) {
+            v->addWidget(monoSlice(text, fg, false));
+            return;
+        }
+
+        v->addWidget(monoSlice(lines.mid(0, kHead).join(QLatin1Char('\n')), fg, false));
+
+        m_toggle = new QPushButton(this);
+        m_toggle->setCursor(Qt::PointingHandCursor);
+        m_toggle->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;background:transparent;text-align:left;"
+            "color:%1;font-size:11px;padding:1px 0;}"
+            "QPushButton:hover{color:%2;}").arg(p.muted, p.accent));
+        v->addWidget(m_toggle, 0, Qt::AlignLeft);
+
+        m_middle = monoSlice(lines.mid(kHead, m_hidden).join(QLatin1Char('\n')), fg, true);
+        m_middle->setVisible(false);
+        v->addWidget(m_middle);
+
+        v->addWidget(monoSlice(lines.mid(lines.size() - kTail, kTail).join(QLatin1Char('\n')),
+                               fg, false));
+
+        updateToggle();
+        QObject::connect(m_toggle, &QPushButton::clicked, m_toggle,
+                         [this] { setOpen(!m_open); });
+    }
+
+    // Reveal the middle (so a search match hidden inside it can be scrolled to).
+    void expand() { setOpen(true); }
+
+private:
+    void setOpen(bool on)
+    {
+        m_open = on;
+        if (m_middle)
+            m_middle->setVisible(on);
+        updateToggle();
+    }
+    void updateToggle()
+    {
+        if (!m_toggle)
+            return;
+        const QString unit = m_hidden == 1 ? QStringLiteral("line")
+                                           : QStringLiteral("lines");
+        m_toggle->setText((m_open ? QStringLiteral("▾  hide %1 %2")
+                                  : QStringLiteral("▸  ⋯ %1 %2"))
+                              .arg(m_hidden)
+                              .arg(unit));
+    }
+    QPushButton *m_toggle = nullptr;
+    QWidget *m_middle = nullptr;
+    int m_hidden = 0;
+    bool m_open = false;
+};
+
 // One row on the transcript's timeline: a left rail (a vertical connecting line
 // with a coloured node dot) beside the item's content. Consecutive rows abut, so
 // their rails join into one continuous thread.
@@ -894,10 +987,9 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     divider->setFixedHeight(1);
     divider->setStyleSheet(QStringLiteral("background:%1;border:none;").arg(m_p.border));
     tc.io->addWidget(divider);
-    QWidget *out = makeMono(text, true);
-    if (isError)
-        out->setStyleSheet(
-            QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.del));
+    // Peek the output: first/last two lines visible, the middle behind a toggle
+    // that says how many lines it hides (errors tinted red).
+    QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.text, m_p);
     tc.io->addWidget(ioRow(isError ? QStringLiteral("ERR") : QStringLiteral("OUT"), out));
     tc.hasResult = true;
 }
@@ -1282,10 +1374,14 @@ void ClaudeTranscriptView::scrollToCurrentMatch()
     QLabel *l = currentMatchLabel();
     if (!l)
         return;
-    // Reveal the match if it sits inside a folded section (e.g. a "Thought" card).
-    for (QWidget *w = l->parentWidget(); w; w = w->parentWidget())
+    // Reveal the match if it sits inside a folded section (a "Thought" card) or
+    // the hidden middle of a peeked output block.
+    for (QWidget *w = l->parentWidget(); w; w = w->parentWidget()) {
         if (auto *c = dynamic_cast<Collapsible *>(w))
             c->setExpanded(true);
+        else if (auto *o = dynamic_cast<OutputPeek *>(w))
+            o->expand();
+    }
     m_stickBottom = false; // jumping to a match takes us off the live tail
     ensureWidgetVisible(l, 40, 80);
 }
