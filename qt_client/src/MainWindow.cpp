@@ -7453,7 +7453,7 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     m_issueQuickAdd = new QLineEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
-    m_issueQuickAdd->setPlaceholderText("+ Quick issue title\xE2\x80\xA6 (Enter)");
+    m_issueQuickAdd->setPlaceholderText("enter prompt");
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is sized to the same cap as the Claude prompt / message input
     // (kMaxTextChars) rather than a short-title length.
@@ -7595,7 +7595,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     twitterButton->setCursor(Qt::PointingHandCursor);
     twitterButton->setToolTip("ForkMesh on X (Twitter)");
 
-    m_issueQuickAdd->setMinimumWidth(360);
+    // Twice as wide and two lines tall (adhoc #10): give the prompt field room
+    // to show a longer prompt while typing. It stays a single-line QLineEdit
+    // (Up/Down drive prompt history), just a taller, wider box.
+    m_issueQuickAdd->setMinimumWidth(720);
+    m_issueQuickAdd->setMinimumHeight(
+        m_issueQuickAdd->fontMetrics().lineSpacing() * 2 + 12);
 
     // Centered between the quick-add controls and the donate/social cluster: the
     // git identity (name <email>) configured for the repo we're viewing. Filled in
