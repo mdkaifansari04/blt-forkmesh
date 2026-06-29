@@ -17893,9 +17893,21 @@ void MainWindow::renderPullDiff(const QString &filePath)
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
+    // Handing an enormous single-file diff to QTextEdit::setHtml() parses, styles
+    // and lays it all out on the GUI thread, freezing the window for seconds
+    // (issue #244, same cause as the branch-diff cap in #187). Past a sane size,
+    // show a notice instead so selecting a giant file in the list stays
+    // responsive. Capping body here also feeds the skip-when-unchanged key below.
+    constexpr int kMaxDiffHtmlChars = 1'000'000;
     const QString body =
-        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                       : html;
+        html.size() > kMaxDiffHtmlChars
+            ? QStringLiteral("<p style='color:#d29922'>This file's diff is too "
+                             "large to render here (%1 KB). View it in your "
+                             "editor.</p>")
+                  .arg(diff.size() / 1024)
+            : html.isEmpty()
+                  ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                  : html;
 
     // Laying out a large diff's HTML table in QTextDocument can block the GUI
     // thread for a second or more. A background PR refresh re-runs showPull(),
