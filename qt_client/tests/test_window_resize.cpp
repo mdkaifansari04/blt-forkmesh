@@ -824,6 +824,48 @@ int main(int argc, char *argv[])
                              "mirror has no agent/looper git dir"));
     }
 
+    // adhoc #38: the issue looper skips issues that are already assigned (a
+    // looper on this or another mirror claimed them) so two loopers never work
+    // the same task, and otherwise picks the highest-priority open issue with no
+    // local agent session, breaking ties on the lowest number.
+    {
+        auto makeIssue = [](int number, int priority, const QStringList &assignees,
+                            const QString &status = QStringLiteral("open")) {
+            Issue i;
+            i.number = number;
+            i.priority = priority;
+            i.assignees = assignees;
+            i.status = status;
+            return i;
+        };
+        QList<Issue> issues;
+        issues << makeIssue(1, 2, {});                    // open, unclaimed
+        issues << makeIssue(2, 1, {QStringLiteral("nodeB")}); // higher priority but claimed
+        issues << makeIssue(3, 2, {});                    // open, unclaimed, ties #1
+        auto none = [](int) { return false; };
+
+        const Issue *pick = MainWindow::looperPickNext(issues, none);
+        check(pick && pick->number == 1,
+              QStringLiteral("looper skips the assigned issue and takes the "
+                             "lowest-numbered open one (adhoc #38)"));
+
+        // With #1 already worked by a local agent, the tie falls to #3 — #2 stays
+        // skipped because it is assigned.
+        auto onlyOne = [](int n) { return n == 1; };
+        const Issue *pick2 = MainWindow::looperPickNext(issues, onlyOne);
+        check(pick2 && pick2->number == 3,
+              QStringLiteral("looper skips issues with a local session and never "
+                             "takes an assigned issue"));
+
+        // Every open issue claimed/worked -> nothing to pick.
+        QList<Issue> allClaimed;
+        allClaimed << makeIssue(4, 1, {QStringLiteral("nodeA")});
+        allClaimed << makeIssue(5, 1, {}, QStringLiteral("closed"));
+        check(MainWindow::looperPickNext(allClaimed, none) == nullptr,
+              QStringLiteral("looper finds nothing when all open issues are "
+                             "assigned"));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }

@@ -25776,21 +25776,18 @@ void MainWindow::toggleIssueLooper()
     looperStartNext();
 }
 
-// Pick the highest-priority open issue that has no agent session yet and start
-// the looper's agent on it. Stops the looper when nothing is left to do. Each
-// issue is attempted at most once (any existing session — queued, running, done,
-// or failed — disqualifies it), so the loop always makes forward progress.
-void MainWindow::looperStartNext()
+const Issue *MainWindow::looperPickNext(
+    const QList<Issue> &issues, const std::function<bool(int)> &hasLocalSession)
 {
-    if (!m_looperActive)
-        return;
     const Issue *next = nullptr;
     int bestPriority = 1 << 30;
-    for (const Issue &issue : std::as_const(m_currentIssues)) {
+    for (const Issue &issue : issues) {
         if (issue.isDeleted() || issue.status != QLatin1String("open"))
             continue;
-        if (latestAgentSessionForIssue(issue.number))
-            continue; // already attempted by an agent
+        if (!issue.assignees.isEmpty())
+            continue; // claimed by a looper on this/another node, or by a human
+        if (hasLocalSession(issue.number))
+            continue; // already attempted by an agent on this node
         const int p = issue.priority > 0 ? issue.priority : 100000;
         if (p < bestPriority ||
             (p == bestPriority && (!next || issue.number < next->number))) {
@@ -25798,6 +25795,22 @@ void MainWindow::looperStartNext()
             next = &issue;
         }
     }
+    return next;
+}
+
+// Pick the highest-priority open, unclaimed issue that has no agent session yet
+// and start the looper's agent on it. Stops the looper when nothing is left to
+// do. Each issue is attempted at most once (any existing session — queued,
+// running, done, or failed — disqualifies it), so the loop always makes forward
+// progress. Before starting, the issue is assigned to this node (adhoc #38) so
+// the claim syncs and no other looper grabs the same task.
+void MainWindow::looperStartNext()
+{
+    if (!m_looperActive)
+        return;
+    const Issue *next = looperPickNext(m_currentIssues, [this](int number) {
+        return latestAgentSessionForIssue(number) != nullptr;
+    });
     if (!next) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25808,11 +25821,16 @@ void MainWindow::looperStartNext()
             "Issue looper finished: every open issue has an agent.");
         return;
     }
-    // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
-    const int issueNumber = next->number;
-    const QString issueTitle = next->title;
-    const int sessionId =
-        startAgentForIssue(*next, m_looperProvider, /*createPr=*/true, /*quiet=*/true);
+    // startAgentForIssue()/looperClaimIssue() rebuild m_currentIssues, so copy the
+    // issue out first (we still pass it by reference to startAgentForIssue below).
+    const Issue picked = *next;
+    const int issueNumber = picked.number;
+    const QString issueTitle = picked.title;
+    // Claim the issue for this node before starting, so a concurrent scan here or
+    // on another mirror sees it as taken and skips it (adhoc #38).
+    looperClaimIssue(issueNumber, picked.assignees);
+    const int sessionId = startAgentForIssue(picked, m_looperProvider,
+                                             /*createPr=*/true, /*quiet=*/true);
     if (sessionId <= 0) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25832,6 +25850,39 @@ void MainWindow::looperStartNext()
             .arg(agentProviderName(m_looperProvider))
             .arg(issueNumber)
             .arg(issueTitle));
+}
+
+QString MainWindow::nodeAssigneeTag() const
+{
+    const QString name = m_userName.trimmed();
+    if (!name.isEmpty())
+        return name;
+    const QString key = m_profileIdentity.publicKey();
+    return key.isEmpty() ? QString() : key.left(12);
+}
+
+// Mark this node as an assignee of the issue the looper just took so the claim
+// syncs to other nodes and no second looper (here or on another mirror) starts
+// the same task. Best-effort: the host writes and commits the assignment (which
+// syncs to mirrors), while a mirror with no write access files it to the owner's
+// inbox to merge and sync back (adhoc #38).
+void MainWindow::looperClaimIssue(int number, const QStringList &existingAssignees)
+{
+    const QString tag = nodeAssigneeTag();
+    if (tag.isEmpty())
+        return;
+    for (const QString &a : existingAssignees)
+        if (a.compare(tag, Qt::CaseInsensitive) == 0)
+            return; // already claimed by this node
+    QStringList assignees = existingAssignees;
+    assignees.append(tag);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    if (store.canWrite()) {
+        store.setAssignees(number, assignees, nullptr);
+        return;
+    }
+    submitIssueAssigneesToInbox(number, assignees);
 }
 
 // Called from both agent-completion paths. When the finished session is the one
@@ -44880,6 +44931,32 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
                                  true);
         }
     });
+}
+
+void MainWindow::submitIssueAssigneesToInbox(int number,
+                                             const QStringList &assignees)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "assignees";
+    ev.assignees = assignees;
+    ev = store.makeSignedEvent(number, ev);
+
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"event", ev.toJson()}};
+
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply] { reply->deleteLater(); });
 }
 
 bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body,
