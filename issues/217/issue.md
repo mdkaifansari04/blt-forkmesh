@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 217
 title: show the source of truth node as the name in the website repo list
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 18
