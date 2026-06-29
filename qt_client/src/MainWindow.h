@@ -984,6 +984,10 @@ private:
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
     void applyClaudeUsage(bool weekly, int percent);
+    // Issue #50: feed one window's reset instant (epoch ms, from the OAuth usage
+    // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
+    // Xh / Xd" countdown, and cache it so the figure survives a restart.
+    void applyClaudeReset(bool weekly, qint64 resetMs);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
