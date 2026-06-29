@@ -10421,6 +10421,13 @@ QWidget *MainWindow::buildHostsSection()
     hostsLabel->setFont(hlf);
     bodyCol->addWidget(hostsLabel);
 
+    auto *hostsHint = new QLabel(QString::fromUtf8(
+        "Double-click a saved host to reload it into the form above, then enter "
+        "the SSH password and run the installer again."));
+    hostsHint->setObjectName("mutedLabel");
+    hostsHint->setWordWrap(true);
+    bodyCol->addWidget(hostsHint);
+
     m_hostsTable = new QTableWidget(0, 4);
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
@@ -10431,6 +10438,11 @@ QWidget *MainWindow::buildHostsSection()
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
     m_hostsTable->horizontalHeader()->setStretchLastSection(true);
+    // Double-clicking a saved host reloads its server info into the install
+    // form so the installer can be re-run. The password is never stored on
+    // disk, so it is left blank for the user to re-enter.
+    connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
+            &MainWindow::loadHostIntoForm);
     bodyCol->addWidget(m_hostsTable);
 
     scroll->setWidget(body);
@@ -10459,6 +10471,33 @@ void MainWindow::refreshHostsTable()
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
     }
+}
+
+void MainWindow::loadHostIntoForm(int row, int /*column*/)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    auto cellText = [this, row](int col) -> QString {
+        QTableWidgetItem *item = m_hostsTable->item(row, col);
+        return item ? item->text() : QString();
+    };
+    const QString name = cellText(0);
+    if (m_hostNameEdit)
+        m_hostNameEdit->setText(name);
+    if (m_hostIpEdit)
+        m_hostIpEdit->setText(cellText(1));
+    if (m_hostUserEdit)
+        m_hostUserEdit->setText(cellText(2));
+    // The SSH password is intentionally never persisted, so reloading a host
+    // clears the field and asks the user to re-enter it before re-running.
+    if (m_hostPassEdit) {
+        m_hostPassEdit->clear();
+        m_hostPassEdit->setFocus();
+    }
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(QString::fromUtf8(
+            "Loaded \"%1\". Enter the SSH password and click Install ForkMesh "
+            "to run the installer again.").arg(name));
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
