@@ -26179,7 +26179,28 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     QDir().mkpath(wtRoot);
     const QString wtPath =
         wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
-    gitOut(repoPath, {QStringLiteral("worktree"), QStringLiteral("prune")});
+    // Recreate the agent's worktree, robustly. A finished session tears its worktree
+    // down asynchronously (cleanupStreamWorktree spawns a detached thread); when the
+    // user continues that session the teardown can still be in flight, so prune AND
+    // force-remove any lingering registration at this path *in the same chained
+    // command* before re-adding. Otherwise `git worktree add` races the teardown and
+    // fails ("branch already used by worktree"), we silently fall back to the main
+    // checkout, and `claude --resume` — looking for a session recorded under the
+    // worktree path — bails out instantly with a red "0 turns" error instead of
+    // continuing the agent.
+    //
+    // On a resume the branch already holds the agent's committed work, so check it
+    // out as-is to continue from where it left off; only a fresh run (no resume id)
+    // creates the branch from baseRef. Branch names and the temp path are sanitised
+    // to [a-z0-9/-] / a fixed tmp layout, so single-quoting is safe.
+    const QString addStep =
+        resumeId.isEmpty()
+            ? QStringLiteral("git worktree add -B '%1' '%2' '%3'")
+                  .arg(branchName, wtPath, baseRef)
+            : QStringLiteral("git worktree add '%1' '%2'").arg(wtPath, branchName);
+    const QString script =
+        QStringLiteral("git worktree prune; git worktree remove --force '%1' 2>/dev/null; %2")
+            .arg(wtPath, addStep);
     auto *add = new QProcess(this);
     add->setWorkingDirectory(repoPath);
     connect(add, &QProcess::finished, this,
@@ -26192,9 +26213,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 }
                 launch(workdir);
             });
-    add->start(QStringLiteral("git"),
-               {QStringLiteral("worktree"), QStringLiteral("add"), QStringLiteral("-B"),
-                branchName, wtPath, baseRef});
+    add->start(QStringLiteral("bash"), {QStringLiteral("-lc"), script});
 }
 
 // Working directory for a session: its worktree if it has one, else the repo.
