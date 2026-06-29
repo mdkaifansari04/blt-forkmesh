@@ -20,6 +20,34 @@ on: [release, workflow_dispatch]
 jobs:
   release:
     steps:
+      # Sync the in-repo version header to the release tag. The committed
+      # source-of-truth version — project(ForkMesh VERSION X.Y.Z ...) in
+      # qt_client/CMakeLists.txt — is otherwise bumped by hand and drifts behind
+      # the published releases, so a release cut from tag vX.Y.Z should leave the
+      # header reading X.Y.Z. This rewrites only the version token on that one
+      # line; ForkMesh harvests the edit back into the working copy alongside the
+      # release metadata (see ActionRunner::landReleaseMetadata), so it lands as
+      # part of the release commit even though the worktree itself is discarded.
+      # Only runs for a tagged release (FORKMESH_TAG set) with a clean
+      # MAJOR.MINOR.PATCH version; a pre-release/dispatch build leaves it alone.
+      - name: Sync the version header to the release tag
+        run: |
+          set -e
+          version="${FORKMESH_TAG#v}"
+          version="${version%%-*}"   # drop any -rc1/-beta pre-release suffix
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*)
+              sed -i.bak -E \
+                "s/^(project\(ForkMesh VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${version}/" \
+                qt_client/CMakeLists.txt
+              rm -f qt_client/CMakeLists.txt.bak
+              echo "Version header set to ${version}"
+              ;;
+            *)
+              echo "FORKMESH_TAG='${FORKMESH_TAG}' is not a clean semver tag; leaving the version header unchanged"
+              ;;
+          esac
+
       # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
       # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
       # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes

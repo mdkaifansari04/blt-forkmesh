@@ -59,6 +59,12 @@ private:
     // FORKMESH_RELEASE_CAS points at <mirror>/forkmesh-releases). Returns true if
     // a new metadata commit was made.
     bool landReleaseMetadata();
+    // Propagate the version header (project(ForkMesh VERSION X.Y.Z ...) the
+    // release workflow rewrote in the worktree's qt_client/CMakeLists.txt) into
+    // the owner's working copy, so the committed source version tracks the
+    // release tag. Surgically rewrites only the version token on that one line —
+    // never any unrelated edits — and returns true when the working copy changed.
+    bool landVersionHeader();
     bool isReleaseRun() const;
     QString redact(QString text) const;
 
