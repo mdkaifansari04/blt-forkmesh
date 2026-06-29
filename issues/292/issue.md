@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 292
 title: in notifications when you click on a row go to the related scren / item
 status: open
-labels: [Complete]
+labels: [Partial]
 milestone: 
 priority: 77
 progress: 85
