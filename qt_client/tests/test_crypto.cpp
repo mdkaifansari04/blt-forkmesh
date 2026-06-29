@@ -1049,6 +1049,28 @@ int main(int argc, char *argv[])
               "substitute blanks unknown ${{ vars.X }} context references");
     }
 
+    {
+        // Workflow `on:` triggers parse into the predicates the runner gates on:
+        // a release workflow fires on a published release, not on every push.
+        const ActionWorkflow rel = ActionFile::parse(
+            QStringLiteral(".forkmesh/release.yml"),
+            QStringLiteral("name: Release\non: [release, workflow_dispatch]\n"
+                           "jobs:\n  release:\n    steps:\n"
+                           "      - run: echo hi\n"));
+        check(rel.valid, "release workflow parses");
+        check(rel.triggersOnRelease(), "on: release sets triggersOnRelease()");
+        check(!rel.triggersOnPush(), "on: release does not trigger on push");
+        check(rel.allowsManualRun(), "workflow_dispatch stays a manual trigger");
+
+        const ActionWorkflow push = ActionFile::parse(
+            QStringLiteral(".forkmesh/ci.yml"),
+            QStringLiteral("name: CI\non: [push]\n"
+                           "jobs:\n  test:\n    steps:\n"
+                           "      - run: echo hi\n"));
+        check(push.triggersOnPush(), "on: push sets triggersOnPush()");
+        check(!push.triggersOnRelease(), "on: push does not trigger on release");
+    }
+
     if (failures) {
         qCritical("TESTS FAILED");
         return 1;

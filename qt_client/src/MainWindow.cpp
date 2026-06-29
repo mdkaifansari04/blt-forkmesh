@@ -38172,6 +38172,26 @@ void MainWindow::promptNewRelease()
     logSystem(QStringLiteral("Git: tagged release %1 at %2.").arg(tag, targetRef));
     setRepoDetailNotice(QStringLiteral("Published release %1.").arg(tag));
     loadBranchesAndTags();
+
+    // Trigger any `on: release` workflow (e.g. .forkmesh/release.yml, which
+    // builds and publishes the desktop binary for this platform). Resolve the
+    // tag's target to a concrete commit the runner can check out, and pass the
+    // tag ref so the run reports against refs/tags/<tag> and the workflow sees
+    // FORKMESH_TAG.
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        if (repo.actionsEnabled) {
+            QByteArray tip;
+            if (runGitCapture(dir, {"rev-parse", "--verify", tag + "^{commit}"},
+                              &tip, nullptr) &&
+                !tip.trimmed().isEmpty()) {
+                queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
+                                        QString::fromUtf8(tip).trimmed(),
+                                        QStringLiteral("refs/tags/") + tag,
+                                        WorkflowTrigger::Release);
+            }
+        }
+    }
 }
 
 void MainWindow::deleteTag(const QString &tag)
@@ -49866,12 +49886,14 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     queueWorkflowsForCommit(repoIndex, owner, name, commit, ref);
 }
 
-// Enqueue every push-triggered .forkmesh/ workflow present at `commit` for
-// owner/name. Shared by the push handler and the PR "Run checks" button so both
-// reuse the same metadata-skip, approval, and queueing rules.
+// Enqueue every .forkmesh/ workflow present at `commit` for owner/name whose
+// `on:` matches `trigger`. Shared by the push handler, the PR "Run checks"
+// button, and the Releases panel so all reuse the same metadata-skip, approval,
+// and queueing rules.
 void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                          const QString &name, const QString &commit,
-                                         const QString &ref)
+                                         const QString &ref,
+                                         WorkflowTrigger trigger)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
@@ -49879,8 +49901,9 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
-    // bail if every one lives under a metadata folder.
-    {
+    // bail if every one lives under a metadata folder. A release is an explicit,
+    // intentional publish, so it skips this guard and runs regardless.
+    if (trigger == WorkflowTrigger::Push) {
         QProcess names;
         names.start(QStringLiteral("git"),
                     {QStringLiteral("-C"), repo.mirrorPath,
@@ -49929,7 +49952,10 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
             continue;
         const QString content = QString::fromUtf8(show.readAllStandardOutput());
         const ActionWorkflow wf = ActionFile::parse(path, content);
-        if (!wf.valid || !wf.triggersOnPush())
+        const bool matchesTrigger = trigger == WorkflowTrigger::Release
+                                        ? wf.triggersOnRelease()
+                                        : wf.triggersOnPush();
+        if (!wf.valid || !matchesTrigger)
             continue;
         if (repo.disabledWorkflows.contains(path)) {
             logSystem(QString::fromUtf8("Actions: \xE2\x80\x9C%1\xE2\x80\x9D is "
@@ -49975,10 +50001,13 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         updateNotificationButton();
         processActionQueue(); // a manual run isn't driven by the push pipeline
     } else {
+        const QString event = trigger == WorkflowTrigger::Release
+                                  ? QStringLiteral("release")
+                                  : QStringLiteral("push");
         logSystem(QString::fromUtf8(
-                      "Actions: no .forkmesh/ workflow with 'on: push' at %1 for "
-                      "%2/%3 \xE2\x80\x94 nothing to run.")
-                      .arg(commit.left(8), owner, name));
+                      "Actions: no .forkmesh/ workflow with 'on: %1' at %2 for "
+                      "%3/%4 \xE2\x80\x94 nothing to run.")
+                      .arg(event, commit.left(8), owner, name));
     }
 }
 
@@ -51291,6 +51320,8 @@ void MainWindow::refreshRepoActions()
         QStringList triggers;
         if (wf.triggersOnPush())
             triggers << QStringLiteral("on: push");
+        if (wf.triggersOnRelease())
+            triggers << QStringLiteral("on: release");
         if (wf.allowsManualRun())
             triggers << QStringLiteral("manual");
         // Valid workflows get a checkbox so the owner can switch each one off
