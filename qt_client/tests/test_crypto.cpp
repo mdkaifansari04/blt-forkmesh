@@ -927,6 +927,13 @@ int main(int argc, char *argv[])
                     seen = p;
             check(seen.commits.contains("GIT binary patch"),
                   "the binary file reconstructs as a real binary patch from refs");
+            // The flat diff must also carry the literal binary delta (derived with
+            // `git diff --binary`), not just "Binary files … differ" — otherwise
+            // the `git apply` merge fallback and the checkMergeable dry-run can't
+            // replay binary changes.
+            check(seen.patch.contains("GIT binary patch"),
+                  "the reconstructed flat patch embeds the binary delta, not just "
+                  "a \"Binary files differ\" marker");
 
             // Mirror the repo, then make this node look like one that holds the
             // PR pointer but not its branch, with a truncated commits.mbox where
