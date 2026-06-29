@@ -5,7 +5,7 @@ title: do an optimization pass of everything make sure the whole app is snappy
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 43
+priority: 9
 progress: 15
 assignees: []
 createdAt: 1782364796679
