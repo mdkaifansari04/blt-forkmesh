@@ -802,7 +802,11 @@ private:
     bool confirmPullDeletion(const QString &prompt, bool *rewriteHistory);
     void syncPullsInbox();
     void submitPullToInbox(const PullRequest &pr);
-    void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo);
+    // `quiet` suppresses the modal delivery confirmation (used for automated
+    // agent-completion submissions, which report through the session log/status
+    // bar instead of a dialog the looper would have to wait on).
+    void submitPullToInbox(const PullRequest &pr, const RepositoryRecord &targetRepo,
+                           bool quiet = false);
     // Submit a signed PR conversation event (comment/review) to the relay inbox
     // for repos this node can't write directly.
     void submitPullEventToInbox(int number, const PullEvent &ev);
@@ -2869,6 +2873,15 @@ private:
     QString sessionDiffBase(int sessionId, const QString &dir);
     QTimer *m_agentFilesDiffTimer = nullptr; // debounces the async working-tree diff
     void maybeCreatePullForStreamSession(int sessionId);
+    // Land a finished agent session's change as a pull request (adhoc #25). On the
+    // source of truth (we own the repo with a working tree) the PR is created and
+    // committed locally. On a mirror node we can't write the owner's repo, so the
+    // PR is signed and delivered to the owner's relay inbox instead — so a looper
+    // running on a mirror still gets its work to the source of truth. `commits` is
+    // the optional format-patch mbox the owner replays to preserve authorship;
+    // pass empty when none is available (the owner synthesizes one from the patch).
+    void landAgentPullForSession(AgentSession &session, const QString &patch,
+                                 const QString &commits);
     bool isStreamTranscriptSession(int sessionId) const;
     // Lazily restore a session's persisted transcript events from disk (issue
     // #41) so the rich transcript survives an app restart even after the live
