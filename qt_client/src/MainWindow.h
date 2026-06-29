@@ -588,6 +588,9 @@ private:
     void appendHostInstallLog(const QString &text);
     void rememberHost(const QString &name, const QString &ip, const QString &user);
     void refreshHostsTable();
+    // Reload a saved host's server info (name/IP/user) from the table back into
+    // the install form so the installer can be re-run against it.
+    void loadHostIntoForm(int row, int column);
     // URL of the hosted installer script the remote host curls and runs.
     QString installScriptUrl() const;
 
