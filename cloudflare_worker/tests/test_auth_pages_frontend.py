@@ -93,8 +93,9 @@ def test_signup_intro_uses_compact_donation_note_instead_of_stats_grid():
     signup = _read(PUBLIC / "signup.html")
 
     assert 'class="signup-donation-note"' in signup
-    assert "Minimum donation" in signup
-    assert 'id="min-donation-sol"' in signup
+    # Signup is free: the note advertises that, not a required donation amount.
+    assert "Free to join" in signup
+    assert "No payment required" in signup
     assert 'class="stat-grid"' not in signup
     assert 'id="stat-nodes"' not in signup
     assert 'id="stat-repos"' not in signup
