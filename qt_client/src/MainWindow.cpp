@@ -13250,10 +13250,19 @@ QWidget *MainWindow::buildRepoDetailSection()
             openMostRecentCommit();
         }
         else if (id == 3) {
+            // issue #289: reloadAgents() shells two git reads per session to
+            // compute Diff cells, blocking the GUI thread for a beat. Run inline
+            // it delays the tab's repaint — setCurrentIndex(3) above only queues
+            // a paint event, which can't process until this slot returns, so the
+            // Agents page visibly appears only *after* the git work ("slight lag"
+            // switching from Issues). Defer to the next event-loop tick: the tab
+            // paints first (the table keeps its prior rows), then the reload runs.
             // Load pulls first so the agents list can show each session's PR
             // status (open/merged/closed) from m_currentPulls.
-            reloadPulls();
-            reloadAgents();
+            QTimer::singleShot(0, this, [this] {
+                reloadPulls();
+                reloadAgents();
+            });
         }
         else if (id == 4) {
             reloadPulls();
