@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 204
 title: when we click on a branch anywhere open it up in branches
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 24
-progress: 55
+progress: 5
 assignees: []
 createdAt: 1782349295114
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

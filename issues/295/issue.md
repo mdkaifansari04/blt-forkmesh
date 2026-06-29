@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 295
 title: on the worktree list show a status for the attached agent and let us click to the agent
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 80
-progress: 65
+progress: 5
 assignees: []
 createdAt: 1782514763682
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

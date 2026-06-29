@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 222
 title: when the issue count changes on other nodes after an update have an animation that happens
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 52
-progress: 50
+progress: 5
 assignees: []
 createdAt: 1782354655592
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

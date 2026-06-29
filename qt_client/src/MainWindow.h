@@ -1054,6 +1054,9 @@ private:
                           bool warning = false, const QString &icon = QString());
     void onRunStatusChanged(int runId, const QString &status);
     void onRunFinished(int runId, bool ok);
+    // A release run committed new artifact metadata into the working copy; publish
+    // it (sync the served mirror) and refresh the Releases panel if it's open.
+    void onReleaseMetadataLanded(int runId);
     void refreshActionsTable();
     void showLatestVisibleActionRun();
     void showRun(int runId);

@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 207
 title: on the commit page next to delete commit have a button to restore commit that undoes the commit and commits that change
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 22
-progress: 65
+progress: 5
 assignees: []
 createdAt: 1782349505941
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

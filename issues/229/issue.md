@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 229
 title: have insights show the number of contributors in the tab
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 49
-progress: 70
+progress: 5
 assignees: []
 createdAt: 1782355015749
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

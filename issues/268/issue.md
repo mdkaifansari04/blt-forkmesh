@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 268
 title: the drag to resize is weird on the issue table please make it so it resizes normally like moving the margins
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 37
-progress: 55
+progress: 5
 assignees: []
 createdAt: 1782432688282
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
