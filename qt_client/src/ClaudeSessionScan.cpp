@@ -145,4 +145,52 @@ qint64 tailStartOffset(const QString &path, qint64 maxBytes)
     return off;
 }
 
+QList<qint64> findSessionPids(const QString &uuid, const QString &cwd)
+{
+    QList<qint64> exact; // matched the session uuid via --resume (precise)
+    QList<qint64> byCwd; // any `claude` process in the same working directory
+#if defined(Q_OS_LINUX)
+    const QString wantCwd = cwd.isEmpty() ? QString() : QDir(cwd).absolutePath();
+    const QByteArray wantUuid = uuid.toUtf8();
+    const auto pids = QDir(QStringLiteral("/proc"))
+                          .entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &name : pids) {
+        bool isPid = false;
+        const qint64 pid = name.toLongLong(&isPid);
+        if (!isPid)
+            continue;
+        // The CLI process reports comm "claude"; check it first so we skip every
+        // other process before touching its cmdline/cwd.
+        QFile comm(QStringLiteral("/proc/%1/comm").arg(name));
+        if (!comm.open(QIODevice::ReadOnly))
+            continue;
+        if (comm.readAll().trimmed() != QByteArrayLiteral("claude"))
+            continue;
+
+        // A resumed session names its uuid as a `--resume <uuid>` arg; cmdline is
+        // NUL-separated, so an exact arg compare avoids false substring hits.
+        bool uuidMatch = false;
+        if (!wantUuid.isEmpty()) {
+            QFile cl(QStringLiteral("/proc/%1/cmdline").arg(name));
+            if (cl.open(QIODevice::ReadOnly))
+                uuidMatch = cl.readAll().split('\0').contains(wantUuid);
+        }
+        if (uuidMatch) {
+            exact.append(pid);
+            continue;
+        }
+        // Fresh sessions don't expose their uuid, so fall back to the cwd — the
+        // /proc/<pid>/cwd symlink resolves to the process's working directory.
+        if (!wantCwd.isEmpty() &&
+            QFileInfo(QStringLiteral("/proc/%1/cwd").arg(name)).symLinkTarget() ==
+                wantCwd)
+            byCwd.append(pid);
+    }
+#else
+    Q_UNUSED(uuid);
+    Q_UNUSED(cwd);
+#endif
+    return exact.isEmpty() ? byCwd : exact;
+}
+
 } // namespace ClaudeSessionScan
