@@ -9,6 +9,12 @@
 
 #include <functional>
 
+#ifndef Q_OS_WIN
+#include <csignal>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
@@ -19,6 +25,7 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
                          const QMap<QString, QString> &variables)
 {
     m_busy = true;
+    m_stopping = false;
     m_run = run;
     m_workflow = workflow;
     m_mirror = mirrorPath;
@@ -55,6 +62,36 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
            QString());
 }
 
+void ActionRunner::stop()
+{
+    if (!m_busy)
+        return;
+    m_stopping = true;
+    emitLog(QString());
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x9B\x91 Stop requested by user.")); // 🛑
+
+    if (m_process && m_process->state() != QProcess::NotRunning) {
+#ifndef Q_OS_WIN
+        // setsid() in launch() made the child its own process-group leader, so
+        // its pid is the group id; the negative pid signals the whole group.
+        const qint64 pid = m_process->processId();
+        if (pid > 0)
+            ::kill(static_cast<pid_t>(-pid), SIGTERM);
+#endif
+        m_process->terminate();
+        if (!m_process->waitForFinished(1500)) {
+#ifndef Q_OS_WIN
+            const qint64 pid = m_process->processId();
+            if (pid > 0)
+                ::kill(static_cast<pid_t>(-pid), SIGKILL);
+#endif
+            m_process->kill();
+        }
+        return; // finished() → onProcessFinished → complete()
+    }
+    complete(false, QStringLiteral("Stopped."));
+}
+
 void ActionRunner::launch(Phase phase, const QString &program,
                           const QStringList &args, const QString &workingDir)
 {
@@ -63,6 +100,13 @@ void ActionRunner::launch(Phase phase, const QString &program,
     m_process->setProcessChannelMode(QProcess::MergedChannels);
     if (!workingDir.isEmpty())
         m_process->setWorkingDirectory(workingDir);
+
+#ifndef Q_OS_WIN
+    // Put each child in its own process group so stop() can signal the whole
+    // tree: a step's shell may fork cargo/wrangler/etc. that would otherwise
+    // outlive a kill of just the shell.
+    m_process->setChildProcessModifier([] { ::setsid(); });
+#endif
 
     // Inherit the system environment, add the global variables (so wrangler sees
     // CLOUDFLARE_API_TOKEN), and make sure user-local tool dirs are on PATH so
@@ -128,6 +172,13 @@ void ActionRunner::onProcessFinished(int exitCode)
         m_process = nullptr;
     }
 
+    // A user-requested stop overrides whatever exit code the killed process
+    // reported; record the run as Cancelled rather than Failed.
+    if (m_stopping) {
+        complete(false, QStringLiteral("Stopped by user."));
+        return;
+    }
+
     if (m_phase == Phase::Checkout) {
         if (exitCode != 0) {
             complete(false, QStringLiteral("Checkout failed."));
@@ -176,8 +227,9 @@ void ActionRunner::runNextStep()
 void ActionRunner::complete(bool ok, const QString &finalMessage)
 {
     emitLog(QString());
-    emitLog((ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ")  // ✅
-                : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) + // ❌
+    emitLog((m_stopping ? QString::fromUtf8("==> \xF0\x9F\x9B\x91 STOPPED: ") // 🛑
+                        : ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ") // ✅
+                             : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) + // ❌
             finalMessage);
 
     // A release run writes its artifact metadata into the throwaway worktree;
@@ -190,7 +242,9 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
 
     cleanupWorktree();
 
-    m_run.status = ok ? ActionStatus::Success : ActionStatus::Failed;
+    m_run.status = m_stopping ? ActionStatus::Cancelled
+                              : ok ? ActionStatus::Success
+                                   : ActionStatus::Failed;
     m_run.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_store->saveRun(m_run);
     m_phase = Phase::Idle;
