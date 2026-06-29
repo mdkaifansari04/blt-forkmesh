@@ -58,6 +58,9 @@ private:
     // Run git upload-pack and stream stdout back as git-chunk/git-end messages.
     void runGitStream(const QString &reqId, const QStringList &args,
                       const QByteArray &input);
+    // Stream a content-addressed release binary (kept outside git) back over the
+    // same git-chunk/git-end protocol. `sha256` is the asset's content address.
+    void streamReleaseBlob(const QString &reqId, const QString &sha256);
     void sendGitChunk(const QString &reqId, const QByteArray &data);
     void sendGitEnd(const QString &reqId, bool ok, const QString &error);
     void scheduleReconnect();

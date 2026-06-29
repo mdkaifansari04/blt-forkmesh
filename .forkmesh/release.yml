@@ -1,22 +1,28 @@
 name: Attach desktop build to release
 # Run this by hand from the Actions tab when you cut a release ("create a
 # release" → trigger this workflow). Each node it runs on builds the desktop
-# Qt client for ITS OWN platform and attaches the binary to the release, so to
+# Qt client for ITS OWN platform and publishes the binary to the release, so to
 # cover Linux + macOS + Windows you dispatch it once on a node of each OS. The
 # installer (cloudflare_worker/public/install.sh) then autodetects the visitor's
 # platform and downloads the matching prebuilt binary instead of compiling.
+#
+# Release binaries are NOT committed into git (issue #304). The binary bytes are
+# staged into the node's content-addressed release store (the CAS, co-located
+# with the served mirror) and only small TEXT metadata is committed under
+# releases/<channel>/ — SHASUMS256.txt + release.json. install.sh reads that
+# metadata over the git proxy, then downloads the binary from the relay's
+# content-addressed endpoint and verifies its sha256.
 on: [workflow_dispatch]
 jobs:
   release:
     steps:
-      # Build the optimized desktop client, then name the binary
-      # forkmesh-<os>-<arch>[.exe] — the exact scheme install.sh resolves from
-      # `uname` — and stage it under releases/<channel>/. Committing it into the
-      # repo is what makes it reachable by the website: the same git mirror the
-      # relay serves now carries the binary, so install.sh can fetch just that
-      # one asset over the website's git proxy. Publish the commit this produces
-      # (it is created on the run's detached worktree of the live mirror) the way
-      # you publish any change, and the asset goes live for download.
+      # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
+      # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
+      # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes
+      # into the node's CAS, and writes releases/<channel>/{SHASUMS256.txt,
+      # release.json}. Commit and publish that metadata the way you publish any
+      # change — the asset goes live for download (the bytes are served on demand
+      # from the CAS over the relay, never from git).
       - name: Build and attach the desktop binary
         run: |
           set -e
@@ -63,27 +69,32 @@ jobs:
             exit 1
           fi
 
-          # Stage the asset under releases/<channel>/ and commit it so it ships
-          # with the repo the relay serves. Also drop a copy into the node's
-          # persistent artifacts dir (the run worktree is deleted on completion)
-          # so it survives even before the commit is published.
-          dest="releases/${channel}"
-          mkdir -p "$dest"
-          cp "$built" "$dest/$asset"
-          chmod 0755 "$dest/$asset" || true
+          # Name the built binary the way install.sh resolves per platform, then
+          # publish it via the content-addressed store (no binary in git). The
+          # CAS dir must be the one the serving node reads from:
+          # <mirror>/forkmesh-releases. Set FORKMESH_RELEASE_CAS to that path on
+          # the node; it defaults to .forkmesh/release-blobs otherwise.
+          staged="$asset"
+          cp "$built" "$staged"
+          chmod 0755 "$staged" || true
 
-          artifacts="$HOME/forkmesh-artifacts/releases/${channel}"
-          mkdir -p "$artifacts"
-          cp "$built" "$artifacts/$asset"
+          cas="${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
+          tools/forkmesh-release-publish.sh \
+            --channel "$channel" \
+            --tag "${FORKMESH_TAG:-}" \
+            --cas-dir "$cas" \
+            ${FORKMESH_REPO:+--repo "$FORKMESH_REPO"} \
+            "$staged"
 
-          git add "$dest/$asset"
+          # Commit ONLY the small text metadata (SHASUMS256.txt + release.json).
+          # The blob bytes live in the gitignored CAS and are served on demand.
+          git add "releases/${channel}/SHASUMS256.txt" "releases/${channel}/release.json"
           git config user.email "actions@forkmesh.local" >/dev/null 2>&1 || true
           git config user.name  "ForkMesh Actions"        >/dev/null 2>&1 || true
-          git commit -m "release: attach $asset ($channel)" >/dev/null 2>&1 \
-            && echo "Committed $dest/$asset ($(git rev-parse --short HEAD)) — publish this commit to make it downloadable." \
-            || echo "No change to $dest/$asset (already up to date)."
+          git commit -m "release: publish $asset ($channel)" >/dev/null 2>&1 \
+            && echo "Committed releases/${channel} metadata ($(git rev-parse --short HEAD)) — publish this commit to make it downloadable." \
+            || echo "No metadata change for $asset (already up to date)."
 
-          size="$(du -h "$dest/$asset" 2>/dev/null | cut -f1)"
-          echo "Attached: $dest/$asset ($size)"
-          echo "Once published, install it with:"
+          echo "Published asset: $asset"
+          echo "Once the metadata commit is published, install it with:"
           echo "  curl -fsSL \"\${FORKMESH_HOST:-https://forkmesh.com}/install.sh\" | bash"
