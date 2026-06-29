@@ -16031,6 +16031,16 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
         html += QStringLiteral(
                     "<div style='color:#8b949e; font-size:11px; margin-top:4px'>%1</div>")
                     .arg(signal.detail.toHtmlEscaped());
+    // Itemised entries (e.g. dependency manifests) render as a list where each
+    // path is a "check" link; the card's linkActivated handler opens the file.
+    for (const QString &item : signal.items) {
+        const QString href = QString::fromUtf8(QUrl::toPercentEncoding(item));
+        html += QStringLiteral(
+                    "<div style='color:#c9d1d9; font-size:12px; margin-top:4px'>"
+                    "&#8226;&nbsp;<a style='color:#58a6ff; text-decoration:none' "
+                    "href='manifest:%1'>%2</a></div>")
+                    .arg(href, item.toHtmlEscaped());
+    }
     return html;
 }
 
@@ -16113,12 +16123,29 @@ void MainWindow::refreshRepoSecurity()
             .arg(severe));
 
     int index = 0;
+    const QString localBase = writable.localPath;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
         auto *card = new QLabel(repoSecuritySignalHtml(signal));
         card->setObjectName("insightsCard");
         card->setTextFormat(Qt::RichText);
         card->setWordWrap(true);
         card->setMinimumHeight(92);
+        if (!signal.items.isEmpty()) {
+            card->setOpenExternalLinks(false);
+            card->setTextInteractionFlags(Qt::TextBrowserInteraction);
+            connect(card, &QLabel::linkActivated, this,
+                    [localBase](const QString &href) {
+                        if (!href.startsWith(QLatin1String("manifest:")))
+                            return;
+                        const QString rel = QUrl::fromPercentEncoding(
+                            href.mid(QStringLiteral("manifest:").size()).toUtf8());
+                        if (localBase.trimmed().isEmpty() || rel.isEmpty())
+                            return;
+                        const QString abs = QDir(localBase).filePath(rel);
+                        if (QFileInfo::exists(abs))
+                            QDesktopServices::openUrl(QUrl::fromLocalFile(abs));
+                    });
+        }
         const int row = index / 3;
         const int col = index % 3;
         m_securitySignalsGrid->addWidget(card, row, col);
@@ -18874,7 +18901,8 @@ void MainWindow::setPullThreadState(const QString &threadId, const QString &stat
 
 void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                                      const QString &headerHtml, const QString &body,
-                                     const QString &accent, const QString &copyLink)
+                                     const QString &accent, const QString &copyLink,
+                                     const QString &authorId)
 {
     if (!layout)
         return;
@@ -18888,6 +18916,23 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     avatar->setObjectName("issueAvatar");
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(36, 36);
+    // Prefer the author's real picture over the initials tile, matching the
+    // issue timeline. Peer avatars are broadcast over chat and cached in
+    // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
+    // our own avatar may not be in that cache yet, so fall back to
+    // effectiveAvatar() for our own cards. Unknown peers keep the initials.
+    if (!authorId.isEmpty()) {
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(authorId);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (authorId == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
+    }
     rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
     auto *card = new QWidget;
@@ -18961,10 +19006,12 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             w->deleteLater();
         delete item;
     }
+    // Trailing stretch first: addConversationCard inserts each card just above
+    // it, so cards flow oldest-to-newest (top to bottom).
+    m_pullThreadLayout->addStretch();
     if (pr.number == 0) {
         if (m_pullLinksValue)
             m_pullLinksValue->hide();
-        m_pullThreadLayout->addStretch();
         return;
     }
 
@@ -19002,7 +19049,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
                        "request %2</span>")
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
-        pr.description, QString(), pullLink + QStringLiteral("#open"));
+        pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
 
     for (const PullEvent &ev : pr.events) {
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
@@ -19058,9 +19105,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 .arg(who.toHtmlEscaped(), verb, when),
             ev.body, accent,
             pullLink + QStringLiteral("#%1")
-                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id));
+                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
+            ev.author);
     }
-    m_pullThreadLayout->addStretch();
 }
 
 void MainWindow::renderPullCommits(const PullRequest &pr)
@@ -25765,11 +25812,9 @@ void MainWindow::toggleIssueLooper()
 // the loop always makes forward progress.
 void MainWindow::looperStartNext()
 {
-    if (!m_looperActive)
-        return;
     const Issue *next = nullptr;
     int bestPriority = 1 << 30;
-    for (const Issue &issue : std::as_const(m_currentIssues)) {
+    for (const Issue &issue : issues) {
         if (issue.isDeleted() || issue.status != QLatin1String("open"))
             continue;
         if (latestAgentSessionForIssue(issue.number))
@@ -25787,6 +25832,22 @@ void MainWindow::looperStartNext()
             next = &issue;
         }
     }
+    return next;
+}
+
+// Pick the highest-priority open, unclaimed issue that has no agent session yet
+// and start the looper's agent on it. Stops the looper when nothing is left to
+// do. Each issue is attempted at most once (any existing session — queued,
+// running, done, or failed — disqualifies it), so the loop always makes forward
+// progress. Before starting, the issue is assigned to this node (adhoc #38) so
+// the claim syncs and no other looper grabs the same task.
+void MainWindow::looperStartNext()
+{
+    if (!m_looperActive)
+        return;
+    const Issue *next = looperPickNext(m_currentIssues, [this](int number) {
+        return latestAgentSessionForIssue(number) != nullptr;
+    });
     if (!next) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25798,11 +25859,16 @@ void MainWindow::looperStartNext()
             "without an agent or linked PR.");
         return;
     }
-    // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
-    const int issueNumber = next->number;
-    const QString issueTitle = next->title;
-    const int sessionId =
-        startAgentForIssue(*next, m_looperProvider, /*createPr=*/true, /*quiet=*/true);
+    // startAgentForIssue()/looperClaimIssue() rebuild m_currentIssues, so copy the
+    // issue out first (we still pass it by reference to startAgentForIssue below).
+    const Issue picked = *next;
+    const int issueNumber = picked.number;
+    const QString issueTitle = picked.title;
+    // Claim the issue for this node before starting, so a concurrent scan here or
+    // on another mirror sees it as taken and skips it (adhoc #38).
+    looperClaimIssue(issueNumber, picked.assignees);
+    const int sessionId = startAgentForIssue(picked, m_looperProvider,
+                                             /*createPr=*/true, /*quiet=*/true);
     if (sessionId <= 0) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25822,6 +25888,39 @@ void MainWindow::looperStartNext()
             .arg(agentProviderName(m_looperProvider))
             .arg(issueNumber)
             .arg(issueTitle));
+}
+
+QString MainWindow::nodeAssigneeTag() const
+{
+    const QString name = m_userName.trimmed();
+    if (!name.isEmpty())
+        return name;
+    const QString key = m_profileIdentity.publicKey();
+    return key.isEmpty() ? QString() : key.left(12);
+}
+
+// Mark this node as an assignee of the issue the looper just took so the claim
+// syncs to other nodes and no second looper (here or on another mirror) starts
+// the same task. Best-effort: the host writes and commits the assignment (which
+// syncs to mirrors), while a mirror with no write access files it to the owner's
+// inbox to merge and sync back (adhoc #38).
+void MainWindow::looperClaimIssue(int number, const QStringList &existingAssignees)
+{
+    const QString tag = nodeAssigneeTag();
+    if (tag.isEmpty())
+        return;
+    for (const QString &a : existingAssignees)
+        if (a.compare(tag, Qt::CaseInsensitive) == 0)
+            return; // already claimed by this node
+    QStringList assignees = existingAssignees;
+    assignees.append(tag);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    if (store.canWrite()) {
+        store.setAssignees(number, assignees, nullptr);
+        return;
+    }
+    submitIssueAssigneesToInbox(number, assignees);
 }
 
 // Called from both agent-completion paths. When the finished session is the one
@@ -29557,6 +29656,13 @@ void MainWindow::loadRepoFileTree()
         if (tab < 0)
             continue;
         const QString path = QString::fromUtf8(record.mid(tab + 1));
+        // Coves are encrypted vaults whose slug-based filename leaks their name to
+        // anyone browsing the tree (including mirror nodes that can't unlock them).
+        // Keep them out of the file browser entirely — and out of folder-size totals
+        // — so they reveal nothing here; they live in Settings → Coves. (#231)
+        if (path.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+            path.startsWith(CoveStore::covesDirRel() + "/"))
+            continue;
         const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
         const qint64 size =
             meta.size() >= 4 ? QString::fromUtf8(meta.at(3)).toLongLong() : 0;
@@ -29595,28 +29701,6 @@ void MainWindow::loadRepoFileTree()
                 item->setData(0, Qt::UserRole, acc);
                 item->setData(0, Qt::UserRole + 1, false);
                 setSize(item, fileSize.value(acc));
-                // A cove is greyed/locked until its password is known; with
-                // "auto-show" on it un-greys once unlocked. Double-click opens the
-                // cove viewer (intercepted in openRepoFile), not the code editor.
-                if (acc.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
-                    acc.startsWith(CoveStore::covesDirRel() + "/")) {
-                    Cove cove;
-                    bool unlocked = false;
-                    if (coveStoreForRepo(m_repoDetailIndex).loadEnvelope(acc, cove)) {
-                        QString pw;
-                        unlocked = tryUnlockCove(cove, m_repoDetailIndex, &pw);
-                    }
-                    item->setText(0, parts.at(i) +
-                                         QString::fromUtf8(unlocked ? "  \xF0\x9F\x94\x93"
-                                                                    : "  \xF0\x9F\x94\x92"));
-                    if (!(unlocked && coveAutoOpenEnabled(m_repoDetailIndex)))
-                        item->setForeground(0, QBrush(QColor("#8b949e")));
-                    item->setToolTip(
-                        0, unlocked
-                               ? QStringLiteral("Encrypted cove — double-click to open")
-                               : QStringLiteral("Encrypted cove — locked; enter the "
-                                                "password in Settings"));
-                }
             } else {
                 QTreeWidgetItem *node = dirs.value(acc);
                 if (!node) {
@@ -33839,10 +33923,10 @@ void MainWindow::renderCommitThread(const QString &sha)
             w->deleteLater();
         delete item;
     }
-    if (sha.isEmpty()) {
-        m_commitThreadLayout->addStretch();
+    // Trailing stretch first so cards flow top to bottom (see renderPullThread).
+    m_commitThreadLayout->addStretch();
+    if (sha.isEmpty())
         return;
-    }
     QString linkOwner = QStringLiteral("repo");
     QString linkRepo = QStringLiteral("commit");
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -33865,9 +33949,9 @@ void MainWindow::renderCommitThread(const QString &sha)
                 .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
             c.body, QString(),
             commitLink + QStringLiteral("#%1")
-                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id));
+                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id),
+            c.author);
     }
-    m_commitThreadLayout->addStretch();
 }
 
 void MainWindow::submitCommitComment()
@@ -44885,6 +44969,32 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
                                  true);
         }
     });
+}
+
+void MainWindow::submitIssueAssigneesToInbox(int number,
+                                             const QStringList &assignees)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "assignees";
+    ev.assignees = assignees;
+    ev = store.makeSignedEvent(number, ev);
+
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"event", ev.toJson()}};
+
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply] { reply->deleteLater(); });
 }
 
 bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body,
