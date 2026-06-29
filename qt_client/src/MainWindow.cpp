@@ -37309,6 +37309,45 @@ void MainWindow::loadReleasesPanel()
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
 
+    // Release artifacts are published under releases/<channel>/release.json (the
+    // channel is usually "latest", NOT the tag name — see releases/README.md and
+    // tools/forkmesh-release-publish.sh). Each manifest records the tag it was cut
+    // from in its "tag" field, so scan every channel manifest and key the asset
+    // names by that tag. The Artifacts column then looks up each release row by
+    // tag, instead of probing a releases/<tag>/ path that the publisher never
+    // writes (which left the column always empty).
+    QHash<QString, QString> artifactsByTag;
+    if (!dir.isEmpty()) {
+        const QDir releasesDir(dir + QStringLiteral("/releases"));
+        const QStringList channels =
+            releasesDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &channel : channels) {
+            QFile releaseFile(
+                releasesDir.filePath(channel + QStringLiteral("/release.json")));
+            if (!releaseFile.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+            const QJsonDocument doc = QJsonDocument::fromJson(releaseFile.readAll());
+            releaseFile.close();
+            if (!doc.isObject())
+                continue;
+            const QJsonObject obj = doc.object();
+            const QString manifestTag =
+                obj.value(QStringLiteral("tag")).toString().trimmed();
+            if (manifestTag.isEmpty())
+                continue;
+            QStringList assetNames;
+            const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
+            for (const QJsonValue &asset : assets) {
+                const QString name =
+                    asset.toObject().value(QStringLiteral("name")).toString();
+                if (!name.isEmpty())
+                    assetNames.append(name);
+            }
+            if (!assetNames.isEmpty())
+                artifactsByTag.insert(manifestTag, assetNames.join(QStringLiteral(", ")));
+        }
+    }
+
     int count = 0;
     QByteArray out;
     if (!dir.isEmpty() &&
@@ -37335,29 +37374,10 @@ void MainWindow::loadReleasesPanel()
             m_releasesTable->setItem(row, 1, new QTableWidgetItem(f.value(1).trimmed()));
             m_releasesTable->setItem(row, 2, new QTableWidgetItem(f.value(2).trimmed()));
 
-            // Load artifacts from release.json if available
-            QString artifacts;
-            const QString releaseJsonPath = dir + QStringLiteral("/releases/") + tag + QStringLiteral("/release.json");
-            QFile releaseFile(releaseJsonPath);
-            if (releaseFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                const QJsonDocument doc = QJsonDocument::fromJson(releaseFile.readAll());
-                releaseFile.close();
-                if (doc.isObject()) {
-                    const QJsonObject obj = doc.object();
-                    const QJsonArray assets = obj.value("assets").toArray();
-                    QStringList assetNames;
-                    for (const QJsonValue &asset : assets) {
-                        const QString name = asset.toObject().value("name").toString();
-                        if (!name.isEmpty()) {
-                            assetNames.append(name);
-                        }
-                    }
-                    if (!assetNames.isEmpty()) {
-                        artifacts = assetNames.join(", ");
-                    }
-                }
-            }
-            m_releasesTable->setItem(row, 3, new QTableWidgetItem(artifacts));
+            // Artifacts for this tag come from the channel manifest scanned above
+            // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
+            m_releasesTable->setItem(row, 3,
+                                     new QTableWidgetItem(artifactsByTag.value(tag)));
 
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
