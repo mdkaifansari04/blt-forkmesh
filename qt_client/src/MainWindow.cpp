@@ -1554,6 +1554,12 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// On by default: when the periodic inbox poll finds new issues, merge and
+// commit them automatically — but only while the owner's working tree has no
+// uncommitted tracked changes, so issue commits never interleave with work in
+// progress (issue #193). Off → incoming issues wait in the inbox for a manual
+// "Sync inbox" click. The manual button is never gated by this.
+const QString kAutoSyncIssuesSetting = QStringLiteral("repos/autoSyncIssues");
 // When a new UI stall is detected, hand its backtrace to a coding agent so the
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
@@ -1698,6 +1704,20 @@ void selectDefaultAgentProvider(QComboBox *combo)
         return;
     const int index = combo->findData(defaultAgentProvider());
     combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+// Fill a combo with the Claude Code model choices (issue #32). The data values
+// are `claude` CLI aliases; the empty default leaves the CLI's own default model
+// in place. Used by the per-session composer model selector.
+void populateClaudeModelCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->addItem(QStringLiteral("Default model"), QString());
+    combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+    combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+    combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
 }
 
 // User's preferred tab a repository opens on (Settings → General). Stored as
@@ -4272,6 +4292,21 @@ bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
     if (out)
         *out = process.readAllStandardOutput();
     return true;
+}
+
+// True when `workTree` has no uncommitted *tracked* changes — a clean base for
+// the auto-issue-sync to land issue commits on (issue #193). Untracked files
+// (build output, scratch notes) are ignored: an issues-only commit never
+// touches them. A failed status check is treated as "not clean" so we err on
+// the side of leaving incoming issues in the inbox rather than committing.
+bool worktreeTrackedClean(const QString &workTree)
+{
+    QByteArray status;
+    if (!runGitCapture(workTree,
+                       {"status", "--porcelain", "--untracked-files=no"},
+                       &status, nullptr))
+        return false;
+    return QString::fromUtf8(status).trimmed().isEmpty();
 }
 
 // Drop any other worktree currently holding `branch` checked out so this working
