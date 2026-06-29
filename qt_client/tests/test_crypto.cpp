@@ -1002,12 +1002,19 @@ int main(int argc, char *argv[])
               "the committed cove is a JSON envelope");
         check(!onDisk.contains("hunter2") && !onDisk.contains("DB_PASSWORD"),
               "the committed cove never leaks the plaintext document body");
+        check(!onDisk.contains("Launch plans"),
+              "the committed cove never leaks the cove's name");
+        check(!created.slug.contains("launch", Qt::CaseInsensitive) &&
+                  !created.relPath.contains("launch", Qt::CaseInsensitive),
+              "the cove's repo filename is an obscure slug, not its name");
 
         Cove reloaded;
         check(coves.loadEnvelope(created.relPath, reloaded, &err),
               "the cove envelope reloads (metadata only)");
         check(!reloaded.unlocked && reloaded.documents.isEmpty(),
               "a reloaded cove starts locked with no decrypted documents");
+        check(reloaded.name.isEmpty(),
+              "a locked cove envelope exposes no name (it is encrypted)");
         check(reloaded.notifyOnOpen, "the notify-on-open flag round-trips in the envelope");
         check(!CoveStore::unlock(reloaded, "WRONG-password"),
               "unlock rejects the wrong cove password");
@@ -1016,6 +1023,8 @@ int main(int argc, char *argv[])
         check(reloaded.unlocked && reloaded.documents.size() == 1 &&
                   reloaded.documents.first().body == "DB_PASSWORD=hunter2",
               "the unlocked cove yields the original document");
+        check(reloaded.name == "Launch plans",
+              "unlock recovers the cove's name from the encrypted payload");
 
         // Appending an access entry and saving carries the trail in the payload.
         CoveAccessEntry visit;
@@ -1034,8 +1043,8 @@ int main(int argc, char *argv[])
               "the encrypted access log round-trips through save + unlock");
 
         const QList<Cove> listed = coves.listCoves();
-        check(listed.size() == 1 && listed.first().name == "Launch plans",
-              "listCoves enumerates the repo's cove envelopes");
+        check(listed.size() == 1 && listed.first().name.isEmpty(),
+              "listCoves enumerates envelopes without leaking the cove name");
     }
 
     // AgentStore persists a Claude Code session's stream-json transcript so it
