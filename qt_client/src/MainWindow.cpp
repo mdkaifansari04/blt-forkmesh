@@ -1461,6 +1461,9 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
+// Persisted Hosts list (adhoc #263): JSON array of {name, ip, user}. The
+// password is never stored — it is only used in-memory for the install run.
+const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
@@ -7319,6 +7322,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: leaderboards section built"));
     m_sectionStack->addWidget(buildSearchResultsSection()); // 6 Search results
     logStartup(QStringLiteral("  buildChatPage: search section built"));
+    m_sectionStack->addWidget(buildHostsSection());      // 7 Hosts (adhoc #263)
+    logStartup(QStringLiteral("  buildChatPage: hosts section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -8280,6 +8285,19 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_leaderboardNavButton, &QPushButton::clicked, this,
             [this] { showSection(5); });
 
+    // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
+    // ForkMesh installer over ansible. Sits right next to Leaderboards, section 7.
+    m_hostsNavButton = new QPushButton(QStringLiteral("Hosts"));
+    m_hostsNavButton->setObjectName("topNavButton");
+    m_hostsNavButton->setCheckable(true);
+    m_hostsNavButton->setCursor(Qt::PointingHandCursor);
+    m_hostsNavButton->setToolTip(
+        QString::fromUtf8("Hosts \xE2\x80\x94 install ForkMesh on a remote machine"));
+    setOcticon(m_hostsNavButton, "server", 16);
+    m_navGroup->addButton(m_hostsNavButton, 7); // section 7: Hosts
+    connect(m_hostsNavButton, &QPushButton::clicked, this,
+            [this] { showSection(7); });
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -8363,6 +8381,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_settingsNavButton);
     navRow->addWidget(m_logNavButton);
     navRow->addWidget(m_leaderboardNavButton);
+    navRow->addWidget(m_hostsNavButton);
     navRow->addStretch();
     // Right-aligned so it sits under the top-right avatar.
     navRow->addWidget(m_navRebuildButton);
@@ -10042,6 +10061,9 @@ void MainWindow::showSection(int index)
     } else if (index == 5) {
         // Pull the latest rankings each time the Leaderboards section opens.
         refreshLeaderboards();
+    } else if (index == 7) {
+        // Re-read the saved host list whenever the Hosts section opens.
+        refreshHostsTable();
     }
 }
 
@@ -10274,6 +10296,367 @@ void MainWindow::populateLeaderboards(const QJsonObject &data)
 
     if (m_leaderboardsStatus)
         m_leaderboardsStatus->setText(QString());
+}
+
+// --- Hosts (adhoc #263) -----------------------------------------------------
+//
+// Provision a remote machine onto the network: enter its IP, SSH username and
+// password plus the node name to give it, and run the hosted ForkMesh installer
+// (curl https://<host>/install.sh | bash) on it over an ansible playbook. The
+// SSH session + install output streams live into the console below. Once the
+// installer finishes the new node joins the network and appears on its own in
+// the per-repo Mirror nodes list.
+
+QString MainWindow::installScriptUrl() const
+{
+    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
+    url.setPath(QStringLiteral("/install.sh"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url.toString();
+}
+
+QWidget *MainWindow::buildHostsSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Hosts"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *subtitle = new QLabel(QString::fromUtf8(
+        "Provision a remote machine onto the network. Enter its address and SSH "
+        "login, give it a node name, and ForkMesh will SSH in with ansible and "
+        "run the hosted installer. When it finishes the new node joins the "
+        "network and shows up in each repository's Mirror nodes list."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *body = new QWidget;
+    auto *bodyCol = new QVBoxLayout(body);
+    bodyCol->setContentsMargins(0, 0, 0, 0);
+    bodyCol->setSpacing(16);
+
+    // --- Install form ------------------------------------------------------
+    auto *formCard = new QFrame;
+    formCard->setObjectName("leaderboardCard");
+    formCard->setFrameShape(QFrame::StyledPanel);
+    auto *formCol = new QVBoxLayout(formCard);
+    formCol->setContentsMargins(16, 14, 16, 14);
+    formCol->setSpacing(10);
+
+    auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight);
+    form->setSpacing(8);
+
+    m_hostIpEdit = new QLineEdit;
+    m_hostIpEdit->setPlaceholderText(QStringLiteral("203.0.113.10"));
+    form->addRow(QStringLiteral("Host IP / address"), m_hostIpEdit);
+
+    m_hostUserEdit = new QLineEdit;
+    m_hostUserEdit->setPlaceholderText(QStringLiteral("root"));
+    form->addRow(QStringLiteral("SSH username"), m_hostUserEdit);
+
+    m_hostPassEdit = new QLineEdit;
+    m_hostPassEdit->setEchoMode(QLineEdit::Password);
+    m_hostPassEdit->setPlaceholderText(QStringLiteral("SSH password"));
+    form->addRow(QStringLiteral("SSH password"), m_hostPassEdit);
+
+    m_hostNameEdit = new QLineEdit;
+    m_hostNameEdit->setPlaceholderText(QStringLiteral("my-mirror-1"));
+    form->addRow(QStringLiteral("Node name"), m_hostNameEdit);
+    formCol->addLayout(form);
+
+    auto *runRow = new QHBoxLayout;
+    runRow->setContentsMargins(0, 0, 0, 0);
+    m_hostInstallButton = new QPushButton(QStringLiteral("Install ForkMesh"));
+    m_hostInstallButton->setObjectName("primaryButton");
+    m_hostInstallButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_hostInstallButton, "rocket", 14);
+    connect(m_hostInstallButton, &QPushButton::clicked, this,
+            &MainWindow::runHostInstall);
+    runRow->addWidget(m_hostInstallButton);
+    m_hostInstallStatus = new QLabel;
+    m_hostInstallStatus->setObjectName("mutedLabel");
+    m_hostInstallStatus->setWordWrap(true);
+    runRow->addWidget(m_hostInstallStatus, 1);
+    formCol->addLayout(runRow);
+    bodyCol->addWidget(formCard);
+
+    // --- Live session / install output ------------------------------------
+    auto *logLabel = new QLabel(QStringLiteral("Live output"));
+    QFont llf = logLabel->font();
+    llf.setBold(true);
+    logLabel->setFont(llf);
+    bodyCol->addWidget(logLabel);
+
+    m_hostInstallLog = new QPlainTextEdit;
+    m_hostInstallLog->setObjectName("actionLog");
+    m_hostInstallLog->setReadOnly(true);
+    m_hostInstallLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_hostInstallLog->setMinimumHeight(220);
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    m_hostInstallLog->setFont(mono);
+    m_hostInstallLog->setPlaceholderText(QString::fromUtf8(
+        "The SSH session and installer output will stream here\xE2\x80\xA6"));
+    bodyCol->addWidget(m_hostInstallLog);
+
+    // --- Provisioned hosts list -------------------------------------------
+    auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
+    QFont hlf = hostsLabel->font();
+    hlf.setBold(true);
+    hostsLabel->setFont(hlf);
+    bodyCol->addWidget(hostsLabel);
+
+    m_hostsTable = new QTableWidget(0, 4);
+    m_hostsTable->setObjectName("issueTable");
+    m_hostsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Node name"), QStringLiteral("Address"),
+         QStringLiteral("User"), QStringLiteral("Status")});
+    m_hostsTable->verticalHeader()->setVisible(false);
+    m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_hostsTable->setShowGrid(false);
+    m_hostsTable->horizontalHeader()->setStretchLastSection(true);
+    bodyCol->addWidget(m_hostsTable);
+
+    scroll->setWidget(body);
+    outer->addWidget(scroll, 1);
+
+    refreshHostsTable();
+    return page;
+}
+
+void MainWindow::refreshHostsTable()
+{
+    if (!m_hostsTable)
+        return;
+    const QJsonArray hosts =
+        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
+            .array();
+    m_hostsTable->setRowCount(hosts.size());
+    for (int i = 0; i < hosts.size(); ++i) {
+        const QJsonObject h = hosts.at(i).toObject();
+        const QString status = h.value("status").toString(QStringLiteral("installed"));
+        m_hostsTable->setItem(i, 0,
+            new QTableWidgetItem(h.value("name").toString()));
+        m_hostsTable->setItem(i, 1,
+            new QTableWidgetItem(h.value("ip").toString()));
+        m_hostsTable->setItem(i, 2,
+            new QTableWidgetItem(h.value("user").toString()));
+        m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+    }
+}
+
+void MainWindow::rememberHost(const QString &name, const QString &ip,
+                              const QString &user)
+{
+    QSettings settings;
+    QJsonArray hosts =
+        QJsonDocument::fromJson(settings.value(kHostsSetting).toString().toUtf8())
+            .array();
+    // Replace any existing row for the same node name, else append.
+    QJsonObject entry;
+    entry.insert(QStringLiteral("name"), name);
+    entry.insert(QStringLiteral("ip"), ip);
+    entry.insert(QStringLiteral("user"), user);
+    entry.insert(QStringLiteral("status"), QStringLiteral("installed"));
+    bool replaced = false;
+    for (int i = 0; i < hosts.size(); ++i) {
+        if (hosts.at(i).toObject().value("name").toString() == name) {
+            hosts.replace(i, entry);
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced)
+        hosts.append(entry);
+    settings.setValue(kHostsSetting,
+                      QString::fromUtf8(QJsonDocument(hosts).toJson(QJsonDocument::Compact)));
+    refreshHostsTable();
+}
+
+void MainWindow::appendHostInstallLog(const QString &text)
+{
+    if (!m_hostInstallLog || text.isEmpty())
+        return;
+    m_hostInstallLog->moveCursor(QTextCursor::End);
+    m_hostInstallLog->insertPlainText(text);
+    m_hostInstallLog->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::runHostInstall()
+{
+    if (m_hostInstallProcess &&
+        m_hostInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("An install is already running."));
+        return;
+    }
+
+    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
+    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
+    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
+    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QString::fromUtf8(
+                "Enter the host IP, SSH username, password and a node name "
+                "first."));
+        return;
+    }
+    const QString installUrl = installScriptUrl();
+    if (installUrl.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not resolve the installer URL."));
+        return;
+    }
+
+    // Write a throwaway ansible playbook + inventory into a temp dir. The
+    // password and connection details are passed as extra-vars (JSON, so any
+    // special characters survive) rather than baked into the inventory, and the
+    // whole directory is removed when the QTemporaryDir is replaced/destroyed.
+    delete m_hostInstallDir;
+    m_hostInstallDir = new QTemporaryDir;
+    if (!m_hostInstallDir->isValid()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not create a working directory."));
+        return;
+    }
+    const QString dir = m_hostInstallDir->path();
+
+    QFile inv(dir + QStringLiteral("/inventory.ini"));
+    if (inv.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        inv.write(QStringLiteral("[all]\n%1\n").arg(ip).toUtf8());
+        inv.close();
+    }
+
+    QFile play(dir + QStringLiteral("/install.yml"));
+    if (play.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        // become: true so the installer can install build prerequisites; the
+        // installer itself handles installing for the connecting user under sudo.
+        play.write(QByteArray(
+            "---\n"
+            "- name: Install ForkMesh on a remote host\n"
+            "  hosts: all\n"
+            "  gather_facts: false\n"
+            "  become: true\n"
+            "  tasks:\n"
+            "    - name: Run the ForkMesh installer\n"
+            "      ansible.builtin.shell: \"curl -fsSL {{ install_url }} | "
+            "FORKMESH_NODE={{ fm_node | quote }} bash\"\n"
+            "      args:\n"
+            "        executable: /bin/bash\n"
+            "      register: fm_install\n"
+            "    - name: Installer output\n"
+            "      ansible.builtin.debug:\n"
+            "        var: fm_install.stdout_lines\n"));
+        play.close();
+    }
+
+    QJsonObject vars;
+    vars.insert(QStringLiteral("ansible_user"), user);
+    vars.insert(QStringLiteral("ansible_password"), pass);
+    vars.insert(QStringLiteral("ansible_become_password"), pass);
+    vars.insert(QStringLiteral("ansible_ssh_common_args"),
+                QStringLiteral("-o StrictHostKeyChecking=no "
+                               "-o UserKnownHostsFile=/dev/null"));
+    vars.insert(QStringLiteral("install_url"), installUrl);
+    vars.insert(QStringLiteral("fm_node"), node);
+    QFile vf(dir + QStringLiteral("/vars.json"));
+    if (vf.open(QIODevice::WriteOnly)) {
+        vf.write(QJsonDocument(vars).toJson(QJsonDocument::Compact));
+        vf.close();
+    }
+
+    m_hostInstallLog->clear();
+    appendHostInstallLog(
+        QStringLiteral("$ ansible-playbook -i inventory.ini install.yml\n"));
+    appendHostInstallLog(
+        QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
+            .arg(ip, user, installUrl));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Installing on %1\xE2\x80\xA6").arg(ip));
+    if (m_hostInstallButton)
+        m_hostInstallButton->setEnabled(false);
+
+    auto *proc = new QProcess(this);
+    m_hostInstallProcess = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setWorkingDirectory(dir);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    // sshpass-free password auth + readable, unbuffered streaming output.
+    env.insert(QStringLiteral("ANSIBLE_HOST_KEY_CHECKING"), QStringLiteral("False"));
+    env.insert(QStringLiteral("ANSIBLE_STDOUT_CALLBACK"), QStringLiteral("debug"));
+    env.insert(QStringLiteral("ANSIBLE_FORCE_COLOR"), QStringLiteral("0"));
+    env.insert(QStringLiteral("ANSIBLE_NOCOLOR"), QStringLiteral("1"));
+    env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    proc->setProcessEnvironment(env);
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+    });
+    connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart)
+            appendHostInstallLog(QString::fromUtf8(
+                "\n[error] Could not start ansible-playbook. Install ansible "
+                "(and sshpass for password auth) on this machine and try "
+                "again.\n"));
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, ip, user, node](int code, QProcess::ExitStatus status) {
+                if (m_hostInstallButton)
+                    m_hostInstallButton->setEnabled(true);
+                const bool ok = status == QProcess::NormalExit && code == 0;
+                if (ok) {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\n\xE2\x9C\x94 Install finished. Node \"%1\" will join "
+                        "the network and appear in the Mirror nodes list "
+                        "shortly.\n").arg(node));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(QString::fromUtf8(
+                            "\xE2\x9C\x94 Installed on %1 as node \"%2\".")
+                            .arg(ip, node));
+                    rememberHost(node, ip, user);
+                } else {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\n\xE2\x9C\x98 Install failed (exit %1).\n").arg(code));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(QString::fromUtf8(
+                            "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
+                            "output above."));
+                }
+                if (m_hostInstallProcess) {
+                    m_hostInstallProcess->deleteLater();
+                    m_hostInstallProcess = nullptr;
+                }
+                // Remove the throwaway playbook dir promptly so the password
+                // file does not linger on disk after the run.
+                delete m_hostInstallDir;
+                m_hostInstallDir = nullptr;
+            });
+
+    proc->start(QStringLiteral("ansible-playbook"),
+                {QStringLiteral("-i"), QStringLiteral("inventory.ini"),
+                 QStringLiteral("install.yml"),
+                 QStringLiteral("--extra-vars"), QStringLiteral("@vars.json")});
 }
 
 QWidget *MainWindow::buildHomeSection()
