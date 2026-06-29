@@ -18427,7 +18427,8 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
         if (run->status == ActionStatus::Success)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
-                 run->status == ActionStatus::Rejected)
+                 run->status == ActionStatus::Rejected ||
+                 run->status == ActionStatus::Cancelled)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
@@ -19481,7 +19482,8 @@ void MainWindow::renderPullChecksSummary(const PullRequest &pr)
         if (run->status == ActionStatus::Success)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
-                 run->status == ActionStatus::Rejected)
+                 run->status == ActionStatus::Rejected ||
+                 run->status == ActionStatus::Cancelled)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
@@ -51586,6 +51588,7 @@ QString actionStatusText(const QString &status)
     if (status == ActionStatus::Success) return QStringLiteral("Success");
     if (status == ActionStatus::Failed) return QStringLiteral("Failed");
     if (status == ActionStatus::Rejected) return QStringLiteral("Rejected");
+    if (status == ActionStatus::Cancelled) return QStringLiteral("Cancelled");
     return status;
 }
 
@@ -51596,6 +51599,7 @@ QColor actionStatusColor(const QString &status)
     if (status == ActionStatus::Running) return QColor("#58a6ff");
     if (status == ActionStatus::AwaitingApproval) return QColor("#d29922");
     if (status == ActionStatus::Rejected) return QColor("#8b949e");
+    if (status == ActionStatus::Cancelled) return QColor("#8b949e");
     return QColor("#8b949e");
 }
 
@@ -52117,12 +52121,16 @@ void MainWindow::onRunFinished(int runId, bool ok)
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     updateNotificationButton();
-    if (const ActionRun *run = findRun(runId))
-        notifyActionEvent(ok ? QStringLiteral("Action succeeded")
-                             : QStringLiteral("Action failed"),
+    if (const ActionRun *run = findRun(runId)) {
+        const bool cancelled = run->status == ActionStatus::Cancelled;
+        const QString title = ok ? QStringLiteral("Action succeeded")
+                                 : cancelled ? QStringLiteral("Action stopped")
+                                             : QStringLiteral("Action failed");
+        notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
-                          !ok);
+                          !ok && !cancelled);
+    }
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
     refreshOpenPullChecks();
@@ -53599,6 +53607,10 @@ void MainWindow::showRun(int runId)
         m_actionRerunButton->setVisible(run != nullptr);
     if (m_actionCopyLogButton)
         m_actionCopyLogButton->setVisible(run != nullptr);
+    if (m_actionStopButton)
+        m_actionStopButton->setVisible(run != nullptr &&
+                                       (run->status == ActionStatus::Running ||
+                                        run->status == ActionStatus::Queued));
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -53734,6 +53746,41 @@ void MainWindow::rerunSelectedRun()
     showRun(created.id);
     updateNotificationButton();
     processActionQueue();
+}
+
+void MainWindow::stopSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run)
+        return;
+
+    // Executing right now: ask the runner to abort it. stop() blocks briefly
+    // while the process tears down, then ActionRunner::finished fires and
+    // onRunFinished refreshes the UI and drains the queue — so don't touch the
+    // run here beyond logging the intent.
+    if (run->status == ActionStatus::Running) {
+        if (m_actionRunner && m_actionRunner->currentRunId() == run->id) {
+            logSystem(QStringLiteral("Actions: stopping \"%1\" for %2/%3.")
+                          .arg(run->workflowName, run->owner, run->name));
+            m_actionRunner->stop();
+        }
+        return;
+    }
+
+    // Still only queued: it never started, so just drop it from the queue and
+    // mark it Cancelled.
+    if (run->status == ActionStatus::Queued) {
+        m_actionQueue.removeAll(run->id);
+        run->status = ActionStatus::Cancelled;
+        run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        m_actionStore->saveRun(*run);
+        logSystem(QStringLiteral("Actions: cancelled queued \"%1\" for %2/%3.")
+                      .arg(run->workflowName, run->owner, run->name));
+        m_actionRuns = m_actionStore->loadAllRuns();
+        refreshActionsTable();
+        showRun(m_selectedRunId);
+        updateNotificationButton();
+    }
 }
 
 void MainWindow::clearActionRuns()
@@ -53996,6 +54043,18 @@ QWidget *MainWindow::buildRepoActionsTab()
     connect(m_actionRerunButton, &QPushButton::clicked, this,
             &MainWindow::rerunSelectedRun);
 
+    // Stop: abort the selected run while it's still queued or executing. Sits
+    // beside Rerun; only shown for a run that's actually in flight.
+    m_actionStopButton = new QPushButton("Stop");
+    m_actionStopButton->setObjectName("dangerButton");
+    m_actionStopButton->setProperty("buttonSize", "sm");
+    m_actionStopButton->setCursor(Qt::PointingHandCursor);
+    m_actionStopButton->setToolTip("Stop this run");
+    setOcticon(m_actionStopButton, "stop", 16);
+    m_actionStopButton->hide();
+    connect(m_actionStopButton, &QPushButton::clicked, this,
+            &MainWindow::stopSelectedRun);
+
     // Copy log: drop the selected run's full log on the clipboard. Sits beside
     // Rerun and shares its visible-when-a-run-is-selected lifecycle.
     m_actionCopyLogButton = new QPushButton("Copy log");
@@ -54021,6 +54080,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
+    titleRow->addWidget(m_actionStopButton);
     titleRow->addWidget(m_actionCopyLogButton);
     titleRow->addWidget(m_actionRerunButton);
 

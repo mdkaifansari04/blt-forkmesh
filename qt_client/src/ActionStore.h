@@ -14,6 +14,8 @@ inline const QString Running = QStringLiteral("running");
 inline const QString Success = QStringLiteral("success");
 inline const QString Failed = QStringLiteral("failed");
 inline const QString Rejected = QStringLiteral("rejected");
+// User stopped the run while it was queued or executing.
+inline const QString Cancelled = QStringLiteral("cancelled");
 } // namespace ActionStatus
 
 // One workflow run, persisted as <root>/runs/<owner>-<name>/<id>/meta.json with a

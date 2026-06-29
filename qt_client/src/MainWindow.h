@@ -1060,6 +1060,9 @@ private:
     void runSelectedWorkflowManually();
     // Re-queue the currently selected run (same workflow, commit and ref).
     void rerunSelectedRun();
+    // Stop the currently selected run: abort it if it's executing, or drop it
+    // from the queue if it hasn't started yet. Records the run as Cancelled.
+    void stopSelectedRun();
     // Delete every run currently shown in the Runs list (its meta + log on
     // disk); skips any run that's still in flight. Prompts for confirmation.
     void clearActionRuns();
@@ -2711,6 +2714,8 @@ private:
     QComboBox *m_actionRunBranchCombo = nullptr;
     // Re-queues the selected run with its original workflow/commit/ref.
     QPushButton *m_actionRerunButton = nullptr;
+    // Stops the selected run while it's still queued or executing.
+    QPushButton *m_actionStopButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
     // Settings: variables/secrets table.
