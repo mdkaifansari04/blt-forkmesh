@@ -2091,7 +2091,10 @@ private:
     QStackedWidget *m_issueDetailStack = nullptr;
     QWidget *m_issueComposePage = nullptr;
     QPushButton *m_issueDetailToggle = nullptr;
-    QLineEdit *m_issueQuickAdd = nullptr;
+    // Two-line wrapping prompt box (adhoc #12): a QPlainTextEdit, not a single
+    // line, so a typed prompt actually shows on two lines. Enter sends,
+    // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
+    QPlainTextEdit *m_issueQuickAdd = nullptr;
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
@@ -2110,6 +2113,10 @@ private:
     QStringList m_quickAddHistory;
     int m_quickAddHistoryIndex = -1;
     QString m_quickAddDraft;
+    // Set while navigateQuickAddHistory() programmatically replaces the field's
+    // text, so the textChanged handler doesn't mistake the recall for a manual
+    // edit and reset the history position.
+    bool m_quickAddHistoryNavigating = false;
     // Centered in the footer: the git identity (name <email>) configured for the
     // repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
