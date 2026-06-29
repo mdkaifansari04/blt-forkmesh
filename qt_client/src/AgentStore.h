@@ -20,6 +20,10 @@ struct AgentSession {
     QString name;
     int issueNumber = 0;
     QString issueTitle;
+    // Ad-hoc sessions (issueNumber == 0, the Agents-tab composer) have no issue
+    // to re-read their task from, so the free-form prompt is persisted here and
+    // replayed verbatim when the session is resumed after an app restart.
+    QString prompt;
     QString provider; // openai | claude-api (legacy: codex, claude-code)
     // Preferred model for this session. Empty falls back to the provider's
     // default (the `claude` CLI's own default for Claude Code). For Claude Code
@@ -52,6 +56,11 @@ struct AgentSession {
     double costUsd = 0.0;
     double spendBeforeUsd = 0.0;
     double spendAfterUsd = 0.0;
+    // Claude Code run summary, captured from the CLI's final `result` event
+    // ("done · N turns · Ms · $X"): the number of turns and total wall-clock
+    // duration the run took, persisted so the list shows it after a restart.
+    int numTurns = 0;
+    qint64 durationMs = 0;
     QString lastError;
 
     QString repoKey() const;
@@ -70,6 +79,11 @@ public:
     bool deleteSession(const AgentSession &session) const;
     void appendLog(const AgentSession &session, const QString &text) const;
     QString readLog(const AgentSession &session) const;
+    // Claude Code stream-json transcript events, persisted one JSON object per
+    // line so the rich transcript survives an app restart (issue #41).
+    void appendEvent(const AgentSession &session, const QJsonObject &ev) const;
+    QList<QJsonObject> loadEvents(const AgentSession &session) const;
+    void clearEvents(const AgentSession &session) const;
     void writePatch(const AgentSession &session, const QString &patch) const;
     QString readPatch(const AgentSession &session) const;
 

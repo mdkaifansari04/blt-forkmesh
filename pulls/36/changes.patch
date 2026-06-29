@@ -1,0 +1,45 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2bb94197..81547150 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -35138,22 +35138,26 @@ void MainWindow::prioritizeIssuesFromReadme()
+                                        .toString()
+                                  : defaultAgentProvider();
+     const bool claude = agentIsClaudeProvider(provider);
+-    const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+-                                   : QSettings().value(kCodexApiKeySetting))
+-                               .toString()
+-                               .trimmed();
+-    // When the default agent is Claude Code (issue #294) the user signs in with
+-    // a claude.ai subscription OAuth token rather than an API key, so fall back
+-    // to that token when no Claude API key is configured.
+-    const QString oauthToken =
+-        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
+-            ? claudeCodeOAuthToken()
+-            : QString();
++    const bool claudeCode = provider == QLatin1String("claude-code");
++    // "Claude Code" (issue #294) authenticates with the claude.ai subscription
++    // OAuth token the CLI keeps in ~/.claude/.credentials.json, never a metered
++    // API key. Read that token first and ignore any stored Claude API key, so an
++    // explicit Claude Code selection can't silently fall through to the
++    // credit-billed API and fail with "credit balance too low". "Claude API" and
++    // "OpenAI API" keep using their respective keys.
++    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
++    const QString apiKey =
++        claudeCode ? QString()
++                   : (claude ? QSettings().value(kClaudeApiKeySetting)
++                             : QSettings().value(kCodexApiKeySetting))
++                         .toString()
++                         .trimmed();
+     if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+         setIssueInlineNotice(
+-            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
+-                     "first."
+-                   : "Add an OpenAI API key in Settings first.",
++            claudeCode
++                ? "Sign in to Claude Code first (run `claude` and log in)."
++                : claude ? "Add a Claude API key in Settings first."
++                         : "Add an OpenAI API key in Settings first.",
+             true);
+         return;
+     }

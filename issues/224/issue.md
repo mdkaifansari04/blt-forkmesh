@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 224
 title: on agents page have a button to delete all merged and closed agents
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 30
-progress: 0
+priority: 32
+progress: 65
 assignees: []
 createdAt: 1782354783801
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

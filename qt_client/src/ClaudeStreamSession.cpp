@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QTimer>
 
 ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
 
@@ -10,7 +11,7 @@ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
-                                const QString &model)
+                                const QString &resumeSessionId, const QString &model)
 {
     stop();
     m_buf.clear();
@@ -44,15 +45,16 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
         "--verbose --include-partial-messages");
     if (skipPermissions)
         cmd += QStringLiteral(" --dangerously-skip-permissions");
-    // Pin the model when one was chosen (e.g. opus | sonnet | haiku); single-quote
-    // it and escape any embedded quotes so the value can't break out of the shell
-    // command. Empty leaves the CLI's default model in place.
-    const QString trimmedModel = model.trimmed();
-    if (!trimmedModel.isEmpty()) {
-        QString quoted = trimmedModel;
-        quoted.replace(QLatin1String("'"), QLatin1String("'\\''"));
-        cmd += QStringLiteral(" --model '%1'").arg(quoted);
-    }
+    // Run as the model the user picked in the quick-add bar (adhoc #261). The
+    // value is a CLI alias ("opus"/"sonnet"/…) or a full model id; single-quote
+    // it defensively like the resume id below.
+    if (!model.trimmed().isEmpty())
+        cmd += QStringLiteral(" --model '%1'").arg(model.trimmed());
+    // Resume a prior conversation so the agent picks up its full context (the
+    // files it touched, what it had figured out, what's left). The id is a UUID
+    // from the CLI's own stream, but single-quote it defensively all the same.
+    if (!resumeSessionId.isEmpty())
+        cmd += QStringLiteral(" --resume '%1'").arg(resumeSessionId);
     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
 
     if (!initialPrompt.isEmpty())
@@ -81,15 +83,28 @@ void ClaudeStreamSession::stop()
 {
     if (!m_proc)
         return;
-    m_proc->disconnect(this);
-    if (m_proc->state() != QProcess::NotRunning) {
-        m_proc->closeWriteChannel(); // signal end-of-input first
-        m_proc->terminate();
-        if (!m_proc->waitForFinished(1500))
-            m_proc->kill();
-    }
-    m_proc->deleteLater();
+    QProcess *proc = m_proc;
     m_proc = nullptr;
+    proc->disconnect(this);
+    // Detach the process from this session so it survives our own destruction and
+    // tears itself down on its own time.
+    proc->setParent(nullptr);
+    if (proc->state() == QProcess::NotRunning) {
+        proc->deleteLater();
+        return;
+    }
+    // Don't block the UI thread waiting for Claude to exit. This used to call
+    // waitForFinished(1500), freezing the window for up to 1.5s every time a
+    // running session was stopped or deleted. Instead ask it to terminate and let
+    // it clean itself up: kill it if it's still alive after a grace period, and
+    // delete the QProcess once it has actually exited.
+    connect(proc, &QProcess::finished, proc, &QObject::deleteLater);
+    proc->closeWriteChannel(); // signal end-of-input first
+    proc->terminate();
+    QTimer::singleShot(1500, proc, [proc] {
+        if (proc->state() != QProcess::NotRunning)
+            proc->kill(); // finished() → deleteLater() then frees it
+    });
 }
 
 bool ClaudeStreamSession::running() const

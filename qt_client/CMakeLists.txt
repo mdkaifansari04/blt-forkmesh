@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.1 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.3 LANGUAGES CXX)
 
 # Baked into the binaries: shown in the UI, and the quick-update button uses
 # the source dir to git pull + rebuild when running from a checkout.
@@ -46,6 +46,7 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
+    src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
     src/ActionStore.h
@@ -71,6 +72,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/ScrollJumpButtons.h
+    src/ScrollJumpButtons.cpp
     src/StallWatchdog.h
     src/StallWatchdog.cpp
     src/SystemStats.h
@@ -113,6 +116,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-tests
         tests/test_crypto.cpp
         resources/icons.qrc
+        src/ActionFile.h
+        src/ActionFile.cpp
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
         src/RoomCrypto.h
@@ -133,6 +138,9 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/CommitCommentStore.h
         src/CommitCommentStore.cpp
+        src/AgentStore.h
+        src/AgentStore.cpp
+        src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)

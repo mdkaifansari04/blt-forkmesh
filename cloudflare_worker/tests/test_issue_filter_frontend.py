@@ -10,18 +10,18 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
+DASHBOARD = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
 CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
-def test_index_has_open_closed_all_filter_defaulting_to_open():
-    assert 'class="issue-filter"' in INDEX
+def test_dashboard_has_open_closed_all_filter_defaulting_to_open():
+    assert 'class="issue-filter"' in DASHBOARD
     for state in ("open", "closed", "all"):
-        assert f'data-state="{state}"' in INDEX
+        assert f'data-state="{state}"' in DASHBOARD
     # The Open button is the active default.
-    open_btn = INDEX[
-        INDEX.index('id="issue-filter-open"') : INDEX.index('id="issue-filter-closed"')
+    open_btn = DASHBOARD[
+        DASHBOARD.index('id="issue-filter-open"') : DASHBOARD.index('id="issue-filter-closed"')
     ]
     assert "is-active" in open_btn
     assert 'aria-pressed="true"' in open_btn

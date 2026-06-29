@@ -1,0 +1,1597 @@
+diff --git a/issues/150/0012-agent.md b/issues/150/0012-agent.md
+deleted file mode 100644
+index 81201a95..00000000
+--- a/issues/150/0012-agent.md
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-type: agent
+-id: 6465ab80-0b37-43fa-aa95-45fff1dd436b
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-ts: 1782513360063
+-agentProvider: claude-code
+-agentSessionId: 39
+-agentStatus: queued
+-agentCreatePr: true
+-sig: WC5kxqeSKTMaaMl-r-wmA8ku9V2Qh2YCB6AUKIl-p5pv5pBfYw5ARIYTu429C48XAoGBRLzG0k0yVovAHQhcCg
+----
+-
+-
+diff --git a/issues/150/0013-agent.md b/issues/150/0013-agent.md
+deleted file mode 100644
+index 4187b34b..00000000
+--- a/issues/150/0013-agent.md
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-type: agent
+-id: ce19c1b5-9219-49e1-928c-59aea67774d7
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-ts: 1782513593111
+-agentProvider: 
+-agentSessionId: 0
+-agentStatus: cleared
+-agentCreatePr: false
+-sig: leAtNBc1wkOjbODzzXcZVgtX-MQjETQ0TaptoFpZA7VaHSQSrrIlsLL1VttxnCLHhf8Zxoe0zg4S3NIiPn2xBg
+----
+-
+-
+diff --git a/issues/216/0004-agent.md b/issues/216/0004-agent.md
+deleted file mode 100644
+index bd438092..00000000
+--- a/issues/216/0004-agent.md
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-type: agent
+-id: 431d0ad6-eebe-4e6f-a056-06a1b04960b4
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-ts: 1782514031434
+-agentProvider: claude-code
+-agentSessionId: 40
+-agentStatus: queued
+-agentCreatePr: true
+-sig: H1M6H5FyydXJ6-rh0cBlihFYAKU5Cx1pyNaXsntlaTO2-rArC-duNv7O2M02H9Tt_uaRCLHRBhadTItdjPsUAQ
+----
+-
+-
+diff --git a/issues/294/0003-agent.md b/issues/294/0003-agent.md
+deleted file mode 100644
+index d6e2cc5d..00000000
+--- a/issues/294/0003-agent.md
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-type: agent
+-id: 2a234717-0930-4776-b0d5-ab0975273828
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-ts: 1782513820017
+-agentProvider: 
+-agentSessionId: 0
+-agentStatus: cleared
+-agentCreatePr: false
+-sig: 1Vs9Hs6UKzBDdnM4NCbhvWJ9FbQiGwJAdQJxsyQTLggDZaYvbToCu4DNz4nHNqCfhWpockHsmEFpSW1wHZKMAQ
+----
+-
+-
+diff --git a/issues/295/0002-agent.md b/issues/295/0002-agent.md
+deleted file mode 100644
+index 178de8cb..00000000
+--- a/issues/295/0002-agent.md
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-type: agent
+-id: 103e5dc4-60a3-4992-ae80-4e8018b83ee9
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-ts: 1782514763842
+-agentProvider: claude-code
+-agentSessionId: 43
+-agentStatus: queued
+-agentCreatePr: true
+-sig: AwcCMY7X7q2_QU2ed0wZk5SvMaPniZmW7tJIDToJZc-0XXDulfO1-isCUO34mNVRMLG6aCEq40AlDuNfs2BRBw
+----
+-
+-
+diff --git a/issues/295/issue.md b/issues/295/issue.md
+deleted file mode 100644
+index 6cfc0639..00000000
+--- a/issues/295/issue.md
++++ /dev/null
+@@ -1,24 +0,0 @@
+----
+-schema: forkmesh-issue-v1
+-number: 295
+-title: on the worktree list show a status for the attached agent and let us click to the agent
+-status: open
+-labels: []
+-milestone: 
+-priority: 0
+-progress: 0
+-assignees: []
+-createdAt: 1782514763682
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-bountyUsd: 0.00
+-bountyAddress: 
+-bountyStatus: 
+-type: open
+-id: open-295
+-ts: 1782514763682
+-attachments: []
+-sig: DwCUQECx9FgMJz-y6cDSKkxciej19nMD1-RaRyZKUpc8AGB2Z_vLrhe6r7mNB76jqv7J2oEEJ_QY9bX-QP-dDw
+----
+-
+-
+diff --git a/issues/296/issue.md b/issues/296/issue.md
+deleted file mode 100644
+index 33863275..00000000
+--- a/issues/296/issue.md
++++ /dev/null
+@@ -1,24 +0,0 @@
+----
+-schema: forkmesh-issue-v1
+-number: 296
+-title: on the agent list when the agent is finished it says somethin glike done 71 turns 828s $4.59 make sure that is shown in the list and stored
+-status: open
+-labels: []
+-milestone: 
+-priority: 0
+-progress: 0
+-assignees: []
+-createdAt: 1782515276058
+-author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
+-authorName: newnewnode
+-bountyUsd: 0.00
+-bountyAddress: 
+-bountyStatus: 
+-type: open
+-id: open-296
+-ts: 1782515276058
+-attachments: []
+-sig: b7rAsnbNsGeZ0PfVm-LqEg219PVvdJMY6OIp5HpKVTgICtKBpaYubWknlcEW-TmJIkQhAA3mGRGSOOwx0P7nBg
+----
+-
+-
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index f9b1b49d..fa50e91f 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -133,8 +133,6 @@ if(FORKMESH_BUILD_TESTS)
+         src/PullReviewModel.cpp
+         src/CommitCommentStore.h
+         src/CommitCommentStore.cpp
+-        src/AgentStore.h
+-        src/AgentStore.cpp
+     )
+     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+     if(APPLE)
+diff --git a/qt_client/src/AgentStore.cpp b/qt_client/src/AgentStore.cpp
+index 6ea7ef18..4cbeafb8 100644
+--- a/qt_client/src/AgentStore.cpp
++++ b/qt_client/src/AgentStore.cpp
+@@ -172,38 +172,6 @@ QString AgentStore::readLog(const AgentSession &session) const
+     return QString::fromUtf8(file.readAll());
+ }
+ 
+-void AgentStore::appendEvent(const AgentSession &session, const QJsonObject &ev) const
+-{
+-    QDir().mkpath(sessionDir(session));
+-    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+-    if (!file.open(QIODevice::Append))
+-        return;
+-    file.write(QJsonDocument(ev).toJson(QJsonDocument::Compact));
+-    file.write("\n");
+-}
+-
+-QList<QJsonObject> AgentStore::loadEvents(const AgentSession &session) const
+-{
+-    QList<QJsonObject> events;
+-    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+-    if (!file.open(QIODevice::ReadOnly))
+-        return events;
+-    while (!file.atEnd()) {
+-        const QByteArray line = file.readLine().trimmed();
+-        if (line.isEmpty())
+-            continue;
+-        const QJsonDocument doc = QJsonDocument::fromJson(line);
+-        if (doc.isObject())
+-            events.append(doc.object());
+-    }
+-    return events;
+-}
+-
+-void AgentStore::clearEvents(const AgentSession &session) const
+-{
+-    QFile::remove(sessionDir(session) + QStringLiteral("/events.jsonl"));
+-}
+-
+ void AgentStore::writePatch(const AgentSession &session, const QString &patch) const
+ {
+     QDir().mkpath(sessionDir(session));
+diff --git a/qt_client/src/AgentStore.h b/qt_client/src/AgentStore.h
+index d9e77739..e47d4a18 100644
+--- a/qt_client/src/AgentStore.h
++++ b/qt_client/src/AgentStore.h
+@@ -65,11 +65,6 @@ public:
+     bool deleteSession(const AgentSession &session) const;
+     void appendLog(const AgentSession &session, const QString &text) const;
+     QString readLog(const AgentSession &session) const;
+-    // Claude Code stream-json transcript events, persisted one JSON object per
+-    // line so the rich transcript survives an app restart (issue #41).
+-    void appendEvent(const AgentSession &session, const QJsonObject &ev) const;
+-    QList<QJsonObject> loadEvents(const AgentSession &session) const;
+-    void clearEvents(const AgentSession &session) const;
+     void writePatch(const AgentSession &session, const QString &patch) const;
+     QString readPatch(const AgentSession &session) const;
+ 
+diff --git a/qt_client/src/ClaudeStreamSession.cpp b/qt_client/src/ClaudeStreamSession.cpp
+index cf929136..139ec43a 100644
+--- a/qt_client/src/ClaudeStreamSession.cpp
++++ b/qt_client/src/ClaudeStreamSession.cpp
+@@ -9,7 +9,8 @@ ClaudeStreamSession::ClaudeStreamSession(QObject *parent) : QObject(parent) {}
+ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
+ 
+ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+-                                const QString &initialPrompt, bool skipPermissions)
++                                const QString &initialPrompt, bool skipPermissions,
++                                const QString &model)
+ {
+     stop();
+     m_buf.clear();
+@@ -43,6 +44,11 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
+         "--verbose --include-partial-messages");
+     if (skipPermissions)
+         cmd += QStringLiteral(" --dangerously-skip-permissions");
++    // Honor an explicit model pick (the new-agent composer's model selector). The
++    // value comes from a fixed set of aliases, but single-quote it anyway so the
++    // shell never reinterprets it.
++    if (const QString m = model.trimmed(); !m.isEmpty())
++        cmd += QStringLiteral(" --model '") + m + QLatin1Char('\'');
+     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
+ 
+     if (!initialPrompt.isEmpty())
+diff --git a/qt_client/src/ClaudeStreamSession.h b/qt_client/src/ClaudeStreamSession.h
+index 50e54d5e..b94f2a55 100644
+--- a/qt_client/src/ClaudeStreamSession.h
++++ b/qt_client/src/ClaudeStreamSession.h
+@@ -21,9 +21,12 @@ public:
+ 
+     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
+     // '=' unsets that variable in the child (matches TerminalWidget semantics).
+-    // The initial prompt is sent as the first user turn.
++    // The initial prompt is sent as the first user turn. `model`, when non-empty,
++    // is passed straight through to the CLI's `--model` flag (an alias such as
++    // "opus"/"sonnet"/"haiku", or a full model id); empty keeps the CLI default.
+     void start(const QString &cwd, const QStringList &extraEnv,
+-               const QString &initialPrompt, bool skipPermissions = true);
++               const QString &initialPrompt, bool skipPermissions = true,
++               const QString &model = QString());
+     // Send another user turn to a running session (steering).
+     void sendUserText(const QString &text);
+     void stop();
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index c2ea3290..1f241bc8 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -979,6 +979,10 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
+ // the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
+ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
+ const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
++// Which model the "Claude Code" agent runs (passed to the CLI's --model flag as
++// an alias like "opus"/"sonnet"/"haiku"). Empty => the CLI's configured default.
++// Chosen via the new-agent composer's model picker.
++const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
+ const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
+ const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
+ // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
+@@ -1100,30 +1104,6 @@ void selectDefaultAgentProvider(QComboBox *combo)
+     combo->setCurrentIndex(index >= 0 ? index : 0);
+ }
+ 
+-// Live claude.ai OAuth access token the Claude Code CLI stores in
+-// ~/.claude/.credentials.json. Empty when the user logged in with an API key
+-// (or isn't signed in). Read fresh each call so a token the CLI has rotated is
+-// picked up automatically.
+-QString claudeCodeOAuthToken()
+-{
+-    QFile credFile(QDir::homePath() +
+-                   QStringLiteral("/.claude/.credentials.json"));
+-    if (!credFile.open(QIODevice::ReadOnly))
+-        return QString();
+-    return QJsonDocument::fromJson(credFile.readAll())
+-        .object()
+-        .value(QStringLiteral("claudeAiOauth"))
+-        .toObject()
+-        .value(QStringLiteral("accessToken"))
+-        .toString();
+-}
+-
+-// System identity Anthropic requires on /v1/messages when authenticating with a
+-// claude.ai subscription OAuth token (as the Claude Code CLI does) instead of an
+-// API key.
+-const QString kClaudeCodeOAuthSystem =
+-    QStringLiteral("You are Claude Code, Anthropic's official CLI for Claude.");
+-
+ // Materialize the bundled Claude agent script into the app data dir and return
+ // its path. The script talks to the Anthropic API directly using
+ // ANTHROPIC_API_KEY, so no `claude` binary is required.
+@@ -10023,25 +10003,8 @@ QWidget *MainWindow::buildIssuesSection()
+     setOcticon(m_issuePrioritizeButton, "rocket", 16);
+     connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
+             &MainWindow::prioritizeIssuesFromReadme);
+-
+-    // Agent picker next to the button so a run can target any provider, not just
+-    // the saved default. Seeded from the default agent (Settings -> Agents).
+-    m_issuePrioritizeAgentCombo = new QComboBox;
+-    m_issuePrioritizeAgentCombo->setObjectName("issueControlSm");
+-    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("OpenAI API"),
+-                                         QStringLiteral("openai"));
+-    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude API"),
+-                                         QStringLiteral("claude-api"));
+-    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude Code"),
+-                                         QStringLiteral("claude-code"));
+-    selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
+-    m_issuePrioritizeAgentCombo->setToolTip(
+-        "Agent that ranks the issues. Defaults to your default agent "
+-        "(Settings \xE2\x86\x92 Agents).");
+-
+     // Place it right after the "Issues" heading, ahead of the view-tab toggles.
+     headingRow->insertWidget(1, m_issuePrioritizeButton);
+-    headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
+ 
+     // Bulk bounty: pledge the same amount on every open issue at once. Bounties
+     // are pledged only (funded on merge), so this never moves money.
+@@ -19255,7 +19218,7 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentTable->setObjectName("issueTable");
+     enableHoverRowHighlight(m_agentTable);
+     m_agentTable->setHorizontalHeaderLabels(
+-        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "Updated", "Activity"});
++        {"#", "Issue", "Agent", "Status", "PR", "Cost", "Tokens", "When", "Activity"});
+     m_agentTable->verticalHeader()->setVisible(false);
+     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
+@@ -19394,6 +19357,8 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentNewPromptEdit->setFrameShape(QFrame::NoFrame);
+     m_agentNewPromptEdit->setStyleSheet(QStringLiteral(
+         "#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
++    // Enter starts the agent; Shift+Enter inserts a newline (issue #36).
++    m_agentNewPromptEdit->installEventFilter(this);
+     // Agent picker: the same three providers offered when assigning an issue.
+     m_agentNewProvider = new QComboBox;
+     m_agentNewProvider->setObjectName("agentNewProvider");
+@@ -19406,6 +19371,40 @@ QWidget *MainWindow::buildAgentsTab()
+                                 QStringLiteral("claude-code"));
+     selectDefaultAgentProvider(m_agentNewProvider);
+     m_agentNewProvider->setToolTip("Which agent to run on this prompt");
++    // Model picker sitting right next to the agent picker: choose which Claude
++    // model the "Claude Code" agent runs (issue #36). The values are CLI --model
++    // aliases, so they track the latest release of each tier without hardcoding a
++    // dated id. Only meaningful for Claude Code, so it's disabled for the
++    // API-key providers (which carry their own model settings).
++    m_agentNewModel = new QComboBox;
++    m_agentNewModel->setObjectName("agentNewModel");
++    m_agentNewModel->setCursor(Qt::PointingHandCursor);
++    m_agentNewModel->addItem(QStringLiteral("Default model"), QString());
++    m_agentNewModel->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
++    m_agentNewModel->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
++    m_agentNewModel->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
++    m_agentNewModel->setToolTip("Which Claude model the Claude Code agent runs");
++    if (const int saved = m_agentNewModel->findData(
++            QSettings().value(kClaudeCodeModelSetting).toString().trimmed());
++        saved >= 0)
++        m_agentNewModel->setCurrentIndex(saved);
++    connect(m_agentNewModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [this](int) {
++                QSettings().setValue(kClaudeCodeModelSetting,
++                                     m_agentNewModel->currentData().toString());
++            });
++    auto syncModelPickerEnabled = [this] {
++        const bool claudeCode =
++            m_agentNewProvider->currentData().toString() == QLatin1String("claude-code");
++        m_agentNewModel->setEnabled(claudeCode);
++        m_agentNewModel->setToolTip(
++            claudeCode ? QStringLiteral("Which Claude model the Claude Code agent runs")
++                       : QStringLiteral("Model selection applies to the Claude Code "
++                                        "agent (set the API agents' model in Settings)"));
++    };
++    syncModelPickerEnabled();
++    connect(m_agentNewProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [syncModelPickerEnabled](int) { syncModelPickerEnabled(); });
+     m_agentStartButton = new QPushButton("Start agent");
+     m_agentStartButton->setObjectName("primaryButton");
+     m_agentStartButton->setCursor(Qt::PointingHandCursor);
+@@ -19427,6 +19426,7 @@ QWidget *MainWindow::buildAgentsTab()
+     newAgentBtns->setContentsMargins(0, 0, 0, 0);
+     newAgentBtns->setSpacing(6);
+     newAgentBtns->addWidget(m_agentNewProvider);
++    newAgentBtns->addWidget(m_agentNewModel);
+     newAgentBtns->addStretch(1);
+     newAgentBtns->addWidget(m_agentStartButton);
+     newAgentCol->addLayout(newAgentBtns);
+@@ -19477,31 +19477,10 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentDeleteButton = new QPushButton("Delete");
+     m_agentDeleteButton->setObjectName("dangerButton");
+     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
+-    m_agentDeleteButton->setToolTip("Delete just this agent session");
+     setOcticon(m_agentDeleteButton, "trash", 16);
+     connect(m_agentDeleteButton, &QPushButton::clicked, this,
+             &MainWindow::deleteSelectedAgentSession);
+ 
+-    // Delete the agent together with its worktree folder and branch in one action.
+-    m_agentDeleteAllButton = new QPushButton("Delete all");
+-    m_agentDeleteAllButton->setObjectName("dangerButton");
+-    m_agentDeleteAllButton->setCursor(Qt::PointingHandCursor);
+-    m_agentDeleteAllButton->setToolTip(
+-        "Delete this agent session, its worktree folder and its branch");
+-    setOcticon(m_agentDeleteAllButton, "trash", 16);
+-    connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
+-        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+-        if (!s || s->branchName.isEmpty())
+-            return;
+-        const int repoIndex = repoIndexFor(s->owner, s->name);
+-        if (repoIndex < 0)
+-            return;
+-        const QString branch = s->branchName;
+-        const QString wt =
+-            worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
+-        deleteWorktreeBranchAndAgent(wt, branch);
+-    });
+-
+     // "View PR" — appears once the session produced a pull request.
+     m_agentViewPrButton = new QPushButton("View PR");
+     m_agentViewPrButton->setObjectName("primaryButton");
+@@ -19533,7 +19512,6 @@ QWidget *MainWindow::buildAgentsTab()
+     topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
+     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
+     topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
+-    topRow->addWidget(m_agentDeleteAllButton, 0, Qt::AlignTop);
+ 
+     m_agentLog = new QPlainTextEdit;
+     m_agentLog->setReadOnly(true);
+@@ -19726,8 +19704,7 @@ QWidget *MainWindow::buildAgentsTab()
+     m_agentPromptEdit->setObjectName("agentComposerEdit");
+     m_agentPromptEdit->setStyleSheet(
+         QStringLiteral("#agentComposerEdit{background:transparent;border:none;color:#e6edf3;}"));
+-    // Enter sends the message, Shift+Enter inserts a newline (see eventFilter),
+-    // matching the Claude Code conversation input.
++    // Enter sends the message; Shift+Enter inserts a newline (issue #36).
+     m_agentPromptEdit->installEventFilter(this);
+     m_agentSendPromptButton = new QPushButton("Send");
+     m_agentSendPromptButton->setObjectName("primaryButton");
+@@ -20268,10 +20245,19 @@ void MainWindow::refreshClaudeCodeUsage()
+         return;
+     // Claude Code authenticates with a claude.ai OAuth token, kept in
+     // ~/.claude/.credentials.json. Read the access token fresh every poll so a
+-    // token the CLI has since rotated is picked up automatically; if it is
++    // token the CLI has since rotated is picked up automatically; if the file is
+     // absent (API-key login, or not signed in) there is nothing to query and the
+     // rate-limit-event path remains the only feed.
+-    const QString token = claudeCodeOAuthToken();
++    QFile credFile(QDir::homePath() +
++                   QStringLiteral("/.claude/.credentials.json"));
++    if (!credFile.open(QIODevice::ReadOnly))
++        return;
++    const QJsonObject oauth =
++        QJsonDocument::fromJson(credFile.readAll())
++            .object()
++            .value(QStringLiteral("claudeAiOauth"))
++            .toObject();
++    const QString token = oauth.value(QStringLiteral("accessToken")).toString();
+     if (token.isEmpty())
+         return;
+ 
+@@ -20568,21 +20554,11 @@ void MainWindow::refreshAgentTable()
+         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
+         m_agentTable->setItem(row, 6, tokens);
+-        // "Updated" column: when the session was last touched — created,
+-        // started, finished or merged, whichever is most recent — shown as a
+-        // friendly "x ago" string. The tooltip carries the full timestamp, and
+-        // the raw millisecond value drives chronological sorting.
+-        const qint64 updatedMs =
+-            qMax(qMax(session.createdAtMs, session.startedAtMs),
+-                 qMax(session.finishedAtMs, session.mergedAtMs));
+-        auto *updated = new SortTableWidgetItem(
+-            updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
+-                          : QStringLiteral("-"));
+-        updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
+-        if (updatedMs > 0)
+-            updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
+-                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+-        m_agentTable->setItem(row, 7, updated);
++        m_agentTable->setItem(
++            row, 7,
++            new QTableWidgetItem(
++                QDateTime::fromMSecsSinceEpoch(session.createdAtMs)
++                    .toString(QStringLiteral("MMM d  hh:mm"))));
+         // Night-rider light: a custom-painted scanner that sweeps while this
+         // session streams raw output. AgentScannerDelegate looks the animation
+         // state up by the sessionId stashed here in Qt::UserRole.
+@@ -20808,10 +20784,6 @@ void MainWindow::showAgentSession(int sessionId)
+         return;
+     }
+ 
+-    // Restore a finished/idle Claude Code session's transcript from disk before
+-    // deciding which output surface to show, so it survives an app restart.
+-    ensureStreamEventsLoaded(sessionId);
+-
+     if (m_agentDetail)
+         m_agentDetail->show();
+     if (m_agentTitle) {
+@@ -20823,16 +20795,29 @@ void MainWindow::showAgentSession(int sessionId)
+                                              : session->branchName);
+             m_agentTitle->setText(QStringLiteral("External Claude Code · %1").arg(label));
+         } else {
+-            m_agentTitle->setText(
+-                session->issueNumber > 0
+-                    ? QStringLiteral("#%1 · %2")
+-                          .arg(session->issueNumber)
+-                          .arg(session->issueTitle.isEmpty()
+-                                   ? agentProviderName(session->provider)
+-                                   : session->issueTitle)
+-                    : QStringLiteral("%1 · pull #%2")
+-                          .arg(agentProviderName(session->provider))
+-                          .arg(session->prNumber));
++            // Lead with what this session is actually about. Issue-assigned runs
++            // show "#N · <issue title>". Ad-hoc / issue-less runs (issue #36) lead
++            // with the prompt the user typed (stored as issueTitle) rather than a
++            // meaningless "pull #0"; the PR number, once one exists, is appended.
++            const QString providerName = agentProviderName(session->provider);
++            QString title;
++            if (session->issueNumber > 0) {
++                title = QStringLiteral("#%1 · %2")
++                            .arg(session->issueNumber)
++                            .arg(session->issueTitle.isEmpty() ? providerName
++                                                               : session->issueTitle);
++            } else if (!session->issueTitle.isEmpty()) {
++                title = QStringLiteral("%1 · %2").arg(providerName, session->issueTitle);
++                if (session->prNumber > 0)
++                    title += QStringLiteral(" · pull #%1").arg(session->prNumber);
++            } else if (session->prNumber > 0) {
++                title = QStringLiteral("%1 · pull #%2")
++                            .arg(providerName)
++                            .arg(session->prNumber);
++            } else {
++                title = providerName;
++            }
++            m_agentTitle->setText(title);
+         }
+     }
+     // Issue #291: a "· merged into <base>" note appended to the meta line once
+@@ -21329,29 +21314,18 @@ void MainWindow::deleteSelectedAgentSession()
+         unsurfaceExternalSession(m_selectedAgentSessionId);
+         return;
+     }
+-    if (!deleteStoredAgentSession(m_selectedAgentSessionId))
++    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+         return;
+-    reloadAgents();
+-    reloadIssues();
+-    refreshIssueList();
+-    updateIssueActionState();
+-    flashMessage("Agent session deleted.");
+-}
+-
+-bool MainWindow::deleteStoredAgentSession(int sessionId)
+-{
+-    if (!m_agentStore || sessionId <= 0)
+-        return false;
+-    AgentSession *session = findAgentSession(sessionId);
++    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+     if (!session)
+-        return true; // already gone — nothing to delete
++        return;
+ 
+     const AgentSession snapshot = *session;
+     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
+         runner->stop();
+         if (runner->busy()) {
+             flashMessage("Stopping agent session. Delete it again once it exits.");
+-            return false;
++            return;
+         }
+     }
+     m_agentQueue.removeAll(snapshot.id);
+@@ -21366,7 +21340,7 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
+         if (!issueStore.canWrite()) {
+             flashMessage("Only the host can delete an agent session from the issue.",
+                          true);
+-            return false;
++            return;
+         }
+         QString error;
+         if (!issueStore.assignAgent(snapshot.issueNumber, QString(), 0, false,
+@@ -21375,17 +21349,21 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
+                              ? QStringLiteral("Could not clear the issue agent.")
+                              : error,
+                          true);
+-            return false;
++            return;
+         }
+     }
+ 
+     if (!m_agentStore->deleteSession(snapshot)) {
+         flashMessage("Could not delete the agent session.", true);
+-        return false;
++        return;
+     }
+-    if (m_selectedAgentSessionId == sessionId)
+-        m_selectedAgentSessionId = -1;
+-    return true;
++
++    m_selectedAgentSessionId = -1;
++    reloadAgents();
++    reloadIssues();
++    refreshIssueList();
++    updateIssueActionState();
++    flashMessage("Agent session deleted.");
+ }
+ 
+ void MainWindow::openAgentSessionFromIssue()
+@@ -21735,20 +21713,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+             .arg(lead)
+             .arg(baseName)
+             .arg(session.branchName);
+-    // Honor the user-editable instruction preamble from Settings → Agents, and let
+-    // it GOVERN the run when set. `body` above bundles the task/branch context
+-    // (`lead`) with a built-in "Work end to end" workflow; if we also prepended a
+-    // custom preamble the agent would receive two competing instruction sets
+-    // ("its sending both prompts — just send the one we have in settings"). So
+-    // when a custom preamble is configured we send it plus only the task/branch
+-    // context and drop the built-in workflow. A blank setting falls back to the
+-    // built-in default preamble followed by the full workflow body, as before.
+-    const QString customPreamble =
+-        QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
++    // Honor the user-editable instruction preamble from Settings → Agents. The
++    // headless AgentRunner path already prepends it via buildPrompt(), but the
++    // Claude Code transcript path (issue-assigned and ad-hoc composer sessions)
++    // used to hardcode its own prompt and ignore the configured one. Prepend it
++    // here too so the prompt set in settings actually drives these runs; a blank
++    // setting falls back to the built-in default, same as everywhere else.
++    const QString preamble = agentPromptPreamble().trimmed();
+     const QString prompt =
+-        customPreamble.isEmpty()
+-            ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
+-            : customPreamble + QStringLiteral("\n\n") + lead;
++        preamble.isEmpty() ? body : preamble + QStringLiteral("\n\n") + body;
+ 
+     // Per-session buffers; tear down any prior stream for THIS session only. The
+     // stream object and the UI hand-off below are set up *before* the worktree is
+@@ -21757,11 +21730,6 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+     m_streamEvents[sid].clear();
+     m_streamRaw[sid].clear();
+     m_streamFiles[sid].clear();
+-    // Capture the session so applyTranscriptEvent can persist each turn to disk
+-    // (issue #41) — m_agentSessions doesn't yet hold a freshly created ad-hoc
+-    // session — and start this run's transcript file from a clean slate.
+-    m_streamSessionInfo[sid] = session;
+-    m_agentStore->clearEvents(session);
+     if (ClaudeStreamSession *old = m_streamSessions.take(sid))
+         old->deleteLater();
+     auto *stream = new ClaudeStreamSession(this);
+@@ -21826,7 +21794,11 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+     // because the worktree checkout below finishes asynchronously; the IDE bridge
+     // and env are set up here since they depend on the final workdir.
+     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
+-    auto launch = [this, sid, prompt, autoMode, branchName](const QString &workdir) {
++    // The model picked in the new-agent composer (empty => CLI default). Applies
++    // to every Claude Code run, ad-hoc or issue-assigned.
++    const QString model =
++        QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
++    auto launch = [this, sid, prompt, autoMode, branchName, model](const QString &workdir) {
+         ClaudeStreamSession *live = m_streamSessions.value(sid);
+         if (!live)
+             return; // session was stopped or deleted while the worktree was building
+@@ -21841,7 +21813,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
+                                     "on branch %1 in %2\n")
+                          .arg(branchName, workdir));
+-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode);
++        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, model);
+     };
+ 
+     // Give the agent its own worktree + branch so concurrent agents never share a
+@@ -22201,9 +22173,6 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
+ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
+ {
+     m_streamEvents[sessionId].append(ev);
+-    // Persist the turn so the transcript survives an app restart (issue #41).
+-    if (m_agentStore && m_streamSessionInfo.contains(sessionId))
+-        m_agentStore->appendEvent(m_streamSessionInfo.value(sessionId), ev);
+ 
+     if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant")) {
+         // Accumulate token usage so the agents list shows it live (see
+@@ -22425,52 +22394,6 @@ void MainWindow::onScannerTick()
+         m_scannerTimer->stop();
+ }
+ 
+-// Restore a Claude Code session's transcript from disk (issue #41). The events
+-// were persisted as the run streamed, so the rich transcript survives an app
+-// restart even though the live stream object is gone. Only populates when the
+-// session actually has persisted events, so non-transcript sessions keep
+-// showing their plain log instead of an empty transcript surface.
+-void MainWindow::ensureStreamEventsLoaded(int sessionId)
+-{
+-    if (!m_agentStore || m_streamEvents.contains(sessionId)
+-        || isExternalSession(sessionId))
+-        return; // already loaded/live, or a watch-only external session
+-    const AgentSession *s = findAgentSession(sessionId);
+-    if (!s)
+-        return;
+-    const QList<QJsonObject> events = m_agentStore->loadEvents(*s);
+-    if (events.isEmpty())
+-        return;
+-    m_streamEvents[sessionId] = events;
+-    // Rebuild the side buffers the raw view and edited-files panel read from.
+-    QString &raw = m_streamRaw[sessionId];
+-    QStringList &files = m_streamFiles[sessionId];
+-    for (const QJsonObject &ev : events) {
+-        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+-            continue; // synthetic user turn, never part of the raw CLI stream
+-        raw += QString::fromUtf8(QJsonDocument(ev).toJson(QJsonDocument::Compact))
+-               + QStringLiteral("\n\n");
+-        if (ev.value(QStringLiteral("type")).toString() != QLatin1String("assistant"))
+-            continue;
+-        // Collect edited files for the side panel (mirrors applyTranscriptEvent).
+-        const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+-                                       .value(QStringLiteral("content")).toArray();
+-        for (const QJsonValue &bv : content) {
+-            const QJsonObject b = bv.toObject();
+-            if (b.value(QStringLiteral("type")).toString() != QLatin1String("tool_use"))
+-                continue;
+-            const QString name = b.value(QStringLiteral("name")).toString();
+-            if (name == QLatin1String("Edit") || name == QLatin1String("Write")
+-                || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
+-                const QString p = b.value(QStringLiteral("input")).toObject()
+-                                      .value(QStringLiteral("file_path")).toString();
+-                if (!p.isEmpty() && !files.contains(p))
+-                    files.append(p);
+-            }
+-        }
+-    }
+-}
+-
+ // Repaint the transcript view from a session's buffered events (on selection).
+ void MainWindow::renderTranscriptForSession(int sessionId)
+ {
+@@ -22739,12 +22662,6 @@ void MainWindow::updateAgentActionState()
+             issueBacked && !running && session->status != AgentStatus::Queued);
+     if (m_agentDeleteButton)
+         m_agentDeleteButton->setEnabled(selected && !aiFixBusy);
+-    // "Delete all" also nukes the worktree + branch, so it only applies to a real
+-    // stored session that has a branch (not external watch-only rows).
+-    if (m_agentDeleteAllButton)
+-        m_agentDeleteAllButton->setEnabled(
+-            selected && !aiFixBusy && session && !session->branchName.isEmpty()
+-            && !isExternalSession(m_selectedAgentSessionId));
+     if (m_agentSendPromptButton)
+         m_agentSendPromptButton->setEnabled(issueBacked);
+     if (m_agentPromptEdit)
+@@ -28652,18 +28569,16 @@ QWidget *MainWindow::buildWorktreesTab()
+         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
+             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
+     });
+-    m_worktreeRemoveButton = new QPushButton("Delete");
++    m_worktreeRemoveButton = new QPushButton("Remove");
+     m_worktreeRemoveButton->setObjectName("ghostButton");
+     m_worktreeRemoveButton->setProperty("buttonSize", "sm");
+     m_worktreeRemoveButton->setCursor(Qt::PointingHandCursor);
+     setOcticon(m_worktreeRemoveButton, "trash", 14);
+-    m_worktreeRemoveButton->setToolTip(
+-        "Remove the selected worktree, delete its branch and its agent session");
++    m_worktreeRemoveButton->setToolTip("Remove the selected worktree's folder");
+     m_worktreeRemoveButton->setEnabled(false);
+     connect(m_worktreeRemoveButton, &QPushButton::clicked, this, [this] {
+         if (!m_worktreeSelectedPath.isEmpty())
+-            deleteWorktreeBranchAndAgent(m_worktreeSelectedPath,
+-                                         m_worktreeSelectedBranch);
++            removeWorktree(m_worktreeSelectedPath, m_worktreeSelectedBranch, true);
+     });
+     auto *detailBar = new QHBoxLayout;
+     detailBar->setContentsMargins(0, 0, 0, 0);
+@@ -28695,17 +28610,10 @@ void MainWindow::loadWorktreesPanel()
+ {
+     if (!m_worktreesTable)
+         return;
+-    // Remember the selected worktree so a rebuild (Refresh, or after an
+-    // "Update from main"/merge) lands back on it instead of going blank — clearing
+-    // the table fires currentCellChanged(-1) which wipes the diff + selection (#272).
+-    const QString keepPath = m_worktreeSelectedPath;
+     m_worktreesTable->setRowCount(0);
+-    QString repoPath, repoOwner, repoName;
+-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
++    QString repoPath;
++    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+         repoPath = m_repositories.at(m_repoDetailIndex).localPath;
+-        repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+-        repoName = m_repositories.at(m_repoDetailIndex).name;
+-    }
+     if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
+         if (m_worktreesSummary)
+             m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
+@@ -28781,53 +28689,6 @@ void MainWindow::loadWorktreesPanel()
+         connect(openBtn, &QPushButton::clicked, this,
+                 [p] { QDesktopServices::openUrl(QUrl::fromLocalFile(p)); });
+         h->addWidget(openBtn);
+-        // Issue #295: surface the agent working in this worktree's branch — show
+-        // its status in the list and let you jump straight to its session.
+-        const AgentSession *agent = nullptr;
+-        if (!wt.branch.isEmpty()) {
+-            for (const AgentSession &s : std::as_const(m_agentSessions)) {
+-                if (s.owner != repoOwner || s.name != repoName
+-                    || s.branchName != wt.branch)
+-                    continue;
+-                if (!agent) {
+-                    agent = &s;
+-                    continue;
+-                }
+-                // Prefer a live (non-cleared) session, then the most recent run.
+-                const bool sLive = s.status != AgentStatus::Cleared;
+-                const bool curLive = agent->status != AgentStatus::Cleared;
+-                if ((sLive && !curLive) || (sLive == curLive && s.id > agent->id))
+-                    agent = &s;
+-            }
+-        }
+-        if (agent) {
+-            const int agentId = agent->id;
+-            auto *agentBtn = new QPushButton(
+-                QString::fromUtf8("Agent \xC2\xB7 %1")
+-                    .arg(agentStatusText(agent->status)));
+-            agentBtn->setObjectName("ghostButton");
+-            agentBtn->setCursor(Qt::PointingHandCursor);
+-            agentBtn->setIcon(themedOcticon(
+-                "rocket",
+-                agent->merged ? QColor("#a371f7") : agentStatusColor(agent->status),
+-                14));
+-            agentBtn->setIconSize(QSize(14, 14));
+-            QString tip = agent->issueNumber > 0
+-                              ? QString::fromUtf8("Agent #%1 \xC2\xB7 issue #%2 %3")
+-                                    .arg(agent->id)
+-                                    .arg(agent->issueNumber)
+-                                    .arg(agent->issueTitle)
+-                              : QString::fromUtf8("Agent #%1 \xC2\xB7 %2")
+-                                    .arg(agent->id)
+-                                    .arg(agent->issueTitle);
+-            tip += QString::fromUtf8(" \xC2\xB7 %1").arg(agentStatusText(agent->status));
+-            if (agent->merged)
+-                tip += QString::fromUtf8(" \xC2\xB7 merged");
+-            agentBtn->setToolTip(tip);
+-            connect(agentBtn, &QPushButton::clicked, this,
+-                    [this, agentId] { switchToAgentsTab(agentId); });
+-            h->addWidget(agentBtn);
+-        }
+         if (!isMain && !wt.branch.isEmpty()) {
+             const QString branch = wt.branch;
+             // Merge this worktree's branch straight into the default branch.
+@@ -28848,17 +28709,13 @@ void MainWindow::loadWorktreesPanel()
+             h->addWidget(prBtn);
+         }
+         if (!isMain) {
+-            // Wipe the worktree, its branch, and the agent that ran on it in one go.
+-            auto *rmBtn = new QPushButton("Delete");
++            auto *rmBtn = new QPushButton("Remove");
+             rmBtn->setObjectName("ghostButton");
+             rmBtn->setCursor(Qt::PointingHandCursor);
+             setOcticon(rmBtn, "trash", 14);
+-            rmBtn->setToolTip(
+-                agent ? "Remove this worktree, delete its branch and its agent session"
+-                      : "Remove this worktree and delete its branch");
+             const QString branch = wt.branch;
+             connect(rmBtn, &QPushButton::clicked, this,
+-                    [this, p, branch] { deleteWorktreeBranchAndAgent(p, branch); });
++                    [this, p, branch] { removeWorktree(p, branch, true); });
+             h->addWidget(rmBtn);
+         }
+         h->addStretch();
+@@ -28874,20 +28731,6 @@ void MainWindow::loadWorktreesPanel()
+         m_repoWorktreesTab->setText(wts.size() > 1
+                                         ? QStringLiteral("Worktrees (%1)").arg(wts.size())
+                                         : QStringLiteral("Worktrees"));
+-
+-    // Re-select the worktree that was selected before the rebuild so its diff and
+-    // the detail buttons stay visible (e.g. right after "Update from main"). If it
+-    // was removed, no row matches and the pane stays blank, which is correct (#272).
+-    if (!keepPath.isEmpty()) {
+-        const QString keep = QDir(keepPath).absolutePath();
+-        for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+-            QTableWidgetItem *p = m_worktreesTable->item(row, 1);
+-            if (p && QDir(p->text()).absolutePath() == keep) {
+-                m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
+-                break;
+-            }
+-        }
+-    }
+ }
+ 
+ // Open the Worktrees tab and select the row whose branch matches, so clicking a
+@@ -29126,128 +28969,6 @@ void MainWindow::removeWorktree(const QString &worktreePath, const QString &bran
+         loadBranchesPanel();
+ }
+ 
+-QString MainWindow::worktreePathForBranch(const QString &repoPath,
+-                                          const QString &branch) const
+-{
+-    if (repoPath.isEmpty() || branch.trimmed().isEmpty())
+-        return QString();
+-    QByteArray out;
+-    if (!runGitCapture(repoPath, {QStringLiteral("worktree"), QStringLiteral("list"),
+-                                  QStringLiteral("--porcelain")},
+-                       &out, nullptr))
+-        return QString();
+-    const QString want = QStringLiteral("refs/heads/%1").arg(branch);
+-    const QString mainPath = QDir(repoPath).absolutePath();
+-    QString currentPath;
+-    for (const QString &raw : QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+-        const QString line = raw.trimmed();
+-        if (line.startsWith(QLatin1String("worktree ")))
+-            currentPath = line.mid(9).trimmed();
+-        else if (line.startsWith(QLatin1String("branch "))
+-                 && line.mid(7).trimmed() == want && !currentPath.isEmpty()
+-                 && QDir(currentPath).absolutePath() != mainPath)
+-            return currentPath;
+-    }
+-    return QString();
+-}
+-
+-// One action to wipe everything an agent left behind: its worktree folder, its
+-// branch, and the stored agent session(s) that ran on it. Resolves the repo from
+-// the open detail view; agent sessions are matched by branch.
+-void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
+-                                              const QString &branch)
+-{
+-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+-        return;
+-    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+-    const QString repoPath = repo.localPath;
+-    if (repoPath.isEmpty())
+-        return;
+-    if (!worktreePath.isEmpty()
+-        && QDir(worktreePath).absolutePath() == QDir(repoPath).absolutePath()) {
+-        setRepoDetailNotice("That's the main checkout — it can't be removed here.",
+-                            true);
+-        return;
+-    }
+-
+-    // Every stored (non-external) agent session that ran on this branch.
+-    QList<int> agentIds;
+-    if (!branch.isEmpty()) {
+-        for (const AgentSession &s : std::as_const(m_agentSessions)) {
+-            if (s.owner == repo.owner && s.name == repo.name
+-                && s.branchName == branch && !isExternalSession(s.id))
+-                agentIds.append(s.id);
+-        }
+-    }
+-
+-    const QString base = repoDefaultBranch(repoBranches());
+-    const bool willDeleteBranch = !branch.isEmpty() && branch != base;
+-
+-    // One confirmation covering all three pieces.
+-    QStringList parts;
+-    if (!worktreePath.isEmpty())
+-        parts << QStringLiteral("the worktree at\n%1").arg(worktreePath);
+-    if (willDeleteBranch)
+-        parts << QStringLiteral("branch %1").arg(branch);
+-    if (!agentIds.isEmpty())
+-        parts << (agentIds.size() == 1
+-                      ? QStringLiteral("its agent session")
+-                      : QStringLiteral("its %1 agent sessions").arg(agentIds.size()));
+-    if (parts.isEmpty())
+-        return;
+-    const QString what =
+-        parts.size() == 1
+-            ? parts.first()
+-            : QStringLiteral("%1 and %2").arg(
+-                  QStringList(parts.mid(0, parts.size() - 1)).join(QStringLiteral(", ")),
+-                  parts.last());
+-    if (QMessageBox::question(
+-            this, QStringLiteral("Delete worktree, branch & agent"),
+-            QStringLiteral("Delete %1?\n\nUncommitted changes there will be lost. "
+-                           "This cannot be undone.")
+-                .arg(what))
+-        != QMessageBox::Yes)
+-        return;
+-
+-    // Delete the agent session(s) first — that stops any runner still holding the
+-    // worktree open. If one is mid-stop or we lack permission, bail (it flashed
+-    // why) before touching the worktree so nothing is half-deleted.
+-    for (int id : std::as_const(agentIds)) {
+-        if (!deleteStoredAgentSession(id)) {
+-            reloadAgents();
+-            return;
+-        }
+-    }
+-
+-    if (!worktreePath.isEmpty()) {
+-        // removeWorktree handles the folder + branch and refreshes the panels.
+-        removeWorktree(worktreePath, branch, /*confirm=*/false,
+-                       /*alsoDeleteBranch=*/willDeleteBranch);
+-    } else if (willDeleteBranch) {
+-        // No worktree left (the agent already cleaned it up) — just drop the branch.
+-        QString err;
+-        if (runGitCapture(repoPath, {"branch", "-D", branch}, nullptr, &err)) {
+-            logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
+-            setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+-        } else {
+-            setRepoDetailNotice(
+-                err.isEmpty() ? QStringLiteral("Could not delete branch %1.").arg(branch)
+-                              : err,
+-                true);
+-        }
+-        loadWorktreesPanel();
+-        if (m_branchesTable)
+-            loadBranchesPanel();
+-    }
+-
+-    if (!agentIds.isEmpty()) {
+-        reloadAgents();
+-        reloadIssues();
+-        refreshIssueList();
+-        updateIssueActionState();
+-    }
+-}
+-
+ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
+                                         const QString &branch)
+ {
+@@ -29285,9 +29006,10 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
+                 .arg(branch, base),
+             true);
+     }
+-    // loadWorktreesPanel() preserves the current selection across the rebuild, so
+-    // focus stays on the worktree we just updated instead of going blank (#272).
++    // Rebuilding the table drops the selection, blanking the diff/buttons; keep
++    // the focus on the worktree we just updated so it doesn't go blank (#272).
+     loadWorktreesPanel();
++    selectWorktreeRow(branch);
+ }
+ 
+ QWidget *MainWindow::buildBranchesTab()
+@@ -29323,18 +29045,9 @@ QWidget *MainWindow::buildBranchesTab()
+     setOcticon(m_branchPullAllButton, "download", 16);
+     connect(m_branchPullAllButton, &QPushButton::clicked, this,
+             &MainWindow::pullBaseIntoAllBranches);
+-    // Tidy up branches that are fully merged into the default branch (0 behind and
+-    // 0 ahead of it); enabled in loadBranchesPanel() once those counts are known.
+-    m_branchDeleteMergedButton = new QPushButton("Delete merged");
+-    m_branchDeleteMergedButton->setObjectName("ghostButton");
+-    m_branchDeleteMergedButton->setCursor(Qt::PointingHandCursor);
+-    setOcticon(m_branchDeleteMergedButton, "trash", 16);
+-    connect(m_branchDeleteMergedButton, &QPushButton::clicked, this,
+-            &MainWindow::deleteMergedBranches);
+     headerRow->addWidget(heading);
+     headerRow->addWidget(m_branchesSummary);
+     headerRow->addStretch();
+-    headerRow->addWidget(m_branchDeleteMergedButton);
+     headerRow->addWidget(m_branchPullAllButton);
+     headerRow->addWidget(refreshButton);
+     headerRow->addWidget(newBranchButton);
+@@ -29461,7 +29174,6 @@ void MainWindow::loadBranchesPanel()
+     // its cell widgets; size it to the widest action row we build below.
+     int actionWidth = 0;
+     bool anyBehind = false;
+-    bool anyMerged = false; // fully-merged branches the "Delete merged" action can remove
+     for (const QString &branch : branches) {
+         const int row = m_branchesTable->rowCount();
+         m_branchesTable->insertRow(row);
+@@ -29608,10 +29320,6 @@ void MainWindow::loadBranchesPanel()
+         del->setToolTip(QStringLiteral("Delete branch %1").arg(branch));
+         const bool canDelete = writable && branch != base && branch != selected;
+         del->setEnabled(canDelete);
+-        // A deletable branch sitting at the base tip (0 behind, 0 ahead) is fully
+-        // merged and a candidate for the header's one-click "Delete merged".
+-        if (canDelete && behind == 0 && ahead == 0)
+-            anyMerged = true;
+         if (!canDelete)
+             del->setToolTip(writable
+                                 ? "Can't delete the default or current branch"
+@@ -29658,21 +29366,6 @@ void MainWindow::loadBranchesPanel()
+                             .arg(base));
+     }
+ 
+-    // Header "Delete merged" is enabled only when at least one branch is fully
+-    // merged into the base (0 behind, 0 ahead) and therefore safe to prune.
+-    if (m_branchDeleteMergedButton) {
+-        m_branchDeleteMergedButton->setEnabled(writable && anyMerged);
+-        m_branchDeleteMergedButton->setToolTip(
+-            !writable
+-                ? QStringLiteral("Read-only mirror \xE2\x80\x94 nothing to delete")
+-                : anyMerged
+-                      ? QStringLiteral("Delete every branch fully merged into %1 "
+-                                       "(0 behind, 0 ahead)")
+-                            .arg(base)
+-                      : QStringLiteral("No branches are fully merged into %1")
+-                            .arg(base));
+-    }
+-
+     if (branches.isEmpty()) {
+         m_branchesTable->insertRow(0);
+         auto *empty = new QTableWidgetItem("No branches in this repository.");
+@@ -29747,88 +29440,6 @@ void MainWindow::deleteBranch(const QString &branch)
+     loadBranchesAndTags();
+ }
+ 
+-// Prune every branch that's fully merged into the default branch (0 behind and
+-// 0 ahead of it), in one confirmed pass. The default and checked-out branches
+-// are always skipped — they're never redundant and can't be force-deleted.
+-void MainWindow::deleteMergedBranches()
+-{
+-    const QString dir = repoGitDir();
+-    if (dir.isEmpty())
+-        return;
+-    if (!repoHasWorkingTree()) {
+-        setRepoDetailNotice(
+-            "This is a read-only mirror; branches can't be deleted here.", true);
+-        return;
+-    }
+-    const QStringList branches = repoBranches();
+-    const QString base = repoDefaultBranch(branches);
+-    if (base.isEmpty())
+-        return;
+-
+-    // The checked-out branch can't be force-deleted; skip it (it's usually base).
+-    QByteArray headOut;
+-    QString currentBranch;
+-    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
+-        currentBranch = QString::fromUtf8(headOut).trimmed();
+-
+-    // A branch with 0 behind and 0 ahead of base points at the same tip — fully
+-    // merged and redundant.
+-    QStringList merged;
+-    for (const QString &branch : branches) {
+-        if (branch == base || branch == currentBranch)
+-            continue;
+-        QByteArray counts;
+-        if (!runGitCapture(dir,
+-                           {"rev-list", "--left-right", "--count",
+-                            base + "..." + branch},
+-                           &counts, nullptr))
+-            continue;
+-        const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+-            QRegularExpression(QStringLiteral("\\s+")));
+-        if (parts.size() >= 2 && parts.at(0).toInt() == 0 && parts.at(1).toInt() == 0)
+-            merged << branch;
+-    }
+-
+-    if (merged.isEmpty()) {
+-        setRepoDetailNotice(
+-            QStringLiteral("No branches are fully merged into %1.").arg(base));
+-        return;
+-    }
+-    if (QMessageBox::question(
+-            this, "Delete merged branches",
+-            QStringLiteral("Delete the %1 branch(es) fully merged into %2 "
+-                           "(0 behind, 0 ahead)? This cannot be undone.\n\n%3")
+-                .arg(merged.size())
+-                .arg(base, merged.join(QStringLiteral("\n"))),
+-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+-        return;
+-
+-    QStringList deleted, failed;
+-    for (const QString &branch : merged) {
+-        // -D rather than -d: identical-tip branches are merged, but -D keeps the
+-        // pass from stalling on any edge case git counts differently.
+-        if (runGitCapture(dir, {"branch", "-D", branch}, nullptr, nullptr))
+-            deleted << branch;
+-        else
+-            failed << branch;
+-    }
+-    if (!deleted.isEmpty())
+-        logSystem(QStringLiteral("Git: deleted %1 merged branch(es): %2.")
+-                      .arg(deleted.size())
+-                      .arg(deleted.join(QStringLiteral(", "))));
+-    if (failed.isEmpty())
+-        setRepoDetailNotice(
+-            QStringLiteral("Deleted %1 merged branch(es).").arg(deleted.size()));
+-    else
+-        setRepoDetailNotice(
+-            QStringLiteral("Deleted %1 merged branch(es); %2 could not be deleted (%3).")
+-                .arg(deleted.size())
+-                .arg(failed.size())
+-                .arg(failed.join(QStringLiteral(", "))),
+-            true);
+-    loadBranchesAndTags();
+-}
+-
+ void MainWindow::showBranchDiff(const QString &branch)
+ {
+     if (!m_branchDiffView)
+@@ -34451,6 +34062,22 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+             }
+         }
+     }
++    // Agent composers (issue #36): plain Enter sends/starts, Shift+Enter (or any
++    // other modifier) keeps the default newline so multi-line prompts still work.
++    if ((obj == m_agentNewPromptEdit || obj == m_agentPromptEdit) &&
++        event->type() == QEvent::KeyPress) {
++        auto *ke = static_cast<QKeyEvent *>(event);
++        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
++            (ke->modifiers() &
++             (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier |
++              Qt::MetaModifier)) == Qt::NoModifier) {
++            if (obj == m_agentNewPromptEdit)
++                startAdHocAgent();
++            else if (m_agentSendPromptButton)
++                m_agentSendPromptButton->click();
++            return true;
++        }
++    }
+     // Pasting an image into the chat composer shares it as an attachment. Only
+     // consume the event when we actually sent an image; otherwise let the line
+     // edit handle a normal text paste.
+@@ -34459,17 +34086,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
+             return true;
+     }
+-    // Agents composer: Enter sends the queued message; Shift+Enter inserts a
+-    // newline (issue #41). Mirrors the Claude Code conversation input.
+-    if (obj == m_agentPromptEdit && event->type() == QEvent::KeyPress) {
+-        auto *ke = static_cast<QKeyEvent *>(event);
+-        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+-            && !(ke->modifiers() & Qt::ShiftModifier)) {
+-            if (m_agentSendPromptButton)
+-                m_agentSendPromptButton->click();
+-            return true;
+-        }
+-    }
+     // Drag along the issue list's Progress column to set a row's percent.
+     if (m_issueTable && obj == m_issueTable->viewport() &&
+         (event->type() == QEvent::MouseButtonPress ||
+@@ -35110,30 +34726,16 @@ void MainWindow::prioritizeIssuesFromReadme()
+     if (readme.size() > 8000)
+         readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
+ 
+-    // Use the agent picked in the dropdown next to the button; fall back to the
+-    // saved default agent when the picker isn't built yet.
+-    const QString provider = m_issuePrioritizeAgentCombo
+-                                 ? m_issuePrioritizeAgentCombo->currentData()
+-                                       .toString()
+-                                 : defaultAgentProvider();
++    const QString provider = defaultAgentProvider();
+     const bool claude = agentIsClaudeProvider(provider);
+     const QString apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
+                                    : QSettings().value(kCodexApiKeySetting))
+                                .toString()
+                                .trimmed();
+-    // When the default agent is Claude Code (issue #294) the user signs in with
+-    // a claude.ai subscription OAuth token rather than an API key, so fall back
+-    // to that token when no Claude API key is configured.
+-    const QString oauthToken =
+-        (apiKey.isEmpty() && provider == QLatin1String("claude-code"))
+-            ? claudeCodeOAuthToken()
+-            : QString();
+-    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+-        setIssueInlineNotice(
+-            claude ? "Sign in to Claude Code or add a Claude API key in Settings "
+-                     "first."
+-                   : "Add an OpenAI API key in Settings first.",
+-            true);
++    if (apiKey.isEmpty()) {
++        setIssueInlineNotice(claude ? "Add a Claude API key in Settings first."
++                                    : "Add an OpenAI API key in Settings first.",
++                             true);
+         return;
+     }
+ 
+@@ -35179,15 +34781,7 @@ void MainWindow::prioritizeIssuesFromReadme()
+         payload.insert("messages", messages);
+         QNetworkRequest req(
+             QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+-        if (!oauthToken.isEmpty()) {
+-            // Claude Code's subscription OAuth token authenticates with a Bearer
+-            // header and requires the Claude Code system identity.
+-            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
+-            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+-            payload.insert("system", kClaudeCodeOAuthSystem);
+-        } else {
+-            req.setRawHeader("x-api-key", apiKey.toUtf8());
+-        }
++        req.setRawHeader("x-api-key", apiKey.toUtf8());
+         req.setRawHeader("anthropic-version", "2023-06-01");
+         req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+         reply = m_networkAccess->post(
+@@ -36751,7 +36345,6 @@ QWidget *MainWindow::buildSettingsSection()
+                 // Keep the live pickers in step with the new default.
+                 selectDefaultAgentProvider(m_quickAddAgentProvider);
+                 selectDefaultAgentProvider(m_issueAgentProvider);
+-                selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
+             });
+ 
+     m_codexApiKeyEdit = new QLineEdit;
+@@ -37890,30 +37483,21 @@ void MainWindow::flashMessage(const QString &text, bool error)
+                   + QString::fromUtf8("\xE2\x80\xA6"); // …
+     m_topMessage->setCursor(m_topMessageElided ? Qt::PointingHandCursor
+                                                : Qt::ArrowCursor);
+-    // The base HTML carries the message; auto-dismissing successes append a
+-    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
+-    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
+-                               .arg(fg, glyph, display.toHtmlEscaped());
+-    m_topMessage->setText(m_topMessageBaseHtml);
++    m_topMessage->setText(
++        QStringLiteral("<span style='color:%1'>%2 %3</span>")
++            .arg(fg, glyph, display.toHtmlEscaped()));
+     m_topMessage->show();
+ 
+     if (!m_topMessageTimer) {
+-        // Ticks once a second so the countdown is visible; it hides the toast
+-        // when the count runs out rather than firing a single timeout.
+         m_topMessageTimer = new QTimer(this);
++        m_topMessageTimer->setSingleShot(true);
+         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
+-            if (!m_topMessage)
+-                return;
+-            if (--m_topMessageSecondsLeft <= 0) {
+-                m_topMessageTimer->stop();
++            if (m_topMessage)
+                 m_topMessage->hide();
+-                return;
+-            }
+-            renderTopMessageCountdown();
+         });
+     }
+     // Errors persist with Copy / dismiss buttons until the user acts on them;
+-    // successes count down for ~5 seconds and then fade on their own.
++    // successes fade on their own and need no affordance.
+     if (error) {
+         m_topMessageTimer->stop();
+         if (m_topMessageCopy)
+@@ -37925,33 +37509,15 @@ void MainWindow::flashMessage(const QString &text, bool error)
+             m_topMessageCopy->hide();
+         if (m_topMessageClose)
+             m_topMessageClose->hide();
+-        m_topMessageSecondsLeft = 5;
+-        renderTopMessageCountdown();
+-        m_topMessageTimer->start(1000);
++        m_topMessageTimer->start(4000);
+     }
+ }
+ 
+-// Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
+-// reflecting how many seconds remain before an auto-dismissing toast fades.
+-void MainWindow::renderTopMessageCountdown()
+-{
+-    if (!m_topMessage)
+-        return;
+-    // "·" is a byte-escaped glyph, so it must go through fromUtf8 (QStringLiteral
+-    // would mangle the multibyte sequence).
+-    const QString suffix =
+-        QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
+-            .arg(m_topMessageSecondsLeft);
+-    m_topMessage->setText(m_topMessageBaseHtml + suffix);
+-}
+-
+ // Hide the top toast and its error affordances (Copy / dismiss).
+ void MainWindow::dismissTopMessage()
+ {
+     m_loadStatusShowing = false;
+     m_pinWarningActive = false;
+-    if (m_topMessageTimer)
+-        m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
+     if (m_topMessage)
+         m_topMessage->hide();
+     if (m_topMessageCopy)
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 1b0f7597..0b7802f5 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -227,12 +227,6 @@ public:
+     QString testQuickAddAgentProvider() const;
+     QString testIssueAgentProvider() const;
+     void testSetDefaultAgentProvider(const QString &provider);
+-    // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
+-    // "Update from main" merge does), and read back which worktree stays selected
+-    // so a test can prove the detail pane doesn't go blank after a refresh.
+-    void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
+-    void testReloadWorktreesPanel() { loadWorktreesPanel(); }
+-    QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
+ #endif
+ 
+     // --- Headless / CLI support (HeadlessConsole) ------------------------------
+@@ -673,17 +667,6 @@ private:
+     void assignIssueToAgent(const QString &provider);
+     void continueSelectedAgentSession();
+     void deleteSelectedAgentSession();
+-    // Stop and remove one stored agent session (clear its issue assignment, drop
+-    // it from the run queue, delete it from the store). Returns true once it's
+-    // gone; false (after flashing why) when it can't go yet — a running agent
+-    // still stopping, or no host write access to clear the issue. External
+-    // (watch-only) sessions aren't handled here.
+-    bool deleteStoredAgentSession(int sessionId);
+-    // Delete everything an agent left behind in one action: its worktree folder,
+-    // its branch, and the stored agent session(s) that ran on it. Used by the
+-    // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+-    void deleteWorktreeBranchAndAgent(const QString &worktreePath,
+-                                      const QString &branch);
+     void testOpenAiAgentKey();
+     void refreshClaudeSpend();
+     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
+@@ -865,11 +848,6 @@ private:
+     // the post-merge cleanup passes false so the just-merged branch stays visible.
+     void removeWorktree(const QString &worktreePath, const QString &branch,
+                         bool confirm, bool alsoDeleteBranch = true);
+-    // Filesystem path of the worktree currently checked out to `branch` (other
+-    // than the main checkout), or empty if none. Lets the agent detail resolve a
+-    // session's worktree folder from its branch.
+-    QString worktreePathForBranch(const QString &repoPath,
+-                                  const QString &branch) const;
+     void showBranchDiff(const QString &branch);
+     void createPullFromBranch(const QString &branch);
+     void onBranchDiffAnchorClicked(const QUrl &url);
+@@ -888,9 +866,6 @@ private:
+     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
+     void promptNewBranch();
+     void deleteBranch(const QString &branch);
+-    // Delete every branch that is fully merged into the default branch (0 behind
+-    // and 0 ahead of it), skipping the default and the checked-out branch.
+-    void deleteMergedBranches();
+     void deleteSelectedBranches();
+     QWidget *buildReleasesTab();
+     void loadReleasesPanel();
+@@ -1309,7 +1284,6 @@ private:
+     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
+     void flashMessage(const QString &text, bool error = false);
+     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
+-    void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
+     void showFullMessageDialog(); // scrollable modal with the full (un-elided) toast
+     MessageRow *addMessageRow(const ChatMessage &message);
+     void rebuildConversationView();
+@@ -1489,8 +1463,6 @@ private:
+     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
+     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
+     QString m_topMessageRaw;              // plain text of the current toast, for copy
+-    QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
+-    int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
+     bool m_topMessageElided = false;      // current toast was truncated (hover opens the full modal)
+     bool m_topMessageDialogOpen = false;  // guards against stacking the full-message modal
+     bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
+@@ -1693,7 +1665,6 @@ private:
+     QTableWidget *m_branchesTable = nullptr;
+     QLabel *m_branchesSummary = nullptr;
+     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
+-    QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
+     QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
+     QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
+     QTextBrowser *m_branchDiffView = nullptr;
+@@ -2154,10 +2125,6 @@ private:
+     void notifyAgentWaiting(int sessionId, bool needsPermission);
+     QHash<int, QStringList> m_streamFiles;
+     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+-    // Snapshot of each live stream session, captured at launch so transcript
+-    // events can be persisted to disk without depending on m_agentSessions
+-    // (which doesn't yet hold a freshly created ad-hoc session). Issue #41.
+-    QHash<int, AgentSession> m_streamSessionInfo;
+     // customPrompt, when non-empty, is used as the agent's task verbatim (the
+     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
+     // derived from `issue`.
+@@ -2169,11 +2136,6 @@ private:
+     void refreshAgentFilesPanel(int sessionId);
+     void maybeCreatePullForStreamSession(int sessionId);
+     bool isStreamTranscriptSession(int sessionId) const;
+-    // Lazily restore a session's persisted transcript events from disk (issue
+-    // #41) so the rich transcript survives an app restart even after the live
+-    // stream object is gone. No-op for sessions already in memory or with no
+-    // persisted events.
+-    void ensureStreamEventsLoaded(int sessionId);
+     // Stop a live Claude Code stream session (the Stop button). stop() emits no
+     // `finished`, so transition the session to Stopped and refresh here.
+     void stopStreamSession(int sessionId);
+@@ -2217,12 +2179,12 @@ private:
+     // start a brand-new agent in the open repo, not tied to any issue (issue #273).
+     QPlainTextEdit *m_agentNewPromptEdit = nullptr;
+     QComboBox *m_agentNewProvider = nullptr; // OpenAI API | Claude API | Claude Code
++    QComboBox *m_agentNewModel = nullptr;    // Claude Code model picker (issue #36)
+     QPushButton *m_agentStartButton = nullptr;
+     void startAdHocAgent();
+     QPushButton *m_agentStopButton = nullptr;
+     QPushButton *m_agentContinueButton = nullptr;
+     QPushButton *m_agentDeleteButton = nullptr;
+-    QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
+     QPushButton *m_agentTestApiKeyButton = nullptr;
+     QLabel *m_agentOpenAiSpend = nullptr;
+     QLabel *m_agentApiKeyStatus = nullptr;
+@@ -2320,9 +2282,6 @@ private:
+     QPushButton *m_issueNewButton = nullptr;
+     QPushButton *m_issueSyncButton = nullptr;
+     QPushButton *m_issuePrioritizeButton = nullptr;
+-    // Agent picker sitting next to "Prioritize from README" so the run can use
+-    // any provider, not just the saved default. Seeded from the default agent.
+-    QComboBox *m_issuePrioritizeAgentCombo = nullptr;
+     bool m_prioritizeInFlight = false;
+     QPushButton *m_issueCopyButton = nullptr;
+     QPushButton *m_issueCopyAllButton = nullptr;
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index 3287762c..5832992a 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -1,4 +1,3 @@
+-#include "../src/AgentStore.h"
+ #include "../src/CommitCommentStore.h"
+ #include "../src/CoveCrypto.h"
+ #include "../src/CoveStore.h"
+@@ -849,46 +848,6 @@ int main(int argc, char *argv[])
+               "listCoves enumerates the repo's cove envelopes");
+     }
+ 
+-    // AgentStore persists a Claude Code session's stream-json transcript so it
+-    // survives an app restart (issue #41): events append one per line, reload in
+-    // order, and clearEvents starts a fresh run.
+-    {
+-        QTemporaryDir tmp;
+-        check(tmp.isValid(), "agent store temp dir is valid");
+-        AgentStore store(tmp.path());
+-        AgentSession session;
+-        session.owner = "octo";
+-        session.name = "demo";
+-        session = store.createSession(session);
+-
+-        check(store.loadEvents(session).isEmpty(),
+-              "a fresh agent session has no persisted transcript events");
+-
+-        store.appendEvent(session, QJsonObject{{"type", "_local_user"},
+-                                               {"text", "do the thing"}});
+-        store.appendEvent(session,
+-                          QJsonObject{{"type", "assistant"}, {"seq", 2}});
+-        const QList<QJsonObject> events = store.loadEvents(session);
+-        check(events.size() == 2, "appended transcript events reload from disk");
+-        check(!events.isEmpty() &&
+-                  events.first().value("type").toString() == "_local_user" &&
+-                  events.first().value("text").toString() == "do the thing",
+-              "the first reloaded event is the initial user prompt, intact");
+-        check(events.size() == 2 && events.at(1).value("seq").toInt() == 2,
+-              "transcript events reload in append order");
+-
+-        // Reopening the store mimics an app restart: the transcript is still there.
+-        AgentStore reopened(tmp.path());
+-        const QList<AgentSession> sessions = reopened.loadAllSessions();
+-        check(sessions.size() == 1 &&
+-                  reopened.loadEvents(sessions.first()).size() == 2,
+-              "transcript events survive reopening the store (app restart)");
+-
+-        store.clearEvents(session);
+-        check(store.loadEvents(session).isEmpty(),
+-              "clearEvents starts the next run with a clean transcript");
+-    }
+-
+     if (failures) {
+         qCritical("TESTS FAILED");
+         return 1;
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 151b3268..a06df46a 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -443,30 +443,6 @@ int main(int argc, char *argv[])
+     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
+         dumpTallMinimums(window);
+ 
+-    // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
+-    // rebuild must keep the same worktree selected so its diff/detail pane stays
+-    // on screen instead of going blank.
+-    QTemporaryDir wtRepo;
+-    if (initGitRepo(wtRepo)) {
+-        runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+-        const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
+-        runGitChecked(wtRepo.path(),
+-                      {"worktree", "add", wtPath, "feature/keep-selected"});
+-        const int wtIdx =
+-            window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
+-        window.testOpenRepository(wtIdx);
+-        QApplication::processEvents();
+-        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+-        check(window.testSelectedWorktreeBranch() ==
+-                  QStringLiteral("feature/keep-selected"),
+-              QStringLiteral("selecting a worktree records it as the selection"));
+-        window.testReloadWorktreesPanel(); // what "Update from main" does after merging
+-        check(window.testSelectedWorktreeBranch() ==
+-                  QStringLiteral("feature/keep-selected"),
+-              QStringLiteral("reloading the worktrees panel keeps the selected "
+-                             "worktree instead of going blank (#272)"));
+-    }
+-
+     // issue #251: the Settings "Default agent" choice should seed the agent
+     // pickers. A window built while the default is Claude Code must start both
+     // the quick-add and issue-detail pickers there (not the OpenAI fallback),

@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 269
 title: show on the agent detail page if we hit our session limit and update the status bar in the top top nav usage to show it
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 57
+progress: 60
 assignees: []
 createdAt: 1782434273454
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

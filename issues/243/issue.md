@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 243
 title: still not seeing teh nodes show up in the mirror nodes section i see 2 on the mirror and none on the source of truth please fix
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 16
 progress: 0
 assignees: []
 createdAt: 1782361704980

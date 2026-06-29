@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 281
 title: when I click to add to the discussion it does not click
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 67
+progress: 35
 assignees: []
 createdAt: 1782487418815
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

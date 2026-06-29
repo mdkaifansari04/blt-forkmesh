@@ -2,16 +2,18 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QPointer>
 #include <QScrollArea>
 #include <QString>
+#include <QVector>
 
 class QVBoxLayout;
 class QWidget;
 class QLabel;
 class QPropertyAnimation;
-class QPushButton;
 class QResizeEvent;
 class Collapsible;
+class ScrollJumpButtons;
 
 // Renders a Claude Code session as a native, extension-style chat transcript by
 // consuming the stream-json events from ClaudeStreamSession: assistant text,
@@ -48,12 +50,33 @@ protected:
     void resizeEvent(QResizeEvent *e) override;
 
 public:
-    // Jump the view to the start / end of the transcript (used by the floating
-    // ▲/▼ buttons in the corner).
+    // Jump the view to the start / end of the transcript (driven by the floating
+    // ▲/▼ ScrollJumpButtons in the corner).
     void scrollToTop();
     void scrollToBottom();
+    // Land on the latest content immediately (no smooth animation) and keep it
+    // pinned through any pending relayout — used when a session is opened so a
+    // click always shows the bottom of its transcript (adhoc #128). A plain
+    // scrollToBottom() animation would be overridden by, and fight, the deferred
+    // rangeChanged pin after the freshly-rebuilt rows lay out.
+    void jumpToBottom();
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
+
+    // ---- transcript search (adhoc #201) ------------------------------------
+    // Find query (case-insensitive) across the rendered transcript, highlighting
+    // every match, selecting the first and scrolling it into view; returns the
+    // total number of matches. clearSearch() removes all highlighting.
+    // searchNext()/searchPrev() step through the matches (wrapping at the ends).
+    // searchResultsChanged() reports "current of total" (current is 1-based, 0
+    // when there are no matches) so the host can show a counter.
+    int search(const QString &query);
+    void searchNext();
+    void searchPrev();
+    void clearSearch();
+
+signals:
+    void searchResultsChanged(int current, int total);
 
 private:
     void applyScheme();
@@ -66,8 +89,6 @@ private:
     void cycleActivityWord();
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
-    void positionScrollButtons();
-    void updateScrollButtons();
     QString accentFor(const QString &toolName) const;
 
     QWidget *makeBubble(const QString &title, const QString &markdown,
@@ -107,8 +128,7 @@ private:
     // Follow mode: while the view is at the bottom, new content keeps it pinned
     // there; scrolling up releases it until the user returns to the bottom.
     bool m_stickBottom = true;
-    QPushButton *m_toTopBtn = nullptr;    // floating ▲ jump-to-top
-    QPushButton *m_toBottomBtn = nullptr; // floating ▼ jump-to-bottom
+    ScrollJumpButtons *m_jumpButtons = nullptr; // floating ▲/▼ jump corner
     bool m_splitDiffs = false;            // side-by-side vs unified diffs
     QWidget *m_activity = nullptr;        // live "what it's doing" ticker row
     QLabel *m_activityLabel = nullptr;
@@ -130,4 +150,26 @@ private:
     QPropertyAnimation *m_scrollAnim = nullptr; // smooth scrolling
     qint64 m_totalTokens = 0;
     double m_totalCost = 0.0;
+
+    // ---- transcript search state ------------------------------------------
+    // Each label that contains at least one match, in top-to-bottom order, with
+    // its pristine (un-highlighted) text/format so highlighting is reversible.
+    struct LabelHit {
+        QPointer<QLabel> label;
+        Qt::TextFormat fmt;
+        QString orig;
+        int count; // matches in this label
+    };
+    void rebuildSearchMatches();   // recompute m_searchLabels from m_searchQuery
+    void renderSearchHighlights(); // (re)apply highlights, marking the current one
+    void restoreSearchOriginals(); // put every modified label back as it was
+    void scrollToCurrentMatch();
+    void stepMatch(int delta);
+    QLabel *currentMatchLabel() const;
+    QString highlightedTextFor(const QString &orig, Qt::TextFormat fmt,
+                               int currentLocalOcc) const;
+    QString m_searchQuery;
+    QVector<LabelHit> m_searchLabels;
+    int m_searchTotal = 0;    // sum of all per-label counts
+    int m_searchCurrent = -1; // global match index, -1 = none selected
 };

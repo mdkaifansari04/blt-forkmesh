@@ -16,7 +16,36 @@
 #include <unistd.h>
 #endif
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace {
+
+// The offscreen/minimal QPA plugins don't override
+// QPlatformWindow::propagateSizeHints(), so Qt's base implementation logs a
+// qWarning ("This plugin does not support propagateSizeHints()") every time a
+// top-level window pushes its size constraints — including the initial show().
+// Headless ForkMesh forces the offscreen platform, so that harmless noise lands
+// straight in the interactive `forkmesh>` console (issue #300). Drop just that
+// one message and forward everything else through Qt's default behaviour.
+QtMessageHandler g_previousMessageHandler = nullptr;
+
+void filterPlatformNoise(QtMsgType type, const QMessageLogContext &context,
+                         const QString &message)
+{
+    if (message.contains(QLatin1String("propagateSizeHints")))
+        return;
+    if (g_previousMessageHandler) {
+        g_previousMessageHandler(type, context, message);
+        return;
+    }
+    // No prior handler installed: replicate Qt's default (stderr, abort on fatal).
+    fprintf(stderr, "%s\n",
+            qFormatLogMessage(type, context, message).toLocal8Bit().constData());
+    fflush(stderr);
+    if (type == QtFatalMsg)
+        abort();
+}
 
 // Headless = no GUI available / wanted. Triggered explicitly with --headless or
 // --cli, or auto-detected on Linux when there's no display server to connect to
@@ -62,6 +91,12 @@ int main(int argc, char *argv[])
     // CLI node.
     if (headless && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
+
+    // Headless always runs on offscreen/minimal, whose propagateSizeHints()
+    // warning would otherwise spam the `forkmesh>` console. Install the filter
+    // only here so the desktop GUI keeps Qt's untouched default logging.
+    if (headless)
+        g_previousMessageHandler = qInstallMessageHandler(filterPlatformNoise);
 
     // The embedded terminal (TerminalWidget) renders itself from a forkpty PTY —
     // no xterm, no X11 reparenting — so it works the same on X11 and Wayland and

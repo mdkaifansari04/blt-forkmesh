@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 193
 title: make a chekcbox in settings to auto sync  new issues (if clean)
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 20
-progress: 0
+priority: 25
+progress: 35
 assignees: []
 createdAt: 1782339177891
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

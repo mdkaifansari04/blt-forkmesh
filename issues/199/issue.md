@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 199
 title: don't pop up errors, just show the toast up top and make it so we can mouse over and see the modal but only if we mouse over
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 23
-progress: 0
+priority: 84
+progress: 60
 assignees: []
 createdAt: 1782348641656
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

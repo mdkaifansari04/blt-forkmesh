@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 253
 title: make sure the claude code agent creates a pr from the worktree when its done
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 19
 progress: 0
 assignees: []
 createdAt: 1782423356269

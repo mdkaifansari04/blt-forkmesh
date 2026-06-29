@@ -35,6 +35,7 @@ QJsonObject AgentSession::toJson() const
     obj["name"] = name;
     obj["issueNumber"] = issueNumber;
     obj["issueTitle"] = issueTitle;
+    obj["prompt"] = prompt;
     obj["provider"] = provider;
     obj["model"] = model;
     obj["createPr"] = createPr;
@@ -58,6 +59,8 @@ QJsonObject AgentSession::toJson() const
     obj["costUsd"] = costUsd;
     obj["spendBeforeUsd"] = spendBeforeUsd;
     obj["spendAfterUsd"] = spendAfterUsd;
+    obj["numTurns"] = numTurns;
+    obj["durationMs"] = durationMs;
     obj["lastError"] = lastError;
     return obj;
 }
@@ -70,6 +73,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.name = obj.value("name").toString();
     session.issueNumber = obj.value("issueNumber").toInt();
     session.issueTitle = obj.value("issueTitle").toString();
+    session.prompt = obj.value("prompt").toString();
     session.provider = obj.value("provider").toString();
     session.model = obj.value("model").toString();
     session.createPr = obj.value("createPr").toBool();
@@ -93,6 +97,8 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.costUsd = obj.value("costUsd").toDouble();
     session.spendBeforeUsd = obj.value("spendBeforeUsd").toDouble();
     session.spendAfterUsd = obj.value("spendAfterUsd").toDouble();
+    session.numTurns = obj.value("numTurns").toInt();
+    session.durationMs = obj.value("durationMs").toVariant().toLongLong();
     session.lastError = obj.value("lastError").toString();
     return session;
 }
@@ -172,6 +178,38 @@ QString AgentStore::readLog(const AgentSession &session) const
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return QString();
     return QString::fromUtf8(file.readAll());
+}
+
+void AgentStore::appendEvent(const AgentSession &session, const QJsonObject &ev) const
+{
+    QDir().mkpath(sessionDir(session));
+    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+    if (!file.open(QIODevice::Append))
+        return;
+    file.write(QJsonDocument(ev).toJson(QJsonDocument::Compact));
+    file.write("\n");
+}
+
+QList<QJsonObject> AgentStore::loadEvents(const AgentSession &session) const
+{
+    QList<QJsonObject> events;
+    QFile file(sessionDir(session) + QStringLiteral("/events.jsonl"));
+    if (!file.open(QIODevice::ReadOnly))
+        return events;
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(line);
+        if (doc.isObject())
+            events.append(doc.object());
+    }
+    return events;
+}
+
+void AgentStore::clearEvents(const AgentSession &session) const
+{
+    QFile::remove(sessionDir(session) + QStringLiteral("/events.jsonl"));
 }
 
 void AgentStore::writePatch(const AgentSession &session, const QString &patch) const

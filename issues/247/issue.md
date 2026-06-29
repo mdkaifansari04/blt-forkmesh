@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 247
 title: make sure when we restart forkmesh the agents keep running and default quick issue agent to claude code
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 18
 progress: 0
 assignees: []
 createdAt: 1782363243466

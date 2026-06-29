@@ -2,7 +2,7 @@
   "name": "forkmesh",
   "displayName": "ForkMesh",
   "description": "Browse ForkMesh issues and hand them to Claude Code or Codex, right inside the IDE.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "forkmesh",
   "license": "MIT",
   "icon": "media/forkmesh.png",

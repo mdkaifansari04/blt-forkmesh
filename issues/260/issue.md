@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 260
 title: allow claude clde prompt to be edited and saved in the settings
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 50
+progress: 65
 assignees: []
 createdAt: 1782428147358
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
