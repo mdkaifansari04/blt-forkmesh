@@ -50994,7 +50994,52 @@ void MainWindow::refreshActionsTable()
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
+    refreshActionFailureBanner();
     updateActionsTabIndicator();
+}
+
+void MainWindow::refreshActionFailureBanner()
+{
+    if (!m_actionFailureBanner)
+        return;
+
+    // Find the most recent failed run for the repo whose Actions tab this is, so a
+    // failure surfaces no matter which workflow is selected in the left column.
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+    const ActionRun *latest = nullptr;
+    for (const ActionRun &run : m_actionRuns) {
+        if (run.owner != owner || run.name != name)
+            continue;
+        if (run.status != ActionStatus::Failed)
+            continue;
+        if (!latest || run.createdAtMs > latest->createdAtMs ||
+            (run.createdAtMs == latest->createdAtMs && run.id > latest->id))
+            latest = &run;
+    }
+
+    // Nothing failed, or the only failure is one the user already dismissed: hide.
+    if (!latest || latest->id == m_actionFailureDismissedRunId) {
+        m_actionFailureBannerRunId = -1;
+        m_actionFailureBanner->hide();
+        return;
+    }
+
+    m_actionFailureBannerRunId = latest->id;
+    const QString when =
+        latest->createdAtMs > 0
+            ? QDateTime::fromMSecsSinceEpoch(latest->createdAtMs)
+                  .toString(QStringLiteral("MMM d  hh:mm"))
+            : QString();
+    m_actionFailureLabel->setText(
+        QString::fromUtf8("\xE2\x9A\xA0  Action failed: %1%2")
+            .arg(latest->workflowName,
+                 when.isEmpty() ? QString()
+                                : QString::fromUtf8(" \xC2\xB7 ") + when));
+    m_actionFailureBanner->show();
 }
 
 void MainWindow::showLatestVisibleActionRun()
@@ -52409,9 +52454,48 @@ QWidget *MainWindow::buildRepoActionsTab()
     splitter->setStretchFactor(1, 0);
     splitter->setStretchFactor(2, 1);
 
-    auto *layout = new QHBoxLayout(page);
+    // Failure alert pinned across the very top of the Actions tab. A failed run
+    // (e.g. a Cloudflare deploy that errored out) otherwise only shows as red text
+    // buried in the runs list; this makes it impossible to miss. "View" jumps to
+    // the run; the × dismisses it until the next, newer failure.
+    m_actionFailureBanner = new QWidget;
+    m_actionFailureBanner->setObjectName("actionFailureBanner");
+    m_actionFailureLabel = new QLabel;
+    m_actionFailureLabel->setWordWrap(true);
+    m_actionFailureLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *failureViewButton = new QPushButton("View");
+    failureViewButton->setObjectName("ghostButton");
+    failureViewButton->setProperty("buttonSize", "sm");
+    failureViewButton->setCursor(Qt::PointingHandCursor);
+    connect(failureViewButton, &QPushButton::clicked, this, [this] {
+        if (m_actionFailureBannerRunId >= 0)
+            openActionRunFromNotification(m_actionFailureBannerRunId);
+    });
+    auto *failureDismissButton = new QPushButton(QString::fromUtf8("\xC3\x97"));
+    failureDismissButton->setObjectName("ghostButton");
+    failureDismissButton->setProperty("buttonSize", "sm");
+    failureDismissButton->setCursor(Qt::PointingHandCursor);
+    failureDismissButton->setToolTip("Dismiss until the next failure");
+    connect(failureDismissButton, &QPushButton::clicked, this, [this] {
+        m_actionFailureDismissedRunId = m_actionFailureBannerRunId;
+        refreshActionFailureBanner();
+    });
+    auto *failureRow = new QHBoxLayout(m_actionFailureBanner);
+    failureRow->setContentsMargins(12, 8, 12, 8);
+    failureRow->setSpacing(8);
+    failureRow->addWidget(m_actionFailureLabel, 1);
+    failureRow->addWidget(failureViewButton);
+    failureRow->addWidget(failureDismissButton);
+    m_actionFailureBanner->setStyleSheet(
+        "#actionFailureBanner{background:#2d1316; border-bottom:1px solid #5c2125;}"
+        "#actionFailureBanner QLabel{color:#ff7b72;}");
+    m_actionFailureBanner->hide();
+
+    auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(splitter);
+    layout->setSpacing(0);
+    layout->addWidget(m_actionFailureBanner);
+    layout->addWidget(splitter, 1);
     return page;
 }
 
