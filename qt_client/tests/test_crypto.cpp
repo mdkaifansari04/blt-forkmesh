@@ -890,6 +890,86 @@ int main(int argc, char *argv[])
                   "a merged branch-backed PR's diff stays viewable via the snapshot");
         }
 
+        // --- A branch-backed PR survives a corrupt stored blob by rebuilding
+        // --- its commits from the mirror's refs ------------------------------
+        // Reproduces the "corrupt binary patch" failure: a PR pushed from
+        // another node whose head branch has not landed in this working tree
+        // falls back to the committed commits.mbox, which the inbox can deliver
+        // truncated. Reconstructing the series from real git objects (the
+        // mirror) sidesteps the damaged blob entirely.
+        {
+            auto writeBytes = [&](const QString &rel, const QByteArray &bytes) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(bytes);
+                f.close();
+            };
+            const QString cbBase = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            git({"checkout", "-q", "-b", "feat-bin"});
+            QByteArray binary; // a genuine binary file → a "GIT binary patch"
+            for (int i = 0; i < 256; ++i)
+                binary.append(static_cast<char>(i));
+            writeBytes("asset.bin", binary);
+            git({"add", "asset.bin"});
+            git({"commit", "-q", "-m", "bin: add asset"});
+            git({"checkout", "-q", cbBase});
+
+            PullStore plain(tmp.path(), QString(), &identity, "tester");
+            const int pbn = plain.createPull("Binary change", "body", cbBase,
+                                             "feat-bin", QString(), QString(),
+                                             /*branchBacked=*/true, &err);
+            check(pbn > 0,
+                  "createPull stores a branch-backed PR carrying a binary file");
+            PullRequest seen;
+            for (const PullRequest &p : plain.loadAll())
+                if (p.number == pbn)
+                    seen = p;
+            check(seen.commits.contains("GIT binary patch"),
+                  "the binary file reconstructs as a real binary patch from refs");
+
+            // Mirror the repo, then make this node look like one that holds the
+            // PR pointer but not its branch, with a truncated commits.mbox where
+            // the inbox would have dropped one.
+            QTemporaryDir mirrorRoot;
+            const QString mirror = mirrorRoot.path() + "/mirror.git";
+            {
+                QProcess clone;
+                clone.start("git",
+                            {"clone", "--bare", "-q", tmp.path(), mirror});
+                clone.waitForFinished(8000);
+            }
+            git({"branch", "-D", "feat-bin"});
+            writeBytes(
+                "pulls/" + QString::number(pbn) + "/commits.mbox",
+                QByteArray(
+                    "From 0000000000000000000000000000000000000000 Mon Sep 17 "
+                    "00:00:00 2001\nFrom: x <x@x>\nDate: Thu, 1 Jan 1970 "
+                    "00:00:00 +0000\nSubject: [PATCH] bin\n\n---\n asset.bin | "
+                    "Bin\n\ndiff --git a/asset.bin b/asset.bin\nnew file mode "
+                    "100644\nindex 0000000000000000000000000000000000000000.."
+                    "1111111111111111111111111111111111111111\nGIT binary "
+                    "patch\nliteral 256\nzcmZ!!CORRUPT!!\n\nliteral 0\n\n-- "
+                    "\n2.0.0\n"));
+
+            // With no reachable refs, the corrupt blob is the only source: fail.
+            PullStore noMirror(tmp.path(), QString(), &identity, "tester");
+            QString blobErr;
+            check(!noMirror.mergePull(pbn, &blobErr),
+                  "a branch-backed PR with no reachable refs and a corrupt blob "
+                  "fails to apply");
+
+            // With the mirror, the commits come from real objects and apply.
+            PullStore viaMirror(tmp.path(), mirror, &identity, "tester");
+            check(viaMirror.mergePull(pbn, &err),
+                  "the PR merges once its commits are rebuilt from the mirror");
+            QFile applied(tmp.path() + "/asset.bin");
+            check(applied.open(QIODevice::ReadOnly) &&
+                      applied.readAll() == binary,
+                  "merging restores the binary file's exact bytes from the "
+                  "mirror's commits");
+        }
+
         // --- CommitCommentStore round-trip -------------------------------
         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
         CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
