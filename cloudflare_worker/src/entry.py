@@ -88,6 +88,11 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|commits|commit)$")
+# Release asset download (issue #304): the bytes live in the node's
+# content-addressed store (never in git), streamed back over the host tunnel.
+# Stable, content-addressed URL — immutable, so it caches forever at the edge.
+RELEASE_BLOB_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
@@ -655,6 +660,27 @@ def git_bytes_response(data, content_type):
                 "headers": {
                     "content-type": content_type,
                     "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+            }
+        ),
+    )
+
+
+def release_bytes_response(data, sha256):
+    # A downloaded release asset. Content-addressed, so the bytes for a hash never
+    # change: cache forever at the edge and let the client verify against the
+    # manifest's sha256 (echoed back in x-content-sha256).
+    data = bytes(data)
+    return JsResponse.new(
+        _to_js(data),
+        to_js(
+            {
+                "status": 200,
+                "headers": {
+                    "content-type": "application/octet-stream",
+                    "content-length": str(len(data)),
+                    "cache-control": "public, max-age=31536000, immutable",
+                    "x-content-sha256": sha256.lower(),
                 },
             }
         ),
@@ -6192,6 +6218,18 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
 
+        release_blob_match = RELEASE_BLOB_RE.match(url.path)
+        if release_blob_match:
+            owner = safe_segment(release_blob_match.group(1))
+            repo = safe_segment(release_blob_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            # Public, content-addressed download: forward to the repo's host DO,
+            # which streams the blob from a serving node over the tunnel.
+            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+            host_object = self.env.FORKMESH_HOST.get(host_id)
+            return await host_object.fetch(request)
+
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
             owner = safe_segment(host_match.group(1))
@@ -6534,7 +6572,7 @@ class ForkMeshHost(DurableObject):
         if self._repo_bi:
             return self._repo_bi
         match = (REPO_HOST_RE.match(path) or GIT_INFO_RE.match(path)
-                 or GIT_PACK_RE.match(path))
+                 or GIT_PACK_RE.match(path) or RELEASE_BLOB_RE.match(path))
         if not match:
             return None
         owner = safe_segment(match.group(1))
@@ -6610,6 +6648,11 @@ class ForkMeshHost(DurableObject):
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
             )
+
+        release_blob_match = RELEASE_BLOB_RE.match(path)
+        if release_blob_match:
+            await self._mark_present(path)
+            return await self._release_blob(release_blob_match.group(3))
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         if action in ("tree", "blob", "commits", "commit"):
@@ -6736,6 +6779,45 @@ class ForkMeshHost(DurableObject):
         }
         payload["ok"] = True
         return json_response(payload)
+
+    async def _release_blob(self, sha256):
+        # Stream a content-addressed release asset from a serving node. Reuses the
+        # chunked git-stream transport (git-chunk/git-end → self.git_buffers), so
+        # arbitrarily large binaries flow without the 4 MB inline /blob cap.
+        if not valid_sha256_hex(sha256):
+            return Response("not found", status=404)
+        self._ensure()
+        host = self._best_host()
+        if host is None:
+            return Response(
+                "No host is currently serving this release.", status=503)
+        self.counter += 1
+        req_id = "r%d" % self.counter
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        self.git_buffers[req_id] = bytearray()
+        try:
+            host.send(json.dumps({
+                "type": "request", "reqId": req_id,
+                "op": "release-blob", "path": sha256.lower(),
+            }))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503)
+        try:
+            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            return Response("Host timed out.", status=504)
+        if not result.get("ok"):
+            err = str(result.get("error", ""))
+            status = 404 if err in ("not_found", "bad_hash") else 502
+            return Response("Release asset unavailable.", status=status)
+        return release_bytes_response(result.get("data", b""), sha256)
 
     def _drop_host(self, ws):
         # A send failed: force-close so the runtime drops it from getWebSockets.
