@@ -165,8 +165,9 @@
       return;
     }
     nodeName = value;
-    showStep("step-join");
-    loadDonationAddress();
+    // Signup is free: skip the (legacy) donation step and go straight to setting
+    // an email + password. Email verification confirms a real human afterward.
+    showStep("step-account");
   }
 
   // --- Step 2: donation ------------------------------------------------------
@@ -410,13 +411,13 @@
     if (!ok) {
       hint.textContent = body.error === "email_taken"
         ? "That email is already registered."
-        : body.error === "donation_required"
-          ? "We haven’t confirmed your donation yet - please wait a moment."
-          : "Could not create the account. Please try again.";
+        : "Could not create the account. Please try again.";
       hint.className = "hint bad";
       return;
     }
-    $("#done-name").textContent = "Node “" + (body.nodeName || nodeName) + "” is registered.";
+    $("#done-name").textContent = "Node “" + (body.nodeName || nodeName) +
+      "” is registered. Check " + (body.email || email) +
+      " to verify your address.";
     showStep("step-done");
   }
 
