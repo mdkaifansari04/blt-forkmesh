@@ -116,6 +116,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-tests
         tests/test_crypto.cpp
         resources/icons.qrc
+        src/ActionFile.h
+        src/ActionFile.cpp
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
         src/RoomCrypto.h
