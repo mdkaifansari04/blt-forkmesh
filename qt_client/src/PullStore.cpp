@@ -94,12 +94,17 @@ bool deriveFromRefs(const QString &dir, const QString &base, const QString &head
         return false;
     if (patch) {
         QByteArray diff;
-        runGit(dir, {"diff", base + "..." + head}, &diff);
+        // --binary embeds the literal/delta for binary files; without it the diff
+        // is only "Binary files differ", which `git apply` (the flat-patch merge
+        // and checkMergeable dry-run) cannot replay — so binary changes would
+        // silently fail to merge or be misreported as conflicts.
+        runGit(dir, {"diff", "--binary", base + "..." + head}, &diff);
         *patch = QString::fromUtf8(diff);
     }
     if (commits) {
         QByteArray mbox;
-        runGit(dir, {"format-patch", "--stdout", base + ".." + head}, &mbox);
+        runGit(dir, {"format-patch", "--binary", "--stdout", base + ".." + head},
+               &mbox);
         *commits = QString::fromUtf8(mbox);
     }
     return true;
@@ -1265,7 +1270,8 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
     }
 
     QByteArray diff;
-    if (!runGit(m_workTree, {"diff", pr.base + ".." + pr.head}, &diff, &err)) {
+    if (!runGit(m_workTree, {"diff", "--binary", pr.base + ".." + pr.head}, &diff,
+                &err)) {
         if (error)
             *error = QStringLiteral("Could not refresh the pull request patch: %1").arg(err);
         return false;
@@ -1786,13 +1792,14 @@ bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
     }
     const QString range = m_amBase + ".." + m_amBranch;
     QByteArray diff;
-    if (!runGit(m_workTree, {"diff", range}, &diff, &err)) {
+    if (!runGit(m_workTree, {"diff", "--binary", range}, &diff, &err)) {
         if (error)
             *error = "Could not refresh the pull request patch: " + err;
         return false;
     }
     QByteArray mbox;
-    if (!runGit(m_workTree, {"format-patch", "--stdout", range}, &mbox, &err)) {
+    if (!runGit(m_workTree, {"format-patch", "--binary", "--stdout", range}, &mbox,
+                &err)) {
         if (error)
             *error = "Could not refresh the pull request commits: " + err;
         return false;
