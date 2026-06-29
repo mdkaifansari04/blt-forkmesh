@@ -5,7 +5,7 @@ title: use the icons we have in the folder for web as well i guess move them to 
 status: open
 labels: [Partial]
 milestone: 
-priority: 30
+priority: 17
 progress: 40
 assignees: []
 createdAt: 1782353910582
