@@ -1,7 +1,3 @@
-diff --git a/cloudflare_worker/public/assets/hero.gif b/cloudflare_worker/public/assets/hero.gif
-new file mode 100644
-index 00000000..92272d35
-Binary files /dev/null and b/cloudflare_worker/public/assets/hero.gif differ
 diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
 index 522363b2..3a91196e 100644
 --- a/cloudflare_worker/public/index.html
