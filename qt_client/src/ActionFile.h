@@ -26,6 +26,13 @@ struct ActionWorkflow {
     QString error;
 
     bool triggersOnPush() const { return on.contains(QStringLiteral("push")); }
+    // Fires when a release is published (a tag is drafted from the Releases
+    // panel). Release-only workflows publish build artifacts and shouldn't run
+    // on every push.
+    bool triggersOnRelease() const
+    {
+        return on.contains(QStringLiteral("release"));
+    }
     // Opts the workflow into manual ("workflow_dispatch") runs the user can
     // trigger by hand from the Actions tab, optionally against a chosen branch.
     bool allowsManualRun() const
@@ -36,7 +43,8 @@ struct ActionWorkflow {
 
 // Parses a deliberately small YAML subset — enough for the workflow schema:
 //   name: <scalar>
-//   on: push | [push, workflow_dispatch] | block list   # workflow_dispatch = manual
+//   on: push | release | [release, workflow_dispatch] | block list
+//       # release = fires when a release tag is drafted; workflow_dispatch = manual
 //   env: { KEY: value, ... }
 //   jobs: { <job>: { steps: [ { name, run }, ... ] } }
 //   steps: [ ... ]          # flattened top-level form is also accepted
