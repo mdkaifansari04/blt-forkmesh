@@ -22,10 +22,16 @@ public:
     explicit ActionRunner(ActionStore *store, QObject *parent = nullptr);
 
     bool busy() const { return m_busy; }
+    // The id of the run currently executing, or -1 when idle.
+    int currentRunId() const { return m_busy ? m_run.id : -1; }
 
     void start(const ActionRun &run, const ActionWorkflow &workflow,
                const QString &mirrorPath, const QString &workTreePath,
                const QMap<QString, QString> &variables);
+
+    // Abort the in-flight run: signal the step's process group, clean up the
+    // throwaway worktree and record the run as Cancelled. No-op when idle.
+    void stop();
 
 signals:
     void logLine(int runId, const QString &text);
@@ -58,6 +64,7 @@ private:
 
     ActionStore *m_store;
     bool m_busy = false;
+    bool m_stopping = false; // a stop() was requested; complete() records Cancelled
     Phase m_phase = Phase::Idle;
     ActionRun m_run;
     ActionWorkflow m_workflow;
