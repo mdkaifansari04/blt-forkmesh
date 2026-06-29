@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 214
 title: add the ability on a pr to - build and preview so it builds the pr and launches the app
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 19
