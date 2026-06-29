@@ -359,16 +359,21 @@ publish_release_binary() {
     cp "$built" "$asset"
     chmod 0755 "$asset" || true
     mkdir -p "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
-    ../tools/forkmesh-release-publish.sh \
+    local publish_output
+    if ! publish_output="$(../tools/forkmesh-release-publish.sh \
         --channel latest \
         --tag "${FORKMESH_TAG:-}" \
         --cas-dir "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}" \
         ${FORKMESH_REPO:+--repo "$FORKMESH_REPO"} \
-        "$asset" 2>&1 | tail -3
+        "$asset" 2>&1)"; then
+        echo "ERROR: failed to publish release binary." >&2
+        return 1
+    fi
+    printf '%s\n' "$publish_output" | tail -3
     rm -f "$asset"
 
     # Stage the release metadata for commit.
-    git add ../releases/latest/SHASUMS256.txt ../releases/latest/release.json
+    git add ../releases/latest/SHASUMS256.txt ../releases/latest/release.json || return 1
 }
 
 # Commit release metadata changes if any were staged.
