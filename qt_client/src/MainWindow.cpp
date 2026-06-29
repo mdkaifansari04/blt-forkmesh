@@ -10333,7 +10333,8 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "Provision a remote machine onto the network. Enter its address and SSH "
-        "login, give it a node name, and ForkMesh will SSH in and run the hosted "
+        "login and give it a node name, then click Add host to save it. With the "
+        "host saved, click Install ForkMesh and it will SSH in and run the hosted "
         "installer in a plain shell. When it finishes the new node joins the "
         "network and shows up in each repository's Mirror nodes list."));
     subtitle->setObjectName("mutedLabel");
@@ -10381,6 +10382,15 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *runRow = new QHBoxLayout;
     runRow->setContentsMargins(0, 0, 0, 0);
+    // Add the host first (saves name/IP/user), then run the installer against
+    // the saved host. Saving up front means the server info is remembered even
+    // before — or if — the install runs.
+    m_hostAddButton = new QPushButton(QStringLiteral("Add host"));
+    m_hostAddButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_hostAddButton, "plus", 14);
+    connect(m_hostAddButton, &QPushButton::clicked, this,
+            &MainWindow::addHostFromForm);
+    runRow->addWidget(m_hostAddButton);
     m_hostInstallButton = new QPushButton(QStringLiteral("Install ForkMesh"));
     m_hostInstallButton->setObjectName("primaryButton");
     m_hostInstallButton->setCursor(Qt::PointingHandCursor);
@@ -10500,8 +10510,28 @@ void MainWindow::loadHostIntoForm(int row, int /*column*/)
             "to run the installer again.").arg(name));
 }
 
+void MainWindow::addHostFromForm()
+{
+    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
+    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QString::fromUtf8(
+                "Enter the host IP, SSH username and a node name to add a host."));
+        return;
+    }
+    // Save the server info up front (no password) with a not-yet-installed
+    // status. Running the installer later flips it to "installed".
+    rememberHost(node, ip, user, QStringLiteral("added"));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(QString::fromUtf8(
+            "Saved \"%1\". Enter the SSH password and click Install ForkMesh to "
+            "provision it.").arg(node));
+}
+
 void MainWindow::rememberHost(const QString &name, const QString &ip,
-                              const QString &user)
+                              const QString &user, const QString &status)
 {
     QSettings settings;
     QJsonArray hosts =
@@ -10512,7 +10542,7 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     entry.insert(QStringLiteral("name"), name);
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
-    entry.insert(QStringLiteral("status"), QStringLiteral("installed"));
+    entry.insert(QStringLiteral("status"), status);
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
         if (hosts.at(i).toObject().value("name").toString() == name) {
@@ -10595,6 +10625,10 @@ void MainWindow::runHostInstall()
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
         user + QStringLiteral("@") + ip, remoteCmd};
 
+    // Persist the server info before we start so it is saved even if the install
+    // fails partway through; a successful run flips the status to "installed".
+    rememberHost(node, ip, user, QStringLiteral("installing"));
+
     m_hostInstallLog->clear();
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
     // nothing here leaks it).
@@ -10649,6 +10683,7 @@ void MainWindow::runHostInstall()
                         m_hostInstallStatus->setText(QString::fromUtf8(
                             "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
                             "output above."));
+                    rememberHost(node, ip, user, QStringLiteral("install failed"));
                 }
                 if (m_hostInstallProcess) {
                     m_hostInstallProcess->deleteLater();
@@ -17858,9 +17893,21 @@ void MainWindow::renderPullDiff(const QString &filePath)
     const QString html = renderDiffHtml(diff, files, QString(), QString(),
                                         QString(), filePath, notes, viewed);
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
+    // Handing an enormous single-file diff to QTextEdit::setHtml() parses, styles
+    // and lays it all out on the GUI thread, freezing the window for seconds
+    // (issue #244, same cause as the branch-diff cap in #187). Past a sane size,
+    // show a notice instead so selecting a giant file in the list stays
+    // responsive. Capping body here also feeds the skip-when-unchanged key below.
+    constexpr int kMaxDiffHtmlChars = 1'000'000;
     const QString body =
-        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                       : html;
+        html.size() > kMaxDiffHtmlChars
+            ? QStringLiteral("<p style='color:#d29922'>This file's diff is too "
+                             "large to render here (%1 KB). View it in your "
+                             "editor.</p>")
+                  .arg(diff.size() / 1024)
+            : html.isEmpty()
+                  ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
+                  : html;
 
     // Laying out a large diff's HTML table in QTextDocument can block the GUI
     // thread for a second or more. A background PR refresh re-runs showPull(),
@@ -19518,6 +19565,31 @@ bool MainWindow::runMergeConflictEditor(
     oursBtn->setToolTip("Keep our version of this conflict");
     theirsBtn->setToolTip("Take their version of this conflict");
     bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
+    // Tint the accept buttons to echo ConflictHighlighter's side colours: blue
+    // for "ours", green for "theirs", so they read against the highlighted diff.
+    // Give them their own objectName: the per-widget stylesheet below targets
+    // that ID so it outranks the global "#ghostButton { background: transparent }"
+    // rule on specificity (an ID selector), otherwise the tint never shows.
+    oursBtn->setObjectName("conflictOursBtn");
+    theirsBtn->setObjectName("conflictTheirsBtn");
+    const bool darkConflict = currentThemeIsDark();
+    const auto tintConflictBtn = [](QPushButton *b, const QString &bg,
+                                    const QString &border, const QString &fg,
+                                    const QString &hoverBg) {
+        b->setStyleSheet(QStringLiteral(
+                             "QPushButton#%1 { background:%2; border:1px solid %3;"
+                             " color:%4; font-weight:600; padding:3px 10px;"
+                             " border-radius:6px; }"
+                             "QPushButton#%1:hover { background:%5; color:%4; }")
+                             .arg(b->objectName(), bg, border, fg, hoverBg));
+    };
+    if (darkConflict) {
+        tintConflictBtn(oursBtn, "#0b2a4a", "#1f6feb", "#cae3ff", "#10395f");
+        tintConflictBtn(theirsBtn, "#0b3a1e", "#238636", "#aff5b8", "#114a26");
+    } else {
+        tintConflictBtn(oursBtn, "#ddf4ff", "#54aeff", "#0969da", "#cae8ff");
+        tintConflictBtn(theirsBtn, "#e6ffec", "#4ac26b", "#1a7f37", "#d2f8d9");
+    }
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->addWidget(oursBtn);
