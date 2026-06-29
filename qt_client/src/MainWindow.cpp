@@ -10302,8 +10302,8 @@ void MainWindow::populateLeaderboards(const QJsonObject &data)
 //
 // Provision a remote machine onto the network: enter its IP, SSH username and
 // password plus the node name to give it, and run the hosted ForkMesh installer
-// (curl https://<host>/install.sh | bash) on it over an ansible playbook. The
-// SSH session + install output streams live into the console below. Once the
+// (curl https://<host>/install.sh | bash) on it over a plain SSH shell. The SSH
+// session + install output streams live into the console below. Once the
 // installer finishes the new node joins the network and appears on its own in
 // the per-repo Mirror nodes list.
 
@@ -10333,8 +10333,8 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "Provision a remote machine onto the network. Enter its address and SSH "
-        "login, give it a node name, and ForkMesh will SSH in with ansible and "
-        "run the hosted installer. When it finishes the new node joins the "
+        "login, give it a node name, and ForkMesh will SSH in and run the hosted "
+        "installer in a plain shell. When it finishes the new node joins the "
         "network and shows up in each repository's Mirror nodes list."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
@@ -10527,68 +10527,40 @@ void MainWindow::runHostInstall()
         return;
     }
 
-    // Write a throwaway ansible playbook + inventory into a temp dir. The
-    // password and connection details are passed as extra-vars (JSON, so any
-    // special characters survive) rather than baked into the inventory, and the
-    // whole directory is removed when the QTemporaryDir is replaced/destroyed.
-    delete m_hostInstallDir;
-    m_hostInstallDir = new QTemporaryDir;
-    if (!m_hostInstallDir->isValid()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("Could not create a working directory."));
-        return;
-    }
-    const QString dir = m_hostInstallDir->path();
+    // Build the remote command: curl the hosted installer and pipe it to bash
+    // with the chosen node name. When the SSH user is not root, escalate the
+    // whole installer to root with `sudo -S` (the password arrives on stdin, so
+    // it never touches argv) the way the old playbook used become: true; the
+    // installer then sees it is root and skips its own per-package sudo calls.
+    auto shq = [](const QString &s) {
+        QString out = s;
+        out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QStringLiteral("'") + out + QStringLiteral("'");
+    };
+    const QString pipeline =
+        QStringLiteral("curl -fsSL %1 | FORKMESH_NODE=%2 bash")
+            .arg(shq(installUrl), shq(node));
+    const bool needSudo = user != QStringLiteral("root");
+    const QString remoteCmd =
+        needSudo
+            ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
+            : pipeline;
 
-    QFile inv(dir + QStringLiteral("/inventory.ini"));
-    if (inv.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        inv.write(QStringLiteral("[all]\n%1\n").arg(ip).toUtf8());
-        inv.close();
-    }
-
-    QFile play(dir + QStringLiteral("/install.yml"));
-    if (play.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        // become: true so the installer can install build prerequisites; the
-        // installer itself handles installing for the connecting user under sudo.
-        play.write(QByteArray(
-            "---\n"
-            "- name: Install ForkMesh on a remote host\n"
-            "  hosts: all\n"
-            "  gather_facts: false\n"
-            "  become: true\n"
-            "  tasks:\n"
-            "    - name: Run the ForkMesh installer\n"
-            "      ansible.builtin.shell: \"curl -fsSL {{ install_url }} | "
-            "FORKMESH_NODE={{ fm_node | quote }} bash\"\n"
-            "      args:\n"
-            "        executable: /bin/bash\n"
-            "      register: fm_install\n"
-            "    - name: Installer output\n"
-            "      ansible.builtin.debug:\n"
-            "        var: fm_install.stdout_lines\n"));
-        play.close();
-    }
-
-    QJsonObject vars;
-    vars.insert(QStringLiteral("ansible_user"), user);
-    vars.insert(QStringLiteral("ansible_password"), pass);
-    vars.insert(QStringLiteral("ansible_become_password"), pass);
-    vars.insert(QStringLiteral("ansible_ssh_common_args"),
-                QStringLiteral("-o IdentitiesOnly=yes "
-                               "-o StrictHostKeyChecking=no "
-                               "-o UserKnownHostsFile=/dev/null"));
-    vars.insert(QStringLiteral("install_url"), installUrl);
-    vars.insert(QStringLiteral("fm_node"), node);
-    QFile vf(dir + QStringLiteral("/vars.json"));
-    if (vf.open(QIODevice::WriteOnly)) {
-        vf.write(QJsonDocument(vars).toJson(QJsonDocument::Compact));
-        vf.close();
-    }
+    const QStringList sshArgs = {
+        QStringLiteral("-e"), QStringLiteral("ssh"),
+        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
+        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+        user + QStringLiteral("@") + ip, remoteCmd};
 
     m_hostInstallLog->clear();
+    // Echo the command we run (the password lives in the SSHPASS env / stdin, so
+    // nothing here leaks it).
     appendHostInstallLog(
-        QStringLiteral("$ ansible-playbook -i inventory.ini install.yml\n"));
+        QStringLiteral("$ ssh %1@%2 %3\n").arg(user, ip, remoteCmd));
     appendHostInstallLog(
         QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
             .arg(ip, user, installUrl));
@@ -10601,14 +10573,10 @@ void MainWindow::runHostInstall()
     auto *proc = new QProcess(this);
     m_hostInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    proc->setWorkingDirectory(dir);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // sshpass-free password auth + readable, unbuffered streaming output.
-    env.insert(QStringLiteral("ANSIBLE_HOST_KEY_CHECKING"), QStringLiteral("False"));
-    env.insert(QStringLiteral("ANSIBLE_STDOUT_CALLBACK"), QStringLiteral("default"));
-    env.insert(QStringLiteral("ANSIBLE_FORCE_COLOR"), QStringLiteral("0"));
-    env.insert(QStringLiteral("ANSIBLE_NOCOLOR"), QStringLiteral("1"));
-    env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    // Hand the SSH password to sshpass via the environment so it never lands in
+    // argv or on disk.
+    env.insert(QStringLiteral("SSHPASS"), pass);
     proc->setProcessEnvironment(env);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
@@ -10617,9 +10585,8 @@ void MainWindow::runHostInstall()
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             appendHostInstallLog(QString::fromUtf8(
-                "\n[error] Could not start ansible-playbook. Install ansible "
-                "(and sshpass for password auth) on this machine and try "
-                "again.\n"));
+                "\n[error] Could not start sshpass/ssh. Install openssh-client "
+                "and sshpass on this machine and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
             [this, ip, user, node](int code, QProcess::ExitStatus status) {
@@ -10648,16 +10615,14 @@ void MainWindow::runHostInstall()
                     m_hostInstallProcess->deleteLater();
                     m_hostInstallProcess = nullptr;
                 }
-                // Remove the throwaway playbook dir promptly so the password
-                // file does not linger on disk after the run.
-                delete m_hostInstallDir;
-                m_hostInstallDir = nullptr;
             });
 
-    proc->start(QStringLiteral("ansible-playbook"),
-                {QStringLiteral("-i"), QStringLiteral("inventory.ini"),
-                 QStringLiteral("install.yml"),
-                 QStringLiteral("--extra-vars"), QStringLiteral("@vars.json")});
+    proc->start(QStringLiteral("sshpass"), sshArgs);
+    // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
+    // the remote shell. Closing the channel hands the installer a clean EOF.
+    if (needSudo)
+        proc->write((pass + QStringLiteral("\n")).toUtf8());
+    proc->closeWriteChannel();
 }
 
 QWidget *MainWindow::buildHomeSection()
