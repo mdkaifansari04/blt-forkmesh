@@ -297,6 +297,93 @@ push_secrets() {
     fi
 }
 
+# Build and publish a prebuilt release binary for the current platform. This
+# makes install.sh downloads fast (no recompile) instead of falling back to a
+# full source build. Silently skips if already published for this platform.
+publish_release_binary() {
+    if ! command -v cmake >/dev/null 2>&1; then
+        echo "note: cmake not found — skipping release binary build." >&2
+        return 0
+    fi
+
+    # Detect current platform (same logic as release.yml).
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+    case "$os" in
+        Linux)                            os="linux" ;;
+        Darwin)                           os="macos" ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)  os="windows" ;;
+        *) os="$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
+    esac
+    case "$arch" in
+        x86_64|amd64|x64) arch="x86_64" ;;
+        aarch64|arm64)    arch="arm64" ;;
+    esac
+    local asset="forkmesh-${os}-${arch}"
+    [ "$os" = "windows" ] && asset="${asset}.exe"
+
+    # Check if this asset is already published.
+    if [ -f ../releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../releases/latest/SHASUMS256.txt 2>/dev/null; then
+        echo "Release binary for $asset is already published."
+        return 0
+    fi
+
+    echo "Building and publishing release binary for ${os}/${arch}…"
+
+    # Build the Qt client in Release mode (same as release.yml). Note: we are
+    # in cloudflare_worker/ so qt_client is at ../qt_client.
+    local jobs
+    jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
+    cmake -S ../qt_client -B ../qt_client/build-release \
+        -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF 2>&1 | grep -v "^--" || true
+    if ! cmake --build ../qt_client/build-release -j"$jobs" 2>&1 | tail -5; then
+        echo "ERROR: failed to build release binary." >&2
+        return 1
+    fi
+
+    # Locate the built executable.
+    local built=""
+    for cand in \
+        "../qt_client/build-release/forkmesh" \
+        "../qt_client/build-release/forkmesh.exe" \
+        "../qt_client/build-release/ForkMesh.app/Contents/MacOS/ForkMesh"; do
+        if [ -x "$cand" ]; then built="$cand"; break; fi
+    done
+    if [ -z "$built" ]; then
+        echo "ERROR: build did not produce an executable." >&2
+        return 1
+    fi
+
+    # Publish via content-addressed store and write release metadata.
+    cp "$built" "$asset"
+    chmod 0755 "$asset" || true
+    mkdir -p "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
+    ../tools/forkmesh-release-publish.sh \
+        --channel latest \
+        --tag "${FORKMESH_TAG:-}" \
+        --cas-dir "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}" \
+        ${FORKMESH_REPO:+--repo "$FORKMESH_REPO"} \
+        "$asset" 2>&1 | tail -3
+    rm -f "$asset"
+
+    # Stage the release metadata for commit.
+    git add ../releases/latest/SHASUMS256.txt ../releases/latest/release.json
+}
+
+# Commit release metadata changes if any were staged.
+commit_release_metadata() {
+    if git diff --quiet --cached ../releases/latest/ 2>/dev/null; then
+        return 0
+    fi
+    echo "Committing release metadata…"
+    git config user.email "deploy@forkmesh.local" >/dev/null 2>&1 || true
+    git config user.name  "ForkMesh Deploy"        >/dev/null 2>&1 || true
+    git commit -m "release: publish prebuilt binary for $(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)" \
+        2>&1 | tail -2
+    echo "Release metadata staged. Push this commit alongside the Worker deploy."
+}
+
 case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
@@ -315,6 +402,17 @@ case "${1:-deploy}" in
         # phantom success.
         verify_deploy "$BUILD_REV"
         verify_public_assets
+
+        # Build and publish a prebuilt release binary for install.sh to find.
+        # This is optional: if it fails, the deploy still succeeds (users can build
+        # from source), but install.sh will be much faster with prebuilts.
+        echo
+        if publish_release_binary; then
+            commit_release_metadata
+        else
+            echo "note: prebuilt binary build failed, but deploy succeeded." >&2
+            echo "      install.sh will fall back to building from source." >&2
+        fi
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
         ;;
     secrets)
