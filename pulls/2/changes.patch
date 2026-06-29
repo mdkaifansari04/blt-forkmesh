@@ -1,0 +1,138 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 8aac36a2..7b57cd43 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -5461,6 +5461,20 @@ int MainWindow::testAddLocalRepository(const QString &owner, const QString &name
+     return m_repositories.size() - 1;
+ }
+ 
++int MainWindow::testAddLocalMirrorRepository(const QString &owner,
++                                             const QString &name,
++                                             const QString &localPath,
++                                             const QString &mirrorPath)
++{
++    RepositoryRecord repo;
++    repo.owner = owner;
++    repo.name = name;
++    repo.localPath = localPath;
++    repo.mirrorPath = mirrorPath;
++    m_repositories.append(repo);
++    return m_repositories.size() - 1;
++}
++
+ bool MainWindow::testOpenRepository(int index)
+ {
+     if (index < 0 || index >= m_repositories.size())
+@@ -47146,8 +47160,19 @@ void MainWindow::syncRepository(int index, bool quiet)
+     // the async fetch is kicked off back on the main thread once it finishes.
+     auto beforeDigest = std::make_shared<QString>();
+     auto beforeHeadCommit = std::make_shared<QString>();
++#ifdef FORKMESH_WINDOW_TESTS
++    auto testSyncPrepRunner = m_testSyncPrepRunner;
++#endif
+     QThread *prep = QThread::create(
+-        [mirrorPath, source, hasMirror, beforeDigest, beforeHeadCommit] {
++        [mirrorPath, source, hasMirror, beforeDigest, beforeHeadCommit
++#ifdef FORKMESH_WINDOW_TESTS
++         , testSyncPrepRunner
++#endif
++    ] {
++#ifdef FORKMESH_WINDOW_TESTS
++            if (testSyncPrepRunner)
++                testSyncPrepRunner();
++#endif
+             *beforeDigest = mirrorRefsDigest(mirrorPath);
+             *beforeHeadCommit =
+                 mirrorBranchCommit(mirrorPath, mirrorHeadBranch(mirrorPath));
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 41114fe8..8597ee25 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -187,6 +187,7 @@ public:
+ #ifdef FORKMESH_WINDOW_TESTS
+     using TestIssueHistoryDeleteRunner =
+         std::function<bool(int number, QString *error)>;
++    using TestSyncPrepRunner = std::function<void()>;
+     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
+     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
+     QStringList testNetworkLog() const { return m_networkLog; }
+@@ -225,7 +226,19 @@ public:
+     Q_INVOKABLE bool testAgentColumnsMovable() const;
+     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
+                                            const QString &localPath);
++    Q_INVOKABLE int testAddLocalMirrorRepository(const QString &owner,
++                                                 const QString &name,
++                                                 const QString &localPath,
++                                                 const QString &mirrorPath);
+     Q_INVOKABLE bool testOpenRepository(int index);
++    Q_INVOKABLE void testSyncRepository(int index, bool quiet = true)
++    {
++        syncRepository(index, quiet);
++    }
++    Q_INVOKABLE bool testRepoSyncing(int index) const
++    {
++        return m_syncingRepos.contains(index);
++    }
+     // The branch the open repo treats as its default/merge base, so a test can
+     // prove it stays main even when the working tree is parked on a feature branch.
+     Q_INVOKABLE QString testRepoDefaultBranch() const;
+@@ -258,6 +271,10 @@ public:
+     {
+         m_testIssueHistoryDeleteRunner = std::move(runner);
+     }
++    void testSetSyncPrepRunner(TestSyncPrepRunner runner)
++    {
++        m_testSyncPrepRunner = std::move(runner);
++    }
+     void testDeleteIssueWithHistory(int number) { deleteCurrentIssueWithHistory(number); }
+     bool testIssueHistoryDeleteInProgress() const
+     {
+@@ -3047,5 +3064,6 @@ private:
+     int m_testEnsureNodeAccountCalls = 0;
+     bool m_testBypassServerStart = false;
+     TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;
++    TestSyncPrepRunner m_testSyncPrepRunner;
+ #endif
+ };
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 131d1836..d7f76d31 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -205,6 +205,37 @@ int main(int argc, char *argv[])
+         check(window.testQuickUpdatePullArguments(upstreamRepo.path()) ==
+                   QStringList({"pull", "--ff-only"}),
+               QStringLiteral("quick update keeps plain pull when upstream exists"));
++
++        QSemaphore syncPrepStarted;
++        QSemaphore finishSyncPrep;
++        window.testSetSyncPrepRunner([&] {
++            syncPrepStarted.release();
++            finishSyncPrep.acquire();
++        });
++        QTemporaryDir syncMirrorDir;
++        const QString syncMirrorPath =
++            syncMirrorDir.path() + QStringLiteral("/mirror.git");
++        const int syncIdx = window.testAddLocalMirrorRepository(
++            QStringLiteral("me"), QStringLiteral("sync-bg"), upstreamRepo.path(),
++            syncMirrorPath);
++        QElapsedTimer syncReturnTimer;
++        syncReturnTimer.start();
++        window.testSyncRepository(syncIdx, true);
++        const qint64 syncReturnMs = syncReturnTimer.elapsed();
++        check(syncPrepStarted.tryAcquire(1, 1000),
++              QStringLiteral("manual sync pre-fetch prep starts on a worker thread"));
++        check(syncReturnMs < 250 && window.testRepoSyncing(syncIdx),
++              QString("manual sync returns before pre-fetch prep finishes "
++                      "(elapsed %1ms)")
++                  .arg(syncReturnMs));
++        finishSyncPrep.release();
++        QElapsedTimer syncClearTimer;
++        syncClearTimer.start();
++        while (window.testRepoSyncing(syncIdx) && syncClearTimer.elapsed() < 5000)
++            QApplication::processEvents();
++        check(!window.testRepoSyncing(syncIdx),
++              QStringLiteral("manual sync clears syncing state after background work"));
++        window.testSetSyncPrepRunner({});
+     }
+ 
+     QTemporaryDir noUpstreamRepo;
