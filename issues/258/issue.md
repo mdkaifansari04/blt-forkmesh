@@ -5,7 +5,7 @@ title: when i deleted a file from the pr it removed almost everything I think we
 status: open
 labels: [Partial]
 milestone: 
-priority: 48
+priority: 41
 progress: 35
 assignees: []
 createdAt: 1782427320682
