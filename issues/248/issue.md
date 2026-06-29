@@ -5,7 +5,7 @@ title: make the merge graph look nicer
 status: open
 labels: [Partial]
 milestone: 
-priority: 42
+priority: 46
 progress: 40
 assignees: []
 createdAt: 1782363526448
