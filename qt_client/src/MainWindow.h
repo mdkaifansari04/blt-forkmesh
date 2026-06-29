@@ -656,7 +656,8 @@ private:
     void addConversationCard(QVBoxLayout *layout, const QString &author,
                              const QString &headerHtml, const QString &body,
                              const QString &accent = QString(),
-                             const QString &copyLink = QString());
+                             const QString &copyLink = QString(),
+                             const QString &authorId = QString());
     QWidget *buildAboutSidebar();
     QWidget *buildRepoSecurityTab();
     QWidget *buildInsightsTab();

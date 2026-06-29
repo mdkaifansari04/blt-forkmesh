@@ -18874,7 +18874,8 @@ void MainWindow::setPullThreadState(const QString &threadId, const QString &stat
 
 void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                                      const QString &headerHtml, const QString &body,
-                                     const QString &accent, const QString &copyLink)
+                                     const QString &accent, const QString &copyLink,
+                                     const QString &authorId)
 {
     if (!layout)
         return;
@@ -18888,6 +18889,23 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     avatar->setObjectName("issueAvatar");
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(36, 36);
+    // Prefer the author's real picture over the initials tile, matching the
+    // issue timeline. Peer avatars are broadcast over chat and cached in
+    // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
+    // our own avatar may not be in that cache yet, so fall back to
+    // effectiveAvatar() for our own cards. Unknown peers keep the initials.
+    if (!authorId.isEmpty()) {
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(authorId);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (authorId == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
+    }
     rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
     auto *card = new QWidget;
@@ -18961,10 +18979,12 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             w->deleteLater();
         delete item;
     }
+    // Trailing stretch first: addConversationCard inserts each card just above
+    // it, so cards flow oldest-to-newest (top to bottom).
+    m_pullThreadLayout->addStretch();
     if (pr.number == 0) {
         if (m_pullLinksValue)
             m_pullLinksValue->hide();
-        m_pullThreadLayout->addStretch();
         return;
     }
 
@@ -19002,7 +19022,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
                        "request %2</span>")
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
-        pr.description, QString(), pullLink + QStringLiteral("#open"));
+        pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
 
     for (const PullEvent &ev : pr.events) {
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
@@ -19058,9 +19078,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 .arg(who.toHtmlEscaped(), verb, when),
             ev.body, accent,
             pullLink + QStringLiteral("#%1")
-                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id));
+                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
+            ev.author);
     }
-    m_pullThreadLayout->addStretch();
 }
 
 void MainWindow::renderPullCommits(const PullRequest &pr)
@@ -33491,10 +33511,10 @@ void MainWindow::renderCommitThread(const QString &sha)
             w->deleteLater();
         delete item;
     }
-    if (sha.isEmpty()) {
-        m_commitThreadLayout->addStretch();
+    // Trailing stretch first so cards flow top to bottom (see renderPullThread).
+    m_commitThreadLayout->addStretch();
+    if (sha.isEmpty())
         return;
-    }
     QString linkOwner = QStringLiteral("repo");
     QString linkRepo = QStringLiteral("commit");
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -33517,9 +33537,9 @@ void MainWindow::renderCommitThread(const QString &sha)
                 .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
             c.body, QString(),
             commitLink + QStringLiteral("#%1")
-                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id));
+                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id),
+            c.author);
     }
-    m_commitThreadLayout->addStretch();
 }
 
 void MainWindow::submitCommitComment()
