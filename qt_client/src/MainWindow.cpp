@@ -35322,6 +35322,7 @@ QWidget *MainWindow::buildBranchesTab()
     diffPaneLayout->addWidget(m_branchDiffView, 1);
 
     auto *split = new QSplitter(Qt::Horizontal);
+    m_branchesSplit = split;
     split->setChildrenCollapsible(false);
     split->addWidget(m_branchesTable);
     split->addWidget(filesPane);
@@ -35354,12 +35355,20 @@ void MainWindow::loadBranchesPanel()
     // loop pumping across the batch so the window stays responsive (waitForGit
     // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
     GitKeepAlive keepAlive;
-    // Remember which branch's diff is on screen. Clearing the rows below fires
-    // currentCellChanged with no current item, which blanks the diff pane and
-    // resets m_branchDiffBranch; we re-select this branch's row at the end so
-    // the diff stays on screen (now reflecting any merge we just performed).
+    // Remember which branch's diff is on screen so we can re-render it at the end
+    // (now reflecting any merge we just performed).
     const QString previouslyViewed = m_branchDiffBranch;
-    TableRepaintGuard repaintGuard(m_branchesTable);
+    // Freeze the whole splitter — table, changed-files/scope lists and diff view —
+    // while we tear down and rebuild the rows so a refresh after a merge/delete
+    // doesn't flash all of them blank before the new contents land; they all
+    // repaint once together when the guard lifts (adhoc #256).
+    TableRepaintGuard repaintGuard(m_branchesSplit ? m_branchesSplit
+                                                   : static_cast<QWidget *>(m_branchesTable));
+    // Block the table's selection signals across the rebuild so clearing the rows
+    // doesn't fire currentCellChanged -> showBranchDiff(empty), which would blank
+    // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
+    // viewed branch's diff explicitly at the end instead (adhoc #256).
+    QSignalBlocker branchesTableBlock(m_branchesTable);
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     QStringList branches = repoBranches();
@@ -35656,12 +35665,13 @@ void MainWindow::loadBranchesPanel()
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
         m_branchesTable->setItem(0, 0, empty);
+        // Table signals are blocked, so blank the diff pane ourselves.
+        showBranchDiff(QString());
         return;
     }
 
     // Re-select the row the user was viewing (falling back to the checked-out
-    // branch) so rebuilding the table doesn't leave the diff pane blank. Setting
-    // the current cell re-fires currentCellChanged, which re-renders the diff.
+    // branch) so rebuilding the table doesn't leave the diff pane blank.
     QString target = previouslyViewed;
     if (target.isEmpty() || !branches.contains(target))
         target = selected;
@@ -35672,6 +35682,11 @@ void MainWindow::loadBranchesPanel()
             break;
         }
     }
+    // The table's selection signals were blocked across the rebuild, so the
+    // setCurrentCell above won't have re-rendered the diff. Do it explicitly now —
+    // a single, guarded transition rather than the blank-then-refill flash the
+    // old signal-driven path produced (adhoc #256).
+    showBranchDiff(target);
 }
 
 void MainWindow::promptNewBranch()
@@ -35714,6 +35729,14 @@ void MainWindow::deleteBranch(const QString &branch)
             QStringLiteral("Delete branch \"%1\"? This cannot be undone.").arg(branch),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
+    // Pick the branch to land on after the delete: the neighbour in the list (the
+    // row that slides up into the deleted one, or the row above when we deleted the
+    // last one) rather than snapping back to the checked-out branch, so deleting
+    // several in a row walks down the list. Falls through to the default branch when
+    // this was the last non-default branch (adhoc #256). Computed from the table now,
+    // while its rows still reflect the pre-delete order.
+    QString nextSelection = neighbourBranchInList(branch);
+
     QString err;
     // -D force-deletes even if not merged; the user explicitly confirmed.
     if (!runGitCapture(dir, {"branch", "-D", branch}, nullptr, &err)) {
@@ -35722,7 +35745,43 @@ void MainWindow::deleteBranch(const QString &branch)
     }
     logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
     setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+    // Steer loadBranchesPanel()'s "re-select the previously-viewed branch" logic at
+    // the neighbour: it reads m_branchDiffBranch as the branch to restore, and an
+    // empty value falls back to the default branch ("go to main") (adhoc #256).
+    m_branchDiffBranch = nextSelection;
     loadBranchesAndTags();
+}
+
+// The branch sitting next to `branch` in the Branches table — the row just below
+// it (which slides up when it's deleted) or, if it was the last row, the row just
+// above. Empty when there's no other branch listed, which makes loadBranchesPanel
+// fall back to the default branch. Used to pick the post-delete selection so
+// removing a branch doesn't jump the list back to the checked-out branch (#256).
+QString MainWindow::neighbourBranchInList(const QString &branch) const
+{
+    if (!m_branchesTable || branch.isEmpty())
+        return QString();
+    int row = -1;
+    for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && it->text() == branch) {
+            row = r;
+            break;
+        }
+    }
+    if (row < 0)
+        return QString();
+    for (int r = row + 1; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && !it->text().isEmpty())
+            return it->text();
+    }
+    for (int r = row - 1; r >= 0; --r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && !it->text().isEmpty())
+            return it->text();
+    }
+    return QString();
 }
 
 // Prune every branch that's fully merged into the default branch (0 behind and
