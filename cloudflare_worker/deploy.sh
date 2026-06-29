@@ -96,6 +96,29 @@ require_cloudflare_account() {
     return 1
 }
 
+# Wrangler needs Cloudflare credentials to touch the API. An explicit
+# CLOUDFLARE_API_TOKEN (exported from $ENV_FILE above) always works; without one
+# wrangler falls back to an interactive OAuth login, which only works at a TTY.
+# In a non-interactive environment (CI, a headless box, an agent) that fallback
+# fails — and only AFTER the [build] command has already run migrate.sh — with a
+# terse "Failed to fetch auth token: 400 Bad Request / set a CLOUDFLARE_API_TOKEN".
+# Catch it up front with actionable guidance instead. The TTY test mirrors
+# wrangler's own interactive detection (stdin && stdout), so this errors exactly
+# when wrangler would have, never sooner.
+require_cloudflare_auth() {
+    [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
+    if [ -t 0 ] && [ -t 1 ]; then
+        return 0   # a human at a terminal: let wrangler do its OAuth login
+    fi
+    echo "ERROR: no Cloudflare credentials for a non-interactive deploy." >&2
+    echo "       wrangler can't open an interactive OAuth login here, so set a" >&2
+    echo "       scoped API token (permissions: Workers Scripts: Edit + D1: Edit)" >&2
+    echo "       as CLOUDFLARE_API_TOKEN in $ENV_FILE (deploy.sh exports it for wrangler):" >&2
+    echo "         CLOUDFLARE_API_TOKEN=..." >&2
+    echo "       Create one: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" >&2
+    return 1
+}
+
 # A stamp identifying exactly which build we are shipping. The git rev (marked
 # -dirty when the tree has uncommitted changes) when available, else a UTC
 # timestamp. Passed to the Worker as the BUILD_REV var and echoed back by
@@ -396,6 +419,7 @@ commit_release_metadata() {
 case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
+        require_cloudflare_auth
         BUILD_REV="$(build_rev)"
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV)..."
         # Stamp the build into the Worker as a plaintext var so /api/version can
@@ -426,6 +450,7 @@ case "${1:-deploy}" in
         ;;
     secrets)
         require_cloudflare_account
+        require_cloudflare_auth
         # Re-push just the .env.production secrets, no full redeploy.
         push_secrets
         ;;
@@ -434,6 +459,9 @@ case "${1:-deploy}" in
         ;;
     dry-run)
         require_cloudflare_account
+        # --dry-run still runs the [build] command (migrate.sh → remote D1), which
+        # needs Cloudflare auth, so the same non-interactive guard applies.
+        require_cloudflare_auth
         pywrangler deploy --dry-run
         ;;
     *)
