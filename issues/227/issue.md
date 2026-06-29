@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 227
 title: in security have the dependency inventory be a list and then have a link to check each manifest
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 16
 progress: 50
