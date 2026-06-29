@@ -10605,7 +10605,7 @@ void MainWindow::runHostInstall()
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     // sshpass-free password auth + readable, unbuffered streaming output.
     env.insert(QStringLiteral("ANSIBLE_HOST_KEY_CHECKING"), QStringLiteral("False"));
-    env.insert(QStringLiteral("ANSIBLE_STDOUT_CALLBACK"), QStringLiteral("debug"));
+    env.insert(QStringLiteral("ANSIBLE_STDOUT_CALLBACK"), QStringLiteral("default"));
     env.insert(QStringLiteral("ANSIBLE_FORCE_COLOR"), QStringLiteral("0"));
     env.insert(QStringLiteral("ANSIBLE_NOCOLOR"), QStringLiteral("1"));
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
