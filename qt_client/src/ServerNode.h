@@ -59,6 +59,13 @@ private:
         QString version;
         QStringList mirrors;
         QList<MirrorAdvert> mirrorDetails; // per-repo HEAD info advertised by the peer
+        // Host resource telemetry the peer advertises in its hello/presence frames,
+        // surfaced as the Mirror nodes view's CPU/RAM/disk bars.
+        qint64 memUsedBytes = 0;
+        qint64 memTotalBytes = 0;
+        qint64 diskUsedBytes = 0;
+        qint64 diskTotalBytes = 0;
+        double cpuPercent = -1.0;
         qint64 lastSeenMs = 0;
         bool online = true;
     };
@@ -74,6 +81,10 @@ private:
     void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void sendEncrypted(const QJsonObject &plain, bool showActivity = false);
     void sendHello();
+    // Refresh the cached host resource telemetry (CPU/RAM/disk) advertised in the
+    // "sys" field of every frame. Throttled internally so it only re-samples on
+    // the heartbeats, not on each chat send. Cheap on Linux (/proc + statvfs).
+    void sampleSystemStats();
     // Lightweight broadcast so peers refresh this node's "last seen"; sent on a
     // timer while connected. Unknown to older peers, but they still record it as
     // activity (every frame with a senderId refreshes the peer's last-seen time).
@@ -112,6 +123,14 @@ private:
     QString m_platform;
     QString m_version;
     QList<MirrorAdvert> m_mirroredRepos; // repos + HEAD advertised to other nodes
+    // Cached host telemetry for our own node, refreshed by sampleSystemStats() and
+    // copied into the "sys" field of outgoing frames + our own roster row.
+    qint64 m_memUsedBytes = 0;
+    qint64 m_memTotalBytes = 0;
+    qint64 m_diskUsedBytes = 0;
+    qint64 m_diskTotalBytes = 0;
+    double m_cpuPercent = -1.0;
+    qint64 m_lastStatsSampleMs = 0; // throttle so chat sends don't re-sample
     QString m_nodeId;
     // SHA-256 of mainnode URL + room; scopes the persisted roster so members are
     // only recalled for the exact same room.
