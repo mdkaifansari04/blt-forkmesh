@@ -268,6 +268,46 @@ int main(int argc, char *argv[])
               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
     }
 
+    // Issue #214: "Build & preview" checks the PR head out into a throwaway
+    // worktree, then CMake-configures and builds it. A fresh worktree is
+    // registered with `git worktree add`; a reused one is moved with a forced
+    // detached checkout. Either way the pipeline ends with the same configure +
+    // build commands. The CMake configure line is platform-dependent (macOS adds
+    // brew prefixes) so only assert the deterministic checkout-and-build steps here.
+    {
+        const QString gitDir = QStringLiteral("/repo/.git");
+        const QString previewDir = QStringLiteral("/tmp/preview/acme-app-pr7");
+        const QString clientDir = previewDir + QStringLiteral("/qt_client");
+        const QString buildDir = clientDir + QStringLiteral("/build");
+        const QString commit = QStringLiteral("deadbeef");
+
+        const QStringList freshSteps = window.testBuildAndPreviewSteps(
+            gitDir, previewDir, clientDir, buildDir, commit, /*haveWorktree=*/false);
+        check(freshSteps.size() == 4,
+              QStringLiteral("build & preview runs prune, checkout, configure, build (#214)"));
+        check(freshSteps.value(0) ==
+                  QStringLiteral("git -C /repo/.git worktree prune"),
+              QStringLiteral("build & preview prunes stale worktrees first (#214)"));
+        check(freshSteps.value(1) ==
+                  QStringLiteral("git -C /repo/.git worktree add --detach "
+                                 "/tmp/preview/acme-app-pr7 deadbeef"),
+              QStringLiteral("build & preview adds a fresh worktree at the PR head (#214)"));
+        check(freshSteps.value(3) ==
+                  QStringLiteral("cmake --build /tmp/preview/acme-app-pr7/qt_client/build "
+                                 "-j 4"),
+              QStringLiteral("build & preview compiles the checked-out PR (#214)"));
+
+        const QStringList reuseSteps = window.testBuildAndPreviewSteps(
+            gitDir, previewDir, clientDir, buildDir, commit, /*haveWorktree=*/true);
+        check(reuseSteps.value(1) ==
+                  QStringLiteral("git -C /tmp/preview/acme-app-pr7 checkout --detach "
+                                 "-f deadbeef"),
+              QStringLiteral("build & preview reuses an existing worktree by checkout (#214)"));
+        check(reuseSteps.value(3) == freshSteps.value(3),
+              QStringLiteral("build & preview builds the same way whether or not the "
+                             "worktree is reused (#214)"));
+    }
+
     // Issue #263: data-table columns are user-resizable — ResizeToContents
     // columns flip to draggable Interactive once rows arrive, keeping their
     // fitted widths, while Stretch and Fixed columns are left as configured.
