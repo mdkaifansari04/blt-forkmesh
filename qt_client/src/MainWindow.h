@@ -1463,6 +1463,13 @@ private:
     // work finishes. Pair these around a GitKeepAlive scope so it animates.
     void startButtonSpin(QPushButton *button);
     void stopButtonSpin(QPushButton *button);
+    // Spin the icon of whichever button kicked off a rebuild/restart, as live
+    // feedback while the (async, multi-step) restart runs. The app relaunches on
+    // success, so the spin only needs stopping on the failure paths, where
+    // stopRestartSpin() restores the icon. Tracking a single button keeps the
+    // centralised failure handler (runUpdateStep) agnostic to which one it was.
+    void startRestartSpin(QPushButton *button);
+    void stopRestartSpin();
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
@@ -1986,6 +1993,7 @@ private:
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     // Hosts section widgets (adhoc #263): one-host install form + live log.

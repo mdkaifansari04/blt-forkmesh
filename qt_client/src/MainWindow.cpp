@@ -7024,6 +7024,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
                         return;
                     }
                     stopRefreshSpin();
+                    stopRestartSpin();
                     setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
                     if (m_buildButton)
                         m_buildButton->setEnabled(true);
@@ -7034,6 +7035,7 @@ void MainWindow::runUpdateStep(const QString &program, const QStringList &argume
     connect(process, &QProcess::errorOccurred, this,
             [this, process, stepTimer, commandLine] {
         stopRefreshSpin();
+        stopRestartSpin();
         logRestart(QStringLiteral("failed to start after %1ms: %2")
                        .arg(stepTimer.elapsed())
                        .arg(commandLine));
@@ -7141,6 +7143,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         QFile::remove(appPath);
         if (!QFile::copy(built, appPath)) {
             setUpdateStatus("Update failed: could not replace " + appPath, true);
+            stopRestartSpin();
             if (m_buildButton)
                 m_buildButton->setEnabled(true);
             return;
@@ -7217,6 +7220,7 @@ void MainWindow::updateRebuildRestart()
                         "Try again shortly.",
                         true);
         flashMessage("No online ForkMesh mirror is available right now.", true);
+        stopRestartSpin();
         if (m_rebuildButton)
             m_rebuildButton->setEnabled(true);
         return;
@@ -8539,7 +8543,7 @@ QWidget *MainWindow::buildBreadcrumb()
                           "then relaunch"));
     setOcticon(m_navRebuildButton, "sync", 14);
     connect(m_navRebuildButton, &QPushButton::clicked, this,
-            [this] { quickRebuildRestart(); });
+            [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
@@ -11252,11 +11256,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "sync",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
     connect(m_profileRebuildButton, &QPushButton::clicked, this,
-            [this] { quickRebuildRestart(); });
+            [this] { startRestartSpin(m_profileRebuildButton); quickRebuildRestart(); });
     m_profileUpdateButton = makeProfileActionButton(
         "download", "Pull the latest source, then rebuild and relaunch");
     connect(m_profileUpdateButton, &QPushButton::clicked, this,
-            [this] { updateRebuildRestart(); });
+            [this] { startRestartSpin(m_profileUpdateButton); updateRebuildRestart(); });
     auto *selfSettingsButton = makeProfileActionButton("gear", "Settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
@@ -39105,6 +39109,23 @@ void MainWindow::stopButtonSpin(QPushButton *button)
     button->setProperty("fmSpinning", false);
 }
 
+void MainWindow::startRestartSpin(QPushButton *button)
+{
+    if (!button)
+        return;
+    stopRestartSpin();
+    m_restartSpinButton = button;
+    startButtonSpin(button);
+}
+
+void MainWindow::stopRestartSpin()
+{
+    if (!m_restartSpinButton)
+        return;
+    stopButtonSpin(m_restartSpinButton);
+    m_restartSpinButton = nullptr;
+}
+
 void MainWindow::startRefreshSpin()
 {
     if (!m_refreshButton)
@@ -45384,7 +45405,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_rebuildButton->setToolTip("Pull the latest version, rebuild, and relaunch");
     setOcticon(m_rebuildButton, "sync", 16);
     connect(m_rebuildButton, &QPushButton::clicked, this,
-            [this] { quickRebuildRestart(); });
+            [this] { startRestartSpin(m_rebuildButton); quickRebuildRestart(); });
 
     // Log out clears the signed-in account so you can log back in (as the same
     // or a different account).
@@ -45644,6 +45665,7 @@ void MainWindow::quickRebuildRestart()
     const QString clientDir = updateClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt")) {
         stopRefreshSpin();
+        stopRestartSpin();
         QMessageBox::information(
             this, "Rebuild & restart",
             "No local source checkout to rebuild from. Use Quick update on the "
@@ -45676,6 +45698,7 @@ void MainWindow::rebuildAndRelaunch()
         setUpdateStatus("No local source checkout to rebuild from. Use Quick "
                         "update on the start screen instead.",
                         true);
+        stopRestartSpin();
         m_rebuildButton->setEnabled(true);
         return;
     }
