@@ -1,0 +1,463 @@
+diff --git a/ide_extension/src/issues.ts b/ide_extension/src/issues.ts
+index 137ec99f..beb147e9 100644
+--- a/ide_extension/src/issues.ts
++++ b/ide_extension/src/issues.ts
+@@ -1,9 +1,11 @@
+ // Parse ForkMesh's file-based issue tracker (see issues/README.md):
++//   issues/index.json             generated list-view snapshot when available
+ //   issues/<N>/issue.md          frontmatter (metadata + open event) + body
+ //   issues/<N>/NNNN-status.md     append-only later events (status changes, ...)
+ //
+-// We only need a light read here: title, current status, labels and the body,
+-// so a small frontmatter parser is enough — no need to verify signatures.
++// We only need a light read here: title, current status, labels and the body.
++// index.json is a derived cache; when it is absent, a small frontmatter parser
++// is enough for the markdown fallback — no need to verify signatures.
+ import * as fs from "fs";
+ import * as path from "path";
+ 
+@@ -119,6 +121,53 @@ function readIssue(issuesDir: string, repoRoot: string, dirName: string): ForkMe
+   };
+ }
+ 
++function issueFromIndexEntry(
++  issuesDir: string,
++  repoRoot: string,
++  value: unknown
++): ForkMeshIssue | undefined {
++  if (!value || typeof value !== "object") {
++    return undefined;
++  }
++  const entry = value as Record<string, unknown>;
++  const number =
++    typeof entry.number === "number" ? entry.number : parseInt(String(entry.number ?? ""), 10);
++  if (!Number.isFinite(number)) {
++    return undefined;
++  }
++  return {
++    number,
++    title: typeof entry.title === "string" ? entry.title : `Issue ${number}`,
++    status: typeof entry.status === "string" ? entry.status : "open",
++    labels: Array.isArray(entry.labels)
++      ? entry.labels.filter((label): label is string => typeof label === "string")
++      : [],
++    priority: typeof entry.priority === "number" ? entry.priority : 0,
++    assignees: Array.isArray(entry.assignees)
++      ? entry.assignees.filter((assignee): assignee is string => typeof assignee === "string")
++      : [],
++    body: "",
++    issueFile: path.join(issuesDir, String(number), "issue.md"),
++    repoRoot,
++  };
++}
++
++function readIndexedIssues(issuesDir: string, repoRoot: string): ForkMeshIssue[] | undefined {
++  const indexFile = path.join(issuesDir, "index.json");
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(fs.readFileSync(indexFile, "utf8"));
++  } catch {
++    return undefined;
++  }
++  if (!Array.isArray(parsed)) {
++    return undefined;
++  }
++  return parsed
++    .map((entry) => issueFromIndexEntry(issuesDir, repoRoot, entry))
++    .filter((issue): issue is ForkMeshIssue => issue !== undefined);
++}
++
+ // Locate the issues directory: an explicit override, else <root>/issues for the
+ // first workspace root that has one.
+ export function findIssuesDir(roots: string[], override: string): string | undefined {
+@@ -141,6 +190,11 @@ export function findIssuesDir(roots: string[], override: string): string | undef
+ 
+ export function loadIssues(issuesDir: string, includeClosed: boolean): ForkMeshIssue[] {
+   const repoRoot = path.dirname(issuesDir);
++  const indexed = readIndexedIssues(issuesDir, repoRoot);
++  if (indexed) {
++    return sortIssues(indexed.filter((issue) => includeClosed || issue.status === "open"));
++  }
++
+   let entries: string[] = [];
+   try {
+     entries = fs.readdirSync(issuesDir);
+@@ -157,9 +211,13 @@ export function loadIssues(issuesDir: string, includeClosed: boolean): ForkMeshI
+       issues.push(issue);
+     }
+   }
++  return sortIssues(issues);
++}
++
++function sortIssues(issues: ForkMeshIssue[]): ForkMeshIssue[] {
+   // Open first, then by ascending priority (1 = highest, 0 = unset -> last),
+   // then by number.
+-  issues.sort((a, b) => {
++  return issues.sort((a, b) => {
+     const pa = a.priority || 999;
+     const pb = b.priority || 999;
+     if (pa !== pb) {
+@@ -167,10 +225,11 @@ export function loadIssues(issuesDir: string, includeClosed: boolean): ForkMeshI
+     }
+     return a.number - b.number;
+   });
+-  return issues;
+ }
+ 
+ // Read a single issue by number from a known repo root (used for Qt requests).
+ export function loadIssueByNumber(repoRoot: string, n: number): ForkMeshIssue | undefined {
+-  return readIssue(path.join(repoRoot, "issues"), repoRoot, String(n));
++  const issuesDir = path.join(repoRoot, "issues");
++  const indexed = readIndexedIssues(issuesDir, repoRoot);
++  return indexed?.find((issue) => issue.number === n) ?? readIssue(issuesDir, repoRoot, String(n));
+ }
+diff --git a/issues/README.md b/issues/README.md
+index 2b647179..39e6f2b4 100644
+--- a/issues/README.md
++++ b/issues/README.md
+@@ -13,6 +13,7 @@ the prose lives in the body. Images go directly in the issue folder.
+ 
+ ```
+ issues/
++  index.json           generated list-view snapshot (derived cache)
+   labels.json          repo-level label definitions (name + color)
+   milestones.json      repo-level milestone definitions (title, due, status)
+   1/
+@@ -24,6 +25,13 @@ issues/
+     ...
+ ```
+ 
++`issues/index.json` is regenerated by the desktop client before issue commits.
++It contains the folded list-view metadata for non-deleted issues (`number`,
++`title`, `status`, `labels`, `milestone`, `priority`, `progress`, `assignees`,
++`createdAt`, `author`, `authorName`, `votes`, `bountyUsd`, `bountyAddress`,
++`bountyStatus`, and `updatedAt`). It is only a cache/snapshot for fast readers;
++the signed markdown event log remains the canonical source of truth.
++
+ ## `issues/<N>/issue.md`
+ 
+ The frontmatter carries the issue-level metadata **and** the open event; the
+@@ -111,6 +119,11 @@ change the signature. `attachments` is the comma-joined list of image filenames:
+ The relay verifies submissions with the same scheme (`ed25519_verify` in
+ `cloudflare_worker/src/entry.py`).
+ 
++Because the signature covers only the markdown event content, derived files such
++as `issues/index.json` are never authoritative. If the snapshot disagrees with
++the event log, regenerate it from the signed issue folders and trust the event
++log.
++
+ ## Cross-user
+ 
+ Issues live in the owner's repo. People without write access submit signed
+diff --git a/qt_client/src/CoveStore.cpp b/qt_client/src/CoveStore.cpp
+index fa9b65e9..2b322a0a 100644
+--- a/qt_client/src/CoveStore.cpp
++++ b/qt_client/src/CoveStore.cpp
+@@ -288,6 +288,12 @@ void CoveStore::appendAccess(Cove &cove, const CoveAccessEntry &entry)
+         cove.accessLog.removeFirst();
+ }
+ 
++bool CoveStore::isCoveStoragePath(const QString &relPath)
++{
++    return relPath.startsWith(covesDirRel() + "/") &&
++           relPath.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive);
++}
++
+ QString CoveStore::uniqueSlug() const
+ {
+     QString slug = obscureSlug();
+diff --git a/qt_client/src/CoveStore.h b/qt_client/src/CoveStore.h
+index 5f91eb6d..0f079ea5 100644
+--- a/qt_client/src/CoveStore.h
++++ b/qt_client/src/CoveStore.h
+@@ -90,6 +90,7 @@ public:
+     static void appendAccess(Cove &cove, const CoveAccessEntry &entry);
+ 
+     static QString covesDirRel() { return QStringLiteral(".forkmesh/coves"); }
++    static bool isCoveStoragePath(const QString &relPath);
+ 
+ private:
+     QString covesDir() const; // <workTree>/.forkmesh/coves
+diff --git a/qt_client/src/IssueStore.cpp b/qt_client/src/IssueStore.cpp
+index b03b717e..18e16a0f 100644
+--- a/qt_client/src/IssueStore.cpp
++++ b/qt_client/src/IssueStore.cpp
+@@ -886,6 +886,36 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
+     return true;
+ }
+ 
++bool IssueStore::writeIssueIndex(QString *error) const
++{
++    QJsonArray array;
++    for (const Issue &issue : loadAll(error)) {
++        qint64 updatedAt = issue.createdAt;
++        for (const IssueEvent &ev : issue.events)
++            updatedAt = std::max(updatedAt, ev.ts);
++
++        array.append(QJsonObject{{"number", issue.number},
++                                 {"title", issue.title},
++                                 {"status", issue.status},
++                                 {"labels", fromStringList(issue.labels)},
++                                 {"milestone", issue.milestone},
++                                 {"priority", issue.priority},
++                                 {"progress", issue.progress},
++                                 {"assignees", fromStringList(issue.assignees)},
++                                 {"createdAt", double(issue.createdAt)},
++                                 {"author", issue.author},
++                                 {"authorName", issue.authorName},
++                                 {"votes", issue.votes},
++                                 {"bountyUsd", issue.bountyUsd},
++                                 {"bountyAddress", issue.bountyAddress},
++                                 {"bountyStatus", issue.bountyStatus},
++                                 {"updatedAt", double(updatedAt)}});
++    }
++    QDir().mkpath(issuesDir());
++    return writeTextFile(issuesDir() + "/index.json",
++                         QString::fromUtf8(QJsonDocument(array).toJson()), error);
++}
++
+ void IssueStore::recomputeMetadata(Issue &issue) const
+ {
+     int voteCount = 0;
+@@ -946,6 +976,8 @@ QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths)
+ bool IssueStore::commit(const QString &message, QString *error) const
+ {
+     QString err;
++    if (!writeIssueIndex(error))
++        return false;
+     if (!runGit(m_workTree, {"add", "issues"}, nullptr, &err)) {
+         if (error)
+             *error = "git add failed: " + err;
+@@ -1381,15 +1413,8 @@ bool IssueStore::deleteIssue(int number, QString *error)
+             *error = QStringLiteral("Could not remove issue folder.");
+         return false;
+     }
+-    if (!runGit(m_workTree, {"commit", "-m", QStringLiteral("delete issue"),
+-                             "--", relPath},
+-                nullptr, &err)) {
+-        if (!err.contains(QStringLiteral("nothing to commit")) && !err.isEmpty()) {
+-            if (error)
+-                *error = QStringLiteral("git commit failed: ") + err;
+-            return false;
+-        }
+-    }
++    if (!commit(QStringLiteral("delete issue"), error))
++        return false;
+ 
+     QByteArray refs;
+     if (!runGit(m_workTree, {"rev-list", "--all", "--max-count=1"}, &refs, &err,
+diff --git a/qt_client/src/IssueStore.h b/qt_client/src/IssueStore.h
+index 49def9b9..52e73e6d 100644
+--- a/qt_client/src/IssueStore.h
++++ b/qt_client/src/IssueStore.h
+@@ -189,6 +189,7 @@ private:
+     QString issueDir(int number) const;        // <workTree>/issues/<n>
+     bool readIssueFile(int number, Issue &out) const;
+     bool writeIssueFile(const Issue &issue, QString *error) const;
++    bool writeIssueIndex(QString *error) const;
+     void recomputeMetadata(Issue &issue) const; // fold events into top-level fields
+     QStringList copyAttachments(int number, const QStringList &srcPaths) const;
+     int nextNumber() const;
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 6d241229..c9288a0e 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -29547,6 +29547,12 @@ void MainWindow::loadRepoFileTree()
+         if (tab < 0)
+             continue;
+         const QString path = QString::fromUtf8(record.mid(tab + 1));
++        // Coves are encrypted vaults whose slug-based filename leaks their name to
++        // anyone browsing the tree (including mirror nodes that can't unlock them).
++        // Keep them out of the file browser entirely — and out of folder-size totals
++        // — so they reveal nothing here; they live in Settings → Coves. (#231)
++        if (CoveStore::isCoveStoragePath(path))
++            continue;
+         const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+         const qint64 size =
+             meta.size() >= 4 ? QString::fromUtf8(meta.at(3)).toLongLong() : 0;
+@@ -29585,28 +29591,6 @@ void MainWindow::loadRepoFileTree()
+                 item->setData(0, Qt::UserRole, acc);
+                 item->setData(0, Qt::UserRole + 1, false);
+                 setSize(item, fileSize.value(acc));
+-                // A cove is greyed/locked until its password is known; with
+-                // "auto-show" on it un-greys once unlocked. Double-click opens the
+-                // cove viewer (intercepted in openRepoFile), not the code editor.
+-                if (acc.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+-                    acc.startsWith(CoveStore::covesDirRel() + "/")) {
+-                    Cove cove;
+-                    bool unlocked = false;
+-                    if (coveStoreForRepo(m_repoDetailIndex).loadEnvelope(acc, cove)) {
+-                        QString pw;
+-                        unlocked = tryUnlockCove(cove, m_repoDetailIndex, &pw);
+-                    }
+-                    item->setText(0, parts.at(i) +
+-                                         QString::fromUtf8(unlocked ? "  \xF0\x9F\x94\x93"
+-                                                                    : "  \xF0\x9F\x94\x92"));
+-                    if (!(unlocked && coveAutoOpenEnabled(m_repoDetailIndex)))
+-                        item->setForeground(0, QBrush(QColor("#8b949e")));
+-                    item->setToolTip(
+-                        0, unlocked
+-                               ? QStringLiteral("Encrypted cove — double-click to open")
+-                               : QStringLiteral("Encrypted cove — locked; enter the "
+-                                                "password in Settings"));
+-                }
+             } else {
+                 QTreeWidgetItem *node = dirs.value(acc);
+                 if (!node) {
+@@ -30613,8 +30597,10 @@ void MainWindow::loadRepoOverview(const QString &path)
+             if (meta.size() < 4)
+                 continue;
+             const qint64 sz = meta.at(3).toLongLong(); // '-' (submodule) -> 0
+-            m_overviewRepoBytes += sz;
+             const QString blob = QString::fromUtf8(record.mid(tab + 1));
++            if (CoveStore::isCoveStoragePath(blob))
++                continue;
++            m_overviewRepoBytes += sz;
+             if (!prefix.isEmpty() && !blob.startsWith(prefix))
+                 continue;
+             const QString rel = prefix.isEmpty() ? blob : blob.mid(prefix.size());
+@@ -30649,6 +30635,8 @@ void MainWindow::loadRepoOverview(const QString &path)
+             const qint64 lines = added.toLongLong();
+             const QString blob =
+                 QString::fromUtf8(record.mid(secondTab + 1));
++            if (CoveStore::isCoveStoragePath(blob))
++                continue;
+             if (!prefix.isEmpty() && !blob.startsWith(prefix))
+                 continue;
+             const QString rel = prefix.isEmpty() ? blob : blob.mid(prefix.size());
+@@ -30671,6 +30659,8 @@ void MainWindow::loadRepoOverview(const QString &path)
+         e.name = QString::fromUtf8(record.mid(tab + 1));
+         e.isDir = meta.at(1) == "tree";
+         e.path = path.isEmpty() ? e.name : path + "/" + e.name;
++        if (CoveStore::isCoveStoragePath(e.path))
++            continue;
+         e.size = childBytes.value(e.name, 0);
+         e.loc = childLoc.value(e.name, 0);
+         // Last commit that touched this entry: timestamp (for sorting), relative
+@@ -34692,8 +34682,8 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
+     const QDir repoDir(repo.localPath);
+     const QString infoPath = repoDir.filePath(kRepoInfoPath);
+     QJsonObject obj;
+-    if (QFileInfo::exists(readPath)) {
+-        QFile file(readPath);
++    if (QFileInfo::exists(infoPath)) {
++        QFile file(infoPath);
+         if (!file.open(QIODevice::ReadOnly)) {
+             if (error)
+                 *error = QStringLiteral("Could not read .forkmesh/info.json.");
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index b9615def..74a0091d 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -2493,6 +2493,7 @@ private:
+     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
+     QListWidget *m_coveList = nullptr;       // coves in the open repo (lock state)
+     QLineEdit *m_covePasswordEdit = nullptr; // per-repo unlock password field
++    QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
+     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
+     QLabel *m_coveEmptyHint = nullptr;
+     QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
+diff --git a/qt_client/src/MainWindowCoves.cpp b/qt_client/src/MainWindowCoves.cpp
+index 49da40c3..3abe9d7e 100644
+--- a/qt_client/src/MainWindowCoves.cpp
++++ b/qt_client/src/MainWindowCoves.cpp
+@@ -516,6 +516,24 @@ QWidget *MainWindow::buildCoveSection()
+     m_covePasswordEdit->setEchoMode(QLineEdit::Password);
+     m_covePasswordEdit->setPlaceholderText(QStringLiteral("Cove password for this repo"));
+     pwRow->addWidget(m_covePasswordEdit, 1);
++    // On the source-of-truth node (the one holding the working tree) the owner can
++    // reveal the saved cove password — handy for sharing it with the team. Hidden on
++    // mirror nodes; visibility is (re)set in rebuildRepoCovesList. (#231)
++    m_covePwRevealBtn = new QPushButton(QStringLiteral("Show"));
++    m_covePwRevealBtn->setObjectName("covePwReveal");
++    m_covePwRevealBtn->setProperty("buttonSize", "sm");
++    m_covePwRevealBtn->setCheckable(true);
++    m_covePwRevealBtn->setCursor(Qt::PointingHandCursor);
++    m_covePwRevealBtn->setToolTip(
++        QStringLiteral("Reveal the saved cove password on this source-of-truth node"));
++    m_covePwRevealBtn->setVisible(false); // shown only on source-of-truth (rebuild)
++    pwRow->addWidget(m_covePwRevealBtn);
++    connect(m_covePwRevealBtn, &QPushButton::toggled, this, [this](bool on) {
++        if (on && m_covePasswordEdit->text().isEmpty())
++            m_covePasswordEdit->setText(rememberedCovePassword(m_repoDetailIndex));
++        m_covePasswordEdit->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
++        m_covePwRevealBtn->setText(on ? QStringLiteral("Hide") : QStringLiteral("Show"));
++    });
+     auto *unlockBtn = new QPushButton(QStringLiteral("Unlock"));
+     unlockBtn->setProperty("buttonSize", "sm");
+     unlockBtn->setCursor(Qt::PointingHandCursor);
+@@ -571,6 +589,20 @@ void MainWindow::rebuildRepoCovesList()
+     m_coveList->clear();
+     const int idx = m_repoDetailIndex;
+ 
++    if (m_covePwRevealBtn) {
++        // Only the source-of-truth node (a writable working tree) can reveal the
++        // saved password. Re-mask on every rebuild so a revealed password never
++        // lingers across a repo switch.
++        if (m_covePwRevealBtn->isChecked()) {
++            QSignalBlocker block(m_covePwRevealBtn);
++            m_covePwRevealBtn->setChecked(false);
++            m_covePwRevealBtn->setText(QStringLiteral("Show"));
++            if (m_covePasswordEdit)
++                m_covePasswordEdit->setEchoMode(QLineEdit::Password);
++        }
++        m_covePwRevealBtn->setVisible(idx >= 0 && coveStoreForRepo(idx).canWrite());
++    }
++
+     if (m_coveAutoOpenCheck) {
+         QSignalBlocker block(m_coveAutoOpenCheck);
+         m_coveAutoOpenCheck->setChecked(
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index 0f25c2c4..78aa7ba6 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -17,6 +17,8 @@
+ #include <QCoreApplication>
+ #include <QDebug>
+ #include <QFile>
++#include <QJsonArray>
++#include <QJsonDocument>
+ #include <QJsonObject>
+ #include <QProcess>
+ #include <QTemporaryDir>
+@@ -495,6 +497,7 @@ int main(int argc, char *argv[])
+         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
+         check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
+         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
++        check(repo.addVote(n, &err), "addVote succeeds");
+         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
+               "assignAgent succeeds");
+         check(repo.assignAgent(n, QString(), 0, false, "cleared", &err),
+@@ -521,6 +524,20 @@ int main(int argc, char *argv[])
+         check(sawAgentClear, "agent clear event round-trips");
+         check(loaded.first().status == "closed", "status reflects close event");
+ 
++        QFile indexFile(tmp.path() + "/issues/index.json");
++        check(indexFile.open(QIODevice::ReadOnly), "issues/index.json is generated");
++        const QJsonArray indexedIssues =
++            QJsonDocument::fromJson(indexFile.readAll()).array();
++        check(indexedIssues.size() == 1, "issue index lists active issues");
++        const QJsonObject indexed = indexedIssues.isEmpty()
++                                        ? QJsonObject()
++                                        : indexedIssues.first().toObject();
++        check(indexed.value("number").toInt() == n &&
++                  indexed.value("status").toString() == "closed" &&
++                  indexed.value("priority").toInt() == 3 &&
++                  indexed.value("votes").toInt() == 1,
++              "issue index reflects folded status, priority and votes");
++
+         // Fast "regular" delete: a tombstone hides the issue from every list but
+         // leaves its history intact in git (and recoverable).
+         const int tomb = repo.createIssue("Tombstone me", "body", {}, QString(),
+@@ -1007,6 +1024,11 @@ int main(int argc, char *argv[])
+         check(!created.slug.contains("launch", Qt::CaseInsensitive) &&
+                   !created.relPath.contains("launch", Qt::CaseInsensitive),
+               "the cove's repo filename is an obscure slug, not its name");
++        check(CoveStore::isCoveStoragePath(created.relPath),
++              "cove storage paths are identifiable for repo browser filtering");
++        check(!CoveStore::isCoveStoragePath(QStringLiteral(".forkmesh/coves.txt")) &&
++                  !CoveStore::isCoveStoragePath(QStringLiteral("docs/example.cove")),
++              "non-cove-storage paths are not hidden by cove filtering");
+ 
+         Cove reloaded;
+         check(coves.loadEnvelope(created.relPath, reloaded, &err),

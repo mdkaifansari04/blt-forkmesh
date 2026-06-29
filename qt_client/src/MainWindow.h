@@ -188,6 +188,17 @@ public:
     // Static + pure so the window tests can exercise it directly.
     static QString autolinkReferences(const QString &markdown);
 
+    // adhoc #38: choose the next open issue the issue looper should work, or
+    // nullptr when none qualify. An issue is skipped when it is deleted, not open,
+    // already has a local agent session (hasLocalSession), or already carries an
+    // assignee. The assignee is the cross-mirror claim: once a looper takes an
+    // issue it assigns its node, so neither this node's looper nor a looper on
+    // another mirror starts the same task twice. Highest priority wins; ties go to
+    // the lowest issue number. Static + pure so the window tests can exercise it.
+    static const Issue *looperPickNext(
+        const QList<Issue> &issues,
+        const std::function<bool(int)> &hasLocalSession);
+
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
@@ -656,7 +667,8 @@ private:
     void addConversationCard(QVBoxLayout *layout, const QString &author,
                              const QString &headerHtml, const QString &body,
                              const QString &accent = QString(),
-                             const QString &copyLink = QString());
+                             const QString &copyLink = QString(),
+                             const QString &authorId = QString());
     QWidget *buildAboutSidebar();
     QWidget *buildRepoSecurityTab();
     QWidget *buildInsightsTab();
@@ -904,6 +916,15 @@ private:
     void toggleIssueLooper();
     void looperStartNext();
     void looperOnSessionFinished(int sessionId);
+    // adhoc #38: stamp this node onto an issue's assignees the moment the looper
+    // takes it, so the claim syncs to every node and no second looper (here or on
+    // another mirror) starts the same task. The host appends the node and commits
+    // (which syncs to mirrors); a mirror with no write access files the signed
+    // assignees event to the owner's inbox, which merges and syncs it back.
+    void looperClaimIssue(int number, const QStringList &existingAssignees);
+    // The label the looper assigns to mark a claimed issue: this node's display
+    // name, or a public-key prefix when no name is set (adhoc #38).
+    QString nodeAssigneeTag() const;
     // Funnel for every looper state change: refresh the floating toggle above
     // the Issues tab and persist the running state so the loop resumes after a
     // restart (adhoc #130, #125).
@@ -1108,6 +1129,22 @@ private:
     void showRepoOverview();
     void showRepoEditor();
     void loadRepoFileTree();
+    // IDE-style right-click menu on the file-explorer tree, and the file
+    // operations it drives. New/rename/delete commit directly to the default
+    // branch and need a working tree we own; copy-path/reveal work on any local
+    // repo. closeRepoFileTabsUnder discards editor tabs for a gone path.
+    void showRepoFileTreeMenu(const QPoint &pos);
+    void newRepoFileEntry(const QString &parentDir, bool folder);
+    void renameRepoFileEntry(const QString &path, bool isDir);
+    void deleteRepoFileEntry(const QString &path, bool isDir);
+    void closeRepoFileTabsUnder(const QString &path, bool isDir);
+    // Shared setup for a direct file operation: requires a clean working tree,
+    // checks out the default branch, and returns the working-tree dir (empty and
+    // a notice on failure) with *base set to that branch.
+    QString prepareRepoFileOp(QString *base);
+    // Commit follow-up shared by the file operations: re-point to the branch,
+    // refresh the open repo, and rebuild the explorer tree in place.
+    void finishRepoFileOp(const QString &base);
     void openRepoFile(const QString &path);
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
@@ -1660,6 +1697,10 @@ private:
                             const QString &uri, const QString &address,
                             double amountUsd, const QString &amountSol);
     void submitIssueCommentToInbox(const QString &body);
+    // Mirror node path: file a signed "assignees" event to the source of truth's
+    // inbox so the looper's claim on an issue reaches the owner and syncs back to
+    // every mirror (adhoc #38).
+    void submitIssueAssigneesToInbox(int number, const QStringList &assignees);
     // Mirror node path: send a signed new-issue ("open") event to the source of
     // truth's inbox. Returns false only when there is no repo to target.
     bool submitNewIssueToInbox(const QString &title, const QString &body,
@@ -2277,8 +2318,10 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
-    QPushButton *m_editorModeButton = nullptr; // overview -> explorer/editor view
-    QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
+    // Persistent segmented toggle, always visible above the Code page, that
+    // switches between the GitHub-style overview and the explorer/editor view.
+    QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
+    QPushButton *m_filesModeExplorerButton = nullptr; // -> explorer/editor
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_securitySummary = nullptr;
@@ -2475,6 +2518,7 @@ private:
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
     QListWidget *m_coveList = nullptr;       // coves in the open repo (lock state)
     QLineEdit *m_covePasswordEdit = nullptr; // per-repo unlock password field
+    QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
     QLabel *m_coveEmptyHint = nullptr;
     QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
