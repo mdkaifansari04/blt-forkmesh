@@ -10686,22 +10686,27 @@ QWidget *MainWindow::buildHostsSection()
     bodyCol->addWidget(hostsLabel);
 
     auto *hostsHint = new QLabel(QString::fromUtf8(
-        "Double-click a saved host to reload it into the form above, then enter "
-        "the SSH password and run the installer again."));
+        "Click Update on a saved host to re-run the installer and bring it up to "
+        "the latest ForkMesh release. Double-click a host instead to reload it "
+        "into the form above for editing."));
     hostsHint->setObjectName("mutedLabel");
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
 
-    m_hostsTable = new QTableWidget(0, 4);
+    m_hostsTable = new QTableWidget(0, 5);
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
-         QStringLiteral("User"), QStringLiteral("Status")});
+         QStringLiteral("User"), QStringLiteral("Status"), QString()});
     m_hostsTable->verticalHeader()->setVisible(false);
     m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
-    m_hostsTable->horizontalHeader()->setStretchLastSection(true);
+    // Stretch the Status column and let the trailing Update-button column size to
+    // its contents.
+    m_hostsTable->horizontalHeader()->setStretchLastSection(false);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. The password is never stored on
     // disk, so it is left blank for the user to re-enter.
@@ -10734,6 +10739,28 @@ void MainWindow::refreshHostsTable()
         m_hostsTable->setItem(i, 2,
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+
+        // Per-row Update button: reload the saved host into the install form and
+        // re-run the hosted installer against it. The installer is idempotent, so
+        // re-running it pulls the latest ForkMesh release onto that host.
+        auto *cell = new QWidget;
+        auto *cellRow = new QHBoxLayout(cell);
+        cellRow->setContentsMargins(4, 2, 4, 2);
+        cellRow->setSpacing(0);
+        auto *updateBtn = new QPushButton(QStringLiteral("Update"));
+        updateBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(updateBtn, "sync", 12);
+        // Defer to the next event-loop turn: re-running the installer rebuilds
+        // this table (and deletes this very button), so let the click signal
+        // fully unwind first.
+        connect(updateBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                loadHostIntoForm(i, 0);
+                runHostInstall();
+            });
+        });
+        cellRow->addWidget(updateBtn);
+        m_hostsTable->setCellWidget(i, 4, cell);
     }
 }
 
