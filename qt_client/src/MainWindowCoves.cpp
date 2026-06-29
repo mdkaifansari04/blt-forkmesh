@@ -512,6 +512,24 @@ QWidget *MainWindow::buildCoveSection()
     m_covePasswordEdit->setEchoMode(QLineEdit::Password);
     m_covePasswordEdit->setPlaceholderText(QStringLiteral("Cove password for this repo"));
     pwRow->addWidget(m_covePasswordEdit, 1);
+    // On the source-of-truth node (the one holding the working tree) the owner can
+    // reveal the saved cove password — handy for sharing it with the team. Hidden on
+    // mirror nodes; visibility is (re)set in rebuildRepoCovesList. (#231)
+    m_covePwRevealBtn = new QPushButton(QStringLiteral("Show"));
+    m_covePwRevealBtn->setObjectName("covePwReveal");
+    m_covePwRevealBtn->setProperty("buttonSize", "sm");
+    m_covePwRevealBtn->setCheckable(true);
+    m_covePwRevealBtn->setCursor(Qt::PointingHandCursor);
+    m_covePwRevealBtn->setToolTip(
+        QStringLiteral("Reveal the saved cove password on this source-of-truth node"));
+    m_covePwRevealBtn->setVisible(false); // shown only on source-of-truth (rebuild)
+    pwRow->addWidget(m_covePwRevealBtn);
+    connect(m_covePwRevealBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (on && m_covePasswordEdit->text().isEmpty())
+            m_covePasswordEdit->setText(rememberedCovePassword(m_repoDetailIndex));
+        m_covePasswordEdit->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+        m_covePwRevealBtn->setText(on ? QStringLiteral("Hide") : QStringLiteral("Show"));
+    });
     auto *unlockBtn = new QPushButton(QStringLiteral("Unlock"));
     unlockBtn->setProperty("buttonSize", "sm");
     unlockBtn->setCursor(Qt::PointingHandCursor);
@@ -566,6 +584,20 @@ void MainWindow::rebuildRepoCovesList()
         return;
     m_coveList->clear();
     const int idx = m_repoDetailIndex;
+
+    if (m_covePwRevealBtn) {
+        // Only the source-of-truth node (a writable working tree) can reveal the
+        // saved password. Re-mask on every rebuild so a revealed password never
+        // lingers across a repo switch.
+        if (m_covePwRevealBtn->isChecked()) {
+            QSignalBlocker block(m_covePwRevealBtn);
+            m_covePwRevealBtn->setChecked(false);
+            m_covePwRevealBtn->setText(QStringLiteral("Show"));
+            if (m_covePasswordEdit)
+                m_covePasswordEdit->setEchoMode(QLineEdit::Password);
+        }
+        m_covePwRevealBtn->setVisible(idx >= 0 && coveStoreForRepo(idx).canWrite());
+    }
 
     if (m_coveAutoOpenCheck) {
         QSignalBlocker block(m_coveAutoOpenCheck);
