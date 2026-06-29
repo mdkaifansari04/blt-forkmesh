@@ -1545,6 +1545,9 @@ private:
     void attachIssueImage();
     void queueIssueAttachment(const QString &path); // dedupe + reference + count
     void toggleIssueStatus();
+    // The issue listed just after `number` in the table's current visual order
+    // (falls back to the one before it when closing the last row); -1 if none.
+    int nextVisibleIssueAfter(int number) const;
     void deleteCurrentIssue();
     // Runs the destructive history-rewriting delete on a worker thread so the UI
     // stays responsive while git filter-branch/gc churn.
@@ -3062,6 +3065,10 @@ private:
     // that same (now-closed) issue instead of collapsing to the full-width list
     // or jumping elsewhere (issue #188).
     bool m_keepCurrentOnReload = false;
+    // Set just before a reload that closes the viewed issue: refreshIssueList
+    // selects this issue (the next one in the list) once the table is rebuilt, so
+    // closing an issue advances to the next instead of lingering on it (adhoc #249).
+    int m_selectIssueOnReload = -1;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.
