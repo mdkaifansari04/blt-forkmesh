@@ -2293,8 +2293,10 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
-    QPushButton *m_editorModeButton = nullptr; // overview -> explorer/editor view
-    QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
+    // Persistent segmented toggle, always visible above the Code page, that
+    // switches between the GitHub-style overview and the explorer/editor view.
+    QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
+    QPushButton *m_filesModeExplorerButton = nullptr; // -> explorer/editor
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_securitySummary = nullptr;
