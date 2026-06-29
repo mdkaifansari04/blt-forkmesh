@@ -146,7 +146,9 @@
 #include <memory>
 
 #ifndef Q_OS_WIN
+#include <csignal>
 #include <pwd.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -22575,6 +22577,12 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentStopButton, "circle-slash", 16);
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
+        // External (watch-only) rows have no runner/stream — stop the CLI process
+        // ForkMesh detected running outside it instead.
+        if (isExternalSession(m_selectedAgentSessionId)) {
+            stopExternalSession(m_selectedAgentSessionId);
+            return;
+        }
         if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
             runner->stop();
         stopStreamSession(m_selectedAgentSessionId);
@@ -26106,6 +26114,10 @@ void MainWindow::scanExternalClaudeSessions()
 
 bool MainWindow::externalIsLive(const QString &uuid) const
 {
+    // A session we stopped stays idle even while its just-written transcript is
+    // still inside the "active" window, so its row flips out of Running at once.
+    if (m_externalStopped.contains(uuid))
+        return false;
     for (const ExternalClaudeSession &e : m_externalClaude)
         if (e.uuid == uuid)
             return true;
@@ -26202,6 +26214,49 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     reloadAgents();
+}
+
+// Stop on an external row terminates the real `claude` CLI process. ForkMesh
+// holds no QProcess handle for it (it was started elsewhere), so we locate the
+// process by uuid/cwd and signal it directly. SIGTERM lets the CLI shut down
+// cleanly; a SIGKILL fallback fires if it ignores that within the grace period.
+void MainWindow::stopExternalSession(int sessionId)
+{
+    auto it = m_externalSurfaced.constFind(sessionId);
+    if (it == m_externalSurfaced.constEnd())
+        return;
+    const ExternalClaudeSession ext = it.value();
+    const QList<qint64> pids = ClaudeSessionScan::findSessionPids(ext.uuid, ext.cwd);
+    if (pids.isEmpty()) {
+        flashMessage(QStringLiteral("Couldn't find the external Claude Code process "
+                                    "to stop — it may have already exited."),
+                     /*error=*/true);
+        return;
+    }
+    if (QMessageBox::warning(
+            this, QStringLiteral("Stop external Claude Code"),
+            QStringLiteral("Stop the Claude Code session running in\n%1?\n\n"
+                           "This ends a process ForkMesh didn't start.").arg(ext.cwd),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    for (const qint64 pid : pids)
+        ::kill(static_cast<pid_t>(pid), SIGTERM);
+    // Don't leave a wedged session running: if it's still alive after the grace
+    // period, force it down. kill(pid, 0) probes liveness without signalling.
+    QTimer::singleShot(4000, this, [pids] {
+        for (const qint64 pid : pids)
+            if (::kill(static_cast<pid_t>(pid), 0) == 0)
+                ::kill(static_cast<pid_t>(pid), SIGKILL);
+    });
+
+    // Reflect the stop immediately rather than waiting ~90s for the transcript to
+    // fall out of the active window.
+    m_externalStopped.insert(ext.uuid);
+    m_externalSig.clear();
+    flashMessage(QStringLiteral("Stopping external Claude Code session…"));
+    reloadAgents();
+    updateAgentActionState();
 }
 
 // Periodic rescan: refresh spinners always (cheap, guarded internally) and the
@@ -27399,8 +27454,13 @@ void MainWindow::updateAgentActionState()
         selected ? m_streamSessions.value(m_selectedAgentSessionId) : nullptr;
     const bool running = selected && (runnerForSession(m_selectedAgentSessionId) ||
                                       (stream && stream->running()));
+    // External rows have negative ids (so `running` is false), but a live one can
+    // still be stopped by signalling its CLI process. See stopExternalSession.
+    const bool externalRunning =
+        externalSelected && m_externalSurfaced.contains(m_selectedAgentSessionId) &&
+        externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
-        m_agentStopButton->setEnabled(running);
+        m_agentStopButton->setEnabled(running || externalRunning);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) aren't
@@ -37442,6 +37502,25 @@ void MainWindow::loadReleasesPanel()
     // names by that tag. The Artifacts column then looks up each release row by
     // tag, instead of probing a releases/<tag>/ path that the publisher never
     // writes (which left the column always empty).
+    // Each artifact name links to its live download on the relay's
+    // content-addressed release endpoint (the exact URL install.sh fetches:
+    // <relay>/api/repo/<owner>/<name>/releases/blob/sha256/<blob_sha256>), so a
+    // release row's binaries can be pulled straight from the served mirror.
+    QString relayHost =
+        serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
+    if (relayHost.isEmpty())
+        relayHost = serverHost(kDefaultServerUrl);
+    const bool localRelay = relayHost.startsWith(QStringLiteral("127.0.0.1")) ||
+                            relayHost.startsWith(QStringLiteral("localhost"));
+    const QString relayBase =
+        relayHost.isEmpty()
+            ? QString()
+            : QStringLiteral("%1://%2").arg(
+                  localRelay ? QStringLiteral("http") : QStringLiteral("https"),
+                  relayHost);
+    static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
+
+    // Artifacts column holds rich-text links, so key it on the rendered HTML.
     QHash<QString, QString> artifactsByTag;
     if (!dir.isEmpty()) {
         const QDir releasesDir(dir + QStringLiteral("/releases"));
@@ -37461,16 +37540,38 @@ void MainWindow::loadReleasesPanel()
                 obj.value(QStringLiteral("tag")).toString().trimmed();
             if (manifestTag.isEmpty())
                 continue;
-            QStringList assetNames;
+            // The canonical owner/repo that staged the out-of-git blob; only that
+            // node serves the content-addressed download.
+            const QString manifestRepo =
+                obj.value(QStringLiteral("repo")).toString().trimmed();
+            QStringList assetLinks;
             const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
             for (const QJsonValue &asset : assets) {
-                const QString name =
-                    asset.toObject().value(QStringLiteral("name")).toString();
-                if (!name.isEmpty())
-                    assetNames.append(name);
+                const QJsonObject a = asset.toObject();
+                const QString name = a.value(QStringLiteral("name")).toString();
+                if (name.isEmpty())
+                    continue;
+                const QString escaped = name.toHtmlEscaped();
+                const QString hash =
+                    a.value(QStringLiteral("blob_sha256")).toString().trimmed();
+                if (!relayBase.isEmpty() && !manifestRepo.isEmpty() &&
+                    sha256Re.match(hash).hasMatch()) {
+                    const QString url =
+                        QStringLiteral(
+                            "%1/api/repo/%2/releases/blob/sha256/%3")
+                            .arg(relayBase, manifestRepo, hash);
+                    assetLinks.append(
+                        QStringLiteral(
+                            "<a href=\"%1\" style=\"color:#58a6ff;"
+                            "text-decoration:none\">%2</a>")
+                            .arg(url.toHtmlEscaped(), escaped));
+                } else {
+                    assetLinks.append(escaped);
+                }
             }
-            if (!assetNames.isEmpty())
-                artifactsByTag.insert(manifestTag, assetNames.join(QStringLiteral(", ")));
+            if (!assetLinks.isEmpty())
+                artifactsByTag.insert(manifestTag,
+                                      assetLinks.join(QStringLiteral(", ")));
         }
     }
 
@@ -37502,8 +37603,21 @@ void MainWindow::loadReleasesPanel()
 
             // Artifacts for this tag come from the channel manifest scanned above
             // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
-            m_releasesTable->setItem(row, 3,
-                                     new QTableWidgetItem(artifactsByTag.value(tag)));
+            // The asset names are rendered as live-download links, so use a
+            // rich-text label cell that opens the URL in the browser on click.
+            const QString artifactsHtml = artifactsByTag.value(tag);
+            if (artifactsHtml.isEmpty()) {
+                m_releasesTable->setItem(row, 3, new QTableWidgetItem(QString()));
+            } else {
+                auto *artifacts = new QLabel(artifactsHtml);
+                artifacts->setTextFormat(Qt::RichText);
+                artifacts->setOpenExternalLinks(true);
+                artifacts->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+                artifacts->setContentsMargins(6, 0, 6, 0);
+                artifacts->setCursor(Qt::PointingHandCursor);
+                artifacts->setStyleSheet(QStringLiteral("background:transparent;"));
+                m_releasesTable->setCellWidget(row, 3, artifacts);
+            }
 
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
