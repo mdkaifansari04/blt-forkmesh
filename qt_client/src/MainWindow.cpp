@@ -34247,6 +34247,22 @@ void MainWindow::reassignContributorIdentity(const QString &oldName)
     loadCommits();
 }
 
+// Per-repo metadata lives in .forkmesh/info.json (issue #232). Older repos kept
+// it at the working-tree root, so reads fall back to that legacy location.
+static QString repoInfoJsonWritePath(const QString &localPath)
+{
+    return QDir(localPath).filePath(QStringLiteral(".forkmesh/info.json"));
+}
+
+static QString repoInfoJsonReadPath(const QString &localPath)
+{
+    const QString preferred = repoInfoJsonWritePath(localPath);
+    if (QFileInfo::exists(preferred))
+        return preferred;
+    const QString legacy = QDir(localPath).filePath(QStringLiteral("info.json"));
+    return QFileInfo::exists(legacy) ? legacy : preferred;
+}
+
 void MainWindow::loadRepoInfo()
 {
     m_repoInfo = RepoInfo();
@@ -34369,8 +34385,8 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
     const QDir repoDir(repo.localPath);
     const QString infoPath = repoDir.filePath(kRepoInfoPath);
     QJsonObject obj;
-    if (QFileInfo::exists(infoPath)) {
-        QFile file(infoPath);
+    if (QFileInfo::exists(readPath)) {
+        QFile file(readPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
                 *error = QStringLiteral("Could not read .forkmesh/info.json.");
@@ -34413,6 +34429,12 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
             *error = QStringLiteral("Could not save .forkmesh/info.json.");
         return false;
     }
+
+    // Now that the metadata lives under .forkmesh/, drop any stale root-level
+    // info.json so the repo carries a single source of truth (issue #232).
+    const QString legacyPath = QDir(repo.localPath).filePath("info.json");
+    if (legacyPath != infoPath && QFileInfo::exists(legacyPath))
+        QFile::remove(legacyPath);
 
     repo.description = aboutText;
     saveRepositories();
