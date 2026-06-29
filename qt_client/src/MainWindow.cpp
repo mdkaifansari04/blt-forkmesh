@@ -38384,17 +38384,6 @@ void MainWindow::pullBaseIntoAllBranches()
     if (base.isEmpty())
         return;
 
-    // Acknowledge the click with a spinner on the button instead of a modal
-    // confirmation (adhoc #259). The per-branch git work runs synchronously, so
-    // a GitKeepAlive scope pumps the event loop across it to keep the spinner
-    // turning; the scope guard restores the button on every exit path below.
-    startButtonSpin(m_branchPullAllButton);
-    GitKeepAlive keepAlive;
-    QPushButton *const spinButton = m_branchPullAllButton;
-    const auto spinGuard = qScopeGuard([this, spinButton] {
-        stopButtonSpin(spinButton);
-    });
-
     // The checked-out branch can't be advanced by a bare ref update without
     // desyncing its working tree, so the batch skips it (it's usually the base);
     // the user can still update it individually with its row's "Pull" button.
@@ -38433,6 +38422,29 @@ void MainWindow::pullBaseIntoAllBranches()
             QStringLiteral("Every branch is already up to date with %1.").arg(base));
         return;
     }
+
+    // Confirm before touching every behind branch (adhoc #45): this bulk merge
+    // rewrites refs across the whole repo, so make the blast radius explicit and
+    // give the user a chance to back out, mirroring the per-branch "Pull main".
+    if (QMessageBox::question(
+            this, QStringLiteral("Pull %1 into all").arg(base),
+            QStringLiteral("Merge %1 into %2 branch(es) that are behind it?")
+                .arg(base)
+                .arg(behindCount),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+
+    // Acknowledge the confirmed click with a spinner on the button. The per-branch
+    // git work runs synchronously, so a GitKeepAlive scope pumps the event loop
+    // across it to keep the spinner turning; the scope guard restores the button on
+    // every exit path below.
+    startButtonSpin(m_branchPullAllButton);
+    GitKeepAlive keepAlive;
+    QPushButton *const spinButton = m_branchPullAllButton;
+    const auto spinGuard = qScopeGuard([this, spinButton] {
+        stopButtonSpin(spinButton);
+    });
+
     int updated = 0;
     QStringList conflicts, skipped;
     for (const QString &branch : branches) {
@@ -41663,11 +41675,30 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueDevelopmentValue->setText("No linked pull requests.");
         } else {
             QStringList links;
-            for (const int n : pulls)
+            for (const int n : pulls) {
+                // Append the linked PR's state (Open/Merged/Closed) when the PR is
+                // loaded, colour-matched to the pull request detail header.
+                QString badge;
+                for (const PullRequest &pr : m_currentPulls) {
+                    if (pr.number != n)
+                        continue;
+                    const QString label =
+                        pr.status == QLatin1String("merged")  ? QStringLiteral("Merged")
+                        : pr.status == QLatin1String("closed") ? QStringLiteral("Closed")
+                                                               : QStringLiteral("Open");
+                    const QString color =
+                        pr.status == QLatin1String("merged")  ? QStringLiteral("#a371f7")
+                        : pr.status == QLatin1String("closed") ? QStringLiteral("#f85149")
+                                                               : QStringLiteral("#3fb950");
+                    badge = QStringLiteral(
+                                " <span style='color:%1'>%2</span>").arg(color, label);
+                    break;
+                }
                 links << QStringLiteral(
                              "<a href='pull:%1' style='color:#58a6ff;"
-                             "text-decoration:none'>pull request #%1</a>")
-                             .arg(n);
+                             "text-decoration:none'>pull request #%1</a>%2")
+                             .arg(QString::number(n), badge);
+            }
             m_issueDevelopmentValue->setText(links.join("<br>"));
         }
     }
