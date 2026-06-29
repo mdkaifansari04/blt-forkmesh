@@ -188,6 +188,17 @@ public:
     // Static + pure so the window tests can exercise it directly.
     static QString autolinkReferences(const QString &markdown);
 
+    // adhoc #38: choose the next open issue the issue looper should work, or
+    // nullptr when none qualify. An issue is skipped when it is deleted, not open,
+    // already has a local agent session (hasLocalSession), or already carries an
+    // assignee. The assignee is the cross-mirror claim: once a looper takes an
+    // issue it assigns its node, so neither this node's looper nor a looper on
+    // another mirror starts the same task twice. Highest priority wins; ties go to
+    // the lowest issue number. Static + pure so the window tests can exercise it.
+    static const Issue *looperPickNext(
+        const QList<Issue> &issues,
+        const std::function<bool(int)> &hasLocalSession);
+
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
@@ -904,6 +915,15 @@ private:
     void toggleIssueLooper();
     void looperStartNext();
     void looperOnSessionFinished(int sessionId);
+    // adhoc #38: stamp this node onto an issue's assignees the moment the looper
+    // takes it, so the claim syncs to every node and no second looper (here or on
+    // another mirror) starts the same task. The host appends the node and commits
+    // (which syncs to mirrors); a mirror with no write access files the signed
+    // assignees event to the owner's inbox, which merges and syncs it back.
+    void looperClaimIssue(int number, const QStringList &existingAssignees);
+    // The label the looper assigns to mark a claimed issue: this node's display
+    // name, or a public-key prefix when no name is set (adhoc #38).
+    QString nodeAssigneeTag() const;
     // Funnel for every looper state change: refresh the floating toggle above
     // the Issues tab and persist the running state so the loop resumes after a
     // restart (adhoc #130, #125).
@@ -1660,6 +1680,10 @@ private:
                             const QString &uri, const QString &address,
                             double amountUsd, const QString &amountSol);
     void submitIssueCommentToInbox(const QString &body);
+    // Mirror node path: file a signed "assignees" event to the source of truth's
+    // inbox so the looper's claim on an issue reaches the owner and syncs back to
+    // every mirror (adhoc #38).
+    void submitIssueAssigneesToInbox(int number, const QStringList &assignees);
     // Mirror node path: send a signed new-issue ("open") event to the source of
     // truth's inbox. Returns false only when there is no repo to target.
     bool submitNewIssueToInbox(const QString &title, const QString &body,
