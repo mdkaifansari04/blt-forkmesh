@@ -8196,9 +8196,10 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
-    // Copy button shown beside the toast for errors only. The toast stays up
-    // until the user copies (or dismisses) it, so a failure can't scroll away
-    // before it's been read or grabbed for a bug report.
+    // Copy button shown beside the toast for errors only. An error toast counts
+    // down for a long window (kToastErrorSeconds) and keeps this Copy / ✕ pair the
+    // whole time, so a failure can be read and grabbed for a bug report before it
+    // fades on its own.
     m_topMessageCopy = new QPushButton(QStringLiteral("Copy"));
     m_topMessageCopy->setObjectName("ghostButton");
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
@@ -45693,6 +45694,14 @@ void MainWindow::logSystem(const QString &text)
 // elided to one line and revealed in full via the Expand button.
 static constexpr int kToastMaxChars = 100;
 
+// Auto-dismiss windows for the top toast. Every toast counts down visibly so the
+// notification area never flashes a message away unannounced. Success
+// confirmations clear quickly; errors linger far longer (but still show a
+// countdown) so a failure can be read and copied before it fades — its full text
+// is also preserved in the network log regardless.
+static constexpr int kToastSuccessSeconds = 5;
+static constexpr int kToastErrorSeconds = 20;
+
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
 // A long message shows as an elided one-liner so it can never widen the window;
 // expanding it wraps the full text so the toast grows in place (no modal).
@@ -45817,37 +45826,40 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessage->show();
 
     if (!m_topMessageTimer) {
-        // Ticks once a second so the countdown is visible; it hides the toast
-        // when the count runs out rather than firing a single timeout.
+        // Ticks once a second so the countdown is visible; when the count runs out
+        // it dismisses the whole toast (label plus any Copy / ✕ / Expand
+        // affordances) rather than firing a single timeout.
         m_topMessageTimer = new QTimer(this);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
             if (!m_topMessage)
                 return;
             if (--m_topMessageSecondsLeft <= 0) {
-                m_topMessageTimer->stop();
-                m_topMessage->hide();
+                dismissTopMessage();
                 return;
             }
             renderTopMessageCountdown();
         });
     }
-    // Errors persist with Copy / dismiss buttons until the user acts on them;
-    // successes count down for ~5 seconds and then fade on their own.
+    // Every toast counts down visibly so the notification area never flashes a
+    // message away without the user knowing how long it stayed (or what it was).
+    // Errors keep their Copy / ✕ buttons and get a much longer window, so a
+    // failure stays readable and grabbable for a bug report before it fades; its
+    // full text also remains in the network log (logSystem above) regardless.
     if (error) {
-        m_topMessageTimer->stop();
         if (m_topMessageCopy)
             m_topMessageCopy->show();
         if (m_topMessageClose)
             m_topMessageClose->show();
+        m_topMessageSecondsLeft = kToastErrorSeconds;
     } else {
         if (m_topMessageCopy)
             m_topMessageCopy->hide();
         if (m_topMessageClose)
             m_topMessageClose->hide();
-        m_topMessageSecondsLeft = 5;
-        renderTopMessageCountdown();
-        m_topMessageTimer->start(1000);
+        m_topMessageSecondsLeft = kToastSuccessSeconds;
     }
+    renderTopMessageCountdown();
+    m_topMessageTimer->start(1000);
     // The Expand affordance appears only when the message was truncated, so the
     // user can read it in full inline instead of via a popup.
     if (m_topMessageExpand)
