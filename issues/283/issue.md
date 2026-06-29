@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 283
 title: make the security and quality page load faster
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 4
