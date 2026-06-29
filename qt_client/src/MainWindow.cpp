@@ -29574,6 +29574,13 @@ void MainWindow::loadRepoFileTree()
         if (tab < 0)
             continue;
         const QString path = QString::fromUtf8(record.mid(tab + 1));
+        // Coves are encrypted vaults whose slug-based filename leaks their name to
+        // anyone browsing the tree (including mirror nodes that can't unlock them).
+        // Keep them out of the file browser entirely — and out of folder-size totals
+        // — so they reveal nothing here; they live in Settings → Coves. (#231)
+        if (path.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+            path.startsWith(CoveStore::covesDirRel() + "/"))
+            continue;
         const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
         const qint64 size =
             meta.size() >= 4 ? QString::fromUtf8(meta.at(3)).toLongLong() : 0;
@@ -29612,28 +29619,6 @@ void MainWindow::loadRepoFileTree()
                 item->setData(0, Qt::UserRole, acc);
                 item->setData(0, Qt::UserRole + 1, false);
                 setSize(item, fileSize.value(acc));
-                // A cove is greyed/locked until its password is known; with
-                // "auto-show" on it un-greys once unlocked. Double-click opens the
-                // cove viewer (intercepted in openRepoFile), not the code editor.
-                if (acc.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
-                    acc.startsWith(CoveStore::covesDirRel() + "/")) {
-                    Cove cove;
-                    bool unlocked = false;
-                    if (coveStoreForRepo(m_repoDetailIndex).loadEnvelope(acc, cove)) {
-                        QString pw;
-                        unlocked = tryUnlockCove(cove, m_repoDetailIndex, &pw);
-                    }
-                    item->setText(0, parts.at(i) +
-                                         QString::fromUtf8(unlocked ? "  \xF0\x9F\x94\x93"
-                                                                    : "  \xF0\x9F\x94\x92"));
-                    if (!(unlocked && coveAutoOpenEnabled(m_repoDetailIndex)))
-                        item->setForeground(0, QBrush(QColor("#8b949e")));
-                    item->setToolTip(
-                        0, unlocked
-                               ? QStringLiteral("Encrypted cove — double-click to open")
-                               : QStringLiteral("Encrypted cove — locked; enter the "
-                                                "password in Settings"));
-                }
             } else {
                 QTreeWidgetItem *node = dirs.value(acc);
                 if (!node) {
