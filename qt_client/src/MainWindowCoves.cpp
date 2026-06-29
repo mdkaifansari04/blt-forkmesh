@@ -197,10 +197,14 @@ void MainWindow::openCove(const QString &relPath)
     QString password;
     if (!tryUnlockCove(cove, idx, &password)) {
         bool ok = false;
+        // A locked cove's name is encrypted, so it may be unknown here.
+        const QString prompt =
+            cove.name.isEmpty()
+                ? QStringLiteral("Enter the password for this cove:")
+                : QString::fromUtf8("Enter the password for \xE2\x80\x9C%1\xE2\x80\x9D:")
+                      .arg(cove.name);
         const QString entered = QInputDialog::getText(
-            this, QStringLiteral("Unlock cove"),
-            QString::fromUtf8("Enter the password for \xE2\x80\x9C%1\xE2\x80\x9D:")
-                .arg(cove.name),
+            this, QStringLiteral("Unlock cove"), prompt,
             QLineEdit::Password, QString(), &ok);
         if (!ok || entered.isEmpty())
             return;
@@ -512,6 +516,24 @@ QWidget *MainWindow::buildCoveSection()
     m_covePasswordEdit->setEchoMode(QLineEdit::Password);
     m_covePasswordEdit->setPlaceholderText(QStringLiteral("Cove password for this repo"));
     pwRow->addWidget(m_covePasswordEdit, 1);
+    // On the source-of-truth node (the one holding the working tree) the owner can
+    // reveal the saved cove password — handy for sharing it with the team. Hidden on
+    // mirror nodes; visibility is (re)set in rebuildRepoCovesList. (#231)
+    m_covePwRevealBtn = new QPushButton(QStringLiteral("Show"));
+    m_covePwRevealBtn->setObjectName("covePwReveal");
+    m_covePwRevealBtn->setProperty("buttonSize", "sm");
+    m_covePwRevealBtn->setCheckable(true);
+    m_covePwRevealBtn->setCursor(Qt::PointingHandCursor);
+    m_covePwRevealBtn->setToolTip(
+        QStringLiteral("Reveal the saved cove password on this source-of-truth node"));
+    m_covePwRevealBtn->setVisible(false); // shown only on source-of-truth (rebuild)
+    pwRow->addWidget(m_covePwRevealBtn);
+    connect(m_covePwRevealBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (on && m_covePasswordEdit->text().isEmpty())
+            m_covePasswordEdit->setText(rememberedCovePassword(m_repoDetailIndex));
+        m_covePasswordEdit->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+        m_covePwRevealBtn->setText(on ? QStringLiteral("Hide") : QStringLiteral("Show"));
+    });
     auto *unlockBtn = new QPushButton(QStringLiteral("Unlock"));
     unlockBtn->setProperty("buttonSize", "sm");
     unlockBtn->setCursor(Qt::PointingHandCursor);
@@ -567,6 +589,20 @@ void MainWindow::rebuildRepoCovesList()
     m_coveList->clear();
     const int idx = m_repoDetailIndex;
 
+    if (m_covePwRevealBtn) {
+        // Only the source-of-truth node (a writable working tree) can reveal the
+        // saved password. Re-mask on every rebuild so a revealed password never
+        // lingers across a repo switch.
+        if (m_covePwRevealBtn->isChecked()) {
+            QSignalBlocker block(m_covePwRevealBtn);
+            m_covePwRevealBtn->setChecked(false);
+            m_covePwRevealBtn->setText(QStringLiteral("Show"));
+            if (m_covePasswordEdit)
+                m_covePasswordEdit->setEchoMode(QLineEdit::Password);
+        }
+        m_covePwRevealBtn->setVisible(idx >= 0 && coveStoreForRepo(idx).canWrite());
+    }
+
     if (m_coveAutoOpenCheck) {
         QSignalBlocker block(m_coveAutoOpenCheck);
         m_coveAutoOpenCheck->setChecked(
@@ -584,8 +620,11 @@ void MainWindow::rebuildRepoCovesList()
                                       : QString::fromUtf8("\xF0\x9F\x94\x92");
         const QString mine =
             cove.createdByMe(&m_profileIdentity) ? QStringLiteral("  (yours)") : QString();
+        // A locked cove keeps its name encrypted; show a neutral label until unlock.
+        const QString label =
+            cove.name.isEmpty() ? QStringLiteral("Locked cove") : cove.name;
         auto *item = new QListWidgetItem(
-            QStringLiteral("%1  %2%3").arg(lock, cove.name, mine), m_coveList);
+            QStringLiteral("%1  %2%3").arg(lock, label, mine), m_coveList);
         item->setData(Qt::UserRole, cove.relPath);
         item->setToolTip(unlocked ? QStringLiteral("Double-click to open")
                                   : QStringLiteral("Locked — enter the password to unlock"));

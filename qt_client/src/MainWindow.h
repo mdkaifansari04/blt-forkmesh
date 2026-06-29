@@ -1128,6 +1128,22 @@ private:
     void showRepoOverview();
     void showRepoEditor();
     void loadRepoFileTree();
+    // IDE-style right-click menu on the file-explorer tree, and the file
+    // operations it drives. New/rename/delete commit directly to the default
+    // branch and need a working tree we own; copy-path/reveal work on any local
+    // repo. closeRepoFileTabsUnder discards editor tabs for a gone path.
+    void showRepoFileTreeMenu(const QPoint &pos);
+    void newRepoFileEntry(const QString &parentDir, bool folder);
+    void renameRepoFileEntry(const QString &path, bool isDir);
+    void deleteRepoFileEntry(const QString &path, bool isDir);
+    void closeRepoFileTabsUnder(const QString &path, bool isDir);
+    // Shared setup for a direct file operation: requires a clean working tree,
+    // checks out the default branch, and returns the working-tree dir (empty and
+    // a notice on failure) with *base set to that branch.
+    QString prepareRepoFileOp(QString *base);
+    // Commit follow-up shared by the file operations: re-point to the branch,
+    // refresh the open repo, and rebuild the explorer tree in place.
+    void finishRepoFileOp(const QString &base);
     void openRepoFile(const QString &path);
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
@@ -2301,8 +2317,10 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
-    QPushButton *m_editorModeButton = nullptr; // overview -> explorer/editor view
-    QPushButton *m_overviewBackButton = nullptr; // editor view -> overview
+    // Persistent segmented toggle, always visible above the Code page, that
+    // switches between the GitHub-style overview and the explorer/editor view.
+    QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
+    QPushButton *m_filesModeExplorerButton = nullptr; // -> explorer/editor
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_securitySummary = nullptr;
@@ -2499,6 +2517,7 @@ private:
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
     QListWidget *m_coveList = nullptr;       // coves in the open repo (lock state)
     QLineEdit *m_covePasswordEdit = nullptr; // per-repo unlock password field
+    QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
     QLabel *m_coveEmptyHint = nullptr;
     QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
