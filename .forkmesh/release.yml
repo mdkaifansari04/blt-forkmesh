@@ -1,10 +1,10 @@
 name: Attach desktop build to release
-# Run this by hand from the Actions tab when you cut a release ("create a
-# release" → trigger this workflow). Each node it runs on builds the desktop
-# Qt client for ITS OWN platform and publishes the binary to the release, so to
-# cover Linux + macOS + Windows you dispatch it once on a node of each OS. The
-# installer (cloudflare_worker/public/install.sh) then autodetects the visitor's
-# platform and downloads the matching prebuilt binary instead of compiling.
+# Automatically builds the desktop Qt client for each platform when a tag is
+# pushed. Each node it runs on builds its own platform's binary and publishes
+# it to the release, so to cover Linux + macOS + Windows, the workflow runs on
+# a node of each OS. The installer (cloudflare_worker/public/install.sh) then
+# autodetects the visitor's platform and downloads the matching prebuilt
+# binary instead of compiling.
 #
 # Release binaries are NOT committed into git (issue #304). The binary bytes are
 # staged into the node's content-addressed release store (the CAS, co-located
@@ -12,10 +12,18 @@ name: Attach desktop build to release
 # releases/<channel>/ — SHASUMS256.txt + release.json. install.sh reads that
 # metadata over the git proxy, then downloads the binary from the relay's
 # content-addressed endpoint and verifies its sha256.
-on: [workflow_dispatch]
+on: [push, workflow_dispatch]
 jobs:
   release:
     steps:
+      # Skip if this push is not a tag (releases only trigger on tags).
+      - name: Check if this is a tagged release
+        run: |
+          if ! git describe --tags --exact-match 2>/dev/null >/dev/null; then
+            echo "Not a tagged release; skipping binary build."
+            touch .forkmesh-skip-release
+          fi
+
       # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
       # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
       # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes
@@ -25,6 +33,7 @@ jobs:
       # from the CAS over the relay, never from git).
       - name: Build and attach the desktop binary
         run: |
+          [ -f .forkmesh-skip-release ] && exit 0
           set -e
 
           # Where install.sh looks for prebuilt assets. Override RELEASE_CHANNEL
