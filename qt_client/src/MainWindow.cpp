@@ -35381,6 +35381,7 @@ QWidget *MainWindow::buildBranchesTab()
     diffPaneLayout->addWidget(m_branchDiffView, 1);
 
     auto *split = new QSplitter(Qt::Horizontal);
+    m_branchesSplit = split;
     split->setChildrenCollapsible(false);
     split->addWidget(m_branchesTable);
     split->addWidget(filesPane);
@@ -35413,12 +35414,20 @@ void MainWindow::loadBranchesPanel()
     // loop pumping across the batch so the window stays responsive (waitForGit
     // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
     GitKeepAlive keepAlive;
-    // Remember which branch's diff is on screen. Clearing the rows below fires
-    // currentCellChanged with no current item, which blanks the diff pane and
-    // resets m_branchDiffBranch; we re-select this branch's row at the end so
-    // the diff stays on screen (now reflecting any merge we just performed).
+    // Remember which branch's diff is on screen so we can re-render it at the end
+    // (now reflecting any merge we just performed).
     const QString previouslyViewed = m_branchDiffBranch;
-    TableRepaintGuard repaintGuard(m_branchesTable);
+    // Freeze the whole splitter — table, changed-files/scope lists and diff view —
+    // while we tear down and rebuild the rows so a refresh after a merge/delete
+    // doesn't flash all of them blank before the new contents land; they all
+    // repaint once together when the guard lifts (adhoc #256).
+    TableRepaintGuard repaintGuard(m_branchesSplit ? m_branchesSplit
+                                                   : static_cast<QWidget *>(m_branchesTable));
+    // Block the table's selection signals across the rebuild so clearing the rows
+    // doesn't fire currentCellChanged -> showBranchDiff(empty), which would blank
+    // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
+    // viewed branch's diff explicitly at the end instead (adhoc #256).
+    QSignalBlocker branchesTableBlock(m_branchesTable);
     m_branchesTable->setRowCount(0);
     const QString dir = repoGitDir();
     QStringList branches = repoBranches();
@@ -35715,12 +35724,13 @@ void MainWindow::loadBranchesPanel()
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
         m_branchesTable->setItem(0, 0, empty);
+        // Table signals are blocked, so blank the diff pane ourselves.
+        showBranchDiff(QString());
         return;
     }
 
     // Re-select the row the user was viewing (falling back to the checked-out
-    // branch) so rebuilding the table doesn't leave the diff pane blank. Setting
-    // the current cell re-fires currentCellChanged, which re-renders the diff.
+    // branch) so rebuilding the table doesn't leave the diff pane blank.
     QString target = previouslyViewed;
     if (target.isEmpty() || !branches.contains(target))
         target = selected;
@@ -35731,6 +35741,11 @@ void MainWindow::loadBranchesPanel()
             break;
         }
     }
+    // The table's selection signals were blocked across the rebuild, so the
+    // setCurrentCell above won't have re-rendered the diff. Do it explicitly now —
+    // a single, guarded transition rather than the blank-then-refill flash the
+    // old signal-driven path produced (adhoc #256).
+    showBranchDiff(target);
 }
 
 void MainWindow::promptNewBranch()
@@ -35773,6 +35788,14 @@ void MainWindow::deleteBranch(const QString &branch)
             QStringLiteral("Delete branch \"%1\"? This cannot be undone.").arg(branch),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
+    // Pick the branch to land on after the delete: the neighbour in the list (the
+    // row that slides up into the deleted one, or the row above when we deleted the
+    // last one) rather than snapping back to the checked-out branch, so deleting
+    // several in a row walks down the list. Falls through to the default branch when
+    // this was the last non-default branch (adhoc #256). Computed from the table now,
+    // while its rows still reflect the pre-delete order.
+    QString nextSelection = neighbourBranchInList(branch);
+
     QString err;
     // -D force-deletes even if not merged; the user explicitly confirmed.
     if (!runGitCapture(dir, {"branch", "-D", branch}, nullptr, &err)) {
@@ -35781,7 +35804,43 @@ void MainWindow::deleteBranch(const QString &branch)
     }
     logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
     setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+    // Steer loadBranchesPanel()'s "re-select the previously-viewed branch" logic at
+    // the neighbour: it reads m_branchDiffBranch as the branch to restore, and an
+    // empty value falls back to the default branch ("go to main") (adhoc #256).
+    m_branchDiffBranch = nextSelection;
     loadBranchesAndTags();
+}
+
+// The branch sitting next to `branch` in the Branches table — the row just below
+// it (which slides up when it's deleted) or, if it was the last row, the row just
+// above. Empty when there's no other branch listed, which makes loadBranchesPanel
+// fall back to the default branch. Used to pick the post-delete selection so
+// removing a branch doesn't jump the list back to the checked-out branch (#256).
+QString MainWindow::neighbourBranchInList(const QString &branch) const
+{
+    if (!m_branchesTable || branch.isEmpty())
+        return QString();
+    int row = -1;
+    for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && it->text() == branch) {
+            row = r;
+            break;
+        }
+    }
+    if (row < 0)
+        return QString();
+    for (int r = row + 1; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && !it->text().isEmpty())
+            return it->text();
+    }
+    for (int r = row - 1; r >= 0; --r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && !it->text().isEmpty())
+            return it->text();
+    }
+    return QString();
 }
 
 // Prune every branch that's fully merged into the default branch (0 behind and
@@ -36866,33 +36925,48 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
         return;
     }
 
-    // The merge happens on a checkout, so the working tree must be clean first.
+    // Branches that live in their own dedicated worktree (every agent branch) are
+    // already checked out there, and git refuses to check a branch out a second
+    // time in the main checkout — so the old "checkout in main, then merge" path
+    // failed before the agent ever started. Run the merge directly in that worktree
+    // instead: it's already on the branch, so there's nothing to check out or
+    // restore. Branches without a worktree fall back to merging in the main
+    // checkout, briefly switched onto the branch and restored afterwards.
+    const QString branchWorktree = worktreePathForBranch(dir, branch);
+    const bool inBranchWorktree = !branchWorktree.isEmpty();
+    const QString mergeDir = inBranchWorktree ? branchWorktree : dir;
+
+    // The merge happens in mergeDir, so its working tree must be clean first.
     QByteArray status;
-    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, nullptr) ||
+    if (!runGitCapture(mergeDir, {"status", "--porcelain"}, &status, nullptr) ||
         !status.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Commit or stash local changes before fixing this branch.", true);
         return;
     }
 
-    QByteArray headOut;
+    // Only the main-checkout path checks out the branch (and restores afterwards);
+    // a dedicated worktree is already on it, so restoreBranch stays empty.
     QString restoreBranch;
-    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
-        restoreBranch = QString::fromUtf8(headOut).trimmed();
-    const bool isCurrent = restoreBranch == branch;
-
     QString err;
-    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
-        setRepoDetailNotice(
-            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
-            true);
-        return;
+    if (!inBranchWorktree) {
+        QByteArray headOut;
+        if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut,
+                          nullptr))
+            restoreBranch = QString::fromUtf8(headOut).trimmed();
+        if (restoreBranch != branch &&
+            !checkoutReleasingWorktree(dir, branch, &err)) {
+            setRepoDetailNotice(
+                QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
+                true);
+            return;
+        }
     }
 
     // A clean merge needs no agent — commit it and we're done.
-    if (runGitCapture(dir, {"merge", "--no-edit", base}, nullptr, &err)) {
-        if (!isCurrent && !restoreBranch.isEmpty())
-            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+    if (runGitCapture(mergeDir, {"merge", "--no-edit", base}, nullptr, &err)) {
+        if (!restoreBranch.isEmpty() && restoreBranch != branch)
+            runGitCapture(mergeDir, {"checkout", restoreBranch}, nullptr, nullptr);
         logSystem(QStringLiteral("Git: merged %1 into %2 (no conflicts).")
                       .arg(base, branch));
         setRepoDetailNotice(
@@ -36903,15 +36977,15 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     }
 
     QByteArray unmerged;
-    runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+    runGitCapture(mergeDir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
                   nullptr);
     const QStringList conflicted =
         QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
     if (conflicted.isEmpty()) {
         // Failed for some other reason — restore as before.
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
-        if (!isCurrent && !restoreBranch.isEmpty())
-            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+        runGitCapture(mergeDir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!restoreBranch.isEmpty() && restoreBranch != branch)
+            runGitCapture(mergeDir, {"checkout", restoreBranch}, nullptr, nullptr);
         setRepoDetailNotice(
             QStringLiteral("Could not merge %1 into %2: %3")
                 .arg(base, branch, err.left(160)),
@@ -36947,7 +37021,7 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_aiFix->provider = provider;
     m_aiFix->model = model;
     m_aiFix->apiKey = apiKey;
-    m_aiFix->workTree = dir;
+    m_aiFix->workTree = mergeDir;
     m_aiFix->files = conflicted;
     m_aiFix->branch = branch;
     m_aiFix->baseBranch = base;
