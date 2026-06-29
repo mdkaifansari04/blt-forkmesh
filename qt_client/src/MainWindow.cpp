@@ -33630,6 +33630,21 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedPath.isEmpty() && !m_worktreeSelectedBranch.isEmpty())
             updateWorktreeFromMain(m_worktreeSelectedPath, m_worktreeSelectedBranch);
     });
+    // Opens the merge editor over the selected worktree's conflicted files so the
+    // user can resolve and commit a merge that left conflict markers (e.g. an
+    // "Update from main" or an agent merge that didn't apply cleanly). Hidden
+    // unless the selected worktree actually has unmerged files (set in
+    // showWorktreeDiff).
+    m_worktreeResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
+    m_worktreeResolveButton->setObjectName("primaryButton");
+    m_worktreeResolveButton->setProperty("buttonSize", "sm");
+    m_worktreeResolveButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_worktreeResolveButton, "alert", 14);
+    m_worktreeResolveButton->setToolTip(
+        "Open the merge editor to resolve this worktree's conflicts and commit them");
+    m_worktreeResolveButton->hide();
+    connect(m_worktreeResolveButton, &QPushButton::clicked, this,
+            &MainWindow::resolveWorktreeConflicts);
     // Commit the worktree's uncommitted changes in place, so you can snapshot
     // in-progress work without dropping to a terminal (sits beside "Update from
     // main" since you typically commit before pulling main in).
@@ -33671,6 +33686,7 @@ QWidget *MainWindow::buildWorktreesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_worktreeResolveButton);
     detailBar->addWidget(m_worktreeCommitButton);
     detailBar->addWidget(m_worktreeUpdateButton);
     detailBar->addWidget(m_worktreeMergeButton);
@@ -33691,7 +33707,9 @@ QWidget *MainWindow::buildWorktreesTab()
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
-    split->setSizes({560, 180, 760});
+    // Open with the worktrees table taking ~50% of the width and the two detail
+    // panes (file list + diff) sharing the other ~50%.
+    split->setSizes({500, 150, 350});
     layout->addWidget(split, 1);
     return page;
 }
@@ -34155,6 +34173,18 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
                                            QDir(worktreePath).exists());
     if (m_worktreeRemoveButton)
         m_worktreeRemoveButton->setEnabled(!isMain && !worktreePath.isEmpty());
+    // Surface a "Resolve conflicts" button only when this worktree has a merge in
+    // progress that left unmerged (conflicted) files to fix.
+    if (m_worktreeResolveButton) {
+        bool conflicted = false;
+        if (!worktreePath.isEmpty() && QDir(worktreePath).exists()) {
+            QByteArray u;
+            if (runGitCapture(worktreePath,
+                              {"diff", "--name-only", "--diff-filter=U"}, &u, nullptr))
+                conflicted = !QString::fromUtf8(u).trimmed().isEmpty();
+        }
+        m_worktreeResolveButton->setVisible(conflicted);
+    }
     QByteArray out;
     bool ok = false;
     if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
@@ -34742,16 +34772,75 @@ void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
                       nullptr, &err)) {
         setRepoDetailNotice(
             QStringLiteral("Updated %1 from %2.").arg(branch, base), false);
-    } else {
-        runGitCapture(worktreePath, {"merge", "--abort"}, nullptr, nullptr);
+    } else if (editWorktreeConflicts(worktreePath, branch, base)) {
+        // The merge left conflict markers; the user resolved them in the editor.
         setRepoDetailNotice(
-            QStringLiteral("Couldn't update %1 from %2 cleanly (conflicts) — resolve "
-                           "them in that worktree.")
+            QStringLiteral("Updated %1 from %2 (conflicts resolved).").arg(branch, base),
+            false);
+    } else {
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't update %1 from %2 cleanly; the merge was left "
+                           "unchanged.")
                 .arg(branch, base),
             true);
     }
     // loadWorktreesPanel() preserves the current selection across the rebuild, so
     // focus stays on the worktree we just updated instead of going blank (#272).
+    loadWorktreesPanel();
+}
+
+// Open the shared merge editor over the worktree's unmerged files. On commit,
+// stage everything and finish the merge commit; on cancel, abort the merge. The
+// branch/base names only feed the intro text. Returns true iff committed.
+bool MainWindow::editWorktreeConflicts(const QString &worktreePath,
+                                       const QString &branch, const QString &base)
+{
+    QByteArray unmerged;
+    runGitCapture(worktreePath, {"diff", "--name-only", "--diff-filter=U"},
+                  &unmerged, nullptr);
+    const QStringList conflicted =
+        QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
+    if (conflicted.isEmpty()) {
+        // No markers to edit — nothing in progress (or it failed for another
+        // reason). Abort any half-started merge so the worktree is left clean.
+        runGitCapture(worktreePath, {"merge", "--abort"}, nullptr, nullptr);
+        return false;
+    }
+    const QString intro =
+        QString::fromUtf8(
+            "Resolve each conflict, then commit the merge into <b>%1</b>. "
+            "<b>Ours</b> is %1; <b>theirs</b> is %2. You can also edit the "
+            "text directly.")
+            .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
+    const bool committed = runMergeConflictEditor(
+        QString::fromUtf8("Resolve conflicts \xE2\x80\x94 %1").arg(branch),
+        intro, worktreePath, conflicted, QStringLiteral("Commit merge"),
+        [this, worktreePath](QString *e) {
+            return runGitCapture(worktreePath, {"add", "-A"}, nullptr, e) &&
+                   runGitCapture(worktreePath, {"commit", "--no-edit"}, nullptr, e);
+        });
+    if (!committed)
+        runGitCapture(worktreePath, {"merge", "--abort"}, nullptr, nullptr);
+    return committed;
+}
+
+void MainWindow::resolveWorktreeConflicts()
+{
+    const QString worktreePath = m_worktreeSelectedPath;
+    const QString branch = m_worktreeSelectedBranch;
+    if (worktreePath.isEmpty() || !QDir(worktreePath).exists()) {
+        setRepoDetailNotice("That worktree's folder is gone.", true);
+        loadWorktreesPanel();
+        return;
+    }
+    const QString base = repoDefaultBranch(repoBranches());
+    if (editWorktreeConflicts(worktreePath, branch, base))
+        setRepoDetailNotice(
+            QStringLiteral("Resolved conflicts in %1.").arg(branch), false);
+    else
+        setRepoDetailNotice(
+            QStringLiteral("Cancelled conflict resolution; %1 was left unchanged.")
+                .arg(branch));
     loadWorktreesPanel();
 }
 
