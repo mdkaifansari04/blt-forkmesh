@@ -22819,7 +22819,9 @@ QWidget *MainWindow::buildAgentsTab()
     // Same merge, but also tear down this agent session once its branch is in main
     // (mirrors the Worktrees tab's "Merge & delete agent").
     m_agentMergeDeleteButton = new QPushButton("Merge & delete agent");
-    m_agentMergeDeleteButton->setObjectName("ghostButton");
+    // Green/primary like "Merge into main" — both land the branch in main, so they
+    // read as the affirmative actions on this bar (adhoc #254).
+    m_agentMergeDeleteButton->setObjectName("primaryButton");
     m_agentMergeDeleteButton->setProperty("buttonSize", "sm");
     m_agentMergeDeleteButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentMergeDeleteButton, "check-circle", 14);
@@ -34398,6 +34400,50 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // — all blocking git on the UI thread. Pump the event loop across the lot so
     // the window stays responsive instead of freezing ("Not Responding").
     GitKeepAlive keepAlive;
+
+    // adhoc #254: bring the branch up to date with base *before* merging it back, so a
+    // stale branch (forked before recent base commits) merges cleanly instead of
+    // conflicting on base. Do it in the branch's own worktree so any conflicts surface
+    // there — where the user/agent can resolve them — and so we never delete a worktree
+    // that still holds uncommitted work or a half-finished merge. If it can't update
+    // cleanly we keep everything and bail; the into-base merge below then fast-forwards.
+    if (!worktreePath.isEmpty() && QDir(worktreePath).exists()
+        && QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
+        QByteArray wst;
+        if (runGitCapture(worktreePath, {"status", "--porcelain"}, &wst, nullptr)
+            && !QString::fromUtf8(wst).trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Worktree %1 has uncommitted changes — commit or stash "
+                               "them first (they'd be lost when it's deleted).")
+                    .arg(branch),
+                true);
+            return;
+        }
+        QString uerr;
+        const bool updated = runGitCapture(
+            worktreePath,
+            {"merge", base, "-m", QStringLiteral("Merge %1 into %2").arg(base, branch)},
+            nullptr, &uerr);
+        QByteArray uConflicted;
+        const bool updateConflicts =
+            runGitCapture(worktreePath, {"diff", "--name-only", "--diff-filter=U"},
+                          &uConflicted, nullptr)
+            && !QString::fromUtf8(uConflicted).trimmed().isEmpty();
+        if (!updated || updateConflicts) {
+            // Leave the branch as it was and keep the worktree — its work isn't lost.
+            runGitCapture(worktreePath, {"merge", "--abort"}, nullptr, nullptr);
+            setRepoDetailNotice(
+                QStringLiteral("Couldn't update %1 from %2 cleanly (conflicts) — kept "
+                               "its worktree and branch. Resolve them with \"Update "
+                               "from %2\" or \"Fix with agent\", then merge.")
+                    .arg(branch, base),
+                true);
+            loadWorktreesPanel();
+            loadBranchesAndTags();
+            return;
+        }
+    }
+
     QString err;
     const bool merged =
         runGitCapture(dir,
@@ -34415,7 +34461,17 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &conflicted,
                       nullptr) &&
         !QString::fromUtf8(conflicted).trimmed().isEmpty();
-    if (merged && !hasConflicts) {
+    // Authoritative safety gate (adhoc #254): only delete the worktree+branch once
+    // the branch's commits are *provably* contained in the base branch — i.e. its tip
+    // is now an ancestor of HEAD. The exit-code/conflict checks above can pass while
+    // the work isn't actually in main (a stale branch whose merge was aborted, killed,
+    // or left half-applied), and deleting then discards the only copy of that work.
+    // This is exact: a clean --no-ff merge (or an "Already up to date" no-op) always
+    // leaves the branch an ancestor; a merge that didn't land never does.
+    const bool branchInBase =
+        runGitCapture(dir, {"merge-base", "--is-ancestor", branch, "HEAD"}, nullptr,
+                      nullptr);
+    if (merged && !hasConflicts && branchInBase) {
         // The branch is now in main, so the worktree has served its purpose — clean
         // it up (silently; the merge was already confirmed). Delete the branch too:
         // its work is preserved in the merge commit, so leaving it behind only
@@ -34471,13 +34527,16 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         if (m_branchAutoPullAllCheck && m_branchAutoPullAllCheck->isChecked())
             pullBaseIntoAllBranches();
     } else {
-        // Roll the failed merge back so the checkout is left clean, and keep the
-        // worktree so its work isn't lost (issue #126).
+        // The branch did not land cleanly in main — roll back any in-progress merge so
+        // the checkout is left clean, and keep the worktree and branch so their work
+        // isn't lost (issue #126 / adhoc #254). merge --abort is a harmless no-op when
+        // there's nothing to abort.
         runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
         setRepoDetailNotice(
-            QStringLiteral("Couldn't merge %1 cleanly (conflicts) — kept its worktree. "
-                           "Open a PR and use \"Fix with agent\" on the Branches tab.")
-                .arg(branch),
+            QStringLiteral("Couldn't merge %1 into %2 cleanly — kept its worktree and "
+                           "branch. Update it from %2 to resolve the conflicts (the "
+                           "\"Update from %2\" button), or use \"Fix with agent\".")
+                .arg(branch, base),
             true);
     }
     loadWorktreesPanel();
@@ -37680,12 +37739,71 @@ void MainWindow::promptNewRelease()
     const QString target = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
                                                   : m_repoBranch;
 
+    // Auto-fill the tag and title from the previous release so a typical
+    // patch bump is one click away. Grab the newest tag (by creation date)
+    // and its subject (the release title baked into the annotated tag).
+    QString prevTag, prevTitle;
+    {
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate", "--count=1",
+                           "--format=%(refname:short)%09%(contents:subject)",
+                           "refs/tags"},
+                          &out, nullptr)) {
+            const QString line = QString::fromUtf8(out).trimmed();
+            const int tab = line.indexOf('\t');
+            if (tab >= 0) {
+                prevTag = line.left(tab).trimmed();
+                prevTitle = line.mid(tab + 1).trimmed();
+            } else {
+                prevTag = line;
+            }
+        }
+    }
+    // Suggest the next tag by incrementing the last run of digits in the
+    // previous tag (v0.5.1 -> v0.5.2, v1.0.0-rc1 -> v1.0.0-rc2). Falls back
+    // to an empty suggestion when there's no prior release to bump.
+    QString suggestedTag, suggestedTitle;
+    if (!prevTag.isEmpty()) {
+        int end = -1;
+        for (int i = prevTag.size() - 1; i >= 0; --i) {
+            if (prevTag.at(i).isDigit()) {
+                end = i;
+                break;
+            }
+        }
+        if (end >= 0) {
+            int start = end;
+            while (start > 0 && prevTag.at(start - 1).isDigit())
+                --start;
+            bool ok = false;
+            const qulonglong n =
+                prevTag.mid(start, end - start + 1).toULongLong(&ok);
+            if (ok)
+                suggestedTag = prevTag.left(start) + QString::number(n + 1) +
+                               prevTag.mid(end + 1);
+        }
+        if (!suggestedTag.isEmpty()) {
+            // Carry the previous title's pattern forward, swapping in the new
+            // tag where the old one appeared (titles are usually just the tag).
+            if (prevTitle.isEmpty() || prevTitle == prevTag)
+                suggestedTitle = suggestedTag;
+            else if (prevTitle.contains(prevTag))
+                suggestedTitle = QString(prevTitle).replace(prevTag, suggestedTag);
+            else
+                suggestedTitle = prevTitle;
+        }
+    }
+
     // GitHub-style "draft a release": tag name, target ref, and release notes.
     QDialog dialog(this);
     dialog.setWindowTitle("Draft a new release");
     auto *form = new QFormLayout(&dialog);
     auto *tagEdit = new QLineEdit;
     tagEdit->setPlaceholderText("v1.0.0");
+    if (!suggestedTag.isEmpty())
+        tagEdit->setText(suggestedTag);
     auto *targetEdit = new QComboBox;
     targetEdit->addItems(branches);
     const int targetIdx = targetEdit->findText(target);
@@ -37693,6 +37811,8 @@ void MainWindow::promptNewRelease()
         targetEdit->setCurrentIndex(targetIdx);
     auto *titleEdit = new QLineEdit;
     titleEdit->setPlaceholderText("Release title (optional)");
+    if (!suggestedTitle.isEmpty())
+        titleEdit->setText(suggestedTitle);
     auto *notesEdit = new QPlainTextEdit;
     notesEdit->setPlaceholderText("Describe this release...");
     notesEdit->setMinimumHeight(120);
@@ -37705,6 +37825,9 @@ void MainWindow::promptNewRelease()
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    // Pre-select the suggested tag so it can be accepted as-is or typed over.
+    tagEdit->setFocus();
+    tagEdit->selectAll();
     if (dialog.exec() != QDialog::Accepted)
         return;
 
