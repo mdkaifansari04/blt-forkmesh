@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 295
 title: on the worktree list show a status for the attached agent and let us click to the agent
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 80
