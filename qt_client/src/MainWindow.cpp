@@ -1582,6 +1582,9 @@ const QString kBranchAutoPullAllSetting =
     QStringLiteral("branches/autoPullAllOnMerge");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
+// Persisted footer quick-add prompt history (adhoc #200) so Up still recalls
+// prompts sent in earlier sessions, not just the current one.
+const QString kQuickAddHistorySetting = QStringLiteral("issues/quickAddHistory");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
 // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
 // a regular API key cannot read organization spend.
@@ -1860,23 +1863,31 @@ QString prioritizePromptSetting()
     return stored.isEmpty() ? defaultPrioritizePrompt() : stored;
 }
 
-// Instruction for the "Analyze completeness" button (adhoc #139). The README and
-// the open-issue list are appended after this text before the request is sent.
+// Instruction for the "Analyze completeness" button (adhoc #139, adhoc #200). The
+// README, the repository file listing and the open-issue list are appended after
+// this text before the request is sent. The verdict judges how much of each
+// issue's work is already implemented in the code, not how well the issue is
+// written.
 QString completenessPrompt()
 {
     // \xE2\x80\x94 is an em-dash; keep this QString::fromUtf8 (not QStringLiteral)
     // so the multi-byte UTF-8 escape decodes to one code point, not mojibake.
     return QString::fromUtf8(
-        "You are reviewing a software project's open issues for completeness. An "
-        "issue is complete when it clearly states the problem or goal, gives "
-        "enough detail for someone to start work, and implies how to tell it is "
-        "done. Use the project's README for context. For EACH open issue, rate it "
-        "Complete, Partial or Incomplete, estimate a completeness percentage from "
-        "0 to 100, and give one short sentence on what is missing (or why it is "
-        "ready). Respond with ONLY a JSON array, one object per issue, exactly "
-        "like: [{\"number\":12,\"rating\":\"Partial\",\"completeness\":40,"
-        "\"reason\":\"no acceptance criteria\"}]. Do not add code fences or any "
-        "other commentary.");
+        "You are reviewing a software project's open issues to judge how much of "
+        "each issue's requested work is ALREADY implemented in the codebase. Use "
+        "the project's README and the repository file listing below for context, "
+        "and reason carefully about whether the described feature or fix already "
+        "exists in the code. For EACH open issue decide whether it is Complete (the "
+        "work appears fully done and the issue could be closed), Partial (some of it "
+        "exists but more is needed) or Incomplete (not started), and estimate a "
+        "completeness percentage from 0 to 100 that reflects how much of the work is "
+        "actually done. Give one short sentence (the \"comment\") on what is "
+        "implemented and what is still missing. Be accurate and conservative: do not "
+        "call something Complete unless the code really supports it. Respond with "
+        "ONLY a JSON array, one object per issue, exactly like: "
+        "[{\"number\":12,\"rating\":\"Partial\",\"completeness\":40,\"comment\":"
+        "\"history exists but is not persisted across restarts\"}]. Do not add code "
+        "fences or any other commentary.");
 }
 
 QString codexCommandSetting()
@@ -7434,6 +7445,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setMaxLength(16000);
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
+    // Restore the prompt history persisted from earlier sessions so Up recalls
+    // prompts sent before the app was last closed (adhoc #200).
+    m_quickAddHistory = QSettings().value(kQuickAddHistorySetting).toStringList();
 
     // Characters-remaining counter: counts down from the field's limit as you
     // type, so it's clear how much room is left before the field stops accepting
@@ -41138,6 +41152,8 @@ void MainWindow::recordQuickAddHistory(const QString &text)
         m_quickAddHistory.removeFirst();
     m_quickAddHistoryIndex = -1;
     m_quickAddDraft.clear();
+    // Persist so Up still recalls these prompts after a restart (adhoc #200).
+    QSettings().setValue(kQuickAddHistorySetting, m_quickAddHistory);
 }
 
 // Walk the quick-add prompt history from the footer bar (adhoc #200). direction
@@ -42706,6 +42722,24 @@ void MainWindow::analyzeIssueCompleteness()
     if (readme.size() > 8000)
         readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
 
+    // Repository file listing so the agent can judge whether each issue's feature
+    // is actually implemented rather than guessing from the issue text alone
+    // (adhoc #200). Tracked files from the work tree's HEAD; capped for the prompt.
+    QString fileTree;
+    {
+        const int repoIdx = issuesRepoIndex();
+        if (repoIdx >= 0) {
+            const RepositoryRecord repo =
+                writableRecordFor(m_repositories.at(repoIdx));
+            QByteArray out;
+            if (!repo.localPath.trimmed().isEmpty() &&
+                runGitCapture(repo.localPath, {"ls-files"}, &out, nullptr))
+                fileTree = QString::fromUtf8(out).trimmed();
+        }
+    }
+    if (fileTree.size() > 12000)
+        fileTree = fileTree.left(12000) + QStringLiteral("\n[file list truncated]");
+
     // Use the agent picked in the dropdown shared with "Prioritize from README";
     // fall back to the saved default agent when the picker isn't built yet.
     const QString provider = m_issuePrioritizeAgentCombo
@@ -42757,14 +42791,19 @@ void MainWindow::analyzeIssueCompleteness()
         readme.isEmpty()
             ? QStringLiteral("(no README found)")
             : readme;
+    const QString filesSection =
+        fileTree.isEmpty() ? QStringLiteral("(file listing unavailable)") : fileTree;
     const QString task =
-        QStringLiteral(
-            "%1\n\n----- README -----\n%2\n\n----- OPEN ISSUES -----\n%3")
-            .arg(completenessPrompt(), readmeSection, lines.join('\n'));
+        QStringLiteral("%1\n\n----- README -----\n%2\n\n----- REPOSITORY FILES "
+                       "-----\n%3\n\n----- OPEN ISSUES -----\n%4")
+            .arg(completenessPrompt(), readmeSection, filesSection,
+                 lines.join('\n'));
+    // Opus does the implementation-vs-issue reasoning; the user asked for it by
+    // name so the percentages and comments are grounded in the actual code.
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
-    // Budget enough output for a sentence per issue, with headroom.
-    const int outTok = qBound(512, open.size() * 64 + 256, 4000);
+        claude ? QStringLiteral("claude-opus-4-8") : kIssueAskAiModel;
+    // Budget enough output for a per-issue comment plus the verdict, with headroom.
+    const int outTok = qBound(1024, open.size() * 220 + 512, 8000);
 
     QNetworkReply *reply = nullptr;
     if (claude) {
@@ -42900,7 +42939,11 @@ void MainWindow::analyzeIssueCompleteness()
             else if (rating.contains(QLatin1String("partial")))
                 label = QStringLiteral("Partial");
             const int pct = qBound(0, o.value("completeness").toInt(), 100);
-            const QString reason = o.value("reason").toString().trimmed();
+            // "comment" is the new field; fall back to the legacy "reason" key so
+            // an older-style response still yields a note.
+            QString comment = o.value("comment").toString().trimmed();
+            if (comment.isEmpty())
+                comment = o.value("reason").toString().trimmed();
 
             QStringList labels = openByNumber.value(number).labels;
             for (const QString &cl : kCompletenessLabels)
@@ -42913,7 +42956,18 @@ void MainWindow::analyzeIssueCompleteness()
                 label.isEmpty() ? true
                                 : writeStore.setLabels(number, labels, &error);
             const bool okProgress = writeStore.setProgress(number, pct, &error);
-            if (okLabels && okProgress)
+            // Post the short verdict as a comment on the issue so it's visible in
+            // the thread, not just this run's dialog (adhoc #200).
+            bool okComment = true;
+            if (!comment.isEmpty()) {
+                const QString commentBody =
+                    QStringLiteral("**Completeness analysis:** %1 (%2%)\n\n%3")
+                        .arg(label.isEmpty() ? QStringLiteral("?") : label)
+                        .arg(pct)
+                        .arg(comment);
+                okComment = writeStore.addComment(number, commentBody, {}, &error);
+            }
+            if (okLabels && okProgress && okComment)
                 ++applied;
             else
                 ++failed;
@@ -42923,8 +42977,8 @@ void MainWindow::analyzeIssueCompleteness()
                            .arg(number)
                            .arg(label.isEmpty() ? QStringLiteral("?") : label) +
                        dash + QStringLiteral("%1%").arg(pct) + dash +
-                       (reason.isEmpty() ? QStringLiteral("(no detail)")
-                                         : reason);
+                       (comment.isEmpty() ? QStringLiteral("(no detail)")
+                                          : comment);
         }
 
         if (applied == 0) {
