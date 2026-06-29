@@ -10690,22 +10690,27 @@ QWidget *MainWindow::buildHostsSection()
     bodyCol->addWidget(hostsLabel);
 
     auto *hostsHint = new QLabel(QString::fromUtf8(
-        "Double-click a saved host to reload it into the form above, then enter "
-        "the SSH password and run the installer again."));
+        "Click Update on a saved host to re-run the installer and bring it up to "
+        "the latest ForkMesh release. Double-click a host instead to reload it "
+        "into the form above for editing."));
     hostsHint->setObjectName("mutedLabel");
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
 
-    m_hostsTable = new QTableWidget(0, 4);
+    m_hostsTable = new QTableWidget(0, 5);
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
-         QStringLiteral("User"), QStringLiteral("Status")});
+         QStringLiteral("User"), QStringLiteral("Status"), QString()});
     m_hostsTable->verticalHeader()->setVisible(false);
     m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
-    m_hostsTable->horizontalHeader()->setStretchLastSection(true);
+    // Stretch the Status column and let the trailing Update-button column size to
+    // its contents.
+    m_hostsTable->horizontalHeader()->setStretchLastSection(false);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. The password is never stored on
     // disk, so it is left blank for the user to re-enter.
@@ -10738,6 +10743,28 @@ void MainWindow::refreshHostsTable()
         m_hostsTable->setItem(i, 2,
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+
+        // Per-row Update button: reload the saved host into the install form and
+        // re-run the hosted installer against it. The installer is idempotent, so
+        // re-running it pulls the latest ForkMesh release onto that host.
+        auto *cell = new QWidget;
+        auto *cellRow = new QHBoxLayout(cell);
+        cellRow->setContentsMargins(4, 2, 4, 2);
+        cellRow->setSpacing(0);
+        auto *updateBtn = new QPushButton(QStringLiteral("Update"));
+        updateBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(updateBtn, "sync", 12);
+        // Defer to the next event-loop turn: re-running the installer rebuilds
+        // this table (and deletes this very button), so let the click signal
+        // fully unwind first.
+        connect(updateBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                loadHostIntoForm(i, 0);
+                runHostInstall();
+            });
+        });
+        cellRow->addWidget(updateBtn);
+        m_hostsTable->setCellWidget(i, 4, cell);
     }
 }
 
@@ -34174,6 +34201,22 @@ void MainWindow::reassignContributorIdentity(const QString &oldName)
     loadCommits();
 }
 
+// Per-repo metadata lives in .forkmesh/info.json (issue #232). Older repos kept
+// it at the working-tree root, so reads fall back to that legacy location.
+static QString repoInfoJsonWritePath(const QString &localPath)
+{
+    return QDir(localPath).filePath(QStringLiteral(".forkmesh/info.json"));
+}
+
+static QString repoInfoJsonReadPath(const QString &localPath)
+{
+    const QString preferred = repoInfoJsonWritePath(localPath);
+    if (QFileInfo::exists(preferred))
+        return preferred;
+    const QString legacy = QDir(localPath).filePath(QStringLiteral("info.json"));
+    return QFileInfo::exists(legacy) ? legacy : preferred;
+}
+
 void MainWindow::loadRepoInfo()
 {
     m_repoInfo = RepoInfo();
@@ -34296,8 +34339,8 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
     const QDir repoDir(repo.localPath);
     const QString infoPath = repoDir.filePath(kRepoInfoPath);
     QJsonObject obj;
-    if (QFileInfo::exists(infoPath)) {
-        QFile file(infoPath);
+    if (QFileInfo::exists(readPath)) {
+        QFile file(readPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
                 *error = QStringLiteral("Could not read .forkmesh/info.json.");
@@ -34340,6 +34383,12 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
             *error = QStringLiteral("Could not save .forkmesh/info.json.");
         return false;
     }
+
+    // Now that the metadata lives under .forkmesh/, drop any stale root-level
+    // info.json so the repo carries a single source of truth (issue #232).
+    const QString legacyPath = QDir(repo.localPath).filePath("info.json");
+    if (legacyPath != infoPath && QFileInfo::exists(legacyPath))
+        QFile::remove(legacyPath);
 
     repo.description = aboutText;
     saveRepositories();
@@ -44241,8 +44290,17 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
-    const QImage qr = QrCode::encodeToImage(uri, 6, 3);
-    if (!qr.isNull()) {
+    // The Solana Pay URI bakes in the amount, so it's long and yields a
+    // high-version (many-module) QR. At a fixed scale that overflows the dialog
+    // and gets clipped, so size each module to the largest integer that keeps
+    // the whole code within the dialog width (and crisp).
+    const auto modules = QrCode::encode(uri.toUtf8());
+    if (!modules.empty()) {
+        constexpr int kMargin = 3;
+        constexpr int kMaxQrPx = 300;
+        const int span = static_cast<int>(modules.size()) + 2 * kMargin;
+        const int scale = qMax(2, kMaxQrPx / span);
+        const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
         auto *qrLabel = new QLabel;
         qrLabel->setPixmap(QPixmap::fromImage(qr));
         qrLabel->setAlignment(Qt::AlignCenter);
