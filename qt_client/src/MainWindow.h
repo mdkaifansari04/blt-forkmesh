@@ -2890,6 +2890,8 @@ private:
     bool isExternalSession(int sessionId) const { return sessionId <= kExternalIdBase; }
     bool externalIsLive(const QString &uuid) const; // still in the detected set
     void renderExternalTranscript(int sessionId, bool full);
+    void stopExternalSession(int sessionId); // signal the external CLI process to quit
+    QSet<QString> m_externalStopped;         // uuids we've stopped — keep them idle
     QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
