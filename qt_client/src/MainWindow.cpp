@@ -6728,7 +6728,13 @@ void MainWindow::styleFooterUpdateLog()
     // for failures ("!!"/"ERROR"), the accent for phase headers ("==>"/"$ "),
     // muted body grey otherwise.
     const bool dark = currentThemeIsDark();
-    const QString &clean = m_footerUpdateLineRaw;
+    // Tone is driven by the message body, so skip any leading
+    // "yyyy-MM-dd HH:mm:ss  " stamp (position 10 is the date/time space) before
+    // matching the narrative markers.
+    const QString &raw = m_footerUpdateLineRaw;
+    const QString clean = (raw.size() >= 21 && raw.at(10) == QLatin1Char(' '))
+                              ? raw.mid(21)
+                              : raw;
     QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
     if (clean.startsWith(QStringLiteral("!!")) ||
         clean.startsWith(QStringLiteral("ERROR")))
@@ -6758,8 +6764,11 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     m_footerUpdateLineRaw = clean;
     m_footerUpdateLog->show();
     styleFooterUpdateLog();
-    // Elide to a single line that fits the current width so a long compiler line
-    // never stretches the window.
+    // Elide the visible strip to a single line that fits the current width so a
+    // long compiler line never stretches the window, but expose the full,
+    // untruncated log line in the tooltip so it's always readable on hover.
+    m_footerUpdateLog->setToolTip(
+        clean + QStringLiteral("\n\nClick to open the full log."));
     const QFontMetrics fm(m_footerUpdateLog->font());
     const int avail = qMax(40, m_footerUpdateLog->width() - 28);
     m_footerUpdateLog->setText(fm.elidedText(clean, Qt::ElideRight, avail));
@@ -7585,12 +7594,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     styleFooterUpdateLog();
     // Seed the always-on strip with the most recent live-log line (or a ready
     // placeholder) so it's populated on first paint; logSystem() then streams
-    // every new event onto it.
+    // every new event onto it. Keep the full dated line so the timestamp shows.
     if (!m_networkLog.isEmpty()) {
-        const QString &last = m_networkLog.last();
-        setFooterUpdateLine(last.size() >= 21 && last.at(10) == QLatin1Char(' ')
-                                ? last.mid(21)
-                                : last);
+        setFooterUpdateLine(m_networkLog.last());
     } else {
         setFooterUpdateLine(QStringLiteral("ForkMesh ready"));
     }
@@ -45169,7 +45175,9 @@ void MainWindow::logSystem(const QString &text)
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
-    setFooterUpdateLine(plain);
+    // Pass the full dated line (not just the message) so the bottom strip shows the
+    // same timestamped log line as the Log view.
+    setFooterUpdateLine(line);
 
     // Persist incrementally so the history survives a restart (even an unclean
     // one). Periodically rewrite the file to trim it back to the in-memory cap.
