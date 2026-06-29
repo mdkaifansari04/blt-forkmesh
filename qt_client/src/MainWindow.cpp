@@ -38274,17 +38274,6 @@ void MainWindow::pullBaseIntoAllBranches()
     if (base.isEmpty())
         return;
 
-    // Acknowledge the click with a spinner on the button instead of a modal
-    // confirmation (adhoc #259). The per-branch git work runs synchronously, so
-    // a GitKeepAlive scope pumps the event loop across it to keep the spinner
-    // turning; the scope guard restores the button on every exit path below.
-    startButtonSpin(m_branchPullAllButton);
-    GitKeepAlive keepAlive;
-    QPushButton *const spinButton = m_branchPullAllButton;
-    const auto spinGuard = qScopeGuard([this, spinButton] {
-        stopButtonSpin(spinButton);
-    });
-
     // The checked-out branch can't be advanced by a bare ref update without
     // desyncing its working tree, so the batch skips it (it's usually the base);
     // the user can still update it individually with its row's "Pull" button.
@@ -38323,6 +38312,29 @@ void MainWindow::pullBaseIntoAllBranches()
             QStringLiteral("Every branch is already up to date with %1.").arg(base));
         return;
     }
+
+    // Confirm before touching every behind branch (adhoc #45): this bulk merge
+    // rewrites refs across the whole repo, so make the blast radius explicit and
+    // give the user a chance to back out, mirroring the per-branch "Pull main".
+    if (QMessageBox::question(
+            this, QStringLiteral("Pull %1 into all").arg(base),
+            QStringLiteral("Merge %1 into %2 branch(es) that are behind it?")
+                .arg(base)
+                .arg(behindCount),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        return;
+
+    // Acknowledge the confirmed click with a spinner on the button. The per-branch
+    // git work runs synchronously, so a GitKeepAlive scope pumps the event loop
+    // across it to keep the spinner turning; the scope guard restores the button on
+    // every exit path below.
+    startButtonSpin(m_branchPullAllButton);
+    GitKeepAlive keepAlive;
+    QPushButton *const spinButton = m_branchPullAllButton;
+    const auto spinGuard = qScopeGuard([this, spinButton] {
+        stopButtonSpin(spinButton);
+    });
+
     int updated = 0;
     QStringList conflicts, skipped;
     for (const QString &branch : branches) {
