@@ -5,7 +5,7 @@ title: BUG: in verify wallter option whenever i click on very wallet button a po
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 25
 progress: 0
 assignees: []
 createdAt: 1782758500903
