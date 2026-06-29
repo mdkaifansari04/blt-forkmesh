@@ -109,7 +109,12 @@ public:
                    const QString &commits, bool branchBacked = false,
                    QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
-    bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr) const;
+    // Whether the PR's head branch is behind its base (the base carries commits the
+    // head lacks). When `behindCount` is non-null it also receives how many such
+    // commits the head is missing, so callers can show the branch's position
+    // relative to the base ("N commits behind main").
+    bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr,
+                            int *behindCount = nullptr) const;
     bool updateBranchFromBase(int number, QString *error = nullptr);
     // Apply the PR's patch into the working tree, commit, mark merged.
     bool mergePull(int number, QString *error = nullptr);
