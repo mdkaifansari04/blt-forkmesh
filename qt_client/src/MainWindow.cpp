@@ -37268,10 +37268,10 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 4);
+    m_releasesTable = new QTableWidget(0, 5);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
-    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", ""});
+    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", "Artifacts", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -37283,7 +37283,8 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(2, QHeaderView::Stretch);
-    rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(3, QHeaderView::Stretch);
+    rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the tag too, matching the arrow-key navigation
@@ -37334,6 +37335,30 @@ void MainWindow::loadReleasesPanel()
             m_releasesTable->setItem(row, 1, new QTableWidgetItem(f.value(1).trimmed()));
             m_releasesTable->setItem(row, 2, new QTableWidgetItem(f.value(2).trimmed()));
 
+            // Load artifacts from release.json if available
+            QString artifacts;
+            const QString releaseJsonPath = dir + QStringLiteral("/releases/") + tag + QStringLiteral("/release.json");
+            QFile releaseFile(releaseJsonPath);
+            if (releaseFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QJsonDocument doc = QJsonDocument::fromJson(releaseFile.readAll());
+                releaseFile.close();
+                if (doc.isObject()) {
+                    const QJsonObject obj = doc.object();
+                    const QJsonArray assets = obj.value("assets").toArray();
+                    QStringList assetNames;
+                    for (const QJsonValue &asset : assets) {
+                        const QString name = asset.toObject().value("name").toString();
+                        if (!name.isEmpty()) {
+                            assetNames.append(name);
+                        }
+                    }
+                    if (!assetNames.isEmpty()) {
+                        artifacts = assetNames.join(", ");
+                    }
+                }
+            }
+            m_releasesTable->setItem(row, 3, new QTableWidgetItem(artifacts));
+
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
             del->setFlat(true);
@@ -37343,7 +37368,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 3, del);
+            m_releasesTable->setCellWidget(row, 4, del);
             ++count;
         }
     }
