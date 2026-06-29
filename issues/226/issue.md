@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 226
 title: show number of releases in releases tab
 status: open
-labels: [Complete]
+labels: [Partial]
 milestone: 
 priority: 50
 progress: 90
