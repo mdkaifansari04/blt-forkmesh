@@ -5,7 +5,7 @@ title: show the time elapsed for each agent in the list as well as token count
 status: open
 labels: [Partial]
 milestone: 
-priority: 41
+priority: 47
 progress: 60
 assignees: []
 createdAt: 1782362656438
