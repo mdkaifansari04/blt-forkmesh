@@ -173,9 +173,6 @@ def test_clean_marketing_routes_target_static_pages():
         "/desktop /desktop.html 200",
         "/docs /docs/index.html 200",
         "/blog /blogs 308",
-        "/:owner/:repo /dashboard?repo=:owner/:repo 308",
-        "/:owner/:repo/tree/:splat /dashboard?repo=:owner/:repo 308",
-        "/:owner/:repo/blob/:splat /dashboard?repo=:owner/:repo 308",
     ):
         assert redirect in REDIRECTS
 
@@ -184,6 +181,38 @@ def test_clean_marketing_routes_target_static_pages():
         assert route in run_worker_first
     for route in ("/desktop", "/blogs"):
         assert route not in run_worker_first
+
+
+def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
+    # A /:owner/:repo rule in _redirects matches real two-segment static assets
+    # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
+    # applies _redirects before serving a matching static file — that 308'd those
+    # assets and broke the deploy's public-asset check. The shortcut must live in
+    # 404.html (post-asset-resolution) instead, so guard against the rule's return.
+    rules = [
+        line for line in REDIRECTS.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    for rule in rules:
+        assert ":owner" not in rule
+        assert ":repo" not in rule
+        assert "/dashboard?repo=" not in rule
+        # Self-referential 200 rewrites for asset dirs are no-ops (a rewrite to the
+        # same path); real files serve directly once nothing else hijacks them.
+        assert not rule.startswith("/assets/*")
+        assert not rule.startswith("/favicon/*")
+
+
+def test_repo_shortcut_urls_redirect_to_dashboard_from_404_page():
+    html = _read(PUBLIC / "404.html")
+
+    # The 404 page bounces /owner/repo (and tree/blob deep links) to the dashboard.
+    assert '"/dashboard?repo=" +' in html
+    assert "window.location.pathname.split" in html
+    assert '(parts[2] === "tree" || parts[2] === "blob")' in html
+    # Real site sections must not be treated as repo owners.
+    for reserved in ("assets", "favicon", "dashboard", "docs", "blogs"):
+        assert '"%s"' % reserved in html
 
 
 def test_desktop_client_stub_exists():
