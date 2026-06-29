@@ -2,42 +2,17 @@
   // Must match valid_node_name in cloudflare_worker/src/entry.py and the Qt
   // client: a single DNS-like label, lowercase, hyphens allowed, no underscores.
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-  const PAYOUT_PER_JOIN_SOL = 0.0001; // illustrative only - reward engine WIP
-  // Mirror of TREASURY_SPLIT_NUMERATOR / TREASURY_SPLIT_DENOMINATOR in
-  // cloudflare_worker/src/entry.py: half of each join donation funds ForkMesh's
-  // servers, the other half is shared evenly across online payout nodes.
-  const TREASURY_SHARE = 0.5;
-  const POLL_MS = 5000;
-  const ADDRESS_DELETE_GRACE_MS = 5 * 60 * 1000;
 
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
   let nodeName = "";
-  let payAddress = "";
-  let payUri = "";       // full Solana Pay URI (with label/message) for the copy link
-  let payQrUri = "";     // compact URI for the QR, so it fits a small QR version
-  let expiresAt = 0;
-  let deleteAt = 0;
-  let lastReceivedLamports = 0;
-  let addressHidden = false;
-  let statusTimer = null;
-  let expiryTimer = null;
-  let solUsd = 0;                 // SOL→USD spot price, 0 until fetched
-  let currentDonationSol = 0;     // required donation for this signup, in SOL
-  let currentDonationUsd = 0;     // server-computed USD value of the requirement
-  let minDonationUsd = 0;         // ~$1 minimum, used before an address is requested
-  let nodesOnline = 0;            // live count of mirror nodes, for the money split
+  let nameOk = false;
 
   function showStep(id) {
     for (const el of document.querySelectorAll(".step")) {
       el.classList.toggle("active", el.id === id);
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function setText(sel, value) {
-    const el = $(sel);
-    if (el) el.textContent = value;
   }
 
   async function api(path, options) {
@@ -50,63 +25,11 @@
     return { ok: res.ok, status: res.status, body };
   }
 
-  // --- Network stats + earnings estimate -------------------------------------
-  async function loadStats() {
-    if (!isLive) return;
-    try {
-      const { ok, body } = await api("/api/network/stats");
-      if (!ok) return;
-      const nodes = Number(body.hosts) || 0;
-      nodesOnline = nodes;
-      setText("#calc-nodes", String(nodes));
-      const earn = (Math.max(nodes, 1) * PAYOUT_PER_JOIN_SOL).toFixed(9);
-      setText("#calc-earn", earn + " SOL");
-      // Live minimum donation (~$1), computed server-side from the SOL price.
-      const minSol = Number(body.minSol) || 0;
-      const minUsd = Number(body.minUsd) || 0;
-      if (minUsd > 0) minDonationUsd = minUsd;
-      if (Number(body.solUsd) > 0) solUsd = Number(body.solUsd);
-      const minSolEl = $("#min-donation-sol");
-      if (minSolEl && minSol > 0) minSolEl.textContent = trimAmount(minSol.toFixed(9)) + " SOL";
-      const minUsdEl = $("#min-donation-usd");
-      if (minUsdEl) {
-        minUsdEl.textContent = minUsd > 0
-          ? "≈ $" + minUsd.toLocaleString(undefined,
-              { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          : "";
-      }
-      renderSplit();
-    } catch (_) { /* leave placeholders */ }
-  }
-
-  // Show exactly how a join donation is divided: half to ForkMesh's servers,
-  // half split evenly across the mirror nodes online right now.
-  function money(n) {
-    return "$" + n.toLocaleString(undefined,
-      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  function renderSplit() {
-    const usd = currentDonationUsd > 0 ? currentDonationUsd : minDonationUsd;
-    const serversUsd = usd * TREASURY_SHARE;
-    const nodesUsd = usd * (1 - TREASURY_SHARE);
-    const online = Math.max(nodesOnline, 0);
-    const perNode = online > 0 ? nodesUsd / online : 0;
-    setText("#split-node-count", String(online));
-    setText("#split-node-count-2", String(online));
-    setText("#split-servers-usd",
-      serversUsd > 0 ? "≈ " + money(serversUsd) : "infrastructure & relay");
-    setText("#split-nodes-usd",
-      nodesUsd > 0 ? "≈ " + money(nodesUsd) : "shared by uptime & data");
-    setText("#split-per-node",
-      online <= 0 ? "no nodes yet"
-        : perNode > 0 ? "≈ " + money(perNode) : "...");
-  }
-
   // --- Step 1: node name -----------------------------------------------------
   const nameInput = $("#node-name");
   const nameHint = $("#name-hint");
   const nameContinue = $("#name-continue");
+  const termsAgree = $("#terms-agree");
   let availTimer = null;
 
   function setHint(text, cls) {
@@ -114,9 +37,16 @@
     nameHint.className = "hint" + (cls ? " " + cls : "");
   }
 
+  // Continue is enabled only when the name is valid/available and the user has
+  // agreed to the Terms and Privacy.
+  function updateContinue() {
+    nameContinue.disabled = !(nameOk && termsAgree.checked);
+  }
+
   function validateName() {
     const value = nameInput.value.trim().toLowerCase();
-    nameContinue.disabled = true;
+    nameOk = false;
+    updateContinue();
     if (!value) {
       setHint("Lowercase letters, numbers and hyphens. Start with a letter, end with a letter or number. This name is public.", "");
       return;
@@ -131,25 +61,26 @@
   }
 
   async function checkAvailability(value) {
-    if (!isLive) { setHint("Looks good (preview).", "good"); nameContinue.disabled = false; return; }
+    if (!isLive) { setHint("Looks good (preview).", "good"); nameOk = true; updateContinue(); return; }
     try {
       const { body } = await api("/api/accounts/" + encodeURIComponent(value));
       if (body.exists && body.available === false) {
         setHint("That name is already taken - try another.", "bad");
-        nameContinue.disabled = true;
+        nameOk = false;
       } else {
         setHint("“" + value + "” is available.", "good");
-        nameContinue.disabled = false;
+        nameOk = true;
       }
     } catch (_) {
       setHint("Couldn’t check availability - you can still continue.", "");
-      nameContinue.disabled = false;
+      nameOk = true;
     }
+    updateContinue();
   }
 
   async function reserveName() {
     const value = nameInput.value.trim().toLowerCase();
-    if (!NAME_RE.test(value)) return;
+    if (!NAME_RE.test(value) || !termsAgree.checked) return;
     nameContinue.disabled = true;
     nameContinue.textContent = "Reserving…";
     const { ok, body } = await api("/api/accounts/reserve", {
@@ -165,226 +96,10 @@
       return;
     }
     nodeName = value;
-    // Signup is free: skip the (legacy) donation step and go straight to setting
-    // an email + password. Email verification confirms a real human afterward.
     showStep("step-account");
   }
 
-  // --- Step 2: donation ------------------------------------------------------
-  function stopStatusPolling() {
-    if (!statusTimer) return;
-    clearInterval(statusTimer);
-    statusTimer = null;
-  }
-
-  function stopExpiryTimer() {
-    if (!expiryTimer) return;
-    clearInterval(expiryTimer);
-    expiryTimer = null;
-  }
-
-  function setPayStatus(text, cls) {
-    const el = $("#pay-status");
-    el.textContent = text;
-    el.className = "pay-status " + (cls || "waiting");
-  }
-
-  function setAddressVisible(visible) {
-    const wrap = $("#pay-visible");
-    if (wrap) wrap.hidden = !visible;
-    const copy = $("#pay-copy");
-    if (copy) copy.disabled = !visible || !payAddress;
-  }
-
-  function formatDuration(ms) {
-    const total = Math.max(0, Math.ceil(ms / 1000));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const seconds = total % 60;
-    if (hours > 0) return hours + "h " + String(minutes).padStart(2, "0") + "m";
-    return minutes + ":" + String(seconds).padStart(2, "0");
-  }
-
-  function renderQr() {
-    const qr = $("#pay-qr");
-    if (!qr) return;
-    qr.innerHTML = "";
-    if (!payQrUri && !payUri && !payAddress) return;
-    if (window.ForkMeshQR) {
-      // Encode the compact URI: label/message bloat the payload past the QR's
-      // capacity, and a wallet shows its own label anyway.
-      window.ForkMeshQR.render(payQrUri || payUri || payAddress, qr, 236);
-    } else {
-      qr.textContent = "QR unavailable";
-    }
-  }
-
-  // Drop trailing zeros from a decimal SOL amount ("0.005000000" -> "0.005").
-  function trimAmount(s) {
-    s = String(s || "");
-    return s.indexOf(".") >= 0 ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
-  }
-
-  function renderAddress(body) {
-    payAddress = body.address || "";
-    payUri = body.uri || payAddress;
-    payQrUri = (payAddress && body.reference)
-      ? "solana:" + payAddress + "?amount=" + trimAmount(body.amountSol) +
-        "&reference=" + body.reference
-      : payUri;
-    addressHidden = false;
-    setAddressVisible(true);
-    $("#pay-renew").hidden = true;
-    $("#pay-addr").textContent = "";
-    const link = document.createElement("a");
-    link.href = payUri || "#";
-    link.style.color = "inherit";
-    link.textContent = payAddress;
-    $("#pay-addr").append(link);
-    renderQr();
-  }
-
-  function hideExpiredAddress(deleted) {
-    addressHidden = true;
-    payAddress = "";
-    payUri = "";
-    payQrUri = "";
-    setAddressVisible(false);
-    const qr = $("#pay-qr");
-    if (qr) qr.innerHTML = "";
-    $("#pay-renew").hidden = false;
-    setPayStatus(
-      deleted
-        ? "This payment request was removed. Generate a new request to continue."
-        : "This payment request is expiring. Do not send SOL to it.",
-      "waiting"
-    );
-    updateExpiryText();
-  }
-
-  function updateExpiryText() {
-    const el = $("#pay-expiry");
-    if (!el) return;
-    if (!expiresAt) {
-      el.textContent = "";
-      el.className = "pay-expiry";
-      return;
-    }
-    const now = Date.now();
-    if (!addressHidden && lastReceivedLamports <= 0 && now >= expiresAt) {
-      hideExpiredAddress(false);
-      return;
-    }
-    if (addressHidden) {
-      const remaining = Math.max(0, (deleteAt || now) - now);
-      el.className = "pay-expiry danger";
-      el.textContent = remaining > 0
-        ? "We are expiring this payment request. Do not send SOL to it. It will be deleted in " + formatDuration(remaining) + "."
-        : "This payment request has been removed from the page. Generate a new request to continue.";
-      return;
-    }
-    const remaining = expiresAt - now;
-    el.className = remaining <= 10 * 60 * 1000 ? "pay-expiry warn" : "pay-expiry";
-    el.textContent = remaining > 0
-      ? "This payment request expires in " + formatDuration(remaining) + " if it receives no transactions."
-      : "";
-  }
-
-  function applyExpiry(body) {
-    expiresAt = Number(body.expiresAt) || 0;
-    deleteAt = Number(body.deleteAt) ||
-      (expiresAt ? expiresAt + ADDRESS_DELETE_GRACE_MS : 0);
-    updateExpiryText();
-    if (expiresAt && !expiryTimer) expiryTimer = setInterval(updateExpiryText, 1000);
-    if (!expiresAt) stopExpiryTimer();
-  }
-
-  async function loadDonationAddress(renewExpired) {
-    const renew = Boolean(renewExpired);
-    const renewBtn = $("#pay-renew");
-    if (renewBtn) {
-      renewBtn.disabled = true;
-      renewBtn.textContent = "Generating…";
-    }
-    setPayStatus(renew ? "Generating a new payment request…" : "Generating payment request…", "waiting");
-    const payload = { nodeName };
-    if (renew) payload.renewExpired = true;
-    const { ok, body } = await api("/api/accounts/donation-address", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    if (renewBtn) {
-      renewBtn.disabled = false;
-      renewBtn.textContent = "Generate a new request";
-    }
-    if (!ok) {
-      setAddressVisible(false);
-      setPayStatus(body.error === "solana_rpc_unavailable"
-        ? "Signup is temporarily unavailable because Solana payment verification is offline. Please try again later."
-        : "Could not generate a payment request. Reload and retry.", "waiting");
-      return;
-    }
-    lastReceivedLamports = Number(body.receivedLamports) || 0;
-    $("#pay-amount").textContent = trimAmount(body.amountSol || "0") + " SOL";
-    currentDonationSol = Number(body.amountSol) || 0;
-    currentDonationUsd = Number(body.amountUsd) || 0;
-    if (Number(body.solUsd) > 0) solUsd = Number(body.solUsd);
-    renderUsd();
-    applyExpiry(body);
-    if (body.hidden || body.expired || body.deleted) {
-      hideExpiredAddress(Boolean(body.deleted));
-      startStatusPolling();
-      return;
-    }
-    renderAddress(body);
-    setPayStatus("Waiting for your donation…", "waiting");
-    startStatusPolling();
-  }
-
-  function startStatusPolling() {
-    if (!isLive || statusTimer) return;
-    pollStatus();
-    statusTimer = setInterval(pollStatus, POLL_MS);
-  }
-
-  async function pollStatus() {
-    const { ok, body } = await api(
-      "/api/accounts/donation-status?nodeName=" + encodeURIComponent(nodeName));
-    if (!ok) {
-      if (body.error === "solana_rpc_unavailable") {
-        setPayStatus("Solana payment verification is temporarily offline. Please wait before sending SOL.", "waiting");
-      }
-      return;
-    }
-    lastReceivedLamports = Number(body.receivedLamports) || 0;
-    applyExpiry(body);
-    if (body.deleted) {
-      hideExpiredAddress(true);
-      stopStatusPolling();
-      return;
-    }
-    if (body.hidden || body.expired) {
-      hideExpiredAddress(false);
-      return;
-    }
-    if (body.checking && !body.paid) {
-      // RPC was momentarily unreachable; keep the address up and keep polling.
-      setPayStatus("Checking the network for your donation…", "waiting");
-      return;
-    }
-    if (body.paid) {
-      stopStatusPolling();
-      stopExpiryTimer();
-      $("#pay-status").textContent = "Donation received!";
-      $("#pay-status").className = "pay-status paid";
-      setTimeout(() => showStep("step-account"), 600);
-    } else {
-      const got = (lastReceivedLamports / 1e9).toFixed(9);
-      setPayStatus("Waiting for your donation… (received " + got + " SOL)", "waiting");
-    }
-  }
-
-  // --- Step 3: create account ------------------------------------------------
+  // --- Step 2: create account ------------------------------------------------
   async function createAccount() {
     const email = $("#acct-email").value.trim();
     const password = $("#acct-pass").value;
@@ -421,59 +136,12 @@
     showStep("step-done");
   }
 
-  // --- SOL→USD price ---------------------------------------------------------
-  function fmtUsd(sol) {
-    if (!solUsd || !sol) return "";
-    return "≈ $" + (sol * solUsd).toLocaleString(undefined, {
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-    });
-  }
-
-  function renderUsd() {
-    // Prefer the server's authoritative USD value (derived from the live rate
-    // and rounded up to ~$1); fall back to the client spot price for display.
-    const usd = currentDonationUsd > 0
-      ? "≈ $" + currentDonationUsd.toLocaleString(undefined,
-          { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      : fmtUsd(currentDonationSol);
-    // The "Min. donation" stat card is owned by loadStats; here we only set the
-    // USD value next to the amount the user is being asked to send.
-    const pay = $("#pay-amount-usd");
-    if (pay) pay.textContent = usd;
-    renderSplit();
-  }
-
-  // The minimum is computed and enforced server-side; this is best-effort and
-  // only used to show a $ value before the deposit address has been requested.
-  async function loadSolPrice() {
-    try {
-      const res = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
-      const j = await res.json();
-      const p = Number(j && j.solana && j.solana.usd);
-      if (p > 0) { solUsd = p; renderUsd(); }
-    } catch (_) { /* price is best-effort; leave blank on failure */ }
-  }
-
   // --- Wiring ----------------------------------------------------------------
   nameInput.addEventListener("input", validateName);
   nameInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !nameContinue.disabled) reserveName();
   });
+  termsAgree.addEventListener("change", updateContinue);
   nameContinue.addEventListener("click", reserveName);
-  $("#pay-copy").addEventListener("click", async () => {
-    if (!payUri && !payAddress) return;
-    try { await navigator.clipboard.writeText(payUri || payAddress); } catch (_) {}
-    const b = $("#pay-copy");
-    const t = b.textContent;
-    b.textContent = "Copied";
-    setTimeout(() => (b.textContent = t), 1500);
-  });
-  $("#pay-renew").addEventListener("click", () => loadDonationAddress(true));
   $("#acct-create").addEventListener("click", createAccount);
-
-  loadStats();
-  setInterval(loadStats, 30000);
-  loadSolPrice();
-  setInterval(loadSolPrice, 60000);
 })();
