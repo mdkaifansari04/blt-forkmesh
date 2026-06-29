@@ -4595,6 +4595,36 @@ qint64 mirrorRepoSizeBytes(const QString &mirrorPath)
     return sizeKiB * 1024;
 }
 
+// How many issues a node's bare mirror holds: the count of numbered subdirs under
+// issues/ on the served branch (the same tally the issues tab shows). Advertised
+// to peers so the mirror-nodes view can show what each node is mirroring. Returns
+// -1 when the mirror/branch can't be read, so "unknown" stays distinct from zero.
+int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
+{
+    if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
+        !QDir(mirrorPath).exists())
+        return -1;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":issues"}, &out,
+                       nullptr))
+        return 0; // no issues/ folder yet -> nothing filed
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    int count = 0;
+    for (const QByteArray &record : out.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 2 || meta.at(1) != "tree")
+            continue;
+        if (numericName.match(QString::fromUtf8(record.mid(tab + 1))).hasMatch())
+            ++count;
+    }
+    return count;
+}
+
 bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteArray *out,
                           QString *err)
 {
@@ -38927,12 +38957,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 10);
+    m_mirrorNodesTable = new QTableWidget(0, 11);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Latest commit", "Synced", "Size", "CPU", "RAM", "Disk",
-         "Platform", "Version", "Node id"});
+        {"Node", "Latest commit", "Synced", "Size", "Issues", "CPU", "RAM",
+         "Disk", "Platform", "Version", "Node id"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -38947,12 +38977,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(1, QHeaderView::ResizeToContents); // Latest commit
     mh->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Synced
     mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Size
-    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // CPU (bar)
-    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // RAM (bar)
-    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Disk (bar)
-    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Platform
-    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Version
-    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Node id
+    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Issues
+    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // CPU (bar)
+    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // RAM (bar)
+    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Disk (bar)
+    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Platform
+    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Version
+    mh->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Node id
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -38960,7 +38991,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
         2, new MirrorSyncDelegate(m_mirrorNodesTable));
     // CPU / RAM / disk columns render as little usage bars (details on hover).
     auto *resourceBars = new ResourceBarDelegate(m_mirrorNodesTable);
-    for (int col : {4, 5, 6})
+    for (int col : {5, 6, 7})
         m_mirrorNodesTable->setItemDelegateForColumn(col, resourceBars);
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
@@ -39040,6 +39071,7 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
     selfAdvert.updatedMs = repo.lastSyncMs;
     selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
+    selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
 
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
@@ -39222,23 +39254,38 @@ void MainWindow::loadMirrorNodesPanel()
             maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
         }
 
+        // Issues: how many issues this node is mirroring (advertised per node).
+        // Sorts numerically; an em-dash for older peers that don't advertise it.
+        const int nodeIssues = advert ? advert->issueCount : -1;
+        auto *issuesItem = new SortTableWidgetItem(
+            nodeIssues >= 0 ? QString::number(nodeIssues)
+                            : QString::fromUtf8("\xE2\x80\x94"));
+        issuesItem->setData(kTableSortRole, double(nodeIssues));
+        issuesItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (nodeIssues >= 0)
+            issuesItem->setToolTip(
+                QString::fromUtf8("Mirroring %1 issue%2")
+                    .arg(nodeIssues)
+                    .arg(nodeIssues == 1 ? "" : "s"));
+        m_mirrorNodesTable->setItem(row, 4, issuesItem);
+
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
-        m_mirrorNodesTable->setItem(row, 4, makeCpuUsageCell(node.cpuPercent));
+        m_mirrorNodesTable->setItem(row, 5, makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 5, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+            row, 6, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
         m_mirrorNodesTable->setItem(
-            row, 6,
+            row, 7,
             makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
 
         m_mirrorNodesTable->setItem(
-            row, 7,
+            row, 8,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 8,
+            row, 9,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -39246,7 +39293,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 9, idItem);
+        m_mirrorNodesTable->setItem(row, 10, idItem);
         ++count;
     }
 
@@ -39307,12 +39354,15 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
-            // Catalog-only mirrors aren't live in the room, so there's no live
-            // resource telemetry for them: the CPU/RAM/disk bars stay unknown.
-            for (int col : {4, 5, 6})
+            // Catalog-only mirrors aren't live in the room, so we don't have their
+            // advertised issue count or resource telemetry: those columns stay
+            // unknown (em-dash), like the other catalog-derived rows.
+            m_mirrorNodesTable->setItem(
+                row, 4, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            for (int col : {5, 6, 7})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
-            for (int col : {7, 8, 9})
+            for (int col : {8, 9, 10})
                 m_mirrorNodesTable->setItem(
                     row, col,
                     new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
@@ -48831,6 +48881,8 @@ void MainWindow::refreshRepositoryList()
             advert.updatedMs = repo.lastSyncMs;
             // On-disk mirror size so peers can show how much data we're holding.
             advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
+            // Issues we're mirroring, so peers can show the count per node.
+            advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);

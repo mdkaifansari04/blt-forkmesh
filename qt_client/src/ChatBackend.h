@@ -19,6 +19,7 @@ struct MirrorAdvert {
     QString branch;       // branch HEAD points to
     qint64 updatedMs = 0; // when the node last synced this repo from its source
     qint64 sizeBytes = 0; // on-disk size of this node's bare mirror (git objects)
+    int issueCount = -1;  // issues this node's mirror holds; -1 = not advertised
 };
 
 // A chat participant as shown in the member list. `id` is the stable node id
