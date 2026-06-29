@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 255
 title: make the sync run in the background so it doesn't freeze the ui
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 3
