@@ -29269,7 +29269,8 @@ void MainWindow::openRepoDetail(int repoIndex)
                 .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
     setRepoDetailNotice(QString());
 
-    // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
+    // Per-repo metadata (.forkmesh/info.json) + the branch we view; both feed the
+    // loaders.
     m_repoInfo = RepoInfo();
     m_repoBranch.clear();
     loadRepoInfo();
@@ -34184,6 +34185,22 @@ void MainWindow::reassignContributorIdentity(const QString &oldName)
     loadCommits();
 }
 
+// Per-repo metadata lives in .forkmesh/info.json (issue #232). Older repos kept
+// it at the working-tree root, so reads fall back to that legacy location.
+static QString repoInfoJsonWritePath(const QString &localPath)
+{
+    return QDir(localPath).filePath(QStringLiteral(".forkmesh/info.json"));
+}
+
+static QString repoInfoJsonReadPath(const QString &localPath)
+{
+    const QString preferred = repoInfoJsonWritePath(localPath);
+    if (QFileInfo::exists(preferred))
+        return preferred;
+    const QString legacy = QDir(localPath).filePath(QStringLiteral("info.json"));
+    return QFileInfo::exists(legacy) ? legacy : preferred;
+}
+
 void MainWindow::loadRepoInfo()
 {
     m_repoInfo = RepoInfo();
@@ -34192,15 +34209,20 @@ void MainWindow::loadRepoInfo()
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
 
     QByteArray raw;
-    const QString local = repo.localPath + "/info.json";
+    const QString local = repoInfoJsonReadPath(repo.localPath);
     if (!repo.localPath.isEmpty() && QFileInfo::exists(local)) {
         QFile file(local);
         if (file.open(QIODevice::ReadOnly))
             raw = file.readAll();
     } else {
         const QString dir = repoGitDir();
-        if (!dir.isEmpty())
-            runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw, nullptr);
+        if (!dir.isEmpty()) {
+            runGitCapture(dir, {"show", currentRef() + ":.forkmesh/info.json"},
+                          &raw, nullptr);
+            if (raw.isEmpty())
+                runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw,
+                              nullptr);
+        }
     }
     if (raw.isEmpty())
         return;
@@ -34302,10 +34324,11 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
 
     const int index = m_repoDetailIndex;
     RepositoryRecord &repo = m_repositories[index];
-    const QString infoPath = QDir(repo.localPath).filePath("info.json");
+    const QString readPath = repoInfoJsonReadPath(repo.localPath);
+    const QString infoPath = repoInfoJsonWritePath(repo.localPath);
     QJsonObject obj;
-    if (QFileInfo::exists(infoPath)) {
-        QFile file(infoPath);
+    if (QFileInfo::exists(readPath)) {
+        QFile file(readPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
                 *error = QStringLiteral("Could not read info.json.");
@@ -34332,6 +34355,7 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
         obj.insert(QStringLiteral("website"), website);
 
     const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    QDir().mkpath(QFileInfo(infoPath).absolutePath());
     QSaveFile file(infoPath);
     if (!file.open(QIODevice::WriteOnly)) {
         if (error)
@@ -34343,6 +34367,12 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
             *error = QStringLiteral("Could not save info.json.");
         return false;
     }
+
+    // Now that the metadata lives under .forkmesh/, drop any stale root-level
+    // info.json so the repo carries a single source of truth (issue #232).
+    const QString legacyPath = QDir(repo.localPath).filePath("info.json");
+    if (legacyPath != infoPath && QFileInfo::exists(legacyPath))
+        QFile::remove(legacyPath);
 
     repo.description = aboutText;
     saveRepositories();
@@ -49663,7 +49693,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
     QString publishedWebsite;
     if (!repo.localPath.trimmed().isEmpty()) {
-        QFile file(QDir(repo.localPath).filePath("info.json"));
+        QFile file(repoInfoJsonReadPath(repo.localPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();

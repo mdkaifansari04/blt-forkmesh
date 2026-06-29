@@ -114,8 +114,9 @@ struct ServerConfig {
     QString room;
 };
 
-// Per-repository metadata that git can't provide, stored in the repo's info.json
-// (about text, topics, social counts, contributor avatar overrides).
+// Per-repository metadata that git can't provide, stored in the repo's
+// .forkmesh/info.json (about text, topics, social counts, contributor avatar
+// overrides).
 struct RepoInfo {
     QString about;
     QString website;
