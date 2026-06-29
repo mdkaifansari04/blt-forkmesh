@@ -1994,6 +1994,12 @@ private:
     QPushButton *m_hostInstallButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
+    // ANSI parser state for the live install log: a carry buffer holding an
+    // escape sequence split across read chunks, plus the current SGR style
+    // (foreground as 0xRRGGBB, -1 = theme default).
+    QString m_hostInstallLogCarry;
+    int m_hostInstallLogFg = -1;
+    bool m_hostInstallLogBold = false;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
