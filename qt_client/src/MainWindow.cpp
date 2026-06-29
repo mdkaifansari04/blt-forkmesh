@@ -28580,12 +28580,49 @@ void MainWindow::applyIssueFilesCount(int issueNumber, int count,
 
 QWidget *MainWindow::buildRepoFilesPanel()
 {
-    // Two modes: a GitHub-style overview, and an explorer+editor view shown only
-    // once a specific file is opened.
+    // Two modes: a GitHub-style overview, and an explorer+editor view. A
+    // persistent segmented toggle sits above both so switching between
+    // "Code overview" and "Explorer" is always one click away, no matter
+    // which view is currently showing.
     m_filesStack = new QStackedWidget;
     m_filesStack->addWidget(buildRepoOverviewPage()); // 0 overview
     m_filesStack->addWidget(buildRepoEditorPage());   // 1 editor (explorer + tabs)
-    return m_filesStack;
+
+    m_filesModeOverviewButton = new QPushButton("Code overview");
+    m_filesModeOverviewButton->setObjectName("repoTab");
+    m_filesModeOverviewButton->setCheckable(true);
+    m_filesModeOverviewButton->setChecked(true);
+    m_filesModeOverviewButton->setCursor(Qt::PointingHandCursor);
+    m_filesModeOverviewButton->setToolTip(
+        "Show the repository overview (latest commit, file list and README)");
+    setOcticon(m_filesModeOverviewButton, "code", 16);
+    connect(m_filesModeOverviewButton, &QPushButton::clicked, this,
+            [this] { showRepoOverview(); });
+
+    m_filesModeExplorerButton = new QPushButton("Explorer");
+    m_filesModeExplorerButton->setObjectName("repoTab");
+    m_filesModeExplorerButton->setCheckable(true);
+    m_filesModeExplorerButton->setCursor(Qt::PointingHandCursor);
+    m_filesModeExplorerButton->setToolTip(
+        "Open the file explorer and code editor");
+    setOcticon(m_filesModeExplorerButton, "file-directory", 16);
+    connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
+            [this] { showRepoEditor(); });
+
+    auto *modeRow = new QHBoxLayout;
+    modeRow->setContentsMargins(16, 6, 16, 0);
+    modeRow->setSpacing(2);
+    modeRow->addWidget(m_filesModeOverviewButton);
+    modeRow->addWidget(m_filesModeExplorerButton);
+    modeRow->addStretch();
+
+    auto *panel = new QWidget;
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addLayout(modeRow);
+    layout->addWidget(m_filesStack, 1);
+    return panel;
 }
 
 QWidget *MainWindow::buildRepoOverviewPage()
@@ -28719,14 +28756,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
                     openRepoFile(path);
                 m_fileSearch->clear();
             });
-    // Switch from the GitHub-style overview into the explorer + editor view.
-    m_editorModeButton = new QPushButton("Edit");
-    m_editorModeButton->setObjectName("ghostButton");
-    m_editorModeButton->setCursor(Qt::PointingHandCursor);
-    m_editorModeButton->setToolTip("Open the file explorer and code editor");
-    setOcticon(m_editorModeButton, "pencil", 16);
-    connect(m_editorModeButton, &QPushButton::clicked, this,
-            [this] { showRepoEditor(); });
+    // Switching into the explorer + editor view is handled by the persistent
+    // "Explorer" toggle above the stack (see buildRepoFilesPanel).
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
@@ -28734,7 +28765,6 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
-    toolbar->addWidget(m_editorModeButton);
 
     // Left column: toolbar, latest commit, file list, README.
     auto *leftColumn = new QWidget;
@@ -28883,15 +28913,8 @@ QWidget *MainWindow::buildRepoEditorPage()
 
     auto *backRow = new QHBoxLayout;
     backRow->setContentsMargins(8, 4, 8, 0);
-    // Return from the explorer/editor view to the GitHub-style overview.
-    m_overviewBackButton = new QPushButton("Code overview");
-    m_overviewBackButton->setObjectName("ghostButton");
-    m_overviewBackButton->setCursor(Qt::PointingHandCursor);
-    m_overviewBackButton->setToolTip("Back to the repository overview");
-    setOcticon(m_overviewBackButton, "code", 16);
-    connect(m_overviewBackButton, &QPushButton::clicked, this,
-            [this] { showRepoOverview(); });
-    backRow->addWidget(m_overviewBackButton);
+    // Returning to the GitHub-style overview is handled by the persistent
+    // "Code overview" toggle above the stack (see buildRepoFilesPanel).
     backRow->addStretch();
     m_repoFileCommitButton = new QPushButton("Commit direct");
     m_repoFileCommitButton->setObjectName("ghostButton");
@@ -29402,7 +29425,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // Insights tab is opened — see the tab-switch handler — so opening a repo
     // doesn't pay for them up front.
     // Land on the GitHub-style overview at the repo root by default; the
-    // explorer + editor is one click away via the "Edit" button.
+    // explorer + editor is one click away via the persistent "Explorer" toggle.
     nodeSwitchStep(QStringLiteral("Rendering overview…"));
     loadRepoOverview(QString());
     logStartup(QStringLiteral("  openRepo: overview loaded"));
@@ -30084,12 +30107,16 @@ bool MainWindow::proposePullFromMirrorEdit(const QString &cleanPath,
 void MainWindow::showRepoOverview()
 {
     // Default Code view: the GitHub-style overview (branch/tags toolbar, latest
-    // commit, file list and README). The explorer + editor lives behind the
-    // "Edit" button — see showRepoEditor().
+    // commit, file list and README). The explorer + editor lives one toggle
+    // away — see showRepoEditor().
     if (!m_filesStack)
         return;
     loadRepoOverview(m_overviewPath);
     m_filesStack->setCurrentIndex(0);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(true);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
 }
 
 void MainWindow::showRepoEditor()
@@ -30105,6 +30132,10 @@ void MainWindow::showRepoEditor()
     if (m_repoFileTabs && m_repoFileTabs->count() == 0)
         openRepoReadme();
     m_filesStack->setCurrentIndex(1);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(false);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(true);
 }
 
 void MainWindow::openRepoReadme()
