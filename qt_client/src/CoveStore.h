@@ -38,8 +38,8 @@ struct CoveAccessEntry {
 // payload (documents + access log), present only after a successful unlock().
 struct Cove {
     QString id;
-    QString name;
-    QString slug;        // file stem
+    QString name;        // human-readable; kept inside the ciphertext, not the repo
+    QString slug;        // obscure file stem — reveals nothing about the cove
     QString relPath;     // .forkmesh/coves/<slug>.cove (repo-relative)
     QString creator;     // creator pubkey (base64url) — routes open-notifications
     qint64 createdAtMs = 0;
@@ -96,7 +96,7 @@ private:
     QByteArray readCoveBytes(const QString &relPath, bool *ok) const;
     bool commit(const QString &message, const QString &relPath, QString *error) const;
     QString mirrorRef() const;
-    QString uniqueSlug(const QString &name) const;
+    QString uniqueSlug() const; // obscure, name-free file stem
 
     QString m_workTree;
     QString m_mirror;
