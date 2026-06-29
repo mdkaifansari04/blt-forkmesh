@@ -1,0 +1,179 @@
+diff --git a/info.json b/info.json
+deleted file mode 100644
+index a588a910..00000000
+--- a/info.json
++++ /dev/null
+@@ -1,4 +0,0 @@
+-{
+-    "about": "test repo desc",
+-    "website": "https://forkmesh.com"
+-}
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 903decd3..5f3f01fe 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -231,6 +231,10 @@ const QLatin1String kPullLinkScheme("forkmesh-pull:");
+ // session's repo (adhoc #138). Shared by the link builder and its handler.
+ const QLatin1String kIssueLinkScheme("forkmesh-issue:");
+ 
++// Per-repository about/catalog metadata lives under ForkMesh's own metadata dir
++// instead of the project root.
++const QLatin1String kRepoInfoPath(".forkmesh/info.json");
++
+ // "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
+ // session produced a pull request, the header links back to that session on the
+ // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
+@@ -28918,7 +28922,8 @@ void MainWindow::openRepoDetail(int repoIndex)
+                 .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
+     setRepoDetailNotice(QString());
+ 
+-    // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
++    // Per-repo metadata (.forkmesh/info.json) + the branch we view; both feed
++    // the loaders.
+     m_repoInfo = RepoInfo();
+     m_repoBranch.clear();
+     loadRepoInfo();
+@@ -33841,7 +33846,7 @@ void MainWindow::loadRepoInfo()
+     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+ 
+     QByteArray raw;
+-    const QString local = repo.localPath + "/info.json";
++    const QString local = QDir(repo.localPath).filePath(kRepoInfoPath);
+     if (!repo.localPath.isEmpty() && QFileInfo::exists(local)) {
+         QFile file(local);
+         if (file.open(QIODevice::ReadOnly))
+@@ -33849,7 +33854,8 @@ void MainWindow::loadRepoInfo()
+     } else {
+         const QString dir = repoGitDir();
+         if (!dir.isEmpty())
+-            runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw, nullptr);
++            runGitCapture(dir, {"show", currentRef() + ":" + kRepoInfoPath}, &raw,
++                          nullptr);
+     }
+     if (raw.isEmpty())
+         return;
+@@ -33951,20 +33957,21 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
+ 
+     const int index = m_repoDetailIndex;
+     RepositoryRecord &repo = m_repositories[index];
+-    const QString infoPath = QDir(repo.localPath).filePath("info.json");
++    const QDir repoDir(repo.localPath);
++    const QString infoPath = repoDir.filePath(kRepoInfoPath);
+     QJsonObject obj;
+     if (QFileInfo::exists(infoPath)) {
+         QFile file(infoPath);
+         if (!file.open(QIODevice::ReadOnly)) {
+             if (error)
+-                *error = QStringLiteral("Could not read info.json.");
++                *error = QStringLiteral("Could not read .forkmesh/info.json.");
+             return false;
+         }
+         QJsonParseError parseError;
+         const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+             if (error)
+-                *error = QStringLiteral("info.json is not valid JSON.");
++                *error = QStringLiteral(".forkmesh/info.json is not valid JSON.");
+             return false;
+         }
+         obj = doc.object();
+@@ -33981,15 +33988,20 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
+         obj.insert(QStringLiteral("website"), website);
+ 
+     const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
++    if (!repoDir.mkpath(QStringLiteral(".forkmesh"))) {
++        if (error)
++            *error = QStringLiteral("Could not create .forkmesh directory.");
++        return false;
++    }
+     QSaveFile file(infoPath);
+     if (!file.open(QIODevice::WriteOnly)) {
+         if (error)
+-            *error = QStringLiteral("Could not write info.json.");
++            *error = QStringLiteral("Could not write .forkmesh/info.json.");
+         return false;
+     }
+     if (file.write(data) != data.size() || !file.commit()) {
+         if (error)
+-            *error = QStringLiteral("Could not save info.json.");
++            *error = QStringLiteral("Could not save .forkmesh/info.json.");
+         return false;
+     }
+ 
+@@ -49276,7 +49288,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
+     const QString stateHash = mirrorStateHash(repo.mirrorPath);
+     QString publishedWebsite;
+     if (!repo.localPath.trimmed().isEmpty()) {
+-        QFile file(QDir(repo.localPath).filePath("info.json"));
++        QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
+         if (file.open(QIODevice::ReadOnly)) {
+             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
+             publishedWebsite = info.value(QStringLiteral("website")).toString();
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 2cb0b380..728b5bdb 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -114,7 +114,7 @@ struct ServerConfig {
+     QString room;
+ };
+ 
+-// Per-repository metadata that git can't provide, stored in the repo's info.json
++// Per-repository metadata that git can't provide, stored in .forkmesh/info.json
+ // (about text, topics, social counts, contributor avatar overrides).
+ struct RepoInfo {
+     QString about;
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index be27c69a..58b36340 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -6,7 +6,10 @@
+ #include <QFile>
+ #include <QCheckBox>
+ #include <QDebug>
++#include <QDir>
+ #include <QElapsedTimer>
++#include <QJsonDocument>
++#include <QJsonObject>
+ #include <QMenu>
+ #include <QProcess>
+ #include <QSemaphore>
+@@ -672,6 +675,39 @@ int main(int argc, char *argv[])
+         }
+     }
+ 
++    // Issue #232: repository About metadata belongs under the ForkMesh metadata
++    // directory, not as a root-level info.json that collides with project files.
++    {
++        QTemporaryDir aboutRepo;
++        if (initGitRepo(aboutRepo)) {
++            const int idx =
++                window.testAddLocalRepository("me", "aboutrepo", aboutRepo.path());
++            window.testOpenRepository(idx);
++            QApplication::processEvents();
++
++            const bool saved = window.testSaveRepoAboutMetadata(
++                QStringLiteral("About from test"),
++                QStringLiteral("https://forkmesh.com"));
++            const QString metadataPath =
++                QDir(aboutRepo.path()).filePath(QStringLiteral(".forkmesh/info.json"));
++            QFile metadata(metadataPath);
++            const bool hasMetadata = metadata.open(QIODevice::ReadOnly);
++            const QJsonObject obj =
++                hasMetadata ? QJsonDocument::fromJson(metadata.readAll()).object()
++                            : QJsonObject();
++
++            check(saved && hasMetadata &&
++                      obj.value(QStringLiteral("about")).toString() ==
++                          QStringLiteral("About from test") &&
++                      obj.value(QStringLiteral("website")).toString() ==
++                          QStringLiteral("https://forkmesh.com") &&
++                      !QFileInfo::exists(
++                          QDir(aboutRepo.path()).filePath(QStringLiteral("info.json"))),
++                  QStringLiteral("repo about metadata saves to .forkmesh/info.json "
++                                 "and leaves root info.json absent (#232)"));
++        }
++    }
++
+     // issue #251: the Settings "Default agent" choice should seed the agent
+     // pickers. A window built while the default is Claude Code must start both
+     // the quick-add and issue-detail pickers there (not the OpenAI fallback),
