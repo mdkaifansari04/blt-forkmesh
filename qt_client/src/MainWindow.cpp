@@ -10657,13 +10657,184 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     refreshHostsTable();
 }
 
+namespace {
+// Foreground colours for the live install log's SGR codes (indices 0-7 normal,
+// 8-15 bright), in two tables so the installer's colours stay legible on both
+// the dark (#010409) and light (#f6f8fa) log backgrounds. Matches the
+// GitHub-style palette used elsewhere in the UI.
+int installLogAnsiFg(int idx, bool dark)
+{
+    static const int kDark[16] = {
+        0x6e7681, 0xff7b72, 0x3fb950, 0xd29922, 0x58a6ff, 0xbc8cff, 0x39c5cf,
+        0xb1bac4, 0x6e7681, 0xffa198, 0x56d364, 0xe3b341, 0x79c0ff, 0xd2a8ff,
+        0x56d4dd, 0xf0f6fc};
+    static const int kLight[16] = {
+        0x24292f, 0xcf222e, 0x1a7f37, 0x9a6700, 0x0550ae, 0x8250df, 0x1b7c83,
+        0x6e7781, 0x57606a, 0xa40e26, 0x116329, 0x7d4e00, 0x0969da, 0x6639ba,
+        0x3192aa, 0x424a53};
+    idx = qBound(0, idx, 15);
+    return dark ? kDark[idx] : kLight[idx];
+}
+
+// xterm 256-colour cube / grayscale ramp for SGR 38;5;n with n >= 16.
+int installLogXterm256(int n)
+{
+    if (n < 232) {
+        n -= 16;
+        const int r = (n / 36) % 6, g = (n / 6) % 6, b = n % 6;
+        auto comp = [](int v) { return v ? v * 40 + 55 : 0; };
+        return (comp(r) << 16) | (comp(g) << 8) | comp(b);
+    }
+    const int v = (n - 232) * 10 + 8;
+    return (v << 16) | (v << 8) | v;
+}
+} // namespace
+
 void MainWindow::appendHostInstallLog(const QString &text)
 {
     if (!m_hostInstallLog || text.isEmpty())
         return;
+
+    // The installer streams ANSI/VT escape sequences — SGR colour codes plus a
+    // box-drawing banner. Render the SGR colours into the log and drop every
+    // other control sequence; otherwise the raw codes show up as literal
+    // "[32m"/"[0m" noise (adhoc #6). A sequence can straddle two read chunks, so
+    // an unfinished tail is carried over to the next call.
+    QString data = m_hostInstallLogCarry + text;
+    m_hostInstallLogCarry.clear();
+    const bool dark = currentThemeIsDark();
+
+    QTextCursor cursor(m_hostInstallLog->document());
+    cursor.movePosition(QTextCursor::End);
+
+    auto currentFormat = [this]() {
+        QTextCharFormat fmt;
+        if (m_hostInstallLogFg >= 0)
+            fmt.setForeground(QColor((m_hostInstallLogFg >> 16) & 0xFF,
+                                     (m_hostInstallLogFg >> 8) & 0xFF,
+                                     m_hostInstallLogFg & 0xFF));
+        if (m_hostInstallLogBold)
+            fmt.setFontWeight(QFont::Bold);
+        return fmt;
+    };
+
+    QString run;
+    auto flush = [&]() {
+        if (!run.isEmpty()) {
+            cursor.insertText(run, currentFormat());
+            run.clear();
+        }
+    };
+
+    // Apply one SGR sequence's parameters (the text between ESC[ and 'm') to the
+    // running style. Only the foreground colour and bold weight are rendered;
+    // background and other attributes are parsed-and-ignored so they don't leak.
+    auto applySgr = [this, dark](const QString &paramStr) {
+        const QStringList parts =
+            paramStr.isEmpty() ? QStringList{QStringLiteral("0")}
+                               : paramStr.split(QLatin1Char(';'));
+        for (int k = 0; k < parts.size(); ++k) {
+            bool ok = false;
+            const int code = parts.at(k).toInt(&ok);
+            if (!ok)
+                continue;
+            if (code == 0) {
+                m_hostInstallLogFg = -1;
+                m_hostInstallLogBold = false;
+            } else if (code == 1) {
+                m_hostInstallLogBold = true;
+            } else if (code == 22) {
+                m_hostInstallLogBold = false;
+            } else if (code == 39) {
+                m_hostInstallLogFg = -1;
+            } else if (code >= 30 && code <= 37) {
+                m_hostInstallLogFg = installLogAnsiFg(code - 30, dark);
+            } else if (code >= 90 && code <= 97) {
+                m_hostInstallLogFg = installLogAnsiFg(8 + code - 90, dark);
+            } else if (code == 38 && k + 2 < parts.size() &&
+                       parts.at(k + 1).toInt() == 5) {
+                const int idx = parts.at(k + 2).toInt();
+                m_hostInstallLogFg = idx < 16 ? installLogAnsiFg(idx, dark)
+                                              : installLogXterm256(idx);
+                k += 2;
+            } else if (code == 38 && k + 4 < parts.size() &&
+                       parts.at(k + 1).toInt() == 2) {
+                m_hostInstallLogFg = ((parts.at(k + 2).toInt() & 0xFF) << 16) |
+                                     ((parts.at(k + 3).toInt() & 0xFF) << 8) |
+                                     (parts.at(k + 4).toInt() & 0xFF);
+                k += 4;
+            }
+        }
+    };
+
+    int i = 0;
+    const int len = data.size();
+    while (i < len) {
+        if (data.at(i).unicode() != 0x1B) { // ordinary text
+            run += data.at(i);
+            ++i;
+            continue;
+        }
+        if (i + 1 >= len) { // dangling ESC: wait for the rest
+            m_hostInstallLogCarry = data.mid(i);
+            break;
+        }
+        const QChar kind = data.at(i + 1);
+        if (kind == QLatin1Char('[')) { // CSI: ESC [ params... final(0x40-0x7E)
+            int j = i + 2;
+            while (j < len) {
+                const ushort u = data.at(j).unicode();
+                if (u >= 0x40 && u <= 0x7E)
+                    break;
+                ++j;
+            }
+            if (j >= len) { // sequence not finished yet
+                m_hostInstallLogCarry = data.mid(i);
+                break;
+            }
+            if (data.at(j) == QLatin1Char('m')) { // SGR: change the style
+                flush();
+                applySgr(data.mid(i + 2, j - (i + 2)));
+            }
+            // Other CSI finals (cursor moves, erases, …) are dropped.
+            i = j + 1;
+        } else if (kind == QLatin1Char(']')) { // OSC: ESC ] ... BEL or ST
+            int j = i + 2;
+            bool done = false;
+            while (j < len) {
+                if (data.at(j).unicode() == 0x07) { // BEL terminator
+                    ++j;
+                    done = true;
+                    break;
+                }
+                if (data.at(j).unicode() == 0x1B && j + 1 < len &&
+                    data.at(j + 1) == QLatin1Char('\\')) { // ST terminator
+                    j += 2;
+                    done = true;
+                    break;
+                }
+                ++j;
+            }
+            if (!done) {
+                m_hostInstallLogCarry = data.mid(i);
+                break;
+            }
+            i = j;
+        } else { // other two-byte escape (charset selection, etc.): drop both
+            i += 2;
+        }
+    }
+    flush();
+
+    // Guard against a never-terminating sequence pinning real output in the
+    // carry buffer forever: past a sane length, give up and show it literally.
+    if (m_hostInstallLogCarry.size() > 256) {
+        cursor.insertText(m_hostInstallLogCarry, currentFormat());
+        m_hostInstallLogCarry.clear();
+    }
+
     m_hostInstallLog->moveCursor(QTextCursor::End);
-    m_hostInstallLog->insertPlainText(text);
-    m_hostInstallLog->moveCursor(QTextCursor::End);
+    m_hostInstallLog->ensureCursorVisible();
 }
 
 void MainWindow::runHostInstall()
@@ -10734,6 +10905,9 @@ void MainWindow::runHostInstall()
     rememberHost(node, ip, user, pass, QStringLiteral("installing"));
 
     m_hostInstallLog->clear();
+    m_hostInstallLogCarry.clear();
+    m_hostInstallLogFg = -1;
+    m_hostInstallLogBold = false;
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
     // nothing here leaks it).
     appendHostInstallLog(
@@ -37572,20 +37746,34 @@ void MainWindow::loadReleasesPanel()
                 const QString escaped = name.toHtmlEscaped();
                 const QString hash =
                     a.value(QStringLiteral("blob_sha256")).toString().trimmed();
+                const bool hashValid = sha256Re.match(hash).hasMatch();
+                QString entry;
                 if (!relayBase.isEmpty() && !manifestRepo.isEmpty() &&
-                    sha256Re.match(hash).hasMatch()) {
+                    hashValid) {
                     const QString url =
                         QStringLiteral(
                             "%1/api/repo/%2/releases/blob/sha256/%3")
                             .arg(relayBase, manifestRepo, hash);
-                    assetLinks.append(
+                    entry =
                         QStringLiteral(
                             "<a href=\"%1\" style=\"color:#58a6ff;"
                             "text-decoration:none\">%2</a>")
-                            .arg(url.toHtmlEscaped(), escaped));
+                            .arg(url.toHtmlEscaped(), escaped);
                 } else {
-                    assetLinks.append(escaped);
+                    entry = escaped;
                 }
+                // Show the sha256 checksum next to each artifact so it can be
+                // eyeballed against the value install.sh verifies. The full
+                // 64-char digest would blow out the column width, so render an
+                // abbreviated form and keep the full hash in the hover tooltip.
+                if (hashValid) {
+                    entry += QStringLiteral(
+                                 " <span title=\"sha256:%1\" "
+                                 "style=\"color:#8b949e;font-family:monospace;"
+                                 "font-size:11px\">sha256:%2</span>")
+                                 .arg(hash, hash.left(12));
+                }
+                assetLinks.append(entry);
             }
             if (!assetLinks.isEmpty())
                 artifactsByTag.insert(manifestTag,
