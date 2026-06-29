@@ -580,9 +580,9 @@ private:
     void populateLeaderboards(const QJsonObject &data);
 
     // Hosts (adhoc #263): SSH into a remote machine and run the ForkMesh
-    // installer via an ansible playbook, streaming the live session output.
-    // Once the install finishes the new node joins the network and shows up in
-    // the per-repo Mirror nodes list on its own.
+    // installer over a plain shell (sshpass + ssh), streaming the live session
+    // output. Once the install finishes the new node joins the network and shows
+    // up in the per-repo Mirror nodes list on its own.
     QWidget *buildHostsSection();
     void runHostInstall();
     void appendHostInstallLog(const QString &text);
@@ -1969,8 +1969,7 @@ private:
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     QTableWidget *m_hostsTable = nullptr;
-    QProcess *m_hostInstallProcess = nullptr; // running ansible-playbook, if any
-    QTemporaryDir *m_hostInstallDir = nullptr; // holds the throwaway playbook/inventory
+    QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
