@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 302
 title: remove create pr from the quick issue add
 status: open
-labels: [Complete]
+labels: [Incomplete]
 milestone: 
 priority: 0
-progress: 85
+progress: 5
 assignees: []
 createdAt: 1782589642251
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

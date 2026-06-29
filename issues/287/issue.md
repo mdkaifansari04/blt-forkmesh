@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 287
 title: please make the headless mode stay running until we explicitly shut it down have it be a duralbe daemon also show memory and cpu levels in the mirrors list
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 1
-progress: 40
+progress: 5
 assignees: []
 createdAt: 1782497401761
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

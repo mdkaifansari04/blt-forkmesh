@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 205
 title: make the branches page load better with the table expanded to see everything
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 23
-progress: 50
+progress: 5
 assignees: []
 createdAt: 1782349321778
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

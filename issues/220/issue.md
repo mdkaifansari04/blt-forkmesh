@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 220
 title: show the time on the when column in workflows and have the width of the table expand more
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 53
-progress: 60
+progress: 5
 assignees: []
 createdAt: 1782354120269
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

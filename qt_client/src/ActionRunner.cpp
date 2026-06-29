@@ -3,8 +3,11 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
+
+#include <functional>
 
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
@@ -12,13 +15,14 @@ ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
 }
 
 void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
-                         const QString &mirrorPath,
+                         const QString &mirrorPath, const QString &workTreePath,
                          const QMap<QString, QString> &variables)
 {
     m_busy = true;
     m_run = run;
     m_workflow = workflow;
     m_mirror = mirrorPath;
+    m_repoWorkTree = workTreePath;
     m_variables = variables;
     m_stepIndex = 0;
 
@@ -72,6 +76,20 @@ void ActionRunner::launch(Phase phase, const QString &program,
     if (m_run.ref.startsWith(QLatin1String("refs/tags/")))
         env.insert(QStringLiteral("FORKMESH_TAG"),
                    m_run.ref.mid(QStringLiteral("refs/tags/").size()));
+    // The release workflow stages artifact bytes into a content-addressed store
+    // (the CAS) and the serving node streams them back from <mirror>/
+    // forkmesh-releases (RepoHost::streamReleaseBlob). Point FORKMESH_RELEASE_CAS
+    // there so the bytes land where they're served — NOT in the throwaway
+    // worktree's default .forkmesh/release-blobs, which cleanupWorktree() deletes
+    // (which is why no prebuilt binary was ever downloadable).
+    if (!m_mirror.isEmpty())
+        env.insert(QStringLiteral("FORKMESH_RELEASE_CAS"),
+                   QDir(m_mirror).absoluteFilePath(
+                       QStringLiteral("forkmesh-releases")));
+    // owner/name so the release.json manifest records which repo it belongs to.
+    if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())
+        env.insert(QStringLiteral("FORKMESH_REPO"),
+                   m_run.owner + QLatin1Char('/') + m_run.name);
     const QString home = QDir::homePath();
     const QString extraPath = home + QStringLiteral("/.local/bin:") + home +
                               QStringLiteral("/.cargo/bin");
@@ -162,6 +180,14 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
                 : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) + // ❌
             finalMessage);
 
+    // A release run writes its artifact metadata into the throwaway worktree;
+    // harvest it into the working copy BEFORE cleanupWorktree() removes the dir,
+    // otherwise the release would never show up (issue: no artifacts listed / no
+    // prebuilt binary published).
+    bool landed = false;
+    if (ok && isReleaseRun())
+        landed = landReleaseMetadata();
+
     cleanupWorktree();
 
     m_run.status = ok ? ActionStatus::Success : ActionStatus::Failed;
@@ -171,6 +197,99 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
     m_busy = false;
     emit statusChanged(m_run.id, m_run.status);
     emit finished(m_run.id, ok);
+    if (landed)
+        emit releaseMetadataLanded(m_run.id);
+}
+
+bool ActionRunner::isReleaseRun() const
+{
+    return m_run.ref.startsWith(QLatin1String("refs/tags/"));
+}
+
+bool ActionRunner::landReleaseMetadata()
+{
+    // Only the owner (who holds the working copy) can publish; a mirror-only node
+    // has nowhere to commit and can't publish anyway.
+    if (m_repoWorkTree.isEmpty() || !QDir(m_repoWorkTree).exists())
+        return false;
+    const QDir produced(m_worktree + QStringLiteral("/releases"));
+    if (!produced.exists())
+        return false;
+
+    // Mirror releases/ from the worktree into the working copy. The metadata is a
+    // few tiny text files (SHASUMS256.txt + release.json per channel); the binary
+    // bytes are NOT here — they already live in the served CAS.
+    const QDir dest(m_repoWorkTree + QStringLiteral("/releases"));
+    const QString destRoot = dest.absolutePath();
+    QDir().mkpath(destRoot);
+    const QFileInfoList entries = produced.entryInfoList(
+        QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    bool copiedAny = false;
+    std::function<void(const QString &, const QString &)> copyTree =
+        [&](const QString &srcDir, const QString &dstDir) {
+            QDir().mkpath(dstDir);
+            const QFileInfoList items = QDir(srcDir).entryInfoList(
+                QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+            for (const QFileInfo &fi : items) {
+                const QString to = dstDir + QLatin1Char('/') + fi.fileName();
+                if (fi.isDir()) {
+                    copyTree(fi.absoluteFilePath(), to);
+                } else {
+                    QFile::remove(to); // overwrite an older manifest
+                    if (QFile::copy(fi.absoluteFilePath(), to))
+                        copiedAny = true;
+                }
+            }
+        };
+    for (const QFileInfo &fi : entries) {
+        const QString to = destRoot + QLatin1Char('/') + fi.fileName();
+        if (fi.isDir()) {
+            copyTree(fi.absoluteFilePath(), to);
+        } else {
+            QFile::remove(to);
+            if (QFile::copy(fi.absoluteFilePath(), to))
+                copiedAny = true;
+        }
+    }
+    if (!copiedAny)
+        return false;
+
+    // Stage just releases/ and commit only if it actually changed, so re-cutting
+    // an identical release is a no-op and we never disturb unrelated edits.
+    auto git = [&](const QStringList &args) {
+        QProcess p;
+        p.setWorkingDirectory(m_repoWorkTree);
+        p.start(QStringLiteral("git"), args);
+        p.waitForFinished(30000);
+        return p.exitCode();
+    };
+    git({QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("releases")});
+    if (git({QStringLiteral("diff"), QStringLiteral("--cached"),
+             QStringLiteral("--quiet"), QStringLiteral("--"),
+             QStringLiteral("releases")}) == 0) {
+        emitLog(QString::fromUtf8(
+            "==> \xE2\x84\xB9\xEF\xB8\x8F  Release metadata unchanged; nothing to "
+            "publish.")); // ℹ️
+        return false;
+    }
+    const QString tag = m_run.ref.mid(QStringLiteral("refs/tags/").size());
+    const int rc = git({QStringLiteral("-c"),
+                        QStringLiteral("user.email=actions@forkmesh.local"),
+                        QStringLiteral("-c"),
+                        QStringLiteral("user.name=ForkMesh Actions"),
+                        QStringLiteral("commit"), QStringLiteral("-m"),
+                        QStringLiteral("release: publish %1 artifacts").arg(tag),
+                        QStringLiteral("--"), QStringLiteral("releases")});
+    if (rc != 0) {
+        emitLog(QString::fromUtf8(
+            "!! Could not commit release metadata into the working copy."));
+        return false;
+    }
+    emitLog(QString::fromUtf8(
+                "==> \xF0\x9F\x93\xA6 Attached release metadata for %1; "
+                "publishing\xE2\x80\xA6") // 📦 …
+                .arg(tag));
+    return true;
 }
 
 void ActionRunner::cleanupWorktree()

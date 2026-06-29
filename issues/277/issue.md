@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 277
 title: on actions runs have a button to clear the run history
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 63
-progress: 70
+progress: 5
 assignees: []
 createdAt: 1782485959696
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

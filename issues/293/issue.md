@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 293
 title: show in the worktree list time ago column
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 78
-progress: 70
+progress: 5
 assignees: []
 createdAt: 1782506564142
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
