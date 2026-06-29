@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 289
 title: there is a slight lag when clicking from issues to agents tab
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 10
 progress: 40
