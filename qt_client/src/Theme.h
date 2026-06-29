@@ -108,6 +108,19 @@ QPushButton#ghostButton {
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
 
+/* --- Network-log quick-filter chips --- */
+#logFilterScroll, #logFilterScroll > QWidget,
+#logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+QPushButton#logFilterChip {
+    background: transparent; border: 1px solid #30363d; color: #8b949e;
+    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
+    min-height: 20px; max-height: 24px;
+}
+QPushButton#logFilterChip:hover { color: #e6edf3; border-color: #6e7681; }
+QPushButton#logFilterChip:checked {
+    background-color: #21262d; color: #e6edf3; border-color: #2ea043;
+}
+
 /* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
 #quickAddCard {
     background-color: #0d1117;
@@ -192,7 +205,8 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
-    border: none; border-bottom: 1px solid #21262d; font-weight: 600;
+    border: none; border-bottom: 1px solid #21262d;
+    border-right: 2px solid #010409; font-weight: 600;
 }
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
@@ -319,6 +333,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -444,7 +461,8 @@ QPushButton#memberDeleteButton:hover {
 #issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #161b22; color: #8b949e; padding: 6px 8px;
-    border: none; border-bottom: 1px solid #30363d; font-weight: 700;
+    border: none; border-bottom: 1px solid #30363d;
+    border-right: 2px solid #010409; font-weight: 700;
 }
 
 /* --- Kanban issue board --- */
@@ -814,6 +832,19 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #58a6ff; }
 #issueComposeSidebar { background: transparent; }
+/* Agent detail "Queue another message" composer (adhoc #177). */
+#agentComposer {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+}
+QPlainTextEdit#agentComposerEdit {
+    background: transparent;
+    border: none;
+    color: #e6edf3;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#agentComposerEdit:disabled { color: #6e7681; }
 QPushButton#markdownTab {
     background-color: #161b22;
     border: 1px solid #30363d;
@@ -874,6 +905,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     padding: 6px 8px;
     border: none;
     border-bottom: 1px solid #30363d;
+    border-right: 2px solid #010409;
     font-weight: 700;
 }
 #issueTable QTableCornerButton::section {
@@ -976,6 +1008,15 @@ QAbstractItemView::item { border: 0px; }
 #sidebar QListWidget::item:selected { background-color: #238636; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #238636; }
 
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #1f2630; }
+
 )";
 
 // GitHub (Primer) light:
@@ -1061,6 +1102,19 @@ QPushButton#ghostButton {
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
 
+/* --- Network-log quick-filter chips --- */
+#logFilterScroll, #logFilterScroll > QWidget,
+#logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
+QPushButton#logFilterChip {
+    background: transparent; border: 1px solid #d0d7de; color: #656d76;
+    font-weight: 600; font-size: 11px; padding: 2px 10px; border-radius: 11px;
+    min-height: 20px; max-height: 24px;
+}
+QPushButton#logFilterChip:hover { color: #1f2328; border-color: #afb8c1; }
+QPushButton#logFilterChip:checked {
+    background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
+}
+
 /* --- Nav rail --- */
 #navRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #navRail QLabel { background: transparent; }
@@ -1126,7 +1180,8 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
-    border: none; border-bottom: 1px solid #d8dee4; font-weight: 600;
+    border: none; border-bottom: 1px solid #d8dee4;
+    border-right: 2px solid #afb8c1; font-weight: 600;
 }
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
@@ -1271,6 +1326,9 @@ QPushButton#repoMenuButton:hover {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
               padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
+                     border-radius: 10px; }
+#topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
@@ -1376,7 +1434,8 @@ QPushButton#memberDeleteButton:hover {
 #issueTable::item:selected { background-color: #0969da; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
     background-color: #f6f8fa; color: #656d76; padding: 6px 8px;
-    border: none; border-bottom: 1px solid #d0d7de; font-weight: 700;
+    border: none; border-bottom: 1px solid #d0d7de;
+    border-right: 2px solid #afb8c1; font-weight: 700;
 }
 
 /* --- Kanban issue board --- */
@@ -1494,8 +1553,8 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     color: #8c959f; font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa; border: none;
-    color: #656d76; font-family: monospace; font-size: 12px;
+    background-color: #ffffff; border: none;
+    color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
@@ -1606,9 +1665,9 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     font-size: 11px;
 }
 #networkLog {
-    background-color: #f6f8fa;
+    background-color: #ffffff;
     border: none;
-    color: #656d76;
+    color: #1f2328;
     font-family: monospace;
     font-size: 12px;
 }
@@ -1747,6 +1806,19 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #0969da; }
 #issueComposeSidebar { background: transparent; }
+/* Agent detail "Queue another message" composer (adhoc #177). */
+#agentComposer {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 12px;
+}
+QPlainTextEdit#agentComposerEdit {
+    background: transparent;
+    border: none;
+    color: #1f2328;
+    selection-background-color: rgba(46, 160, 67, 46);
+}
+QPlainTextEdit#agentComposerEdit:disabled { color: #8c959f; }
 QPushButton#markdownTab {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
@@ -1808,6 +1880,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     padding: 6px 8px;
     border: none;
     border-bottom: 1px solid #d0d7de;
+    border-right: 2px solid #afb8c1;
     font-weight: 700;
 }
 #issueTable QTableCornerButton::section {
@@ -1907,6 +1980,15 @@ QAbstractItemView::item { border: 0px; }
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #1f883d; color: #ffffff; }
 QComboBox QAbstractItemView { selection-background-color: #1f883d; }
+
+/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
+   agent raw-output log. The rich transcript styles its own copy per scheme. */
+QPushButton#scrollJump {
+    background-color: #f6f8fa; color: #1f2328;
+    border: 1px solid #d0d7de; border-radius: 15px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#scrollJump:hover { background-color: #eef1f5; }
 
 )";
 

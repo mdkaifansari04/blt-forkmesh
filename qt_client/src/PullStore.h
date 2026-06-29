@@ -53,12 +53,23 @@ struct PullRequest {
     QString author;          // signer pubkey (base64url)
     QString authorName;
     QString sig;
-    QString patch;           // unified diff (from changes.patch)
+    QString patch;           // unified diff (from changes.patch, or derived from refs)
     // git format-patch series (mbox) for base..head when the PR is built from a
     // branch range, so the owner can replay it with `git am` and keep every
     // commit's author/date/message. Empty for working-tree or imported-patch PRs,
     // which fall back to a single `git apply` of `patch`.
-    QString commits;         // from commits.mbox
+    QString commits;         // from commits.mbox, or derived from refs
+    // Branch-backed PRs keep their diff out of the repo entirely: the head branch
+    // ref already carries every commit (full author history), so nothing but this
+    // signed pull.md pointer is committed and `patch`/`commits` are reconstructed
+    // from base..head on demand. Working-tree/imported/cross-node PRs are not
+    // branch-backed and persist a portable patch/mbox alongside pull.md.
+    bool branchBacked = false;
+    // For a *merged* branch-backed PR, the exact base/head commits the merge
+    // applied, so the historical diff stays viewable after the base absorbs the
+    // commits (a live base...head would then resolve to empty). Empty otherwise.
+    QString mergeBase;
+    QString mergeHead;
     int filesChanged = 0;
     int additions = 0;
     int deletions = 0;
@@ -88,10 +99,15 @@ public:
 
     // Owner-side: create a PR locally from an already-computed diff. `commits` is
     // the optional format-patch mbox (base..head) used to preserve authorship on
-    // merge; pass an empty string for working-tree/imported patches.
+    // merge; pass an empty string for working-tree/imported patches. Set
+    // `branchBacked` when `head` is a real branch whose committed range (base..head)
+    // *is* the change: the PR then stores only its signed pointer and reconstructs
+    // the diff/commits from the synced ref, so no diff text is committed to the
+    // repo (the passed patch/commits are recomputed from the refs before signing).
     int createPull(const QString &title, const QString &description,
                    const QString &base, const QString &head, const QString &patch,
-                   const QString &commits, QString *error = nullptr);
+                   const QString &commits, bool branchBacked = false,
+                   QString *error = nullptr);
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool isBranchBehindBase(int number, bool *behind, QString *error = nullptr) const;
     bool updateBranchFromBase(int number, QString *error = nullptr);
@@ -102,9 +118,18 @@ public:
     // whether it will merge cleanly. Returns false only on a hard error
     // (no working tree, PR/patch missing); on success sets *clean and, when not
     // clean, fills *conflictFiles with the conflicting paths.
+    // When `keepGuiAlive` is set the (potentially slow) `git apply --check` is
+    // waited on by pumping posted events in short slices instead of blocking, so
+    // a GUI-thread caller keeps the window responsive while the dry-run runs.
     bool checkMergeable(int number, bool *clean,
                         QStringList *conflictFiles = nullptr,
-                        QString *error = nullptr) const;
+                        QString *error = nullptr,
+                        bool keepGuiAlive = false) const;
+    // The working tree's current HEAD commit, or empty when unavailable. Cheap
+    // (one `git rev-parse`); used to fingerprint the base a checkMergeable()
+    // result was computed against so callers can cache the dry-run apply and skip
+    // re-spawning it for every open PR when neither the base nor the patch moved.
+    QString baseTip() const;
 
     // Interactive conflict resolution that isolates the fix on the PR's own
     // branch instead of merging into the checked-out (base) branch.
@@ -140,14 +165,22 @@ public:
                            QString *error = nullptr);
     bool finishPullFileEdit(int number, const QString &relPath,
                             const QString &content, QString *error = nullptr);
+    // Delete a file on the PR's branch in one step: checks out the branch with the
+    // PR applied (clean, conflict-free), removes the file, commits the deletion,
+    // returns to the original branch and regenerates the PR's patch — the PR stays
+    // open and mergeable. On failure the caller should abortConflictMerge().
+    bool deletePullFile(int number, const QString &relPath, QString *error = nullptr);
     // Build a minimal mbox (single commit) from a flat patch so `git am` can
     // apply it and credit the PR author. Public for testing.
     static QString syntheticMbox(const PullRequest &pr);
 
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
-    // Remove the PR folder entirely and commit the deletion.
-    bool deletePull(int number, QString *error = nullptr);
+    // Remove the PR folder entirely and commit the deletion. This is fast and
+    // leaves history intact. Pass rewriteHistory=true to also purge the PR's diff
+    // text (changes.patch / commits.mbox) from every commit via a filter-branch
+    // rewrite — thorough but slow (seconds to minutes on a large repo).
+    bool deletePull(int number, bool rewriteHistory, QString *error = nullptr);
 
     // Conversation: append a signed comment or review event, then commit. The
     // review state is one of approved | changes_requested | commented.

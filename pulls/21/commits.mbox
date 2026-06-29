@@ -1,0 +1,297 @@
+From 989931d72558013f927dcdecba7ff8a662958a9d Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Thu, 25 Jun 2026 16:12:56 +0530
+Subject: [PATCH] feat: add admin sign-in page
+
+---
+ cloudflare_worker/.env.production.example     |   6 +-
+ cloudflare_worker/deploy.sh                   |   2 +-
+ cloudflare_worker/src/entry.py                | 152 ++++++++++++++++--
+ cloudflare_worker/tests/test_admin_sign_in.py |  22 +++
+ cloudflare_worker/wrangler.toml               |   6 +-
+ 5 files changed, 168 insertions(+), 20 deletions(-)
+ create mode 100644 cloudflare_worker/tests/test_admin_sign_in.py
+
+diff --git a/cloudflare_worker/.env.production.example b/cloudflare_worker/.env.production.example
+index da13e29..777719c 100644
+--- a/cloudflare_worker/.env.production.example
++++ b/cloudflare_worker/.env.production.example
+@@ -13,9 +13,9 @@
+ # ID and forks deploy to their own account. Find yours: `wrangler whoami`.
+ CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
+ 
+-# Admin error dashboard at https://<host>/<ADMIN_PATH>, gated by HTTP Basic auth.
+-# ADMIN_PATH must start with "admin-" so it is routed to the worker.
+-ADMIN_PATH=admin-CHANGE-ME-TO-SOMETHING-RANDOM
++# Admin dashboard at https://<host>/admin.
++# Optional: set ADMIN_PATH only if you also want an extra admin-* alias.
++# ADMIN_PATH=admin-CHANGE-ME-TO-SOMETHING-RANDOM
+ ADMIN_USER=admin
+ ADMIN_PASS=CHANGE-ME
+ 
+diff --git a/cloudflare_worker/deploy.sh b/cloudflare_worker/deploy.sh
+index 081ad75..d39ce8b 100755
+--- a/cloudflare_worker/deploy.sh
++++ b/cloudflare_worker/deploy.sh
+@@ -161,7 +161,7 @@ push_secrets() {
+     # Worker secrets that MUST be set for the site to work; an empty/missing one
+     # is a hard error, not a silent skip (that's what made a broken deploy look
+     # successful). TREASURY_BCH_ADDRESS is optional (legacy), so it's not listed.
+-    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS "
++    local required=" ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS "
+ 
+     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+     local count=0
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index a8fb9ad..8840921 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -4904,6 +4904,108 @@ def _check_basic_auth(env, request):
+     return ok_user and ok_pass
+ 
+ 
++ADMIN_SESSION_COOKIE = "forkmesh_admin"
++ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
++
++
++def _admin_session_secret(env):
++    return (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
++            str(getattr(env, "DATA_KEY", "") or "")).encode()
++
++
++def _admin_session_token(env, now=None):
++    ts = str(int(Date.now() if now is None else now))
++    sig = hmac.new(
++        _admin_session_secret(env),
++        ("forkmesh-admin-session-v1\n" + ts).encode(),
++        "sha256",
++    ).hexdigest()
++    return ts + "." + sig
++
++
++def _admin_session_valid(env, token):
++    try:
++        ts, sig = str(token or "").split(".", 1)
++        age = int(Date.now()) - int(ts)
++    except (TypeError, ValueError):
++        return False
++    if age < 0 or age > ADMIN_SESSION_TTL_MS:
++        return False
++    expected = _admin_session_token(env, now=int(ts)).split(".", 1)[1]
++    return hmac.compare_digest(sig, expected)
++
++
++def _request_cookie(request, name):
++    header = request.headers.get("cookie") or ""
++    prefix = name + "="
++    for part in header.split(";"):
++        item = part.strip()
++        if item.startswith(prefix):
++            return item[len(prefix):]
++    return ""
++
++
++def _admin_session_cookie(env, request):
++    secure = "; Secure" if urlparse(request.url).scheme == "https" else ""
++    return (
++        ADMIN_SESSION_COOKIE + "=" + _admin_session_token(env) +
++        "; Path=/admin; Max-Age=%d; HttpOnly; SameSite=Lax%s" %
++        (ADMIN_SESSION_TTL_MS // 1000, secure)
++    )
++
++
++def _admin_clear_session_cookie(request):
++    secure = "; Secure" if urlparse(request.url).scheme == "https" else ""
++    return (ADMIN_SESSION_COOKIE +
++            "=; Path=/admin; Max-Age=0; HttpOnly; SameSite=Lax" + secure)
++
++
++def _admin_is_authenticated(env, request):
++    return (_check_basic_auth(env, request) or
++            _admin_session_valid(env, _request_cookie(request, ADMIN_SESSION_COOKIE)))
++
++
++def _admin_login_ok(env, form):
++    user = str(getattr(env, "ADMIN_USER", "") or "")
++    password = str(getattr(env, "ADMIN_PASS", "") or "")
++    if not user or not password:
++        return False
++    submitted_user = (form.get("username", [""]) or [""])[0]
++    submitted_password = (form.get("password", [""]) or [""])[0]
++    return (hmac.compare_digest(submitted_user, user) and
++            hmac.compare_digest(submitted_password, password))
++
++
++def _admin_login_response(message="", status=200):
++    banner = ('<div class="login-error">%s</div>' % _html_escape(message)) if message else ""
++    return Response(
++        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
++        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
++        "<title>forkmesh · admin sign in</title><style>" + ADMIN_STYLE +
++        "</style></head><body class=\"login-body\">"
++        "<main class=\"login-shell\"><section class=\"login-card\">"
++        "<div class=\"login-kicker\">forkmesh admin</div>"
++        "<h1>Sign in</h1>"
++        "<p class=\"meta\">Use the admin username and password from Worker secrets.</p>"
++        + banner +
++        "<form method=\"post\" action=\"/admin?action=login\" class=\"login-form\">"
++        "<label class=\"login-field\"><span>Username</span>"
++        "<input name=\"username\" autocomplete=\"username\" required autofocus></label>"
++        "<label class=\"login-field\"><span>Password</span>"
++        "<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label>"
++        "<button type=\"submit\">Sign in</button>"
++        "</form></section></main></body></html>",
++        status=status,
++        headers={"content-type": "text/html; charset=utf-8"},
++    )
++
++
++def _admin_redirect(request, cookie):
++    url = urlparse(request.url)
++    location = url.scheme + "://" + url.netloc + "/admin"
++    return Response("", status=303, headers={"location": location, "set-cookie": cookie})
++
++
+ ADMIN_STYLE = """
+  *{box-sizing:border-box}
+  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
+@@ -4951,6 +5053,16 @@ ADMIN_STYLE = """
+  .diagcol{min-width:240px}
+  .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
+  .diagcol table{width:auto;min-width:220px}
++ .login-body{min-height:100vh;display:grid;place-items:center;padding:24px}
++ .login-shell{width:100%;max-width:420px;padding:0;overflow:visible}
++ .login-card{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.32)}
++ .login-card h1{font-size:24px;margin:2px 0 6px}
++ .login-kicker{color:#58a6ff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
++ .login-form{display:grid;gap:14px;margin-top:22px}
++ .login-field span{display:block;color:#8b949e;font-size:12px;margin-bottom:5px}
++ .login-field input{width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:8px;padding:10px 12px;font:14px system-ui,sans-serif}
++ .login-form button{width:100%;justify-content:center;margin-top:2px}
++ .login-error{margin-top:16px;padding:10px 12px;border-radius:8px;border:1px solid #f85149;background:#2d1215;color:#ffd7d7}
+ """
+ 
+ # Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
+@@ -5325,6 +5437,8 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
+           'onsubmit="return confirm(\'Sweep confirmed join deposits now?\')">'
+           + csrf_field +
+           '<button type="submit">Sweep join deposits</button></form>'
++          '<form method="post" action="?action=logout">' + csrf_field +
++          '<button type="submit">Sign out</button></form>'
+           '<span class="meta">Automated sweeping is enabled: confirmed join '
+           'deposits sweep to the treasury and online node payout addresses; '
+           'this retries any pending sweep.</span></div>'
+@@ -5441,10 +5555,11 @@ class Default(WorkerEntrypoint):
+     async def fetch(self, request):
+         url = urlparse(request.url)
+ 
+-        # Admin error dashboard at a secret, env-configured path. Handled before
+-        # routing (and outside the 5xx wrapper) so its own 401 isn't logged.
++        # Admin dashboard at /admin, with ADMIN_PATH kept as an optional legacy
++        # alias. Handled before routing so auth redirects/401s are not logged.
++        requested_path = url.path.strip("/")
+         admin_path = _admin_path(self.env)
+-        if admin_path and url.path.strip("/") == admin_path:
++        if requested_path == "admin" or (admin_path and requested_path == admin_path):
+             return await self._admin(request)
+ 
+         # Capture any unhandled exception (which surfaces as an HTTP 500) and any
+@@ -5469,22 +5584,31 @@ class Default(WorkerEntrypoint):
+         return response
+ 
+     async def _admin(self, request):
+-        if not _check_basic_auth(self.env, request):
+-            return Response(
+-                "Authentication required.",
+-                status=401,
+-                headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
+-            )
+-        await ensure_schema(self.env)
+         params = parse_qs(urlparse(request.url).query)
++        action = params.get("action", [""])[0]
++        if not _admin_is_authenticated(self.env, request):
++            if method_name(request) == "POST" and action == "login":
++                try:
++                    form = parse_qs(await request.text(), keep_blank_values=True)
++                except Exception:
++                    form = {}
++                if _admin_login_ok(self.env, form):
++                    return _admin_redirect(request, _admin_session_cookie(self.env, request))
++                return _admin_login_response("Invalid admin username or password.",
++                                             status=401)
++            if not (str(getattr(self.env, "ADMIN_USER", "") or "") and
++                    str(getattr(self.env, "ADMIN_PASS", "") or "")):
++                return _admin_login_response("Admin credentials are not configured.",
++                                             status=503)
++            return _admin_login_response()
++
++        await ensure_schema(self.env)
+ 
+         # POST actions: ?action=disburse retries join-deposit sweeps;
+         # ?action=set_password resets a user account's login password. Every
+         # state-changing POST must carry a CSRF token (rendered only into this
+-        # Basic-auth-gated page) so a cross-site form — which would still send the
+-        # browser's cached admin credentials — can't trigger these actions.
++        # session-authenticated page) so a cross-site form cannot trigger them.
+         banner = ""
+-        action = params.get("action", [""])[0]
+         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
+                       % _html_escape(_admin_csrf_token(self.env)))
+         if method_name(request) == "POST":
+@@ -5495,6 +5619,8 @@ class Default(WorkerEntrypoint):
+             if not _admin_csrf_ok(self.env, form):
+                 banner = ("Action blocked: invalid or missing CSRF token. "
+                           "Reload the admin page and try again.")
++            elif action == "logout":
++                return _admin_redirect(request, _admin_clear_session_cookie(request))
+             elif action == "disburse":
+                 try:
+                     banner = await _admin_disburse(self.env)
+diff --git a/cloudflare_worker/tests/test_admin_sign_in.py b/cloudflare_worker/tests/test_admin_sign_in.py
+new file mode 100644
+index 0000000..ef5b5a7
+--- /dev/null
++++ b/cloudflare_worker/tests/test_admin_sign_in.py
+@@ -0,0 +1,22 @@
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++ENTRY = (ROOT / "src" / "entry.py").read_text()
++WRANGLER = (ROOT / "wrangler.toml").read_text()
++
++
++def test_bare_admin_path_routes_to_worker_before_assets():
++    assert 'requested_path == "admin"' in ENTRY
++    assert '"/admin"' in WRANGLER
++    assert '"/admin/*"' in WRANGLER
++    assert '"/admin-*"' in WRANGLER
++
++
++def test_admin_uses_form_login_session_instead_of_browser_prompt():
++    assert 'def _admin_login_response(' in ENTRY
++    assert 'def _admin_session_token(' in ENTRY
++    assert 'def _admin_is_authenticated(' in ENTRY
++    assert '/admin?action=login' in ENTRY
++    assert 'forkmesh_admin' in ENTRY
++    unauth_block = ENTRY.split('if not _admin_is_authenticated', 1)[1].split('await ensure_schema', 1)[0]
++    assert 'WWW-Authenticate' not in unauth_block
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index 3b69765..7277605 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -19,9 +19,9 @@ directory = "./public"
+ # unmatched path and let catalog.js route it. Real assets still take priority,
+ # and git/API paths below are handled by the worker first.
+ not_found_handling = "single-page-application"
+-# /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
+-# handled in code rather than served as a static asset.
+-run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/*/git-upload-pack", "/admin-*"]
++# /admin, /admin/*, and /admin-* always hit the worker so the canonical
++# dashboard and optional ADMIN_PATH aliases are handled in code.
++run_worker_first = ["/api/*", "/health", "/network", "/docs", "/*/info/refs", "/*/git-upload-pack", "/admin", "/admin/*", "/admin-*"]
+ 
+ [vars]
+ NODE_NAME = "forkmesh-mainnode"
+-- 
+2.50.1 (Apple Git-155)
+

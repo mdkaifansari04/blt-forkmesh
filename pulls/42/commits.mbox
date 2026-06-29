@@ -1,0 +1,212 @@
+From c97e9cc76172fd58ed895c66675344efabb83364 Mon Sep 17 00:00:00 2001
+From: dev-2f782c1c <dev-2f782c1c@users.noreply.forkmesh.com>
+Date: Fri, 26 Jun 2026 21:59:13 -0400
+Subject: [PATCH] adhoc #65: continue a failed agent with a typed follow-up
+ prompt
+
+A failed (or finished) Claude Code agent session can now be continued
+straight from the composer: type a prompt on the selected session and
+hit Send, and the agent relaunches on its branch with that prompt as a
+follow-up instruction (the issue context is preserved). The Continue
+button still does a plain relaunch.
+
+- Extract continueSelectedAgentSession() into continueAgentSession(id,
+  customPrompt); a non-empty prompt is stashed in m_agentContinuePrompt
+  and consumed by processAgentQueue() for the relaunch.
+- startClaudeCodeTranscript() builds an issue-context + follow-up lead
+  for an issue-backed continuation (ad-hoc verbatim path unchanged).
+- The composer Send handler routes a not-running issue-backed Claude
+  Code session to continueAgentSession() instead of only logging it.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ qt_client/src/MainWindow.cpp | 104 ++++++++++++++++++++++++-----------
+ qt_client/src/MainWindow.h   |   8 +++
+ 2 files changed, 81 insertions(+), 31 deletions(-)
+
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 2fd6a326..8309176f 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -20065,11 +20065,21 @@ QWidget *MainWindow::buildAgentsTab()
+         } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+             runner->steer(prompt);
+         } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+-            m_agentStore->appendLog(
+-                *session,
+-                QStringLiteral("\n==> User prompt saved while session was not running\n%1")
+-                    .arg(prompt));
+-            showAgentSession(session->id);
++            // Not running (typically the session failed). For an issue-backed
++            // Claude Code session, Send relaunches it with the typed prompt as a
++            // follow-up — so a failed agent can be continued straight from the
++            // composer. Other agents have no prompt-injection path, so keep saving.
++            if (session->issueNumber > 0 &&
++                session->provider == QLatin1String("claude-code")) {
++                continueAgentSession(session->id, prompt);
++            } else {
++                m_agentStore->appendLog(
++                    *session,
++                    QStringLiteral(
++                        "\n==> User prompt saved while session was not running\n%1")
++                        .arg(prompt));
++                showAgentSession(session->id);
++            }
+         }
+         m_agentPromptEdit->clear();
+     });
+@@ -21696,9 +21706,14 @@ void MainWindow::showAgentSlashMenu()
+ 
+ void MainWindow::continueSelectedAgentSession()
+ {
+-    if (!m_agentStore || m_selectedAgentSessionId <= 0)
++    continueAgentSession(m_selectedAgentSessionId);
++}
++
++void MainWindow::continueAgentSession(int sessionId, const QString &customPrompt)
++{
++    if (!m_agentStore || sessionId <= 0)
+         return;
+-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
++    AgentSession *session = findAgentSession(sessionId);
+     if (!session)
+         return;
+     // Already running (in its own runner) or queued — nothing to do. Other
+@@ -21708,17 +21723,25 @@ void MainWindow::continueSelectedAgentSession()
+         runnerForSession(session->id))
+         return;
+ 
++    // A typed follow-up (sent on a failed/finished session) leads the relaunch;
++    // processAgentQueue() hands it to startClaudeCodeTranscript as the prompt.
++    if (customPrompt.trimmed().isEmpty())
++        m_agentContinuePrompt.remove(sessionId);
++    else
++        m_agentContinuePrompt.insert(sessionId, customPrompt.trimmed());
++
+     session->status = AgentStatus::Queued;
+     session->lastError.clear();
+     session->finishedAtMs = 0;
+     m_agentStore->saveSession(*session);
+     m_agentStore->appendLog(
+         *session,
+-        QStringLiteral("\n==> Session continued from ForkMesh."));
+-    // Capture the id before reloadAgents() rebuilds m_agentSessions, which frees
+-    // the backing array and leaves `session` dangling (a use-after-free crash if
+-    // dereferenced afterwards).
+-    const int sessionId = session->id;
++        customPrompt.trimmed().isEmpty()
++            ? QStringLiteral("\n==> Session continued from ForkMesh.")
++            : QStringLiteral("\n==> Session continued from ForkMesh with a "
++                             "follow-up:\n%1").arg(customPrompt.trimmed()));
++    // reloadAgents() rebuilds m_agentSessions, which frees the backing array and
++    // leaves `session` dangling (a use-after-free if dereferenced afterwards).
+     if (!m_agentQueue.contains(sessionId))
+         m_agentQueue.append(sessionId);
+     reloadAgents();
+@@ -21863,6 +21886,9 @@ void MainWindow::processAgentQueue()
+             continue;
+         if (runnerForSession(sessionId)) // already running somewhere
+             continue;
++        // A typed follow-up to continue a failed/finished session (claude-code
++        // only); empty for a plain Continue, which relaunches from the issue.
++        const QString continuePrompt = m_agentContinuePrompt.take(sessionId);
+         const int repoIndex = repoIndexFor(session->owner, session->name);
+         if (repoIndex < 0) {
+             session->status = AgentStatus::Failed;
+@@ -21898,7 +21924,7 @@ void MainWindow::processAgentQueue()
+         // detail screen (with a Raw-output toggle), not headlessly through a
+         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
+         if (session->provider == QLatin1String("claude-code")) {
+-            startClaudeCodeTranscript(*session, issue, repo.localPath);
++            startClaudeCodeTranscript(*session, issue, repo.localPath, continuePrompt);
+             continue;
+         }
+         const AgentSession snapshot = *session;
+@@ -22127,24 +22153,40 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
+     // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
+     // issue-assigned sessions point the agent at issues/<n>/issue.md. Both share
+     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
+-    const QString lead =
+-        customPrompt.trimmed().isEmpty()
+-            ? QStringLiteral(
+-                  "Resolve ForkMesh issue #%1: %2\n\n"
+-                  "You are working in a dedicated git worktree on branch `%3` "
+-                  "(forked from `%4`). The full issue is in issues/%1/issue.md.%5")
+-                  .arg(session.issueNumber)
+-                  .arg(issue.title)
+-                  .arg(session.branchName)
+-                  .arg(baseName)
+-                  .arg(commentThread)
+-            : QStringLiteral(
+-                  "%1\n\n"
+-                  "You are working in a dedicated git worktree on branch `%2` "
+-                  "(forked from `%3`).")
+-                  .arg(customPrompt.trimmed())
+-                  .arg(session.branchName)
+-                  .arg(baseName);
++    // Continuing a failed/finished issue session with a typed follow-up keeps the
++    // issue context but leads with the new instruction so the agent acts on it.
++    const QString typed = customPrompt.trimmed();
++    QString lead;
++    if (typed.isEmpty())
++        lead = QStringLiteral(
++                   "Resolve ForkMesh issue #%1: %2\n\n"
++                   "You are working in a dedicated git worktree on branch `%3` "
++                   "(forked from `%4`). The full issue is in issues/%1/issue.md.%5")
++                   .arg(session.issueNumber)
++                   .arg(issue.title)
++                   .arg(session.branchName)
++                   .arg(baseName)
++                   .arg(commentThread);
++    else if (session.issueNumber > 0)
++        lead = QStringLiteral(
++                   "Continue work on ForkMesh issue #%1: %2\n\n"
++                   "Follow-up instruction:\n%3\n\n"
++                   "You are working in a dedicated git worktree on branch `%4` "
++                   "(forked from `%5`). The full issue is in issues/%1/issue.md.%6")
++                   .arg(session.issueNumber)
++                   .arg(issue.title)
++                   .arg(typed)
++                   .arg(session.branchName)
++                   .arg(baseName)
++                   .arg(commentThread);
++    else
++        lead = QStringLiteral(
++                   "%1\n\n"
++                   "You are working in a dedicated git worktree on branch `%2` "
++                   "(forked from `%3`).")
++                   .arg(typed)
++                   .arg(session.branchName)
++                   .arg(baseName);
+     const QString body =
+         QStringLiteral(
+             "%1 Work end to end:\n"
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 44c56db8..6f3fdbb4 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -678,6 +678,10 @@ private:
+     bool agentSessionLandedInBase(const AgentSession &session) const;
+     void assignIssueToAgent(const QString &provider);
+     void continueSelectedAgentSession();
++    // Re-queue a finished/failed session to run again. When customPrompt is given
++    // (e.g. typed into the composer of a failed session), the relaunch leads with
++    // that follow-up instruction instead of restarting from the issue alone.
++    void continueAgentSession(int sessionId, const QString &customPrompt = QString());
+     void deleteSelectedAgentSession();
+     // Stop and remove one stored agent session (clear its issue assignment, drop
+     // it from the run queue, delete it from the store). Returns true once it's
+@@ -2084,6 +2088,10 @@ private:
+     QList<AgentRunner *> m_agentRunners;
+     QList<AgentSession> m_agentSessions;
+     QList<int> m_agentQueue;
++    // Custom follow-up prompt to launch a continued session with, keyed by session
++    // id. Set when a failed/finished session is continued from the composer with a
++    // typed instruction; processAgentQueue() consumes it for the relaunch.
++    QHash<int, QString> m_agentContinuePrompt;
+     int m_selectedAgentSessionId = -1;
+ 
+     // In-flight AI conflict resolution (see fixCurrentPullConflictsWithAi). The
+-- 
+2.47.3
+

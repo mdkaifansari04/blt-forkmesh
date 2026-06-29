@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 200
 title: remove teh click a column header to sort message that appears sometimes
 status: open
-labels: []
+labels: [Complete]
 milestone: 
-priority: 35
-progress: 0
+priority: 85
+progress: 85
 assignees: []
 createdAt: 1782348662454
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -7,11 +7,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
+#include <QPair>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QUuid>
 
 #include <algorithm>
@@ -33,6 +37,34 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
+    if (!process.waitForFinished(timeoutMs)) {
+        if (errText)
+            *errText = QStringLiteral("git timed out");
+        return false;
+    }
+    if (output)
+        *output = process.readAllStandardOutput();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (errText)
+            *errText =
+                QString::fromUtf8(process.readAllStandardError()).trimmed().left(200);
+        return false;
+    }
+    return true;
+}
+
+// Like runGit, but feeds `input` to the process's stdin. Used for batched reads
+// (`git cat-file --batch`) so a whole tree of blobs is fetched in one process
+// instead of one `git show` per file. waitForFinished services both channels, so
+// large input/output won't deadlock the pipes.
+bool runGitInput(const QString &dir, const QStringList &args, const QByteArray &input,
+                 QByteArray *output, QString *errText = nullptr,
+                 int timeoutMs = kGitTimeoutMs)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    process.write(input);
+    process.closeWriteChannel();
     if (!process.waitForFinished(timeoutMs)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
@@ -194,6 +226,57 @@ const QRegularExpression &eventFileRe()
 {
     static const QRegularExpression re(QStringLiteral("^\\d{4}-.+\\.md$"));
     return re;
+}
+
+QString pendingAttachmentPlaceholder(int index)
+{
+    return QStringLiteral("forkmesh-pending-image:%1").arg(index);
+}
+
+QStringList effectiveAttachmentPlaceholders(const QStringList &srcPaths,
+                                            const QStringList &placeholders)
+{
+    if (!placeholders.isEmpty())
+        return placeholders;
+    QStringList inferred;
+    for (int i = 0; i < srcPaths.size(); ++i)
+        inferred << pendingAttachmentPlaceholder(i);
+    return inferred;
+}
+
+QString replaceAttachmentPlaceholders(QString body, const QStringList &srcPaths,
+                                      const QStringList &placeholders,
+                                      const QStringList &copiedAttachments)
+{
+    const QStringList effective =
+        effectiveAttachmentPlaceholders(srcPaths, placeholders);
+    const int count = std::min(effective.size(), copiedAttachments.size());
+    QList<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i)
+        order.append(i);
+    std::sort(order.begin(), order.end(), [&effective](int a, int b) {
+        return effective.at(a).size() > effective.at(b).size();
+    });
+    for (int i : order) {
+        if (!effective.at(i).isEmpty())
+            body.replace(effective.at(i), copiedAttachments.at(i));
+    }
+    return body;
+}
+
+bool copiedEveryAttachment(const QStringList &srcPaths,
+                           const QStringList &copiedAttachments,
+                           QString *error)
+{
+    if (copiedAttachments.size() == srcPaths.size())
+        return true;
+    if (error) {
+        *error = QStringLiteral("Could not copy %1 of %2 attachment(s).")
+                     .arg(srcPaths.size() - copiedAttachments.size())
+                     .arg(srcPaths.size());
+    }
+    return false;
 }
 
 } // namespace
@@ -544,18 +627,24 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
 
 QString IssueStore::mirrorRef() const
 {
+    // The mirror doesn't change while a single store reads it, but mirrorRef() is
+    // hit once per blob fetched from the mirror. Resolving it via git every time
+    // spawns hundreds of subprocesses on the GUI thread; memoize for our lifetime.
+    if (m_mirrorRefResolved)
+        return m_cachedMirrorRef;
+    m_mirrorRefResolved = true;
+
     QByteArray output;
     if (runGit(m_mirror, {"rev-parse", "--verify", "-q", "HEAD"}, &output) &&
-        !output.trimmed().isEmpty())
-        return QStringLiteral("HEAD");
-    if (runGit(m_mirror,
-               {"for-each-ref", "--format=%(refname)", "--count=1", "refs/heads/"},
-               &output)) {
-        const QString ref = QString::fromUtf8(output).trimmed();
-        if (!ref.isEmpty())
-            return ref;
+        !output.trimmed().isEmpty()) {
+        m_cachedMirrorRef = QStringLiteral("HEAD");
+    } else if (runGit(m_mirror,
+                      {"for-each-ref", "--format=%(refname)", "--count=1",
+                       "refs/heads/"},
+                      &output)) {
+        m_cachedMirrorRef = QString::fromUtf8(output).trimmed();
     }
-    return QString();
+    return m_cachedMirrorRef;
 }
 
 QByteArray IssueStore::showFromMirror(const QString &repoRelPath, bool *ok) const
@@ -581,28 +670,87 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
     if (ref.isEmpty())
         return issues;
 
+    // Read the whole issues/ subtree in one recursive listing, then fetch every
+    // needed blob in a single `git cat-file --batch`. The old code spawned a
+    // `git show` per file (plus a per-issue `ls-tree`), which stalled the GUI
+    // thread for seconds on repos with many issues/events.
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "issues/"}, &listing))
+    if (!runGit(m_mirror, {"ls-tree", "-r", ref, "issues/"}, &listing))
         return issues;
+
+    struct MirrorIssue {
+        QString issueOid;                          // blob oid of issue.md
+        QList<QPair<QString, QString>> eventBlobs; // (filename, oid)
+    };
+    QMap<int, MirrorIssue> byNumber; // keyed (and thus sorted) by issue number
+    QSet<QString> wantedOids;
     for (const QString &line :
          QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
         const int tab = line.indexOf('\t');
-        if (tab < 0 || !line.contains(" tree "))
+        if (tab < 0)
             continue;
-        const QString base = line.mid(tab + 1).section('/', -1); // <n>
+        const QStringList meta = line.left(tab).split(' ', Qt::SkipEmptyParts);
+        if (meta.size() < 3 || meta.at(1) != QStringLiteral("blob"))
+            continue;
+        const QString oid = meta.at(2);
+        // path is "issues/<n>/<file>"; ignore top-level files (labels.json …)
+        // and anything nested deeper (attachments/…).
+        const QString rel = line.mid(tab + 1).section('/', 1); // strip "issues/"
+        const int slash = rel.indexOf('/');
+        if (slash < 0)
+            continue;
         bool numeric = false;
-        const int number = base.toInt(&numeric);
+        const int number = rel.left(slash).toInt(&numeric);
         if (!numeric)
             continue;
-
-        bool ok = false;
-        const QByteArray issueMd =
-            showFromMirror("issues/" + base + "/issue.md", &ok);
-        if (!ok)
+        const QString fname = rel.mid(slash + 1);
+        if (fname.contains('/'))
             continue;
-        const FrontMatter fm = parseFrontMatter(issueMd);
+        if (fname == QStringLiteral("issue.md")) {
+            byNumber[number].issueOid = oid;
+            wantedOids.insert(oid);
+        } else if (eventFileRe().match(fname).hasMatch()) {
+            byNumber[number].eventBlobs.append({fname, oid});
+            wantedOids.insert(oid);
+        }
+    }
+    if (byNumber.isEmpty())
+        return issues;
+
+    // Batch-fetch every blob in one process. Output framing per object is
+    // "<oid> <type> <size>\n<size bytes>\n".
+    QByteArray batchInput;
+    for (const QString &oid : wantedOids)
+        batchInput += oid.toUtf8() + '\n';
+    QByteArray batch;
+    if (!runGitInput(m_mirror, {"cat-file", "--batch"}, batchInput, &batch))
+        return issues;
+
+    QHash<QString, QByteArray> contentByOid;
+    contentByOid.reserve(wantedOids.size());
+    for (int pos = 0; pos < batch.size();) {
+        const int nl = batch.indexOf('\n', pos);
+        if (nl < 0)
+            break;
+        const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
+        pos = nl + 1;
+        if (header.size() < 3) // "<oid> missing" or malformed — no body follows
+            continue;
+        bool sizeOk = false;
+        const int size = header.at(2).toInt(&sizeOk);
+        if (!sizeOk || pos + size > batch.size())
+            break;
+        contentByOid.insert(QString::fromUtf8(header.at(0)), batch.mid(pos, size));
+        pos += size + 1; // skip body and its trailing newline
+    }
+
+    for (auto it = byNumber.constBegin(); it != byNumber.constEnd(); ++it) {
+        const MirrorIssue &files = it.value();
+        if (files.issueOid.isEmpty() || !contentByOid.contains(files.issueOid))
+            continue;
+        const FrontMatter fm = parseFrontMatter(contentByOid.value(files.issueOid));
         Issue issue;
-        issue.number = number;
+        issue.number = it.key();
         issue.title = fm.get("title");
         issue.status = fm.values.contains("status") ? fm.get("status")
                                                     : QStringLiteral("open");
@@ -622,34 +770,21 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
         open.title = issue.title;
         issue.events.append(open);
 
-        // Enumerate this issue's event files from the mirror.
-        QByteArray dirListing;
-        if (runGit(m_mirror, {"ls-tree", ref, "issues/" + base + "/"}, &dirListing)) {
-            QStringList names;
-            for (const QString &l :
-                 QString::fromUtf8(dirListing).split('\n', Qt::SkipEmptyParts)) {
-                const int t = l.indexOf('\t');
-                if (t < 0 || !l.contains(" blob "))
-                    continue;
-                const QString fname = l.mid(t + 1).section('/', -1);
-                if (eventFileRe().match(fname).hasMatch())
-                    names << fname;
-            }
-            names.sort();
-            for (const QString &name : names) {
-                bool eok = false;
-                const QByteArray ev =
-                    showFromMirror("issues/" + base + "/" + name, &eok);
-                if (eok)
-                    issue.events.append(eventFromFrontMatter(parseFrontMatter(ev)));
-            }
+        // Subsequent events in filename (chronological) order.
+        QList<QPair<QString, QString>> events = files.eventBlobs;
+        std::sort(events.begin(), events.end(),
+                  [](const QPair<QString, QString> &a,
+                     const QPair<QString, QString> &b) { return a.first < b.first; });
+        for (const QPair<QString, QString> &ev : events) {
+            if (contentByOid.contains(ev.second))
+                issue.events.append(
+                    eventFromFrontMatter(parseFrontMatter(contentByOid.value(ev.second))));
         }
         recomputeMetadata(issue); // tally votes (and fold event metadata)
         if (!issue.isDeleted())
             issues.append(issue);
     }
-    std::sort(issues.begin(), issues.end(),
-              [](const Issue &a, const Issue &b) { return a.number < b.number; });
+    // byNumber iterates in ascending key order, so issues is already sorted.
     return issues;
 }
 
@@ -849,6 +984,17 @@ int IssueStore::createIssue(const QString &title, const QString &body,
                             const QStringList &assignees,
                             const QStringList &attachmentSrcPaths, QString *error)
 {
+    return createIssue(title, body, labels, milestone, priority, assignees,
+                       attachmentSrcPaths, {}, error);
+}
+
+int IssueStore::createIssue(const QString &title, const QString &body,
+                            const QStringList &labels, const QString &milestone,
+                            int priority,
+                            const QStringList &assignees,
+                            const QStringList &attachmentSrcPaths,
+                            const QStringList &attachmentPlaceholders, QString *error)
+{
     if (!canWrite()) {
         if (error)
             *error = QStringLiteral("This repository is read-only on this node.");
@@ -861,8 +1007,11 @@ int IssueStore::createIssue(const QString &title, const QString &body,
     ev.type = "open";
     ev.id = QStringLiteral("open-%1").arg(number);
     ev.title = title;
-    ev.body = stripEdgeNewlines(body);
     ev.attachments = copyAttachments(number, attachmentSrcPaths);
+    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
+        return -1;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
     ev = makeSignedEvent(number, ev);
 
     Issue issue;
@@ -888,6 +1037,13 @@ int IssueStore::createIssue(const QString &title, const QString &body,
 bool IssueStore::addComment(int number, const QString &body,
                             const QStringList &attachmentSrcPaths, QString *error)
 {
+    return addComment(number, body, attachmentSrcPaths, {}, error);
+}
+
+bool IssueStore::addComment(int number, const QString &body,
+                            const QStringList &attachmentSrcPaths,
+                            const QStringList &attachmentPlaceholders, QString *error)
+{
     if (!canWrite()) {
         if (error)
             *error = QStringLiteral("This repository is read-only on this node.");
@@ -901,8 +1057,11 @@ bool IssueStore::addComment(int number, const QString &body,
     }
     IssueEvent ev;
     ev.type = "comment";
-    ev.body = stripEdgeNewlines(body);
     ev.attachments = copyAttachments(number, attachmentSrcPaths);
+    if (!copiedEveryAttachment(attachmentSrcPaths, ev.attachments, error))
+        return false;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, ev.attachments));
     ev = makeSignedEvent(number, ev);
     issue.events.append(ev);
     if (!writeIssueFile(issue, error))
@@ -938,6 +1097,15 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
                            const QStringList &keepAttachments,
                            const QStringList &newAttachmentSrcPaths, QString *error)
 {
+    return editEvent(number, eventId, newBody, keepAttachments,
+                     newAttachmentSrcPaths, {}, error);
+}
+
+bool IssueStore::editEvent(int number, const QString &eventId, const QString &newBody,
+                           const QStringList &keepAttachments,
+                           const QStringList &newAttachmentSrcPaths,
+                           const QStringList &newAttachmentPlaceholders, QString *error)
+{
     if (!canWrite())
         return false;
     Issue issue;
@@ -946,12 +1114,15 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
     IssueEvent ev;
     ev.type = "edit";
     ev.target = eventId;
-    ev.body = stripEdgeNewlines(newBody);
     // An edit overwrites the target's attachment set, so carry forward the ones
     // being kept (already in the issue folder) and copy in any newly added.
     ev.attachments = keepAttachments;
-    if (!newAttachmentSrcPaths.isEmpty())
-        ev.attachments += copyAttachments(number, newAttachmentSrcPaths);
+    const QStringList copiedAttachments = copyAttachments(number, newAttachmentSrcPaths);
+    if (!copiedEveryAttachment(newAttachmentSrcPaths, copiedAttachments, error))
+        return false;
+    ev.attachments += copiedAttachments;
+    ev.body = stripEdgeNewlines(replaceAttachmentPlaceholders(
+        newBody, newAttachmentSrcPaths, newAttachmentPlaceholders, copiedAttachments));
     ev = makeSignedEvent(number, ev);
     issue.events.append(ev);
     if (!writeIssueFile(issue, error))

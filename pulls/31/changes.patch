@@ -1,0 +1,171 @@
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index a8fb9ad..27c2e24 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -3095,6 +3095,7 @@ async def _account_login(env, request):
+         data.get("email", ""), 254).strip().lower()
+     password = (data.get("password", "") or "")[:256]
+     totp = clean_string(data.get("totp", ""), 10)
++    pubkey = clean_string(data.get("pubkey", ""), 120)
+ 
+     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
+     # stored). Checked before any account lookup so it also protects nonexistent
+@@ -3124,6 +3125,7 @@ async def _account_login(env, request):
+     if not ok:
+         await _login_record_fail(env, id_bi)
+         return json_response({"error": "invalid_credentials"}, status=401)
++    assert rec is not None
+     # TOTP is only enforced for accounts that have enrolled it. A bad code counts
+     # toward the lockout but the password was already correct, so the distinct
+     # error here doesn't aid account enumeration.
+@@ -3132,6 +3134,18 @@ async def _account_login(env, request):
+             await _login_record_fail(env, id_bi)
+             return json_response({"error": "bad_totp"}, status=401)
+     await _login_clear(env, id_bi)
++
++    # A web-created account can be active before any desktop node key is bound.
++    # When the Qt client logs in with the correct password, bind its Ed25519 key
++    # exactly once so signed heartbeat/catalog publishes work. Never silently
++    # replace an existing key; key rotation needs an explicit recovery flow.
++    if not rec.get("pubkey") and pubkey:
++        rec["pubkey"] = pubkey
++        name_bi = await blind_index(env, rec.get("name", ""))
++        await _save_account(env, name_bi, rec)
++    elif pubkey and rec.get("pubkey") != pubkey:
++        return json_response({"error": "pubkey_mismatch"}, status=409)
++
+     return json_response({
+         "ok": True, "nodeName": rec.get("name", ""),
+         "email": rec.get("email", ""), "status": rec.get("status", "active"),
+diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
+new file mode 100644
+index 0000000..2c72ff8
+--- /dev/null
++++ b/cloudflare_worker/tests/test_login_key_binding.py
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++"""Login-to-desktop-key binding contract checks (stdlib only).
++
++An account created on the web can be active before a desktop node key is bound.
++When the Qt client later logs in with the correct email/password, the worker must
++bind the client's Ed25519 pubkey if the account has no pubkey yet. Otherwise the
++UI says login/setup succeeded but signed repo publish/heartbeat still fail with
++401/"Host requires authentication".
++"""
++
++from pathlib import Path
++
++ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++
++
++def test_login_accepts_desktop_pubkey_in_request_body():
++    assert 'pubkey = clean_string(data.get("pubkey", ""), 120)' in ENTRY_TEXT
++
++
++def test_login_binds_pubkey_when_account_has_none():
++    assert 'if not rec.get("pubkey") and pubkey:' in ENTRY_TEXT
++    assert 'rec["pubkey"] = pubkey' in ENTRY_TEXT
++    assert 'await _save_account(env, name_bi, rec)' in ENTRY_TEXT
++
++
++def test_login_refuses_silent_key_overwrite():
++    assert 'elif pubkey and rec.get("pubkey") != pubkey:' in ENTRY_TEXT
++    assert 'return json_response({"error": "pubkey_mismatch"}, status=409)' in ENTRY_TEXT
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index 7df8e4e..91a61ec 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -3953,6 +3953,46 @@ QString MainWindow::testSavedSolanaAddress() const
+     return QSettings().value(kSolanaSetting).toString().trimmed();
+ }
+ 
++int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
++                                       const QString &localPath)
++{
++    const QString path = QDir::cleanPath(localPath);
++    if (path.isEmpty() || !QDir(path).exists(".git"))
++        return -1;
++
++    RepositoryRecord repo;
++    repo.owner = repoSegment(owner, QStringLiteral("owner"));
++    repo.name =
++        repoSegment(name.isEmpty() ? repoNameFromUrl(path) : name,
++                    QStringLiteral("repository"));
++    repo.localPath = path;
++    repo.solanaAddress = savedSolanaAddress();
++    repo.publishToNetwork = false;
++    repo.mirrorPath = repositoryMirrorRoot() + "/" +
++                      repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
++                      repoSegment(repo.name, QStringLiteral("repository")) + ".git";
++
++    m_repositories.append(repo);
++    saveRepositories();
++    refreshRepositoryList();
++    return m_repositories.size() - 1;
++}
++
++bool MainWindow::testOpenRepository(int index)
++{
++    if (index < 0 || index >= m_repositories.size())
++        return false;
++
++    openRepoDetail(index);
++    return m_repoDetailIndex == index && !m_repoDetailLoading;
++}
++
++bool MainWindow::testSaveRepoAboutMetadata(const QString &about,
++                                           const QString &website)
++{
++    return saveRepoAboutMetadata(about, website);
++}
++
+ int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
+                                            const QString &mirrorPath)
+ {
+@@ -4593,18 +4633,14 @@ bool MainWindow::authenticateSilently(const QString &accountName)
+         QSettings().setValue(kAuthedAccountSetting, accountName);
+         return true;
+     }
+-    // Previously authenticated on this machine — either by key (above) or by a
+-    // password (cross-device) login, where this node key does NOT own the
+-    // account so the pubkey check above can never pass. Trust the cached marker
+-    // so those users aren't forced to re-enter credentials on every launch.
+-    // When the relay is reachable we still require the account to exist and be
+-    // active; when it's unreachable (status == 0) we trust the cache outright.
+-    // Either way the relay re-verifies the signed token for any real hosting.
++    // If the relay is unreachable, trust a previously authenticated marker so a
++    // returning user can still open the app shell offline. When the relay is
++    // reachable, however, do NOT treat a password-login cache as signed hosting
++    // auth unless the server pubkey matched above. Publishing/heartbeat require
++    // this desktop's Ed25519 key, not just an email/password session.
+     const bool cachedHere =
+         QSettings().value(kAuthedAccountSetting).toString() == accountName;
+-    const bool activeAccount = lookup.value("exists").toBool() &&
+-                               lookup.value("status").toString() == "active";
+-    if (cachedHere && (status == 0 || activeAccount)) {
++    if (cachedHere && status == 0) {
+         m_accountAuthenticated = true;
+         m_accountName = accountName;
+         m_accountTier = QStringLiteral("active");
+@@ -4623,7 +4659,8 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+     const QJsonObject resp = postAccountSync(
+         "login",
+         QJsonObject{{"email", email}, {"password", password},
+-                    {"totp", totp}},
++                    {"totp", totp},
++                    {"pubkey", m_profileIdentity.publicKey()}},
+         &status);
+     if (status == 200 && resp.value("ok").toBool()) {
+         m_accountAuthenticated = true;
+@@ -4650,6 +4687,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+                              : err == "too_many_attempts"
+                                    ? "Too many failed attempts. Wait a few minutes "
+                                      "and try again."
++                             : err == "pubkey_mismatch"
++                                   ? "This account is already bound to another "
++                                     "desktop key. Use that device or rotate the "
++                                     "account key before publishing from here."
+                                          : "Login failed" +
+                                                (err.isEmpty() ? QString() : ": " + err) +
+                                                ".");

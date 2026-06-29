@@ -19,12 +19,22 @@ public:
         QString apiKey;
         QString isolatedHome;
         QString model;
+        // Instruction preamble prepended to the issue prompt. Empty falls back to
+        // defaultPromptPreamble(); editable and saved via Settings → Agents.
+        QString promptPreamble;
+        // Ad-hoc runs (the Agents-tab composer, issue #273) have no issue to
+        // anchor to: when set, this free-form task becomes the agent's prompt in
+        // place of the issue thread.
+        QString taskOverride;
         bool preferApiKeyAuth = false;
         int contextWindow = 32000;
         int maxOutputTokens = 2000;
     };
 
     explicit AgentRunner(AgentStore *store, QObject *parent = nullptr);
+
+    // The built-in instruction preamble used when no custom prompt is configured.
+    static QString defaultPromptPreamble();
 
     bool busy() const { return m_busy; }
     int currentSessionId() const { return m_session.id; }

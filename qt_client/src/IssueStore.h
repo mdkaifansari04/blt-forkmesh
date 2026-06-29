@@ -114,8 +114,19 @@ public:
                     int priority,
                     const QStringList &assignees,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
+    int createIssue(const QString &title, const QString &body,
+                    const QStringList &labels, const QString &milestone,
+                    int priority,
+                    const QStringList &assignees,
+                    const QStringList &attachmentSrcPaths,
+                    const QStringList &attachmentPlaceholders,
+                    QString *error = nullptr);
     bool addComment(int number, const QString &body,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
+    bool addComment(int number, const QString &body,
+                    const QStringList &attachmentSrcPaths,
+                    const QStringList &attachmentPlaceholders,
+                    QString *error = nullptr);
     // Cast a vote on an issue (one vote per author). Owner-side write path.
     bool addVote(int number, QString *error = nullptr);
     // Edit an event's body. keepAttachments are existing issue-folder-relative
@@ -123,6 +134,11 @@ public:
     bool editEvent(int number, const QString &eventId, const QString &newBody,
                    const QStringList &keepAttachments = {},
                    const QStringList &newAttachmentSrcPaths = {},
+                   QString *error = nullptr);
+    bool editEvent(int number, const QString &eventId, const QString &newBody,
+                   const QStringList &keepAttachments,
+                   const QStringList &newAttachmentSrcPaths,
+                   const QStringList &newAttachmentPlaceholders,
                    QString *error = nullptr);
     // Rename an issue via a signed "title" event (folds into Issue::title).
     bool setTitle(int number, const QString &newTitle, QString *error = nullptr);
@@ -187,4 +203,9 @@ private:
     QString m_mirror;
     const ForkMeshIdentity *m_identity;
     QString m_authorName;
+
+    // mirrorRef() is hit once per blob read from the mirror; cache it for the
+    // store's lifetime so we resolve the ref via git at most once.
+    mutable bool m_mirrorRefResolved = false;
+    mutable QString m_cachedMirrorRef;
 };

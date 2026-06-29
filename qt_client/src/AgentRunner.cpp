@@ -217,9 +217,13 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                  QStringLiteral("No command is configured for this agent."));
         return;
     }
-    if (!QDir(m_repoPath).exists(QStringLiteral(".git"))) {
+    // Accept either a working-tree checkout (has .git) or a bare mirror (has a
+    // HEAD at its root): a node that only mirrors a repo runs agents straight off
+    // the mirror, building the branch in a throwaway worktree (adhoc #191).
+    if (!QDir(m_repoPath).exists(QStringLiteral(".git")) &&
+        !QDir(m_repoPath).exists(QStringLiteral("HEAD"))) {
         complete(false, AgentStatus::Failed,
-                 QStringLiteral("No writable git checkout is available for this repo."));
+                 QStringLiteral("No git checkout is available for this repo."));
         return;
     }
 
@@ -609,30 +613,49 @@ void AgentRunner::cleanupWorktree()
     m_worktree.clear();
 }
 
+QString AgentRunner::defaultPromptPreamble()
+{
+    return QStringLiteral(
+        "You are running inside ForkMesh as a coding agent.\n"
+        "Use the minimum context and output needed. Inspect only files relevant to the issue.\n"
+        "Do not spend extra tokens on broad refactors or unrelated cleanup.\n"
+        "When possible, make the smallest patch that satisfies the issue.\n"
+        "Do not commit, push, or open network resources unless the issue explicitly requires it.");
+}
+
 QString AgentRunner::buildPrompt() const
 {
     QStringList prompt;
-    prompt << QStringLiteral("You are running inside ForkMesh as a coding agent.");
-    prompt << QStringLiteral("Use the minimum context and output needed. Inspect only files relevant to the issue.");
-    prompt << QStringLiteral("Do not spend extra tokens on broad refactors or unrelated cleanup.");
-    prompt << QStringLiteral("When possible, make the smallest patch that satisfies the issue.");
-    prompt << QStringLiteral("Do not commit, push, or open network resources unless the issue explicitly requires it.");
+    // Instruction preamble: the user-editable prompt saved in Settings → Agents,
+    // falling back to the built-in default when left blank.
+    QString preamble = m_config.promptPreamble.trimmed();
+    if (preamble.isEmpty())
+        preamble = defaultPromptPreamble();
+    prompt << preamble;
     prompt << QStringLiteral("");
     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
-    prompt << QStringLiteral("Issue #%1: %2")
-                  .arg(m_session.issueNumber)
-                  .arg(m_session.issueTitle);
-    prompt << QStringLiteral("");
-    prompt << QStringLiteral("Issue thread:");
-    for (const IssueEvent &ev : m_issue.events) {
-        const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
-        if (ev.type == QLatin1String("open") || ev.type == QLatin1String("comment")) {
-            prompt << QStringLiteral("--- %1 by %2 ---").arg(ev.type, who);
-            prompt << ev.body.left(6000);
-        } else if (ev.type == QLatin1String("labels")) {
-            prompt << QStringLiteral("--- labels: %1 ---").arg(ev.labels.join(", "));
-        } else if (ev.type == QLatin1String("assignees")) {
-            prompt << QStringLiteral("--- assignees: %1 ---").arg(ev.assignees.join(", "));
+    const QString task = m_config.taskOverride.trimmed();
+    if (!task.isEmpty()) {
+        // Ad-hoc composer run: no issue thread, just the typed task.
+        prompt << QStringLiteral("Task: %1").arg(m_session.issueTitle);
+        prompt << QStringLiteral("");
+        prompt << task;
+    } else {
+        prompt << QStringLiteral("Issue #%1: %2")
+                      .arg(m_session.issueNumber)
+                      .arg(m_session.issueTitle);
+        prompt << QStringLiteral("");
+        prompt << QStringLiteral("Issue thread:");
+        for (const IssueEvent &ev : m_issue.events) {
+            const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
+            if (ev.type == QLatin1String("open") || ev.type == QLatin1String("comment")) {
+                prompt << QStringLiteral("--- %1 by %2 ---").arg(ev.type, who);
+                prompt << ev.body.left(6000);
+            } else if (ev.type == QLatin1String("labels")) {
+                prompt << QStringLiteral("--- labels: %1 ---").arg(ev.labels.join(", "));
+            } else if (ev.type == QLatin1String("assignees")) {
+                prompt << QStringLiteral("--- assignees: %1 ---").arg(ev.assignees.join(", "));
+            }
         }
     }
     if (m_store && m_session.startedAtMs > 0) {

@@ -295,20 +295,33 @@ QString ActionFile::substitute(const QString &input,
                                const QMap<QString, QString> &vars)
 {
     QString result = input;
-    // ${{ vars.NAME }} with flexible whitespace.
+    // ${{ vars.NAME }} with flexible whitespace — the explicit ForkMesh/CI
+    // context reference, always expanded (empty for unknown names, matching CI
+    // conventions).
     static const QRegularExpression ctx(
         QStringLiteral("\\$\\{\\{\\s*vars\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\}"));
-    // ${NAME}
+    // ${NAME} — ambiguous with ordinary shell parameter expansion. Only expand
+    // it when NAME is a declared variable; otherwise leave it verbatim so the
+    // shell can substitute its own variables. (Expanding every ${NAME} here used
+    // to blank out a workflow's own shell variables — e.g. release.yml building
+    // "releases/${channel}/forkmesh-${os}-${arch}" into "releases//forkmesh--".)
     static const QRegularExpression brace(
         QStringLiteral("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}"));
-    for (const QRegularExpression &re : {ctx, brace}) {
+    struct Pass {
+        const QRegularExpression &re;
+        bool onlyKnown;
+    };
+    for (const Pass &pass : {Pass{ctx, false}, Pass{brace, true}}) {
         QString out;
         int last = 0;
-        auto it = re.globalMatch(result);
+        auto it = pass.re.globalMatch(result);
         while (it.hasNext()) {
             const QRegularExpressionMatch m = it.next();
+            const QString name = m.captured(1);
+            if (pass.onlyKnown && !vars.contains(name))
+                continue; // leave shell variables for the shell
             out += result.mid(last, m.capturedStart() - last);
-            out += vars.value(m.captured(1));
+            out += vars.value(name);
             last = m.capturedEnd();
         }
         out += result.mid(last);
