@@ -858,6 +858,13 @@ esac
 register_desktop_entry() {
   [ "$(uname -s)" = "Linux" ] || return 0
   CURRENT_STEP="desktop"
+  # A headless box has no GNOME/KDE app menu or dock to register into, so writing
+  # a .desktop launcher + icons there is pointless. Skip it (matching the
+  # auto-launch display check below); the app still runs from $BIN / the CLI.
+  if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    say "No display detected; skipping app-menu registration (run:  forkmesh)."
+    return 0
+  fi
   local script="$SRC/qt_client/install.sh"
   if [ ! -f "$script" ]; then
     # The prebuilt fast path never clones the source, so the helper that writes
