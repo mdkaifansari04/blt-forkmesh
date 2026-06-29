@@ -10696,7 +10696,7 @@ void MainWindow::runHostInstall()
                 "and sshpass on this machine and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
-            [this, ip, user, node](int code, QProcess::ExitStatus status) {
+            [this, ip, user, node, pass](int code, QProcess::ExitStatus status) {
                 if (m_hostInstallButton)
                     m_hostInstallButton->setEnabled(true);
                 const bool ok = status == QProcess::NormalExit && code == 0;
