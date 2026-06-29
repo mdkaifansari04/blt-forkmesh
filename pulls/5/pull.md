@@ -4,7 +4,7 @@ number: 5
 title: Agent: issue #232 have the about be stored in the .forkmesh dir and move the info.json there
 base: main
 head: mdkaifansari04:agent/issue-232-have-the-about-be-stored-in-the-forkmesh-dir-and
-status: open
+status: merged
 ts: 1782761702515
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: mdkaifansari04
