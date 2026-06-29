@@ -13659,16 +13659,26 @@ QWidget *MainWindow::buildRepoDetailSection()
             // The repo's commits were already loaded when it opened, so a tab
             // click usually rebuilds an identical 300-row table (4 git
             // subprocesses + per-row widgets). Skip that when nothing changed.
-            if (commitsListIsCurrent()) {
-                // The commit list may be current, but the working tree can still
-                // have moved (an agent staged/edited files) — always rescan the
-                // changes panel so it's fresh the moment the tab is opened.
-                refreshSourceControl();
-            } else {
-                loadCommits();
-            }
-            // Land on the newest commit's change view rather than an empty list.
-            openMostRecentCommit();
+            //
+            // Run inline, this whole block (git status + the openMostRecentCommit
+            // diff read) blocks before the tab can paint — setCurrentIndex(1)
+            // above only queues the paint, which can't process until this slot
+            // returns, so the Commits page stays blank (still showing the prior
+            // tab) for the delay, then snaps in. Defer to the next event-loop tick
+            // like the Agents tab below: the tab paints first, then the work runs
+            // (openMostRecentCommit shows its own spinner across the diff read).
+            QTimer::singleShot(0, this, [this] {
+                if (commitsListIsCurrent()) {
+                    // The commit list may be current, but the working tree can
+                    // still have moved (an agent staged/edited files) — always
+                    // rescan the changes panel so it's fresh on tab open.
+                    refreshSourceControl();
+                } else {
+                    loadCommits();
+                }
+                // Land on the newest commit's change view, not an empty list.
+                openMostRecentCommit();
+            });
         }
         else if (id == 3) {
             // issue #289: reloadAgents() shells two git reads per session to
