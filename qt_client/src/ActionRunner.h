@@ -24,13 +24,17 @@ public:
     bool busy() const { return m_busy; }
 
     void start(const ActionRun &run, const ActionWorkflow &workflow,
-               const QString &mirrorPath,
+               const QString &mirrorPath, const QString &workTreePath,
                const QMap<QString, QString> &variables);
 
 signals:
     void logLine(int runId, const QString &text);
     void statusChanged(int runId, const QString &status);
     void finished(int runId, bool ok);
+    // Emitted after a successful release run lands new release metadata into the
+    // working copy, so MainWindow can publish it (sync the served mirror) and the
+    // installer / Releases panel can see the attached artifact.
+    void releaseMetadataLanded(int runId);
 
 private:
     enum class Phase { Idle, Checkout, Step };
@@ -42,6 +46,14 @@ private:
     void emitLog(const QString &text);
     void complete(bool ok, const QString &finalMessage);
     void cleanupWorktree();
+    // For a release run (ref under refs/tags/), copy the release metadata the
+    // workflow produced in the throwaway worktree (releases/<channel>/*) into the
+    // owner's working copy and commit it, so it survives worktree cleanup and can
+    // be published. The artifact bytes are already in the served CAS (the run's
+    // FORKMESH_RELEASE_CAS points at <mirror>/forkmesh-releases). Returns true if
+    // a new metadata commit was made.
+    bool landReleaseMetadata();
+    bool isReleaseRun() const;
     QString redact(QString text) const;
 
     ActionStore *m_store;
@@ -51,6 +63,7 @@ private:
     ActionWorkflow m_workflow;
     QString m_mirror;
     QString m_worktree;
+    QString m_repoWorkTree; // owner's working copy (may be empty on a mirror-only node)
     QMap<QString, QString> m_variables;
     QStringList m_secrets; // values to redact from logs
     int m_stepIndex = 0;
