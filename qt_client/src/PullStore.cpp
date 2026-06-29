@@ -1036,15 +1036,22 @@ bool PullStore::readPull(int number, PullRequest &out) const
     out.description = fm.body;
     // A branch-backed PR carries no committed diff: reconstruct it from the refs.
     // A merged one resolves against the snapshot taken at merge (the live range
-    // would be empty once the base absorbed the commits). Fall through to any
-    // on-disk blobs if the refs are gone (degraded, but never crashes).
+    // would be empty once the base absorbed the commits).
+    const bool merged = !out.mergeBase.isEmpty() && !out.mergeHead.isEmpty();
+    const QString rbase = merged ? out.mergeBase : out.base;
+    const QString rhead = merged ? out.mergeHead : out.head;
+    // Reconstruct from real git objects wherever they resolve — the working tree
+    // first, then the mirror (it keeps refs/heads/* after a sync, so a PR pushed
+    // from another node is reachable even before its branch lands here). Sourcing
+    // the diff and commit series straight from the commits means a truncated or
+    // otherwise corrupt stored changes.patch / commits.mbox blob (e.g. a binary
+    // section damaged in transit through the inbox) can never reach `git am`.
+    // Fall through to the on-disk blobs only when nothing resolves anywhere
+    // (degraded, but never crashes).
     const bool derived =
         out.branchBacked &&
-        (!out.mergeBase.isEmpty() && !out.mergeHead.isEmpty()
-             ? deriveFromRefs(m_workTree, out.mergeBase, out.mergeHead, &out.patch,
-                              &out.commits)
-             : deriveFromRefs(m_workTree, out.base, out.head, &out.patch,
-                              &out.commits));
+        (deriveFromRefs(m_workTree, rbase, rhead, &out.patch, &out.commits) ||
+         deriveFromRefs(m_mirror, rbase, rhead, &out.patch, &out.commits));
     if (!derived) {
         QFile patch(pullDir(number) + "/changes.patch");
         if (patch.open(QIODevice::ReadOnly))
@@ -1315,7 +1322,11 @@ bool PullStore::mergePull(int number, QString *error)
     QString tempFile;
     auto materialize = [&](const QString &onDisk, const QString &content,
                            const char *suffix) -> QString {
-        if (QFileInfo::exists(onDisk))
+        // For a branch-backed PR the authoritative bytes are the ones readPull
+        // reconstructed from the refs; a stale or truncated on-disk blob (e.g. an
+        // inbox-drained commits.mbox) must never be preferred over them, or a
+        // damaged binary section resurfaces as "corrupt binary patch".
+        if (!pr.branchBacked && QFileInfo::exists(onDisk))
             return onDisk;
         tempFile = QDir::temp().filePath(
             QStringLiteral("forkmesh-merge-%1.%2").arg(number).arg(suffix));
@@ -1538,10 +1549,13 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
     // readPull reconstructed for a branch-backed PR), else a single synthesized
     // commit from the flat patch. A temp mbox is read once by `git am`, then
     // removed. Preferring pr.commits keeps every authored commit on the branch.
+    // Never trust an on-disk commits.mbox for a branch-backed PR: readPull
+    // rebuilt pr.commits from the refs, while the stored blob may be a truncated
+    // inbox artifact whose damaged binary section trips "corrupt binary patch".
     const QString realMbox = pullDir(number) + "/commits.mbox";
     QString mboxPath;
     QString tempMbox;
-    if (!pr.commits.isEmpty() && QFileInfo::exists(realMbox)) {
+    if (!pr.commits.isEmpty() && !pr.branchBacked && QFileInfo::exists(realMbox)) {
         mboxPath = realMbox;
     } else {
         tempMbox = QDir::temp().filePath(
@@ -1574,10 +1588,25 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
         const QString detail =
             QString::fromUtf8(git.readAllStandardError()).trimmed().left(300);
         abortConflictMerge();
-        if (error)
-            *error = QStringLiteral("The pull request could not be applied: %1")
-                         .arg(detail.isEmpty() ? QStringLiteral("patch did not apply")
-                                               : detail);
+        if (error) {
+            // A corrupt/truncated patch (typically a binary section damaged in
+            // transit) makes `git am` bail before it can leave any conflict to
+            // resolve. The commits are reconstructed from refs whenever those are
+            // reachable, so a recurrence means the source objects aren't here yet
+            // — point the reviewer at the fix instead of the raw git error.
+            if (detail.contains(QLatin1String("corrupt")))
+                *error = QStringLiteral(
+                             "This pull request's patch is corrupt, so it could "
+                             "not be applied. Sync the repository to fetch an "
+                             "intact copy of its commits, then try again. (%1)")
+                             .arg(detail.isEmpty() ? QStringLiteral("corrupt patch")
+                                                   : detail);
+            else
+                *error =
+                    QStringLiteral("The pull request could not be applied: %1")
+                        .arg(detail.isEmpty() ? QStringLiteral("patch did not apply")
+                                              : detail);
+        }
         return false;
     }
     if (conflicted)
