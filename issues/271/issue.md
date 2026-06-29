@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 271
 title: when deleting a worktree from the worktree section also delete it's branch
 status: open
-labels: [Complete]
+labels: [Incomplete]
 milestone: 
 priority: 34
 progress: 85
