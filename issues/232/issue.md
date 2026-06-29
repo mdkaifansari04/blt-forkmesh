@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 232
 title: have the about be stored in the .forkmesh dir and move the info.json there
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 13
 progress: 55
