@@ -1,3 +1,33 @@
+From 0aa706eea05c6032c3f07fc20c9f53a6ded1554d Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM@forkmesh>
+Date: Mon, 29 Jun 2026 18:28:29 -0400
+Subject: [PATCH] chore: fix blogs path and added the updated images
+
+Updates the public blog image paths to optimized WebP assets, fixes the blog detail hero markup, and keeps the blog frontend contract test aligned with the shipped assets. The WebP assets were resized to keep the signed PR inbox payload under API storage limits.
+
+Validation:
+- python3.12 -m py_compile cloudflare_worker/src/entry.py
+- python3.12 direct run of cloudflare_worker/tests/test_blog_frontend.py (14 tests)
+- ./deploy.sh dry-run attempted, blocked by missing CLOUDFLARE_ACCOUNT_ID in this environment
+
+Note: submitted as a patch-only ForkMesh PR because including commits.mbox duplicates binary asset data and exceeded the Worker inbox path.
+
+Commits:
+
+0b80e823 chore: fix blogs path and added the updated images
+---
+ .../public/assets/blog/coming-soon.webp       | Bin 0 -> 264460 bytes
+ .../public/assets/blog/forkmesh-noise.webp    | Bin 0 -> 236734 bytes
+ cloudflare_worker/public/blog.html            |  10 +--
+ .../blog/assets/introducing-forkmesh.svg      |  81 ------------------
+ cloudflare_worker/public/blog/index.html      |   2 +-
+ .../blog/introducing-forkmesh/index.html      |   6 +-
+ cloudflare_worker/tests/test_blog_frontend.py |   4 +-
+ 7 files changed, 11 insertions(+), 92 deletions(-)
+ create mode 100644 cloudflare_worker/public/assets/blog/coming-soon.webp
+ create mode 100644 cloudflare_worker/public/assets/blog/forkmesh-noise.webp
+ delete mode 100644 cloudflare_worker/public/blog/assets/introducing-forkmesh.svg
+
 diff --git a/cloudflare_worker/public/assets/blog/coming-soon.webp b/cloudflare_worker/public/assets/blog/coming-soon.webp
 new file mode 100644
 index 0000000000000000000000000000000000000000..8748c1c75f8a2dd78e2b1366157847719cae97ce
@@ -9853,3 +9883,6 @@ index 43a1386e..cc440291 100644
      for marker in (
          'class="blog1-featured-image blog1-has-art"',
          'class="blog1-featured-image blog1-article-image blog1-has-art"',
+-- 
+2.47.3
+
