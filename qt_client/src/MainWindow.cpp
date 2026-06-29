@@ -4944,6 +4944,9 @@ void MainWindow::applyTheme()
             // The floating agent strip carries its own inline stylesheet (not the
             // global sheet), so re-point it at the new theme's opaque surface.
             window->styleAgentSpinnerOverlay();
+            // The always-on footer log line is inline-styled too — repaint it for
+            // the new theme so its text/border/canvas track the switch.
+            window->styleFooterUpdateLog();
         }
     }
 }
@@ -6716,6 +6719,35 @@ void MainWindow::appendUpdateLog(const QString &text)
     }
 }
 
+void MainWindow::styleFooterUpdateLog()
+{
+    if (!m_footerUpdateLog)
+        return;
+    // Theme-aware so the strip reads on either canvas (it carries its own inline
+    // sheet, not the global one). Tint the text by the current line's tone: red
+    // for failures ("!!"/"ERROR"), the accent for phase headers ("==>"/"$ "),
+    // muted body grey otherwise.
+    const bool dark = currentThemeIsDark();
+    const QString &clean = m_footerUpdateLineRaw;
+    QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    if (clean.startsWith(QStringLiteral("!!")) ||
+        clean.startsWith(QStringLiteral("ERROR")))
+        colour = dark ? QStringLiteral("#ff6b6b") : QStringLiteral("#cf222e");
+    else if (clean.startsWith(QStringLiteral("==>")) ||
+             clean.startsWith(QStringLiteral("$ ")))
+        colour = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString border = dark ? QStringLiteral("#21262d") : QStringLiteral("#d0d7de");
+    const QString canvas = dark ? QStringLiteral("#0d1117") : QStringLiteral("#f6f8fa");
+    const QString hover = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    m_footerUpdateLog->setStyleSheet(
+        QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
+                       "border-top:1px solid %2;background:%3;"
+                       "font-family:monospace;font-size:11px;padding:3px 12px;"
+                       "text-align:left;}"
+                       "QPushButton#footerUpdateLog:hover{color:%4;}")
+            .arg(colour, border, canvas, hover));
+}
+
 void MainWindow::setFooterUpdateLine(const QString &line)
 {
     if (!m_footerUpdateLog)
@@ -6725,22 +6757,7 @@ void MainWindow::setFooterUpdateLine(const QString &line)
         return;
     m_footerUpdateLineRaw = clean;
     m_footerUpdateLog->show();
-    // Colour the strip to match the log's narrative markers: red for failures
-    // ("!!"/"ERROR"), the accent blue for phase headers ("==>"), grey otherwise.
-    QString colour = QStringLiteral("#8b949e");
-    if (clean.startsWith(QStringLiteral("!!")) ||
-        clean.startsWith(QStringLiteral("ERROR")))
-        colour = QStringLiteral("#ff6b6b");
-    else if (clean.startsWith(QStringLiteral("==>")) ||
-             clean.startsWith(QStringLiteral("$ ")))
-        colour = QStringLiteral("#58a6ff");
-    m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
-                       "border-top:1px solid #21262d;background:#0d1117;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;"
-                       "text-align:left;}"
-                       "QPushButton#footerUpdateLog:hover{color:#e6edf3;}")
-            .arg(colour));
+    styleFooterUpdateLog();
     // Elide to a single line that fits the current width so a long compiler line
     // never stretches the window.
     const QFontMetrics fm(m_footerUpdateLog->font());
@@ -7556,21 +7573,27 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(redditButton);
     quickAddRow->addWidget(twitterButton);
 
-    // A thin single-line strip below the quick-add bar: the live restart/update
-    // log. Hidden until an update runs, it streams the newest log line so progress
-    // is visible at the bottom of the app; clicking it opens the full log window.
+    // A thin single-line strip below the quick-add bar: the always-on live log.
+    // It streams the newest network/update line so the latest activity is visible
+    // at the bottom of the app at all times; clicking it opens the full log window.
     m_footerUpdateLog = new QPushButton;
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setFlat(true);
     m_footerUpdateLog->setCursor(Qt::PointingHandCursor);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_footerUpdateLog->setToolTip("Live update/restart log. Click to open the full log.");
-    m_footerUpdateLog->setStyleSheet(
-        "QPushButton#footerUpdateLog{color:#8b949e;border:none;"
-        "border-top:1px solid #21262d;background:#0d1117;"
-        "font-family:monospace;font-size:11px;padding:3px 12px;text-align:left;}"
-        "QPushButton#footerUpdateLog:hover{color:#e6edf3;}");
-    m_footerUpdateLog->hide();
+    m_footerUpdateLog->setToolTip("Live log. Click to open the full log.");
+    styleFooterUpdateLog();
+    // Seed the always-on strip with the most recent live-log line (or a ready
+    // placeholder) so it's populated on first paint; logSystem() then streams
+    // every new event onto it.
+    if (!m_networkLog.isEmpty()) {
+        const QString &last = m_networkLog.last();
+        setFooterUpdateLine(last.size() >= 21 && last.at(10) == QLatin1Char(' ')
+                                ? last.mid(21)
+                                : last);
+    } else {
+        setFooterUpdateLine(QStringLiteral("ForkMesh ready"));
+    }
     connect(m_footerUpdateLog, &QPushButton::clicked, this, [this] {
         if (!m_updateLogDialog)
             return;
@@ -38893,7 +38916,11 @@ void MainWindow::refreshIssueList()
     const QString msFilter = m_issueMilestoneFilter->currentData().toString();
     const QString search =
         m_issueSearch ? m_issueSearch->text().trimmed() : QString();
-    const int keep = m_currentIssueNumber;
+    // When a close asked us to advance, target the next issue instead of the one
+    // that was being viewed (which a close may have just filtered out) — issue #249.
+    const int selectNext = m_selectIssueOnReload;
+    m_selectIssueOnReload = -1;
+    const int keep = selectNext > 0 ? selectNext : m_currentIssueNumber;
     // Remember whether the viewed issue's detail pane is open so that, if a close
     // drops it out of the filtered list, we can keep the pane open on that same
     // (now-closed) issue instead of collapsing to the full-width list (issue #188).
@@ -41192,10 +41219,14 @@ void MainWindow::closeIssueWithComment()
     m_pendingIssueAttachments.clear();
     if (m_issueAttachButton)
         m_issueAttachButton->setText("Paste, drop, or click to add files");
-    // Closing may drop the issue out of the current filter; stay on it (keep the
-    // detail panel open on the just-closed issue) rather than collapsing to the
-    // list or jumping away (mirrors toggleIssueStatus).
-    m_keepCurrentOnReload = true;
+    // Closing advances to the next issue in the list so the user can keep working
+    // through them (adhoc #249); if there's none, stay on the just-closed issue
+    // rather than collapsing to the list (mirrors toggleIssueStatus).
+    const int nextIssue = nextVisibleIssueAfter(number);
+    if (nextIssue > 0)
+        m_selectIssueOnReload = nextIssue;
+    else
+        m_keepCurrentOnReload = true;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
     setIssueInlineNotice("Comment added and issue closed.");
@@ -41335,18 +41366,55 @@ void MainWindow::toggleIssueStatus()
             status = issue.status;
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.setStatus(m_currentIssueNumber, status == "open" ? "closed" : "open",
+    const bool closing = status == "open";
+    // Closing advances to the next issue in the list so the user can keep working
+    // through them; capture that target before the status flip reorders things.
+    const int nextIssue = closing ? nextVisibleIssueAfter(m_currentIssueNumber) : -1;
+    if (!store.setStatus(m_currentIssueNumber, closing ? "closed" : "open",
                          &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not update issue status." : error,
                              true);
         return;
     }
-    // If this toggle drops the issue out of the current filter (e.g. closing it
-    // while filtering to Open), stay on it: keep the detail panel open on the same
-    // issue rather than jumping away or collapsing back to the list.
-    m_keepCurrentOnReload = true;
+    if (closing && nextIssue > 0) {
+        // Select the next issue once the table is rebuilt (adhoc #249).
+        m_selectIssueOnReload = nextIssue;
+    } else {
+        // No next issue (or reopening): if this toggle drops the issue out of the
+        // current filter (e.g. closing it while filtering to Open), stay on it —
+        // keep the detail panel open on the same issue rather than jumping away or
+        // collapsing back to the list.
+        m_keepCurrentOnReload = true;
+    }
     reloadIssues();
-    setIssueInlineNotice(status == "open" ? "Issue closed." : "Issue reopened.");
+    setIssueInlineNotice(closing ? "Issue closed." : "Issue reopened.");
+}
+
+int MainWindow::nextVisibleIssueAfter(int number) const
+{
+    if (!m_issueTable)
+        return -1;
+    const int rows = m_issueTable->rowCount();
+    int idx = -1;
+    for (int r = 0; r < rows; ++r) {
+        const QTableWidgetItem *item = m_issueTable->item(r, 0);
+        if (item && item->data(Qt::UserRole).toInt() == number) {
+            idx = r;
+            break;
+        }
+    }
+    if (idx < 0)
+        return -1;
+    // Prefer the row below; fall back to the row above when closing the last one.
+    if (idx + 1 < rows) {
+        if (const QTableWidgetItem *item = m_issueTable->item(idx + 1, 0))
+            return item->data(Qt::UserRole).toInt();
+    }
+    if (idx - 1 >= 0) {
+        if (const QTableWidgetItem *item = m_issueTable->item(idx - 1, 0))
+            return item->data(Qt::UserRole).toInt();
+    }
+    return -1;
 }
 
 void MainWindow::deleteCurrentIssue()
@@ -45089,6 +45157,10 @@ void MainWindow::logSystem(const QString &text)
     // Only render the line if it passes the active filter.
     if (m_logFilter.isEmpty() || m_logFilter == badge)
         appendNetworkLogLine(line);
+
+    // Mirror the newest event onto the always-on footer log line so the latest
+    // activity is visible at the bottom of the app even when the Log tab is closed.
+    setFooterUpdateLine(plain);
 
     // Persist incrementally so the history survives a restart (even an unclean
     // one). Periodically rewrite the file to trim it back to the in-memory cap.
