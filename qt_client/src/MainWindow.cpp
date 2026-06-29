@@ -29236,6 +29236,18 @@ QWidget *MainWindow::buildRepoEditorPage()
     // Returning to the GitHub-style overview is handled by the persistent
     // "Code overview" toggle above the stack (see buildRepoFilesPanel).
     backRow->addStretch();
+    m_repoFileHistoryButton = new QPushButton("Show history");
+    m_repoFileHistoryButton->setObjectName("ghostButton");
+    m_repoFileHistoryButton->setCursor(Qt::PointingHandCursor);
+    m_repoFileHistoryButton->setToolTip(
+        "Show the commit history and changes for this file");
+    setOcticon(m_repoFileHistoryButton, "history", 16);
+    connect(m_repoFileHistoryButton, &QPushButton::clicked, this, [this] {
+        QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
+        const QString path = w ? w->property("previewPath").toString() : QString();
+        if (!path.isEmpty())
+            showRepoFileHistory(path);
+    });
     m_repoFileCommitButton = new QPushButton("Commit direct");
     m_repoFileCommitButton->setObjectName("ghostButton");
     m_repoFileCommitButton->setCursor(Qt::PointingHandCursor);
@@ -29250,6 +29262,7 @@ QWidget *MainWindow::buildRepoEditorPage()
     setOcticon(m_repoFilePullButton, "git-pull-request", 16);
     connect(m_repoFilePullButton, &QPushButton::clicked, this,
             [this] { saveCurrentRepoFile(true); });
+    backRow->addWidget(m_repoFileHistoryButton);
     backRow->addWidget(m_repoFileCommitButton);
     backRow->addWidget(m_repoFilePullButton);
 
@@ -30322,8 +30335,12 @@ void MainWindow::updateRepoFileSaveActions()
 {
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
     const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
-    const bool editable = editor && !editor->isReadOnly() &&
-                          !w->property("previewPath").toString().isEmpty();
+    const bool haveFile = editor && !w->property("previewPath").toString().isEmpty();
+    const bool editable = haveFile && !editor->isReadOnly();
+    // Viewing history only reads git, so it works for any open file — including
+    // read-only previews on a mirror.
+    if (m_repoFileHistoryButton)
+        m_repoFileHistoryButton->setEnabled(haveFile);
     // Direct commits need a working tree we own; a mirrored repo can still open a
     // pull request, which is sent to the owner's inbox.
     if (m_repoFileCommitButton)
@@ -30345,6 +30362,106 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
         editor->document()->setModified(false);
     updateRepoFileSaveActions();
+}
+
+void MainWindow::showRepoFileHistory(const QString &path)
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || path.isEmpty())
+        return;
+
+    // The commits that touched this file, newest first. --follow keeps the
+    // history walking across renames so an early commit under an old name still
+    // shows up.
+    QByteArray out;
+    QString err;
+    if (!runGitCapture(dir,
+                       {"log", "--follow", "--date=format:%b %e, %Y",
+                        "--format=%H%x1f%an%x1f%ad%x1f%s", currentRef(), "--", path},
+                       &out, &err)) {
+        setRepoDetailNotice("Could not read history: " + err.left(200), true);
+        return;
+    }
+
+    struct HistEntry {
+        QString hash, author, date, subject;
+    };
+    QList<HistEntry> entries;
+    for (const QByteArray &lineRaw : out.split('\n')) {
+        const QString line = QString::fromUtf8(lineRaw);
+        if (line.trimmed().isEmpty())
+            continue;
+        const QStringList f = line.split(QLatin1Char('\x1f'));
+        if (f.size() < 4)
+            continue;
+        entries.append(
+            {f[0].trimmed(), f[1].trimmed(), f[2].trimmed(), f[3].trimmed()});
+    }
+    if (entries.isEmpty()) {
+        setRepoDetailNotice("No commit history for " + path, false);
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName("fileHistoryDialog");
+    dialog->setWindowTitle(QString::fromUtf8("History \xE2\x80\x94 ") + path);
+    dialog->resize(940, 620);
+
+    // Left: one row per commit (subject + short hash / author / date).
+    auto *list = new QListWidget;
+    list->setObjectName("commitFileList");
+    list->setMinimumWidth(260);
+    list->setMaximumWidth(380);
+    for (const HistEntry &e : entries) {
+        auto *item = new QListWidgetItem(
+            QString::fromUtf8("%1\n%2 \xC2\xB7 %3 \xC2\xB7 %4")
+                .arg(e.subject, e.hash.left(7), e.author, e.date));
+        item->setData(Qt::UserRole, e.hash);
+        list->addItem(item);
+    }
+
+    // Right: the selected commit's diff for just this file.
+    auto *diffView = new QTextBrowser;
+    diffView->setObjectName("commitDiffView");
+    diffView->setOpenExternalLinks(false);
+    diffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+
+    connect(list, &QListWidget::currentItemChanged, this,
+            [this, diffView, dir, path](QListWidgetItem *item, QListWidgetItem *) {
+                if (!item)
+                    return;
+                const QString hash = item->data(Qt::UserRole).toString();
+                QByteArray patch;
+                runGitCapture(dir, {"show", "-M", "--format=", hash, "--", path},
+                              &patch, nullptr);
+                QList<DiffFileEntry> files;
+                QString html = renderDiffHtml(QString::fromUtf8(patch), files, dir,
+                                              hash + "^", hash);
+                if (html.trimmed().isEmpty())
+                    html = QStringLiteral(
+                        "<p style='color:#8b949e'>No textual changes to this file "
+                        "in the selected commit.</p>");
+                diffView->setHtml(html);
+            });
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(list);
+    split->addWidget(diffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({300, 640});
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(split, 1);
+    layout->addWidget(buttons);
+
+    // Land on the most recent commit's diff straight away.
+    list->setCurrentRow(0);
+    dialog->show();
 }
 
 bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
