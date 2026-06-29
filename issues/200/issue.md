@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 200
 title: remove teh click a column header to sort message that appears sometimes
 status: open
-labels: [Complete]
+labels: [Incomplete]
 milestone: 
 priority: 26
 progress: 85
