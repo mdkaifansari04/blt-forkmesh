@@ -96,6 +96,27 @@ require_cloudflare_account() {
     return 1
 }
 
+# ForkMesh injects every Settings -> Secrets & Coves variable into this run's
+# environment under the exact name you gave it, and wrangler only authenticates
+# with CLOUDFLARE_API_TOKEN. So if the token was saved under a common near-miss
+# name (CF_API_TOKEN / CLOUDFLARE_TOKEN / CF_TOKEN), promote it to
+# CLOUDFLARE_API_TOKEN here rather than failing the deploy over a naming
+# mismatch. Only runs when CLOUDFLARE_API_TOKEN is empty, and announces the
+# rename so the source is never a mystery.
+adopt_cloudflare_token_alias() {
+    [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
+    local name val
+    for name in CF_API_TOKEN CLOUDFLARE_TOKEN CF_TOKEN; do
+        val="$(trim "${!name:-}")"
+        if [ -n "$val" ]; then
+            export CLOUDFLARE_API_TOKEN="$val"
+            echo "note: found a Cloudflare token in \$$name; using it as CLOUDFLARE_API_TOKEN." >&2
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Wrangler needs Cloudflare credentials to touch the API. An explicit
 # CLOUDFLARE_API_TOKEN (exported from $ENV_FILE above) always works; without one
 # wrangler falls back to an interactive OAuth login, which only works at a TTY.
@@ -106,6 +127,7 @@ require_cloudflare_account() {
 # wrangler's own interactive detection (stdin && stdout), so this errors exactly
 # when wrangler would have, never sooner.
 require_cloudflare_auth() {
+    adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
         return 0   # a human at a terminal: let wrangler do its OAuth login
@@ -119,6 +141,20 @@ require_cloudflare_auth() {
     echo "       $ENV_FILE (deploy.sh exports it for wrangler):" >&2
     echo "         CLOUDFLARE_API_TOKEN=..." >&2
     echo "       Create one: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" >&2
+    # The token must be named EXACTLY CLOUDFLARE_API_TOKEN (or one of the aliases
+    # adopted above). A token saved under any other name is invisible to wrangler,
+    # so surface the Cloudflare-ish variable names we CAN see — this is what turns
+    # "but I added the token!" into "oh, I named it the wrong thing."
+    local seen
+    seen="$(compgen -v 2>/dev/null | grep -E '^(CF_|CLOUDFLARE_)' \
+        | grep -v '^CLOUDFLARE_ACCOUNT_ID$' \
+        | awk 'NR>1{printf ", "} {printf "%s",$0}' || true)"
+    if [ -n "$seen" ]; then
+        echo "       NOTE: this run's environment has Cloudflare-related vars named:" >&2
+        echo "         $seen" >&2
+        echo "       If one of those holds your API token, rename it to" >&2
+        echo "       CLOUDFLARE_API_TOKEN in Settings -> Secrets & Coves." >&2
+    fi
     return 1
 }
 
