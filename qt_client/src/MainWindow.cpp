@@ -23067,6 +23067,31 @@ QWidget *MainWindow::buildAgentsTab()
                                      m_agentAutoModeCombo->currentData().toBool());
             });
 
+    // Per-session model selector (issue #32): pick which Claude model drives the
+    // selected session. The choice is stored on the session and takes effect on
+    // its next launch/continuation; it's also shown in the agent header. Values
+    // are `claude` CLI aliases; empty leaves the CLI's default model in place.
+    m_agentModelCombo = new QComboBox;
+    m_agentModelCombo->setObjectName("agentModel");
+    m_agentModelCombo->setCursor(Qt::PointingHandCursor);
+    populateClaudeModelCombo(m_agentModelCombo);
+    m_agentModelCombo->setToolTip(
+        "Model for this session. Applies the next time it runs; shown in the header.");
+    connect(m_agentModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!m_agentModelCombo || m_selectedAgentSessionId <= 0 || !m_agentStore)
+                    return;
+                AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+                if (!s)
+                    return;
+                const QString picked = m_agentModelCombo->currentData().toString();
+                if (s->model == picked)
+                    return;
+                s->model = picked;
+                m_agentStore->saveSession(*s);
+                showAgentSession(s->id); // refresh the header's model note
+            });
+
     // Composer styled like the Claude Code conversation input: a rounded panel
     // with the message field above an accessory + send button row.
     auto *composer = new QFrame;
@@ -23082,6 +23107,7 @@ QWidget *MainWindow::buildAgentsTab()
     composerBtns->addWidget(m_agentAddFilesButton);
     composerBtns->addWidget(m_agentSlashButton);
     composerBtns->addWidget(m_agentAutoModeCombo);
+    composerBtns->addWidget(m_agentModelCombo);
     composerBtns->addStretch(1);
     composerBtns->addWidget(m_agentSendPromptButton);
     composerCol->addLayout(composerBtns);
@@ -24349,6 +24375,18 @@ void MainWindow::showAgentSession(int sessionId)
     // its contents below still update for when the user reopens it.
     if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
+    // Reflect this session's chosen model in the composer's model selector. Block
+    // signals so syncing the UI doesn't re-trigger the change handler (which would
+    // re-enter showAgentSession). The selector is meaningful only for Claude Code
+    // sessions; disable it for the others (and watch-only externals).
+    if (m_agentModelCombo) {
+        QSignalBlocker block(m_agentModelCombo);
+        int idx = m_agentModelCombo->findData(session->model);
+        m_agentModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        m_agentModelCombo->setEnabled(!isExternalSession(sessionId) &&
+                                      session->provider ==
+                                          QLatin1String("claude-code"));
+    }
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
@@ -25224,6 +25262,7 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         stopStreamSession(snapshot.id, /*refreshUi=*/false);
     cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
+    m_streamPending.remove(snapshot.id); // drop any queued-but-undelivered messages
 
     const int repoIndex = repoIndexFor(snapshot.owner, snapshot.name);
     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) carry no
@@ -25765,6 +25804,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     const QString branchName = session.branchName;
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
+    const QString model = session.model;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
