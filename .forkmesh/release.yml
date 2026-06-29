@@ -55,11 +55,18 @@ jobs:
           [ "$os" = "windows" ] && asset="${asset}.exe"
           echo "Building release asset: $asset (channel: $channel)"
 
+          # Stamp the release tag into the client version so the published
+          # artifact reports the version it was cut from (strip a leading "v":
+          # tag v0.6.0 -> version 0.6.0). With no tag (e.g. a manual
+          # workflow_dispatch) the build keeps the project() version.
+          version="${FORKMESH_TAG#v}"
+
           # Configure + build the client (Release, tests off — this is a release
           # artifact build, the CI workflow already runs the test suite).
           jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
           cmake -S qt_client -B qt_client/build-release \
-            -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF
+            -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
+            ${version:+-DFORKMESH_VERSION="$version"}
           cmake --build qt_client/build-release -j"$jobs"
 
           # Locate the produced executable (a bare binary on Linux/Windows, a
