@@ -3351,10 +3351,11 @@ async def _account_finalize(env, request):
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
 
-    # A key-bound (desktop) account proves ownership with its Ed25519 signature and
-    # joins for free: no donation, and email/password are optional. All a desktop
-    # node needs to become active is its reserved name. Keyless (web) signups still
-    # pay first, where the donation is what proves a real human is behind the name.
+    # A key-bound (desktop) account proves ownership with its Ed25519 signature;
+    # email/password are optional (it logs in by key). A keyless (web) signup just
+    # sets an email + password — signup is free (no donation required), and the
+    # verification email sent below (Mailtrap) is what confirms a real human is
+    # behind the name.
     key_bound = bool(rec.get("pubkey"))
     if key_bound:
         if not _ts_ok(ts):
@@ -3363,11 +3364,8 @@ async def _account_finalize(env, request):
                      ts).encode()
         if not await ed25519_verify(rec["pubkey"], signature, canonical):
             return json_response({"error": "bad_signature"}, status=401)
-    else:
-        if not rec.get("donation_confirmed"):
-            return json_response({"error": "donation_required"}, status=402)
-        if pubkey:
-            rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
+    elif pubkey:
+        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
 
     # Email + password unlock cross-device (password) login. They're required for
     # keyless signups and optional for key-bound ones (which log in by key); when
@@ -3402,11 +3400,13 @@ async def _account_finalize(env, request):
     signup_ip = (rec.get("signup") or {}).get("ip") or ""
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
-    # Until a real email service exists, an admin verifies the email by hand:
-    # enqueue the new account so admins are notified and can verify it. A free
-    # key-bound join with no email yet has nothing to verify, so skip the queue.
+    # Send a verification email (Mailtrap). If the email service is unconfigured
+    # or the send fails, fall back to the admin queue so an admin can still verify
+    # by hand. A free key-bound join with no email yet has nothing to verify.
     if rec.get("email") and not rec["email_verified"]:
-        await _enqueue_verification(env, name_bi, name, rec["email"])
+        sent = await _send_verification_email(env, request, name, rec["email"])
+        if not sent:
+            await _enqueue_verification(env, name_bi, name, rec["email"])
     return json_response(
         {"ok": True, "nodeName": name, "email": rec.get("email", ""),
          "status": "active", "emailVerified": rec["email_verified"],
@@ -4222,6 +4222,116 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+# --- Transactional email (Mailtrap) -----------------------------------------
+# Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
+# a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
+# When it's unset the sender is a no-op, so a fork without an email provider
+# still works — callers fall back to the admin verification queue.
+MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
+
+
+async def _send_email(env, to_email, subject, text, html=None):
+    from js import fetch as js_fetch
+    token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
+    if not token or not to_email:
+        return False
+    sender = (getattr(env, "MAILTRAP_SENDER", "") or "no-reply@forkmesh.com").strip()
+    sender_name = (getattr(env, "MAILTRAP_SENDER_NAME", "") or "ForkMesh").strip()
+    url = (getattr(env, "MAILTRAP_API_URL", "") or MAILTRAP_SEND_URL).strip()
+    payload = {
+        "from": {"email": sender, "name": sender_name},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "text": text,
+    }
+    if html:
+        payload["html"] = html
+    try:
+        resp = await js_fetch(url, to_js({
+            "method": "POST",
+            "headers": {"content-type": "application/json",
+                        "authorization": "Bearer " + token},
+            "body": json.dumps(payload),
+        }))
+        return 200 <= int(getattr(resp, "status", 0)) < 300
+    except Exception:
+        return False
+
+
+async def _email_verify_token(env, name, email):
+    # Stateless, deterministic confirm token bound to (name, email). Only the
+    # server can compute it (keyed by DATA_KEY via the blind-index HMAC key, with
+    # its own domain-separation prefix), so a valid token in the link proves the
+    # recipient controls the mailbox — no token column or extra storage needed.
+    key = await _hmac_key(env)
+    msg = ("forkmesh-email-verify-v1\n" + (name or "") + "\n" + (email or "")).encode()
+    sig = await js_crypto.subtle.sign("HMAC", key, _to_js(msg))
+    return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
+
+
+def _public_base_url(env, request):
+    base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if base:
+        return base
+    try:
+        u = urlparse(request.url)
+        if u.scheme and u.netloc:
+            return u.scheme + "://" + u.netloc
+    except Exception:
+        pass
+    return ""
+
+
+async def _send_verification_email(env, request, name, email):
+    token = await _email_verify_token(env, name, email)
+    link = (_public_base_url(env, request) +
+            "/api/accounts/verify-email?node=" + quote(name) + "&token=" + token)
+    subject = "Confirm your ForkMesh email"
+    text = ("Welcome to ForkMesh!\n\n"
+            "Confirm the email for your node \"" + name + "\" by opening:\n" +
+            link + "\n\n"
+            "If you didn't create this account, you can ignore this email.")
+    html = (
+        "<p>Welcome to ForkMesh!</p>"
+        "<p>Confirm the email for your node <strong>" + name + "</strong>:</p>"
+        "<p><a href=\"" + link + "\">Confirm my email</a></p>"
+        "<p style=\"color:#888;font-size:13px\">If you didn't create this account, "
+        "you can ignore this email.</p>")
+    return await _send_email(env, email, subject, text, html)
+
+
+def _verify_email_page(message, status):
+    body = ("<!doctype html><meta charset=utf-8><title>ForkMesh email</title>"
+            "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
+            "margin:4rem auto;padding:0 1rem;line-height:1.5\">" + message +
+            "</body>")
+    return Response(body, status=status,
+                    headers={"content-type": "text/html; charset=utf-8"})
+
+
+async def _verify_email(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    name = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    token = clean_string(params.get("token", [""])[0], 64)
+    name_bi, rec = await _account_row(env, name)
+    if rec and rec.get("email") and token:
+        expected = await _email_verify_token(env, name, rec.get("email", ""))
+        if hmac.compare_digest(token, expected):
+            if not rec.get("email_verified"):
+                rec["email_verified"] = True
+                await _save_account(env, name_bi, rec)
+                await d1_run(
+                    env, "DELETE FROM pending_verifications WHERE name_bi=?", name_bi)
+            return _verify_email_page(
+                "<h1>Email confirmed</h1><p>Your ForkMesh email is verified. "
+                "You can close this tab and <a href=\"/login.html\">log in</a>.</p>",
+                200)
+    return _verify_email_page(
+        "<h1>Verification link invalid</h1><p>This confirmation link is invalid "
+        "or has expired. Try logging in; if your email still shows unverified, "
+        "sign up again.</p>", 400)
+
+
 # --- Relay federation -------------------------------------------------------
 # A relay with MAIN_RELAY_URL set is "federated": node signups custody their
 # Solana on the main relay (funds flow through it) and its online nodes join the
@@ -4755,6 +4865,8 @@ async def accounts_handler(env, request):
         return await _account_finalize(env, request)
     if url.path == "/api/accounts/heartbeat" and method == "POST":
         return await _account_heartbeat(env, request)
+    if url.path == "/api/accounts/verify-email" and method == "GET":
+        return await _verify_email(env, request)
     if url.path == "/api/accounts/admin-pending" and method == "GET":
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":

@@ -228,7 +228,11 @@ push_secrets() {
     # Worker secrets that MUST be set for the site to work; an empty/missing one
     # is a hard error, not a silent skip (that's what made a broken deploy look
     # successful). TREASURY_BCH_ADDRESS is optional (legacy), so it's not listed.
-    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS "
+    # MAILTRAP_API_TOKEN sends signup confirmation emails - required here so a
+    # production deploy is guaranteed to push and register it (the Worker still
+    # no-ops gracefully if it's ever unset). A fork that doesn't send email can
+    # drop it from this list.
+    local required=" ADMIN_PATH ADMIN_USER ADMIN_PASS TREASURY_SOLANA_ADDRESS MAILTRAP_API_TOKEN "
 
     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     local count=0
