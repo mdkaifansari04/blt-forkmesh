@@ -18331,6 +18331,25 @@ void MainWindow::showPull(int number)
             .arg((found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
+    // Surface where the head branch sits relative to its base: when it trails the
+    // base, say by how much so the reviewer knows there's something to pull in
+    // before merging (the "Update branch" button merges the base in — issue #72).
+    if (found->status == QLatin1String("open")) {
+        const PullStore store = pullStoreForCurrentRepo();
+        bool behind = false;
+        int behindCount = 0;
+        if (store.canWrite() &&
+            store.isBranchBehindBase(found->number, &behind, nullptr, &behindCount) &&
+            behind) {
+            m_pullMeta->setText(
+                m_pullMeta->text() +
+                QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
+                                  "behind %3</span>")
+                    .arg(behindCount)
+                    .arg(behindCount == 1 ? QString() : QStringLiteral("s"),
+                         found->base.toHtmlEscaped()));
+        }
+    }
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
         m_pullMeta->setText(m_pullMeta->text() +
@@ -45252,6 +45271,37 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
+    // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
+    // Mirror nodes view. Off by default on the desktop so a personal machine
+    // doesn't broadcast its load; headless installs are seeded on at startup so
+    // hosts stay monitorable (adhoc #23). Re-sampled within ~10s of a change.
+    auto *nodeStatsLabel = new QLabel("NODE STATS");
+    nodeStatsLabel->setObjectName("sectionLabel");
+    auto *nodeStatsHint = new QLabel(
+        "Show this node's resource use to other nodes in the Mirror nodes view. "
+        "Off by default; servers installed from the Hosts tab report all three.");
+    nodeStatsHint->setObjectName("statusLine");
+    nodeStatsHint->setWordWrap(true);
+    struct NodeStatToggle {
+        const char *label;
+        const QString &key;
+    };
+    const NodeStatToggle nodeStatToggles[] = {
+        {"Report CPU usage", TelemetrySettings::kReportCpu},
+        {"Report memory usage", TelemetrySettings::kReportMemory},
+        {"Report disk usage", TelemetrySettings::kReportDisk},
+    };
+    QList<QCheckBox *> nodeStatChecks;
+    for (const NodeStatToggle &toggle : nodeStatToggles) {
+        auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
+        check->setChecked(QSettings().value(toggle.key, false).toBool());
+        const QString key = toggle.key;
+        connect(check, &QCheckBox::toggled, this, [key](bool enabled) {
+            QSettings().setValue(key, enabled);
+        });
+        nodeStatChecks.append(check);
+    }
+
     auto *agentsLabel = new QLabel("AGENTS");
     agentsLabel->setObjectName("sectionLabel");
     auto *agentsHint = new QLabel(
@@ -45732,6 +45782,11 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(nodeStatsLabel);
+    generalCol->addWidget(nodeStatsHint);
+    for (QCheckBox *check : std::as_const(nodeStatChecks))
+        generalCol->addWidget(check);
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);

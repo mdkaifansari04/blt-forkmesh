@@ -32,29 +32,25 @@ jobs:
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
           python3 cloudflare_worker/tests/test_crypto.py
-      # .env.production is gitignored, so materialize it from CI secrets. deploy.sh
-      # reads it, exports CLOUDFLARE_* for wrangler, and pushes Worker secrets.
+      # .env.production is gitignored, so materialize it from this node's ForkMesh
+      # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
+      # ${{ vars.NAME }} references below from that store before running the step;
+      # GitHub-Actions ${{ secrets.NAME }} and step-level `env:` are NOT understood
+      # here, so reference vars.* instead. deploy.sh then reads .env.production,
+      # exports CLOUDFLARE_* for wrangler, and pushes the Worker secrets. The
+      # quoted 'EOF' writes the substituted values verbatim (no shell re-expansion),
+      # so a token/password containing $ or backticks survives intact.
       - name: Write production env (admin dashboard vars)
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ADMIN_PATH: ${{ secrets.ADMIN_PATH }}
-          ADMIN_USER: ${{ secrets.ADMIN_USER }}
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-          TREASURY_SOLANA_ADDRESS: ${{ secrets.TREASURY_SOLANA_ADDRESS }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          DATA_KEY: ${{ secrets.DATA_KEY }}
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
-          cat > cloudflare_worker/.env.production <<EOF
-          CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
-          CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-          ADMIN_PATH=${ADMIN_PATH}
-          ADMIN_USER=${ADMIN_USER}
-          ADMIN_PASS=${ADMIN_PASS}
-          TREASURY_SOLANA_ADDRESS=${TREASURY_SOLANA_ADDRESS}
-          CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
-          DATA_KEY=${DATA_KEY}
+          cat > cloudflare_worker/.env.production <<'EOF'
+          CLOUDFLARE_ACCOUNT_ID=${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN=${{ vars.CLOUDFLARE_API_TOKEN }}
+          ADMIN_PATH=${{ vars.ADMIN_PATH }}
+          ADMIN_USER=${{ vars.ADMIN_USER }}
+          ADMIN_PASS=${{ vars.ADMIN_PASS }}
+          TREASURY_SOLANA_ADDRESS=${{ vars.TREASURY_SOLANA_ADDRESS }}
+          DATA_KEY=${{ vars.DATA_KEY }}
           EOF
       - name: Deploy worker
         run: |
