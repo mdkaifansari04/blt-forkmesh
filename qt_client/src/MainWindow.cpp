@@ -35047,9 +35047,11 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
 
 // Batch "Delete all merged": for every merged agent session in the open repo, wipe
 // its worktree folder, branch and stored session — the same cleanup the per-session
-// "Delete all" does, but for the whole merged backlog after one confirmation (adhoc
-// #235). Sessions are grouped by branch so a branch with several sessions is handled
-// once; deleteWorktreeBranchAndAgent removes all of that branch's sessions together.
+// "Delete all" does, but for the whole merged backlog at once. No confirmation —
+// merged work is already landed, so it just does it (adhoc #5; the dialog from adhoc
+// #235 was removed). Sessions are grouped by branch so a branch with several sessions
+// is handled once; deleteWorktreeBranchAndAgent removes all of that branch's sessions
+// together.
 void MainWindow::deleteAllMergedAgentSessions()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -35080,21 +35082,13 @@ void MainWindow::deleteAllMergedAgentSessions()
         return;
     }
 
-    const QString prompt =
-        QStringLiteral("Delete %1 merged agent session%2 along with their worktrees "
-                       "and branches?\n\nUncommitted changes in those worktrees will "
-                       "be lost. This cannot be undone.")
-            .arg(sessionCount)
-            .arg(sessionCount == 1 ? QString() : QStringLiteral("s"));
-    if (QMessageBox::question(this, QStringLiteral("Delete all merged"), prompt)
-        != QMessageBox::Yes)
-        return;
-
-    // Resolve every worktree path up front against the live worktree list, then
-    // delete: each call below reloads m_agentSessions, but we iterate the branch
-    // snapshot captured here, so that churn can't disturb the loop. confirm=false —
-    // the user already approved the whole batch above; async=false so the removes
-    // run one at a time instead of racing concurrent `git worktree remove`s.
+    // No confirmation prompt — merged sessions are landed work, so wiping their
+    // worktrees/branches is low-risk and the user asked for it to "just do it"
+    // (adhoc #5). Resolve every worktree path up front against the live worktree
+    // list, then delete: each call below reloads m_agentSessions, but we iterate
+    // the branch snapshot captured here, so that churn can't disturb the loop.
+    // confirm=false skips the per-item dialog; async=false so the removes run one
+    // at a time instead of racing concurrent `git worktree remove`s.
     for (const QString &branch : std::as_const(branches)) {
         const QString wt = worktreePathForBranch(repoPath, branch);
         deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false, /*async=*/false);
