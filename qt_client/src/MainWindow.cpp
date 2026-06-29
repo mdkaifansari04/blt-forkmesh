@@ -34692,8 +34692,8 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
     const QDir repoDir(repo.localPath);
     const QString infoPath = repoDir.filePath(kRepoInfoPath);
     QJsonObject obj;
-    if (QFileInfo::exists(readPath)) {
-        QFile file(readPath);
+    if (QFileInfo::exists(infoPath)) {
+        QFile file(infoPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
                 *error = QStringLiteral("Could not read .forkmesh/info.json.");
