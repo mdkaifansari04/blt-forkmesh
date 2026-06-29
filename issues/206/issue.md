@@ -5,7 +5,7 @@ title: when dragging certain sections the app freezes is slow
 status: open
 labels: [Partial]
 milestone: 
-priority: 88
+priority: 7
 progress: 40
 assignees: []
 createdAt: 1782349346026
