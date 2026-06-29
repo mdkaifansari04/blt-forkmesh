@@ -54,9 +54,9 @@ def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW):
     }
 
 
-def _pick(owner, repo, rows, presence, *, source_online=False):
+def _pick(owner, repo, rows, presence, *, source_online=False, rotate=0):
     return select_clone_fallback(
-        owner, repo, rows, presence, NOW, STALE, source_online)
+        owner, repo, rows, presence, NOW, STALE, source_online, rotate)
 
 
 def test_online_source_never_redirects():
@@ -128,3 +128,35 @@ def test_name_fallback_when_source_never_published():
     rows = [_row("kM", "mirror", "forkmesh", root="")]
     presence = {"kM": NOW}
     assert _pick("source", "forkmesh", rows, presence) == "mirror"
+
+
+def test_round_robin_spreads_clones_across_online_mirrors():
+    # Three equally-fresh online mirrors of the same repo. Advancing the rotation
+    # cursor walks through every mirror in turn (sorted order alpha/bravo/charlie),
+    # so clone traffic spreads across all of them instead of one.
+    rows = [
+        _row("kS", "source", "forkmesh"),
+        _row("kA", "alpha", "forkmesh"),
+        _row("kB", "bravo", "forkmesh"),
+        _row("kC", "charlie", "forkmesh"),
+    ]
+    presence = {"kS": NOW - 2 * STALE, "kA": NOW, "kB": NOW, "kC": NOW}
+    order = ["alpha", "bravo", "charlie"]
+    picks = [
+        _pick("source", "forkmesh", rows, presence, rotate=i) for i in range(6)
+    ]
+    # rotate=0 -> first, then it cycles, wrapping cleanly past the candidate count.
+    assert picks == order + order
+    assert set(picks) == set(order)  # every mirror gets served
+
+
+def test_round_robin_wraps_modulo_candidate_count():
+    # A large cursor still lands on a valid mirror (modulo the candidate count),
+    # so the counter can grow unbounded without ever indexing out of range.
+    rows = [
+        _row("kS", "source", "forkmesh"),
+        _row("kA", "alpha", "forkmesh"),
+        _row("kB", "bravo", "forkmesh"),
+    ]
+    presence = {"kS": NOW - 2 * STALE, "kA": NOW, "kB": NOW}
+    assert _pick("source", "forkmesh", rows, presence, rotate=1001) == "bravo"
