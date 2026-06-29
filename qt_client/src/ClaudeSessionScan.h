@@ -42,4 +42,12 @@ QList<QJsonObject> readEvents(const QString &path, qint64 fromOffset,
 // widgets). Returns 0 when the file is smaller than maxBytes.
 qint64 tailStartOffset(const QString &path, qint64 maxBytes);
 
+// OS process ids of the running `claude` CLI that belong to a detected session,
+// so ForkMesh can stop it (the scan otherwise never signals these processes).
+// A resumed session carries `--resume <uuid>` in its argv, giving an exact match;
+// a fresh session doesn't expose its uuid, so we fall back to every `claude`
+// process whose working directory is cwd. Returns the exact matches when any are
+// found, otherwise the cwd matches. Linux-only (reads /proc); empty elsewhere.
+QList<qint64> findSessionPids(const QString &uuid, const QString &cwd);
+
 } // namespace ClaudeSessionScan
