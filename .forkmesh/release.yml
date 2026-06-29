@@ -1,0 +1,89 @@
+name: Attach desktop build to release
+# Run this by hand from the Actions tab when you cut a release ("create a
+# release" → trigger this workflow). Each node it runs on builds the desktop
+# Qt client for ITS OWN platform and attaches the binary to the release, so to
+# cover Linux + macOS + Windows you dispatch it once on a node of each OS. The
+# installer (cloudflare_worker/public/install.sh) then autodetects the visitor's
+# platform and downloads the matching prebuilt binary instead of compiling.
+on: [workflow_dispatch]
+jobs:
+  release:
+    steps:
+      # Build the optimized desktop client, then name the binary
+      # forkmesh-<os>-<arch>[.exe] — the exact scheme install.sh resolves from
+      # `uname` — and stage it under releases/<channel>/. Committing it into the
+      # repo is what makes it reachable by the website: the same git mirror the
+      # relay serves now carries the binary, so install.sh can fetch just that
+      # one asset over the website's git proxy. Publish the commit this produces
+      # (it is created on the run's detached worktree of the live mirror) the way
+      # you publish any change, and the asset goes live for download.
+      - name: Build and attach the desktop binary
+        run: |
+          set -e
+
+          # Where install.sh looks for prebuilt assets. Override RELEASE_CHANNEL
+          # to cut a named/pre-release channel instead of overwriting "latest".
+          channel="${RELEASE_CHANNEL:-latest}"
+
+          # Map this host's uname to the asset name install.sh autodetects.
+          os="$(uname -s)"
+          arch="$(uname -m)"
+          case "$os" in
+            Linux)                            os="linux" ;;
+            Darwin)                           os="macos" ;;
+            MINGW*|MSYS*|CYGWIN*|Windows_NT)  os="windows" ;;
+            *) os="$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
+          esac
+          case "$arch" in
+            x86_64|amd64|x64) arch="x86_64" ;;
+            aarch64|arm64)    arch="arm64" ;;
+          esac
+          asset="forkmesh-${os}-${arch}"
+          [ "$os" = "windows" ] && asset="${asset}.exe"
+          echo "Building release asset: $asset (channel: $channel)"
+
+          # Configure + build the client (Release, tests off — this is a release
+          # artifact build, the CI workflow already runs the test suite).
+          jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
+          cmake -S qt_client -B qt_client/build-release \
+            -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF
+          cmake --build qt_client/build-release -j"$jobs"
+
+          # Locate the produced executable (a bare binary on Linux/Windows, a
+          # .app bundle on macOS).
+          built=""
+          for cand in \
+            "qt_client/build-release/forkmesh" \
+            "qt_client/build-release/forkmesh.exe" \
+            "qt_client/build-release/ForkMesh.app/Contents/MacOS/ForkMesh"; do
+            if [ -x "$cand" ]; then built="$cand"; break; fi
+          done
+          if [ -z "$built" ]; then
+            echo "ERROR: build did not produce an executable in qt_client/build-release" >&2
+            exit 1
+          fi
+
+          # Stage the asset under releases/<channel>/ and commit it so it ships
+          # with the repo the relay serves. Also drop a copy into the node's
+          # persistent artifacts dir (the run worktree is deleted on completion)
+          # so it survives even before the commit is published.
+          dest="releases/${channel}"
+          mkdir -p "$dest"
+          cp "$built" "$dest/$asset"
+          chmod 0755 "$dest/$asset" || true
+
+          artifacts="$HOME/forkmesh-artifacts/releases/${channel}"
+          mkdir -p "$artifacts"
+          cp "$built" "$artifacts/$asset"
+
+          git add "$dest/$asset"
+          git config user.email "actions@forkmesh.local" >/dev/null 2>&1 || true
+          git config user.name  "ForkMesh Actions"        >/dev/null 2>&1 || true
+          git commit -m "release: attach $asset ($channel)" >/dev/null 2>&1 \
+            && echo "Committed $dest/$asset ($(git rev-parse --short HEAD)) — publish this commit to make it downloadable." \
+            || echo "No change to $dest/$asset (already up to date)."
+
+          size="$(du -h "$dest/$asset" 2>/dev/null | cut -f1)"
+          echo "Attached: $dest/$asset ($size)"
+          echo "Once published, install it with:"
+          echo "  curl -fsSL \"\${FORKMESH_HOST:-https://forkmesh.com}/install.sh\" | bash"
