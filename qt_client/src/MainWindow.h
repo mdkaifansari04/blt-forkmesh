@@ -462,6 +462,9 @@ private:
     // Mirror the newest update/rebuild log line onto the footer one-liner so the
     // live progress is visible at the bottom of the app without the full window.
     void setFooterUpdateLine(const QString &line);
+    // (Re)apply the always-on footer log line's inline stylesheet for the active
+    // theme, tinting the text by the current line's tone. Called on theme switch.
+    void styleFooterUpdateLog();
     void persistProfile();
 
     // Chat page
