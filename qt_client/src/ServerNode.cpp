@@ -1,13 +1,16 @@
 #include "ServerNode.h"
+#include "SystemStats.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRandomGenerator>
 #include <QSet>
 #include <QSettings>
 #include <QSslSocket>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
 
@@ -512,6 +515,23 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
         message.insert("platform", m_platform);
     if (!m_version.isEmpty())
         message.insert("version", m_version);
+    // Host resource telemetry for the Mirror nodes view's CPU/RAM/disk bars. Sent
+    // on every frame so peers refresh it on any heartbeat; unknown fields are
+    // omitted. Compact keys keep the per-frame overhead tiny (~60 bytes).
+    if (m_memTotalBytes > 0 || m_diskTotalBytes > 0 || m_cpuPercent >= 0.0) {
+        QJsonObject sys;
+        if (m_memTotalBytes > 0) {
+            sys.insert("mu", double(m_memUsedBytes));
+            sys.insert("mt", double(m_memTotalBytes));
+        }
+        if (m_diskTotalBytes > 0) {
+            sys.insert("du", double(m_diskUsedBytes));
+            sys.insert("dt", double(m_diskTotalBytes));
+        }
+        if (m_cpuPercent >= 0.0)
+            sys.insert("cpu", m_cpuPercent);
+        message.insert("sys", sys);
+    }
     return message;
 }
 
@@ -538,8 +558,39 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
                            " through mainnode room " + m_roomName + ".");
 }
 
+void ServerNode::sampleSystemStats()
+{
+    // Re-sample at most once per ~10s so a burst of chat sends (each of which
+    // builds a frame via makeMessage) doesn't repeatedly stat the filesystem.
+    // The heartbeats (hello/presence) call this; chat sends reuse the cache.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_lastStatsSampleMs != 0 && now - m_lastStatsSampleMs < 10000)
+        return;
+    m_lastStatsSampleMs = now;
+
+    const qint64 total = SystemStats::totalMemoryBytes();
+    const qint64 avail = SystemStats::availableMemoryBytes();
+    m_memTotalBytes = total;
+    m_memUsedBytes = (total > 0 && avail > 0) ? qMax(qint64(0), total - avail) : 0;
+
+    // Measure the volume that holds our app data (where mirrors live); fall back
+    // to the home directory so a meaningful figure shows even without app data.
+    QString diskPath =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (diskPath.isEmpty() || !QDir(diskPath).exists())
+        diskPath = QDir::homePath();
+    const qint64 diskTotal = SystemStats::diskTotalBytes(diskPath);
+    const qint64 diskFree = SystemStats::diskFreeBytes(diskPath);
+    m_diskTotalBytes = diskTotal;
+    m_diskUsedBytes =
+        (diskTotal > 0 && diskFree >= 0) ? qMax(qint64(0), diskTotal - diskFree) : 0;
+
+    m_cpuPercent = SystemStats::hostCpuPercent();
+}
+
 void ServerNode::sendHello()
 {
+    sampleSystemStats();
     QJsonArray channels;
     for (const QString &channel : std::as_const(m_channels))
         channels.append(channel);
@@ -553,6 +604,7 @@ void ServerNode::sendPresence()
 {
     if (!m_wsReady)
         return;
+    sampleSystemStats();
     // A bare keep-alive: makeMessage already carries senderId/name/platform, so
     // peers refresh our last-seen on receipt. Ephemeral (not persisted) and not
     // logged as activity, unlike hello, so it stays quiet on the network log.
@@ -821,6 +873,25 @@ void ServerNode::handlePlain(const QJsonObject &message)
     if (!senderId.isEmpty())
         rememberPeer(senderId, sender, solanaAddress, platform, version);
 
+    // Host resource telemetry (CPU/RAM/disk) the sender advertised; refresh the
+    // peer's cached figures so the Mirror nodes view's bars track live load.
+    // rememberPeer just (re)created the peer, so it's safe to look up by id.
+    if (!senderId.isEmpty() && message.contains("sys") &&
+        m_peers.contains(senderId)) {
+        const QJsonObject sys = message.value("sys").toObject();
+        Peer &peer = m_peers[senderId];
+        if (sys.contains("mt")) {
+            peer.memTotalBytes = qMax(qint64(0), qint64(sys.value("mt").toDouble()));
+            peer.memUsedBytes = qMax(qint64(0), qint64(sys.value("mu").toDouble()));
+        }
+        if (sys.contains("dt")) {
+            peer.diskTotalBytes = qMax(qint64(0), qint64(sys.value("dt").toDouble()));
+            peer.diskUsedBytes = qMax(qint64(0), qint64(sys.value("du").toDouble()));
+        }
+        if (sys.contains("cpu"))
+            peer.cpuPercent = qBound(0.0, sys.value("cpu").toDouble(), 100.0);
+    }
+
     if (type == "hello") {
         bool changed = false;
         for (const auto &value : message.value("channels").toArray()) {
@@ -1044,6 +1115,9 @@ void ServerNode::updateRosterAndStatus()
 
 void ServerNode::flushRosterAndStatus()
 {
+    // Refresh our own telemetry so the self row's CPU/RAM/disk bars are populated
+    // even before the first heartbeat fires (throttled internally to ~10s).
+    sampleSystemStats();
     MemberInfo self;
     self.id = m_nodeId;
     self.name = m_userName;
@@ -1054,6 +1128,11 @@ void ServerNode::flushRosterAndStatus()
     self.version = m_version;
     self.mirrors = mirrorNames(m_mirroredRepos);
     self.mirrorDetails = m_mirroredRepos;
+    self.memUsedBytes = m_memUsedBytes;
+    self.memTotalBytes = m_memTotalBytes;
+    self.diskUsedBytes = m_diskUsedBytes;
+    self.diskTotalBytes = m_diskTotalBytes;
+    self.cpuPercent = m_cpuPercent;
     QList<MemberInfo> members{self};
     int onlineCount = 0;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1074,6 +1153,11 @@ void ServerNode::flushRosterAndStatus()
         member.version = it->version;
         member.mirrors = it->mirrors;
         member.mirrorDetails = it->mirrorDetails;
+        member.memUsedBytes = it->memUsedBytes;
+        member.memTotalBytes = it->memTotalBytes;
+        member.diskUsedBytes = it->diskUsedBytes;
+        member.diskTotalBytes = it->diskTotalBytes;
+        member.cpuPercent = it->cpuPercent;
         members.append(member);
         ++onlineCount;
     }

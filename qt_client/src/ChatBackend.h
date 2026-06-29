@@ -37,6 +37,14 @@ struct MemberInfo {
     // Per-repo HEAD detail for the repos in `mirrors` (same owner/name keys).
     // Carried alongside `mirrors` so older peers that only read names still work.
     QList<MirrorAdvert> mirrorDetails;
+    // Host resource telemetry advertised by the node, for the Mirror nodes view's
+    // little CPU/RAM/disk bars. A 0 byte total / negative percent means the node
+    // didn't advertise it (older peer, or sampling unavailable).
+    qint64 memUsedBytes = 0;
+    qint64 memTotalBytes = 0;
+    qint64 diskUsedBytes = 0;
+    qint64 diskTotalBytes = 0;
+    double cpuPercent = -1.0; // whole-host CPU utilization, 0..100
 };
 
 // A single chat message delivered to the UI. `conversation` is either a
