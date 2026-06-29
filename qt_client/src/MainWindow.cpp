@@ -480,6 +480,18 @@ public:
         update();
     }
 
+    // Update one window's "resets in ..." text (e.g. "2h 13m"), shown next to its
+    // utilisation in the tooltip so the user can see how long until the limit
+    // clears (issue #50). Pass an empty string to mark it unknown.
+    void setReset(bool weekly, const QString &remaining)
+    {
+        QString &slot = weekly ? m_weeklyReset : m_fiveHourReset;
+        if (slot == remaining)
+            return;
+        slot = remaining;
+        refreshTooltip();
+    }
+
     // The per-session token/cost detail that used to live on the agent detail
     // page (issue #84): shown in the hover tooltip below the 5h/weekly figures.
     // Pass an empty string to drop it (e.g. when no session is selected).
@@ -542,12 +554,20 @@ private:
     }
     void refreshTooltip()
     {
-        auto fmt = [](int v) {
-            return v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
-                         : QStringLiteral("%1%").arg(v);
+        auto line = [](const QString &label, int v, const QString &reset) {
+            QString s =
+                QStringLiteral("%1: %2").arg(
+                    label, v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
+                                 : QStringLiteral("%1%").arg(v));
+            if (!reset.isEmpty())
+                s += QString::fromUtf8(" \xC2\xB7 resets in ") + reset; // ·
+            return s;
         };
-        QString tip = QStringLiteral("Claude Code usage\n5-hour: %1\nWeekly: %2")
-                          .arg(fmt(m_fiveHour), fmt(m_weekly));
+        QString tip = QStringLiteral("Claude Code usage\n%1\n%2")
+                          .arg(line(QStringLiteral("5-hour"), m_fiveHour,
+                                    m_fiveHourReset),
+                               line(QStringLiteral("Weekly"), m_weekly,
+                                    m_weeklyReset));
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
         setToolTip(tip);
@@ -555,6 +575,8 @@ private:
 
     int m_fiveHour = -1;
     int m_weekly = -1;
+    QString m_fiveHourReset; // "resets in ..." text for the 5-hour window
+    QString m_weeklyReset;   // "resets in ..." text for the weekly window
     QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
@@ -1743,8 +1765,31 @@ const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitW
 // the very first frame, before any agent has streamed a fresh rate-limit event.
 const QString kClaudeUsage5hPctSetting = QStringLiteral("agents/claudeUsage5hPct");
 const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWeekPct");
+// Wall-clock reset instant (epoch ms) of each Claude Code rolling window, taken
+// from the OAuth usage endpoint's resets_at, cached alongside the utilisation so
+// the mini chart's tooltip can show "resets in 2h" / "resets in 4d" straight
+// away on the first frame after a restart (issue #50).
+const QString kClaudeUsage5hResetSetting = QStringLiteral("agents/claudeUsage5hReset");
+const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageWeekReset");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
+
+// Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
+// up to the minute. Shared by the agent-limits label and the top-bar usage
+// chart's reset-time tooltip (issue #50).
+static QString humanizeRemaining(qint64 ms)
+{
+    const qint64 totalMin = (ms + 59999) / 60000; // round up to the minute
+    const qint64 days = totalMin / (24 * 60);
+    const qint64 hours = (totalMin % (24 * 60)) / 60;
+    const qint64 mins = totalMin % 60;
+    if (days > 0)
+        return QStringLiteral("%1d %2h").arg(days).arg(hours);
+    if (hours > 0)
+        return QStringLiteral("%1h %2m").arg(hours).arg(mins);
+    return QStringLiteral("%1m").arg(mins);
+}
+
 const QString kDefaultCodexCommand =
     QStringLiteral("codex -a never {modelArg} exec --sandbox workspace-write - < {promptFile}");
 const QString kPreviousCodexCommand =
@@ -8304,6 +8349,19 @@ QWidget *MainWindow::buildBreadcrumb()
         };
         restore(false, kClaudeUsage5hPctSetting);
         restore(true, kClaudeUsageWeekPctSetting);
+        // Reset countdown (issue #50): the cached instant is wall-clock, so derive
+        // the remaining time relative to now; a window that already elapsed shows
+        // no countdown until the next poll refreshes it.
+        auto restoreReset = [&](bool weekly, const QString &key) {
+            if (!settings.contains(key))
+                return;
+            const qint64 remaining = settings.value(key).toLongLong() -
+                                     QDateTime::currentMSecsSinceEpoch();
+            if (remaining > 0)
+                tokenUsage->setReset(weekly, humanizeRemaining(remaining));
+        };
+        restoreReset(false, kClaudeUsage5hResetSetting);
+        restoreReset(true, kClaudeUsageWeekResetSetting);
     }
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
@@ -24343,18 +24401,6 @@ void MainWindow::refreshAgentLimitLabel()
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
-    // Compact "3h 12m" / "4d 6h" rendering of a remaining duration.
-    auto humanize = [](qint64 ms) -> QString {
-        const qint64 totalMin = (ms + 59999) / 60000; // round up to the minute
-        const qint64 days = totalMin / (24 * 60);
-        const qint64 hours = (totalMin % (24 * 60)) / 60;
-        const qint64 mins = totalMin % 60;
-        if (days > 0)
-            return QStringLiteral("%1d %2h").arg(days).arg(hours);
-        if (hours > 0)
-            return QStringLiteral("%1h %2m").arg(hours).arg(mins);
-        return QStringLiteral("%1m").arg(mins);
-    };
     auto windowText = [&](const QString &key, qint64 windowMs) -> QString {
         const qint64 start = settings.value(key).toLongLong();
         if (start <= 0)
@@ -24362,7 +24408,7 @@ void MainWindow::refreshAgentLimitLabel()
         const qint64 remaining = windowMs - (now - start);
         if (remaining <= 0)
             return QStringLiteral("ready");
-        return QStringLiteral("resets in %1").arg(humanize(remaining));
+        return QStringLiteral("resets in %1").arg(humanizeRemaining(remaining));
     };
     auto providerLine = [&](const QString &label, const QString &k5h,
                             const QString &kWeek) {
@@ -24415,6 +24461,20 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
                          pct);
 }
 
+void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
+{
+    QSettings().setValue(weekly ? kClaudeUsageWeekResetSetting
+                                : kClaudeUsage5hResetSetting,
+                         resetMs);
+    if (!m_navTokenUsage)
+        return;
+    const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+    // A window already past its reset (or with no known time) shows no countdown.
+    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+        ->setReset(weekly, remaining > 0 ? humanizeRemaining(remaining)
+                                         : QString());
+}
+
 void MainWindow::bumpClaudeCodeUsage()
 {
     // A just-started agent (or a freshly sent prompt) hasn't consumed anything
@@ -24461,12 +24521,38 @@ void MainWindow::refreshClaudeCodeUsage()
                               .value(QStringLiteral("utilization"))
                               .toDouble());
         };
+        // resets_at is the wall-clock instant the window clears. Accept either an
+        // ISO 8601 string or a numeric Unix timestamp (seconds), and tolerate the
+        // camelCase spelling, so a format tweak on the endpoint won't silently
+        // drop the countdown. Returns 0 when absent/unparseable (issue #50).
+        auto resetMsOf = [&root](const QString &key) -> qint64 {
+            const QJsonObject win = root.value(key).toObject();
+            QJsonValue v = win.value(QStringLiteral("resets_at"));
+            if (v.isUndefined() || v.isNull())
+                v = win.value(QStringLiteral("resetsAt"));
+            if (v.isString()) {
+                const QDateTime when =
+                    QDateTime::fromString(v.toString(), Qt::ISODate);
+                return when.isValid() ? when.toMSecsSinceEpoch() : 0;
+            }
+            if (v.isDouble()) {
+                const double secs = v.toDouble();
+                return secs > 0 ? static_cast<qint64>(secs * 1000.0) : 0;
+            }
+            return 0;
+        };
         // five_hour = rolling session window; seven_day = the plan-wide weekly
         // window (matches the "weekly" rate-limit event and the CLI's /usage).
-        if (root.contains(QStringLiteral("five_hour")))
+        if (root.contains(QStringLiteral("five_hour"))) {
             applyClaudeUsage(false, pctOf(QStringLiteral("five_hour")));
-        if (root.contains(QStringLiteral("seven_day")))
+            if (const qint64 r = resetMsOf(QStringLiteral("five_hour")))
+                applyClaudeReset(false, r);
+        }
+        if (root.contains(QStringLiteral("seven_day"))) {
             applyClaudeUsage(true, pctOf(QStringLiteral("seven_day")));
+            if (const qint64 r = resetMsOf(QStringLiteral("seven_day")))
+                applyClaudeReset(true, r);
+        }
     });
 }
 
