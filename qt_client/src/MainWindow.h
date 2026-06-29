@@ -1216,6 +1216,9 @@ private:
     void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
     void promptNewBranch();
     void deleteBranch(const QString &branch);
+    // The branch listed next to `branch` in the Branches table (the row below it,
+    // else the row above), used to pick the post-delete selection (adhoc #256).
+    QString neighbourBranchInList(const QString &branch) const;
     // Delete every branch that is fully merged into the default branch (0 behind
     // and 0 ahead of it), skipping the default and the checked-out branch.
     void deleteMergedBranches();
@@ -2159,6 +2162,10 @@ private:
     int m_settingsTabIndex = -1; // index of the Settings page
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
+    // Splitter holding the branches table + changed-files/scope lists + diff view.
+    // loadBranchesPanel() freezes it while it tears down and rebuilds the rows so
+    // the panes don't flash blank during a refresh/merge (adhoc #256).
+    QWidget *m_branchesSplit = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
     // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
