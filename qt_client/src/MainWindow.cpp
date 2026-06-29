@@ -27159,6 +27159,10 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 void MainWindow::updateAgentActionState()
 {
     const bool selected = m_selectedAgentSessionId > 0;
+    // External (watch-only) rows carry negative synthetic ids, so `selected` is
+    // false for them — but Delete still applies: it drops the local mirror (the
+    // real session keeps running in its own process).
+    const bool externalSelected = isExternalSession(m_selectedAgentSessionId);
     // A session is "running" if a headless AgentRunner is driving it, OR a live
     // Claude Code stream-json session (no runner) is still attached.
     ClaudeStreamSession *stream =
@@ -27182,7 +27186,7 @@ void MainWindow::updateAgentActionState()
         m_agentContinueButton->setEnabled(
             issueBacked && !running && session->status != AgentStatus::Queued);
     if (m_agentDeleteButton)
-        m_agentDeleteButton->setEnabled(selected && !aiFixBusy);
+        m_agentDeleteButton->setEnabled((selected || externalSelected) && !aiFixBusy);
     // "Delete all" also nukes the worktree + branch, so it only applies to a real
     // stored session that has a branch (not external watch-only rows).
     if (m_agentDeleteAllButton)
