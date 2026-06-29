@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 249
 title: do an optimization pass of everything make sure the whole app is snappy
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 9
