@@ -1,0 +1,18 @@
+{
+    "cipher": {
+        "body": "i/Auqu3XxR8+x6h1etS30Alb7PZLEgRNSw3/D15dlIVhX3kExuDgX2F4qotNFXFfZMgF2BTXCcEF3ewlLeAR8lTp3h3zyYGtixLVg2CCdpaIFizF9yMGxUcQVivm5R9H2unJuCil4+DN5ttq0lsldNe4ljCVXUcGDptNfonTmyPgbzJ2nWTw3vvRwjFWuJ9nn5Gbg9V6ZVPWk77ykjiuOfGUGA==",
+        "nonce": "7wsecBccwx01hcMj",
+        "tag": "Ji5YqhbmJZcDdfOP7WkAdg=="
+    },
+    "createdAtMs": 1782769740269,
+    "creator": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "id": "2fef3aaa-b55d-47e3-bde0-c2014f8ecc01",
+    "kdf": {
+        "algo": "pbkdf2-sha256",
+        "rounds": 600000,
+        "salt": "+qjMiKx1vlYY9kIfE11plA=="
+    },
+    "kind": "cove",
+    "notifyOnOpen": true,
+    "v": 1
+}
