@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 275
 title: show the time on the commits list in pr detail
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 32
 progress: 70
