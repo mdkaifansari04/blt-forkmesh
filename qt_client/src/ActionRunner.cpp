@@ -66,6 +66,12 @@ void ActionRunner::launch(Phase phase, const QString &program,
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     for (auto it = m_variables.constBegin(); it != m_variables.constEnd(); ++it)
         env.insert(it.key(), it.value());
+    // Release runs check out a tag's commit detached, so the tag name isn't
+    // recoverable from git inside the worktree. Surface it as FORKMESH_TAG (the
+    // env var release workflows read to name the published artifact).
+    if (m_run.ref.startsWith(QLatin1String("refs/tags/")))
+        env.insert(QStringLiteral("FORKMESH_TAG"),
+                   m_run.ref.mid(QStringLiteral("refs/tags/").size()));
     const QString home = QDir::homePath();
     const QString extraPath = home + QStringLiteral("/.local/bin:") + home +
                               QStringLiteral("/.cargo/bin");

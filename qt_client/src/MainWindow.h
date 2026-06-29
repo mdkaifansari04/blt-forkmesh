@@ -717,11 +717,16 @@ private:
     void buildAndPreviewCurrentPull();
     void updatePullSubTabCounts(const PullRequest &pr);
     void refreshOpenPullChecks();                   // re-render checks for the open PR
-    // Enqueue every push-triggered workflow found at `commit` for owner/name.
-    // Shared by the push handler and the PR "Run checks" button.
+    // Which event a workflow run is being queued for: a code push (the default)
+    // or a published release. Selects the matching `on:` trigger to enqueue.
+    enum class WorkflowTrigger { Push, Release };
+    // Enqueue every workflow found at `commit` for owner/name whose `on:` matches
+    // `trigger`. Shared by the push handler, the PR "Run checks" button, and the
+    // Releases panel's "Publish release" action.
     void queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                  const QString &name, const QString &commit,
-                                 const QString &ref);
+                                 const QString &ref,
+                                 WorkflowTrigger trigger = WorkflowTrigger::Push);
     void submitPullComment();                       // post a comment on the PR
     void sendPullRevisionToAgent();                 // re-queue the linked agent with revision feedback
     void submitPullReview(const QString &state);    // approve / request changes
