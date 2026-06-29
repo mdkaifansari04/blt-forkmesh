@@ -7527,6 +7527,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: search section built"));
     m_sectionStack->addWidget(buildHostsSection());      // 7 Hosts (adhoc #263)
     logStartup(QStringLiteral("  buildChatPage: hosts section built"));
+    m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
+    logStartup(QStringLiteral("  buildChatPage: relays section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -8532,6 +8534,20 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_hostsNavButton, &QPushButton::clicked, this,
             [this] { showSection(7); });
 
+    // Relays: a live list of the configured mainnode relays with their online
+    // status, round-trip response time and running version. Sits next to Hosts,
+    // section 8.
+    m_relaysNavButton = new QPushButton(QStringLiteral("Relays"));
+    m_relaysNavButton->setObjectName("topNavButton");
+    m_relaysNavButton->setCheckable(true);
+    m_relaysNavButton->setCursor(Qt::PointingHandCursor);
+    m_relaysNavButton->setToolTip(
+        QString::fromUtf8("Relays \xE2\x80\x94 online status, response time and version"));
+    setOcticon(m_relaysNavButton, "broadcast", 16);
+    m_navGroup->addButton(m_relaysNavButton, 8); // section 8: Relays
+    connect(m_relaysNavButton, &QPushButton::clicked, this,
+            [this] { showSection(8); });
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -8616,6 +8632,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_logNavButton);
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
+    navRow->addWidget(m_relaysNavButton);
     navRow->addStretch();
     // Right-aligned so it sits under the top-right avatar.
     navRow->addWidget(m_navRebuildButton);
@@ -10298,6 +10315,9 @@ void MainWindow::showSection(int index)
     } else if (index == 7) {
         // Re-read the saved host list whenever the Hosts section opens.
         refreshHostsTable();
+    } else if (index == 8) {
+        // Re-list and re-probe the relays each time the Relays section opens.
+        refreshRelaysTable();
     }
 }
 
@@ -10715,6 +10735,219 @@ void MainWindow::refreshHostsTable()
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
     }
+}
+
+// --- Relays -----------------------------------------------------------------
+//
+// A live directory of the configured mainnode relays (the same ones reachable
+// from the top-bar relay switcher). Each row shows the relay's host, whether it
+// is currently online, the round-trip response time and the version it is
+// running. The status / latency / version are filled in by probing each relay's
+// lightweight /api/version endpoint (the same endpoint the top-bar radar uses).
+
+QWidget *MainWindow::buildRelaysSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Relays"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *subtitle = new QLabel(QString::fromUtf8(
+        "The mainnode relays this node knows about. Each one is probed live for "
+        "its online status, round-trip response time and the version it is "
+        "running. Switch the active relay from the relay dropdown in the top bar."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    // Status line + manual refresh button.
+    auto *controls = new QHBoxLayout;
+    controls->setContentsMargins(0, 0, 0, 0);
+    m_relaysStatus = new QLabel;
+    m_relaysStatus->setObjectName("mutedLabel");
+    controls->addWidget(m_relaysStatus, 1);
+    m_relaysRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_relaysRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_relaysRefreshButton, "sync", 14);
+    connect(m_relaysRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshRelaysTable);
+    controls->addWidget(m_relaysRefreshButton);
+    outer->addLayout(controls);
+
+    m_relaysTable = new QTableWidget(0, 4);
+    m_relaysTable->setObjectName("issueTable");
+    m_relaysTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Relay"), QStringLiteral("Status"),
+         QStringLiteral("Response time"), QStringLiteral("Version")});
+    m_relaysTable->verticalHeader()->setVisible(false);
+    m_relaysTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_relaysTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_relaysTable->setShowGrid(false);
+    m_relaysTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int c = 1; c < 4; ++c)
+        m_relaysTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    // Double-clicking a relay opens its website in the browser.
+    connect(m_relaysTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) { openServerWebsite(row); });
+    outer->addWidget(m_relaysTable, 1);
+
+    refreshRelaysTable();
+    return page;
+}
+
+void MainWindow::refreshRelaysTable()
+{
+    if (!m_relaysTable)
+        return;
+    m_relaysTable->setRowCount(m_servers.size());
+    for (int i = 0; i < m_servers.size(); ++i) {
+        const ServerConfig &server = m_servers.at(i);
+        const QString host = serverHost(server.url);
+        auto *nameItem = new QTableWidgetItem(QIcon(faviconFor(server)),
+                                              host.isEmpty() ? server.url : host);
+        // Stash the host so an in-flight probe can confirm the row hasn't shifted
+        // under it before writing its result.
+        nameItem->setData(Qt::UserRole, host);
+        if (i == m_activeServer) {
+            QFont f = nameItem->font();
+            f.setBold(true);
+            nameItem->setFont(f);
+            nameItem->setToolTip(QStringLiteral("Active relay"));
+        }
+        m_relaysTable->setItem(i, 0, nameItem);
+        m_relaysTable->setItem(i, 1, new QTableWidgetItem(
+            QString::fromUtf8("Checking\xE2\x80\xA6")));
+        m_relaysTable->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+        m_relaysTable->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+    }
+
+    // Count every relay as in-flight up front so the "all done" summary only
+    // fires once the last probe settles (not when an early invalid URL resolves
+    // synchronously).
+    m_relayProbesInFlight = m_servers.size();
+    if (m_relaysStatus)
+        m_relaysStatus->setText(m_servers.isEmpty()
+            ? QStringLiteral("No relays configured.")
+            : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
+                  .arg(m_servers.size()));
+    for (int i = 0; i < m_servers.size(); ++i)
+        probeRelayRow(i);
+}
+
+void MainWindow::probeRelayRow(int row)
+{
+    if (!m_relaysTable || !m_networkAccess || row < 0 || row >= m_servers.size())
+        return;
+
+    // Same relay host as the stored ws/wss URL, but over http(s) for the API.
+    QUrl url(m_servers.at(row).url);
+    if (url.scheme() == "ws")
+        url.setScheme(QStringLiteral("http"));
+    else if (url.scheme() == "wss")
+        url.setScheme(QStringLiteral("https"));
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    const QString host = serverHost(m_servers.at(row).url);
+    auto markDone = [this] {
+        if (--m_relayProbesInFlight <= 0) {
+            m_relayProbesInFlight = 0;
+            if (!m_relaysTable || !m_relaysStatus)
+                return;
+            int online = 0;
+            for (int r = 0; r < m_relaysTable->rowCount(); ++r) {
+                QTableWidgetItem *s = m_relaysTable->item(r, 1);
+                if (s && s->text() == QStringLiteral("Online"))
+                    ++online;
+            }
+            const int total = m_relaysTable->rowCount();
+            m_relaysStatus->setText(
+                QString::fromUtf8("%1 of %2 relay(s) online \xC2\xB7 updated %3")
+                    .arg(online).arg(total)
+                    .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss"))));
+        }
+    };
+
+    // The row a probe writes back to is found by the host stashed in UserRole, so
+    // it stays correct even if the list was re-sorted/rebuilt mid-flight.
+    auto rowForHost = [this](const QString &h) -> int {
+        if (!m_relaysTable)
+            return -1;
+        for (int r = 0; r < m_relaysTable->rowCount(); ++r) {
+            QTableWidgetItem *item = m_relaysTable->item(r, 0);
+            if (item && item->data(Qt::UserRole).toString() == h)
+                return r;
+        }
+        return -1;
+    };
+
+    if (!url.isValid() || url.host().isEmpty()) {
+        const int r = rowForHost(host);
+        if (r >= 0) {
+            if (auto *s = m_relaysTable->item(r, 1)) {
+                s->setText(QStringLiteral("Offline"));
+                s->setForeground(QColor(QStringLiteral("#8b949e")));
+            }
+        }
+        markDone();
+        return;
+    }
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(10000); // no answer within 10s counts as offline
+
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, clock, host, rowForHost, markDone] {
+        const qint64 elapsed = clock->elapsed();
+        delete clock;
+        reply->deleteLater();
+        const int r = rowForHost(host);
+        if (r >= 0 && m_relaysTable) {
+            QTableWidgetItem *status = m_relaysTable->item(r, 1);
+            QTableWidgetItem *ping = m_relaysTable->item(r, 2);
+            QTableWidgetItem *ver = m_relaysTable->item(r, 3);
+            if (reply->error() == QNetworkReply::NoError) {
+                const QJsonObject obj =
+                    QJsonDocument::fromJson(reply->readAll()).object();
+                const QString rev = obj.value(QStringLiteral("rev"))
+                                        .toString(QStringLiteral("dev"));
+                if (status) {
+                    status->setText(QStringLiteral("Online"));
+                    status->setForeground(QColor(QStringLiteral("#3fb950")));
+                }
+                if (ping)
+                    ping->setText(QStringLiteral("%1 ms").arg(elapsed));
+                if (ver)
+                    ver->setText(rev.isEmpty() ? QStringLiteral("dev") : rev);
+            } else {
+                if (status) {
+                    status->setText(QStringLiteral("Offline"));
+                    status->setForeground(QColor(QStringLiteral("#8b949e")));
+                }
+                if (ping)
+                    ping->setText(QString::fromUtf8("\xE2\x80\x94"));
+                if (ver)
+                    ver->setText(QString::fromUtf8("\xE2\x80\x94"));
+            }
+        }
+        markDone();
+    });
 }
 
 void MainWindow::loadHostIntoForm(int row, int /*column*/)
@@ -18098,6 +18331,25 @@ void MainWindow::showPull(int number)
             .arg((found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
+    // Surface where the head branch sits relative to its base: when it trails the
+    // base, say by how much so the reviewer knows there's something to pull in
+    // before merging (the "Update branch" button merges the base in — issue #72).
+    if (found->status == QLatin1String("open")) {
+        const PullStore store = pullStoreForCurrentRepo();
+        bool behind = false;
+        int behindCount = 0;
+        if (store.canWrite() &&
+            store.isBranchBehindBase(found->number, &behind, nullptr, &behindCount) &&
+            behind) {
+            m_pullMeta->setText(
+                m_pullMeta->text() +
+                QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
+                                  "behind %3</span>")
+                    .arg(behindCount)
+                    .arg(behindCount == 1 ? QString() : QStringLiteral("s"),
+                         found->base.toHtmlEscaped()));
+        }
+    }
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
         m_pullMeta->setText(m_pullMeta->text() +
@@ -21900,7 +22152,7 @@ void MainWindow::submitPullToInbox(const PullRequest &pr)
 }
 
 void MainWindow::submitPullToInbox(const PullRequest &pr,
-                                   const RepositoryRecord &targetRepo)
+                                   const RepositoryRecord &targetRepo, bool quiet)
 {
     const QJsonObject payload{{"owner", targetRepo.owner},
                               {"repo", targetRepo.name},
@@ -21909,17 +22161,25 @@ void MainWindow::submitPullToInbox(const PullRequest &pr,
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, targetRepo] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, targetRepo, quiet] {
         reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
-            QMessageBox::information(
-                this, "Pull request sent",
-                "Your signed pull request was delivered to " + targetRepo.owner +
-                    "/" + targetRepo.name + ".");
-        else
+        const QString slug = targetRepo.owner + "/" + targetRepo.name;
+        if (reply->error() == QNetworkReply::NoError) {
+            if (quiet)
+                logSystem("Pull request delivered to " + slug + " (source of truth).");
+            else
+                QMessageBox::information(
+                    this, "Pull request sent",
+                    "Your signed pull request was delivered to " + slug + ".");
+        } else if (quiet) {
+            flashMessage("Could not send the pull request to " + slug + ": " +
+                             reply->errorString(),
+                         true);
+        } else {
             QMessageBox::warning(this, "Pull request",
                                  "Could not send the pull request: " +
                                      reply->errorString());
+        }
     });
 }
 
@@ -27584,10 +27844,8 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     AgentSession *s = findAgentSession(sessionId);
     if (!s || !s->createPr || s->prNumber > 0 || !m_agentStore || s->baseRef.isEmpty())
         return;
-    const int ri = repoIndexFor(s->owner, s->name);
-    if (ri < 0)
+    if (repoIndexFor(s->owner, s->name) < 0)
         return;
-    const RepositoryRecord repo = m_repositories.at(ri);
     const QString workdir = sessionWorkdir(sessionId); // diff in the worktree
 
     QString patch;
@@ -27604,35 +27862,86 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
             *s, QStringLiteral("==> No code changes; no pull request created.\n"));
         return;
     }
+    // The committed series base..HEAD as a format-patch mbox, so a mirror-node
+    // submission can be replayed by the owner with `git am` and keep each commit's
+    // author/message. Empty when the agent left the work uncommitted (the flat
+    // patch above still carries it; the owner synthesizes a single-commit mbox).
+    QString commits;
+    {
+        QProcess git;
+        git.setWorkingDirectory(workdir);
+        git.start(QStringLiteral("git"),
+                  {QStringLiteral("format-patch"), QStringLiteral("--stdout"), s->baseRef});
+        if (git.waitForFinished(8000) && git.exitCode() == 0)
+            commits = QString::fromUtf8(git.readAllStandardOutput());
+    }
     m_agentStore->writePatch(*s, patch);
+    landAgentPullForSession(*s, patch, commits);
+}
+
+void MainWindow::landAgentPullForSession(AgentSession &session, const QString &patch,
+                                         const QString &commits)
+{
+    if (!m_agentStore || patch.trimmed().isEmpty())
+        return;
+    const int ri = repoIndexFor(session.owner, session.name);
+    if (ri < 0)
+        return;
+    const RepositoryRecord repo = m_repositories.at(ri);
     // Issue-less ad-hoc runs (issue #273) have no issue number to cite, so title
     // and body read off the session's prompt-derived title instead.
     const QString prTitle =
-        s->issueNumber > 0
-            ? QStringLiteral("Agent: issue #%1 %2").arg(s->issueNumber).arg(s->issueTitle)
-            : QStringLiteral("Agent: %1").arg(s->issueTitle);
+        session.issueNumber > 0
+            ? QStringLiteral("Agent: issue #%1 %2").arg(session.issueNumber).arg(session.issueTitle)
+            : QStringLiteral("Agent: %1").arg(session.issueTitle);
     const QString prBody =
-        s->issueNumber > 0
-            ? QStringLiteral("Created from a Claude Code session for issue #%1.")
-                  .arg(s->issueNumber)
-            : QStringLiteral("Created from a Claude Code agent session.");
+        session.issueNumber > 0
+            ? QStringLiteral("Created from a %1 session for issue #%2.")
+                  .arg(agentProviderName(session.provider))
+                  .arg(session.issueNumber)
+            : QStringLiteral("Created from a %1 agent session.")
+                  .arg(agentProviderName(session.provider));
+    const QString base = session.baseBranch.isEmpty() ? session.baseRef : session.baseBranch;
     PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
-    QString error;
-    const int pr = store.createPull(
-        prTitle, prBody,
-        s->baseBranch.isEmpty() ? s->baseRef : s->baseBranch, s->branchName, patch,
-        QString(), /*branchBacked=*/true, &error);
-    if (pr > 0) {
-        s->prNumber = pr;
-        m_agentStore->saveSession(*s);
-        m_agentStore->appendLog(*s, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
-        linkAgentPullToIssue(*s, pr); // record it in the issue's Development section
-        if (ri == m_repoDetailIndex)
-            reloadPulls();
-    } else {
-        m_agentStore->appendLog(
-            *s, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+    if (store.canWrite()) {
+        // Source of truth: commit the pull request straight into the local repo.
+        QString error;
+        const int pr = store.createPull(prTitle, prBody, base, session.branchName, patch,
+                                        commits, /*branchBacked=*/true, &error);
+        if (pr > 0) {
+            session.prNumber = pr;
+            m_agentStore->saveSession(session);
+            m_agentStore->appendLog(
+                session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
+            linkAgentPullToIssue(session, pr); // record it in the issue's Development section
+            if (ri == m_repoDetailIndex)
+                reloadPulls();
+        } else {
+            m_agentStore->appendLog(
+                session, QStringLiteral("!! Could not create pull request: %1\n").arg(error));
+        }
+        return;
     }
+    // Mirror node (not the source of truth): we can't write the owner's repo, so
+    // sign the PR and deliver it to the owner's relay inbox, which queues it for
+    // the source of truth even if that node is offline (adhoc #25). Label the head
+    // with this node's name so the owner can tell which mirror it came from. The
+    // PR's number is assigned by the owner and syncs back later, so none is
+    // recorded on the session here.
+    PullRequest pr;
+    pr.title = prTitle;
+    pr.description = prBody;
+    pr.base = base;
+    pr.head = session.branchName;
+    pr.patch = patch;
+    pr.commits = commits;
+    const QString nodeName = accountNameFromInput(m_userName, QString());
+    if (!nodeName.isEmpty() && !pr.head.contains(QLatin1Char(':')))
+        pr.head = nodeName + QLatin1Char(':') + pr.head;
+    submitPullToInbox(store.makeSignedPull(pr), repo, /*quiet=*/true);
+    m_agentStore->appendLog(
+        session, QStringLiteral("==> Sent pull request to %1/%2 (source of truth).\n")
+                     .arg(repo.owner, repo.name));
 }
 
 // Release the temp worktree a stream session ran in once the run is over. The
@@ -27763,44 +28072,12 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     // be reached more than once (signal re-fire, requeue), and the session may
     // already carry a prNumber from a previous pass.
     if (ok && session && session->createPr && session->prNumber <= 0 && m_agentStore) {
+        // Lands locally when we're the source of truth, or submits to the owner's
+        // inbox when this is a mirror node (adhoc #25). The headless runner path has
+        // no format-patch mbox handy, so the owner synthesizes one from the patch.
         const QString patch = m_agentStore->readPatch(*session);
-        if (!patch.trimmed().isEmpty()) {
-            const int repoIndex = repoIndexFor(session->owner, session->name);
-            if (repoIndex >= 0) {
-                const RepositoryRecord repo = m_repositories.at(repoIndex);
-                PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity,
-                                m_userName);
-                QString error;
-                const int pr = store.createPull(
-                    QStringLiteral("Agent: issue #%1 %2")
-                        .arg(session->issueNumber)
-                        .arg(session->issueTitle),
-                    QStringLiteral("Created from %1 session #%2 for issue #%3.")
-                        .arg(agentProviderName(session->provider))
-                        .arg(session->id)
-                        .arg(session->issueNumber),
-                    session->baseBranch.isEmpty() ? session->baseRef
-                                                  : session->baseBranch,
-                    session->branchName, patch, QString(), /*branchBacked=*/true,
-                    &error);
-                if (pr > 0) {
-                    session->prNumber = pr;
-                    m_agentStore->saveSession(*session);
-                    m_agentStore->appendLog(
-                        *session,
-                        QStringLiteral("==> Created pull request #%1.").arg(pr));
-                    // Record it in the issue's Development section (issue #156).
-                    linkAgentPullToIssue(*session, pr);
-                    if (repoIndex == m_repoDetailIndex)
-                        reloadPulls();
-                } else {
-                    m_agentStore->appendLog(
-                        *session,
-                        QStringLiteral("!! Could not create pull request: %1")
-                            .arg(error));
-                }
-            }
-        }
+        if (!patch.trimmed().isEmpty())
+            landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
     if (sessionId == m_selectedAgentSessionId)
