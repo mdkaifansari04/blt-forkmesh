@@ -7527,6 +7527,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: search section built"));
     m_sectionStack->addWidget(buildHostsSection());      // 7 Hosts (adhoc #263)
     logStartup(QStringLiteral("  buildChatPage: hosts section built"));
+    m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
+    logStartup(QStringLiteral("  buildChatPage: relays section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -8532,6 +8534,20 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_hostsNavButton, &QPushButton::clicked, this,
             [this] { showSection(7); });
 
+    // Relays: a live list of the configured mainnode relays with their online
+    // status, round-trip response time and running version. Sits next to Hosts,
+    // section 8.
+    m_relaysNavButton = new QPushButton(QStringLiteral("Relays"));
+    m_relaysNavButton->setObjectName("topNavButton");
+    m_relaysNavButton->setCheckable(true);
+    m_relaysNavButton->setCursor(Qt::PointingHandCursor);
+    m_relaysNavButton->setToolTip(
+        QString::fromUtf8("Relays \xE2\x80\x94 online status, response time and version"));
+    setOcticon(m_relaysNavButton, "broadcast", 16);
+    m_navGroup->addButton(m_relaysNavButton, 8); // section 8: Relays
+    connect(m_relaysNavButton, &QPushButton::clicked, this,
+            [this] { showSection(8); });
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -8616,6 +8632,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_logNavButton);
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
+    navRow->addWidget(m_relaysNavButton);
     navRow->addStretch();
     // Right-aligned so it sits under the top-right avatar.
     navRow->addWidget(m_navRebuildButton);
@@ -10298,6 +10315,9 @@ void MainWindow::showSection(int index)
     } else if (index == 7) {
         // Re-read the saved host list whenever the Hosts section opens.
         refreshHostsTable();
+    } else if (index == 8) {
+        // Re-list and re-probe the relays each time the Relays section opens.
+        refreshRelaysTable();
     }
 }
 
@@ -10715,6 +10735,219 @@ void MainWindow::refreshHostsTable()
             new QTableWidgetItem(h.value("user").toString()));
         m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
     }
+}
+
+// --- Relays -----------------------------------------------------------------
+//
+// A live directory of the configured mainnode relays (the same ones reachable
+// from the top-bar relay switcher). Each row shows the relay's host, whether it
+// is currently online, the round-trip response time and the version it is
+// running. The status / latency / version are filled in by probing each relay's
+// lightweight /api/version endpoint (the same endpoint the top-bar radar uses).
+
+QWidget *MainWindow::buildRelaysSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Relays"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *subtitle = new QLabel(QString::fromUtf8(
+        "The mainnode relays this node knows about. Each one is probed live for "
+        "its online status, round-trip response time and the version it is "
+        "running. Switch the active relay from the relay dropdown in the top bar."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    // Status line + manual refresh button.
+    auto *controls = new QHBoxLayout;
+    controls->setContentsMargins(0, 0, 0, 0);
+    m_relaysStatus = new QLabel;
+    m_relaysStatus->setObjectName("mutedLabel");
+    controls->addWidget(m_relaysStatus, 1);
+    m_relaysRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_relaysRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_relaysRefreshButton, "sync", 14);
+    connect(m_relaysRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshRelaysTable);
+    controls->addWidget(m_relaysRefreshButton);
+    outer->addLayout(controls);
+
+    m_relaysTable = new QTableWidget(0, 4);
+    m_relaysTable->setObjectName("issueTable");
+    m_relaysTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Relay"), QStringLiteral("Status"),
+         QStringLiteral("Response time"), QStringLiteral("Version")});
+    m_relaysTable->verticalHeader()->setVisible(false);
+    m_relaysTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_relaysTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_relaysTable->setShowGrid(false);
+    m_relaysTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int c = 1; c < 4; ++c)
+        m_relaysTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    // Double-clicking a relay opens its website in the browser.
+    connect(m_relaysTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) { openServerWebsite(row); });
+    outer->addWidget(m_relaysTable, 1);
+
+    refreshRelaysTable();
+    return page;
+}
+
+void MainWindow::refreshRelaysTable()
+{
+    if (!m_relaysTable)
+        return;
+    m_relaysTable->setRowCount(m_servers.size());
+    for (int i = 0; i < m_servers.size(); ++i) {
+        const ServerConfig &server = m_servers.at(i);
+        const QString host = serverHost(server.url);
+        auto *nameItem = new QTableWidgetItem(QIcon(faviconFor(server)),
+                                              host.isEmpty() ? server.url : host);
+        // Stash the host so an in-flight probe can confirm the row hasn't shifted
+        // under it before writing its result.
+        nameItem->setData(Qt::UserRole, host);
+        if (i == m_activeServer) {
+            QFont f = nameItem->font();
+            f.setBold(true);
+            nameItem->setFont(f);
+            nameItem->setToolTip(QStringLiteral("Active relay"));
+        }
+        m_relaysTable->setItem(i, 0, nameItem);
+        m_relaysTable->setItem(i, 1, new QTableWidgetItem(
+            QString::fromUtf8("Checking\xE2\x80\xA6")));
+        m_relaysTable->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+        m_relaysTable->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+    }
+
+    // Count every relay as in-flight up front so the "all done" summary only
+    // fires once the last probe settles (not when an early invalid URL resolves
+    // synchronously).
+    m_relayProbesInFlight = m_servers.size();
+    if (m_relaysStatus)
+        m_relaysStatus->setText(m_servers.isEmpty()
+            ? QStringLiteral("No relays configured.")
+            : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
+                  .arg(m_servers.size()));
+    for (int i = 0; i < m_servers.size(); ++i)
+        probeRelayRow(i);
+}
+
+void MainWindow::probeRelayRow(int row)
+{
+    if (!m_relaysTable || !m_networkAccess || row < 0 || row >= m_servers.size())
+        return;
+
+    // Same relay host as the stored ws/wss URL, but over http(s) for the API.
+    QUrl url(m_servers.at(row).url);
+    if (url.scheme() == "ws")
+        url.setScheme(QStringLiteral("http"));
+    else if (url.scheme() == "wss")
+        url.setScheme(QStringLiteral("https"));
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    const QString host = serverHost(m_servers.at(row).url);
+    auto markDone = [this] {
+        if (--m_relayProbesInFlight <= 0) {
+            m_relayProbesInFlight = 0;
+            if (!m_relaysTable || !m_relaysStatus)
+                return;
+            int online = 0;
+            for (int r = 0; r < m_relaysTable->rowCount(); ++r) {
+                QTableWidgetItem *s = m_relaysTable->item(r, 1);
+                if (s && s->text() == QStringLiteral("Online"))
+                    ++online;
+            }
+            const int total = m_relaysTable->rowCount();
+            m_relaysStatus->setText(
+                QString::fromUtf8("%1 of %2 relay(s) online \xC2\xB7 updated %3")
+                    .arg(online).arg(total)
+                    .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss"))));
+        }
+    };
+
+    // The row a probe writes back to is found by the host stashed in UserRole, so
+    // it stays correct even if the list was re-sorted/rebuilt mid-flight.
+    auto rowForHost = [this](const QString &h) -> int {
+        if (!m_relaysTable)
+            return -1;
+        for (int r = 0; r < m_relaysTable->rowCount(); ++r) {
+            QTableWidgetItem *item = m_relaysTable->item(r, 0);
+            if (item && item->data(Qt::UserRole).toString() == h)
+                return r;
+        }
+        return -1;
+    };
+
+    if (!url.isValid() || url.host().isEmpty()) {
+        const int r = rowForHost(host);
+        if (r >= 0) {
+            if (auto *s = m_relaysTable->item(r, 1)) {
+                s->setText(QStringLiteral("Offline"));
+                s->setForeground(QColor(QStringLiteral("#8b949e")));
+            }
+        }
+        markDone();
+        return;
+    }
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(10000); // no answer within 10s counts as offline
+
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, clock, host, rowForHost, markDone] {
+        const qint64 elapsed = clock->elapsed();
+        delete clock;
+        reply->deleteLater();
+        const int r = rowForHost(host);
+        if (r >= 0 && m_relaysTable) {
+            QTableWidgetItem *status = m_relaysTable->item(r, 1);
+            QTableWidgetItem *ping = m_relaysTable->item(r, 2);
+            QTableWidgetItem *ver = m_relaysTable->item(r, 3);
+            if (reply->error() == QNetworkReply::NoError) {
+                const QJsonObject obj =
+                    QJsonDocument::fromJson(reply->readAll()).object();
+                const QString rev = obj.value(QStringLiteral("rev"))
+                                        .toString(QStringLiteral("dev"));
+                if (status) {
+                    status->setText(QStringLiteral("Online"));
+                    status->setForeground(QColor(QStringLiteral("#3fb950")));
+                }
+                if (ping)
+                    ping->setText(QStringLiteral("%1 ms").arg(elapsed));
+                if (ver)
+                    ver->setText(rev.isEmpty() ? QStringLiteral("dev") : rev);
+            } else {
+                if (status) {
+                    status->setText(QStringLiteral("Offline"));
+                    status->setForeground(QColor(QStringLiteral("#8b949e")));
+                }
+                if (ping)
+                    ping->setText(QString::fromUtf8("\xE2\x80\x94"));
+                if (ver)
+                    ver->setText(QString::fromUtf8("\xE2\x80\x94"));
+            }
+        }
+        markDone();
+    });
 }
 
 void MainWindow::loadHostIntoForm(int row, int /*column*/)
