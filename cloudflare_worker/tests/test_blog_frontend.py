@@ -209,8 +209,8 @@ def test_blog_search_result_copy_is_compact():
 def test_blog_page_uses_blog_banner_assets():
     html = _read(BLOG_PAGE)
 
-    assert html.count('src="/assets/blog/intro-to-forkmesh.png"') == 3
-    assert html.count('src="/assets/blog/coming-soon.png"') == 2
+    assert html.count('src="/assets/blog/forkmesh-noise.webp"') == 3
+    assert html.count('src="/assets/blog/coming-soon.webp"') == 2
     for marker in (
         'class="blog1-featured-image blog1-has-art"',
         'class="blog1-featured-image blog1-article-image blog1-has-art"',
