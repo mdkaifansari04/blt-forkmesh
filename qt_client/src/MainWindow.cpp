@@ -1248,6 +1248,80 @@ public:
     }
 };
 
+// Draws a compact "resource usage" bar (track + fill + "NN%") for the Mirror
+// nodes view's CPU / RAM / disk columns. Unlike paintProgressBar (geared to task
+// progress, where 100% is good and green) this colours by load: green when there
+// is headroom, amber as it tightens, red when nearly exhausted. The percentage is
+// read from kProgressBarRole; a value < 0 (or no value) renders a muted em-dash
+// for nodes that don't advertise telemetry. Details live in the cell's tooltip.
+inline void paintResourceBar(QPainter *painter, const QRect &cellRect, int pct,
+                             const QFontMetrics &fm)
+{
+    const bool dark = currentThemeIsDark();
+    const QColor track(dark ? "#30363d" : "#d0d7de");
+    const QColor textColor(dark ? "#8b949e" : "#57606a");
+    const QRect cell = cellRect.adjusted(8, 0, -8, 0);
+
+    if (pct < 0) {
+        painter->save();
+        painter->setPen(textColor);
+        painter->drawText(cell, Qt::AlignVCenter | Qt::AlignLeft,
+                          QString::fromUtf8("\xE2\x80\x94"));
+        painter->restore();
+        return;
+    }
+    pct = qBound(0, pct, 100);
+    const QString label = QStringLiteral("%1%").arg(pct);
+    const int textW = fm.horizontalAdvance(QStringLiteral("100%")) + 4;
+    QRect barRect(cell.left(), cell.center().y() - 4,
+                  qMax(0, cell.width() - textW), 8);
+    QRect textRect(barRect.right() + 4, cell.top(), textW, cell.height());
+
+    // green < 70 <= amber < 90 <= red.
+    const QColor fillColor(pct >= 90 ? "#f85149" : (pct >= 70 ? "#d29922" : "#3fb950"));
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(track);
+    painter->drawRoundedRect(barRect, 4, 4);
+    if (pct > 0) {
+        QRect fill(barRect.left(), barRect.top(),
+                   qMax(barRect.height(), barRect.width() * pct / 100),
+                   barRect.height());
+        painter->setBrush(fillColor);
+        painter->drawRoundedRect(fill, 4, 4);
+    }
+    painter->setPen(textColor);
+    painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignRight, label);
+    painter->restore();
+}
+
+// Cell delegate wrapper around paintResourceBar; keeps the full-row hover via
+// HoverRowDelegate, like ProgressBarDelegate.
+class ResourceBarDelegate : public HoverRowDelegate
+{
+public:
+    using HoverRowDelegate::HoverRowDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize base = HoverRowDelegate::sizeHint(option, index);
+        return QSize(qMax(base.width(), 84), qMax(base.height(), 18));
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        HoverRowDelegate::paint(painter, option, index);
+        const QVariant value = index.data(kProgressBarRole);
+        paintResourceBar(painter, option.rect,
+                         value.isValid() ? value.toInt() : -1,
+                         option.fontMetrics);
+    }
+};
+
 // A draggable version of the progress bar for the issue detail panel: click or
 // drag anywhere along the track to set the percentage. Pure QWidget (no moc) —
 // the owner wires the result through the onCommitted callback, fired once the
@@ -1424,6 +1498,45 @@ QString formatByteSize(qint64 bytes)
     }
     return unit == 0 ? QStringLiteral("%1 B").arg(bytes)
                      : QStringLiteral("%1 %2").arg(size, 0, 'f', 1).arg(units[unit]);
+}
+
+// Builds a Mirror nodes resource cell: an empty SortTableWidgetItem carrying the
+// usage percentage (kProgressBarRole, drawn as a little bar by ResourceBarDelegate)
+// and a hover tooltip with the underlying figures. pct < 0 renders as "unknown".
+SortTableWidgetItem *makeResourceBarCell(int pct, const QString &tooltip)
+{
+    auto *item = new SortTableWidgetItem(QString());
+    item->setData(kProgressBarRole, pct);
+    item->setData(kTableSortRole, double(pct)); // unknown (-1) sorts below 0%
+    if (!tooltip.isEmpty())
+        item->setToolTip(tooltip);
+    return item;
+}
+
+// A RAM/disk usage bar cell from used/total byte counts (total <= 0 == unknown),
+// with a "<used> used of <total> (NN%) \xC2\xB7 <free> free" tooltip.
+SortTableWidgetItem *makeByteUsageCell(const QString &label, qint64 used, qint64 total)
+{
+    if (total <= 0)
+        return makeResourceBarCell(-1, QString());
+    used = qBound<qint64>(0, used, total);
+    const int pct = int(qRound(100.0 * double(used) / double(total)));
+    const QString tip =
+        QStringLiteral("%1: %2 used of %3 (%4%) \xC2\xB7 %5 free")
+            .arg(label, formatByteSize(used), formatByteSize(total))
+            .arg(pct)
+            .arg(formatByteSize(total - used));
+    return makeResourceBarCell(pct, tip);
+}
+
+// A CPU usage bar cell from a 0..100 host-CPU percentage (< 0 == unknown).
+SortTableWidgetItem *makeCpuUsageCell(double cpuPercent)
+{
+    if (cpuPercent < 0.0)
+        return makeResourceBarCell(-1, QString());
+    const int pct = int(qRound(qBound(0.0, cpuPercent, 100.0)));
+    return makeResourceBarCell(
+        pct, QStringLiteral("CPU: %1% busy across all cores").arg(pct));
 }
 
 // Format an integer with thousands separators, e.g. 1234567 -> "1,234,567". Uses
@@ -37947,12 +38060,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 7);
+    m_mirrorNodesTable = new QTableWidget(0, 10);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Latest commit", "Synced", "Size", "Platform", "Version",
-         "Node id"});
+        {"Node", "Latest commit", "Synced", "Size", "CPU", "RAM", "Disk",
+         "Platform", "Version", "Node id"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -37967,14 +38080,21 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(1, QHeaderView::ResizeToContents); // Latest commit
     mh->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Synced
     mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Size
-    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Platform
-    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // Version
-    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Node id
+    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // CPU (bar)
+    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // RAM (bar)
+    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // Disk (bar)
+    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Platform
+    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Version
+    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Node id
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
     m_mirrorNodesTable->setItemDelegateForColumn(
         2, new MirrorSyncDelegate(m_mirrorNodesTable));
+    // CPU / RAM / disk columns render as little usage bars (details on hover).
+    auto *resourceBars = new ResourceBarDelegate(m_mirrorNodesTable);
+    for (int col : {4, 5, 6})
+        m_mirrorNodesTable->setItemDelegateForColumn(col, resourceBars);
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
@@ -38235,13 +38355,23 @@ void MainWindow::loadMirrorNodesPanel()
             maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
         }
 
+        // CPU / RAM / disk usage bars (hover for the underlying figures). The
+        // telemetry is per-node, advertised in the node's heartbeats; peers that
+        // don't advertise it (older builds) leave the bars as an em-dash.
+        m_mirrorNodesTable->setItem(row, 4, makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 4,
+            row, 5, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+        m_mirrorNodesTable->setItem(
+            row, 6,
+            makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
+
+        m_mirrorNodesTable->setItem(
+            row, 7,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 5,
+            row, 8,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -38249,7 +38379,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 6, idItem);
+        m_mirrorNodesTable->setItem(row, 9, idItem);
         ++count;
     }
 
@@ -38310,7 +38440,12 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
+            // Catalog-only mirrors aren't live in the room, so there's no live
+            // resource telemetry for them: the CPU/RAM/disk bars stay unknown.
             for (int col : {4, 5, 6})
+                m_mirrorNodesTable->setItem(row, col,
+                                            makeResourceBarCell(-1, QString()));
+            for (int col : {7, 8, 9})
                 m_mirrorNodesTable->setItem(
                     row, col,
                     new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
