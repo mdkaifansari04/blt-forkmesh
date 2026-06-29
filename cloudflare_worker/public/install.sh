@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # ForkMesh desktop client installer.
 #   curl -fsSL https://forkmesh.com/install.sh | bash
-# Clones the repository, builds the Qt client, and installs it to ~/.local/bin.
-# Missing build prerequisites are installed automatically when a supported
-# package manager is detected. Set FORKMESH_NO_INSTALL_DEPS=1 to opt out.
+# Autodetects this machine's OS/arch and installs the matching PREBUILT binary
+# attached to the latest release (no compiler/Qt toolchain, no multi-minute
+# build). When no prebuilt asset is published for the platform — or
+# FORKMESH_FROM_SOURCE=1 is set — it falls back to cloning the repository and
+# building the Qt client from source. Missing build prerequisites are installed
+# automatically when a supported package manager is detected; set
+# FORKMESH_NO_INSTALL_DEPS=1 to opt out. The binary lands in ~/.local/bin.
 set -euo pipefail
 
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.9.4 (2026-06-28)"
+INSTALLER_VERSION="0.10.0 (2026-06-28)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -41,6 +45,13 @@ BIN="$BIN_DIR/forkmesh"
 # Set to 1 if a clone is rejected by the relay's integrity gate, so the final
 # error can explain that specific (owner-fixable) case instead of a generic one.
 PIN_FAILURE=0
+# Set to 1 once a prebuilt release binary has been installed, so the whole
+# source-build pipeline (toolchain deps, clone, compile) is skipped.
+INSTALLED_PREBUILT=0
+# Set by build_client to the build directory; pre-declared so the shared
+# desktop/launch tail can reference it even on the prebuilt fast path (where no
+# build ever runs) without tripping `set -u`.
+BUILD=""
 
 # Anchor to a directory that exists. The installer may be launched from a path
 # that was just deleted — e.g. running this right after the uninstaller removed
@@ -423,6 +434,95 @@ fi
 CURRENT_STEP="deps"
 say "Checking build prerequisites (git, cmake, compiler, Qt 6, OpenSSL)…"
 ensure git    command -v git
+
+# --- prebuilt release binary (fast path) ------------------------------------
+# Resolve this machine's release asset name from uname. The release workflow
+# (.forkmesh/release.yml) names every attached build forkmesh-<os>-<arch> (with
+# a .exe suffix on Windows), so the installer can pick the right one with no
+# server round-trip beyond the clone the build path already needs.
+detect_release_asset() {
+  local os arch
+  os="$(uname -s 2>/dev/null || echo unknown)"
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  case "$os" in
+    Linux)                            os="linux" ;;
+    Darwin)                           os="macos" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)  os="windows" ;;
+    *) os="$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+  case "$arch" in
+    x86_64|amd64|x64) arch="x86_64" ;;
+    aarch64|arm64)    arch="arm64" ;;
+  esac
+  ASSET_OS="$os"
+  ASSET_ARCH="$arch"
+  ASSET_NAME="forkmesh-${os}-${arch}"
+  [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
+  # Release channel: the directory under releases/ the workflow publishes into.
+  RELEASE_CHANNEL="${FORKMESH_RELEASE:-latest}"
+  ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
+}
+
+# Try to extract just $ASSET_REL_PATH from $1 (a clone URL) into $2 (an empty
+# dir), without a working-tree checkout of the whole tree. Prefers a blobless
+# clone (fetches only the one asset's blob); if the mirror/relay does not honour
+# partial-clone filters, retries with a plain shallow clone so the fast path
+# still works (it just transfers more). Leaves the asset at "$2/$ASSET_REL_PATH"
+# on success.
+_fetch_release_asset() {
+  local repo="$1" tmp="$2" mode
+  for mode in "--filter=blob:none" ""; do
+    rm -rf "$tmp"; mkdir -p "$tmp" || return 1
+    # shellcheck disable=SC2086
+    if git clone --quiet --depth 1 $mode --no-checkout "$repo" "$tmp" >/dev/null 2>&1 \
+        && git -C "$tmp" sparse-checkout set --no-cone "$ASSET_REL_PATH" >/dev/null 2>&1 \
+        && git -C "$tmp" checkout --quiet >/dev/null 2>&1 \
+        && [ -s "$tmp/$ASSET_REL_PATH" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Download and install just the prebuilt binary for this platform, fetched from
+# the same online mirror the source build would clone from. Returns non-zero —
+# and leaves the source build to take over — when git is unavailable or no
+# mirror serves the asset.
+install_prebuilt_release() {
+  command -v git >/dev/null 2>&1 || return 1
+  local tmp repo ok=1
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
+  for repo in "${REPO_CANDIDATES[@]}"; do
+    say "Fetching prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
+    if _fetch_release_asset "$repo" "$tmp"; then
+      ok=0; REPO="$repo"; break
+    fi
+  done
+  if [ "$ok" -ne 0 ]; then rm -rf "$tmp"; return 1; fi
+  mkdir -p "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
+  install -m 0755 "$tmp/$ASSET_REL_PATH" "$BIN" 2>/dev/null \
+    || { cp "$tmp/$ASSET_REL_PATH" "$BIN" && chmod 0755 "$BIN"; } \
+    || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+  say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
+  return 0
+}
+
+detect_release_asset
+if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
+  CURRENT_STEP="prebuilt"
+  if install_prebuilt_release; then
+    INSTALLED_PREBUILT=1
+    diag prebuilt 1 "$ASSET_NAME"
+  else
+    say "No prebuilt binary published for ${ASSET_OS}/${ASSET_ARCH}; building from source."
+    diag prebuilt 0 "$ASSET_NAME"
+  fi
+fi
+
+# Everything from here to the build retry is the source-build pipeline; skip it
+# entirely once a prebuilt binary is in place.
+if [ "$INSTALLED_PREBUILT" != "1" ]; then
 ensure cmake  command -v cmake
 
 # Compiler: on macOS this means the Xcode Command Line Tools, which brew can't
@@ -669,6 +769,7 @@ if ! attempt_install; then
     die "Install failed again after a clean re-clone; see the messages above for the cause."
   fi
 fi
+fi  # end source-build pipeline (skipped when a prebuilt binary was installed)
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
@@ -686,7 +787,14 @@ register_desktop_entry() {
   [ "$(uname -s)" = "Linux" ] || return 0
   local script="$SRC/qt_client/install.sh"
   if [ ! -f "$script" ]; then
-    warn "Desktop integration script not found at $script; skipping menu registration."
+    # The prebuilt fast path never clones the source, so the helper that writes
+    # the .desktop entry isn't present — that's expected, not an error. The app
+    # still runs from $BIN on the PATH.
+    if [ "$INSTALLED_PREBUILT" = "1" ]; then
+      say "Installed the prebuilt binary; skipping app-menu registration (run:  forkmesh)."
+    else
+      warn "Desktop integration script not found at $script; skipping menu registration."
+    fi
     return 0
   fi
   say "Registering ForkMesh in the application menu"
