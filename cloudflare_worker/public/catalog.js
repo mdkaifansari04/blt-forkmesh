@@ -265,8 +265,21 @@ function routeProfileClick(event, owner) {
   go(profileUrl(owner));
 }
 
+// The source-of-truth node for a logical repo: the member that published from a
+// local working copy (source === "local-node") — the repo's origin, not a mirror
+// clone of it. Falls back to the primary when no member identifies itself as the
+// local source (e.g. only mirror clones have published a catalog record so far).
+// members are pre-sorted live-host/freshest-first, so among multiple local-node
+// records this prefers an online, up-to-date one.
+function sourceOfTruth(group) {
+  return group.members.find((m) => text(m.source) === "local-node") || group.primary;
+}
+
 function createCatalogGroupItem(group) {
   const repo = group.primary;            // a live host if any, else newest
+  // Name the card after the source of truth, not whichever mirror happens to be
+  // the freshest live host, so the list shows who the repo belongs to (#217).
+  const origin = sourceOfTruth(group);
   const members = group.members;
   for (const m of members) repoIndex.set(`${m.owner}/${m.name}`, m);
   repoGroups.set(repoGroupKey(repo), members);
@@ -280,9 +293,9 @@ function createCatalogGroupItem(group) {
 
   const title = document.createElement("h3");
   const link = document.createElement("a");
-  link.href = repoRoute(repo.owner, repo.name);
-  link.textContent = `${text(repo.owner, "owner")}/${text(repo.name, "repository")}`;
-  link.addEventListener("click", (event) => routeCatalogClick(event, repo.owner, repo.name));
+  link.href = repoRoute(origin.owner, origin.name);
+  link.textContent = `${text(origin.owner, "owner")}/${text(origin.name, "repository")}`;
+  link.addEventListener("click", (event) => routeCatalogClick(event, origin.owner, origin.name));
   title.append(link);
   header.append(title);
 
@@ -322,13 +335,13 @@ function createCatalogGroupItem(group) {
   copy.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    copyText(`git clone ${repoCloneUrl(repo.owner, repo.name)}`, copy);
+    copyText(`git clone ${repoCloneUrl(origin.owner, origin.name)}`, copy);
   });
   const open = document.createElement("a");
   open.className = "catalog-open";
-  open.href = repoRoute(repo.owner, repo.name);
+  open.href = repoRoute(origin.owner, origin.name);
   open.textContent = "Browse repository →";
-  open.addEventListener("click", (event) => routeCatalogClick(event, repo.owner, repo.name));
+  open.addEventListener("click", (event) => routeCatalogClick(event, origin.owner, origin.name));
   actions.append(copy, open);
 
   item.append(header, description, meta, actions);
