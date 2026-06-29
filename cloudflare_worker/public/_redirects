@@ -7,6 +7,7 @@
 /blogs /blog.html 200
 /login /login.html 200
 /signup /signup.html 200
+/mirror-payouts /mirror-payouts.html 200
 /docs /docs/index.html 200
 /docs/ /docs/index.html 200
 /docs.html /docs/ 308
