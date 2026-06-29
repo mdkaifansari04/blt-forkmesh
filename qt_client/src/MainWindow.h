@@ -2494,6 +2494,7 @@ private:
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
     QListWidget *m_coveList = nullptr;       // coves in the open repo (lock state)
     QLineEdit *m_covePasswordEdit = nullptr; // per-repo unlock password field
+    QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
     QLabel *m_coveEmptyHint = nullptr;
     QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
