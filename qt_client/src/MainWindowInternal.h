@@ -170,6 +170,19 @@
 
 namespace forkmesh::ui {
 
+// Cross-region free helpers shared by several MainWindow feature .cpp files.
+// Defined in MainWindowShared.cpp.
+QString openAiAuthHeader(const QString &apiKey);
+QNetworkRequest openAiRequest(const QUrl &url, const QString &apiKey);
+QString apiErrorSummary(QNetworkReply *reply, const QByteArray &body);
+QString openAiResponseText(const QJsonObject &obj);
+double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens = nullptr,
+                        qint64 *outTokens = nullptr);
+QString mirrorHeadBranch(const QString &mirrorPath);
+QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
+QString actionStatusText(const QString &status);
+QColor actionStatusColor(const QString &status);
+
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
 constexpr int kProgressBarRole = Qt::UserRole + 11;
@@ -4405,32 +4418,32 @@ inline QString languageColor(const QString &lang)
     return colors.value(lang, "#8b949e");
 }
 
-namespace {
-
 // While >0, the git wait below keeps the GUI event loop breathing instead of
 // blocking the main thread outright. A multi-second git read (a big ls-tree,
 // log --numstat, count-objects, …) would otherwise stop the app answering
 // window-manager pings and get flagged "Not Responding". User input is excluded
 // from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
 // m_repoDetailLoading guard backstops anything that still slips through.
-int g_gitKeepAliveDepth = 0;
+// inline so the counter is a single shared instance across every TU that
+// includes this header (the per-feature MainWindow*.cpp files all use GitKeepAlive).
+inline int g_gitKeepAliveDepth = 0;
 
 // Process-wide monotonic clock + the time we last pumped the GUI under a
 // keep-alive scope. Shared across every git read so a burst of separate-but-fast
 // calls can be throttled as one stream (see waitForGit).
-QElapsedTimer &keepAliveClock()
+inline QElapsedTimer &keepAliveClock()
 {
     static QElapsedTimer c;
     if (!c.isValid())
         c.start();
     return c;
 }
-qint64 g_lastKeepAlivePumpMs = 0;
+inline qint64 g_lastKeepAlivePumpMs = 0;
 
 // Service the GUI (timers — incl. the stall-watchdog heartbeat — paints, queued
 // slots, but not user input) and record when. One place so the per-call throttle
 // and the in-wait poll share a single "last pumped" timestamp.
-void pumpKeepAlive()
+inline void pumpKeepAlive()
 {
     g_lastKeepAlivePumpMs = keepAliveClock().elapsed();
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
@@ -4439,7 +4452,7 @@ void pumpKeepAlive()
 // Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
 // short slices and service the GUI between them so the window stays responsive
 // and spinners animate; otherwise block as before.
-bool waitForGit(QProcess &process, QString *err)
+inline bool waitForGit(QProcess &process, QString *err)
 {
     if (g_gitKeepAliveDepth <= 0) {
         if (process.waitForFinished(8000))
@@ -4472,8 +4485,6 @@ bool waitForGit(QProcess &process, QString *err)
     }
     return true;
 }
-
-} // namespace
 
 // RAII: keep the GUI responsive across the run of synchronous git reads in an
 // interactive load (a node switch or opening a repo). Nestable.

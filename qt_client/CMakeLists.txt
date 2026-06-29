@@ -89,6 +89,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
+    src/MainWindowShared.cpp
     src/MainWindowCoves.cpp
     src/HeadlessConsole.h
     src/HeadlessConsole.cpp
