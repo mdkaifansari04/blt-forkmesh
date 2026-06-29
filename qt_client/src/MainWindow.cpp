@@ -10575,7 +10575,8 @@ void MainWindow::runHostInstall()
     vars.insert(QStringLiteral("ansible_password"), pass);
     vars.insert(QStringLiteral("ansible_become_password"), pass);
     vars.insert(QStringLiteral("ansible_ssh_common_args"),
-                QStringLiteral("-o StrictHostKeyChecking=no "
+                QStringLiteral("-o IdentitiesOnly=yes "
+                               "-o StrictHostKeyChecking=no "
                                "-o UserKnownHostsFile=/dev/null"));
     vars.insert(QStringLiteral("install_url"), installUrl);
     vars.insert(QStringLiteral("fm_node"), node);
