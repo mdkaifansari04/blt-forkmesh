@@ -19593,9 +19593,10 @@ bool MainWindow::runMergeConflictEditor(
     auto *oursBtn = new QPushButton(QStringLiteral("Accept ours"));
     auto *theirsBtn = new QPushButton(QStringLiteral("Accept theirs"));
     auto *bothBtn = new QPushButton(QStringLiteral("Accept both"));
+    auto *allTheirsBtn = new QPushButton(QStringLiteral("Accept all theirs"));
     auto *prevBtn = new QPushButton(QString::fromUtf8("\xE2\x86\x91 Prev"));
     auto *nextBtn = new QPushButton(QString::fromUtf8("\xE2\x86\x93 Next"));
-    for (QPushButton *b : {oursBtn, theirsBtn, bothBtn, prevBtn, nextBtn}) {
+    for (QPushButton *b : {oursBtn, theirsBtn, bothBtn, allTheirsBtn, prevBtn, nextBtn}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -19603,6 +19604,7 @@ bool MainWindow::runMergeConflictEditor(
     oursBtn->setToolTip("Keep our version of this conflict");
     theirsBtn->setToolTip("Take their version of this conflict");
     bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
+    allTheirsBtn->setToolTip("Take their version of every conflict in every file");
     // Tint the accept buttons to echo ConflictHighlighter's side colours: blue
     // for "ours", green for "theirs", so they read against the highlighted diff.
     // Give them their own objectName: the per-widget stylesheet below targets
@@ -19610,6 +19612,7 @@ bool MainWindow::runMergeConflictEditor(
     // rule on specificity (an ID selector), otherwise the tint never shows.
     oursBtn->setObjectName("conflictOursBtn");
     theirsBtn->setObjectName("conflictTheirsBtn");
+    allTheirsBtn->setObjectName("conflictAllTheirsBtn");
     const bool darkConflict = currentThemeIsDark();
     const auto tintConflictBtn = [](QPushButton *b, const QString &bg,
                                     const QString &border, const QString &fg,
@@ -19624,15 +19627,18 @@ bool MainWindow::runMergeConflictEditor(
     if (darkConflict) {
         tintConflictBtn(oursBtn, "#0b2a4a", "#1f6feb", "#cae3ff", "#10395f");
         tintConflictBtn(theirsBtn, "#0b3a1e", "#238636", "#aff5b8", "#114a26");
+        tintConflictBtn(allTheirsBtn, "#0b3a1e", "#238636", "#aff5b8", "#114a26");
     } else {
         tintConflictBtn(oursBtn, "#ddf4ff", "#54aeff", "#0969da", "#cae8ff");
         tintConflictBtn(theirsBtn, "#e6ffec", "#4ac26b", "#1a7f37", "#d2f8d9");
+        tintConflictBtn(allTheirsBtn, "#e6ffec", "#4ac26b", "#1a7f37", "#d2f8d9");
     }
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->addWidget(oursBtn);
     toolbar->addWidget(theirsBtn);
     toolbar->addWidget(bothBtn);
+    toolbar->addWidget(allTheirsBtn);
     toolbar->addStretch();
     toolbar->addWidget(prevBtn);
     toolbar->addWidget(nextBtn);
@@ -19763,6 +19769,35 @@ bool MainWindow::runMergeConflictEditor(
     connect(oursBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(0); });
     connect(theirsBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(1); });
     connect(bothBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(2); });
+
+    // Bulk action: take their side of every conflict across every file, not just
+    // the one at the cursor. Each resolved file is written straight to the work
+    // tree; the visible editor is then reloaded for the current file.
+    const auto takeAllTheirs = [](const QString &text) {
+        QStringList lines = text.split('\n');
+        const QList<ConflictRegion> regions = findConflicts(lines);
+        // Rewrite from the last region back so earlier line offsets stay valid.
+        for (int i = regions.size() - 1; i >= 0; --i) {
+            const ConflictRegion r = regions.at(i);
+            const QStringList theirs =
+                lines.mid(r.sepLine + 1, r.endLine - r.sepLine - 1);
+            lines = lines.mid(0, r.startLine) + theirs + lines.mid(r.endLine + 1);
+        }
+        return lines.join('\n');
+    };
+    connect(allTheirsBtn, &QPushButton::clicked, &dlg, [=] {
+        saveCurrent(); // flush the visible editor to disk before re-reading
+        for (int i = 0; i < fileList->count(); ++i) {
+            const QString rel = fileList->item(i)->data(Qt::UserRole).toString();
+            const QString resolved = takeAllTheirs(readFile(rel));
+            QFile f(workTree + "/" + rel);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(resolved.toUtf8());
+        }
+        if (!currentPath->isEmpty())
+            editor->setPlainText(readFile(*currentPath));
+        refreshStatus();
+    });
 
     const auto jump = [=](int dir) {
         const QStringList lines = editor->toPlainText().split('\n');
