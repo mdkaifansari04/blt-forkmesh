@@ -900,13 +900,19 @@ def build_repo_mirrors_payload(
     }
 
 
-def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online):
+def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online,
+                          rotate=0):
     # Pick a healthy, online mirror to serve a clone of owner/repo from when the
     # named owner's own host is offline. This is what keeps a repo cloneable when
     # the source of truth goes down: a clone of /owner/repo is redirected to a peer
     # that mirrors the SAME logical repo (grouped by root commit, name fallback) and
     # is online right now. Returns the fallback owner's name, or None to fall
     # through to the normal named-owner host route.
+    #
+    # When several mirrors qualify, `rotate` (a per-repo counter the caller bumps
+    # on every fallback) spreads clone traffic across them round-robin instead of
+    # always hammering the single freshest mirror. rotate=0 keeps the
+    # freshest-first pick.
     #
     # Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload; the
     # caller gathers the catalog rows + host_presence map and whether the named
@@ -948,9 +954,11 @@ def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_onl
         candidates.append((sync, seen, rec_owner))
     if not candidates:
         return None
-    # Freshest-synced wins, then most-recently-seen, then name for a stable order.
+    # Freshest-synced first, then most-recently-seen, then name for a stable order.
     candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
-    return candidates[0][2]
+    # Round-robin across the eligible online mirrors so the load of serving a
+    # downed repo is spread over all of them rather than landing on one mirror.
+    return candidates[rotate % len(candidates)][2]
 
 
 async def touch_host_presence(env, repo_bi):
@@ -974,6 +982,25 @@ async def touch_host_presence(env, repo_bi):
         )
     except Exception:
         pass
+
+
+async def next_clone_rotation(env, repo_bi):
+    # Advance and read back this repo's round-robin cursor so consecutive clone
+    # fallbacks rotate across its mirrors instead of all hitting the freshest one.
+    # Best-effort: any failure yields 0 (the freshest-first pick), so a flaky
+    # counter never blocks a redirect.
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "INSERT INTO clone_rr (repo_bi, n) VALUES (?, 1) "
+            "ON CONFLICT(repo_bi) DO UPDATE SET n = n + 1",
+            repo_bi,
+        )
+        row = await d1_first(env, "SELECT n FROM clone_rr WHERE repo_bi=?", repo_bi)
+        return int((row or {}).get("n") or 0)
+    except Exception:
+        return 0
 
 
 async def _flagship_client_count(env):
@@ -1893,6 +1920,12 @@ SCHEMA_STATEMENTS = [
     # and a staleness window self-heals rows left behind by a missed disconnect.
     "CREATE TABLE IF NOT EXISTS host_presence (repo_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_host_presence_ts ON host_presence(ts)",
+    # Per-repo round-robin cursor for clone fallbacks. When a repo's named host is
+    # offline, a clone is redirected to one of its online mirrors; this counter is
+    # bumped on each redirect so the picks rotate across every mirror instead of
+    # all piling onto the single freshest one. repo_bi is the same blind index
+    # host_presence uses; n is a monotonically increasing rotation cursor.
+    "CREATE TABLE IF NOT EXISTS clone_rr (repo_bi TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
     # Account-level presence: a node heartbeats here while it is online so it can
     # be included in the reward split. Keyed by the account blind index.
     "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
@@ -6427,9 +6460,10 @@ class Default(WorkerEntrypoint):
                     "is_private": int(row.get("is_private") or 0),
                     "data": rec,
                 })
+            rotate = await next_clone_rotation(self.env, repo_bi)
             return select_clone_fallback(
                 owner, repo, catalog_rows, presence, now,
-                HOST_PRESENCE_STALE_MS, source_online)
+                HOST_PRESENCE_STALE_MS, source_online, rotate)
         except Exception:
             return None
 
