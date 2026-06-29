@@ -112,8 +112,11 @@ require_cloudflare_auth() {
     fi
     echo "ERROR: no Cloudflare credentials for a non-interactive deploy." >&2
     echo "       wrangler can't open an interactive OAuth login here, so set a" >&2
-    echo "       scoped API token (permissions: Workers Scripts: Edit + D1: Edit)" >&2
-    echo "       as CLOUDFLARE_API_TOKEN in $ENV_FILE (deploy.sh exports it for wrangler):" >&2
+    echo "       scoped API token (permissions: Workers Scripts: Edit + D1: Edit)." >&2
+    echo "       In ForkMesh: Settings -> Secrets & Coves, add CLOUDFLARE_API_TOKEN" >&2
+    echo "       (and CLOUDFLARE_ACCOUNT_ID); the deploy workflow substitutes those" >&2
+    echo "       vars into $ENV_FILE for you. Outside ForkMesh, set it directly in" >&2
+    echo "       $ENV_FILE (deploy.sh exports it for wrangler):" >&2
     echo "         CLOUDFLARE_API_TOKEN=..." >&2
     echo "       Create one: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" >&2
     return 1

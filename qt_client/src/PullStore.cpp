@@ -1146,10 +1146,13 @@ bool PullStore::setStatus(int number, const QString &status, QString *error)
     return commit(QStringLiteral("pull #%1: %2").arg(number).arg(status), error);
 }
 
-bool PullStore::isBranchBehindBase(int number, bool *behind, QString *error) const
+bool PullStore::isBranchBehindBase(int number, bool *behind, QString *error,
+                                   int *behindCount) const
 {
     if (behind)
         *behind = false;
+    if (behindCount)
+        *behindCount = 0;
     if (!canWrite()) {
         if (error)
             *error = QStringLiteral("This repository is read-only on this node.");
@@ -1174,8 +1177,11 @@ bool PullStore::isBranchBehindBase(int number, bool *behind, QString *error) con
             *error = QStringLiteral("Could not compare branches: %1").arg(err);
         return false;
     }
+    const int count = QString::fromUtf8(output).trimmed().toInt();
     if (behind)
-        *behind = QString::fromUtf8(output).trimmed().toInt() > 0;
+        *behind = count > 0;
+    if (behindCount)
+        *behindCount = count;
     return true;
 }
 
