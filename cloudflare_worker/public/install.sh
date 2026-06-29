@@ -21,6 +21,14 @@ INSTALLER_VERSION="0.12.1 (2026-06-29)"
 # mainnode for the currently-online forkmesh host with the most recent uptime.
 FORKMESH_HOST="${FORKMESH_HOST:-https://forkmesh.com}"
 FORKMESH_NODE="${FORKMESH_NODE:-}"
+# The name to give a freshly-deployed mirror node. The deploy UI passes the
+# operator's chosen name as FORKMESH_NODE_NAME, leaving FORKMESH_NODE empty so
+# the clone source still auto-resolves to a real online mirror. A headless launch
+# hands this on to the app so the new node adopts the chosen name and
+# auto-connects instead of sitting idle at the setup screen. Fall back to a
+# verbatim FORKMESH_NODE (older deploy UI) so naming still works across skew.
+# Empty unless the operator set one of them explicitly.
+FORKMESH_NODE_NAME="${FORKMESH_NODE_NAME:-${FORKMESH_NODE:-}}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
@@ -917,22 +925,49 @@ register_desktop_entry
 # One-shot install: start ForkMesh automatically so the user lands in the app.
 # Detached from this script (which may itself be running under `curl | bash`) so
 # it keeps running after the installer exits. Set FORKMESH_NO_LAUNCH=1 to skip
-# (e.g. headless build servers). On Linux we only auto-launch when a display is
-# present; a headless box gets the manual hint instead.
+# (e.g. headless build servers).
+#
+# On a desktop this opens the GUI. On a headless box — the usual case for a
+# deployed mirror node — it starts the node as a detached BACKGROUND DAEMON
+# instead of just printing a hint: otherwise nothing runs, so the node never
+# joins the network or appears in the Mirror nodes list even though the install
+# "succeeded". LAUNCH_MODE records which path ran so the caller prints the right
+# message.
+LAUNCH_MODE=""
 launch_forkmesh() {
   case "$(uname -s)" in
     Darwin)
+      LAUNCH_MODE="gui"
       if [ -d "$BUILD/ForkMesh.app" ]; then
         open "$BUILD/ForkMesh.app" && return 0
       fi
       open "$BIN" 2>/dev/null && return 0
       ;;
     *)
-      [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || return 1
+      if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        LAUNCH_MODE="gui"
+        if command -v setsid >/dev/null 2>&1; then
+          setsid "$BIN" >/dev/null 2>&1 < /dev/null &
+        else
+          nohup "$BIN" >/dev/null 2>&1 < /dev/null &
+        fi
+        return 0
+      fi
+      # Headless: bring the node up as a background daemon. Reading stdin from
+      # /dev/null makes the headless console drop straight into daemon mode (it
+      # keeps serving once stdin closes) rather than blocking at a prompt nothing
+      # is attached to. Running as root needs --allow-root to clear the built-in
+      # root refusal. FORKMESH_NODE_NAME hands the app the operator's chosen name
+      # so the fresh node adopts it and auto-connects.
+      LAUNCH_MODE="daemon"
+      local args="" log
+      [ "$(id -u)" -eq 0 ] && args="--allow-root"
+      log="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
+      mkdir -p "$(dirname "$log")" 2>/dev/null || true
       if command -v setsid >/dev/null 2>&1; then
-        setsid "$BIN" >/dev/null 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" setsid "$BIN" $args >"$log" 2>&1 < /dev/null &
       else
-        nohup "$BIN" >/dev/null 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" nohup "$BIN" $args >"$log" 2>&1 < /dev/null &
       fi
       return 0
       ;;
@@ -941,13 +976,20 @@ launch_forkmesh() {
 }
 
 CURRENT_STEP="launch"
+LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
   say "  On a server with no display, forkmesh opens an interactive CLI."
   diag launch 1 "skipped"
 elif launch_forkmesh; then
-  say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
-  diag launch 1 "launched"
+  if [ "$LAUNCH_MODE" = "daemon" ]; then
+    say "Done — ForkMesh is running as a background daemon."
+    say "  The node will join the network and appear in the Mirror nodes list shortly."
+    say "  Logs: $LOG_PATH    Stop: pkill -f '$BIN'"
+  else
+    say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
+  fi
+  diag launch 1 "$LAUNCH_MODE"
 else
   say "Done. Launch it with:  forkmesh"
   say "  No display detected — forkmesh opens an interactive CLI here."

@@ -4793,6 +4793,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // swaps to the real avatar a few seconds later when silent-auth/startSession
     // finally loads the same values.
     m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
+    // A headless mirror deployed via the installer arrives with no saved name but
+    // an operator-chosen one in FORKMESH_NODE_NAME. Adopt it (only on a brand-new
+    // node, so a reinstall never renames an existing one) and persist it before
+    // buildSetupPage() seeds m_nameEdit from savedProfileName(), so the deferred
+    // auto-connect path picks it up and the node joins the network unattended
+    // instead of idling at the setup screen.
+    if (savedProfileName().isEmpty()) {
+        const QString envName =
+            accountNameFromInput(qEnvironmentVariable("FORKMESH_NODE_NAME"),
+                                 QString());
+        if (isValidNodeName(envName))
+            QSettings().setValue(kAccountNameSetting, envName);
+    }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
 
@@ -10692,8 +10705,13 @@ void MainWindow::runHostInstall()
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
         return QStringLiteral("'") + out + QStringLiteral("'");
     };
+    // Pass the chosen name as FORKMESH_NODE_NAME (not FORKMESH_NODE): the
+    // installer uses it to name the freshly-deployed node and leaves the
+    // clone-source mirror to auto-resolve to a real online one. The headless
+    // installer then starts the node as a background daemon under this name so it
+    // actually joins the network and shows up in the Mirror nodes list.
     const QString pipeline =
-        QStringLiteral("curl -fsSL %1 | FORKMESH_NODE=%2 bash")
+        QStringLiteral("curl -fsSL %1 | FORKMESH_NODE_NAME=%2 bash")
             .arg(shq(installUrl), shq(node));
     const bool needSudo = user != QStringLiteral("root");
     const QString remoteCmd =
