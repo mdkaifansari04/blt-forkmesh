@@ -1113,7 +1113,7 @@ private:
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
     void reloadVariablesTable();
-    void addOrEditVariable();
+    void addOrEditVariable(bool editSelected);
     void deleteSelectedVariable();
     void toggleVariablesRevealed();
     void persistVariablesFromTable();

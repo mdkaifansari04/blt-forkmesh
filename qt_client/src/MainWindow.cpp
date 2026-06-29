@@ -46602,11 +46602,14 @@ QWidget *MainWindow::buildSettingsSection()
     }
     m_varsRevealButton->setToolTip("Show or hide the secret values in clear text");
     connect(varAddButton, &QPushButton::clicked, this,
-            &MainWindow::addOrEditVariable);
+            [this] { addOrEditVariable(false); });
     connect(varEditButton, &QPushButton::clicked, this,
-            &MainWindow::addOrEditVariable);
+            [this] { addOrEditVariable(true); });
     connect(varDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteSelectedVariable);
+    // Double-clicking a row is the natural "edit this one" gesture.
+    connect(m_varsTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int, int) { addOrEditVariable(true); });
     connect(m_varsRevealButton, &QPushButton::clicked, this,
             &MainWindow::toggleVariablesRevealed);
     // Click a revealed value to copy it to the clipboard. Masked rows do
@@ -53995,17 +53998,32 @@ void MainWindow::reloadVariablesTable()
     }
 }
 
-void MainWindow::addOrEditVariable()
+void MainWindow::addOrEditVariable(bool editSelected)
 {
+    if (!m_varsTable)
+        return;
+
     QString name, value;
-    const QList<QTableWidgetItem *> selected =
-        m_varsTable ? m_varsTable->selectedItems() : QList<QTableWidgetItem *>();
-    const bool editing = !selected.isEmpty();
-    if (editing) {
-        const int row = selected.first()->row();
-        name = m_varsTable->item(row, 0)->text();
-        value = m_varsTable->item(row, 1)->data(Qt::UserRole).toString();
+    // "Edit…" (and double-click) operate on the highlighted row; "Add…" always
+    // starts blank. Resolve the row to edit from the current row, falling back
+    // to the selection so either way of picking a row works.
+    int editRow = -1;
+    if (editSelected) {
+        editRow = m_varsTable->currentRow();
+        if (editRow < 0) {
+            const QList<QTableWidgetItem *> selected = m_varsTable->selectedItems();
+            if (!selected.isEmpty())
+                editRow = selected.first()->row();
+        }
+        if (editRow < 0 || !m_varsTable->item(editRow, 0)) {
+            QMessageBox::information(this, "Edit variable",
+                                    "Select a variable in the list to edit.");
+            return;
+        }
+        name = m_varsTable->item(editRow, 0)->text();
+        value = m_varsTable->item(editRow, 1)->data(Qt::UserRole).toString();
     }
+    const bool editing = editRow >= 0;
 
     bool ok = false;
     const QString newName = QInputDialog::getText(
