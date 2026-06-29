@@ -4,7 +4,7 @@ number: 12
 title: chore: fix blogs path and added the updated images
 base: main
 head: fix/blog-page
-status: open
+status: merged
 ts: 1782772109492
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
