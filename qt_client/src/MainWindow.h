@@ -2776,6 +2776,10 @@ private:
     void notifyAgentWaiting(int sessionId, bool needsPermission);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // User messages queued while a session has no live CLI (typed after the task
+    // finished, or while it resumes after a ForkMesh restart). Flushed as
+    // follow-up turns the next time the session's stream starts.
+    QHash<int, QStringList> m_streamPending;
     // sessionWorkdir() cache for *reloaded* sessions (not in m_streamWorktree):
     // resolving their worktree shells `git worktree list`, which the Files-changed
     // panel drove on every transcript turn — a per-event subprocess that stalled
