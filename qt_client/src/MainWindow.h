@@ -206,6 +206,14 @@ public:
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
+    // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
+    // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
+    QStringList testBuildAndPreviewSteps(const QString &gitDir,
+                                         const QString &previewDir,
+                                         const QString &clientDir,
+                                         const QString &buildDir,
+                                         const QString &commit,
+                                         bool haveWorktree) const;
     void testSetSetupInputs(const QString &name, const QString &solana);
     void testSetAccountFlowResult(bool result)
     {
