@@ -568,24 +568,44 @@ void ServerNode::sampleSystemStats()
         return;
     m_lastStatsSampleMs = now;
 
-    const qint64 total = SystemStats::totalMemoryBytes();
-    const qint64 avail = SystemStats::availableMemoryBytes();
-    m_memTotalBytes = total;
-    m_memUsedBytes = (total > 0 && avail > 0) ? qMax(qint64(0), total - avail) : 0;
+    // Each metric is sampled (and thus advertised + shown on our self row) only
+    // when its display toggle is on. Disabled metrics reset to the "unknown"
+    // sentinel so makeMessage() omits them and the nodes view draws no bar
+    // (adhoc #23). Re-read every sample so a runtime toggle takes effect.
+    QSettings settings;
+    const bool showCpu = settings.value(TelemetrySettings::kReportCpu, false).toBool();
+    const bool showMem = settings.value(TelemetrySettings::kReportMemory, false).toBool();
+    const bool showDisk = settings.value(TelemetrySettings::kReportDisk, false).toBool();
 
-    // Measure the volume that holds our app data (where mirrors live); fall back
-    // to the home directory so a meaningful figure shows even without app data.
-    QString diskPath =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (diskPath.isEmpty() || !QDir(diskPath).exists())
-        diskPath = QDir::homePath();
-    const qint64 diskTotal = SystemStats::diskTotalBytes(diskPath);
-    const qint64 diskFree = SystemStats::diskFreeBytes(diskPath);
-    m_diskTotalBytes = diskTotal;
-    m_diskUsedBytes =
-        (diskTotal > 0 && diskFree >= 0) ? qMax(qint64(0), diskTotal - diskFree) : 0;
+    if (showMem) {
+        const qint64 total = SystemStats::totalMemoryBytes();
+        const qint64 avail = SystemStats::availableMemoryBytes();
+        m_memTotalBytes = total;
+        m_memUsedBytes = (total > 0 && avail > 0) ? qMax(qint64(0), total - avail) : 0;
+    } else {
+        m_memTotalBytes = 0;
+        m_memUsedBytes = 0;
+    }
 
-    m_cpuPercent = SystemStats::hostCpuPercent();
+    if (showDisk) {
+        // Measure the volume that holds our app data (where mirrors live); fall
+        // back to the home directory so a meaningful figure shows even without
+        // app data.
+        QString diskPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (diskPath.isEmpty() || !QDir(diskPath).exists())
+            diskPath = QDir::homePath();
+        const qint64 diskTotal = SystemStats::diskTotalBytes(diskPath);
+        const qint64 diskFree = SystemStats::diskFreeBytes(diskPath);
+        m_diskTotalBytes = diskTotal;
+        m_diskUsedBytes =
+            (diskTotal > 0 && diskFree >= 0) ? qMax(qint64(0), diskTotal - diskFree) : 0;
+    } else {
+        m_diskTotalBytes = 0;
+        m_diskUsedBytes = 0;
+    }
+
+    m_cpuPercent = showCpu ? SystemStats::hostCpuPercent() : -1.0;
 }
 
 void ServerNode::sendHello()

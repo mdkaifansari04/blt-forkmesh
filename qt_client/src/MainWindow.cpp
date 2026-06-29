@@ -45010,6 +45010,37 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
+    // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
+    // Mirror nodes view. Off by default on the desktop so a personal machine
+    // doesn't broadcast its load; headless installs are seeded on at startup so
+    // hosts stay monitorable (adhoc #23). Re-sampled within ~10s of a change.
+    auto *nodeStatsLabel = new QLabel("NODE STATS");
+    nodeStatsLabel->setObjectName("sectionLabel");
+    auto *nodeStatsHint = new QLabel(
+        "Show this node's resource use to other nodes in the Mirror nodes view. "
+        "Off by default; servers installed from the Hosts tab report all three.");
+    nodeStatsHint->setObjectName("statusLine");
+    nodeStatsHint->setWordWrap(true);
+    struct NodeStatToggle {
+        const char *label;
+        const QString &key;
+    };
+    const NodeStatToggle nodeStatToggles[] = {
+        {"Report CPU usage", TelemetrySettings::kReportCpu},
+        {"Report memory usage", TelemetrySettings::kReportMemory},
+        {"Report disk usage", TelemetrySettings::kReportDisk},
+    };
+    QList<QCheckBox *> nodeStatChecks;
+    for (const NodeStatToggle &toggle : nodeStatToggles) {
+        auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
+        check->setChecked(QSettings().value(toggle.key, false).toBool());
+        const QString key = toggle.key;
+        connect(check, &QCheckBox::toggled, this, [key](bool enabled) {
+            QSettings().setValue(key, enabled);
+        });
+        nodeStatChecks.append(check);
+    }
+
     auto *agentsLabel = new QLabel("AGENTS");
     agentsLabel->setObjectName("sectionLabel");
     auto *agentsHint = new QLabel(
@@ -45490,6 +45521,11 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(nodeStatsLabel);
+    generalCol->addWidget(nodeStatsHint);
+    for (QCheckBox *check : std::as_const(nodeStatChecks))
+        generalCol->addWidget(check);
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);

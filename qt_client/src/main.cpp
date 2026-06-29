@@ -1,6 +1,7 @@
 #include "HeadlessConsole.h"
 #include "MainWindow.h"
 #include "PlatformLogFilter.h"
+#include "ServerNode.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -9,6 +10,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QMessageBox>
+#include <QSettings>
 #include <QStringList>
 #include <QStyleFactory>
 #include <QStyleHints>
@@ -88,6 +90,21 @@ int main(int argc, char *argv[])
     // be pinned. Harmless on X11/macOS/Windows.
     QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
     app.setStyle(QStyleFactory::create("Fusion"));
+
+    // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
+    // default on the desktop but on for headless installs done from the Hosts
+    // tab, so an operator can monitor the servers they provisioned. Seed the
+    // toggles on the first headless launch; once set, the value persists and a
+    // later operator edit is never overwritten (adhoc #23).
+    if (headless) {
+        QSettings settings;
+        for (const QString &key : {TelemetrySettings::kReportCpu,
+                                   TelemetrySettings::kReportMemory,
+                                   TelemetrySettings::kReportDisk}) {
+            if (!settings.contains(key))
+                settings.setValue(key, true);
+        }
+    }
 
     // Refuse to run as root: ForkMesh runs git, action workflows and shell
     // steps, so running privileged is dangerous and unnecessary. This is a hard
