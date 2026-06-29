@@ -5,7 +5,7 @@ title: the claude code transcript seems to be gone after it's done - please make
 status: open
 labels: [Partial]
 milestone: 
-priority: 73
+priority: 3
 progress: 60
 assignees: []
 createdAt: 1782497450811
