@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 232
 title: have the about be stored in the .forkmesh dir and move the info.json there
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 13
@@ -12,7 +12,7 @@ createdAt: 1782355760782
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 2.00
-bountyAddress: 
+bountyAddress: 4F2E6AoRnvt2wXMFE27RE5WmAaMAQHvKhCJzSaPp5g1i
 bountyStatus: open
 type: open
 id: open-232
