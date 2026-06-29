@@ -704,8 +704,8 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 24px;
-    max-height: 28px;
+    min-height: 46px;
+    max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
 #issuePageTitle {
@@ -1678,8 +1678,8 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 24px;
-    max-height: 28px;
+    min-height: 46px;
+    max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
 #issuePageTitle {
