@@ -114,7 +114,7 @@ struct ServerConfig {
     QString room;
 };
 
-// Per-repository metadata that git can't provide, stored in the repo's info.json
+// Per-repository metadata that git can't provide, stored in .forkmesh/info.json
 // (about text, topics, social counts, contributor avatar overrides).
 struct RepoInfo {
     QString about;
@@ -2838,8 +2838,16 @@ private:
     QTimer *m_scannerTimer = nullptr;
     // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
     // search-as-you-type refresh reuses them instead of re-shelling git per row.
-    // Rebuilt from scratch on each reloadAgents() (the data-changed entry point).
+    // No longer wiped wholesale on reloadAgents(): a plain tab switch (issue #289)
+    // re-validates each entry against m_agentDiffSig and only re-shells the rows
+    // whose state actually moved, so an idle Issues→Agents switch runs zero git.
     QHash<int, AgentDiffStat> m_agentDiffStats;
+    // Per-session fingerprint of the inputs the cached AgentDiffStat was computed
+    // from (status/branch/merge/finish + the base tip). reloadAgents() flips
+    // m_agentDiffRefreshPending; the next refreshAgentTable() drops only the
+    // entries whose fingerprint changed (issue #289).
+    QHash<int, QString> m_agentDiffSig;
+    bool m_agentDiffRefreshPending = false;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.

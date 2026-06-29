@@ -6,7 +6,10 @@
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenu>
 #include <QProcess>
 #include <QSemaphore>
@@ -669,6 +672,39 @@ int main(int argc, char *argv[])
                   QString("default branch stays main while HEAD is parked on a "
                           "feature branch (got %1)")
                       .arg(window.testRepoDefaultBranch()));
+        }
+    }
+
+    // Issue #232: repository About metadata belongs under the ForkMesh metadata
+    // directory, not as a root-level info.json that collides with project files.
+    {
+        QTemporaryDir aboutRepo;
+        if (initGitRepo(aboutRepo)) {
+            const int idx =
+                window.testAddLocalRepository("me", "aboutrepo", aboutRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+
+            const bool saved = window.testSaveRepoAboutMetadata(
+                QStringLiteral("About from test"),
+                QStringLiteral("https://forkmesh.com"));
+            const QString metadataPath =
+                QDir(aboutRepo.path()).filePath(QStringLiteral(".forkmesh/info.json"));
+            QFile metadata(metadataPath);
+            const bool hasMetadata = metadata.open(QIODevice::ReadOnly);
+            const QJsonObject obj =
+                hasMetadata ? QJsonDocument::fromJson(metadata.readAll()).object()
+                            : QJsonObject();
+
+            check(saved && hasMetadata &&
+                      obj.value(QStringLiteral("about")).toString() ==
+                          QStringLiteral("About from test") &&
+                      obj.value(QStringLiteral("website")).toString() ==
+                          QStringLiteral("https://forkmesh.com") &&
+                      !QFileInfo::exists(
+                          QDir(aboutRepo.path()).filePath(QStringLiteral("info.json"))),
+                  QStringLiteral("repo about metadata saves to .forkmesh/info.json "
+                                 "and leaves root info.json absent (#232)"));
         }
     }
 
