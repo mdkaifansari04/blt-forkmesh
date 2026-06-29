@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 150
 title: on prs that have conflicts have a "fix with agent button" (roll the claude api and oppenai api in the dropdown and include claude code)
 status: open
-labels: [Phase 2]
+labels: [Phase 2, Partial]
 milestone: Phase 2
-priority: 13
-progress: 41
+priority: 94
+progress: 30
 assignees: []
 createdAt: 1782168775715
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

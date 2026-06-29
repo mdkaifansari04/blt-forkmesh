@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 233
 title: come up with a better way fo storing issues
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 51
-progress: 0
+priority: 93
+progress: 20
 assignees: []
 createdAt: 1782356323867
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

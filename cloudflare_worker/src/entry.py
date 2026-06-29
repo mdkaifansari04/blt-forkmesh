@@ -54,8 +54,9 @@ MAX_PENDING_ISSUES = 500
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
 # Pull-request inbox: a PR carries a unified diff (text), capped larger than an
-# issue body but still bounded.
-MAX_PULL_BYTES = 1024 * 1024
+# issue body but still bounded. Raised to 100 MB so a PR with a large diff (e.g.
+# generated files or vendored code) isn't rejected at submission.
+MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
 # Commit-comment inbox: small signed text comments keyed by commit hash.
 MAX_COMMIT_COMMENT_BYTES = 64 * 1024
@@ -87,6 +88,11 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|commits|commit)$")
+# Release asset download (issue #304): the bytes live in the node's
+# content-addressed store (never in git), streamed back over the host tunnel.
+# Stable, content-addressed URL — immutable, so it caches forever at the edge.
+RELEASE_BLOB_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
@@ -396,6 +402,178 @@ async def verify_commit_comment_event(sha, c):
     return await ed25519_verify(author, signature, canonical)
 
 
+# ---------------------------------------------------------------------------
+# Release publishing (issue #304). See docs/design/release-binary-publishing.md.
+#
+# Release METADATA is small, signed, and git-committed (synced across the mesh
+# like issues/PRs); release PAYLOADS (the binary bytes) live in a per-node
+# content-addressed blob store that is gitignored and NEVER committed. The
+# helpers below are the integrity spine shared by both sides: the canonical,
+# signable manifest (what the publisher signs and the worker verifies), the CAS
+# path layout, sha256sum-compatible checksum generation, semver `latest`
+# resolution, and the same-name re-upload decision. They are deliberately pure
+# (stdlib-only) so they can be pinned by tests and reused identically by the
+# client publisher without drifting from the server's verification.
+# ---------------------------------------------------------------------------
+
+# A release tag name: a single segment, no path traversal, no control bytes.
+RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+# Lowercase hex sha256 — the content address of a blob and the integrity anchor.
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+# Recognise vMAJOR.MINOR.PATCH[-prerelease] for `latest` ordering.
+RELEASE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$")
+
+
+def valid_release_tag(value):
+    value = (value or "").strip()
+    return (bool(value) and ".." not in value and
+            bool(RELEASE_TAG_RE.match(value)))
+
+
+def valid_asset_name(value):
+    # An asset's download filename. Must be one path segment with no traversal,
+    # separators, or control characters so it can never escape the release dir.
+    value = value or ""
+    if not (1 <= len(value) <= 255) or value in (".", ".."):
+        return False
+    if "/" in value or "\\" in value or "\x00" in value:
+        return False
+    return not any(ord(ch) < 0x20 for ch in value)
+
+
+def valid_sha256_hex(value):
+    return bool(SHA256_HEX_RE.match((value or "").strip().lower()))
+
+
+def cas_blob_relpath(sha256_hex):
+    # Where a blob's bytes live in the per-node content-addressed store, relative
+    # to .forkmesh/release-blobs/. Fan out by the first byte to keep directories
+    # shallow. Returns None for a non-sha256 input so callers reject it.
+    h = (sha256_hex or "").strip().lower()
+    if not SHA256_HEX_RE.match(h):
+        return None
+    return "sha256/%s/%s/data" % (h[:2], h)
+
+
+def release_asset_line(asset):
+    # One deterministic line per asset for the signable manifest. The fields are
+    # the asset's IMMUTABLE identity (name + the exact bytes it resolves to);
+    # mutable presentation (download_count) and release notes are intentionally
+    # absent so editing them never invalidates the signature.
+    return "\x00".join([
+        asset.get("name", "") or "",
+        (asset.get("blob_sha256", "") or "").lower(),
+        str(int(asset.get("size", 0) or 0)),
+        asset.get("content_type", "") or "",
+        asset.get("os", "") or "",
+        asset.get("arch", "") or "",
+        asset.get("label", "") or "",
+    ])
+
+
+def release_manifest_content(manifest):
+    # The canonical, signable body of a release. Binds the repo, the tag, the
+    # commit the tag pointed to at finalize (so a later force-push can't silently
+    # redefine the release), and the full asset set sorted by line for order
+    # independence. name/body/prerelease are NOT included: they are the editable
+    # metadata of an otherwise immutable release.
+    repo = manifest.get("repo", "") or ""
+    tag = manifest.get("tag", "") or ""
+    tag_commit = manifest.get("tag_commit", "") or ""
+    assets = manifest.get("assets") or []
+    asset_lines = sorted(release_asset_line(a) for a in assets)
+    header = "\x00".join([repo, tag, tag_commit, str(len(asset_lines))])
+    return "\n".join([header] + asset_lines)
+
+
+def release_signing_message(repo, tag, author, ts, content_hash):
+    # The exact bytes signed/verified for a release manifest, matching the
+    # "forkmesh-<thing>-v1\n…\n<sha256 of content>" form used by issue/PR events.
+    return (
+        "forkmesh-release-v1\n" + repo + "\n" + tag + "\n" + author + "\n" +
+        str(ts) + "\n" + content_hash
+    ).encode()
+
+
+async def verify_release_manifest(manifest):
+    # Mirrors the client publisher: sign sha256(release_manifest_content) with the
+    # creator's Ed25519 identity. One signature thus authenticates every asset's
+    # bytes (each blob_sha256 is inside the signed content).
+    author = manifest.get("created_by", "") or ""
+    signature = manifest.get("sig", "") or ""
+    repo = manifest.get("repo", "") or ""
+    tag = manifest.get("tag", "") or ""
+    if not author or not signature or not repo or not tag:
+        return False
+    try:
+        ts = int(manifest.get("published_at", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(release_manifest_content(manifest))
+    canonical = release_signing_message(repo, tag, author, ts, content_hash)
+    return await ed25519_verify(author, signature, canonical)
+
+
+def generate_shasums(assets):
+    # A `sha256sum -c`-compatible SHASUMS256.txt ("<hash>  <name>", two spaces =
+    # text mode), sorted by name. Derived from the asset content addresses, so it
+    # is covered by the manifest signature and can't be tampered independently.
+    lines = []
+    for asset in sorted(assets, key=lambda a: a.get("name", "") or ""):
+        digest = (asset.get("blob_sha256", "") or "").lower()
+        name = asset.get("name", "") or ""
+        if SHA256_HEX_RE.match(digest) and name:
+            lines.append("%s  %s" % (digest, name))
+    return "".join(line + "\n" for line in lines)
+
+
+def release_semver_key(tag):
+    # Orderable key for `latest` resolution. A final release sorts ABOVE any
+    # prerelease of the same x.y.z. Returns None for non-semver tags (skipped).
+    match = RELEASE_SEMVER_RE.match((tag or "").strip())
+    if not match:
+        return None
+    major, minor, patch = (
+        int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    pre = match.group(4)
+    pre_rank = (1,) if pre is None else (0, pre)
+    return (major, minor, patch, pre_rank)
+
+
+def resolve_latest_release(releases):
+    # The release the `…/releases/latest/<asset>` alias points to: the highest
+    # semver among published, non-draft, non-prerelease releases. Computed (never
+    # a committed pointer) so it can't drift from the actual release set.
+    best = None
+    best_key = None
+    for release in releases:
+        if release.get("draft"):
+            continue
+        if (release.get("state", "published") or "published") != "published":
+            continue
+        if release.get("prerelease"):
+            continue
+        key = release_semver_key(release.get("tag", ""))
+        if key is None:
+            continue
+        if best_key is None or key > best_key:
+            best_key, best = key, release
+    return best
+
+
+def asset_upload_decision(release_state, existing_asset, new_sha256):
+    # Resolve a same-name (re-)upload (issue #304 §7). On a draft, replacing an
+    # asset is allowed; on a published/yanked (immutable) release, only a
+    # byte-identical re-upload is a no-op — a different hash is a conflict.
+    new_sha = (new_sha256 or "").lower()
+    if existing_asset is None:
+        return "create"
+    existing_sha = (existing_asset.get("blob_sha256", "") or "").lower()
+    if release_state == "draft":
+        return "noop" if existing_sha == new_sha else "replace"
+    return "noop" if existing_sha == new_sha else "conflict"
+
+
 def pkt_line(payload):
     return ("%04x" % (len(payload) + 4)).encode() + payload
 
@@ -482,6 +660,27 @@ def git_bytes_response(data, content_type):
                 "headers": {
                     "content-type": content_type,
                     "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+            }
+        ),
+    )
+
+
+def release_bytes_response(data, sha256):
+    # A downloaded release asset. Content-addressed, so the bytes for a hash never
+    # change: cache forever at the edge and let the client verify against the
+    # manifest's sha256 (echoed back in x-content-sha256).
+    data = bytes(data)
+    return JsResponse.new(
+        _to_js(data),
+        to_js(
+            {
+                "status": 200,
+                "headers": {
+                    "content-type": "application/octet-stream",
+                    "content-length": str(len(data)),
+                    "cache-control": "public, max-age=31536000, immutable",
+                    "x-content-sha256": sha256.lower(),
                 },
             }
         ),
@@ -699,6 +898,59 @@ def build_repo_mirrors_payload(
         },
         "mirrors": mirrors,
     }
+
+
+def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online):
+    # Pick a healthy, online mirror to serve a clone of owner/repo from when the
+    # named owner's own host is offline. This is what keeps a repo cloneable when
+    # the source of truth goes down: a clone of /owner/repo is redirected to a peer
+    # that mirrors the SAME logical repo (grouped by root commit, name fallback) and
+    # is online right now. Returns the fallback owner's name, or None to fall
+    # through to the normal named-owner host route.
+    #
+    # Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload; the
+    # caller gathers the catalog rows + host_presence map and whether the named
+    # owner is currently online. We never redirect away from an online source.
+    owner_l = (owner or "").strip().lower()
+    repo_l = (repo or "").strip().lower()
+    if not owner_l or not repo_l or source_online:
+        return None
+    public = []
+    target = None
+    for row in rows or []:
+        rec = row.get("data") or {}
+        if row.get("is_private") or rec.get("visibility") == "private":
+            continue
+        rec_owner = str(rec.get("owner") or "").strip()
+        rec_name = str(rec.get("name") or "").strip()
+        if not rec_owner or not rec_name:
+            continue
+        item = {"key_bi": row.get("key_bi"), "data": rec}
+        public.append(item)
+        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
+            target = item
+    # When the source itself never published a record we can still group by name so
+    # an offline-but-unpublished source can fall back to a name-matching mirror.
+    target_data = target["data"] if target else {
+        "owner": owner, "name": repo, "rootCommit": ""}
+    candidates = []
+    for item in public:
+        rec = item["data"]
+        rec_owner = str(rec.get("owner") or "").strip()
+        if not rec_owner or rec_owner.lower() == owner_l:
+            continue  # never redirect to the (offline) source owner itself
+        if not repo_mirror_same_group(target_data, rec):
+            continue
+        seen = _mirror_ms(presence.get(item.get("key_bi")))
+        if not (seen and now - seen <= stale_ms):
+            continue  # only redirect to a mirror that is actually online
+        sync = _mirror_ms(rec.get("lastSync")) or 0
+        candidates.append((sync, seen, rec_owner))
+    if not candidates:
+        return None
+    # Freshest-synced wins, then most-recently-seen, then name for a stable order.
+    candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
+    return candidates[0][2]
 
 
 async def touch_host_presence(env, repo_bi):
@@ -1364,9 +1616,16 @@ async def install_source(env):
         key=lambda item: (-item["totalMinutes"], item["node"]),
     )
     best = ranked[0]
+    # Hand the installer the whole ranked list (capped), not just the top pick,
+    # so it can fall back to the next online mirror when the best one's git
+    # tunnel is unreachable. A node can hold a live host WebSocket — which is all
+    # the "hosts > 0" check above proves, so it counts as online here — yet still
+    # time out the clone proxy with a 504, which would otherwise dead-end the
+    # install. "node" stays for older installers that read only the single best.
+    node_list = [item["node"] for item in ranked[:8]]
     return json_response(
-        {"ok": True, "node": best["node"], "repo": "forkmesh",
-         "totalMinutes": best["totalMinutes"]},
+        {"ok": True, "node": best["node"], "nodes": node_list,
+         "repo": "forkmesh", "totalMinutes": best["totalMinutes"]},
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -2468,6 +2727,16 @@ def _clear_donation_address(rec):
         rec["status"] = "reserved"
 
 
+# A bare reservation only holds the name while a signup is genuinely in flight:
+# the holder has an open, unpaid, unexpired donation request. Once that lapses
+# (or never existed) the reservation is abandoned and the name is free again.
+def _donation_in_progress(rec):
+    if not rec.get("donation_address") or rec.get("donation_confirmed"):
+        return False
+    _, expires, _ = _donation_expiry_fields(rec, Date.now())
+    return Date.now() < expires
+
+
 # Step 1 of the funnel: claim a public node name. The desktop client signs the
 # claim with its Ed25519 identity (binding the name to a key); the website may
 # reserve without a key. A name is only "taken" once it is finalized/paid.
@@ -2488,8 +2757,18 @@ async def _account_reserve(env, request):
         ex_pub = existing.get("pubkey", "")
         if existing.get("status") == "active" or existing.get("donation_confirmed"):
             return json_response({"error": "node_name_taken"}, status=409)
-        if ex_pub and (not pubkey or ex_pub != pubkey):
+        held_by_other = bool(ex_pub) and (not pubkey or ex_pub != pubkey)
+        # A reservation bound to a different key only blocks the name while that
+        # holder's signup is still live (an open, unexpired donation). Otherwise
+        # it's an abandoned reservation — a fresh install on a new key (the common
+        # case) must be able to reclaim its own name instead of forever hitting
+        # "node_name_taken" for a name nobody actually paid for.
+        if held_by_other and _donation_in_progress(existing):
             return json_response({"error": "node_name_taken"}, status=409)
+        if held_by_other:
+            # Reclaiming an abandoned reservation: drop the previous holder's
+            # stale state so the new owner starts a clean, key-bound signup.
+            existing = None
         # else: a stale/own reservation — allow re-reserving it (idempotent).
 
     if pubkey:
@@ -3071,34 +3350,44 @@ async def _account_finalize(env, request):
     name_bi, rec = await _account_row(env, name)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
-    if not rec.get("donation_confirmed"):
-        return json_response({"error": "donation_required"}, status=402)
-    if "@" not in email or len(email) < 3:
-        return json_response({"error": "valid_email_required"}, status=400)
-    if len(password) < 8:
-        return json_response({"error": "password_too_short"}, status=400)
 
-    # A key-bound (desktop) account must prove ownership to finalize.
-    if rec.get("pubkey"):
+    # A key-bound (desktop) account proves ownership with its Ed25519 signature and
+    # joins for free: no donation, and email/password are optional. All a desktop
+    # node needs to become active is its reserved name. Keyless (web) signups still
+    # pay first, where the donation is what proves a real human is behind the name.
+    key_bound = bool(rec.get("pubkey"))
+    if key_bound:
         if not _ts_ok(ts):
             return json_response({"error": "stale_request"}, status=401)
         canonical = ("forkmesh-finalize-v1\n" + name + "\n" + email + "\n" +
                      ts).encode()
         if not await ed25519_verify(rec["pubkey"], signature, canonical):
             return json_response({"error": "bad_signature"}, status=401)
-    elif pubkey:
-        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
+    else:
+        if not rec.get("donation_confirmed"):
+            return json_response({"error": "donation_required"}, status=402)
+        if pubkey:
+            rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
 
-    email_bi = await blind_index(env, email)
-    dup = await d1_first(
-        env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
-    if dup and dup.get("name_bi") != name_bi:
-        return json_response({"error": "email_taken"}, status=409)
-
-    salt, phash = await hash_password(password)
-    rec["email"] = email
-    rec["pass_salt"] = salt
-    rec["pass_hash"] = phash
+    # Email + password unlock cross-device (password) login. They're required for
+    # keyless signups and optional for key-bound ones (which log in by key); when
+    # either is supplied they're validated and the email is indexed for login.
+    set_credentials = bool(email) or bool(password) or not key_bound
+    email_bi = None
+    if set_credentials:
+        if "@" not in email or len(email) < 3:
+            return json_response({"error": "valid_email_required"}, status=400)
+        if len(password) < 8:
+            return json_response({"error": "password_too_short"}, status=400)
+        email_bi = await blind_index(env, email)
+        dup = await d1_first(
+            env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if dup and dup.get("name_bi") != name_bi:
+            return json_response({"error": "email_taken"}, status=409)
+        salt, phash = await hash_password(password)
+        rec["email"] = email
+        rec["pass_salt"] = salt
+        rec["pass_hash"] = phash
     rec["status"] = "active"
     # Optional payout address (where this node receives its share of the split).
     if solana and SOLANA_RE.match(solana):
@@ -3114,12 +3403,13 @@ async def _account_finalize(env, request):
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     # Until a real email service exists, an admin verifies the email by hand:
-    # enqueue the new account so admins are notified and can verify it.
-    if not rec["email_verified"]:
-        await _enqueue_verification(env, name_bi, name, email)
+    # enqueue the new account so admins are notified and can verify it. A free
+    # key-bound join with no email yet has nothing to verify, so skip the queue.
+    if rec.get("email") and not rec["email_verified"]:
+        await _enqueue_verification(env, name_bi, name, rec["email"])
     return json_response(
-        {"ok": True, "nodeName": name, "email": email, "status": "active",
-         "emailVerified": rec["email_verified"],
+        {"ok": True, "nodeName": name, "email": rec.get("email", ""),
+         "status": "active", "emailVerified": rec["email_verified"],
          "isAdmin": await _is_admin(env, name)},
         status=201)
 
@@ -3181,6 +3471,7 @@ async def _account_login(env, request):
         data.get("email", ""), 254).strip().lower()
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
+    pubkey = clean_string(data.get("pubkey", ""), 120)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -3218,6 +3509,18 @@ async def _account_login(env, request):
             await _login_record_fail(env, id_bi)
             return json_response({"error": "bad_totp"}, status=401)
     await _login_clear(env, id_bi)
+
+    # A web-created account can be active before any desktop node key is bound.
+    # When the desktop app logs in with the correct password, bind its Ed25519
+    # key exactly once so signed heartbeat, hosting, and catalog publishes work.
+    # Never silently replace an existing key. Rotation needs an explicit flow.
+    if not rec.get("pubkey") and pubkey:
+        rec["pubkey"] = pubkey
+        name_bi = await blind_index(env, rec.get("name", ""))
+        await _save_account(env, name_bi, rec)
+    elif pubkey and rec.get("pubkey") != pubkey:
+        return json_response({"error": "pubkey_mismatch"}, status=409)
+
     return json_response({
         "ok": True, "nodeName": rec.get("name", ""),
         "email": rec.get("email", ""), "status": rec.get("status", "active"),
@@ -5781,7 +6084,12 @@ class Default(WorkerEntrypoint):
         if url.path == "/docs":
             return Response("", status=308, headers={"location": "/docs/"})
         if url.path == "/blog":
-            return Response("", status=308, headers={"location": "/blog/"})
+            return Response("", status=308, headers={"location": "/blogs"})
+        if url.path == "/blog.html":
+            return Response("", status=308, headers={"location": "/blogs"})
+
+        if url.path == "/features":
+            return Response("", status=308, headers={"location": "/features/"})
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
@@ -5910,6 +6218,18 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
 
+        release_blob_match = RELEASE_BLOB_RE.match(url.path)
+        if release_blob_match:
+            owner = safe_segment(release_blob_match.group(1))
+            repo = safe_segment(release_blob_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            # Public, content-addressed download: forward to the repo's host DO,
+            # which streams the blob from a serving node over the tunnel.
+            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+            host_object = self.env.FORKMESH_HOST.get(host_id)
+            return await host_object.fetch(request)
+
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
             owner = safe_segment(host_match.group(1))
@@ -5957,6 +6277,50 @@ class Default(WorkerEntrypoint):
 
         return json_response({"error": "not_found"}, status=404)
 
+    async def _select_clone_fallback(self, owner, repo):
+        # When owner/repo's own host is offline, find a healthy online mirror of the
+        # same logical repo to redirect a clone to. Best-effort: any failure returns
+        # None so the request just falls through to the normal named-owner route.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            presence_rows = await d1_all(
+                self.env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {
+                str(r.get("repo_bi")): int(r.get("ts") or 0)
+                for r in presence_rows
+                if r.get("repo_bi")
+            }
+            source_ts = presence.get(repo_bi) or 0
+            source_online = bool(
+                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS)
+            # Fast path: the named host is live, so serve it directly (and skip the
+            # catalog decrypt entirely) — never redirect away from an online source.
+            if source_online:
+                return None
+            rows = await d1_all(
+                self.env,
+                "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
+            catalog_rows = []
+            for row in rows:
+                rec = await decrypt_row(self.env, row.get("data"))
+                if not rec:
+                    continue
+                if _is_blocked_catalog_identity(
+                        self.env, rec.get("owner"), rec.get("name")):
+                    continue
+                catalog_rows.append({
+                    "key_bi": row.get("key_bi"),
+                    "is_private": int(row.get("is_private") or 0),
+                    "data": rec,
+                })
+            return select_clone_fallback(
+                owner, repo, catalog_rows, presence, now,
+                HOST_PRESENCE_STALE_MS, source_online)
+        except Exception:
+            return None
+
     async def _git_host(self, request, owner_raw, repo_raw):
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
@@ -5968,6 +6332,21 @@ class Default(WorkerEntrypoint):
         if await _repo_is_private(self.env, owner, repo):
             if not await _basic_auth_view_ok(self.env, owner, repo, request):
                 return _basic_auth_challenge()
+        else:
+            # Public repo whose named host is offline: redirect the clone to a
+            # healthy mirror of the same logical repo so the code survives the
+            # source of truth going down (forkmesh's core promise). Only the
+            # initial info/refs probe is redirected; git then rebases on the
+            # mirror's URL and talks to it directly for the upload-pack POST.
+            url = urlparse(request.url)
+            if url.path.endswith("/info/refs"):
+                fallback = await self._select_clone_fallback(owner, repo)
+                if fallback and fallback.lower() != owner.lower():
+                    query = url.query or "service=git-upload-pack"
+                    location = "/%s/%s/info/refs?%s" % (fallback, repo, query)
+                    return Response(
+                        "", status=302,
+                        headers={"location": location, "cache-control": "no-store"})
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
@@ -6193,7 +6572,7 @@ class ForkMeshHost(DurableObject):
         if self._repo_bi:
             return self._repo_bi
         match = (REPO_HOST_RE.match(path) or GIT_INFO_RE.match(path)
-                 or GIT_PACK_RE.match(path))
+                 or GIT_PACK_RE.match(path) or RELEASE_BLOB_RE.match(path))
         if not match:
             return None
         owner = safe_segment(match.group(1))
@@ -6269,6 +6648,11 @@ class ForkMeshHost(DurableObject):
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
             )
+
+        release_blob_match = RELEASE_BLOB_RE.match(path)
+        if release_blob_match:
+            await self._mark_present(path)
+            return await self._release_blob(release_blob_match.group(3))
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         if action in ("tree", "blob", "commits", "commit"):
@@ -6395,6 +6779,45 @@ class ForkMeshHost(DurableObject):
         }
         payload["ok"] = True
         return json_response(payload)
+
+    async def _release_blob(self, sha256):
+        # Stream a content-addressed release asset from a serving node. Reuses the
+        # chunked git-stream transport (git-chunk/git-end → self.git_buffers), so
+        # arbitrarily large binaries flow without the 4 MB inline /blob cap.
+        if not valid_sha256_hex(sha256):
+            return Response("not found", status=404)
+        self._ensure()
+        host = self._best_host()
+        if host is None:
+            return Response(
+                "No host is currently serving this release.", status=503)
+        self.counter += 1
+        req_id = "r%d" % self.counter
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        self.git_buffers[req_id] = bytearray()
+        try:
+            host.send(json.dumps({
+                "type": "request", "reqId": req_id,
+                "op": "release-blob", "path": sha256.lower(),
+            }))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503)
+        try:
+            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            return Response("Host timed out.", status=504)
+        if not result.get("ok"):
+            err = str(result.get("error", ""))
+            status = 404 if err in ("not_found", "bad_hash") else 502
+            return Response("Release asset unavailable.", status=status)
+        return release_bytes_response(result.get("data", b""), sha256)
 
     def _drop_host(self, ws):
         # A send failed: force-close so the runtime drops it from getWebSockets.

@@ -231,26 +231,27 @@ int main(int argc, char *argv[])
 
     // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
     // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
-    // button instead of separate per-provider buttons.
-    if (QPushButton *fixButton =
-            findButtonStartingWith(window, QStringLiteral("Fix with agent"))) {
-        QMenu *fixMenu = fixButton->menu();
-        check(fixMenu != nullptr,
-              QStringLiteral("PR 'Fix with agent' button carries a dropdown menu"));
-        if (fixMenu) {
-            QStringList labels;
-            for (QAction *action : fixMenu->actions())
-                labels << action->text();
-            check(labels ==
-                      QStringList({QStringLiteral("Claude API"),
+    // button instead of separate per-provider buttons. The Branches tab carries
+    // its own "Fix with agent" button too (issue #116), so identify the PR one by
+    // its distinctive three-resolver menu rather than by label alone.
+    bool prFixMenuFound = false;
+    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
+        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
+            !fixButton->menu())
+            continue;
+        QStringList labels;
+        for (QAction *action : fixButton->menu()->actions())
+            labels << action->text();
+        if (labels == QStringList({QStringLiteral("Claude API"),
                                    QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")}),
-                  QStringLiteral("Fix-with-agent menu offers Claude API, OpenAI API "
-                                 "and Claude Code"));
+                                   QStringLiteral("Claude Code")})) {
+            prFixMenuFound = true;
+            break;
         }
-    } else {
-        check(false, QStringLiteral("PR 'Fix with agent' dropdown button exists"));
     }
+    check(prFixMenuFound,
+          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
+                         "and Claude Code"));
 
     // Issue #268: dragging a column divider resizes like moving a margin — the
     // width comes from the immediate neighbour, not a far-off Stretch column, so
@@ -397,6 +398,30 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // Issue #286: the "Prioritize from README" button must actually be on the
+    // open issues view (not hidden, not pushed off the right edge of the panel).
+    {
+        window.resize(1100, 800);
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+        QPushButton *pb =
+            findButtonStartingWith(window, "Prioritize from README");
+        const bool realized = pb && pb->isVisibleTo(&window);
+        bool onScreen = false;
+        if (realized) {
+            const QPoint tl = pb->mapTo(&window, QPoint(0, 0));
+            onScreen = tl.x() >= 0 && tl.x() + pb->width() <= window.width();
+        }
+        check(shown && realized && onScreen,
+              QString("issue #286 prioritize button is visible on the issues "
+                      "view (shown=%1 realized=%2 onScreen=%3)")
+                  .arg(shown)
+                  .arg(realized)
+                  .arg(onScreen));
+    }
+
     window.resize(480, 420);
     QApplication::processEvents();
     window.testShowPublishBar(false);
@@ -418,6 +443,192 @@ int main(int argc, char *argv[])
               .arg(topBarHidden).arg(topBarShown).arg(hBarShown));
     if (topBarHidden != topBarShown || hBarShown > 420 + 8)
         dumpTallMinimums(window);
+
+    // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
+    // rebuild must keep the same worktree selected so its diff/detail pane stays
+    // on screen instead of going blank.
+    QTemporaryDir wtRepo;
+    if (initGitRepo(wtRepo)) {
+        runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+        const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", wtPath, "feature/keep-selected"});
+        // Put the worktree's branch one commit ahead of main so the ahead/behind
+        // column has something non-trivial to report.
+        runGitChecked(wtPath, {"commit", "--allow-empty", "-m", "ahead by one"});
+        const int wtIdx =
+            window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
+        window.testOpenRepository(wtIdx);
+        QApplication::processEvents();
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("selecting a worktree records it as the selection"));
+        check(window.testWorktreeBranchLabel().contains(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("the worktree detail shows which branch it's on"));
+        check(window.testWorktreeBranchLabel().contains(QStringLiteral("wt-keep")),
+              QStringLiteral("the worktree detail shows the worktree's location"));
+        window.testReloadWorktreesPanel(); // what "Update from main" does after merging
+        check(window.testSelectedWorktreeBranch() ==
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("reloading the worktrees panel keeps the selected "
+                             "worktree instead of going blank (#272)"));
+        // The ahead/behind column is filled by an async `git rev-list`; pump the
+        // event loop until it lands, then check it reports "1 ahead" (↑1).
+        QString abText;
+        QElapsedTimer abTimer;
+        abTimer.start();
+        while (abTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            abText = window.testWorktreeAheadBehindText(
+                QStringLiteral("feature/keep-selected"));
+            if (!abText.isEmpty() && !abText.contains(QStringLiteral("checking")))
+                break;
+        }
+        check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
+              QString("worktrees list shows the branch one commit ahead of main "
+                      "(ahead/behind cell = %1)").arg(abText));
+
+        // Opening the Worktrees tab the way a user does (clicking its nav button)
+        // should hand keyboard focus to the table, so arrow keys work right away
+        // without first clicking a row.
+        window.testClickRepoDetailTab(window.testWorktreesTabIndex());
+        QApplication::processEvents();
+        check(window.testWorktreesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Worktrees tab focuses the table so the "
+                             "arrow keys can move through its rows"));
+
+        // With feature/keep-selected (the bottom row) selected, an Up arrow on the
+        // table should move the selection to the *other* worktree row; Down stays
+        // put because it's already the last row.
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterUp = window.testArrowOnWorktrees(false);
+        window.testSwitchToWorktree(QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        const QString afterDown = window.testArrowOnWorktrees(true);
+        qInfo("arrow nav: up->%s down->%s",
+              qPrintable(afterUp), qPrintable(afterDown));
+        check(!afterUp.isEmpty() &&
+                  afterUp != QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow up moves the worktree selection to the row above"));
+        check(afterDown == QStringLiteral("feature/keep-selected"),
+              QStringLiteral("arrow down on the last worktree row stays put"));
+
+        // adhoc #183 (the "and more" tables): the Releases and Mirror-nodes tabs
+        // are single-list tables too, so opening either should also hand keyboard
+        // focus to its table for immediate arrow-key navigation.
+        window.testClickRepoDetailTab(window.testReleasesTabIndex());
+        QApplication::processEvents();
+        check(window.testReleasesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Releases tab focuses its table for "
+                             "arrow-key navigation"));
+        window.testClickRepoDetailTab(window.testMirrorNodesTabIndex());
+        QApplication::processEvents();
+        check(window.testMirrorNodesTableHasKeyboardFocus(),
+              QStringLiteral("opening the Mirror-nodes tab focuses its table for "
+                             "arrow-key navigation"));
+
+        // issue #172: the Branches list must also surface the worktree a branch
+        // is checked out in, so an agent's isolated working tree is visible
+        // without a trip to the Worktrees tab.
+        window.testReloadBranchesPanel();
+        const QString listedWt =
+            window.testBranchWorktreePath(QStringLiteral("feature/keep-selected"));
+        check(listedWt.contains(QStringLiteral("wt-keep")),
+              QString("branches list shows the worktree a branch is checked out "
+                      "in (#172, worktree cell = %1)").arg(listedWt));
+        // The default branch lives in the main checkout, not a linked worktree,
+        // so its Worktree cell stays empty rather than pointing at the main tree.
+        check(window.testBranchWorktreePath(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch checked out in the main tree has an empty "
+                             "Worktree cell (#172)"));
+
+        // adhoc #191: the Branches list must also surface the issue/agent a branch
+        // is attached to. An agent session bound to this repo's branch should
+        // name its issue ("#N") in the Issue / Agent column; an ad-hoc session
+        // (no issue) should read "Agent"; a plain branch stays empty.
+        AgentSession issueSession;
+        issueSession.id = 4242;
+        issueSession.owner = QStringLiteral("me");
+        issueSession.name = QStringLiteral("wtrepo");
+        issueSession.branchName = QStringLiteral("feature/keep-selected");
+        issueSession.issueNumber = 191;
+        issueSession.issueTitle = QStringLiteral("show attachment in branches list");
+        window.testAddAgentSession(issueSession);
+        window.testReloadBranchesPanel();
+        check(window.testBranchAttachmentText(
+                  QStringLiteral("feature/keep-selected")) == QStringLiteral("#191"),
+              QString("branches list names the issue a branch is attached to "
+                      "(adhoc #191, cell = %1)")
+                  .arg(window.testBranchAttachmentText(
+                      QStringLiteral("feature/keep-selected"))));
+        check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
+              QStringLiteral("a branch with no agent session has an empty "
+                             "Issue / Agent cell (adhoc #191)"));
+
+        // adhoc #251: a branch an agent is working must also carry the agent's
+        // status icon in that cell (a spinner while running, a check on success,
+        // …), so the list shows how each agent is doing at a glance. A plain
+        // branch with no session carries no icon.
+        check(window.testBranchAttachmentHasIcon(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("branches list stamps the agent's status icon on a "
+                             "branch an agent is working (adhoc #251)"));
+        check(!window.testBranchAttachmentHasIcon(QStringLiteral("main")),
+              QStringLiteral("a branch with no agent session carries no status "
+                             "icon (adhoc #251)"));
+
+        // adhoc #258: clicking the Issue / Agent cell must jump straight to the
+        // agent run working that branch. Probe the empty-cell case first: clicking
+        // a plain branch's cell navigates nowhere (the attached session id was just
+        // added and never opened, so the selection can't already be it).
+        check(window.testClickBranchAgentCell(QStringLiteral("main")) !=
+                  issueSession.id,
+              QStringLiteral("clicking a plain branch's empty Issue / Agent cell "
+                             "does not navigate to an agent (adhoc #258)"));
+        check(window.testClickBranchAgentCell(
+                  QStringLiteral("feature/keep-selected")) == issueSession.id,
+              QStringLiteral("clicking the Issue / Agent cell jumps to that "
+                             "branch's agent session (adhoc #258)"));
+
+        // adhoc #185: the default branch must stay pinned to the top of the list.
+        // feature/keep-selected was committed to more recently (it's a worktree one
+        // commit ahead of main), so a plain committer-date sort would float it above
+        // main; the panel must override that and list main first.
+        const QStringList order = window.testBranchRowOrder();
+        qInfo("branch row order: %s", qPrintable(order.join(QStringLiteral(", "))));
+        check(!order.isEmpty() && order.first() == QStringLiteral("main"),
+              QString("the default branch is pinned to the top of the branches "
+                      "list (adhoc #185, first row = %1)")
+                  .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
+    }
+
+    // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
+    // anchored to main and NOT follow the working tree's HEAD. Parking the
+    // checkout on a feature branch — what the commits-area branch switcher or a
+    // transient branches-page merge does — must never silently change the default
+    // branch out from under the merge editor.
+    {
+        QTemporaryDir defaultBranchRepo;
+        if (initGitRepo(defaultBranchRepo)) {
+            // Leave HEAD on a feature branch, exactly as if the user had switched
+            // to it in the commits area.
+            runGitChecked(defaultBranchRepo.path(),
+                          {"checkout", "-b", "feature/parked"});
+            runGitChecked(defaultBranchRepo.path(),
+                          {"commit", "--allow-empty", "-m", "work on feature"});
+            const int idx = window.testAddLocalRepository("me", "dbrepo",
+                                                          defaultBranchRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            check(window.testRepoDefaultBranch() == QStringLiteral("main"),
+                  QString("default branch stays main while HEAD is parked on a "
+                          "feature branch (got %1)")
+                      .arg(window.testRepoDefaultBranch()));
+        }
+    }
 
     // issue #251: the Settings "Default agent" choice should seed the agent
     // pickers. A window built while the default is Claude Code must start both
@@ -467,6 +678,72 @@ int main(int argc, char *argv[])
         }
         check(statusHasLoad,
               QStringLiteral("headless status view includes a cpu/memory load line"));
+    }
+
+    // issue #154: references inside an issue/PR comment body become in-app links.
+    {
+        check(MainWindow::autolinkReferences(QStringLiteral("see #123 please")) ==
+                  QStringLiteral("see [#123](forkmesh-ref:123) please"),
+              QStringLiteral("autolink turns #123 into a ref link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("fixed in a1b2c3d.")) ==
+                  QStringLiteral("fixed in [a1b2c3d](forkmesh-commit:a1b2c3d)."),
+              QStringLiteral("autolink turns a pasted commit SHA into a commit link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("build 1234567 ok")) ==
+                  QStringLiteral("build 1234567 ok"),
+              QStringLiteral("autolink leaves a plain number (no a-f) untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("use `#5` token")) ==
+                  QStringLiteral("use `#5` token"),
+              QStringLiteral("autolink leaves references in inline code untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("```\n#5\n```")) ==
+                  QStringLiteral("```\n#5\n```"),
+              QStringLiteral("autolink leaves references in a fenced block untouched"));
+        check(MainWindow::autolinkReferences(QStringLiteral("[#5](http://x)")) ==
+                  QStringLiteral("[#5](http://x)"),
+              QStringLiteral("autolink never nests inside an existing markdown link"));
+        check(MainWindow::autolinkReferences(QStringLiteral("at http://x/#5 only")) ==
+                  QStringLiteral("at http://x/#5 only"),
+              QStringLiteral("autolink leaves a #fragment inside a URL untouched"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("ref forkmesh://issue/o/r/12#e3 here")) ==
+                  QStringLiteral("ref <forkmesh://issue/o/r/12#e3> here"),
+              QStringLiteral("autolink wraps a pasted forkmesh:// permalink as a link"));
+        check(MainWindow::autolinkReferences(
+                  QStringLiteral("see forkmesh://pull/o/r/7.")) ==
+                  QStringLiteral("see <forkmesh://pull/o/r/7>."),
+              QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
+
+    // adhoc #191: the issue looper (and per-issue agent assignment) must work on
+    // a node that only mirrors a repo it doesn't host. Such a repo has a bare
+    // network mirror and no working tree, so the gate now resolves the bare mirror
+    // as the git dir agents run against instead of refusing with "only the host".
+    {
+        QTemporaryDir mirrorDir;
+        const bool madeBare =
+            mirrorDir.isValid() &&
+            runGitChecked(mirrorDir.path(), {"init", "--bare", "-q"});
+        const int mirrorIdx =
+            window.testAddPublishedRepository("someone", "theirrepo", mirrorDir.path());
+        check(madeBare &&
+                  window.testRepoAgentGitDir(mirrorIdx) == mirrorDir.path(),
+              QStringLiteral("a mirror-only repo resolves its bare mirror as the "
+                             "agent/looper git dir (adhoc #191)"));
+
+        QTemporaryDir localRepo;
+        const bool madeLocal = initGitRepo(localRepo);
+        const int localIdx =
+            window.testAddLocalRepository("me", "minerepo", localRepo.path());
+        check(madeLocal &&
+                  window.testRepoAgentGitDir(localIdx) == localRepo.path(),
+              QStringLiteral("a hosted repo still resolves its working tree as the "
+                             "agent/looper git dir"));
+
+        QTemporaryDir emptyDir;
+        const int noneIdx = window.testAddPublishedRepository(
+            "someone", "uncached", emptyDir.path() + QStringLiteral("/missing.git"));
+        check(window.testRepoAgentGitDir(noneIdx).isEmpty(),
+              QStringLiteral("a repo with neither a working tree nor a cached "
+                             "mirror has no agent/looper git dir"));
     }
 
     stopChildProcesses(window);

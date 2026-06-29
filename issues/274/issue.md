@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 274
 title: show sortable date modified and created  on PRs list allow for hiding the detail panel
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 60
+progress: 55
 assignees: []
 createdAt: 1782485711055
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

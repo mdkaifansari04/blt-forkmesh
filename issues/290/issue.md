@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 290
 title: the claude code usage is not updating correctly have it update every minute please and show the accrate results top right
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 75
+progress: 50
 assignees: []
 createdAt: 1782502896983
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

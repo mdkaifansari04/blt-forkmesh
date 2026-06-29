@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # ForkMesh desktop client installer.
 #   curl -fsSL https://forkmesh.com/install.sh | bash
-# Clones the repository, builds the Qt client, and installs it to ~/.local/bin.
-# Missing build prerequisites are installed automatically when a supported
-# package manager is detected. Set FORKMESH_NO_INSTALL_DEPS=1 to opt out.
+# Autodetects this machine's OS/arch and installs the matching PREBUILT binary
+# attached to the latest release (no compiler/Qt toolchain, no multi-minute
+# build). When no prebuilt asset is published for the platform — or
+# FORKMESH_FROM_SOURCE=1 is set — it falls back to cloning the repository and
+# building the Qt client from source. Missing build prerequisites are installed
+# automatically when a supported package manager is detected; set
+# FORKMESH_NO_INSTALL_DEPS=1 to opt out. The binary lands in ~/.local/bin.
 set -euo pipefail
 
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.9.3 (2026-06-26)"
+INSTALLER_VERSION="0.11.0 (2026-06-28)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -21,6 +25,17 @@ FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
+# Space-separated list of online mirror nodes resolved from the mainnode, best
+# first, and the matching list of clone URLs to try in order. A mirror can report
+# itself online (a live host WebSocket) yet still time out the git clone proxy
+# with a 504, so the installer falls back to the next mirror instead of dead-
+# ending on the first one. Populated by resolve_install_node / the mirror block.
+FORKMESH_NODES=""
+REPO_CANDIDATES=()
+# Set by clean_clone to the human-readable reason the last clone attempt failed
+# (e.g. "mirror host timed out (HTTP 504)"), so the final error and the anonymous
+# diagnostics can say WHY every mirror was unreachable rather than just "failed".
+CLONE_FAIL_REASON=""
 # The build checkout lives in a dedicated, installer-only location. The only
 # thing that ever lives there is a throwaway clone used to build, so it is
 # always safe to wipe and re-clone — the installer fully owns this path.
@@ -30,6 +45,13 @@ BIN="$BIN_DIR/forkmesh"
 # Set to 1 if a clone is rejected by the relay's integrity gate, so the final
 # error can explain that specific (owner-fixable) case instead of a generic one.
 PIN_FAILURE=0
+# Set to 1 once a prebuilt release binary has been installed, so the whole
+# source-build pipeline (toolchain deps, clone, compile) is skipped.
+INSTALLED_PREBUILT=0
+# Set by build_client to the build directory; pre-declared so the shared
+# desktop/launch tail can reference it even on the prebuilt fast path (where no
+# build ever runs) without tripping `set -u`.
+BUILD=""
 
 # Anchor to a directory that exists. The installer may be launched from a path
 # that was just deleted — e.g. running this right after the uninstaller removed
@@ -42,6 +64,20 @@ cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
+# Verbose diagnostic line, printed only when FORKMESH_DEBUG=1. Use it for the
+# extra detail a remote operator needs to debug a failed install (the resolved
+# mirror list, the raw source response, the exact URLs being cloned) without
+# cluttering the normal install log.
+dbg()  { [ "${FORKMESH_DEBUG:-0}" = "1" ] && printf '\033[2m[debug]\033[0m %s\n' "$1" >&2 || true; }
+
+# In debug mode, make git print the full HTTP exchange (request/response status
+# and headers) on stderr so a 5xx from the relay can be traced to its cause.
+if [ "${FORKMESH_DEBUG:-0}" = "1" ]; then
+  export GIT_CURL_VERBOSE=1
+fi
+# Never let git stop a piped `curl | bash` install to prompt for credentials;
+# fail fast (and surface as a classifiable clone error) instead of hanging.
+export GIT_TERMINAL_PROMPT=0
 
 # --- anonymous diagnostics --------------------------------------------------
 # Report each install step to the mainnode so operators can see, in aggregate,
@@ -86,25 +122,45 @@ on_diag_exit() {
 trap on_diag_exit EXIT
 
 resolve_install_node() {
-  [ -n "$FORKMESH_NODE" ] && return 0
+  # An explicit FORKMESH_NODE override pins a single mirror; honour it verbatim.
+  if [ -n "$FORKMESH_NODE" ]; then
+    FORKMESH_NODES="$FORKMESH_NODE"
+    return 0
+  fi
   command -v curl >/dev/null 2>&1 || die "curl is required to find an online ForkMesh mirror."
 
-  local body node source_url sep
+  local body raw_nodes nodes_blob source_url sep
   sep="?"
   case "$FORKMESH_INSTALL_SOURCE_URL" in
     *\?*) sep="&" ;;
   esac
   source_url="${FORKMESH_INSTALL_SOURCE_URL}${sep}_=$(date +%s)"
+  dbg "Querying install source: $source_url"
   if ! body="$(curl -sSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
     die "Could not check for an online ForkMesh mirror. Please try again shortly."
   fi
-  node="$(printf '%s\n' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-  case "$node" in
-    *[!A-Za-z0-9._:-]*|"")
-      die "No online ForkMesh node is currently mirroring '$FORKMESH_NAME'. Start a node that publishes this repository, then try the installer again."
-      ;;
-  esac
-  FORKMESH_NODE="$node"
+  dbg "install-source response: $body"
+  # Prefer the ranked "nodes":[ ... ] list (newer mainnode); fall back to the
+  # single "node" field so older mainnodes — and the no-mirror error shape —
+  # still parse. Extract one node id per line, in server-ranked order.
+  nodes_blob="$(printf '%s\n' "$body" | sed -n 's/.*"nodes"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')"
+  if [ -n "$nodes_blob" ]; then
+    raw_nodes="$(printf '%s\n' "$nodes_blob" | tr ',' '\n' | sed -n 's/.*"\([^"]*\)".*/\1/p')"
+  else
+    raw_nodes="$(printf '%s\n' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  fi
+  # Keep only well-formed node ids, preserving order and dropping duplicates.
+  local valid="" n
+  for n in $raw_nodes; do
+    case "$n" in
+      *[!A-Za-z0-9._:-]*|"") continue ;;
+    esac
+    case " $valid " in *" $n "*) continue ;; esac
+    valid="${valid:+$valid }$n"
+  done
+  [ -n "$valid" ] || die "No online ForkMesh node is currently mirroring '$FORKMESH_NAME'. Start a node that publishes this repository, then try the installer again."
+  FORKMESH_NODES="$valid"
+  FORKMESH_NODE="${valid%% *}"
 }
 
 # --- uninstall --------------------------------------------------------------
@@ -199,10 +255,22 @@ if [ -z "$REPO" ]; then
   CURRENT_STEP="mirror"
   say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
-  REPO="${FORKMESH_HOST%/}/${FORKMESH_NODE}/${FORKMESH_NAME}"
+  # Turn each resolved node into a clone URL, best first. The installer clones
+  # from the first and falls back through the rest if a mirror is unreachable.
+  for _node in $FORKMESH_NODES; do
+    REPO_CANDIDATES+=("${FORKMESH_HOST%/}/${_node}/${FORKMESH_NAME}")
+  done
+  REPO="${REPO_CANDIDATES[0]}"
   say "Using mirror node: $FORKMESH_NODE"
+  if [ "${#REPO_CANDIDATES[@]}" -gt 1 ]; then
+    say "  ${#REPO_CANDIDATES[@]} online mirrors available; will fall back if one is unreachable: $FORKMESH_NODES"
+  fi
   diag mirror 1
 fi
+# An explicit FORKMESH_REPO (or the override path above leaving it unset) means
+# there is exactly one URL to try; make it the sole candidate so clean_clone has
+# a non-empty list to iterate.
+[ "${#REPO_CANDIDATES[@]}" -eq 0 ] && REPO_CANDIDATES=("$REPO")
 
 # --- privilege escalation ---------------------------------------------------
 # Resolve how to run a package manager that needs root. Empty when we are
@@ -366,6 +434,138 @@ fi
 CURRENT_STEP="deps"
 say "Checking build prerequisites (git, cmake, compiler, Qt 6, OpenSSL)…"
 ensure git    command -v git
+
+# --- prebuilt release binary (fast path) ------------------------------------
+# Resolve this machine's release asset name from uname. The release workflow
+# (.forkmesh/release.yml) names every attached build forkmesh-<os>-<arch> (with
+# a .exe suffix on Windows), so the installer can pick the right one with no
+# server round-trip beyond the clone the build path already needs.
+detect_release_asset() {
+  local os arch
+  os="$(uname -s 2>/dev/null || echo unknown)"
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  case "$os" in
+    Linux)                            os="linux" ;;
+    Darwin)                           os="macos" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)  os="windows" ;;
+    *) os="$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+  case "$arch" in
+    x86_64|amd64|x64) arch="x86_64" ;;
+    aarch64|arm64)    arch="arm64" ;;
+  esac
+  ASSET_OS="$os"
+  ASSET_ARCH="$arch"
+  ASSET_NAME="forkmesh-${os}-${arch}"
+  [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
+  # Release channel: the directory under releases/ the workflow publishes into.
+  RELEASE_CHANNEL="${FORKMESH_RELEASE:-latest}"
+  ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
+}
+
+# Sparse-fetch a single committed file (repo-relative path $3) from clone URL $1
+# into dir $2, without checking out the whole tree. Prefers a blobless clone
+# (fetches only that one blob); if the mirror/relay does not honour partial-clone
+# filters, retries with a plain shallow clone so the fast path still works (it
+# just transfers more). Leaves the file at "$2/$3" on success.
+_sparse_fetch_file() {
+  local repo="$1" tmp="$2" rel="$3" mode
+  for mode in "--filter=blob:none" ""; do
+    rm -rf "$tmp"; mkdir -p "$tmp" || return 1
+    # shellcheck disable=SC2086
+    if git clone --quiet --depth 1 $mode --no-checkout "$repo" "$tmp" >/dev/null 2>&1 \
+        && git -C "$tmp" sparse-checkout set --no-cone "$rel" >/dev/null 2>&1 \
+        && git -C "$tmp" checkout --quiet >/dev/null 2>&1 \
+        && [ -s "$tmp/$rel" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Split a clone URL (https://host/owner/repo[.git]) into RELEASE_REPO_OWNER and
+# RELEASE_REPO_NAME — the namespace for the relay's release-download endpoint.
+_repo_owner_name() {
+  local u="${1%.git}"
+  RELEASE_REPO_NAME="${u##*/}"; u="${u%/*}"
+  RELEASE_REPO_OWNER="${u##*/}"
+}
+
+# Echo the sha256 of file $1 (Linux sha256sum / macOS shasum), or empty if no
+# checksum tool is available (download then installs unverified, with a warning).
+_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else echo ""; fi
+}
+
+# Install binary file $1 to $BIN (mode 0755), creating $BIN_DIR. Non-zero on fail.
+_install_binary() {
+  mkdir -p "$BIN_DIR" || return 1
+  install -m 0755 "$1" "$BIN" 2>/dev/null || { cp "$1" "$BIN" && chmod 0755 "$BIN"; }
+}
+
+# Install the prebuilt binary for this platform. New model (issue #304): release
+# binaries are NOT committed to git. The installer reads the tiny committed
+# release manifest (SHASUMS256.txt, fetched over the git proxy) to learn the
+# platform asset's content hash, downloads the bytes from the relay's
+# content-addressed release endpoint, and VERIFIES the sha256 before installing.
+# Falls back to a legacy release that still committed the binary into
+# releases/<channel>/, and then (via the caller) to a source build. Returns
+# non-zero when git is unavailable or no mirror can serve a verified asset.
+install_prebuilt_release() {
+  command -v git >/dev/null 2>&1 || return 1
+  local tmp repo sums hash url bin got
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
+  sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
+  for repo in "${REPO_CANDIDATES[@]}"; do
+    # New model: manifest checksum + content-addressed download (+ verify).
+    if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums"; then
+      hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
+      if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
+        _repo_owner_name "$repo"
+        url="${FORKMESH_HOST%/}/api/repo/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/blob/sha256/${hash}"
+        bin="$tmp/asset.bin"
+        say "Downloading prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
+        if curl -fsSL "$url" -o "$bin" 2>/dev/null && [ -s "$bin" ]; then
+          got="$(_sha256_file "$bin")"
+          if [ -n "$got" ] && [ "$got" != "$hash" ]; then
+            warn "Checksum mismatch for $ASSET_NAME (expected $hash, got $got); skipping."
+          elif _install_binary "$bin"; then
+            [ -n "$got" ] || warn "No sha256 tool found; installed $ASSET_NAME unverified."
+            REPO="$repo"; rm -rf "$tmp"
+            say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
+            return 0
+          fi
+        fi
+      fi
+    fi
+    # Legacy model: binary committed directly into releases/<channel>/.
+    if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
+      REPO="$repo"; rm -rf "$tmp"
+      say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
+      return 0
+    fi
+  done
+  rm -rf "$tmp"
+  return 1
+}
+
+detect_release_asset
+if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
+  CURRENT_STEP="prebuilt"
+  if install_prebuilt_release; then
+    INSTALLED_PREBUILT=1
+    diag prebuilt 1 "$ASSET_NAME"
+  else
+    say "No prebuilt binary published for ${ASSET_OS}/${ASSET_ARCH}; building from source."
+    diag prebuilt 0 "$ASSET_NAME"
+  fi
+fi
+
+# Everything from here to the build retry is the source-build pipeline; skip it
+# entirely once a prebuilt binary is in place.
+if [ "$INSTALLED_PREBUILT" != "1" ]; then
 ensure cmake  command -v cmake
 
 # Compiler: on macOS this means the Xcode Command Line Tools, which brew can't
@@ -429,29 +629,76 @@ diag deps 1 "${DIAG_MISSING:-none}"
 MANAGED_MARKER=".forkmesh-managed"
 owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
 
+# Extract the node segment ("https://host/<node>/forkmesh" -> "<node>") so log
+# lines can name the offending mirror without echoing the whole clone URL.
+repo_node() {
+  local r="${1%/}"   # drop any trailing slash
+  r="${r%/*}"        # drop the trailing /<repo> segment
+  printf '%s' "${r##*/}"
+}
+
+# Turn the captured `git clone` output into a short, human-readable reason. The
+# 504 "Host timed out" the relay returns when a named mirror's git tunnel is
+# unresponsive is the case this whole fallback exists for, so name it precisely;
+# everything else gets a best-effort classification for the diagnostics funnel.
+classify_clone_failure() {
+  case "$1" in
+    *"failed integrity check"*|*"repository failed integrity"*) echo "integrity pin rejected by the relay" ;;
+    *"Host timed out"*|*"error: 504"*|*" 504"*)                 echo "mirror host timed out (HTTP 504)" ;;
+    *"error: 502"*|*" 502"*)                                    echo "relay gateway error (HTTP 502)" ;;
+    *"error: 503"*|*" 503"*)                                    echo "mirror temporarily unavailable (HTTP 503)" ;;
+    *"error: 404"*|*"not found"*|*"Repository not found"*)      echo "repository not found on this mirror (HTTP 404)" ;;
+    *"error: 401"*|*"Authentication failed"*)                   echo "authentication required (HTTP 401)" ;;
+    *"Could not resolve host"*|*"Couldn't resolve"*)            echo "DNS resolution failed" ;;
+    *"Connection refused"*|*"Failed to connect"*)               echo "connection refused" ;;
+    *"timed out"*|*"timeout"*|*"Operation timed out"*)          echo "network timeout" ;;
+    *)                                                          echo "git clone failed" ;;
+  esac
+}
+
 # Replace $SRC with a fresh shallow clone. Clone into a temporary sibling first
 # and swap it into place only after the clone fully succeeds, so a failed clone
 # (e.g. no mirror currently serving the repo) can never leave the user with a
-# half-deleted or missing $SRC.
+# half-deleted or missing $SRC. Tries each resolved mirror in REPO_CANDIDATES in
+# turn, so one unreachable mirror (504/timeout) falls through to the next online
+# one instead of dead-ending the install.
 clean_clone() {
   local tmp="$SRC.new.$$"
-  rm -rf "$tmp"
-  say "Cloning $REPO"
-  # Capture output so we can recognise the relay's integrity-gate rejection and
-  # explain it precisely; the output is still echoed so normal progress shows.
-  local out rc
-  out="$(git clone --depth 1 "$REPO" "$tmp" 2>&1)"; rc=$?
-  printf '%s\n' "$out"
-  if [ "$rc" -ne 0 ]; then
+  local repo out rc reason node total="${#REPO_CANDIDATES[@]}" idx=0
+  CLONE_FAIL_REASON=""
+  for repo in "${REPO_CANDIDATES[@]}"; do
+    idx=$((idx + 1))
+    node="$(repo_node "$repo")"
     rm -rf "$tmp"
+    if [ "$total" -gt 1 ]; then
+      say "Cloning $repo  (mirror $idx of $total)"
+    else
+      say "Cloning $repo"
+    fi
+    # Capture output so we can recognise the relay's integrity-gate rejection and
+    # classify the failure; the output is still echoed so normal progress shows.
+    out="$(git clone --depth 1 "$repo" "$tmp" 2>&1)"; rc=$?
+    printf '%s\n' "$out"
+    if [ "$rc" -eq 0 ]; then
+      : > "$tmp/$MANAGED_MARKER"
+      rm -rf "$SRC"
+      mv "$tmp" "$SRC"
+      REPO="$repo"   # remember the mirror that actually served the clone
+      return 0
+    fi
+    rm -rf "$tmp"
+    reason="$(classify_clone_failure "$out")"
+    CLONE_FAIL_REASON="$reason"
+    # A failed integrity pin is the relay refusing every mirror of this repo, not
+    # a per-mirror outage, so trying the rest is pointless — stop and let the
+    # caller surface the owner-actionable pin help.
     case "$out" in
-      *"failed integrity check"*|*"repository failed integrity"*) PIN_FAILURE=1 ;;
+      *"failed integrity check"*|*"repository failed integrity"*) PIN_FAILURE=1; return 1 ;;
     esac
-    return 1
-  fi
-  : > "$tmp/$MANAGED_MARKER"
-  rm -rf "$SRC"
-  mv "$tmp" "$SRC"
+    warn "Mirror '$node' could not be cloned: $reason."
+    [ "$idx" -lt "$total" ] && say "  Falling back to the next online mirror…"
+  done
+  return 1
 }
 
 fetch_source() {
@@ -521,7 +768,10 @@ install_client() {
 # Fetch -> build -> install, tagging the active phase for diagnostics. Returns
 # non-zero (rather than exiting) on the first failure so the caller can retry.
 attempt_install() {
-  CURRENT_STEP="fetch";   fetch_source   || return 1; diag fetch 1
+  # On a fetch failure, report WHY (the classified clone reason) to the funnel so
+  # operators can see, e.g., that every mirror returned a 504 — not just that the
+  # fetch step dropped off.
+  CURRENT_STEP="fetch";   fetch_source   || { diag fetch 0 "${CLONE_FAIL_REASON:-fetch_failed}"; return 1; }; diag fetch 1
   CURRENT_STEP="build";   build_client   || return 1; diag build 1
   CURRENT_STEP="install"; install_client || return 1; diag install 1
 }
@@ -552,9 +802,17 @@ if ! attempt_install; then
   rm -rf "$SRC"
   if ! attempt_install; then
     [ "$PIN_FAILURE" = "1" ] && pin_failure_help
+    # Name the last failure reason and every mirror that was tried so the cause
+    # is obvious from the final line alone (e.g. all mirrors returned a 504).
+    if [ "${CLONE_FAIL_REASON:-}" ]; then
+      warn "Mirrors tried: ${FORKMESH_NODES:-$REPO}"
+      warn "Re-run with FORKMESH_DEBUG=1 for the full git/HTTP trace."
+      die "Could not fetch the source from any online mirror ($CLONE_FAIL_REASON). All mirrors are unreachable right now — please try again shortly."
+    fi
     die "Install failed again after a clean re-clone; see the messages above for the cause."
   fi
 fi
+fi  # end source-build pipeline (skipped when a prebuilt binary was installed)
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
@@ -572,7 +830,14 @@ register_desktop_entry() {
   [ "$(uname -s)" = "Linux" ] || return 0
   local script="$SRC/qt_client/install.sh"
   if [ ! -f "$script" ]; then
-    warn "Desktop integration script not found at $script; skipping menu registration."
+    # The prebuilt fast path never clones the source, so the helper that writes
+    # the .desktop entry isn't present — that's expected, not an error. The app
+    # still runs from $BIN on the PATH.
+    if [ "$INSTALLED_PREBUILT" = "1" ]; then
+      say "Installed the prebuilt binary; skipping app-menu registration (run:  forkmesh)."
+    else
+      warn "Desktop integration script not found at $script; skipping menu registration."
+    fi
     return 0
   fi
   say "Registering ForkMesh in the application menu"

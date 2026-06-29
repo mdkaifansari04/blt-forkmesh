@@ -1,0 +1,28 @@
+/ /index.html 200
+/dashboard /dashboard/index.html 200
+/dashboard.html /dashboard 308
+/noisy-background.avif /noisy-background.avif 200
+/dashboard.js /dashboard.js 200
+/dashboard-chat.js /dashboard-chat.js 200
+/blogs /blog.html 200
+/login /login.html 200
+/signup /signup.html 200
+/docs /docs/index.html 200
+/docs/ /docs/index.html 200
+/docs.html /docs/ 308
+/blog /blogs 308
+/blog.html /blogs 308
+/network /network/index.html 200
+/network/ /network/index.html 200
+/desktop /desktop.html 200
+/about /about.html 200
+/careers /careers.html 200
+/changelog /changelog.html 200
+/privacy /privacy.html 200
+/terms /terms.html 200
+# Repo shortcut URLs (/owner/repo and /owner/repo/tree|blob/...) are deliberately
+# NOT redirected here. A /:owner/:repo rule also matches real two-segment static
+# assets like /assets/logo.png and /favicon/site.webmanifest, and Cloudflare
+# always applies _redirects BEFORE serving a matching static file, so those
+# assets would 308 instead of loading. The shortcut is handled client-side in
+# public/404.html, which only runs after asset resolution (a genuine 404).

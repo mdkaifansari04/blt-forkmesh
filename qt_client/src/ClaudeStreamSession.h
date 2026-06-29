@@ -21,11 +21,16 @@ public:
 
     // Launch claude in `cwd`. extraEnv holds "KEY=VALUE" entries; "KEY" with no
     // '=' unsets that variable in the child (matches TerminalWidget semantics).
-    // The initial prompt is sent as the first user turn. `model`, when non-empty,
-    // is passed to the CLI as `--model <model>` (e.g. opus | sonnet | haiku);
-    // empty leaves the CLI's own default model in place.
+    // The initial prompt is sent as the first user turn. When resumeSessionId is
+    // non-empty the CLI is launched with `--resume <id>`, so it picks up that
+    // prior conversation with full context instead of starting fresh — the
+    // initial prompt then becomes the next steering turn (adhoc #182).
+    // When model is non-empty it's passed to the CLI as `--model` (an alias like
+    // "opus"/"sonnet"/"haiku" or a full model id), letting the user pick which
+    // Claude model runs the agent (adhoc #261); empty keeps the CLI default.
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt, bool skipPermissions = true,
+               const QString &resumeSessionId = QString(),
                const QString &model = QString());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);

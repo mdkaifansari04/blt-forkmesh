@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 270
 title: on the website only show open issues by default
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 58
+progress: 75
 assignees: []
 createdAt: 1782482034249
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 280
 title: give more info when we stall 11:18:08  INFO   [11:18:08] UI stalled ~5485 ms (event loop blocked)
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 66
+progress: 40
 assignees: []
 createdAt: 1782487143729
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4

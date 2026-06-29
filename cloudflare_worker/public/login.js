@@ -8,6 +8,28 @@
     hint.className = "hint" + (cls ? " " + cls : "");
   }
 
+  const DEMO_EMAIL = "demo@forkmesh.local";
+  const DEMO_PASSWORD = "forkmesh-demo";
+
+  function demoLoginAllowed() {
+    return location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  }
+
+  function storeSession(body) {
+    try {
+      localStorage.setItem("forkmesh.session", JSON.stringify({
+        nodeName: body.nodeName,
+        email: body.email,
+        status: body.status,
+        pubkey: body.pubkey,
+        emailVerified: Boolean(body.emailVerified),
+        isAdmin: Boolean(body.isAdmin),
+        at: Date.now(),
+      }));
+      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";
+    } catch (_) {}
+  }
+
   async function login() {
     const email = $("#email").value.trim();
     const password = $("#password").value;
@@ -18,6 +40,19 @@
     }
     if (!email.includes("@")) {
       setHint("Enter a valid email address.", "bad");
+      return;
+    }
+    if (demoLoginAllowed() && email.toLowerCase() === DEMO_EMAIL && password === DEMO_PASSWORD) {
+      storeSession({
+        nodeName: "demo-node",
+        email: DEMO_EMAIL,
+        status: "active",
+        pubkey: "",
+        emailVerified: true,
+        isAdmin: false,
+      });
+      setHint("Logged in with local demo credentials.", "good");
+      setTimeout(() => (location.href = "/dashboard"), 500);
       return;
     }
     btn.disabled = true;
@@ -32,7 +67,7 @@
       body = await res.json();
     } catch (_) {
       btn.disabled = false; btn.textContent = "Log in";
-      setHint("Network error — please try again.", "bad");
+      setHint("Network error - please try again.", "bad");
       return;
     }
     btn.disabled = false;
@@ -41,11 +76,7 @@
     if (res.ok) {
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
-      try {
-        localStorage.setItem("forkmesh.session", JSON.stringify({
-          nodeName: body.nodeName, email: body.email, at: Date.now(),
-        }));
-      } catch (_) {}
+      storeSession(body);
       setTimeout(() => (location.href = "/"), 700);
       return;
     }
@@ -64,6 +95,18 @@
   }
 
   btn.addEventListener("click", login);
+  if (demoLoginAllowed()) {
+    const demoBox = $("#demo-credentials");
+    const demoFill = $("#demo-fill-btn");
+    if (demoBox) demoBox.style.display = "block";
+    if (demoFill) {
+      demoFill.addEventListener("click", () => {
+        $("#email").value = DEMO_EMAIL;
+        $("#password").value = DEMO_PASSWORD;
+        setHint("Demo credentials filled. Click Log in.", "");
+      });
+    }
+  }
   for (const id of ["email", "password", "totp"]) {
     $("#" + id).addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   }

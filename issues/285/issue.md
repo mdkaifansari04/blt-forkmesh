@@ -3,10 +3,10 @@ schema: forkmesh-issue-v1
 number: 285
 title: on the mirror nodes show memory use / available and CPU levels also show last heartbeat time
 status: open
-labels: []
+labels: [Partial]
 milestone: 
-priority: 0
-progress: 0
+priority: 71
+progress: 60
 assignees: []
 createdAt: 1782487573397
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
