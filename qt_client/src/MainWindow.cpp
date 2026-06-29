@@ -41553,11 +41553,30 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueDevelopmentValue->setText("No linked pull requests.");
         } else {
             QStringList links;
-            for (const int n : pulls)
+            for (const int n : pulls) {
+                // Append the linked PR's state (Open/Merged/Closed) when the PR is
+                // loaded, colour-matched to the pull request detail header.
+                QString badge;
+                for (const PullRequest &pr : m_currentPulls) {
+                    if (pr.number != n)
+                        continue;
+                    const QString label =
+                        pr.status == QLatin1String("merged")  ? QStringLiteral("Merged")
+                        : pr.status == QLatin1String("closed") ? QStringLiteral("Closed")
+                                                               : QStringLiteral("Open");
+                    const QString color =
+                        pr.status == QLatin1String("merged")  ? QStringLiteral("#a371f7")
+                        : pr.status == QLatin1String("closed") ? QStringLiteral("#f85149")
+                                                               : QStringLiteral("#3fb950");
+                    badge = QStringLiteral(
+                                " <span style='color:%1'>%2</span>").arg(color, label);
+                    break;
+                }
                 links << QStringLiteral(
                              "<a href='pull:%1' style='color:#58a6ff;"
-                             "text-decoration:none'>pull request #%1</a>")
-                             .arg(n);
+                             "text-decoration:none'>pull request #%1</a>%2")
+                             .arg(QString::number(n), badge);
+            }
             m_issueDevelopmentValue->setText(links.join("<br>"));
         }
     }
