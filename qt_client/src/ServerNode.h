@@ -10,6 +10,17 @@
 #include <QTcpSocket>
 #include <QUrl>
 
+// QSettings keys for the per-metric "advertise this node's host stats" toggles
+// (adhoc #23). Each controls whether this node samples and broadcasts that metric
+// for the Mirror nodes view's CPU/RAM/disk bars. Headful nodes default these OFF
+// (don't broadcast a personal machine's load); headless installs done from the
+// Hosts tab are seeded ON at startup so the operator can monitor them remotely.
+namespace TelemetrySettings {
+inline const QString kReportCpu = QStringLiteral("nodes/reportCpu");
+inline const QString kReportMemory = QStringLiteral("nodes/reportMemory");
+inline const QString kReportDisk = QStringLiteral("nodes/reportDisk");
+} // namespace TelemetrySettings
+
 class QTimer;
 
 class ServerNode : public ChatBackend
