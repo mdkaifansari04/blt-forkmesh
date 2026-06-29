@@ -37659,12 +37659,71 @@ void MainWindow::promptNewRelease()
     const QString target = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
                                                   : m_repoBranch;
 
+    // Auto-fill the tag and title from the previous release so a typical
+    // patch bump is one click away. Grab the newest tag (by creation date)
+    // and its subject (the release title baked into the annotated tag).
+    QString prevTag, prevTitle;
+    {
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate", "--count=1",
+                           "--format=%(refname:short)%09%(contents:subject)",
+                           "refs/tags"},
+                          &out, nullptr)) {
+            const QString line = QString::fromUtf8(out).trimmed();
+            const int tab = line.indexOf('\t');
+            if (tab >= 0) {
+                prevTag = line.left(tab).trimmed();
+                prevTitle = line.mid(tab + 1).trimmed();
+            } else {
+                prevTag = line;
+            }
+        }
+    }
+    // Suggest the next tag by incrementing the last run of digits in the
+    // previous tag (v0.5.1 -> v0.5.2, v1.0.0-rc1 -> v1.0.0-rc2). Falls back
+    // to an empty suggestion when there's no prior release to bump.
+    QString suggestedTag, suggestedTitle;
+    if (!prevTag.isEmpty()) {
+        int end = -1;
+        for (int i = prevTag.size() - 1; i >= 0; --i) {
+            if (prevTag.at(i).isDigit()) {
+                end = i;
+                break;
+            }
+        }
+        if (end >= 0) {
+            int start = end;
+            while (start > 0 && prevTag.at(start - 1).isDigit())
+                --start;
+            bool ok = false;
+            const qulonglong n =
+                prevTag.mid(start, end - start + 1).toULongLong(&ok);
+            if (ok)
+                suggestedTag = prevTag.left(start) + QString::number(n + 1) +
+                               prevTag.mid(end + 1);
+        }
+        if (!suggestedTag.isEmpty()) {
+            // Carry the previous title's pattern forward, swapping in the new
+            // tag where the old one appeared (titles are usually just the tag).
+            if (prevTitle.isEmpty() || prevTitle == prevTag)
+                suggestedTitle = suggestedTag;
+            else if (prevTitle.contains(prevTag))
+                suggestedTitle = QString(prevTitle).replace(prevTag, suggestedTag);
+            else
+                suggestedTitle = prevTitle;
+        }
+    }
+
     // GitHub-style "draft a release": tag name, target ref, and release notes.
     QDialog dialog(this);
     dialog.setWindowTitle("Draft a new release");
     auto *form = new QFormLayout(&dialog);
     auto *tagEdit = new QLineEdit;
     tagEdit->setPlaceholderText("v1.0.0");
+    if (!suggestedTag.isEmpty())
+        tagEdit->setText(suggestedTag);
     auto *targetEdit = new QComboBox;
     targetEdit->addItems(branches);
     const int targetIdx = targetEdit->findText(target);
@@ -37672,6 +37731,8 @@ void MainWindow::promptNewRelease()
         targetEdit->setCurrentIndex(targetIdx);
     auto *titleEdit = new QLineEdit;
     titleEdit->setPlaceholderText("Release title (optional)");
+    if (!suggestedTitle.isEmpty())
+        titleEdit->setText(suggestedTitle);
     auto *notesEdit = new QPlainTextEdit;
     notesEdit->setPlaceholderText("Describe this release...");
     notesEdit->setMinimumHeight(120);
@@ -37684,6 +37745,9 @@ void MainWindow::promptNewRelease()
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    // Pre-select the suggested tag so it can be accepted as-is or typed over.
+    tagEdit->setFocus();
+    tagEdit->selectAll();
     if (dialog.exec() != QDialog::Accepted)
         return;
 
