@@ -197,10 +197,14 @@ void MainWindow::openCove(const QString &relPath)
     QString password;
     if (!tryUnlockCove(cove, idx, &password)) {
         bool ok = false;
+        // A locked cove's name is encrypted, so it may be unknown here.
+        const QString prompt =
+            cove.name.isEmpty()
+                ? QStringLiteral("Enter the password for this cove:")
+                : QString::fromUtf8("Enter the password for \xE2\x80\x9C%1\xE2\x80\x9D:")
+                      .arg(cove.name);
         const QString entered = QInputDialog::getText(
-            this, QStringLiteral("Unlock cove"),
-            QString::fromUtf8("Enter the password for \xE2\x80\x9C%1\xE2\x80\x9D:")
-                .arg(cove.name),
+            this, QStringLiteral("Unlock cove"), prompt,
             QLineEdit::Password, QString(), &ok);
         if (!ok || entered.isEmpty())
             return;
@@ -616,8 +620,11 @@ void MainWindow::rebuildRepoCovesList()
                                       : QString::fromUtf8("\xF0\x9F\x94\x92");
         const QString mine =
             cove.createdByMe(&m_profileIdentity) ? QStringLiteral("  (yours)") : QString();
+        // A locked cove keeps its name encrypted; show a neutral label until unlock.
+        const QString label =
+            cove.name.isEmpty() ? QStringLiteral("Locked cove") : cove.name;
         auto *item = new QListWidgetItem(
-            QStringLiteral("%1  %2%3").arg(lock, cove.name, mine), m_coveList);
+            QStringLiteral("%1  %2%3").arg(lock, label, mine), m_coveList);
         item->setData(Qt::UserRole, cove.relPath);
         item->setToolTip(unlocked ? QStringLiteral("Double-click to open")
                                   : QStringLiteral("Locked — enter the password to unlock"));
