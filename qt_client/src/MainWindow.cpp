@@ -37554,20 +37554,34 @@ void MainWindow::loadReleasesPanel()
                 const QString escaped = name.toHtmlEscaped();
                 const QString hash =
                     a.value(QStringLiteral("blob_sha256")).toString().trimmed();
+                const bool hashValid = sha256Re.match(hash).hasMatch();
+                QString entry;
                 if (!relayBase.isEmpty() && !manifestRepo.isEmpty() &&
-                    sha256Re.match(hash).hasMatch()) {
+                    hashValid) {
                     const QString url =
                         QStringLiteral(
                             "%1/api/repo/%2/releases/blob/sha256/%3")
                             .arg(relayBase, manifestRepo, hash);
-                    assetLinks.append(
+                    entry =
                         QStringLiteral(
                             "<a href=\"%1\" style=\"color:#58a6ff;"
                             "text-decoration:none\">%2</a>")
-                            .arg(url.toHtmlEscaped(), escaped));
+                            .arg(url.toHtmlEscaped(), escaped);
                 } else {
-                    assetLinks.append(escaped);
+                    entry = escaped;
                 }
+                // Show the sha256 checksum next to each artifact so it can be
+                // eyeballed against the value install.sh verifies. The full
+                // 64-char digest would blow out the column width, so render an
+                // abbreviated form and keep the full hash in the hover tooltip.
+                if (hashValid) {
+                    entry += QStringLiteral(
+                                 " <span title=\"sha256:%1\" "
+                                 "style=\"color:#8b949e;font-family:monospace;"
+                                 "font-size:11px\">sha256:%2</span>")
+                                 .arg(hash, hash.left(12));
+                }
+                assetLinks.append(entry);
             }
             if (!assetLinks.isEmpty())
                 artifactsByTag.insert(manifestTag,
