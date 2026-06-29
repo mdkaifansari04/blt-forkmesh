@@ -25803,28 +25803,29 @@ void MainWindow::toggleIssueLooper()
     looperStartNext();
 }
 
-// Pick the highest-priority open issue that's free to pick up and start the
-// looper's agent on it. Stops the looper when nothing is left to do. The looper
-// only touches open issues that are unassigned, have a priority set, and carry
-// no linked PR (adhoc #42) — anything assigned, untriaged, or already covered by
-// a pull request is left alone. Each issue is attempted at most once (any
-// existing session — queued, running, done, or failed — disqualifies it), so
-// the loop always makes forward progress.
-void MainWindow::looperStartNext()
+// Pick the highest-priority open issue that's free for the looper to pick up, or
+// nullptr when none qualify. The looper only touches open issues that are
+// unassigned, have a priority set, and are not already being handled (adhoc #42)
+// — anything assigned, untriaged, or already covered by an agent session or a
+// linked PR is left alone. "Already being handled" is supplied by the caller via
+// hasLocalSession so this stays static + pure for the window tests; the caller
+// folds both the agent-session and linked-PR checks into that predicate.
+// Highest priority wins; ties go to the lowest issue number.
+const Issue *MainWindow::looperPickNext(
+    const QList<Issue> &issues,
+    const std::function<bool(int)> &hasLocalSession)
 {
     const Issue *next = nullptr;
     int bestPriority = 1 << 30;
     for (const Issue &issue : issues) {
         if (issue.isDeleted() || issue.status != QLatin1String("open"))
             continue;
-        if (latestAgentSessionForIssue(issue.number))
-            continue; // already attempted by an agent
+        if (hasLocalSession(issue.number))
+            continue; // already attempted by an agent or covered by a linked PR
         if (!issue.assignees.isEmpty())
             continue; // assigned to someone — leave it to them
         if (issue.priority <= 0)
             continue; // no priority set — not triaged for the looper yet
-        if (!pullsLinkedToIssue(issue.number).isEmpty())
-            continue; // already has a linked PR
         const int p = issue.priority;
         if (p < bestPriority ||
             (p == bestPriority && (!next || issue.number < next->number))) {
@@ -25846,7 +25847,10 @@ void MainWindow::looperStartNext()
     if (!m_looperActive)
         return;
     const Issue *next = looperPickNext(m_currentIssues, [this](int number) {
-        return latestAgentSessionForIssue(number) != nullptr;
+        // Treat an issue as already handled if an agent has taken it or a PR is
+        // already linked to it (adhoc #42 — leave covered issues alone).
+        return latestAgentSessionForIssue(number) != nullptr ||
+               !pullsLinkedToIssue(number).isEmpty();
     });
     if (!next) {
         m_looperActive = false;
