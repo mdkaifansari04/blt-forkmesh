@@ -231,6 +231,10 @@ const QLatin1String kPullLinkScheme("forkmesh-pull:");
 // session's repo (adhoc #138). Shared by the link builder and its handler.
 const QLatin1String kIssueLinkScheme("forkmesh-issue:");
 
+// Per-repository about/catalog metadata lives under ForkMesh's own metadata dir
+// instead of the project root.
+const QLatin1String kRepoInfoPath(".forkmesh/info.json");
+
 // "forkmesh-agent:<sessionId>" link in the PR-detail meta line: when an agent
 // session produced a pull request, the header links back to that session on the
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
@@ -29269,7 +29273,8 @@ void MainWindow::openRepoDetail(int repoIndex)
                 .arg(repo.owner.toHtmlEscaped(), repo.name.toHtmlEscaped()));
     setRepoDetailNotice(QString());
 
-    // Per-repo metadata (info.json) + the branch we view; both feed the loaders.
+    // Per-repo metadata (.forkmesh/info.json) + the branch we view; both feed
+    // the loaders.
     m_repoInfo = RepoInfo();
     m_repoBranch.clear();
     loadRepoInfo();
@@ -34192,7 +34197,7 @@ void MainWindow::loadRepoInfo()
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
 
     QByteArray raw;
-    const QString local = repo.localPath + "/info.json";
+    const QString local = QDir(repo.localPath).filePath(kRepoInfoPath);
     if (!repo.localPath.isEmpty() && QFileInfo::exists(local)) {
         QFile file(local);
         if (file.open(QIODevice::ReadOnly))
@@ -34200,7 +34205,8 @@ void MainWindow::loadRepoInfo()
     } else {
         const QString dir = repoGitDir();
         if (!dir.isEmpty())
-            runGitCapture(dir, {"show", currentRef() + ":info.json"}, &raw, nullptr);
+            runGitCapture(dir, {"show", currentRef() + ":" + kRepoInfoPath}, &raw,
+                          nullptr);
     }
     if (raw.isEmpty())
         return;
@@ -34302,20 +34308,21 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
 
     const int index = m_repoDetailIndex;
     RepositoryRecord &repo = m_repositories[index];
-    const QString infoPath = QDir(repo.localPath).filePath("info.json");
+    const QDir repoDir(repo.localPath);
+    const QString infoPath = repoDir.filePath(kRepoInfoPath);
     QJsonObject obj;
     if (QFileInfo::exists(infoPath)) {
         QFile file(infoPath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error)
-                *error = QStringLiteral("Could not read info.json.");
+                *error = QStringLiteral("Could not read .forkmesh/info.json.");
             return false;
         }
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
             if (error)
-                *error = QStringLiteral("info.json is not valid JSON.");
+                *error = QStringLiteral(".forkmesh/info.json is not valid JSON.");
             return false;
         }
         obj = doc.object();
@@ -34332,15 +34339,20 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
         obj.insert(QStringLiteral("website"), website);
 
     const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    if (!repoDir.mkpath(QStringLiteral(".forkmesh"))) {
+        if (error)
+            *error = QStringLiteral("Could not create .forkmesh directory.");
+        return false;
+    }
     QSaveFile file(infoPath);
     if (!file.open(QIODevice::WriteOnly)) {
         if (error)
-            *error = QStringLiteral("Could not write info.json.");
+            *error = QStringLiteral("Could not write .forkmesh/info.json.");
         return false;
     }
     if (file.write(data) != data.size() || !file.commit()) {
         if (error)
-            *error = QStringLiteral("Could not save info.json.");
+            *error = QStringLiteral("Could not save .forkmesh/info.json.");
         return false;
     }
 
@@ -49663,7 +49675,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
     QString publishedWebsite;
     if (!repo.localPath.trimmed().isEmpty()) {
-        QFile file(QDir(repo.localPath).filePath("info.json"));
+        QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();
