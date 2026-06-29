@@ -586,7 +586,12 @@ private:
     QWidget *buildHostsSection();
     void runHostInstall();
     void appendHostInstallLog(const QString &text);
-    void rememberHost(const QString &name, const QString &ip, const QString &user);
+    // Save the host's server info (name/IP/user) from the form without running
+    // the installer, so the details are remembered up front and the installer
+    // can be run against the saved host later. The SSH password is never stored.
+    void addHostFromForm();
+    void rememberHost(const QString &name, const QString &ip, const QString &user,
+                      const QString &status = QStringLiteral("installed"));
     void refreshHostsTable();
     // Reload a saved host's server info (name/IP/user) from the table back into
     // the install form so the installer can be re-run against it.
@@ -1968,6 +1973,7 @@ private:
     QLineEdit *m_hostUserEdit = nullptr;
     QLineEdit *m_hostPassEdit = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;
+    QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
