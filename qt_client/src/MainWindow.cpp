@@ -13857,6 +13857,11 @@ struct DiffFileEntry {
     int adds = 0;
     int dels = 0;
     QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
+    // A binary file (`git diff --binary` emits a "GIT binary patch" literal/delta
+    // block, or a plain "Binary files … differ" line): its payload is not a text
+    // diff, so the renderers show a placeholder row and the header shows "BIN"
+    // instead of +/- counts.
+    bool binary = false;
 };
 QString diffStyleSheet(int fontPt = 12);
 // anchorFile (when set) makes the line-number gutters clickable comment anchors
@@ -19240,6 +19245,52 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 listed = true;
             }
         }
+    }
+    // Cross-node fallback: the head ref isn't present on this node (the log above
+    // found nothing), but the signed format-patch mbox carries every commit with
+    // its original author/date/subject — parse those so attribution still shows.
+    if (!listed && !pr.commits.isEmpty()) {
+        static const QRegularExpression boundary(
+            QStringLiteral("^From [0-9a-f]{7,40} "));
+        static const QRegularExpression patchTag(
+            QStringLiteral("^\\[PATCH[^\\]]*\\]\\s*"));
+        QString author, subject, date;
+        bool inHeaders = false;
+        const auto flush = [&] {
+            if (subject.isEmpty() && author.isEmpty())
+                return;
+            auto *item = new QListWidgetItem(
+                QString::fromUtf8("%1 \xC2\xB7 %2")
+                    .arg(subject.isEmpty() ? QStringLiteral("(no subject)") : subject,
+                         author.isEmpty() ? QStringLiteral("unknown") : author));
+            item->setToolTip(date);
+            item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+            m_pullCommitsList->addItem(item);
+            listed = true;
+            author.clear();
+            subject.clear();
+            date.clear();
+        };
+        for (const QString &line : pr.commits.split('\n')) {
+            if (boundary.match(line).hasMatch()) {
+                flush();
+                inHeaders = true;
+                continue;
+            }
+            if (!inHeaders)
+                continue;
+            if (line.isEmpty()) { // blank line ends the header block
+                inHeaders = false;
+            } else if (line.startsWith(QLatin1String("From: "))) {
+                author = line.mid(6).section(QLatin1String(" <"), 0, 0).trimmed();
+            } else if (line.startsWith(QLatin1String("Date: "))) {
+                date = line.mid(6).trimmed();
+            } else if (line.startsWith(QLatin1String("Subject: "))) {
+                subject = line.mid(9).trimmed();
+                subject.remove(patchTag);
+            }
+        }
+        flush();
     }
     if (!listed) {
         auto *item = new QListWidgetItem(
@@ -33211,6 +33262,24 @@ QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &ol
     return out;
 }
 
+// A single placeholder row standing in for a binary file's diff body, which is a
+// base85 literal/delta blob rather than reviewable text. `columns` matches the
+// table the row is inserted into (2 for a one-sided add/delete, 3 otherwise).
+QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
+{
+    QString verb = QStringLiteral("changed");
+    if (f.status == QLatin1String("added"))
+        verb = QStringLiteral("added");
+    else if (f.status == QLatin1String("deleted"))
+        verb = QStringLiteral("removed");
+    else if (f.status == QLatin1String("renamed"))
+        verb = QStringLiteral("renamed");
+    return QStringLiteral("<tr><td class='code ctx' colspan='%1'>"
+                          "<i>Binary file %2 \xE2\x80\x94 content not shown</i></td></tr>")
+        .arg(columns)
+        .arg(verb);
+}
+
 // Per-file header block shared by the unified and split renderers. The old text
 // badge ("ADDED"/"MODIFIED"/…) is replaced by a status octicon (the word lives
 // on as a tooltip); the path shows its directory dimmed and the basename bold;
@@ -33287,16 +33356,21 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
                        .arg(QString(red, QChar(0x2588)));
     }
 
+    // Binary files have no line counts; show a "BIN" marker in place of +/-.
+    const QString statHtml =
+        f.binary
+            ? QStringLiteral("<span class='fstat'> BIN</span>")
+            : QStringLiteral("<span class='fstat'> <span class='sadd'>+%1</span> "
+                             "<span class='sdel'>\xE2\x88\x92%2</span> %3</span>")
+                  .arg(QString::number(f.adds), QString::number(f.dels), bar);
+
     return QString::fromUtf8(
-               "<a name=\"%1\"></a><div class='fileblock%8'>"
+               "<a name=\"%1\"></a><div class='fileblock%6'>"
                "<div class='fileheader'>"
                "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-               "<td>%2<span class='fpath'>%3</span>"
-               "<span class='fstat'> <span class='sadd'>+%4</span> "
-               "<span class='sdel'>\xE2\x88\x92%5</span> %6</span></td>"
-               "<td align='right'>%7%9</td></tr></table></div>")
-        .arg(f.anchor, badge, pathHtml, QString::number(f.adds),
-             QString::number(f.dels), bar, commentIcon,
+               "<td>%2<span class='fpath'>%3</span>%4</td>"
+               "<td align='right'>%5%7</td></tr></table></div>")
+        .arg(f.anchor, badge, pathHtml, statHtml, commentIcon,
              viewed ? QStringLiteral(" viewed") : QString(), viewedLink);
 }
 
@@ -33316,6 +33390,10 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
     bool inFile = false;
+    // Set once a file's "GIT binary patch" / "Binary files … differ" marker is
+    // seen, so the base85 literal/delta payload that follows is skipped instead of
+    // rendered as garbage context rows. Reset at the next "diff --git".
+    bool inBinary = false;
 
     // Per-file header is emitted lazily: we buffer the rows so the header can
     // report final +/- counts (read from the hunks), then prepend the styled
@@ -33358,6 +33436,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             files.append(f);
             fileIdx = files.size() - 1;
             inFile = true;
+            inBinary = false;
             continue;
         }
         if (!inFile)
@@ -33372,6 +33451,22 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                      line.startsWith(QLatin1String("similarity ")))
                 files[fileIdx].status = QStringLiteral("renamed");
         }
+        // Binary section: mark the file, emit one placeholder row, and skip the
+        // base85 payload (and any "Binary files … differ" line) that follows.
+        if (line.startsWith(QLatin1String("GIT binary patch")) ||
+            line.startsWith(QLatin1String("Binary files "))) {
+            if (fileIdx >= 0 && !files[fileIdx].binary) {
+                files[fileIdx].binary = true;
+                const bool oneSided =
+                    files[fileIdx].status == QLatin1String("added") ||
+                    files[fileIdx].status == QLatin1String("deleted");
+                fileBody += diffBinaryRowHtml(files[fileIdx], oneSided ? 2 : 3);
+            }
+            inBinary = true;
+            continue;
+        }
+        if (inBinary)
+            continue;
         if (line.startsWith(QLatin1String("index ")) ||
             line.startsWith(QLatin1String("--- ")) ||
             line.startsWith(QLatin1String("+++ ")) ||
@@ -33468,6 +33563,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
     bool inFile = false;
+    bool inBinary = false; // see renderUnifiedDiffHtml
 
     // A side gutter cell; clickable (comment anchor) when anchors is on.
     const auto gut = [&](const QString &extraCls, const QString &num,
@@ -33583,6 +33679,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             files.append(f);
             fileIdx = files.size() - 1;
             inFile = true;
+            inBinary = false;
             continue;
         }
         if (!inFile)
@@ -33596,6 +33693,19 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                      line.startsWith(QLatin1String("similarity ")))
                 files[fileIdx].status = QStringLiteral("renamed");
         }
+        // Binary section: one placeholder row, then skip the base85 payload.
+        if (line.startsWith(QLatin1String("GIT binary patch")) ||
+            line.startsWith(QLatin1String("Binary files "))) {
+            if (fileIdx >= 0 && !files[fileIdx].binary) {
+                files[fileIdx].binary = true;
+                fileBody += diffBinaryRowHtml(files[fileIdx],
+                                              oneSidedKind() ? 2 : 4);
+            }
+            inBinary = true;
+            continue;
+        }
+        if (inBinary)
+            continue;
         if (line.startsWith(QLatin1String("index ")) ||
             line.startsWith(QLatin1String("--- ")) ||
             line.startsWith(QLatin1String("+++ ")) ||
