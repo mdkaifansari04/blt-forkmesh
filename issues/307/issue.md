@@ -5,7 +5,7 @@ title: feature request: when write a new issue, it should get saved/created on t
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 25
 progress: 0
 assignees: []
 createdAt: 1782758809486
