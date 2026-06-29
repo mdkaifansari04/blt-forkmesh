@@ -5,7 +5,7 @@ title: add the ability on a pr to - build and preview so it builds the pr and la
 status: open
 labels: [Partial]
 milestone: 
-priority: 28
+priority: 19
 progress: 35
 assignees: []
 createdAt: 1782351170098

@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 206
 title: when dragging certain sections the app freezes is slow
-status: open
+status: closed
 labels: [Partial]
 milestone: 
-priority: 88
+priority: 7
 progress: 40
 assignees: []
 createdAt: 1782349346026

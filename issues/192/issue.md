@@ -5,7 +5,7 @@ title: make a welcome room and announce new users to it
 status: open
 labels: [Partial]
 milestone: 
-priority: 24
+priority: 30
 progress: 40
 assignees: []
 createdAt: 1782339135267

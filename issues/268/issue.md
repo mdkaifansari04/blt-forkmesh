@@ -5,7 +5,7 @@ title: the drag to resize is weird on the issue table please make it so it resiz
 status: open
 labels: [Partial]
 milestone: 
-priority: 56
+priority: 37
 progress: 55
 assignees: []
 createdAt: 1782432688282

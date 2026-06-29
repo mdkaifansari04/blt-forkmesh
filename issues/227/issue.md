@@ -5,7 +5,7 @@ title: in security have the dependency inventory be a list and then have a link 
 status: open
 labels: [Partial]
 milestone: 
-priority: 34
+priority: 16
 progress: 50
 assignees: []
 createdAt: 1782354966082
