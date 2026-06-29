@@ -1,10 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
 project(ForkMesh VERSION 0.5.3 LANGUAGES CXX)
 
+# The version stamped into the binary. Defaults to the project() version above,
+# but the release workflow overrides it with -DFORKMESH_VERSION=<tag> so the
+# published artifact reports the release tag it was cut from (see
+# .forkmesh/release.yml).
+set(FORKMESH_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into the binary")
+
 # Baked into the binaries: shown in the UI, and the quick-update button uses
 # the source dir to git pull + rebuild when running from a checkout.
 add_compile_definitions(
-    FORKMESH_VERSION="${PROJECT_VERSION}"
+    FORKMESH_VERSION="${FORKMESH_VERSION}"
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
@@ -107,8 +113,8 @@ if(APPLE)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "ForkMesh"
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.forkmesh.client"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${FORKMESH_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${FORKMESH_VERSION}"
         OUTPUT_NAME "ForkMesh"
     )
 endif()
