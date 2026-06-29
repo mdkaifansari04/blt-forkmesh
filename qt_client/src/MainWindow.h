@@ -2729,6 +2729,13 @@ private:
     QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
     DiffFileNavigator *m_agentDiffNav = nullptr; // sticky header + scroll<->select
     QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
+    QLabel *m_agentCommitsHeading = nullptr;     // "Commits" heading over the list
+    QListWidget *m_agentCommitsList = nullptr;   // this branch's commits, ahead of base
+    // The session whose rich (icon + per-file +/-) diff list is currently on
+    // screen. Once renderAgentDiff() has drawn it, refreshAgentFilesPanel() skips
+    // the plain placeholder rebuild so the panel stops flashing between the two
+    // views on every transcript turn (adhoc #260).
+    int m_agentDiffRenderedSession = -1;
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main

@@ -22758,12 +22758,30 @@ QWidget *MainWindow::buildAgentsTab()
                     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             });
     // Click-to-scroll and scroll-to-select are driven by DiffFileNavigator below.
+
+    // The commits this branch adds on top of its base, newest first (adhoc #260).
+    // A short, read-only list above the file list so the "5 commits" in the summary
+    // is browsable rather than just a count. Kept compact so the file list still
+    // owns most of the panel.
+    m_agentCommitsHeading = new QLabel;
+    m_agentCommitsHeading->setObjectName("agentFilesHeading");
+    m_agentCommitsList = new QListWidget;
+    m_agentCommitsList->setObjectName("agentCommitsList");
+    m_agentCommitsList->setMinimumWidth(190);
+    m_agentCommitsList->setMaximumHeight(120);
+    m_agentCommitsList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_agentCommitsList->setFocusPolicy(Qt::NoFocus);
+    m_agentCommitsHeading->setVisible(false); // shown once a render finds commits
+    m_agentCommitsList->setVisible(false);
+
     auto *filesV = new QVBoxLayout;
     filesV->setContentsMargins(0, 0, 0, 0);
     filesV->setSpacing(4);
     m_agentFilesChangedSummary = new QLabel;
     m_agentFilesChangedSummary->setObjectName("agentFilesHeading");
     filesV->addWidget(m_agentFilesChangedSummary);
+    filesV->addWidget(m_agentCommitsHeading);
+    filesV->addWidget(m_agentCommitsList);
     filesV->addWidget(m_agentFilesList, 1);
     m_agentFilesPanel = new QWidget;
     m_agentFilesPanel->setLayout(filesV);
@@ -26674,7 +26692,15 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
     // blocking waitForFinished(), which fired on *every* transcript event and
     // froze the UI in ~1.5-2s bursts while an agent streamed. It's now coalesced
     // and run off the event loop instead (scheduleAgentFilesDiff).
-    populateAgentFilesPanel(sessionId, QStringList());
+    //
+    // Only draw the plain placeholder once, before the first rich (icon + per-file
+    // +/-) diff render for this session. Re-running it on every transcript turn is
+    // what made the panel flash back and forth: the placeholder (no icons) replaced
+    // the rich list, then ~400ms later the diff redrew the rich list, over and over.
+    // Once renderAgentDiff() has drawn the icon view we leave it in place and just
+    // reschedule the diff, which redraws in place without the flash (adhoc #260).
+    if (m_agentDiffRenderedSession != sessionId)
+        populateAgentFilesPanel(sessionId, QStringList());
     scheduleAgentFilesDiff(sessionId);
 }
 
@@ -26703,6 +26729,10 @@ void MainWindow::populateAgentFilesPanel(int sessionId, const QStringList &diffF
         const QString label = repoPath.isEmpty() ? abs
                                                   : QDir(repoPath).relativeFilePath(abs);
         auto *it = new QListWidgetItem(label);
+        // Carry a neutral file icon even on this pre-diff placeholder so the panel
+        // reads as the same icon list the rich diff render produces — no jump from
+        // a plain text list to an icon list when the diff lands (adhoc #260).
+        it->setIcon(themedOcticon(QStringLiteral("file-diff"), QColor("#d29922"), 14));
         it->setToolTip(abs);
         it->setData(Qt::UserRole, abs);
         m_agentFilesList->addItem(it);
@@ -26812,14 +26842,39 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
             ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
             : html);
 
+    // Which of these changes are still sitting in the working tree (not yet in any
+    // commit on this branch): tracked edits vs HEAD plus untracked files. Files in
+    // this set get a "●" marker so the panel distinguishes work the agent has
+    // committed from work it hasn't (adhoc #260).
+    QSet<QString> uncommitted;
+    if (!dir.isEmpty()) {
+        QByteArray out;
+        if (runGitCapture(dir, {QStringLiteral("diff"), QStringLiteral("--name-only"),
+                                QStringLiteral("HEAD")},
+                          &out, nullptr))
+            for (const QString &p : QString::fromUtf8(out).split(QLatin1Char('\n'),
+                                                                 Qt::SkipEmptyParts))
+                uncommitted.insert(p.trimmed());
+        out.clear();
+        if (runGitCapture(dir, {QStringLiteral("ls-files"), QStringLiteral("--others"),
+                                QStringLiteral("--exclude-standard")},
+                          &out, nullptr))
+            for (const QString &p : QString::fromUtf8(out).split(QLatin1Char('\n'),
+                                                                 Qt::SkipEmptyParts))
+                uncommitted.insert(p.trimmed());
+    }
+
     if (m_agentFilesList) {
         QSignalBlocker block(m_agentFilesList);
         m_agentFilesList->clear();
         for (const DiffFileEntry &f : files) {
             const QString name = f.path.section(QLatin1Char('/'), -1);
+            const bool isUncommitted = uncommitted.contains(f.path);
             auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
+                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3%4")
+                    .arg(name, QString::number(f.adds), QString::number(f.dels),
+                         isUncommitted ? QString::fromUtf8("  \xE2\x97\x8F")
+                                       : QString()));
             QColor tint("#d29922");
             QString icon = "file-diff";
             if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
@@ -26828,7 +26883,11 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
             const QString abs = dir.isEmpty() ? f.path : QDir(dir).filePath(f.path);
             item->setData(Qt::UserRole, abs);          // open on activate
             item->setData(Qt::UserRole + 1, f.anchor); // scroll diff on select
-            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
+            item->setToolTip(
+                isUncommitted
+                    ? QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 uncommitted")
+                          .arg(f.status, f.path)
+                    : QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_agentFilesList->addItem(item);
         }
         fitFileListToWidestEntry(m_agentFilesList);
@@ -26883,6 +26942,40 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
         }
         m_agentFilesChangedSummary->setText(parts.join(QString::fromUtf8("  \xC2\xB7  ")));
     }
+
+    // The commits this branch adds on top of its base, newest first — the browsable
+    // form of the summary's "N commits" (adhoc #260). Hidden entirely when the
+    // branch is even with its base so a clean session stays uncluttered.
+    if (m_agentCommitsList && m_agentCommitsHeading) {
+        m_agentCommitsList->clear();
+        int commitCount = 0;
+        if (!dir.isEmpty() && !base.isEmpty()) {
+            QByteArray log;
+            if (runGitCapture(dir,
+                              {QStringLiteral("log"), QStringLiteral("--format=%h %s"),
+                               base + QStringLiteral("..HEAD")},
+                              &log, nullptr)) {
+                for (const QString &line : QString::fromUtf8(log).split(
+                         QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                    auto *item = new QListWidgetItem(line.trimmed());
+                    item->setIcon(themedOcticon(QStringLiteral("git-commit"),
+                                                QColor("#8b949e"), 14));
+                    m_agentCommitsList->addItem(item);
+                    ++commitCount;
+                }
+            }
+        }
+        const bool any = commitCount > 0;
+        m_agentCommitsHeading->setVisible(any);
+        m_agentCommitsList->setVisible(any);
+        if (any)
+            m_agentCommitsHeading->setText(
+                QStringLiteral("Commits (%1)").arg(commitCount));
+    }
+
+    // The rich icon list is now on screen; refreshAgentFilesPanel() can stop
+    // redrawing the plain placeholder over it on every turn (adhoc #260).
+    m_agentDiffRenderedSession = sessionId;
 }
 
 // Enable the per-session worktree actions (merge / update / delete) only for a
