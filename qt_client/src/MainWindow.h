@@ -1164,6 +1164,9 @@ private:
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
+    // Pop up the commit history for one repo file: a list of the commits that
+    // touched it, each showing that commit's diff for the file.
+    void showRepoFileHistory(const QString &path);
     bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
     // True when the open repo can receive a proposed change as a pull request even
     // without a local working tree: a node mirroring someone else's repo builds the
@@ -2508,6 +2511,7 @@ private:
     QTabWidget *m_repoFileTabs = nullptr;
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
+    QPushButton *m_repoFileHistoryButton = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
 
     // Discussions tab
