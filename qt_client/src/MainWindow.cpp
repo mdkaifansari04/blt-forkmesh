@@ -18089,6 +18089,25 @@ void MainWindow::showPull(int number)
             .arg((found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
+    // Surface where the head branch sits relative to its base: when it trails the
+    // base, say by how much so the reviewer knows there's something to pull in
+    // before merging (the "Update branch" button merges the base in — issue #72).
+    if (found->status == QLatin1String("open")) {
+        const PullStore store = pullStoreForCurrentRepo();
+        bool behind = false;
+        int behindCount = 0;
+        if (store.canWrite() &&
+            store.isBranchBehindBase(found->number, &behind, nullptr, &behindCount) &&
+            behind) {
+            m_pullMeta->setText(
+                m_pullMeta->text() +
+                QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
+                                  "behind %3</span>")
+                    .arg(behindCount)
+                    .arg(behindCount == 1 ? QString() : QStringLiteral("s"),
+                         found->base.toHtmlEscaped()));
+        }
+    }
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
         m_pullMeta->setText(m_pullMeta->text() +
