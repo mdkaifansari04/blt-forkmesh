@@ -50,6 +50,7 @@ jobs:
           ADMIN_USER=${{ vars.ADMIN_USER }}
           ADMIN_PASS=${{ vars.ADMIN_PASS }}
           TREASURY_SOLANA_ADDRESS=${{ vars.TREASURY_SOLANA_ADDRESS }}
+          MAILTRAP_API_TOKEN=${{ vars.MAILTRAP_API_TOKEN }}
           DATA_KEY=${{ vars.DATA_KEY }}
           EOF
       - name: Deploy worker
