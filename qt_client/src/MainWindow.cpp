@@ -7451,13 +7451,20 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *card = new QWidget;
     card->setObjectName("quickAddCard");
 
-    m_issueQuickAdd = new QLineEdit;
+    // A two-line wrapping box (adhoc #12), not a single-line edit, so the typed
+    // prompt is actually visible on two lines. Enter sends / Shift+Enter adds a
+    // newline (handled in the event filter); Up/Down still walk prompt history.
+    m_issueQuickAdd = new QPlainTextEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("enter prompt");
+    m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
-    // field is sized to the same cap as the Claude prompt / message input
-    // (kMaxTextChars) rather than a short-title length.
-    m_issueQuickAdd->setMaxLength(16000);
+    // field is capped at the same length as the Claude prompt / message input
+    // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
+    // in the textChanged handler below.
+    const int kQuickAddMaxChars = 16000;
     // Ctrl+V with an image on the clipboard attaches it (issue #79).
     m_issueQuickAdd->installEventFilter(this);
     // Restore the prompt history persisted from earlier sessions so Up recalls
@@ -7470,23 +7477,34 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCharCount = new QLabel;
     m_quickAddCharCount->setObjectName("quickAddCharCount");
     m_quickAddCharCount->setToolTip("Characters remaining in the quick-add title");
-    auto updateQuickAddCharCount = [this]() {
+    auto updateQuickAddCharCount = [this, kQuickAddMaxChars]() {
         const int remaining =
-            m_issueQuickAdd->maxLength() - m_issueQuickAdd->text().length();
+            kQuickAddMaxChars - m_issueQuickAdd->toPlainText().length();
         m_quickAddCharCount->setText(QString::number(remaining));
         m_quickAddCharCount->setStyleSheet(QStringLiteral(
             "QLabel#quickAddCharCount{color:%1;font-size:11px;}")
                 .arg(remaining <= 20 ? QStringLiteral("#d29922")
                                      : QStringLiteral("#8b949e")));
     };
-    connect(m_issueQuickAdd, &QLineEdit::textChanged, this,
-            [updateQuickAddCharCount](const QString &) { updateQuickAddCharCount(); });
+    connect(m_issueQuickAdd, &QPlainTextEdit::textChanged, this,
+            [this, updateQuickAddCharCount, kQuickAddMaxChars] {
+                // Enforce the prompt-length cap QPlainTextEdit can't do itself:
+                // if a paste pushes past the limit, trim back to it.
+                const QString text = m_issueQuickAdd->toPlainText();
+                if (text.length() > kQuickAddMaxChars) {
+                    const QSignalBlocker block(m_issueQuickAdd);
+                    m_issueQuickAdd->setPlainText(text.left(kQuickAddMaxChars));
+                    m_issueQuickAdd->moveCursor(QTextCursor::End);
+                }
+                updateQuickAddCharCount();
+                // Typing anything by hand drops out of history navigation, so the
+                // next Up starts again from the most recent prompt (adhoc #200).
+                // The flag skips the programmatic setPlainText() the history walk
+                // does, which would otherwise look like a manual edit.
+                if (!m_quickAddHistoryNavigating)
+                    m_quickAddHistoryIndex = -1;
+            });
     updateQuickAddCharCount();
-    // Typing anything by hand drops out of history navigation, so the next Up
-    // starts again from the most recent prompt (adhoc #200). textEdited fires only
-    // on user edits, not the programmatic setText() the history walk does.
-    connect(m_issueQuickAdd, &QLineEdit::textEdited, this,
-            [this](const QString &) { m_quickAddHistoryIndex = -1; });
 
     m_quickAddAssignAgent = new QCheckBox("Assign agent");
     m_quickAddAssignAgent->setToolTip(
@@ -7595,12 +7613,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     twitterButton->setCursor(Qt::PointingHandCursor);
     twitterButton->setToolTip("ForkMesh on X (Twitter)");
 
-    // Twice as wide and two lines tall (adhoc #10): give the prompt field room
-    // to show a longer prompt while typing. It stays a single-line QLineEdit
-    // (Up/Down drive prompt history), just a taller, wider box.
+    // Twice as wide and two lines tall (adhoc #10/#12): give the prompt field
+    // room to actually show two wrapped lines of the prompt while typing. The
+    // two-line height itself is set in the stylesheet (#issueQuickAdd
+    // min-/max-height), which is authoritative over a C++ minimumHeight here;
+    // longer prompts scroll within the box.
     m_issueQuickAdd->setMinimumWidth(720);
-    m_issueQuickAdd->setMinimumHeight(
-        m_issueQuickAdd->fontMetrics().lineSpacing() * 2 + 12);
+    m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     // Centered between the quick-add controls and the donate/social cluster: the
     // git identity (name <email>) configured for the repo we're viewing. Filled in
@@ -7682,8 +7701,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockCol->addWidget(card);
     dockCol->addWidget(m_footerUpdateLog);
 
-    connect(m_issueQuickAdd, &QLineEdit::returnPressed, this,
-            &MainWindow::quickAddIssue);
+    // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
+    // since QPlainTextEdit has no returnPressed signal.
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
     connect(donateButton, &QPushButton::clicked, this,
@@ -41396,7 +41415,7 @@ void MainWindow::quickAddIssue()
 {
     if (!m_issueQuickAdd)
         return;
-    const QString title = m_issueQuickAdd->text().trimmed();
+    const QString title = m_issueQuickAdd->toPlainText().trimmed();
     if (title.isEmpty())
         return;
     // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
@@ -41508,18 +41527,26 @@ bool MainWindow::navigateQuickAddHistory(int direction)
 {
     if (!m_issueQuickAdd || m_quickAddHistory.isEmpty())
         return false;
+    // Replace the field's text without the textChanged handler treating the
+    // recall as a manual edit (which would reset the history position).
+    auto showText = [this](const QString &text) {
+        m_quickAddHistoryNavigating = true;
+        m_issueQuickAdd->setPlainText(text);
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_quickAddHistoryNavigating = false;
+    };
     const int count = m_quickAddHistory.size();
     if (direction < 0) { // Up: step toward older prompts
         if (m_quickAddHistoryIndex < 0) {
             // Entering history: stash whatever was being typed, show the newest.
-            m_quickAddDraft = m_issueQuickAdd->text();
+            m_quickAddDraft = m_issueQuickAdd->toPlainText();
             m_quickAddHistoryIndex = count - 1;
         } else if (m_quickAddHistoryIndex > 0) {
             --m_quickAddHistoryIndex;
         } else {
             return true; // already at the oldest entry; swallow the key
         }
-        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+        showText(m_quickAddHistory.at(m_quickAddHistoryIndex));
         return true;
     }
     // Down: step toward newer prompts, then back out to the stashed draft.
@@ -41527,10 +41554,10 @@ bool MainWindow::navigateQuickAddHistory(int direction)
         return false; // not navigating; let the field handle the key
     if (m_quickAddHistoryIndex < count - 1) {
         ++m_quickAddHistoryIndex;
-        m_issueQuickAdd->setText(m_quickAddHistory.at(m_quickAddHistoryIndex));
+        showText(m_quickAddHistory.at(m_quickAddHistoryIndex));
     } else {
         m_quickAddHistoryIndex = -1;
-        m_issueQuickAdd->setText(m_quickAddDraft);
+        showText(m_quickAddDraft);
     }
     return true;
 }
@@ -42146,6 +42173,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && tryPasteImageIntoQuickAdd())
             return true;
+        // Enter sends the prompt; Shift+Enter inserts a newline (the box is now a
+        // two-line QPlainTextEdit, which would otherwise just add a newline).
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
+            !(ke->modifiers() & Qt::ShiftModifier)) {
+            quickAddIssue();
+            return true;
+        }
         // Up/Down walk the quick-add prompt history (adhoc #200): Up recalls the
         // last prompt sent so it can be fired again, Down returns toward the draft.
         if (ke->key() == Qt::Key_Up && navigateQuickAddHistory(-1))
