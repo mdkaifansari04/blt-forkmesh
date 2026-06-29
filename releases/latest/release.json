@@ -1,0 +1,9 @@
+{
+  "schema": "forkmesh-release-v1",
+  "repo": "newnewnode/forkmesh",
+  "tag": "v0.5.10",
+  "tag_commit": "3dedae132f35e6ca031608d0df9ec1cb3ca4b046",
+  "channel": "latest",
+  "created_at": 1782711915000,
+  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"bc2d18e15389846db55d2be83bf03256e1470235126e1e3fb928296dbf713311","size":7403384,"os":"linux","arch":"x86_64"}]
+}
