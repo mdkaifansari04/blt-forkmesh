@@ -13,7 +13,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.11.0 (2026-06-28)"
+INSTALLER_VERSION="0.12.0 (2026-06-29)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -469,14 +469,19 @@ detect_release_asset() {
 # filters, retries with a plain shallow clone so the fast path still works (it
 # just transfers more). Leaves the file at "$2/$3" on success.
 _sparse_fetch_file() {
-  local repo="$1" tmp="$2" rel="$3" mode
+  local repo="$1" tmp="$2"; shift 2
+  # The first path is required — success is gated on it being present and
+  # non-empty. Any extra paths are fetched best-effort in the SAME checkout (e.g.
+  # release.json alongside SHASUMS256.txt), so the canonical owner/repo can be
+  # read without a second clone.
+  local paths=("$@") mode
   for mode in "--filter=blob:none" ""; do
     rm -rf "$tmp"; mkdir -p "$tmp" || return 1
     # shellcheck disable=SC2086
     if git clone --quiet --depth 1 $mode --no-checkout "$repo" "$tmp" >/dev/null 2>&1 \
-        && git -C "$tmp" sparse-checkout set --no-cone "$rel" >/dev/null 2>&1 \
+        && git -C "$tmp" sparse-checkout set --no-cone "${paths[@]}" >/dev/null 2>&1 \
         && git -C "$tmp" checkout --quiet >/dev/null 2>&1 \
-        && [ -s "$tmp/$rel" ]; then
+        && [ -s "$tmp/${paths[0]}" ]; then
       return 0
     fi
   done
@@ -489,6 +494,18 @@ _repo_owner_name() {
   local u="${1%.git}"
   RELEASE_REPO_NAME="${u##*/}"; u="${u%/*}"
   RELEASE_REPO_OWNER="${u##*/}"
+}
+
+# Echo the canonical "owner/repo" the release manifest (release.json) records. The
+# release blob lives in an out-of-git, content-addressed store on the node that
+# STAGED the release — never in git — so only that repo's host can serve it. A
+# mirror node mirrors the git tree (it has SHASUMS256.txt/release.json) but NOT
+# the CAS, so requesting the blob from the mirror that served the clone 404s,
+# which is exactly why a published binary still fell back to a source build. Echo
+# empty when the manifest is missing or records no well-formed owner/repo.
+_manifest_repo() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"repo"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
 # Echo the sha256 of file $1 (Linux sha256sum / macOS shasum), or empty if no
@@ -515,15 +532,27 @@ _install_binary() {
 # non-zero when git is unavailable or no mirror can serve a verified asset.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
-  local tmp repo sums hash url bin got
+  local tmp repo sums manifest canon hash url bin got
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
+  manifest="releases/${RELEASE_CHANNEL}/release.json"
   for repo in "${REPO_CANDIDATES[@]}"; do
-    # New model: manifest checksum + content-addressed download (+ verify).
-    if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums"; then
+    # New model: manifest checksum + content-addressed download (+ verify). Fetch
+    # release.json in the same checkout so the blob can be requested from the repo
+    # that staged it — not the mirror that happened to serve this clone.
+    if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums" "$manifest"; then
       hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
       if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
-        _repo_owner_name "$repo"
+        # Prefer the canonical owner/repo the manifest records — only that node
+        # holds the out-of-git release blob. Fall back to the mirror's own
+        # owner/repo for legacy manifests that don't record it.
+        canon="$(_manifest_repo "$tmp/$manifest")"
+        if printf '%s' "$canon" | grep -Eq '^[^/]+/[^/]+$'; then
+          RELEASE_REPO_OWNER="${canon%%/*}"
+          RELEASE_REPO_NAME="${canon##*/}"
+        else
+          _repo_owner_name "$repo"
+        fi
         url="${FORKMESH_HOST%/}/api/repo/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/blob/sha256/${hash}"
         bin="$tmp/asset.bin"
         say "Downloading prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
