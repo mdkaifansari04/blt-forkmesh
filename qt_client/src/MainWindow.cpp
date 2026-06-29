@@ -12463,10 +12463,10 @@ namespace {
 // defined here (ahead of its first users) while the renderers themselves live
 // further down next to showCommit; they share this same anonymous namespace
 // within the translation unit.
-// Format an estimated agent task cost as a short USD string, e.g. "$0.0123".
+// Format an estimated agent task cost as a short USD string, e.g. "$0.01".
 QString agentCostText(double usd)
 {
-    return QStringLiteral("$%1").arg(usd, 0, 'f', 4);
+    return QStringLiteral("$%1").arg(usd, 0, 'f', 2);
 }
 
 // A status-coloured agent glyph (defined further down next to the agents table,
