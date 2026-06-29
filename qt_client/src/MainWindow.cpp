@@ -38912,7 +38912,11 @@ void MainWindow::refreshIssueList()
     const QString msFilter = m_issueMilestoneFilter->currentData().toString();
     const QString search =
         m_issueSearch ? m_issueSearch->text().trimmed() : QString();
-    const int keep = m_currentIssueNumber;
+    // When a close asked us to advance, target the next issue instead of the one
+    // that was being viewed (which a close may have just filtered out) — issue #249.
+    const int selectNext = m_selectIssueOnReload;
+    m_selectIssueOnReload = -1;
+    const int keep = selectNext > 0 ? selectNext : m_currentIssueNumber;
     // Remember whether the viewed issue's detail pane is open so that, if a close
     // drops it out of the filtered list, we can keep the pane open on that same
     // (now-closed) issue instead of collapsing to the full-width list (issue #188).
@@ -41211,10 +41215,14 @@ void MainWindow::closeIssueWithComment()
     m_pendingIssueAttachments.clear();
     if (m_issueAttachButton)
         m_issueAttachButton->setText("Paste, drop, or click to add files");
-    // Closing may drop the issue out of the current filter; stay on it (keep the
-    // detail panel open on the just-closed issue) rather than collapsing to the
-    // list or jumping away (mirrors toggleIssueStatus).
-    m_keepCurrentOnReload = true;
+    // Closing advances to the next issue in the list so the user can keep working
+    // through them (adhoc #249); if there's none, stay on the just-closed issue
+    // rather than collapsing to the list (mirrors toggleIssueStatus).
+    const int nextIssue = nextVisibleIssueAfter(number);
+    if (nextIssue > 0)
+        m_selectIssueOnReload = nextIssue;
+    else
+        m_keepCurrentOnReload = true;
     reloadIssues();
     propagateRepoUpdate(issuesRepoIndex());
     setIssueInlineNotice("Comment added and issue closed.");
@@ -41354,18 +41362,55 @@ void MainWindow::toggleIssueStatus()
             status = issue.status;
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    if (!store.setStatus(m_currentIssueNumber, status == "open" ? "closed" : "open",
+    const bool closing = status == "open";
+    // Closing advances to the next issue in the list so the user can keep working
+    // through them; capture that target before the status flip reorders things.
+    const int nextIssue = closing ? nextVisibleIssueAfter(m_currentIssueNumber) : -1;
+    if (!store.setStatus(m_currentIssueNumber, closing ? "closed" : "open",
                          &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not update issue status." : error,
                              true);
         return;
     }
-    // If this toggle drops the issue out of the current filter (e.g. closing it
-    // while filtering to Open), stay on it: keep the detail panel open on the same
-    // issue rather than jumping away or collapsing back to the list.
-    m_keepCurrentOnReload = true;
+    if (closing && nextIssue > 0) {
+        // Select the next issue once the table is rebuilt (adhoc #249).
+        m_selectIssueOnReload = nextIssue;
+    } else {
+        // No next issue (or reopening): if this toggle drops the issue out of the
+        // current filter (e.g. closing it while filtering to Open), stay on it —
+        // keep the detail panel open on the same issue rather than jumping away or
+        // collapsing back to the list.
+        m_keepCurrentOnReload = true;
+    }
     reloadIssues();
-    setIssueInlineNotice(status == "open" ? "Issue closed." : "Issue reopened.");
+    setIssueInlineNotice(closing ? "Issue closed." : "Issue reopened.");
+}
+
+int MainWindow::nextVisibleIssueAfter(int number) const
+{
+    if (!m_issueTable)
+        return -1;
+    const int rows = m_issueTable->rowCount();
+    int idx = -1;
+    for (int r = 0; r < rows; ++r) {
+        const QTableWidgetItem *item = m_issueTable->item(r, 0);
+        if (item && item->data(Qt::UserRole).toInt() == number) {
+            idx = r;
+            break;
+        }
+    }
+    if (idx < 0)
+        return -1;
+    // Prefer the row below; fall back to the row above when closing the last one.
+    if (idx + 1 < rows) {
+        if (const QTableWidgetItem *item = m_issueTable->item(idx + 1, 0))
+            return item->data(Qt::UserRole).toInt();
+    }
+    if (idx - 1 >= 0) {
+        if (const QTableWidgetItem *item = m_issueTable->item(idx - 1, 0))
+            return item->data(Qt::UserRole).toInt();
+    }
+    return -1;
 }
 
 void MainWindow::deleteCurrentIssue()
