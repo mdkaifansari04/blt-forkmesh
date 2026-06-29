@@ -5,7 +5,7 @@ title: when the issue count changes on other nodes after an update have an anima
 status: open
 labels: [Partial]
 milestone: 
-priority: 31
+priority: 52
 progress: 50
 assignees: []
 createdAt: 1782354655592
