@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 203
 title: when I quick add an issue and its nto assigned to an agent then open to that issue detail
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 25
 progress: 70
