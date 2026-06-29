@@ -25803,19 +25803,29 @@ void MainWindow::toggleIssueLooper()
     looperStartNext();
 }
 
-const Issue *MainWindow::looperPickNext(
-    const QList<Issue> &issues, const std::function<bool(int)> &hasLocalSession)
+// Pick the highest-priority open issue that's free to pick up and start the
+// looper's agent on it. Stops the looper when nothing is left to do. The looper
+// only touches open issues that are unassigned, have a priority set, and carry
+// no linked PR (adhoc #42) — anything assigned, untriaged, or already covered by
+// a pull request is left alone. Each issue is attempted at most once (any
+// existing session — queued, running, done, or failed — disqualifies it), so
+// the loop always makes forward progress.
+void MainWindow::looperStartNext()
 {
     const Issue *next = nullptr;
     int bestPriority = 1 << 30;
     for (const Issue &issue : issues) {
         if (issue.isDeleted() || issue.status != QLatin1String("open"))
             continue;
+        if (latestAgentSessionForIssue(issue.number))
+            continue; // already attempted by an agent
         if (!issue.assignees.isEmpty())
-            continue; // claimed by a looper on this/another node, or by a human
-        if (hasLocalSession(issue.number))
-            continue; // already attempted by an agent on this node
-        const int p = issue.priority > 0 ? issue.priority : 100000;
+            continue; // assigned to someone — leave it to them
+        if (issue.priority <= 0)
+            continue; // no priority set — not triaged for the looper yet
+        if (!pullsLinkedToIssue(issue.number).isEmpty())
+            continue; // already has a linked PR
+        const int p = issue.priority;
         if (p < bestPriority ||
             (p == bestPriority && (!next || issue.number < next->number))) {
             bestPriority = p;
@@ -25845,7 +25855,8 @@ void MainWindow::looperStartNext()
         m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice(
-            "Issue looper finished: every open issue has an agent.");
+            "Issue looper finished: no open, unassigned, prioritized issues left "
+            "without an agent or linked PR.");
         return;
     }
     // startAgentForIssue()/looperClaimIssue() rebuild m_currentIssues, so copy the
