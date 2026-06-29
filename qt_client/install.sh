@@ -19,6 +19,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 BIN="$BUILD_DIR/forkmesh"
 
+# Run a command under a hard time limit when coreutils `timeout` is available, so
+# a wedged desktop tool (a slow `gtk-update-icon-cache -f` regen, an ImageMagick
+# delegate stuck waiting on a missing helper) can never freeze the installer.
+# Falls back to running the command directly when `timeout` is absent.
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"; fi
+bounded() { # bounded <seconds> <cmd> [args...]
+    local secs="$1"; shift
+    if [[ -n "$TIMEOUT_BIN" ]]; then
+        "$TIMEOUT_BIN" "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # XDG user dirs (honour overrides; fall back to the spec defaults).
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS_DIR="$DATA_HOME/applications"
@@ -57,10 +72,15 @@ uninstall() {
 refresh_caches() {
     # Best-effort: these tools may be absent on minimal systems, and a stale
     # cache only delays the icon by a login cycle — never fail the install on it.
+    # Each is bounded so a slow/hung cache regen can't freeze the installer (the
+    # classic cause of the install appearing to hang at this step).
+    echo "Refreshing icon cache…"
     command -v gtk-update-icon-cache >/dev/null 2>&1 \
-        && gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
+        && bounded 60 gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
+    echo "Refreshing desktop database…"
     command -v update-desktop-database >/dev/null 2>&1 \
-        && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+        && bounded 30 update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+    echo "Cache refresh done."
 }
 
 # Parse args: --uninstall [--purge] (order-independent).
@@ -107,14 +127,18 @@ install_icon() { # <size>
     local dir="$ICON_BASE/${size}x${size}/apps"
     mkdir -p "$dir"
     if [[ -n "$MAGICK" ]]; then
-        "$MAGICK" "$SRC_1024" -resize "${size}x${size}" "$dir/$DESKTOP_ID.png"
+        bounded 30 "$MAGICK" "$SRC_1024" -resize "${size}x${size}" "$dir/$DESKTOP_ID.png"
     elif [[ "$size" == "256" && -f "$SRC_256" ]]; then
         cp "$SRC_256" "$dir/$DESKTOP_ID.png"      # exact size, no scaling
     fi
 }
 
 if [[ -n "$MAGICK" ]]; then
-    for s in 16 32 48 64 128 256 512; do install_icon "$s"; done
+    echo "Rendering icon sizes with $MAGICK…"
+    for s in 16 32 48 64 128 256 512; do
+        echo "  • ${s}x${s}"
+        install_icon "$s" || echo "note: failed to render ${s}px icon (continuing)" >&2
+    done
 else
     echo "note: ImageMagick not found — installing the 256px icon only." >&2
     install_icon 256
@@ -124,6 +148,7 @@ else
 fi
 
 # --- 3. Write the desktop entry ---------------------------------------------
+echo "Writing desktop launcher → $DESKTOP_FILE"
 mkdir -p "$APPS_DIR"
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]

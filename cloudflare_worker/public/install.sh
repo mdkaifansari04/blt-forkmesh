@@ -13,7 +13,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.0 (2026-06-29)"
+INSTALLER_VERSION="0.12.1 (2026-06-29)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -857,6 +857,7 @@ esac
 # and a missing icon-cache tool must never fail the whole install.
 register_desktop_entry() {
   [ "$(uname -s)" = "Linux" ] || return 0
+  CURRENT_STEP="desktop"
   local script="$SRC/qt_client/install.sh"
   if [ ! -f "$script" ]; then
     # The prebuilt fast path never clones the source, so the helper that writes
@@ -867,17 +868,41 @@ register_desktop_entry() {
     else
       warn "Desktop integration script not found at $script; skipping menu registration."
     fi
+    diag desktop 1 "skipped"
     return 0
   fi
-  say "Registering ForkMesh in the application menu"
-  # Keep the helper's verbose stdout out of the installer log, but let any
-  # errors through. It won't rebuild (the binary already exists) and a non-zero
-  # exit here is non-fatal — the app still runs from $BIN / the build output.
-  if bash "$script" >/dev/null; then
-    say "Added to the application menu — search \"ForkMesh\" in Activities/the app grid."
+  say "Registering ForkMesh in the application menu (this can take a moment)…"
+  # The helper renders icon buckets and rebuilds the GTK icon cache, either of
+  # which can hang on a misconfigured box (a wedged ImageMagick delegate, a slow
+  # `gtk-update-icon-cache -f` over a huge hicolor theme). Run it under a hard
+  # time limit so desktop integration can NEVER freeze the whole install, capture
+  # its verbose output to a log, and replay that log on failure (or always with
+  # FORKMESH_DEBUG=1). A non-zero exit here is non-fatal — the app still runs from
+  # $BIN / the build output.
+  local log rc=0
+  log="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/forkmesh-desktop.$$.log")"
+  dbg "running desktop helper: bash $script (output log: $log)"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 180 bash "$script" >"$log" 2>&1 || rc=$?
   else
-    warn "Could not register the desktop menu entry; ForkMesh still runs via:  forkmesh"
+    bash "$script" >"$log" 2>&1 || rc=$?
   fi
+  dbg "desktop helper exited with status $rc"
+  [ "${FORKMESH_DEBUG:-0}" = "1" ] && [ -s "$log" ] && cat "$log" >&2
+  if [ "$rc" -eq 0 ]; then
+    say "Added to the application menu — search \"ForkMesh\" in Activities/the app grid."
+    diag desktop 1
+  elif [ "$rc" -eq 124 ]; then
+    warn "Desktop menu registration timed out (>180s) and was skipped; ForkMesh still runs via:  forkmesh"
+    [ -s "$log" ] && warn "Last helper output: $(tail -n 3 "$log" 2>/dev/null | tr '\n' ' ')"
+    warn "Re-run with FORKMESH_DEBUG=1 to see exactly which desktop step hung."
+    diag desktop 0 "timeout"
+  else
+    warn "Could not register the desktop menu entry (exit $rc); ForkMesh still runs via:  forkmesh"
+    [ -s "$log" ] && warn "Helper output: $(tail -n 5 "$log" 2>/dev/null | tr '\n' ' ')"
+    diag desktop 0 "rc$rc"
+  fi
+  rm -f "$log" 2>/dev/null || true
 }
 register_desktop_entry
 
