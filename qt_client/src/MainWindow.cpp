@@ -18427,7 +18427,8 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
         if (run->status == ActionStatus::Success)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
-                 run->status == ActionStatus::Rejected)
+                 run->status == ActionStatus::Rejected ||
+                 run->status == ActionStatus::Cancelled)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
@@ -19481,7 +19482,8 @@ void MainWindow::renderPullChecksSummary(const PullRequest &pr)
         if (run->status == ActionStatus::Success)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
-                 run->status == ActionStatus::Rejected)
+                 run->status == ActionStatus::Rejected ||
+                 run->status == ActionStatus::Cancelled)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
@@ -29236,6 +29238,18 @@ QWidget *MainWindow::buildRepoEditorPage()
     // Returning to the GitHub-style overview is handled by the persistent
     // "Code overview" toggle above the stack (see buildRepoFilesPanel).
     backRow->addStretch();
+    m_repoFileHistoryButton = new QPushButton("Show history");
+    m_repoFileHistoryButton->setObjectName("ghostButton");
+    m_repoFileHistoryButton->setCursor(Qt::PointingHandCursor);
+    m_repoFileHistoryButton->setToolTip(
+        "Show the commit history and changes for this file");
+    setOcticon(m_repoFileHistoryButton, "history", 16);
+    connect(m_repoFileHistoryButton, &QPushButton::clicked, this, [this] {
+        QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
+        const QString path = w ? w->property("previewPath").toString() : QString();
+        if (!path.isEmpty())
+            showRepoFileHistory(path);
+    });
     m_repoFileCommitButton = new QPushButton("Commit direct");
     m_repoFileCommitButton->setObjectName("ghostButton");
     m_repoFileCommitButton->setCursor(Qt::PointingHandCursor);
@@ -29250,6 +29264,7 @@ QWidget *MainWindow::buildRepoEditorPage()
     setOcticon(m_repoFilePullButton, "git-pull-request", 16);
     connect(m_repoFilePullButton, &QPushButton::clicked, this,
             [this] { saveCurrentRepoFile(true); });
+    backRow->addWidget(m_repoFileHistoryButton);
     backRow->addWidget(m_repoFileCommitButton);
     backRow->addWidget(m_repoFilePullButton);
 
@@ -30322,8 +30337,12 @@ void MainWindow::updateRepoFileSaveActions()
 {
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
     const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
-    const bool editable = editor && !editor->isReadOnly() &&
-                          !w->property("previewPath").toString().isEmpty();
+    const bool haveFile = editor && !w->property("previewPath").toString().isEmpty();
+    const bool editable = haveFile && !editor->isReadOnly();
+    // Viewing history only reads git, so it works for any open file — including
+    // read-only previews on a mirror.
+    if (m_repoFileHistoryButton)
+        m_repoFileHistoryButton->setEnabled(haveFile);
     // Direct commits need a working tree we own; a mirrored repo can still open a
     // pull request, which is sent to the owner's inbox.
     if (m_repoFileCommitButton)
@@ -30345,6 +30364,106 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
         editor->document()->setModified(false);
     updateRepoFileSaveActions();
+}
+
+void MainWindow::showRepoFileHistory(const QString &path)
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || path.isEmpty())
+        return;
+
+    // The commits that touched this file, newest first. --follow keeps the
+    // history walking across renames so an early commit under an old name still
+    // shows up.
+    QByteArray out;
+    QString err;
+    if (!runGitCapture(dir,
+                       {"log", "--follow", "--date=format:%b %e, %Y",
+                        "--format=%H%x1f%an%x1f%ad%x1f%s", currentRef(), "--", path},
+                       &out, &err)) {
+        setRepoDetailNotice("Could not read history: " + err.left(200), true);
+        return;
+    }
+
+    struct HistEntry {
+        QString hash, author, date, subject;
+    };
+    QList<HistEntry> entries;
+    for (const QByteArray &lineRaw : out.split('\n')) {
+        const QString line = QString::fromUtf8(lineRaw);
+        if (line.trimmed().isEmpty())
+            continue;
+        const QStringList f = line.split(QLatin1Char('\x1f'));
+        if (f.size() < 4)
+            continue;
+        entries.append(
+            {f[0].trimmed(), f[1].trimmed(), f[2].trimmed(), f[3].trimmed()});
+    }
+    if (entries.isEmpty()) {
+        setRepoDetailNotice("No commit history for " + path, false);
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName("fileHistoryDialog");
+    dialog->setWindowTitle(QString::fromUtf8("History \xE2\x80\x94 ") + path);
+    dialog->resize(940, 620);
+
+    // Left: one row per commit (subject + short hash / author / date).
+    auto *list = new QListWidget;
+    list->setObjectName("commitFileList");
+    list->setMinimumWidth(260);
+    list->setMaximumWidth(380);
+    for (const HistEntry &e : entries) {
+        auto *item = new QListWidgetItem(
+            QString::fromUtf8("%1\n%2 \xC2\xB7 %3 \xC2\xB7 %4")
+                .arg(e.subject, e.hash.left(7), e.author, e.date));
+        item->setData(Qt::UserRole, e.hash);
+        list->addItem(item);
+    }
+
+    // Right: the selected commit's diff for just this file.
+    auto *diffView = new QTextBrowser;
+    diffView->setObjectName("commitDiffView");
+    diffView->setOpenExternalLinks(false);
+    diffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+
+    connect(list, &QListWidget::currentItemChanged, this,
+            [this, diffView, dir, path](QListWidgetItem *item, QListWidgetItem *) {
+                if (!item)
+                    return;
+                const QString hash = item->data(Qt::UserRole).toString();
+                QByteArray patch;
+                runGitCapture(dir, {"show", "-M", "--format=", hash, "--", path},
+                              &patch, nullptr);
+                QList<DiffFileEntry> files;
+                QString html = renderDiffHtml(QString::fromUtf8(patch), files, dir,
+                                              hash + "^", hash);
+                if (html.trimmed().isEmpty())
+                    html = QStringLiteral(
+                        "<p style='color:#8b949e'>No textual changes to this file "
+                        "in the selected commit.</p>");
+                diffView->setHtml(html);
+            });
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(list);
+    split->addWidget(diffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({300, 640});
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(split, 1);
+    layout->addWidget(buttons);
+
+    // Land on the most recent commit's diff straight away.
+    list->setCurrentRow(0);
+    dialog->show();
 }
 
 bool MainWindow::saveRepoFileEdit(const QString &path, const QString &content,
@@ -51469,6 +51588,7 @@ QString actionStatusText(const QString &status)
     if (status == ActionStatus::Success) return QStringLiteral("Success");
     if (status == ActionStatus::Failed) return QStringLiteral("Failed");
     if (status == ActionStatus::Rejected) return QStringLiteral("Rejected");
+    if (status == ActionStatus::Cancelled) return QStringLiteral("Cancelled");
     return status;
 }
 
@@ -51479,6 +51599,7 @@ QColor actionStatusColor(const QString &status)
     if (status == ActionStatus::Running) return QColor("#58a6ff");
     if (status == ActionStatus::AwaitingApproval) return QColor("#d29922");
     if (status == ActionStatus::Rejected) return QColor("#8b949e");
+    if (status == ActionStatus::Cancelled) return QColor("#8b949e");
     return QColor("#8b949e");
 }
 
@@ -52000,12 +52121,16 @@ void MainWindow::onRunFinished(int runId, bool ok)
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     updateNotificationButton();
-    if (const ActionRun *run = findRun(runId))
-        notifyActionEvent(ok ? QStringLiteral("Action succeeded")
-                             : QStringLiteral("Action failed"),
+    if (const ActionRun *run = findRun(runId)) {
+        const bool cancelled = run->status == ActionStatus::Cancelled;
+        const QString title = ok ? QStringLiteral("Action succeeded")
+                                 : cancelled ? QStringLiteral("Action stopped")
+                                             : QStringLiteral("Action failed");
+        notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
-                          !ok);
+                          !ok && !cancelled);
+    }
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
     refreshOpenPullChecks();
@@ -53482,6 +53607,10 @@ void MainWindow::showRun(int runId)
         m_actionRerunButton->setVisible(run != nullptr);
     if (m_actionCopyLogButton)
         m_actionCopyLogButton->setVisible(run != nullptr);
+    if (m_actionStopButton)
+        m_actionStopButton->setVisible(run != nullptr &&
+                                       (run->status == ActionStatus::Running ||
+                                        run->status == ActionStatus::Queued));
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -53617,6 +53746,41 @@ void MainWindow::rerunSelectedRun()
     showRun(created.id);
     updateNotificationButton();
     processActionQueue();
+}
+
+void MainWindow::stopSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run)
+        return;
+
+    // Executing right now: ask the runner to abort it. stop() blocks briefly
+    // while the process tears down, then ActionRunner::finished fires and
+    // onRunFinished refreshes the UI and drains the queue — so don't touch the
+    // run here beyond logging the intent.
+    if (run->status == ActionStatus::Running) {
+        if (m_actionRunner && m_actionRunner->currentRunId() == run->id) {
+            logSystem(QStringLiteral("Actions: stopping \"%1\" for %2/%3.")
+                          .arg(run->workflowName, run->owner, run->name));
+            m_actionRunner->stop();
+        }
+        return;
+    }
+
+    // Still only queued: it never started, so just drop it from the queue and
+    // mark it Cancelled.
+    if (run->status == ActionStatus::Queued) {
+        m_actionQueue.removeAll(run->id);
+        run->status = ActionStatus::Cancelled;
+        run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        m_actionStore->saveRun(*run);
+        logSystem(QStringLiteral("Actions: cancelled queued \"%1\" for %2/%3.")
+                      .arg(run->workflowName, run->owner, run->name));
+        m_actionRuns = m_actionStore->loadAllRuns();
+        refreshActionsTable();
+        showRun(m_selectedRunId);
+        updateNotificationButton();
+    }
 }
 
 void MainWindow::clearActionRuns()
@@ -53879,6 +54043,18 @@ QWidget *MainWindow::buildRepoActionsTab()
     connect(m_actionRerunButton, &QPushButton::clicked, this,
             &MainWindow::rerunSelectedRun);
 
+    // Stop: abort the selected run while it's still queued or executing. Sits
+    // beside Rerun; only shown for a run that's actually in flight.
+    m_actionStopButton = new QPushButton("Stop");
+    m_actionStopButton->setObjectName("dangerButton");
+    m_actionStopButton->setProperty("buttonSize", "sm");
+    m_actionStopButton->setCursor(Qt::PointingHandCursor);
+    m_actionStopButton->setToolTip("Stop this run");
+    setOcticon(m_actionStopButton, "stop", 16);
+    m_actionStopButton->hide();
+    connect(m_actionStopButton, &QPushButton::clicked, this,
+            &MainWindow::stopSelectedRun);
+
     // Copy log: drop the selected run's full log on the clipboard. Sits beside
     // Rerun and shares its visible-when-a-run-is-selected lifecycle.
     m_actionCopyLogButton = new QPushButton("Copy log");
@@ -53904,6 +54080,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
+    titleRow->addWidget(m_actionStopButton);
     titleRow->addWidget(m_actionCopyLogButton);
     titleRow->addWidget(m_actionRerunButton);
 

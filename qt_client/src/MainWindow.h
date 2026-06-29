@@ -1060,6 +1060,9 @@ private:
     void runSelectedWorkflowManually();
     // Re-queue the currently selected run (same workflow, commit and ref).
     void rerunSelectedRun();
+    // Stop the currently selected run: abort it if it's executing, or drop it
+    // from the queue if it hasn't started yet. Records the run as Cancelled.
+    void stopSelectedRun();
     // Delete every run currently shown in the Runs list (its meta + log on
     // disk); skips any run that's still in flight. Prompts for confirmation.
     void clearActionRuns();
@@ -1161,6 +1164,9 @@ private:
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
+    // Pop up the commit history for one repo file: a list of the commits that
+    // touched it, each showing that commit's diff for the file.
+    void showRepoFileHistory(const QString &path);
     bool saveRepoFileEdit(const QString &path, const QString &content, bool createPull);
     // True when the open repo can receive a proposed change as a pull request even
     // without a local working tree: a node mirroring someone else's repo builds the
@@ -2505,6 +2511,7 @@ private:
     QTabWidget *m_repoFileTabs = nullptr;
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
+    QPushButton *m_repoFileHistoryButton = nullptr;
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
 
     // Discussions tab
@@ -2707,6 +2714,8 @@ private:
     QComboBox *m_actionRunBranchCombo = nullptr;
     // Re-queues the selected run with its original workflow/commit/ref.
     QPushButton *m_actionRerunButton = nullptr;
+    // Stops the selected run while it's still queued or executing.
+    QPushButton *m_actionStopButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
     // Settings: variables/secrets table.
