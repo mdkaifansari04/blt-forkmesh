@@ -61,6 +61,32 @@ def test_mirrors_css_has_responsive_table_hooks():
     assert "@media (max-width: 700px)" in STYLES
 
 
+def test_catalog_list_names_card_after_source_of_truth():
+    # The repo list must name each card after the source-of-truth node (the
+    # member published from a local working copy, source === "local-node"), not
+    # whichever mirror happens to be the freshest live host (group.primary).
+    # Issue #217.
+    assert "function sourceOfTruth(" in CATALOG
+    source_of_truth = CATALOG[
+        CATALOG.index("function sourceOfTruth(")
+        : CATALOG.index("function createCatalogGroupItem(")
+    ]
+    assert 'text(m.source) === "local-node"' in source_of_truth
+    # Falls back to the primary when no local source has published a record yet.
+    assert "|| group.primary" in source_of_truth
+
+    card = CATALOG[
+        CATALOG.index("function createCatalogGroupItem(")
+        : CATALOG.index("function renderHostPill(")
+    ]
+    assert "const origin = sourceOfTruth(group);" in card
+    # Title text, both navigation links, and the clone command name the origin.
+    assert "`${text(origin.owner, \"owner\")}/${text(origin.name, \"repository\")}`" in card
+    assert "repoRoute(origin.owner, origin.name)" in card
+    assert "routeCatalogClick(event, origin.owner, origin.name)" in card
+    assert "repoCloneUrl(origin.owner, origin.name)" in card
+
+
 def test_catalog_js_groups_empty_root_mirror_with_its_source():
     # The website must apply the same name fallback the worker's
     # repo_mirror_same_group uses, so a relay-cloned mirror with an empty
