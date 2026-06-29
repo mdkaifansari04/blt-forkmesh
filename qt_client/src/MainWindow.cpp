@@ -6728,7 +6728,13 @@ void MainWindow::styleFooterUpdateLog()
     // for failures ("!!"/"ERROR"), the accent for phase headers ("==>"/"$ "),
     // muted body grey otherwise.
     const bool dark = currentThemeIsDark();
-    const QString &clean = m_footerUpdateLineRaw;
+    // Tone is driven by the message body, so skip any leading
+    // "yyyy-MM-dd HH:mm:ss  " stamp (position 10 is the date/time space) before
+    // matching the narrative markers.
+    const QString &raw = m_footerUpdateLineRaw;
+    const QString clean = (raw.size() >= 21 && raw.at(10) == QLatin1Char(' '))
+                              ? raw.mid(21)
+                              : raw;
     QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
     if (clean.startsWith(QStringLiteral("!!")) ||
         clean.startsWith(QStringLiteral("ERROR")))
@@ -6758,8 +6764,11 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     m_footerUpdateLineRaw = clean;
     m_footerUpdateLog->show();
     styleFooterUpdateLog();
-    // Elide to a single line that fits the current width so a long compiler line
-    // never stretches the window.
+    // Elide the visible strip to a single line that fits the current width so a
+    // long compiler line never stretches the window, but expose the full,
+    // untruncated log line in the tooltip so it's always readable on hover.
+    m_footerUpdateLog->setToolTip(
+        clean + QStringLiteral("\n\nClick to open the full log."));
     const QFontMetrics fm(m_footerUpdateLog->font());
     const int avail = qMax(40, m_footerUpdateLog->width() - 28);
     m_footerUpdateLog->setText(fm.elidedText(clean, Qt::ElideRight, avail));
@@ -7585,12 +7594,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     styleFooterUpdateLog();
     // Seed the always-on strip with the most recent live-log line (or a ready
     // placeholder) so it's populated on first paint; logSystem() then streams
-    // every new event onto it.
+    // every new event onto it. Keep the full dated line so the timestamp shows.
     if (!m_networkLog.isEmpty()) {
-        const QString &last = m_networkLog.last();
-        setFooterUpdateLine(last.size() >= 21 && last.at(10) == QLatin1Char(' ')
-                                ? last.mid(21)
-                                : last);
+        setFooterUpdateLine(m_networkLog.last());
     } else {
         setFooterUpdateLine(QStringLiteral("ForkMesh ready"));
     }
@@ -37718,12 +37724,71 @@ void MainWindow::promptNewRelease()
     const QString target = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
                                                   : m_repoBranch;
 
+    // Auto-fill the tag and title from the previous release so a typical
+    // patch bump is one click away. Grab the newest tag (by creation date)
+    // and its subject (the release title baked into the annotated tag).
+    QString prevTag, prevTitle;
+    {
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate", "--count=1",
+                           "--format=%(refname:short)%09%(contents:subject)",
+                           "refs/tags"},
+                          &out, nullptr)) {
+            const QString line = QString::fromUtf8(out).trimmed();
+            const int tab = line.indexOf('\t');
+            if (tab >= 0) {
+                prevTag = line.left(tab).trimmed();
+                prevTitle = line.mid(tab + 1).trimmed();
+            } else {
+                prevTag = line;
+            }
+        }
+    }
+    // Suggest the next tag by incrementing the last run of digits in the
+    // previous tag (v0.5.1 -> v0.5.2, v1.0.0-rc1 -> v1.0.0-rc2). Falls back
+    // to an empty suggestion when there's no prior release to bump.
+    QString suggestedTag, suggestedTitle;
+    if (!prevTag.isEmpty()) {
+        int end = -1;
+        for (int i = prevTag.size() - 1; i >= 0; --i) {
+            if (prevTag.at(i).isDigit()) {
+                end = i;
+                break;
+            }
+        }
+        if (end >= 0) {
+            int start = end;
+            while (start > 0 && prevTag.at(start - 1).isDigit())
+                --start;
+            bool ok = false;
+            const qulonglong n =
+                prevTag.mid(start, end - start + 1).toULongLong(&ok);
+            if (ok)
+                suggestedTag = prevTag.left(start) + QString::number(n + 1) +
+                               prevTag.mid(end + 1);
+        }
+        if (!suggestedTag.isEmpty()) {
+            // Carry the previous title's pattern forward, swapping in the new
+            // tag where the old one appeared (titles are usually just the tag).
+            if (prevTitle.isEmpty() || prevTitle == prevTag)
+                suggestedTitle = suggestedTag;
+            else if (prevTitle.contains(prevTag))
+                suggestedTitle = QString(prevTitle).replace(prevTag, suggestedTag);
+            else
+                suggestedTitle = prevTitle;
+        }
+    }
+
     // GitHub-style "draft a release": tag name, target ref, and release notes.
     QDialog dialog(this);
     dialog.setWindowTitle("Draft a new release");
     auto *form = new QFormLayout(&dialog);
     auto *tagEdit = new QLineEdit;
     tagEdit->setPlaceholderText("v1.0.0");
+    if (!suggestedTag.isEmpty())
+        tagEdit->setText(suggestedTag);
     auto *targetEdit = new QComboBox;
     targetEdit->addItems(branches);
     const int targetIdx = targetEdit->findText(target);
@@ -37731,6 +37796,8 @@ void MainWindow::promptNewRelease()
         targetEdit->setCurrentIndex(targetIdx);
     auto *titleEdit = new QLineEdit;
     titleEdit->setPlaceholderText("Release title (optional)");
+    if (!suggestedTitle.isEmpty())
+        titleEdit->setText(suggestedTitle);
     auto *notesEdit = new QPlainTextEdit;
     notesEdit->setPlaceholderText("Describe this release...");
     notesEdit->setMinimumHeight(120);
@@ -37743,6 +37810,9 @@ void MainWindow::promptNewRelease()
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    // Pre-select the suggested tag so it can be accepted as-is or typed over.
+    tagEdit->setFocus();
+    tagEdit->selectAll();
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -45228,7 +45298,9 @@ void MainWindow::logSystem(const QString &text)
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
-    setFooterUpdateLine(plain);
+    // Pass the full dated line (not just the message) so the bottom strip shows the
+    // same timestamped log line as the Log view.
+    setFooterUpdateLine(line);
 
     // Persist incrementally so the history survives a restart (even an unclean
     // one). Periodically rewrite the file to trim it back to the in-memory cap.
