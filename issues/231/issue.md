@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 231
 title: have the ability to show the cove password on the source of truth node also don't show the filenames in the cove
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 15
