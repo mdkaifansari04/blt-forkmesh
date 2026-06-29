@@ -2877,6 +2877,7 @@ private:
     QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
     QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
+    QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
