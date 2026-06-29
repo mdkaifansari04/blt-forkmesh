@@ -1,3 +1,4 @@
+#include "../src/ActionFile.h"
 #include "../src/AgentStore.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
@@ -1018,6 +1019,34 @@ int main(int argc, char *argv[])
                   sessions.first().durationMs == 828000 &&
                   qAbs(sessions.first().costUsd - 4.59) < 1e-9,
               "turns, duration and cost reload intact after restart");
+    }
+
+    {
+        // Workflow variable substitution must expand the explicit
+        // ${{ vars.NAME }} context form and any declared ${NAME} variables, but
+        // must NOT touch a workflow's own shell variables — otherwise a release
+        // step building "releases/${channel}/forkmesh-${os}-${arch}" from shell
+        // variables collapses to "releases//forkmesh--" (the reported bug).
+        QMap<QString, QString> vars;
+        vars.insert(QStringLiteral("TOKEN"), QStringLiteral("s3cr3t"));
+
+        const QString shellScript =
+            QStringLiteral("channel=\"${RELEASE_CHANNEL:-latest}\"\n"
+                           "os=linux; arch=x86_64\n"
+                           "dest=\"releases/${channel}/forkmesh-${os}-${arch}\"");
+        const QString out = ActionFile::substitute(shellScript, vars);
+        check(out == shellScript,
+              "substitute leaves unknown ${NAME} shell variables untouched");
+
+        check(ActionFile::substitute(
+                  QStringLiteral("auth ${{ vars.TOKEN }} and ${TOKEN}"), vars) ==
+                  QStringLiteral("auth s3cr3t and s3cr3t"),
+              "substitute expands declared vars via both ${{ vars.X }} and ${X}");
+
+        check(ActionFile::substitute(
+                  QStringLiteral("x=${{ vars.MISSING }}-end"), vars) ==
+                  QStringLiteral("x=-end"),
+              "substitute blanks unknown ${{ vars.X }} context references");
     }
 
     if (failures) {
