@@ -1418,9 +1418,16 @@ async def install_source(env):
         key=lambda item: (-item["totalMinutes"], item["node"]),
     )
     best = ranked[0]
+    # Hand the installer the whole ranked list (capped), not just the top pick,
+    # so it can fall back to the next online mirror when the best one's git
+    # tunnel is unreachable. A node can hold a live host WebSocket — which is all
+    # the "hosts > 0" check above proves, so it counts as online here — yet still
+    # time out the clone proxy with a 504, which would otherwise dead-end the
+    # install. "node" stays for older installers that read only the single best.
+    node_list = [item["node"] for item in ranked[:8]]
     return json_response(
-        {"ok": True, "node": best["node"], "repo": "forkmesh",
-         "totalMinutes": best["totalMinutes"]},
+        {"ok": True, "node": best["node"], "nodes": node_list,
+         "repo": "forkmesh", "totalMinutes": best["totalMinutes"]},
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
