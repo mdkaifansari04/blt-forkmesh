@@ -2209,6 +2209,60 @@ QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir
     return args;
 }
 
+// One command in the "Build & preview" pipeline (issue #214): a program + args
+// run in `dir`, with the status line to show while it runs.
+struct PullPreviewStep {
+    QString program;
+    QStringList args;
+    QString dir;
+    QString status;
+};
+
+// Build the ordered command pipeline that checks the PR head (`commit`) out into
+// `previewDir` — reusing an existing worktree when `haveWorktree`, otherwise
+// registering a fresh one against `gitDir` — then configures and compiles the
+// qt_client in `clientDir`/`buildDir` with `jobs` parallel jobs. Pure (no
+// filesystem side effects) so the sequence can be unit-tested.
+QList<PullPreviewStep> pullPreviewSteps(const QString &gitDir,
+                                        const QString &previewDir,
+                                        const QString &clientDir,
+                                        const QString &buildDir,
+                                        const QString &commit, bool haveWorktree,
+                                        int jobs)
+{
+    QList<PullPreviewStep> steps;
+    // Drop any stale worktree registration so the checkout/add below is clean.
+    steps << PullPreviewStep{QStringLiteral("git"),
+                             {QStringLiteral("-C"), gitDir,
+                              QStringLiteral("worktree"), QStringLiteral("prune")},
+                             gitDir, QString::fromUtf8("Preparing worktree\xE2\x80\xA6")};
+    if (haveWorktree) {
+        // Reuse the existing worktree: just move it to the PR's head commit.
+        steps << PullPreviewStep{QStringLiteral("git"),
+                                 {QStringLiteral("-C"), previewDir,
+                                  QStringLiteral("checkout"), QStringLiteral("--detach"),
+                                  QStringLiteral("-f"), commit},
+                                 previewDir,
+                                 QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
+    } else {
+        steps << PullPreviewStep{QStringLiteral("git"),
+                                 {QStringLiteral("-C"), gitDir,
+                                  QStringLiteral("worktree"), QStringLiteral("add"),
+                                  QStringLiteral("--detach"), previewDir, commit},
+                                 gitDir,
+                                 QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
+    }
+    steps << PullPreviewStep{QStringLiteral("cmake"),
+                             cmakeConfigureArgs(clientDir, buildDir,
+                                                QStringLiteral("Release")),
+                             clientDir, QString::fromUtf8("Configuring\xE2\x80\xA6")};
+    steps << PullPreviewStep{QStringLiteral("cmake"),
+                             {QStringLiteral("--build"), buildDir, QStringLiteral("-j"),
+                              QString::number(jobs)},
+                             buildDir, QString::fromUtf8("Building\xE2\x80\xA6")};
+    return steps;
+}
+
 const QString kDmPrefix = QStringLiteral("@");
 
 bool isDirectConversation(const QString &conversation)
@@ -7053,6 +7107,21 @@ void MainWindow::setUpdateStatus(const QString &status, bool isError)
 QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) const
 {
     return quickUpdatePullArguments(clientDir);
+}
+
+QStringList MainWindow::testBuildAndPreviewSteps(const QString &gitDir,
+                                                 const QString &previewDir,
+                                                 const QString &clientDir,
+                                                 const QString &buildDir,
+                                                 const QString &commit,
+                                                 bool haveWorktree) const
+{
+    QStringList lines;
+    for (const PullPreviewStep &step :
+         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
+                          haveWorktree, /*jobs=*/4))
+        lines << (QStringList{step.program} + step.args).join(QLatin1Char(' '));
+    return lines;
 }
 #endif
 
@@ -19617,46 +19686,17 @@ void MainWindow::buildAndPreviewCurrentPull()
         }
     };
 
-    // Sequential build pipeline streamed into the dialog. Captured by a shared
-    // recursive lambda so each step starts the next only on success.
-    struct PreviewStep {
-        QString program;
-        QStringList args;
-        QString dir;
-        QString status;
-    };
-    auto steps = std::make_shared<QList<PreviewStep>>();
-    // Drop any stale worktree registration so the checkout/add below is clean.
-    *steps << PreviewStep{QStringLiteral("git"),
-                          {QStringLiteral("-C"), gitDir,
-                           QStringLiteral("worktree"), QStringLiteral("prune")},
-                          gitDir, QString::fromUtf8("Preparing worktree\xE2\x80\xA6")};
-    if (haveWorktree) {
-        // Reuse the existing worktree: just move it to the PR's head commit.
-        *steps << PreviewStep{QStringLiteral("git"),
-                              {QStringLiteral("-C"), previewDir,
-                               QStringLiteral("checkout"), QStringLiteral("--detach"),
-                               QStringLiteral("-f"), commit},
-                              previewDir,
-                              QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
-    } else {
+    // A fresh worktree needs its parent dir clearing first (its registration is
+    // dropped by the `worktree prune` step the pipeline opens with).
+    if (!haveWorktree) {
         QDir(previewDir).removeRecursively(); // clear any stale, unregistered dir
         QDir().mkpath(QFileInfo(previewDir).absolutePath());
-        *steps << PreviewStep{QStringLiteral("git"),
-                              {QStringLiteral("-C"), gitDir,
-                               QStringLiteral("worktree"), QStringLiteral("add"),
-                               QStringLiteral("--detach"), previewDir, commit},
-                              gitDir,
-                              QString::fromUtf8("Checking out the pull request\xE2\x80\xA6")};
     }
-    *steps << PreviewStep{QStringLiteral("cmake"),
-                          cmakeConfigureArgs(clientDir, buildDir,
-                                             QStringLiteral("Release")),
-                          clientDir, QString::fromUtf8("Configuring\xE2\x80\xA6")};
-    *steps << PreviewStep{QStringLiteral("cmake"),
-                          {QStringLiteral("--build"), buildDir, QStringLiteral("-j"),
-                           QString::number(QThread::idealThreadCount())},
-                          buildDir, QString::fromUtf8("Building\xE2\x80\xA6")};
+    // Sequential build pipeline streamed into the dialog. Captured by a shared
+    // recursive lambda so each step starts the next only on success.
+    auto steps = std::make_shared<QList<PullPreviewStep>>(
+        pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
+                         haveWorktree, QThread::idealThreadCount()));
 
     auto runNext = std::make_shared<std::function<void(int)>>();
     *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,
@@ -19667,7 +19707,7 @@ void MainWindow::buildAndPreviewCurrentPull()
             launchPreview();
             return;
         }
-        const PreviewStep st = steps->at(index);
+        const PullPreviewStep st = steps->at(index);
         if (statusPtr)
             statusPtr->setText(st.status);
         appendLog(QStringLiteral("\n$ %1 %2\n  (in %3)\n")
