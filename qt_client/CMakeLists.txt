@@ -86,6 +86,7 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowCoves.cpp
