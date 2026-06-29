@@ -5,7 +5,7 @@ title: there is a delay when I assign to claude code from the quick issue, plesa
 status: open
 labels: [Partial]
 milestone: 
-priority: 51
+priority: 11
 progress: 50
 assignees: []
 createdAt: 1782430551228
