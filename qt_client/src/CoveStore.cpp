@@ -10,7 +10,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
-#include <QRegularExpression>
 #include <QUuid>
 
 namespace {
@@ -45,24 +44,23 @@ QString newId()
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-QString slugify(const QString &name)
+// An opaque, content-free file stem (32 hex chars). Cove files are named by this
+// alone so a repo's tree/history never hints at what a cove holds — the name is
+// kept inside the encrypted payload, not in the filename.
+QString obscureSlug()
 {
-    QString slug = name.toLower();
-    slug.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
-    while (slug.startsWith('-'))
-        slug.remove(0, 1);
-    while (slug.endsWith('-'))
-        slug.chop(1);
-    return slug.left(48);
+    return QUuid::createUuid().toString(QUuid::Id128);
 }
 
 // Build the on-disk envelope JSON for a cove whose cipher is already computed.
+// The human-readable name is deliberately NOT stored here: it lives inside the
+// encrypted payload so the repo never reveals what a cove is about. The file is
+// identified on disk only by an obscure random slug.
 QJsonObject toEnvelope(const Cove &cove)
 {
     return {{"kind", "cove"},
             {"v", kCoveVersion},
             {"id", cove.id},
-            {"name", cove.name},
             {"creator", cove.creator},
             {"createdAtMs", double(cove.createdAtMs)},
             {"notifyOnOpen", cove.notifyOnOpen},
@@ -83,6 +81,8 @@ bool fromEnvelope(const QByteArray &bytes, Cove &out)
     if (obj.value("kind").toString() != "cove")
         return false;
     out.id = obj.value("id").toString();
+    // Legacy coves stored the name in plaintext here; newer ones keep it inside
+    // the encrypted payload (recovered by unlock()). Read it for back-compat.
     out.name = obj.value("name").toString();
     out.creator = obj.value("creator").toString();
     out.createdAtMs = qint64(obj.value("createdAtMs").toDouble());
@@ -266,6 +266,9 @@ bool CoveStore::unlock(Cove &cove, const QString &password)
     if (!doc.isObject())
         return false;
     const QJsonObject payload = doc.object();
+    // The name lives in the encrypted payload (kept out of the repo). Fall back to
+    // any plaintext envelope name for coves written before this change.
+    cove.name = payload.value("name").toString(cove.name);
     cove.documents.clear();
     for (const QJsonValue &v : payload.value("documents").toArray())
         cove.documents << CoveDocument::fromJson(v.toObject());
@@ -285,15 +288,11 @@ void CoveStore::appendAccess(Cove &cove, const CoveAccessEntry &entry)
         cove.accessLog.removeFirst();
 }
 
-QString CoveStore::uniqueSlug(const QString &name) const
+QString CoveStore::uniqueSlug() const
 {
-    QString base = slugify(name);
-    if (base.isEmpty())
-        base = QStringLiteral("cove");
-    QString slug = base;
-    int n = 2;
+    QString slug = obscureSlug();
     while (QFileInfo::exists(covesDir() + "/" + slug + ".cove"))
-        slug = base + "-" + QString::number(n++);
+        slug = obscureSlug();
     return slug;
 }
 
@@ -316,7 +315,7 @@ bool CoveStore::createCove(const QString &name, const QString &password,
     Cove cove;
     cove.id = newId();
     cove.name = name.trimmed();
-    cove.slug = uniqueSlug(cove.name);
+    cove.slug = uniqueSlug();
     cove.relPath = covesDirRel() + "/" + cove.slug + ".cove";
     cove.creator = m_identity ? m_identity->publicKey() : QString();
     cove.createdAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -352,8 +351,11 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
     QJsonArray log;
     for (const CoveAccessEntry &e : cove.accessLog)
         log.append(e.toJson());
+    // The name rides inside the ciphertext (not the envelope) so it never appears
+    // in the repo's tree, file contents or history.
     const QByteArray payload =
-        QJsonDocument(QJsonObject{{"documents", docs}, {"accessLog", log}})
+        QJsonDocument(
+            QJsonObject{{"name", cove.name}, {"documents", docs}, {"accessLog", log}})
             .toJson(QJsonDocument::Compact);
 
     CoveCrypto crypto(password, cove.salt, cove.rounds);
@@ -381,7 +383,8 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
     file.write(QJsonDocument(toEnvelope(sealed)).toJson(QJsonDocument::Indented));
     file.close();
 
-    return commit(QStringLiteral("cove: %1").arg(sealed.name), sealed.relPath, error);
+    // Commit by slug, never the name, so git history stays free of cove names.
+    return commit(QStringLiteral("cove: %1").arg(sealed.slug), sealed.relPath, error);
 }
 
 bool CoveStore::commit(const QString &message, const QString &relPath, QString *error) const

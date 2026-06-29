@@ -16061,6 +16061,16 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
         html += QStringLiteral(
                     "<div style='color:#8b949e; font-size:11px; margin-top:4px'>%1</div>")
                     .arg(signal.detail.toHtmlEscaped());
+    // Itemised entries (e.g. dependency manifests) render as a list where each
+    // path is a "check" link; the card's linkActivated handler opens the file.
+    for (const QString &item : signal.items) {
+        const QString href = QString::fromUtf8(QUrl::toPercentEncoding(item));
+        html += QStringLiteral(
+                    "<div style='color:#c9d1d9; font-size:12px; margin-top:4px'>"
+                    "&#8226;&nbsp;<a style='color:#58a6ff; text-decoration:none' "
+                    "href='manifest:%1'>%2</a></div>")
+                    .arg(href, item.toHtmlEscaped());
+    }
     return html;
 }
 
@@ -16143,12 +16153,29 @@ void MainWindow::refreshRepoSecurity()
             .arg(severe));
 
     int index = 0;
+    const QString localBase = writable.localPath;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
         auto *card = new QLabel(repoSecuritySignalHtml(signal));
         card->setObjectName("insightsCard");
         card->setTextFormat(Qt::RichText);
         card->setWordWrap(true);
         card->setMinimumHeight(92);
+        if (!signal.items.isEmpty()) {
+            card->setOpenExternalLinks(false);
+            card->setTextInteractionFlags(Qt::TextBrowserInteraction);
+            connect(card, &QLabel::linkActivated, this,
+                    [localBase](const QString &href) {
+                        if (!href.startsWith(QLatin1String("manifest:")))
+                            return;
+                        const QString rel = QUrl::fromPercentEncoding(
+                            href.mid(QStringLiteral("manifest:").size()).toUtf8());
+                        if (localBase.trimmed().isEmpty() || rel.isEmpty())
+                            return;
+                        const QString abs = QDir(localBase).filePath(rel);
+                        if (QFileInfo::exists(abs))
+                            QDesktopServices::openUrl(QUrl::fromLocalFile(abs));
+                    });
+        }
         const int row = index / 3;
         const int col = index % 3;
         m_securitySignalsGrid->addWidget(card, row, col);
@@ -18904,7 +18931,8 @@ void MainWindow::setPullThreadState(const QString &threadId, const QString &stat
 
 void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                                      const QString &headerHtml, const QString &body,
-                                     const QString &accent, const QString &copyLink)
+                                     const QString &accent, const QString &copyLink,
+                                     const QString &authorId)
 {
     if (!layout)
         return;
@@ -18918,6 +18946,23 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     avatar->setObjectName("issueAvatar");
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(36, 36);
+    // Prefer the author's real picture over the initials tile, matching the
+    // issue timeline. Peer avatars are broadcast over chat and cached in
+    // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
+    // our own avatar may not be in that cache yet, so fall back to
+    // effectiveAvatar() for our own cards. Unknown peers keep the initials.
+    if (!authorId.isEmpty()) {
+        QPixmap authorAvatar;
+        const QPixmap cached = m_avatars.value(authorId);
+        if (!cached.isNull())
+            authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
+        else if (authorId == m_profileIdentity.publicKey())
+            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+        if (!authorAvatar.isNull()) {
+            avatar->setText(QString());
+            avatar->setPixmap(authorAvatar);
+        }
+    }
     rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
     auto *card = new QWidget;
@@ -18991,10 +19036,12 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             w->deleteLater();
         delete item;
     }
+    // Trailing stretch first: addConversationCard inserts each card just above
+    // it, so cards flow oldest-to-newest (top to bottom).
+    m_pullThreadLayout->addStretch();
     if (pr.number == 0) {
         if (m_pullLinksValue)
             m_pullLinksValue->hide();
-        m_pullThreadLayout->addStretch();
         return;
     }
 
@@ -19032,7 +19079,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         QStringLiteral("<b>%1</b> <span style='color:#8b949e'>opened this pull "
                        "request %2</span>")
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
-        pr.description, QString(), pullLink + QStringLiteral("#open"));
+        pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
 
     for (const PullEvent &ev : pr.events) {
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
@@ -19088,9 +19135,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 .arg(who.toHtmlEscaped(), verb, when),
             ev.body, accent,
             pullLink + QStringLiteral("#%1")
-                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id));
+                           .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
+            ev.author);
     }
-    m_pullThreadLayout->addStretch();
 }
 
 void MainWindow::renderPullCommits(const PullRequest &pr)
@@ -25786,28 +25833,51 @@ void MainWindow::toggleIssueLooper()
     looperStartNext();
 }
 
-// Pick the highest-priority open issue that has no agent session yet and start
-// the looper's agent on it. Stops the looper when nothing is left to do. Each
-// issue is attempted at most once (any existing session — queued, running, done,
-// or failed — disqualifies it), so the loop always makes forward progress.
+// Pick the highest-priority open issue that's free to pick up and start the
+// looper's agent on it. Stops the looper when nothing is left to do. The looper
+// only touches open issues that are unassigned, have a priority set, and carry
+// no linked PR (adhoc #42) — anything assigned, untriaged, or already covered by
+// a pull request is left alone. Each issue is attempted at most once (any
+// existing session — queued, running, done, or failed — disqualifies it), so
+// the loop always makes forward progress.
 void MainWindow::looperStartNext()
 {
-    if (!m_looperActive)
-        return;
     const Issue *next = nullptr;
     int bestPriority = 1 << 30;
-    for (const Issue &issue : std::as_const(m_currentIssues)) {
+    for (const Issue &issue : issues) {
         if (issue.isDeleted() || issue.status != QLatin1String("open"))
             continue;
         if (latestAgentSessionForIssue(issue.number))
             continue; // already attempted by an agent
-        const int p = issue.priority > 0 ? issue.priority : 100000;
+        if (!issue.assignees.isEmpty())
+            continue; // assigned to someone — leave it to them
+        if (issue.priority <= 0)
+            continue; // no priority set — not triaged for the looper yet
+        if (!pullsLinkedToIssue(issue.number).isEmpty())
+            continue; // already has a linked PR
+        const int p = issue.priority;
         if (p < bestPriority ||
             (p == bestPriority && (!next || issue.number < next->number))) {
             bestPriority = p;
             next = &issue;
         }
     }
+    return next;
+}
+
+// Pick the highest-priority open, unclaimed issue that has no agent session yet
+// and start the looper's agent on it. Stops the looper when nothing is left to
+// do. Each issue is attempted at most once (any existing session — queued,
+// running, done, or failed — disqualifies it), so the loop always makes forward
+// progress. Before starting, the issue is assigned to this node (adhoc #38) so
+// the claim syncs and no other looper grabs the same task.
+void MainWindow::looperStartNext()
+{
+    if (!m_looperActive)
+        return;
+    const Issue *next = looperPickNext(m_currentIssues, [this](int number) {
+        return latestAgentSessionForIssue(number) != nullptr;
+    });
     if (!next) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25815,14 +25885,20 @@ void MainWindow::looperStartNext()
         m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice(
-            "Issue looper finished: every open issue has an agent.");
+            "Issue looper finished: no open, unassigned, prioritized issues left "
+            "without an agent or linked PR.");
         return;
     }
-    // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
-    const int issueNumber = next->number;
-    const QString issueTitle = next->title;
-    const int sessionId =
-        startAgentForIssue(*next, m_looperProvider, /*createPr=*/true, /*quiet=*/true);
+    // startAgentForIssue()/looperClaimIssue() rebuild m_currentIssues, so copy the
+    // issue out first (we still pass it by reference to startAgentForIssue below).
+    const Issue picked = *next;
+    const int issueNumber = picked.number;
+    const QString issueTitle = picked.title;
+    // Claim the issue for this node before starting, so a concurrent scan here or
+    // on another mirror sees it as taken and skips it (adhoc #38).
+    looperClaimIssue(issueNumber, picked.assignees);
+    const int sessionId = startAgentForIssue(picked, m_looperProvider,
+                                             /*createPr=*/true, /*quiet=*/true);
     if (sessionId <= 0) {
         m_looperActive = false;
         m_looperSessionId = 0;
@@ -25842,6 +25918,39 @@ void MainWindow::looperStartNext()
             .arg(agentProviderName(m_looperProvider))
             .arg(issueNumber)
             .arg(issueTitle));
+}
+
+QString MainWindow::nodeAssigneeTag() const
+{
+    const QString name = m_userName.trimmed();
+    if (!name.isEmpty())
+        return name;
+    const QString key = m_profileIdentity.publicKey();
+    return key.isEmpty() ? QString() : key.left(12);
+}
+
+// Mark this node as an assignee of the issue the looper just took so the claim
+// syncs to other nodes and no second looper (here or on another mirror) starts
+// the same task. Best-effort: the host writes and commits the assignment (which
+// syncs to mirrors), while a mirror with no write access files it to the owner's
+// inbox to merge and sync back (adhoc #38).
+void MainWindow::looperClaimIssue(int number, const QStringList &existingAssignees)
+{
+    const QString tag = nodeAssigneeTag();
+    if (tag.isEmpty())
+        return;
+    for (const QString &a : existingAssignees)
+        if (a.compare(tag, Qt::CaseInsensitive) == 0)
+            return; // already claimed by this node
+    QStringList assignees = existingAssignees;
+    assignees.append(tag);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    if (store.canWrite()) {
+        store.setAssignees(number, assignees, nullptr);
+        return;
+    }
+    submitIssueAssigneesToInbox(number, assignees);
 }
 
 // Called from both agent-completion paths. When the finished session is the one
@@ -28610,12 +28719,49 @@ void MainWindow::applyIssueFilesCount(int issueNumber, int count,
 
 QWidget *MainWindow::buildRepoFilesPanel()
 {
-    // Two modes: a GitHub-style overview, and an explorer+editor view shown only
-    // once a specific file is opened.
+    // Two modes: a GitHub-style overview, and an explorer+editor view. A
+    // persistent segmented toggle sits above both so switching between
+    // "Code overview" and "Explorer" is always one click away, no matter
+    // which view is currently showing.
     m_filesStack = new QStackedWidget;
     m_filesStack->addWidget(buildRepoOverviewPage()); // 0 overview
     m_filesStack->addWidget(buildRepoEditorPage());   // 1 editor (explorer + tabs)
-    return m_filesStack;
+
+    m_filesModeOverviewButton = new QPushButton("Code overview");
+    m_filesModeOverviewButton->setObjectName("repoTab");
+    m_filesModeOverviewButton->setCheckable(true);
+    m_filesModeOverviewButton->setChecked(true);
+    m_filesModeOverviewButton->setCursor(Qt::PointingHandCursor);
+    m_filesModeOverviewButton->setToolTip(
+        "Show the repository overview (latest commit, file list and README)");
+    setOcticon(m_filesModeOverviewButton, "code", 16);
+    connect(m_filesModeOverviewButton, &QPushButton::clicked, this,
+            [this] { showRepoOverview(); });
+
+    m_filesModeExplorerButton = new QPushButton("Explorer");
+    m_filesModeExplorerButton->setObjectName("repoTab");
+    m_filesModeExplorerButton->setCheckable(true);
+    m_filesModeExplorerButton->setCursor(Qt::PointingHandCursor);
+    m_filesModeExplorerButton->setToolTip(
+        "Open the file explorer and code editor");
+    setOcticon(m_filesModeExplorerButton, "file-directory", 16);
+    connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
+            [this] { showRepoEditor(); });
+
+    auto *modeRow = new QHBoxLayout;
+    modeRow->setContentsMargins(16, 6, 16, 0);
+    modeRow->setSpacing(2);
+    modeRow->addWidget(m_filesModeOverviewButton);
+    modeRow->addWidget(m_filesModeExplorerButton);
+    modeRow->addStretch();
+
+    auto *panel = new QWidget;
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addLayout(modeRow);
+    layout->addWidget(m_filesStack, 1);
+    return panel;
 }
 
 QWidget *MainWindow::buildRepoOverviewPage()
@@ -28749,14 +28895,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
                     openRepoFile(path);
                 m_fileSearch->clear();
             });
-    // Switch from the GitHub-style overview into the explorer + editor view.
-    m_editorModeButton = new QPushButton("Edit");
-    m_editorModeButton->setObjectName("ghostButton");
-    m_editorModeButton->setCursor(Qt::PointingHandCursor);
-    m_editorModeButton->setToolTip("Open the file explorer and code editor");
-    setOcticon(m_editorModeButton, "pencil", 16);
-    connect(m_editorModeButton, &QPushButton::clicked, this,
-            [this] { showRepoEditor(); });
+    // Switching into the explorer + editor view is handled by the persistent
+    // "Explorer" toggle above the stack (see buildRepoFilesPanel).
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
@@ -28764,7 +28904,6 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
-    toolbar->addWidget(m_editorModeButton);
 
     // Left column: toolbar, latest commit, file list, README.
     auto *leftColumn = new QWidget;
@@ -28913,15 +29052,8 @@ QWidget *MainWindow::buildRepoEditorPage()
 
     auto *backRow = new QHBoxLayout;
     backRow->setContentsMargins(8, 4, 8, 0);
-    // Return from the explorer/editor view to the GitHub-style overview.
-    m_overviewBackButton = new QPushButton("Code overview");
-    m_overviewBackButton->setObjectName("ghostButton");
-    m_overviewBackButton->setCursor(Qt::PointingHandCursor);
-    m_overviewBackButton->setToolTip("Back to the repository overview");
-    setOcticon(m_overviewBackButton, "code", 16);
-    connect(m_overviewBackButton, &QPushButton::clicked, this,
-            [this] { showRepoOverview(); });
-    backRow->addWidget(m_overviewBackButton);
+    // Returning to the GitHub-style overview is handled by the persistent
+    // "Code overview" toggle above the stack (see buildRepoFilesPanel).
     backRow->addStretch();
     m_repoFileCommitButton = new QPushButton("Commit direct");
     m_repoFileCommitButton->setObjectName("ghostButton");
@@ -28951,6 +29083,11 @@ QWidget *MainWindow::buildRepoEditorPage()
     m_repoFileTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_repoFileTree->setMinimumWidth(200);
     m_repoFileTree->setIndentation(14);
+    // Right-click a file or folder for IDE-style operations (new/rename/delete,
+    // copy path, reveal) — see showRepoFileTreeMenu.
+    m_repoFileTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_repoFileTree, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showRepoFileTreeMenu);
     // Double-click a file to open it in an editable tab on the right.
     connect(m_repoFileTree, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem *item, int) {
@@ -29432,7 +29569,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     // Insights tab is opened — see the tab-switch handler — so opening a repo
     // doesn't pay for them up front.
     // Land on the GitHub-style overview at the repo root by default; the
-    // explorer + editor is one click away via the "Edit" button.
+    // explorer + editor is one click away via the persistent "Explorer" toggle.
     nodeSwitchStep(QStringLiteral("Rendering overview…"));
     loadRepoOverview(QString());
     logStartup(QStringLiteral("  openRepo: overview loaded"));
@@ -29549,6 +29686,13 @@ void MainWindow::loadRepoFileTree()
         if (tab < 0)
             continue;
         const QString path = QString::fromUtf8(record.mid(tab + 1));
+        // Coves are encrypted vaults whose slug-based filename leaks their name to
+        // anyone browsing the tree (including mirror nodes that can't unlock them).
+        // Keep them out of the file browser entirely — and out of folder-size totals
+        // — so they reveal nothing here; they live in Settings → Coves. (#231)
+        if (path.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
+            path.startsWith(CoveStore::covesDirRel() + "/"))
+            continue;
         const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
         const qint64 size =
             meta.size() >= 4 ? QString::fromUtf8(meta.at(3)).toLongLong() : 0;
@@ -29587,28 +29731,6 @@ void MainWindow::loadRepoFileTree()
                 item->setData(0, Qt::UserRole, acc);
                 item->setData(0, Qt::UserRole + 1, false);
                 setSize(item, fileSize.value(acc));
-                // A cove is greyed/locked until its password is known; with
-                // "auto-show" on it un-greys once unlocked. Double-click opens the
-                // cove viewer (intercepted in openRepoFile), not the code editor.
-                if (acc.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
-                    acc.startsWith(CoveStore::covesDirRel() + "/")) {
-                    Cove cove;
-                    bool unlocked = false;
-                    if (coveStoreForRepo(m_repoDetailIndex).loadEnvelope(acc, cove)) {
-                        QString pw;
-                        unlocked = tryUnlockCove(cove, m_repoDetailIndex, &pw);
-                    }
-                    item->setText(0, parts.at(i) +
-                                         QString::fromUtf8(unlocked ? "  \xF0\x9F\x94\x93"
-                                                                    : "  \xF0\x9F\x94\x92"));
-                    if (!(unlocked && coveAutoOpenEnabled(m_repoDetailIndex)))
-                        item->setForeground(0, QBrush(QColor("#8b949e")));
-                    item->setToolTip(
-                        0, unlocked
-                               ? QStringLiteral("Encrypted cove — double-click to open")
-                               : QStringLiteral("Encrypted cove — locked; enter the "
-                                                "password in Settings"));
-                }
             } else {
                 QTreeWidgetItem *node = dirs.value(acc);
                 if (!node) {
@@ -29647,6 +29769,308 @@ void MainWindow::loadRepoFileTree()
 
     if (paths.isEmpty())
         new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
+}
+
+// Reject a repo-relative path that would escape the repository or touch .git.
+static bool repoRelPathIsSafe(const QString &cleanPath)
+{
+    return !cleanPath.isEmpty() && cleanPath != QLatin1String(".") &&
+           !cleanPath.startsWith("../") && !cleanPath.contains("/../") &&
+           !QDir::isAbsolutePath(cleanPath) && cleanPath != QLatin1String(".git") &&
+           !cleanPath.startsWith(".git/");
+}
+
+// Right-click context menu for the file-explorer tree. Files/folders get
+// IDE-style operations; an empty-area or placeholder click targets the repo
+// root (so the first file can be added to an empty working tree). New/rename/
+// delete commit directly to the default branch and only appear when this node
+// owns a working tree; copy-path and reveal work on any locally available repo.
+void MainWindow::showRepoFileTreeMenu(const QPoint &pos)
+{
+    if (!m_repoFileTree)
+        return;
+    QTreeWidgetItem *item = m_repoFileTree->itemAt(pos);
+    const QString path = item ? item->data(0, Qt::UserRole).toString() : QString();
+    const bool isDir = item && item->data(0, Qt::UserRole + 1).toBool();
+    // Placeholder rows ("(empty repository)", error notes) carry no path.
+    const bool isEntry = item && !path.isEmpty();
+    const bool canWrite = repoHasWorkingTree();
+    // The folder a new entry is created in: the clicked folder, the clicked
+    // file's parent folder, or the repo root.
+    const QString parentDir =
+        !isEntry ? QString() : (isDir ? path : path.section('/', 0, -2));
+
+    QMenu menu(this);
+    QAction *open = (isEntry && !isDir) ? menu.addAction(QStringLiteral("Open"))
+                                        : nullptr;
+
+    QAction *newFile = nullptr;
+    QAction *newFolder = nullptr;
+    QAction *rename = nullptr;
+    QAction *del = nullptr;
+    if (canWrite) {
+        if (open)
+            menu.addSeparator();
+        newFile = menu.addAction(QString::fromUtf8("New file\xE2\x80\xA6"));
+        newFolder = menu.addAction(QString::fromUtf8("New folder\xE2\x80\xA6"));
+        if (isEntry) {
+            menu.addSeparator();
+            rename = menu.addAction(QString::fromUtf8("Rename\xE2\x80\xA6"));
+            del = menu.addAction(QStringLiteral("Delete"));
+        }
+    }
+
+    QAction *copyRel = nullptr;
+    QAction *copyAbs = nullptr;
+    QAction *reveal = nullptr;
+    if (isEntry) {
+        menu.addSeparator();
+        copyRel = menu.addAction(QStringLiteral("Copy relative path"));
+        // The on-disk path and reveal only make sense for a real working tree;
+        // a bare mirror has no checked-out files.
+        if (canWrite) {
+            copyAbs = menu.addAction(QStringLiteral("Copy full path"));
+            reveal = menu.addAction(isDir ? QStringLiteral("Reveal folder")
+                                          : QStringLiteral("Reveal in file manager"));
+        }
+    }
+
+    if (menu.isEmpty())
+        return;
+    QAction *chosen = menu.exec(m_repoFileTree->viewport()->mapToGlobal(pos));
+    if (!chosen)
+        return;
+    if (chosen == open)
+        openRepoFile(path);
+    else if (chosen == newFile)
+        newRepoFileEntry(parentDir, false);
+    else if (chosen == newFolder)
+        newRepoFileEntry(parentDir, true);
+    else if (chosen == rename)
+        renameRepoFileEntry(path, isDir);
+    else if (chosen == del)
+        deleteRepoFileEntry(path, isDir);
+    else if (chosen == copyRel)
+        QApplication::clipboard()->setText(path);
+    else if (chosen == copyAbs)
+        QApplication::clipboard()->setText(QDir(repoGitDir()).filePath(path));
+    else if (chosen == reveal) {
+        const QString full = QDir(repoGitDir()).filePath(path);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(
+            isDir ? full : QFileInfo(full).absolutePath()));
+    }
+}
+
+QString MainWindow::prepareRepoFileOp(QString *base)
+{
+    if (!repoHasWorkingTree()) {
+        setRepoDetailNotice(
+            "File operations need a local working copy of this repository.", true);
+        return {};
+    }
+    const QString dir = repoGitDir();
+    QByteArray status;
+    QString err;
+    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
+        !status.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            err.isEmpty() ? "Commit or stash local changes before changing files."
+                          : err.left(240),
+            true);
+        return {};
+    }
+    const QString branch = repoDefaultBranch(repoBranches());
+    if (branch.isEmpty()) {
+        setRepoDetailNotice("This repository has no branch to commit onto.", true);
+        return {};
+    }
+    if (!runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
+            true);
+        return {};
+    }
+    if (base)
+        *base = branch;
+    return dir;
+}
+
+void MainWindow::finishRepoFileOp(const QString &base)
+{
+    setRepoBranch(base);
+    // Stay on whichever files-panel page the user was on (the explorer, normally)
+    // across the heavyweight refresh.
+    const int filesPage = m_filesStack ? m_filesStack->currentIndex() : 0;
+    refreshOpenRepoDetail();
+    // The explorer is the active view; rebuild it now rather than lazily so the
+    // change is visible immediately.
+    loadRepoFileTree();
+    m_treeLoadedForIndex = m_repoDetailIndex;
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(filesPage);
+}
+
+void MainWindow::newRepoFileEntry(const QString &parentDir, bool folder)
+{
+    bool ok = false;
+    const QString label = folder ? QStringLiteral("New folder")
+                                  : QStringLiteral("New file");
+    const QString name =
+        QInputDialog::getText(this, label,
+                              folder ? QStringLiteral("Folder name:")
+                                     : QStringLiteral("File name:"),
+                              QLineEdit::Normal, QString(), &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    const QString rel =
+        QDir::cleanPath(parentDir.isEmpty() ? name : parentDir + "/" + name);
+    if (!repoRelPathIsSafe(rel)) {
+        setRepoDetailNotice("Refusing to create that path.", true);
+        return;
+    }
+    // git can't track an empty folder, so seed a new folder with a .gitkeep; the
+    // commit then has content and the folder appears in the tree.
+    const QString trackRel = folder ? rel + "/.gitkeep" : rel;
+
+    QString base;
+    const QString dir = prepareRepoFileOp(&base);
+    if (dir.isEmpty())
+        return;
+    const QString full = QDir(dir).filePath(trackRel);
+    if (QFileInfo::exists(full)) {
+        setRepoDetailNotice(QStringLiteral("%1 already exists.").arg(rel), true);
+        return;
+    }
+    QDir().mkpath(QFileInfo(full).absolutePath());
+    QFile file(full);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        setRepoDetailNotice(QStringLiteral("Could not create %1.").arg(rel), true);
+        return;
+    }
+    file.close();
+
+    QString err;
+    if (!runGitCapture(dir, {"add", "--", trackRel}, nullptr, &err) ||
+        !runGitCapture(dir, {"commit", "-m", QStringLiteral("Add %1").arg(rel)},
+                       nullptr, &err)) {
+        file.remove();
+        runGitCapture(dir, {"reset", "--hard"}, nullptr, nullptr);
+        setRepoDetailNotice(err.isEmpty() ? "Could not commit the new file."
+                                          : err.left(240),
+                            true);
+        return;
+    }
+    logSystem(QStringLiteral("Created %1 in %2.").arg(rel, base));
+    setRepoDetailNotice(QStringLiteral("Created %1.").arg(rel));
+    finishRepoFileOp(base);
+    if (!folder)
+        openRepoFile(rel);
+}
+
+void MainWindow::renameRepoFileEntry(const QString &path, bool isDir)
+{
+    bool ok = false;
+    const QString oldName = path.section('/', -1);
+    const QString newName =
+        QInputDialog::getText(this, QStringLiteral("Rename"),
+                              QStringLiteral("New name for \"%1\":").arg(oldName),
+                              QLineEdit::Normal, oldName, &ok)
+            .trimmed();
+    if (!ok || newName.isEmpty() || newName == oldName)
+        return;
+    if (newName.contains('/')) {
+        setRepoDetailNotice("Enter a name, not a path.", true);
+        return;
+    }
+    const QString parent = path.section('/', 0, -2);
+    const QString dest =
+        QDir::cleanPath(parent.isEmpty() ? newName : parent + "/" + newName);
+    if (!repoRelPathIsSafe(dest)) {
+        setRepoDetailNotice("Refusing to rename to that path.", true);
+        return;
+    }
+
+    QString base;
+    const QString dir = prepareRepoFileOp(&base);
+    if (dir.isEmpty())
+        return;
+    if (QFileInfo::exists(QDir(dir).filePath(dest))) {
+        setRepoDetailNotice(QStringLiteral("%1 already exists.").arg(dest), true);
+        return;
+    }
+    QString err;
+    if (!runGitCapture(dir, {"mv", "--", path, dest}, nullptr, &err) ||
+        !runGitCapture(dir,
+                       {"commit", "-m",
+                        QStringLiteral("Rename %1 to %2").arg(path, dest)},
+                       nullptr, &err)) {
+        runGitCapture(dir, {"reset", "--hard"}, nullptr, nullptr);
+        setRepoDetailNotice(err.isEmpty() ? "Could not rename." : err.left(240),
+                            true);
+        return;
+    }
+    closeRepoFileTabsUnder(path, isDir);
+    logSystem(QStringLiteral("Renamed %1 to %2.").arg(path, dest));
+    setRepoDetailNotice(QStringLiteral("Renamed to %1.").arg(dest));
+    finishRepoFileOp(base);
+}
+
+void MainWindow::deleteRepoFileEntry(const QString &path, bool isDir)
+{
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete"),
+            QStringLiteral("Delete %1 \"%2\" from the repository? The removal is "
+                           "committed to the default branch.")
+                .arg(isDir ? QStringLiteral("folder") : QStringLiteral("file"),
+                     path),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    QString base;
+    const QString dir = prepareRepoFileOp(&base);
+    if (dir.isEmpty())
+        return;
+    QStringList args = {"rm", "-q"};
+    if (isDir)
+        args << "-r";
+    args << "--" << path;
+    QString err;
+    if (!runGitCapture(dir, args, nullptr, &err) ||
+        !runGitCapture(dir, {"commit", "-m", QStringLiteral("Delete %1").arg(path)},
+                       nullptr, &err)) {
+        runGitCapture(dir, {"reset", "--hard"}, nullptr, nullptr);
+        setRepoDetailNotice(err.isEmpty() ? "Could not delete." : err.left(240),
+                            true);
+        return;
+    }
+    closeRepoFileTabsUnder(path, isDir);
+    logSystem(QStringLiteral("Deleted %1 from %2.").arg(path, base));
+    setRepoDetailNotice(QStringLiteral("Deleted %1.").arg(path));
+    finishRepoFileOp(base);
+}
+
+// Close open editor tabs pointing at a path that was renamed or deleted (and,
+// for a folder, everything beneath it) so no stale tab keeps a gone file open.
+void MainWindow::closeRepoFileTabsUnder(const QString &path, bool isDir)
+{
+    if (!m_repoFileTabs)
+        return;
+    const QString prefix = path + "/";
+    const QList<QString> openPaths = m_openFileTabs.keys();
+    for (const QString &p : openPaths) {
+        if (p != path && !(isDir && p.startsWith(prefix)))
+            continue;
+        QWidget *w = m_openFileTabs.value(p);
+        const int idx = w ? m_repoFileTabs->indexOf(w) : -1;
+        if (idx >= 0)
+            m_repoFileTabs->removeTab(idx);
+        m_openFileTabs.remove(p);
+        if (w)
+            w->deleteLater();
+    }
+    if (m_repoFileTabs->count() == 0)
+        showRepoOverview();
 }
 
 void MainWindow::openRepoFile(const QString &path)
@@ -30129,12 +30553,16 @@ bool MainWindow::proposePullFromMirrorEdit(const QString &cleanPath,
 void MainWindow::showRepoOverview()
 {
     // Default Code view: the GitHub-style overview (branch/tags toolbar, latest
-    // commit, file list and README). The explorer + editor lives behind the
-    // "Edit" button — see showRepoEditor().
+    // commit, file list and README). The explorer + editor lives one toggle
+    // away — see showRepoEditor().
     if (!m_filesStack)
         return;
     loadRepoOverview(m_overviewPath);
     m_filesStack->setCurrentIndex(0);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(true);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
 }
 
 void MainWindow::showRepoEditor()
@@ -30150,6 +30578,10 @@ void MainWindow::showRepoEditor()
     if (m_repoFileTabs && m_repoFileTabs->count() == 0)
         openRepoReadme();
     m_filesStack->setCurrentIndex(1);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(false);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(true);
 }
 
 void MainWindow::openRepoReadme()
@@ -33521,10 +33953,10 @@ void MainWindow::renderCommitThread(const QString &sha)
             w->deleteLater();
         delete item;
     }
-    if (sha.isEmpty()) {
-        m_commitThreadLayout->addStretch();
+    // Trailing stretch first so cards flow top to bottom (see renderPullThread).
+    m_commitThreadLayout->addStretch();
+    if (sha.isEmpty())
         return;
-    }
     QString linkOwner = QStringLiteral("repo");
     QString linkRepo = QStringLiteral("commit");
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
@@ -33547,9 +33979,9 @@ void MainWindow::renderCommitThread(const QString &sha)
                 .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
             c.body, QString(),
             commitLink + QStringLiteral("#%1")
-                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id));
+                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id),
+            c.author);
     }
-    m_commitThreadLayout->addStretch();
 }
 
 void MainWindow::submitCommitComment()
@@ -34246,6 +34678,22 @@ void MainWindow::reassignContributorIdentity(const QString &oldName)
     loadCommits();
 }
 
+// Per-repo metadata lives in .forkmesh/info.json (issue #232). Older repos kept
+// it at the working-tree root, so reads fall back to that legacy location.
+static QString repoInfoJsonWritePath(const QString &localPath)
+{
+    return QDir(localPath).filePath(QStringLiteral(".forkmesh/info.json"));
+}
+
+static QString repoInfoJsonReadPath(const QString &localPath)
+{
+    const QString preferred = repoInfoJsonWritePath(localPath);
+    if (QFileInfo::exists(preferred))
+        return preferred;
+    const QString legacy = QDir(localPath).filePath(QStringLiteral("info.json"));
+    return QFileInfo::exists(legacy) ? legacy : preferred;
+}
+
 void MainWindow::loadRepoInfo()
 {
     m_repoInfo = RepoInfo();
@@ -34412,6 +34860,12 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
             *error = QStringLiteral("Could not save .forkmesh/info.json.");
         return false;
     }
+
+    // Now that the metadata lives under .forkmesh/, drop any stale root-level
+    // info.json so the repo carries a single source of truth (issue #232).
+    const QString legacyPath = QDir(repo.localPath).filePath("info.json");
+    if (legacyPath != infoPath && QFileInfo::exists(legacyPath))
+        QFile::remove(legacyPath);
 
     repo.description = aboutText;
     saveRepositories();
@@ -44565,6 +45019,32 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
                                  true);
         }
     });
+}
+
+void MainWindow::submitIssueAssigneesToInbox(int number,
+                                             const QStringList &assignees)
+{
+    const int idx = issuesRepoIndex();
+    if (idx < 0)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(idx);
+
+    IssueStore store = issueStoreForCurrentRepo();
+    IssueEvent ev;
+    ev.type = "assignees";
+    ev.assignees = assignees;
+    ev = store.makeSignedEvent(number, ev);
+
+    const QJsonObject payload{{"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"event", ev.toJson()}};
+
+    QNetworkRequest request(issuesApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply] { reply->deleteLater(); });
 }
 
 bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body,
