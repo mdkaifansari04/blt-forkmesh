@@ -1461,8 +1461,7 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
-// Persisted Hosts list (adhoc #263): JSON array of {name, ip, user}. The
-// password is never stored — it is only used in-memory for the install run.
+// Persisted Hosts list (adhoc #263): JSON array of {name, ip, user, pass}.
 const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
@@ -10527,22 +10526,28 @@ void MainWindow::loadHostIntoForm(int row, int /*column*/)
         m_hostIpEdit->setText(cellText(1));
     if (m_hostUserEdit)
         m_hostUserEdit->setText(cellText(2));
-    // The SSH password is intentionally never persisted, so reloading a host
-    // clears the field and asks the user to re-enter it before re-running.
-    if (m_hostPassEdit) {
-        m_hostPassEdit->clear();
-        m_hostPassEdit->setFocus();
+    // Load the saved SSH password from the settings.
+    const QJsonArray hosts =
+        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
+            .array();
+    for (int i = 0; i < hosts.size(); ++i) {
+        const QJsonObject h = hosts.at(i).toObject();
+        if (h.value("name").toString() == name) {
+            if (m_hostPassEdit)
+                m_hostPassEdit->setText(h.value("pass").toString());
+            break;
+        }
     }
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(QString::fromUtf8(
-            "Loaded \"%1\". Enter the SSH password and click Install ForkMesh "
-            "to run the installer again.").arg(name));
+            "Loaded \"%1\". Click Install ForkMesh to run the installer.").arg(name));
 }
 
 void MainWindow::addHostFromForm()
 {
     const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
     const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
     const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
     if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
@@ -10550,17 +10555,16 @@ void MainWindow::addHostFromForm()
                 "Enter the host IP, SSH username and a node name to add a host."));
         return;
     }
-    // Save the server info up front (no password) with a not-yet-installed
-    // status. Running the installer later flips it to "installed".
-    rememberHost(node, ip, user, QStringLiteral("added"));
+    // Save the server info up front with a not-yet-installed status. Running
+    // the installer later flips it to "installed".
+    rememberHost(node, ip, user, pass, QStringLiteral("added"));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(QString::fromUtf8(
-            "Saved \"%1\". Enter the SSH password and click Install ForkMesh to "
-            "provision it.").arg(node));
+            "Saved \"%1\". Click Install ForkMesh to provision it.").arg(node));
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
-                              const QString &user, const QString &status)
+                              const QString &user, const QString &pass, const QString &status)
 {
     QSettings settings;
     QJsonArray hosts =
@@ -10571,6 +10575,7 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     entry.insert(QStringLiteral("name"), name);
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
+    entry.insert(QStringLiteral("pass"), pass);
     entry.insert(QStringLiteral("status"), status);
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
@@ -10656,7 +10661,7 @@ void MainWindow::runHostInstall()
 
     // Persist the server info before we start so it is saved even if the install
     // fails partway through; a successful run flips the status to "installed".
-    rememberHost(node, ip, user, QStringLiteral("installing"));
+    rememberHost(node, ip, user, pass, QStringLiteral("installing"));
 
     m_hostInstallLog->clear();
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
@@ -10704,7 +10709,7 @@ void MainWindow::runHostInstall()
                         m_hostInstallStatus->setText(QString::fromUtf8(
                             "\xE2\x9C\x94 Installed on %1 as node \"%2\".")
                             .arg(ip, node));
-                    rememberHost(node, ip, user);
+                    rememberHost(node, ip, user, pass);
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
                         "\n\xE2\x9C\x98 Install failed (exit %1).\n").arg(code));
@@ -10712,7 +10717,7 @@ void MainWindow::runHostInstall()
                         m_hostInstallStatus->setText(QString::fromUtf8(
                             "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
                             "output above."));
-                    rememberHost(node, ip, user, QStringLiteral("install failed"));
+                    rememberHost(node, ip, user, pass, QStringLiteral("install failed"));
                 }
                 if (m_hostInstallProcess) {
                     m_hostInstallProcess->deleteLater();
@@ -37263,10 +37268,10 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 4);
+    m_releasesTable = new QTableWidget(0, 5);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
-    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", ""});
+    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", "Artifacts", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -37278,7 +37283,8 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(2, QHeaderView::Stretch);
-    rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(3, QHeaderView::Stretch);
+    rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the tag too, matching the arrow-key navigation
@@ -37329,6 +37335,30 @@ void MainWindow::loadReleasesPanel()
             m_releasesTable->setItem(row, 1, new QTableWidgetItem(f.value(1).trimmed()));
             m_releasesTable->setItem(row, 2, new QTableWidgetItem(f.value(2).trimmed()));
 
+            // Load artifacts from release.json if available
+            QString artifacts;
+            const QString releaseJsonPath = dir + QStringLiteral("/releases/") + tag + QStringLiteral("/release.json");
+            QFile releaseFile(releaseJsonPath);
+            if (releaseFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QJsonDocument doc = QJsonDocument::fromJson(releaseFile.readAll());
+                releaseFile.close();
+                if (doc.isObject()) {
+                    const QJsonObject obj = doc.object();
+                    const QJsonArray assets = obj.value("assets").toArray();
+                    QStringList assetNames;
+                    for (const QJsonValue &asset : assets) {
+                        const QString name = asset.toObject().value("name").toString();
+                        if (!name.isEmpty()) {
+                            assetNames.append(name);
+                        }
+                    }
+                    if (!assetNames.isEmpty()) {
+                        artifacts = assetNames.join(", ");
+                    }
+                }
+            }
+            m_releasesTable->setItem(row, 3, new QTableWidgetItem(artifacts));
+
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
             del->setFlat(true);
@@ -37338,7 +37368,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 3, del);
+            m_releasesTable->setCellWidget(row, 4, del);
             ++count;
         }
     }
