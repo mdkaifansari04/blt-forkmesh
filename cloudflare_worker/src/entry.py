@@ -88,6 +88,11 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|commits|commit)$")
+# Release asset download (issue #304): the bytes live in the node's
+# content-addressed store (never in git), streamed back over the host tunnel.
+# Stable, content-addressed URL — immutable, so it caches forever at the edge.
+RELEASE_BLOB_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
@@ -397,6 +402,178 @@ async def verify_commit_comment_event(sha, c):
     return await ed25519_verify(author, signature, canonical)
 
 
+# ---------------------------------------------------------------------------
+# Release publishing (issue #304). See docs/design/release-binary-publishing.md.
+#
+# Release METADATA is small, signed, and git-committed (synced across the mesh
+# like issues/PRs); release PAYLOADS (the binary bytes) live in a per-node
+# content-addressed blob store that is gitignored and NEVER committed. The
+# helpers below are the integrity spine shared by both sides: the canonical,
+# signable manifest (what the publisher signs and the worker verifies), the CAS
+# path layout, sha256sum-compatible checksum generation, semver `latest`
+# resolution, and the same-name re-upload decision. They are deliberately pure
+# (stdlib-only) so they can be pinned by tests and reused identically by the
+# client publisher without drifting from the server's verification.
+# ---------------------------------------------------------------------------
+
+# A release tag name: a single segment, no path traversal, no control bytes.
+RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+# Lowercase hex sha256 — the content address of a blob and the integrity anchor.
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+# Recognise vMAJOR.MINOR.PATCH[-prerelease] for `latest` ordering.
+RELEASE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$")
+
+
+def valid_release_tag(value):
+    value = (value or "").strip()
+    return (bool(value) and ".." not in value and
+            bool(RELEASE_TAG_RE.match(value)))
+
+
+def valid_asset_name(value):
+    # An asset's download filename. Must be one path segment with no traversal,
+    # separators, or control characters so it can never escape the release dir.
+    value = value or ""
+    if not (1 <= len(value) <= 255) or value in (".", ".."):
+        return False
+    if "/" in value or "\\" in value or "\x00" in value:
+        return False
+    return not any(ord(ch) < 0x20 for ch in value)
+
+
+def valid_sha256_hex(value):
+    return bool(SHA256_HEX_RE.match((value or "").strip().lower()))
+
+
+def cas_blob_relpath(sha256_hex):
+    # Where a blob's bytes live in the per-node content-addressed store, relative
+    # to .forkmesh/release-blobs/. Fan out by the first byte to keep directories
+    # shallow. Returns None for a non-sha256 input so callers reject it.
+    h = (sha256_hex or "").strip().lower()
+    if not SHA256_HEX_RE.match(h):
+        return None
+    return "sha256/%s/%s/data" % (h[:2], h)
+
+
+def release_asset_line(asset):
+    # One deterministic line per asset for the signable manifest. The fields are
+    # the asset's IMMUTABLE identity (name + the exact bytes it resolves to);
+    # mutable presentation (download_count) and release notes are intentionally
+    # absent so editing them never invalidates the signature.
+    return "\x00".join([
+        asset.get("name", "") or "",
+        (asset.get("blob_sha256", "") or "").lower(),
+        str(int(asset.get("size", 0) or 0)),
+        asset.get("content_type", "") or "",
+        asset.get("os", "") or "",
+        asset.get("arch", "") or "",
+        asset.get("label", "") or "",
+    ])
+
+
+def release_manifest_content(manifest):
+    # The canonical, signable body of a release. Binds the repo, the tag, the
+    # commit the tag pointed to at finalize (so a later force-push can't silently
+    # redefine the release), and the full asset set sorted by line for order
+    # independence. name/body/prerelease are NOT included: they are the editable
+    # metadata of an otherwise immutable release.
+    repo = manifest.get("repo", "") or ""
+    tag = manifest.get("tag", "") or ""
+    tag_commit = manifest.get("tag_commit", "") or ""
+    assets = manifest.get("assets") or []
+    asset_lines = sorted(release_asset_line(a) for a in assets)
+    header = "\x00".join([repo, tag, tag_commit, str(len(asset_lines))])
+    return "\n".join([header] + asset_lines)
+
+
+def release_signing_message(repo, tag, author, ts, content_hash):
+    # The exact bytes signed/verified for a release manifest, matching the
+    # "forkmesh-<thing>-v1\n…\n<sha256 of content>" form used by issue/PR events.
+    return (
+        "forkmesh-release-v1\n" + repo + "\n" + tag + "\n" + author + "\n" +
+        str(ts) + "\n" + content_hash
+    ).encode()
+
+
+async def verify_release_manifest(manifest):
+    # Mirrors the client publisher: sign sha256(release_manifest_content) with the
+    # creator's Ed25519 identity. One signature thus authenticates every asset's
+    # bytes (each blob_sha256 is inside the signed content).
+    author = manifest.get("created_by", "") or ""
+    signature = manifest.get("sig", "") or ""
+    repo = manifest.get("repo", "") or ""
+    tag = manifest.get("tag", "") or ""
+    if not author or not signature or not repo or not tag:
+        return False
+    try:
+        ts = int(manifest.get("published_at", 0))
+    except (TypeError, ValueError):
+        return False
+    content_hash = await sha256_hex(release_manifest_content(manifest))
+    canonical = release_signing_message(repo, tag, author, ts, content_hash)
+    return await ed25519_verify(author, signature, canonical)
+
+
+def generate_shasums(assets):
+    # A `sha256sum -c`-compatible SHASUMS256.txt ("<hash>  <name>", two spaces =
+    # text mode), sorted by name. Derived from the asset content addresses, so it
+    # is covered by the manifest signature and can't be tampered independently.
+    lines = []
+    for asset in sorted(assets, key=lambda a: a.get("name", "") or ""):
+        digest = (asset.get("blob_sha256", "") or "").lower()
+        name = asset.get("name", "") or ""
+        if SHA256_HEX_RE.match(digest) and name:
+            lines.append("%s  %s" % (digest, name))
+    return "".join(line + "\n" for line in lines)
+
+
+def release_semver_key(tag):
+    # Orderable key for `latest` resolution. A final release sorts ABOVE any
+    # prerelease of the same x.y.z. Returns None for non-semver tags (skipped).
+    match = RELEASE_SEMVER_RE.match((tag or "").strip())
+    if not match:
+        return None
+    major, minor, patch = (
+        int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    pre = match.group(4)
+    pre_rank = (1,) if pre is None else (0, pre)
+    return (major, minor, patch, pre_rank)
+
+
+def resolve_latest_release(releases):
+    # The release the `…/releases/latest/<asset>` alias points to: the highest
+    # semver among published, non-draft, non-prerelease releases. Computed (never
+    # a committed pointer) so it can't drift from the actual release set.
+    best = None
+    best_key = None
+    for release in releases:
+        if release.get("draft"):
+            continue
+        if (release.get("state", "published") or "published") != "published":
+            continue
+        if release.get("prerelease"):
+            continue
+        key = release_semver_key(release.get("tag", ""))
+        if key is None:
+            continue
+        if best_key is None or key > best_key:
+            best_key, best = key, release
+    return best
+
+
+def asset_upload_decision(release_state, existing_asset, new_sha256):
+    # Resolve a same-name (re-)upload (issue #304 §7). On a draft, replacing an
+    # asset is allowed; on a published/yanked (immutable) release, only a
+    # byte-identical re-upload is a no-op — a different hash is a conflict.
+    new_sha = (new_sha256 or "").lower()
+    if existing_asset is None:
+        return "create"
+    existing_sha = (existing_asset.get("blob_sha256", "") or "").lower()
+    if release_state == "draft":
+        return "noop" if existing_sha == new_sha else "replace"
+    return "noop" if existing_sha == new_sha else "conflict"
+
+
 def pkt_line(payload):
     return ("%04x" % (len(payload) + 4)).encode() + payload
 
@@ -483,6 +660,27 @@ def git_bytes_response(data, content_type):
                 "headers": {
                     "content-type": content_type,
                     "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+            }
+        ),
+    )
+
+
+def release_bytes_response(data, sha256):
+    # A downloaded release asset. Content-addressed, so the bytes for a hash never
+    # change: cache forever at the edge and let the client verify against the
+    # manifest's sha256 (echoed back in x-content-sha256).
+    data = bytes(data)
+    return JsResponse.new(
+        _to_js(data),
+        to_js(
+            {
+                "status": 200,
+                "headers": {
+                    "content-type": "application/octet-stream",
+                    "content-length": str(len(data)),
+                    "cache-control": "public, max-age=31536000, immutable",
+                    "x-content-sha256": sha256.lower(),
                 },
             }
         ),
@@ -6020,6 +6218,18 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
 
+        release_blob_match = RELEASE_BLOB_RE.match(url.path)
+        if release_blob_match:
+            owner = safe_segment(release_blob_match.group(1))
+            repo = safe_segment(release_blob_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            # Public, content-addressed download: forward to the repo's host DO,
+            # which streams the blob from a serving node over the tunnel.
+            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+            host_object = self.env.FORKMESH_HOST.get(host_id)
+            return await host_object.fetch(request)
+
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
             owner = safe_segment(host_match.group(1))
@@ -6362,7 +6572,7 @@ class ForkMeshHost(DurableObject):
         if self._repo_bi:
             return self._repo_bi
         match = (REPO_HOST_RE.match(path) or GIT_INFO_RE.match(path)
-                 or GIT_PACK_RE.match(path))
+                 or GIT_PACK_RE.match(path) or RELEASE_BLOB_RE.match(path))
         if not match:
             return None
         owner = safe_segment(match.group(1))
@@ -6438,6 +6648,11 @@ class ForkMeshHost(DurableObject):
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
             )
+
+        release_blob_match = RELEASE_BLOB_RE.match(path)
+        if release_blob_match:
+            await self._mark_present(path)
+            return await self._release_blob(release_blob_match.group(3))
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         if action in ("tree", "blob", "commits", "commit"):
@@ -6564,6 +6779,45 @@ class ForkMeshHost(DurableObject):
         }
         payload["ok"] = True
         return json_response(payload)
+
+    async def _release_blob(self, sha256):
+        # Stream a content-addressed release asset from a serving node. Reuses the
+        # chunked git-stream transport (git-chunk/git-end → self.git_buffers), so
+        # arbitrarily large binaries flow without the 4 MB inline /blob cap.
+        if not valid_sha256_hex(sha256):
+            return Response("not found", status=404)
+        self._ensure()
+        host = self._best_host()
+        if host is None:
+            return Response(
+                "No host is currently serving this release.", status=503)
+        self.counter += 1
+        req_id = "r%d" % self.counter
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        self.git_buffers[req_id] = bytearray()
+        try:
+            host.send(json.dumps({
+                "type": "request", "reqId": req_id,
+                "op": "release-blob", "path": sha256.lower(),
+            }))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503)
+        try:
+            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            return Response("Host timed out.", status=504)
+        if not result.get("ok"):
+            err = str(result.get("error", ""))
+            status = 404 if err in ("not_found", "bad_hash") else 502
+            return Response("Release asset unavailable.", status=status)
+        return release_bytes_response(result.get("data", b""), sha256)
 
     def _drop_host(self, ws):
         # A send failed: force-close so the runtime drops it from getWebSockets.
