@@ -21754,7 +21754,14 @@ void MainWindow::pollOwnedInboxes()
         if (!probe.canWrite())
             continue; // not the owner of this repo; nothing to drain
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
+        // Auto-sync incoming issues only when the option is on (Settings →
+        // Repositories) and the working tree is clean, so issue commits never
+        // land on top of in-progress edits. Otherwise leave them in the inbox
+        // for a manual "Sync inbox" (issue #193).
+        const bool autoSyncIssues =
+            QSettings().value(kAutoSyncIssuesSetting, true).toBool();
+        if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
+            drainIssuesInboxFor(repo, /*interactive=*/false);
         drainPullsInboxFor(repo, /*interactive=*/false);
         drainDiscussionsInboxFor(repo, /*interactive=*/false);
         drainCommitInboxFor(repo, /*interactive=*/false);
@@ -44471,6 +44478,26 @@ QWidget *MainWindow::buildSettingsSection()
     previewCacheRow->addWidget(m_previewCacheRootEdit, 1);
     previewCacheRow->addWidget(previewCacheChangeButton);
 
+    // Auto-sync incoming issues (issue #193): when on, the periodic inbox poll
+    // merges and commits issues filed on this node's repos as they arrive — but
+    // only while the working tree is clean, so it never interleaves issue
+    // commits with the owner's in-progress edits.
+    auto *issuesSyncLabel = new QLabel("ISSUES");
+    issuesSyncLabel->setObjectName("sectionLabel");
+    auto *autoSyncIssuesCheck =
+        new QCheckBox("Auto-sync new issues when the working tree is clean");
+    autoSyncIssuesCheck->setChecked(
+        QSettings().value(kAutoSyncIssuesSetting, true).toBool());
+    autoSyncIssuesCheck->setToolTip(
+        "Automatically merge and commit issues filed on your repositories as "
+        "they arrive in the inbox — but only while the repo's working tree has "
+        "no uncommitted changes, so issue commits never land on top of work in "
+        "progress. When off, or while the tree is dirty, incoming issues wait "
+        "in the inbox until you click \"Sync inbox\".");
+    connect(autoSyncIssuesCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoSyncIssuesSetting, enabled);
+    });
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -44743,6 +44770,9 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(previewCacheLabel);
     reposCol->addLayout(previewCacheRow);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(issuesSyncLabel);
+    reposCol->addWidget(autoSyncIssuesCheck);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
