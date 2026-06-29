@@ -29510,6 +29510,14 @@ void MainWindow::loadCommits()
     if (!m_commitsTable)
         return;
     QSignalBlocker block(m_commitsTable);
+    // Suspend the table's repaints for the *whole* reload, not just the row-build
+    // loop below. The heavy git reads (log --numstat, the unpushed-set walk) run
+    // under the GitKeepAlive above, which pumps the event loop — so without the
+    // guard the table, already cleared to empty by setRowCount(0), would repaint
+    // blank mid-load and flash before the rows arrive. With it the previous rows
+    // stay frozen on screen until the new ones snap in (one repaint when the guard
+    // unwinds, including on the early returns below). Matches every other loader.
+    TableRepaintGuard repaintGuard(m_commitsTable);
     m_commitsTable->setSortingEnabled(false);
     m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
@@ -29561,10 +29569,9 @@ void MainWindow::loadCommits()
     // slot a new branch can reuse. maxGraphLane sizes the gutter column afterwards.
     QList<QString> activeLanes;
     int maxGraphLane = 0;
-    // Suspend painting while up to 300 rows (each with a cell-widget button) are
-    // built: otherwise the table repaints on every insertRow/setItem, which is
-    // what made a refresh feel sluggish. One repaint happens when re-enabled.
-    m_commitsTable->setUpdatesEnabled(false);
+    // Repaints stay suspended by the TableRepaintGuard above while up to 300 rows
+    // (each with a cell-widget button) are built: otherwise the table repaints on
+    // every insertRow/setItem, which is what made a refresh feel sluggish.
     for (const QByteArray &record : out.split('\x1e')) {
         if (record.trimmed().isEmpty())
             continue;
@@ -29763,7 +29770,9 @@ void MainWindow::loadCommits()
         m_commitsTable->horizontalHeader()->resizeSection(
             kCommitGraphCol, std::clamp(laneSpan, 22, 140));
     }
-    m_commitsTable->setUpdatesEnabled(true);
+    // Repaints stay suspended (TableRepaintGuard) through the sort, banner update
+    // and filter re-apply below, so the whole reload lands in a single repaint when
+    // the guard unwinds at function scope. Only sorting needs re-enabling by hand.
     m_commitsTable->setSortingEnabled(true);
     m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
 
