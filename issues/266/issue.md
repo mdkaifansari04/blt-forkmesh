@@ -5,7 +5,7 @@ title: show a tiny token usage chart in the top right next to the earnings near 
 status: open
 labels: [Partial]
 milestone: 
-priority: 55
+priority: 38
 progress: 50
 assignees: []
 createdAt: 1782432045606
