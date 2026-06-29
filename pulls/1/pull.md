@@ -4,7 +4,7 @@ number: 1
 title: fix: clarify free signup copy
 base: main
 head: fix/free-signup-copy
-status: open
+status: merged
 ts: 1782756052020
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
