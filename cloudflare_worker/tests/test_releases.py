@@ -42,7 +42,7 @@ def _load(*names):
 
 
 NS = _load(
-    "RELEASE_TAG_RE", "SHA256_HEX_RE", "RELEASE_SEMVER_RE",
+    "RELEASE_TAG_RE", "SHA256_HEX_RE", "RELEASE_SEMVER_RE", "RELEASE_BLOB_RE",
     "valid_release_tag", "valid_asset_name", "valid_sha256_hex",
     "cas_blob_relpath", "release_asset_line", "release_manifest_content",
     "release_signing_message", "generate_shasums", "release_semver_key",
@@ -58,6 +58,7 @@ generate_shasums = NS["generate_shasums"]
 release_semver_key = NS["release_semver_key"]
 resolve_latest_release = NS["resolve_latest_release"]
 asset_upload_decision = NS["asset_upload_decision"]
+RELEASE_BLOB_RE = NS["RELEASE_BLOB_RE"]
 
 
 H1 = "a" * 64
@@ -200,6 +201,21 @@ def test_resolve_latest_skips_draft_prerelease_yanked():
 
     assert resolve_latest_release([]) is None
     assert resolve_latest_release([{"tag": "v3.0.0-beta", "prerelease": True}]) is None
+
+
+# --- download route --------------------------------------------------------
+
+def test_release_blob_route():
+    m = RELEASE_BLOB_RE.match("/api/repo/alice/widget/releases/blob/sha256/" + H1)
+    assert m is not None
+    assert m.group(1) == "alice"
+    assert m.group(2) == "widget"
+    assert m.group(3) == H1
+    # Reject non-sha256 and traversal attempts in the hash segment.
+    assert RELEASE_BLOB_RE.match("/api/repo/a/b/releases/blob/sha256/short") is None
+    assert RELEASE_BLOB_RE.match(
+        "/api/repo/a/b/releases/blob/sha256/" + "A" * 64) is None  # must be lowercase
+    assert RELEASE_BLOB_RE.match("/api/repo/a/b/releases/blob/md5/" + H1) is None
 
 
 # --- same-name re-upload (§7) ---------------------------------------------

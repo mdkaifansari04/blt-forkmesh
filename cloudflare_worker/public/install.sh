@@ -13,7 +13,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.10.0 (2026-06-28)"
+INSTALLER_VERSION="0.11.0 (2026-06-28)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -463,49 +463,92 @@ detect_release_asset() {
   ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 }
 
-# Try to extract just $ASSET_REL_PATH from $1 (a clone URL) into $2 (an empty
-# dir), without a working-tree checkout of the whole tree. Prefers a blobless
-# clone (fetches only the one asset's blob); if the mirror/relay does not honour
-# partial-clone filters, retries with a plain shallow clone so the fast path
-# still works (it just transfers more). Leaves the asset at "$2/$ASSET_REL_PATH"
-# on success.
-_fetch_release_asset() {
-  local repo="$1" tmp="$2" mode
+# Sparse-fetch a single committed file (repo-relative path $3) from clone URL $1
+# into dir $2, without checking out the whole tree. Prefers a blobless clone
+# (fetches only that one blob); if the mirror/relay does not honour partial-clone
+# filters, retries with a plain shallow clone so the fast path still works (it
+# just transfers more). Leaves the file at "$2/$3" on success.
+_sparse_fetch_file() {
+  local repo="$1" tmp="$2" rel="$3" mode
   for mode in "--filter=blob:none" ""; do
     rm -rf "$tmp"; mkdir -p "$tmp" || return 1
     # shellcheck disable=SC2086
     if git clone --quiet --depth 1 $mode --no-checkout "$repo" "$tmp" >/dev/null 2>&1 \
-        && git -C "$tmp" sparse-checkout set --no-cone "$ASSET_REL_PATH" >/dev/null 2>&1 \
+        && git -C "$tmp" sparse-checkout set --no-cone "$rel" >/dev/null 2>&1 \
         && git -C "$tmp" checkout --quiet >/dev/null 2>&1 \
-        && [ -s "$tmp/$ASSET_REL_PATH" ]; then
+        && [ -s "$tmp/$rel" ]; then
       return 0
     fi
   done
   return 1
 }
 
-# Download and install just the prebuilt binary for this platform, fetched from
-# the same online mirror the source build would clone from. Returns non-zero —
-# and leaves the source build to take over — when git is unavailable or no
-# mirror serves the asset.
+# Split a clone URL (https://host/owner/repo[.git]) into RELEASE_REPO_OWNER and
+# RELEASE_REPO_NAME — the namespace for the relay's release-download endpoint.
+_repo_owner_name() {
+  local u="${1%.git}"
+  RELEASE_REPO_NAME="${u##*/}"; u="${u%/*}"
+  RELEASE_REPO_OWNER="${u##*/}"
+}
+
+# Echo the sha256 of file $1 (Linux sha256sum / macOS shasum), or empty if no
+# checksum tool is available (download then installs unverified, with a warning).
+_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else echo ""; fi
+}
+
+# Install binary file $1 to $BIN (mode 0755), creating $BIN_DIR. Non-zero on fail.
+_install_binary() {
+  mkdir -p "$BIN_DIR" || return 1
+  install -m 0755 "$1" "$BIN" 2>/dev/null || { cp "$1" "$BIN" && chmod 0755 "$BIN"; }
+}
+
+# Install the prebuilt binary for this platform. New model (issue #304): release
+# binaries are NOT committed to git. The installer reads the tiny committed
+# release manifest (SHASUMS256.txt, fetched over the git proxy) to learn the
+# platform asset's content hash, downloads the bytes from the relay's
+# content-addressed release endpoint, and VERIFIES the sha256 before installing.
+# Falls back to a legacy release that still committed the binary into
+# releases/<channel>/, and then (via the caller) to a source build. Returns
+# non-zero when git is unavailable or no mirror can serve a verified asset.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
-  local tmp repo ok=1
+  local tmp repo sums hash url bin got
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
+  sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   for repo in "${REPO_CANDIDATES[@]}"; do
-    say "Fetching prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
-    if _fetch_release_asset "$repo" "$tmp"; then
-      ok=0; REPO="$repo"; break
+    # New model: manifest checksum + content-addressed download (+ verify).
+    if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums"; then
+      hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
+      if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
+        _repo_owner_name "$repo"
+        url="${FORKMESH_HOST%/}/api/repo/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/blob/sha256/${hash}"
+        bin="$tmp/asset.bin"
+        say "Downloading prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
+        if curl -fsSL "$url" -o "$bin" 2>/dev/null && [ -s "$bin" ]; then
+          got="$(_sha256_file "$bin")"
+          if [ -n "$got" ] && [ "$got" != "$hash" ]; then
+            warn "Checksum mismatch for $ASSET_NAME (expected $hash, got $got); skipping."
+          elif _install_binary "$bin"; then
+            [ -n "$got" ] || warn "No sha256 tool found; installed $ASSET_NAME unverified."
+            REPO="$repo"; rm -rf "$tmp"
+            say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
+            return 0
+          fi
+        fi
+      fi
+    fi
+    # Legacy model: binary committed directly into releases/<channel>/.
+    if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
+      REPO="$repo"; rm -rf "$tmp"
+      say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
+      return 0
     fi
   done
-  if [ "$ok" -ne 0 ]; then rm -rf "$tmp"; return 1; fi
-  mkdir -p "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
-  install -m 0755 "$tmp/$ASSET_REL_PATH" "$BIN" 2>/dev/null \
-    || { cp "$tmp/$ASSET_REL_PATH" "$BIN" && chmod 0755 "$BIN"; } \
-    || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
-  say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
-  return 0
+  return 1
 }
 
 detect_release_asset

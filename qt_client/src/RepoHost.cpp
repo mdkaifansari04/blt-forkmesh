@@ -1,5 +1,7 @@
 #include "RepoHost.h"
 
+#include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -40,6 +42,18 @@ bool isSafeRepoPath(const QString &path)
         return false;
     for (const QString &segment : path.split('/')) {
         if (segment == "..")
+            return false;
+    }
+    return true;
+}
+
+// A release asset's content address: exactly 64 lowercase hex characters.
+bool isSha256Hex(const QString &value)
+{
+    if (value.size() != 64)
+        return false;
+    for (const QChar ch : value) {
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
             return false;
     }
     return true;
@@ -374,6 +388,8 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = QStringLiteral("commit history");
     else if (op == "commit")
         action = QStringLiteral("view commit %1").arg(path);
+    else if (op == "release-blob")
+        action = QStringLiteral("download release asset %1").arg(path);
     else
         action = op.isEmpty() ? QStringLiteral("request") : op;
     emit log(QStringLiteral("Host: served %1 for %2/%3.")
@@ -391,6 +407,14 @@ void RepoHost::handleRequest(const QJsonObject &request)
         const QByteArray body =
             QByteArray::fromBase64(request.value("body").toString().toLatin1());
         runGitStream(reqId, {"upload-pack", "--stateless-rpc", m_mirrorPath}, body);
+        return;
+    }
+    // Release asset download: stream the bytes of a content-addressed blob from
+    // the node's release store (co-located with the bare mirror, never in git).
+    // Reuses the git-chunk/git-end streaming protocol so arbitrarily large
+    // binaries flow without buffering the whole file. `path` carries the sha256.
+    if (op == "release-blob") {
+        streamReleaseBlob(reqId, path);
         return;
     }
 
@@ -463,6 +487,38 @@ void RepoHost::runGitStream(const QString &reqId, const QStringList &args,
         process->closeWriteChannel();
     });
     process->start();
+}
+
+void RepoHost::streamReleaseBlob(const QString &reqId, const QString &sha256)
+{
+    // Release binaries are NOT committed to git (issue #304). They live in a
+    // content-addressed store co-located with the bare mirror — the same hash
+    // the signed release manifest records — so a blob is self-verifying and
+    // shared once across every release/asset that references it.
+    const QString hash = sha256.trimmed().toLower();
+    if (!isSha256Hex(hash)) {
+        sendGitEnd(reqId, false, QStringLiteral("bad_hash"));
+        return;
+    }
+    const QString blobPath =
+        QDir(m_mirrorPath)
+            .filePath(QStringLiteral("forkmesh-releases/sha256/%1/%2/data")
+                          .arg(hash.left(2), hash));
+    QFile file(blobPath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+        sendGitEnd(reqId, false, QStringLiteral("not_found"));
+        return;
+    }
+    // Stream in chunks (sendGitChunk re-splits to stay under the relay's frame
+    // cap) so even a multi-hundred-MB binary never loads fully into memory.
+    constexpr qint64 kRead = 256 * 1024;
+    while (!file.atEnd()) {
+        const QByteArray piece = file.read(kRead);
+        if (piece.isEmpty())
+            break;
+        sendGitChunk(reqId, piece);
+    }
+    sendGitEnd(reqId, true, QString());
 }
 
 void RepoHost::sendGitChunk(const QString &reqId, const QByteArray &data)
