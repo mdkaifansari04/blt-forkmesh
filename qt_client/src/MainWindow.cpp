@@ -36807,33 +36807,48 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
         return;
     }
 
-    // The merge happens on a checkout, so the working tree must be clean first.
+    // Branches that live in their own dedicated worktree (every agent branch) are
+    // already checked out there, and git refuses to check a branch out a second
+    // time in the main checkout — so the old "checkout in main, then merge" path
+    // failed before the agent ever started. Run the merge directly in that worktree
+    // instead: it's already on the branch, so there's nothing to check out or
+    // restore. Branches without a worktree fall back to merging in the main
+    // checkout, briefly switched onto the branch and restored afterwards.
+    const QString branchWorktree = worktreePathForBranch(dir, branch);
+    const bool inBranchWorktree = !branchWorktree.isEmpty();
+    const QString mergeDir = inBranchWorktree ? branchWorktree : dir;
+
+    // The merge happens in mergeDir, so its working tree must be clean first.
     QByteArray status;
-    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, nullptr) ||
+    if (!runGitCapture(mergeDir, {"status", "--porcelain"}, &status, nullptr) ||
         !status.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Commit or stash local changes before fixing this branch.", true);
         return;
     }
 
-    QByteArray headOut;
+    // Only the main-checkout path checks out the branch (and restores afterwards);
+    // a dedicated worktree is already on it, so restoreBranch stays empty.
     QString restoreBranch;
-    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
-        restoreBranch = QString::fromUtf8(headOut).trimmed();
-    const bool isCurrent = restoreBranch == branch;
-
     QString err;
-    if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
-        setRepoDetailNotice(
-            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
-            true);
-        return;
+    if (!inBranchWorktree) {
+        QByteArray headOut;
+        if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut,
+                          nullptr))
+            restoreBranch = QString::fromUtf8(headOut).trimmed();
+        if (restoreBranch != branch &&
+            !checkoutReleasingWorktree(dir, branch, &err)) {
+            setRepoDetailNotice(
+                QStringLiteral("Could not check out %1: %2").arg(branch, err.left(240)),
+                true);
+            return;
+        }
     }
 
     // A clean merge needs no agent — commit it and we're done.
-    if (runGitCapture(dir, {"merge", "--no-edit", base}, nullptr, &err)) {
-        if (!isCurrent && !restoreBranch.isEmpty())
-            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+    if (runGitCapture(mergeDir, {"merge", "--no-edit", base}, nullptr, &err)) {
+        if (!restoreBranch.isEmpty() && restoreBranch != branch)
+            runGitCapture(mergeDir, {"checkout", restoreBranch}, nullptr, nullptr);
         logSystem(QStringLiteral("Git: merged %1 into %2 (no conflicts).")
                       .arg(base, branch));
         setRepoDetailNotice(
@@ -36844,15 +36859,15 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     }
 
     QByteArray unmerged;
-    runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+    runGitCapture(mergeDir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
                   nullptr);
     const QStringList conflicted =
         QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
     if (conflicted.isEmpty()) {
         // Failed for some other reason — restore as before.
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
-        if (!isCurrent && !restoreBranch.isEmpty())
-            runGitCapture(dir, {"checkout", restoreBranch}, nullptr, nullptr);
+        runGitCapture(mergeDir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!restoreBranch.isEmpty() && restoreBranch != branch)
+            runGitCapture(mergeDir, {"checkout", restoreBranch}, nullptr, nullptr);
         setRepoDetailNotice(
             QStringLiteral("Could not merge %1 into %2: %3")
                 .arg(base, branch, err.left(160)),
@@ -36888,7 +36903,7 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_aiFix->provider = provider;
     m_aiFix->model = model;
     m_aiFix->apiKey = apiKey;
-    m_aiFix->workTree = dir;
+    m_aiFix->workTree = mergeDir;
     m_aiFix->files = conflicted;
     m_aiFix->branch = branch;
     m_aiFix->baseBranch = base;
