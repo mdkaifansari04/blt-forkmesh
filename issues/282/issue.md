@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 282
 title: make the runs table expanded more on first load
 status: open
-labels: [Partial]
+labels: [Incomplete]
 milestone: 
 priority: 68
 progress: 65
