@@ -1,4 +1,4 @@
-From dffc23ffb4329d03fe6470b4cf66fc15a1f9f376 Mon Sep 17 00:00:00 2001
+From 628918943bcd2f6f200a492a540bb0aeca66452c Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Mon, 29 Jun 2026 23:30:34 +0530
 Subject: [PATCH] fix: clarify free signup copy
@@ -73,4 +73,5 @@ index 7d9c55f9..522363b2 100644
              </div>
  
 -- 
-2.50.1 (Apple Git-155)
+2.47.3
+
