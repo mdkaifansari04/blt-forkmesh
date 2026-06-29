@@ -23352,6 +23352,15 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDetailTabs->addTab(agentOutputPage, QStringLiteral("Agent"));
     m_agentFilesTabIndex =
         m_agentDetailTabs->addTab(filesChangedPage, QStringLiteral("Files changed"));
+    // Opening the Files-changed tab recomputes the diff straight from git, so the
+    // panel always reflects the branch's current state. It used to refresh only on
+    // transcript events, so after a quiet spell (or once a run finished) it went
+    // stale and the user had to click the branch link to see the real changes
+    // (adhoc #20).
+    connect(m_agentDetailTabs, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == m_agentFilesTabIndex && m_selectedAgentSessionId > 0)
+            refreshAgentFilesPanel(m_selectedAgentSessionId);
+    });
 
     auto *outputContainer = m_agentDetailTabs;
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -27449,21 +27458,27 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
             n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
                   : QStringLiteral("Files changed"));
     if (m_agentFilesChangedSummary) {
-        // Lead with the (now merge-base-accurate) file count, then surface the
-        // wider "what's going on" picture the bare count hid: total +/- lines, how
-        // many commits this branch adds, and how far it trails the base branch
-        // (issue #183). Each clause is omitted when it's zero/unknown so a clean
-        // session reads tidily.
+        // Lead with which branch is merging into which — "<head> → <base>" — so the
+        // direction of the change is explicit (adhoc #20). Then the (now merge-base-
+        // accurate) file count and the wider "what's going on" picture the bare count
+        // hid: total +/- lines, how many commits this branch adds, and how far it
+        // trails the base branch (issue #183). Each clause is omitted when it's
+        // zero/unknown so a clean session reads tidily.
         int adds = 0, dels = 0;
         for (const DiffFileEntry &f : files) { adds += f.adds; dels += f.dels; }
         QStringList parts;
+        const AgentSession *summarySession = findAgentSession(sessionId);
+        const QString headBranch =
+            summarySession ? summarySession->branchName : QString();
+        const QString baseBranch = sessionBaseBranch(sessionId);
+        if (!headBranch.isEmpty() && !baseBranch.isEmpty() && headBranch != baseBranch)
+            parts << QString::fromUtf8("%1 \xE2\x86\x92 %2").arg(headBranch, baseBranch);
         parts << QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s");
         if (adds > 0 || dels > 0)
             parts << QString::fromUtf8("+%1 \xE2\x88\x92%2").arg(adds).arg(dels);
         // Commits the branch carries (ahead) and how far it trails base (behind),
         // measured against the base branch's live tip — same probe the agents
         // table's Diff cell uses (base...branch → left=behind, right=ahead).
-        const QString baseBranch = sessionBaseBranch(sessionId);
         if (!dir.isEmpty() && !baseBranch.isEmpty()) {
             QByteArray counts;
             if (runGitCapture(dir,
