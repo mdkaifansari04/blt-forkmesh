@@ -1,4 +1,5 @@
 #include "../src/MainWindow.h"
+#include "../src/PlatformLogFilter.h"
 
 #include <QAction>
 #include <QApplication>
@@ -20,6 +21,15 @@
 namespace {
 
 int failures = 0;
+
+// Sink for the propagateSizeHints filter test: messages the platform log filter
+// forwards (i.e. does not drop) land here so the test can assert what survived.
+QStringList *g_capturedMessages = nullptr;
+void captureMessages(QtMsgType, const QMessageLogContext &, const QString &message)
+{
+    if (g_capturedMessages)
+        g_capturedMessages->append(message);
+}
 
 void check(bool condition, const QString &what)
 {
@@ -189,6 +199,38 @@ int main(int argc, char *argv[])
     app.setQuitOnLastWindowClosed(false);
     app.setOrganizationName("ForkMeshTests");
     app.setApplicationName("WindowResize");
+
+    // issue #300: the headless node runs on the offscreen QPA plugin, whose
+    // propagateSizeHints() base implementation logs "This plugin does not support
+    // propagateSizeHints()" every time a window pushes its size constraints —
+    // noise that otherwise lands in the interactive `forkmesh>` console. The
+    // platform log filter must swallow exactly that message and forward everything
+    // else to the previously installed handler. (This suite already runs under the
+    // offscreen platform, the same one the warning fires on.)
+    {
+        QStringList captured;
+        g_capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+        qWarning("This plugin does not support propagateSizeHints()");
+        qWarning("forkmesh-300-control-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        g_capturedMessages = nullptr;
+
+        const QString joined = captured.join(QLatin1Char('\n'));
+        check(!joined.contains(QStringLiteral("propagateSizeHints")),
+              QStringLiteral("platform log filter drops the offscreen "
+                             "propagateSizeHints warning (#300)"));
+        check(joined.contains(QStringLiteral("forkmesh-300-control-line")),
+              QStringLiteral("platform log filter forwards unrelated warnings to "
+                             "the previous handler (#300)"));
+        check(forkmesh::isPlatformSizeHintNoise(QStringLiteral(
+                  "This plugin does not support propagateSizeHints()")) &&
+                  !forkmesh::isPlatformSizeHintNoise(
+                      QStringLiteral("forkmesh-300-control-line")),
+              QStringLiteral("isPlatformSizeHintNoise matches only the "
+                             "propagateSizeHints warning (#300)"));
+    }
 
     MainWindow window;
     window.show();
