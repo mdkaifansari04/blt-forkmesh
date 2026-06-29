@@ -146,7 +146,9 @@
 #include <memory>
 
 #ifndef Q_OS_WIN
+#include <csignal>
 #include <pwd.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -22575,6 +22577,12 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentStopButton, "circle-slash", 16);
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
+        // External (watch-only) rows have no runner/stream — stop the CLI process
+        // ForkMesh detected running outside it instead.
+        if (isExternalSession(m_selectedAgentSessionId)) {
+            stopExternalSession(m_selectedAgentSessionId);
+            return;
+        }
         if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId))
             runner->stop();
         stopStreamSession(m_selectedAgentSessionId);
@@ -26106,6 +26114,10 @@ void MainWindow::scanExternalClaudeSessions()
 
 bool MainWindow::externalIsLive(const QString &uuid) const
 {
+    // A session we stopped stays idle even while its just-written transcript is
+    // still inside the "active" window, so its row flips out of Running at once.
+    if (m_externalStopped.contains(uuid))
+        return false;
     for (const ExternalClaudeSession &e : m_externalClaude)
         if (e.uuid == uuid)
             return true;
@@ -26202,6 +26214,49 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     reloadAgents();
+}
+
+// Stop on an external row terminates the real `claude` CLI process. ForkMesh
+// holds no QProcess handle for it (it was started elsewhere), so we locate the
+// process by uuid/cwd and signal it directly. SIGTERM lets the CLI shut down
+// cleanly; a SIGKILL fallback fires if it ignores that within the grace period.
+void MainWindow::stopExternalSession(int sessionId)
+{
+    auto it = m_externalSurfaced.constFind(sessionId);
+    if (it == m_externalSurfaced.constEnd())
+        return;
+    const ExternalClaudeSession ext = it.value();
+    const QList<qint64> pids = ClaudeSessionScan::findSessionPids(ext.uuid, ext.cwd);
+    if (pids.isEmpty()) {
+        flashMessage(QStringLiteral("Couldn't find the external Claude Code process "
+                                    "to stop — it may have already exited."),
+                     /*error=*/true);
+        return;
+    }
+    if (QMessageBox::warning(
+            this, QStringLiteral("Stop external Claude Code"),
+            QStringLiteral("Stop the Claude Code session running in\n%1?\n\n"
+                           "This ends a process ForkMesh didn't start.").arg(ext.cwd),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    for (const qint64 pid : pids)
+        ::kill(static_cast<pid_t>(pid), SIGTERM);
+    // Don't leave a wedged session running: if it's still alive after the grace
+    // period, force it down. kill(pid, 0) probes liveness without signalling.
+    QTimer::singleShot(4000, this, [pids] {
+        for (const qint64 pid : pids)
+            if (::kill(static_cast<pid_t>(pid), 0) == 0)
+                ::kill(static_cast<pid_t>(pid), SIGKILL);
+    });
+
+    // Reflect the stop immediately rather than waiting ~90s for the transcript to
+    // fall out of the active window.
+    m_externalStopped.insert(ext.uuid);
+    m_externalSig.clear();
+    flashMessage(QStringLiteral("Stopping external Claude Code session…"));
+    reloadAgents();
+    updateAgentActionState();
 }
 
 // Periodic rescan: refresh spinners always (cheap, guarded internally) and the
@@ -27399,8 +27454,13 @@ void MainWindow::updateAgentActionState()
         selected ? m_streamSessions.value(m_selectedAgentSessionId) : nullptr;
     const bool running = selected && (runnerForSession(m_selectedAgentSessionId) ||
                                       (stream && stream->running()));
+    // External rows have negative ids (so `running` is false), but a live one can
+    // still be stopped by signalling its CLI process. See stopExternalSession.
+    const bool externalRunning =
+        externalSelected && m_externalSurfaced.contains(m_selectedAgentSessionId) &&
+        externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
-        m_agentStopButton->setEnabled(running);
+        m_agentStopButton->setEnabled(running || externalRunning);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) aren't
