@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 242
 title: make it so we can restart Forkmesh and the agents keep running
-status: open
+status: closed
 labels: [Partial]
 milestone: 
-priority: 39
+priority: 2
 progress: 40
 assignees: []
 createdAt: 1782360915806

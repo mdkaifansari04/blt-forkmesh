@@ -5,7 +5,7 @@ title: allow ohters to bid on issues to state their desired bounty others can bi
 status: open
 labels: [Partial]
 milestone: 
-priority: 47
+priority: 42
 progress: 30
 assignees: []
 createdAt: 1782426869921

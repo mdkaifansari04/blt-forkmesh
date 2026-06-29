@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 301
 title: go through the code and optimize it keep it try and make it consitent and reusable
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
-priority: 0
+priority: 6
 progress: 5
 assignees: []
 createdAt: 1782589613698

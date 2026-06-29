@@ -5,7 +5,7 @@ title: on prs that have conflicts have a "fix with agent button" (roll the claud
 status: open
 labels: [Phase 2, Partial]
 milestone: Phase 2
-priority: 94
+priority: 31
 progress: 30
 assignees: []
 createdAt: 1782168775715

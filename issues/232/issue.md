@@ -5,7 +5,7 @@ title: have the about be stored in the .forkmesh dir and move the info.json ther
 status: open
 labels: [Partial]
 milestone: 
-priority: 38
+priority: 13
 progress: 55
 assignees: []
 createdAt: 1782355760782

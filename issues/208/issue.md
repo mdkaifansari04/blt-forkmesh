@@ -5,7 +5,7 @@ title: when there are changes show a small numbedr above the comimts tab
 status: open
 labels: [Partial]
 milestone: 
-priority: 90
+priority: 21
 progress: 70
 assignees: []
 createdAt: 1782349642460
