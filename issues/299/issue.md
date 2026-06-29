@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 299
 title: in the quick issue title have the ability to not create an issue and just start an agent so have a chekcbot also make accepted text more
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 0
