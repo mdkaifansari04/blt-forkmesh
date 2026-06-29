@@ -328,20 +328,25 @@ RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
                      QStringLiteral("Matched values are redacted. Rotate any exposed keys.")));
 
     const QStringList manifests = dependencyManifests(files);
-    snapshot.signalList.append(
-        manifests.isEmpty()
-            ? signal(QStringLiteral("dependencies"),
-                     QStringLiteral("Dependency inventory"),
-                     RepoSecuritySeverity::Info,
-                     QStringLiteral("No dependency manifests detected."),
-                     QStringLiteral("MVP does not perform external advisory matching."))
-            : signal(QStringLiteral("dependencies"),
-                     QStringLiteral("Dependency inventory"),
-                     RepoSecuritySeverity::Info,
-                     plural(manifests.size(), QStringLiteral("manifest"),
-                            QStringLiteral("manifests")) +
-                         QStringLiteral(" detected."),
-                     manifests.join(QStringLiteral(", "))));
+    if (manifests.isEmpty()) {
+        snapshot.signalList.append(
+            signal(QStringLiteral("dependencies"),
+                   QStringLiteral("Dependency inventory"),
+                   RepoSecuritySeverity::Info,
+                   QStringLiteral("No dependency manifests detected."),
+                   QStringLiteral("MVP does not perform external advisory matching.")));
+    } else {
+        RepoSecuritySignal dependencies =
+            signal(QStringLiteral("dependencies"),
+                   QStringLiteral("Dependency inventory"),
+                   RepoSecuritySeverity::Info,
+                   plural(manifests.size(), QStringLiteral("manifest"),
+                          QStringLiteral("manifests")) +
+                       QStringLiteral(" detected."),
+                   QStringLiteral("Check each manifest to review its declared dependencies."));
+        dependencies.items = manifests;
+        snapshot.signalList.append(dependencies);
+    }
 
     RepoSecuritySeverity actionsSeverity = RepoSecuritySeverity::Pass;
     QString actionsSummary;

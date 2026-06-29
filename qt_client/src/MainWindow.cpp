@@ -16031,6 +16031,16 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
         html += QStringLiteral(
                     "<div style='color:#8b949e; font-size:11px; margin-top:4px'>%1</div>")
                     .arg(signal.detail.toHtmlEscaped());
+    // Itemised entries (e.g. dependency manifests) render as a list where each
+    // path is a "check" link; the card's linkActivated handler opens the file.
+    for (const QString &item : signal.items) {
+        const QString href = QString::fromUtf8(QUrl::toPercentEncoding(item));
+        html += QStringLiteral(
+                    "<div style='color:#c9d1d9; font-size:12px; margin-top:4px'>"
+                    "&#8226;&nbsp;<a style='color:#58a6ff; text-decoration:none' "
+                    "href='manifest:%1'>%2</a></div>")
+                    .arg(href, item.toHtmlEscaped());
+    }
     return html;
 }
 
@@ -16113,12 +16123,29 @@ void MainWindow::refreshRepoSecurity()
             .arg(severe));
 
     int index = 0;
+    const QString localBase = writable.localPath;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
         auto *card = new QLabel(repoSecuritySignalHtml(signal));
         card->setObjectName("insightsCard");
         card->setTextFormat(Qt::RichText);
         card->setWordWrap(true);
         card->setMinimumHeight(92);
+        if (!signal.items.isEmpty()) {
+            card->setOpenExternalLinks(false);
+            card->setTextInteractionFlags(Qt::TextBrowserInteraction);
+            connect(card, &QLabel::linkActivated, this,
+                    [localBase](const QString &href) {
+                        if (!href.startsWith(QLatin1String("manifest:")))
+                            return;
+                        const QString rel = QUrl::fromPercentEncoding(
+                            href.mid(QStringLiteral("manifest:").size()).toUtf8());
+                        if (localBase.trimmed().isEmpty() || rel.isEmpty())
+                            return;
+                        const QString abs = QDir(localBase).filePath(rel);
+                        if (QFileInfo::exists(abs))
+                            QDesktopServices::openUrl(QUrl::fromLocalFile(abs));
+                    });
+        }
         const int row = index / 3;
         const int col = index % 3;
         m_securitySignalsGrid->addWidget(card, row, col);
