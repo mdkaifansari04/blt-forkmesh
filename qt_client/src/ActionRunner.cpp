@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QRegularExpression>
 
 #include <functional>
 
@@ -308,8 +309,18 @@ bool ActionRunner::landReleaseMetadata()
     if (!copiedAny)
         return false;
 
-    // Stage just releases/ and commit only if it actually changed, so re-cutting
-    // an identical release is a no-op and we never disturb unrelated edits.
+    // Carry the version-header bump the release workflow made (project(ForkMesh
+    // VERSION ...)) into the working copy too, so it lands in the same commit.
+    // The path is only staged when the bump actually changed something, keeping
+    // the release commit to releases/ alone whenever the header is already in
+    // sync (or the tag wasn't a clean semver).
+    QStringList paths{QStringLiteral("releases")};
+    if (landVersionHeader())
+        paths << QStringLiteral("qt_client/CMakeLists.txt");
+
+    // Stage just those paths and commit only if they actually changed, so
+    // re-cutting an identical release is a no-op and we never disturb unrelated
+    // edits.
     auto git = [&](const QStringList &args) {
         QProcess p;
         p.setWorkingDirectory(m_repoWorkTree);
@@ -317,23 +328,28 @@ bool ActionRunner::landReleaseMetadata()
         p.waitForFinished(30000);
         return p.exitCode();
     };
-    git({QStringLiteral("add"), QStringLiteral("--"), QStringLiteral("releases")});
-    if (git({QStringLiteral("diff"), QStringLiteral("--cached"),
-             QStringLiteral("--quiet"), QStringLiteral("--"),
-             QStringLiteral("releases")}) == 0) {
+    git(QStringList{QStringLiteral("add"), QStringLiteral("--")} + paths);
+    if (git(QStringList{QStringLiteral("diff"), QStringLiteral("--cached"),
+                        QStringLiteral("--quiet"), QStringLiteral("--")} +
+            paths) == 0) {
         emitLog(QString::fromUtf8(
             "==> \xE2\x84\xB9\xEF\xB8\x8F  Release metadata unchanged; nothing to "
             "publish.")); // ℹ️
         return false;
     }
     const QString tag = m_run.ref.mid(QStringLiteral("refs/tags/").size());
-    const int rc = git({QStringLiteral("-c"),
-                        QStringLiteral("user.email=actions@forkmesh.local"),
-                        QStringLiteral("-c"),
-                        QStringLiteral("user.name=ForkMesh Actions"),
-                        QStringLiteral("commit"), QStringLiteral("-m"),
-                        QStringLiteral("release: publish %1 artifacts").arg(tag),
-                        QStringLiteral("--"), QStringLiteral("releases")});
+    const QString message =
+        paths.contains(QStringLiteral("qt_client/CMakeLists.txt"))
+            ? QStringLiteral("release: publish %1 artifacts, bump version header")
+                  .arg(tag)
+            : QStringLiteral("release: publish %1 artifacts").arg(tag);
+    const int rc = git(QStringList{QStringLiteral("-c"),
+                                   QStringLiteral("user.email=actions@forkmesh.local"),
+                                   QStringLiteral("-c"),
+                                   QStringLiteral("user.name=ForkMesh Actions"),
+                                   QStringLiteral("commit"), QStringLiteral("-m"),
+                                   message, QStringLiteral("--")} +
+                       paths);
     if (rc != 0) {
         emitLog(QString::fromUtf8(
             "!! Could not commit release metadata into the working copy."));
@@ -344,6 +360,43 @@ bool ActionRunner::landReleaseMetadata()
                 "publishing\xE2\x80\xA6") // 📦 …
                 .arg(tag));
     return true;
+}
+
+bool ActionRunner::landVersionHeader()
+{
+    if (m_repoWorkTree.isEmpty() || m_worktree.isEmpty())
+        return false;
+    const QString rel = QStringLiteral("qt_client/CMakeLists.txt");
+    QFile src(m_worktree + QLatin1Char('/') + rel);
+    QFile dst(m_repoWorkTree + QLatin1Char('/') + rel);
+
+    // The version sits on a single line: project(ForkMesh VERSION X.Y.Z ...).
+    static const QRegularExpression versionLine(
+        QStringLiteral("^(project\\(ForkMesh VERSION )([0-9]+\\.[0-9]+\\.[0-9]+)"),
+        QRegularExpression::MultilineOption);
+
+    if (!src.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    const QRegularExpressionMatch want =
+        versionLine.match(QString::fromUtf8(src.readAll()));
+    src.close();
+    if (!want.hasMatch())
+        return false; // workflow left the header alone (e.g. no clean semver tag)
+    const QString version = want.captured(2);
+
+    if (!dst.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    QString text = QString::fromUtf8(dst.readAll());
+    dst.close();
+    const QRegularExpressionMatch have = versionLine.match(text);
+    if (!have.hasMatch() || have.captured(2) == version)
+        return false; // header missing here or already at the release version
+    text.replace(have.capturedStart(2), have.capturedLength(2), version);
+    if (!dst.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return false;
+    const bool wrote = dst.write(text.toUtf8()) >= 0;
+    dst.close();
+    return wrote;
 }
 
 void ActionRunner::cleanupWorktree()
