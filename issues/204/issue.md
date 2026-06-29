@@ -5,7 +5,7 @@ title: when we click on a branch anywhere open it up in branches
 status: open
 labels: [Partial]
 milestone: 
-priority: 86
+priority: 24
 progress: 55
 assignees: []
 createdAt: 1782349295114
