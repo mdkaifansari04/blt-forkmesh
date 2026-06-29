@@ -49692,6 +49692,8 @@ void MainWindow::initActions()
             &MainWindow::onRunStatusChanged);
     connect(m_actionRunner, &ActionRunner::finished, this,
             &MainWindow::onRunFinished);
+    connect(m_actionRunner, &ActionRunner::releaseMetadataLanded, this,
+            &MainWindow::onReleaseMetadataLanded);
 
     m_actionRuns = m_actionStore->loadAllRuns();
     // A run still marked Running was interrupted by a previous shutdown; it can't
@@ -50138,6 +50140,7 @@ void MainWindow::processActionQueue()
             continue;
         }
         const QString mirror = m_repositories.at(repoIndex).mirrorPath;
+        const QString workTree = m_repositories.at(repoIndex).localPath;
         const ActionWorkflow wf =
             ActionFile::parse(run->workflowPath, run->workflowContent);
         if (!wf.valid) {
@@ -50148,7 +50151,8 @@ void MainWindow::processActionQueue()
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
         // so copy the run out first and don't touch the pointer afterwards.
         const ActionRun snapshot = *run;
-        m_actionRunner->start(snapshot, wf, mirror, ActionStore::variables());
+        m_actionRunner->start(snapshot, wf, mirror, workTree,
+                              ActionStore::variables());
         return; // one run at a time; finished() drives the next
     }
 }
@@ -50202,6 +50206,31 @@ void MainWindow::onRunFinished(int runId, bool ok)
         showRun(runId); // finished: reload the complete log from disk
     refreshOpenPullChecks();
     processActionQueue();
+}
+
+void MainWindow::onReleaseMetadataLanded(int runId)
+{
+    const ActionRun *run = findRun(runId);
+    if (!run)
+        return;
+    const int index = repoIndexFor(run->owner, run->name);
+    if (index < 0)
+        return;
+    // The release workflow staged the artifact bytes into the served CAS and the
+    // runner committed the tiny releases/ manifest into the working copy. Publish
+    // it so the served mirror carries the metadata (install.sh reads it over the
+    // git proxy) and the catalog reflects the new commit.
+    logSystem(QStringLiteral(
+                  "Release: published artifact metadata for %1/%2 to the mirror.")
+                  .arg(run->owner, run->name));
+    publishRepository(index, /*showDialogOnError=*/false);
+    // If this repo's Releases panel is on screen, refresh it so the freshly
+    // attached artifacts appear without a manual reload.
+    if (index == m_repoDetailIndex && m_releasesTabIndex >= 0 &&
+        m_repoDetailStack &&
+        m_repoDetailStack->currentIndex() == m_releasesTabIndex)
+        loadReleasesPanel();
+    updateRepoPushButton();
 }
 
 // After action-run state changes, keep an open PR's Checks tab and the inline
