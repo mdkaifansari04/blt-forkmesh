@@ -25756,10 +25756,13 @@ void MainWindow::toggleIssueLooper()
     looperStartNext();
 }
 
-// Pick the highest-priority open issue that has no agent session yet and start
-// the looper's agent on it. Stops the looper when nothing is left to do. Each
-// issue is attempted at most once (any existing session — queued, running, done,
-// or failed — disqualifies it), so the loop always makes forward progress.
+// Pick the highest-priority open issue that's free to pick up and start the
+// looper's agent on it. Stops the looper when nothing is left to do. The looper
+// only touches open issues that are unassigned, have a priority set, and carry
+// no linked PR (adhoc #42) — anything assigned, untriaged, or already covered by
+// a pull request is left alone. Each issue is attempted at most once (any
+// existing session — queued, running, done, or failed — disqualifies it), so
+// the loop always makes forward progress.
 void MainWindow::looperStartNext()
 {
     if (!m_looperActive)
@@ -25771,7 +25774,13 @@ void MainWindow::looperStartNext()
             continue;
         if (latestAgentSessionForIssue(issue.number))
             continue; // already attempted by an agent
-        const int p = issue.priority > 0 ? issue.priority : 100000;
+        if (!issue.assignees.isEmpty())
+            continue; // assigned to someone — leave it to them
+        if (issue.priority <= 0)
+            continue; // no priority set — not triaged for the looper yet
+        if (!pullsLinkedToIssue(issue.number).isEmpty())
+            continue; // already has a linked PR
+        const int p = issue.priority;
         if (p < bestPriority ||
             (p == bestPriority && (!next || issue.number < next->number))) {
             bestPriority = p;
@@ -25785,7 +25794,8 @@ void MainWindow::looperStartNext()
         m_looperCurrentTitle.clear();
         updateIssueLooperButton();
         setIssueInlineNotice(
-            "Issue looper finished: every open issue has an agent.");
+            "Issue looper finished: no open, unassigned, prioritized issues left "
+            "without an agent or linked PR.");
         return;
     }
     // startAgentForIssue() rebuilds m_currentIssues, so capture what we need first.
