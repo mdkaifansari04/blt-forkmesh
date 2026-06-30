@@ -196,12 +196,11 @@ void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
 {
     if (!m_issueDiffView || issueNumber != m_currentIssueNumber)
         return;
-    m_issueDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     QList<DiffFileEntry> files;
     const QString html =
         renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
                        QString(), QHash<QString, QString>(), QSet<QString>());
-    m_issueDiffView->setHtml(
+    setDiffHtml(m_issueDiffView,
         html.isEmpty()
             ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
             : html);
@@ -1922,7 +1921,7 @@ void MainWindow::showRepoFileHistory(const QString &path)
     auto *diffView = new QTextBrowser;
     diffView->setObjectName("commitDiffView");
     diffView->setOpenExternalLinks(false);
-    diffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    registerDiffView(diffView);
 
     connect(list, &QListWidget::currentItemChanged, this,
             [this, diffView, dir, path](QListWidgetItem *item, QListWidgetItem *) {
@@ -1939,7 +1938,7 @@ void MainWindow::showRepoFileHistory(const QString &path)
                     html = QStringLiteral(
                         "<p style='color:#8b949e'>No textual changes to this file "
                         "in the selected commit.</p>");
-                diffView->setHtml(html);
+                setDiffHtml(diffView, html);
             });
 
     auto *split = new QSplitter(Qt::Horizontal);
@@ -5142,11 +5141,11 @@ void MainWindow::showCommit(const QString &hash)
 
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
-        m_commitDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-        m_commitDiffView->setHtml(diffHtml.isEmpty()
-                                      ? QStringLiteral("<p style='color:#8b949e'>"
-                                                       "No changes in this commit.</p>")
-                                      : diffHtml);
+        setDiffHtml(m_commitDiffView,
+                    diffHtml.isEmpty()
+                        ? QStringLiteral("<p style='color:#8b949e'>"
+                                         "No changes in this commit.</p>")
+                        : diffHtml);
     }
 
     renderCommitThread(m_currentCommitHash);
@@ -7046,6 +7045,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitDiffView = new QTextBrowser;
     m_commitDiffView->setObjectName("commitDiffView");
     m_commitDiffView->setOpenExternalLinks(false);
+    registerDiffView(m_commitDiffView);
 
     auto *split = new QSplitter(Qt::Horizontal);
     split->addWidget(filesPane);
