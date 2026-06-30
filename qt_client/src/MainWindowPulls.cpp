@@ -1861,7 +1861,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
         QByteArray out;
         if (runGitCapture(dir,
-                          {"log", "--no-merges", "--date=short",
+                          {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
                            "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad",
                            pr.base + ".." + pr.head},
                           &out, nullptr) &&
@@ -1871,9 +1871,11 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 const QStringList f = line.split(QLatin1Char('\x1f'));
                 if (f.size() < 5)
                     continue;
+                // Show the commit date and time on the row (issue #275); the
+                // tooltip keeps the full timestamp for hover detail.
                 auto *item = new QListWidgetItem(
-                    QString::fromUtf8("%1  %2 \xC2\xB7 %3")
-                        .arg(f.at(1), f.at(2), f.at(3)));
+                    QString::fromUtf8("%1  %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                        .arg(f.at(1), f.at(2), f.at(3), f.at(4)));
                 item->setData(Qt::UserRole, f.at(0));
                 item->setToolTip(f.at(4));
                 m_pullCommitsList->addItem(item);
@@ -1894,10 +1896,25 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
         const auto flush = [&] {
             if (subject.isEmpty() && author.isEmpty())
                 return;
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1 \xC2\xB7 %2")
-                    .arg(subject.isEmpty() ? QStringLiteral("(no subject)") : subject,
-                         author.isEmpty() ? QStringLiteral("unknown") : author));
+            // The mbox Date: header is RFC 2822; reformat to a compact date+time
+            // so the row carries it like the local-log path above (issue #275),
+            // falling back to the raw header if it doesn't parse.
+            QString when = date;
+            const QDateTime dt = QDateTime::fromString(date, Qt::RFC2822Date);
+            if (dt.isValid())
+                when = dt.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+            const QString text =
+                when.isEmpty()
+                    ? QString::fromUtf8("%1 \xC2\xB7 %2")
+                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
+                                                 : subject,
+                               author.isEmpty() ? QStringLiteral("unknown") : author)
+                    : QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 %3")
+                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
+                                                 : subject,
+                               author.isEmpty() ? QStringLiteral("unknown") : author,
+                               when);
+            auto *item = new QListWidgetItem(text);
             item->setToolTip(date);
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             m_pullCommitsList->addItem(item);
@@ -4130,73 +4147,64 @@ void MainWindow::deleteCurrentPullFile()
 
 void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
 {
+    // issuesLinkedFromPull() is the single source of truth for what this PR
+    // resolves: an agent session's attached issue (matched by PR number or head
+    // branch — issue #257) plus any "closes #N" reference in the PR text or
+    // comments. Re-scanning only the text here would silently skip an agent branch
+    // whose attached issue is never mentioned in prose.
+    const QList<int> closed = closeIssuesForMerge(
+        issuesLinkedFromPull(pr),
+        QStringLiteral("Closed by merged pull request #%1.").arg(pr.number),
+        QStringLiteral("pull request #%1").arg(pr.number));
+
+    if (closed.size() == 1)
+        flashMessage(QStringLiteral("Closed issue #%1 from merged pull request.")
+                         .arg(closed.first()));
+    else if (closed.size() > 1)
+        flashMessage(QStringLiteral("Closed %1 issues from merged pull request.")
+                         .arg(closed.size()));
+}
+
+QList<int> MainWindow::closeIssuesForMerge(const QList<int> &numbers,
+                                           const QString &comment, const QString &via)
+{
     IssueStore store = issueStoreForCurrentRepo();
-    if (!store.canWrite())
-        return;
-
-    static const QRegularExpression issueRefRe(
-        QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
-                       "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
-        QRegularExpression::CaseInsensitiveOption);
-
-    const QString haystack =
-        QStringList{pr.title, pr.description, pr.head, pr.base}.join('\n');
-    QSet<int> linked;
-    auto it = issueRefRe.globalMatch(haystack);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch match = it.next();
-        const int number =
-            (match.captured(1).isEmpty() ? match.captured(2) : match.captured(1)).toInt();
-        if (number > 0)
-            linked.insert(number);
-    }
-    if (linked.isEmpty())
-        return;
+    if (!store.canWrite() || numbers.isEmpty())
+        return {};
 
     QHash<int, Issue> byNumber;
     for (const Issue &issue : store.loadAll())
         byNumber.insert(issue.number, issue);
 
-    int closedCount = 0;
-    QString lastClosed;
-    for (const int number : std::as_const(linked)) {
+    QList<int> closed;
+    for (const int number : numbers) {
         const Issue issue = byNumber.value(number);
         if (issue.number <= 0 || issue.status == QLatin1String("closed"))
             continue;
 
         QString err;
-        const QString note =
-            QStringLiteral("Closed by merged pull request #%1.").arg(pr.number);
-        if (!store.addComment(number, note, {}, &err)) {
-            logSystem(QStringLiteral("Issue #%1: could not link pull request #%2: %3")
+        if (!store.addComment(number, comment, {}, &err)) {
+            logSystem(QStringLiteral("Issue #%1: could not link %2: %3")
                           .arg(number)
-                          .arg(pr.number)
-                          .arg(err));
+                          .arg(via, err));
             continue;
         }
         if (!store.setStatus(number, QStringLiteral("closed"), &err)) {
-            logSystem(QStringLiteral("Issue #%1: could not close after pull request #%2: %3")
+            logSystem(QStringLiteral("Issue #%1: could not close after %2: %3")
                           .arg(number)
-                          .arg(pr.number)
-                          .arg(err));
+                          .arg(via, err));
             continue;
         }
-        logSystem(QStringLiteral("Closed issue #%1 via pull request #%2.")
-                      .arg(number)
-                      .arg(pr.number));
-        ++closedCount;
-        lastClosed = QStringLiteral("#%1").arg(number);
+        logSystem(
+            QStringLiteral("Closed issue #%1 via %2.").arg(number).arg(via));
+        closed.append(number);
     }
 
-    if (closedCount > 0) {
+    if (!closed.isEmpty()) {
         reloadIssues();
         updateRepoIssueCount();
-        flashMessage(closedCount == 1
-                         ? QStringLiteral("Closed issue %1 from merged pull request.")
-                               .arg(lastClosed)
-                         : QStringLiteral("Closed %1 issues from merged pull request.")
-                               .arg(closedCount));
     }
+    return closed;
 }
 
 QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
