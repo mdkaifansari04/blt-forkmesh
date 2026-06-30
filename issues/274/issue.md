@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 274
 title: show sortable date modified and created  on PRs list allow for hiding the detail panel
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 12
