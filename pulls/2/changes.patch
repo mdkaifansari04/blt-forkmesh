@@ -1,0 +1,149 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index b8c9e861..e0363d48 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -1089,6 +1089,31 @@ bool MainWindow::testMirrorNodesTableHasKeyboardFocus() const
+            m_mirrorNodesTable->window()->focusWidget() == m_mirrorNodesTable;
+ }
+ 
++bool MainWindow::testCommitRowActionsIncludeRestore()
++{
++    if (!m_commitsTable)
++        return false;
++    loadCommits();
++    if (m_commitsTable->rowCount() <= 0)
++        return false;
++    QWidget *actions = m_commitsTable->cellWidget(0, kCommitActionCol);
++    if (!actions)
++        return false;
++
++    QList<QPushButton *> buttons = actions->findChildren<QPushButton *>();
++    if (auto *button = qobject_cast<QPushButton *>(actions))
++        buttons.prepend(button);
++
++    bool hasDelete = false;
++    bool hasRestore = false;
++    for (QPushButton *button : buttons) {
++        const QString tip = button->toolTip();
++        hasDelete = hasDelete || tip.contains(QStringLiteral("Remove"));
++        hasRestore = hasRestore || tip.contains(QStringLiteral("Undo"));
++    }
++    return hasDelete && hasRestore;
++}
++
+ QString MainWindow::testBranchWorktreePath(const QString &branch) const
+ {
+     if (!m_branchesTable)
+@@ -9370,9 +9395,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
+         commitHeader->resizeSection(i, commitColWidths[i]);
+     }
+     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
+-    // Trailing action column: a fixed, narrow slot for the per-row delete button.
++    // Trailing action column: fixed slots for per-row restore + delete buttons.
+     commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
+-    commitHeader->resizeSection(kCommitActionCol, 38);
++    commitHeader->resizeSection(kCommitActionCol, 70);
+     // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
+     // moved to the far left so it reads like a git log graph. Its width is
+     // recomputed per load once the lane count is known (see loadCommits).
+@@ -26786,29 +26811,43 @@ void MainWindow::loadCommits()
+         delsItem->setData(kTableSortRole, dels);
+         m_commitsTable->setItem(row, 5, delsItem);
+ 
+-        // Per-row "delete from history" button. Enabled only on the source of
+-        // truth; on a browse-only mirror it stays visible but disabled so the
+-        // reason is discoverable.
++        // Per-row restore + delete buttons. Enabled only on the source of truth;
++        // on a browse-only mirror they stay visible but disabled so the reason is
++        // discoverable.
+         const QString fullHash = f.at(0);
+-        auto *del = new QPushButton;
+-        del->setObjectName("issueIconButton");
+-        del->setFlat(true);
+-        del->setCursor(Qt::PointingHandCursor);
+-        // Don't let the per-row button take keyboard focus: as a focusable cell
+-        // widget it makes the table scroll itself to keep it visible, which read
+-        // as the list "jumping" on click. The row click still selects/opens the
+-        // commit; the trash button is mouse-only.
+-        del->setFocusPolicy(Qt::NoFocus);
+-        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+-        del->setIconSize(QSize(15, 15));
+-        del->setEnabled(writable);
+-        del->setToolTip(writable
+-                            ? QStringLiteral("Remove %1 from history").arg(f.at(1))
+-                            : QStringLiteral("Read-only mirror — no working tree to "
+-                                             "rewrite history in"));
++        auto *actions = new QWidget;
++        auto *actionLayout = new QHBoxLayout(actions);
++        actionLayout->setContentsMargins(0, 0, 0, 0);
++        actionLayout->setSpacing(2);
++        auto makeActionButton = [writable](const QIcon &icon, const QString &tip) {
++            auto *button = new QPushButton;
++            button->setObjectName("issueIconButton");
++            button->setFlat(true);
++            button->setCursor(Qt::PointingHandCursor);
++            // Don't let per-row buttons take keyboard focus: as focusable cell
++            // widgets they make the table scroll itself to keep them visible.
++            button->setFocusPolicy(Qt::NoFocus);
++            button->setIcon(icon);
++            button->setIconSize(QSize(15, 15));
++            button->setEnabled(writable);
++            button->setToolTip(tip);
++            return button;
++        };
++        auto *restore = makeActionButton(
++            themedOcticon("history", QColor("#58a6ff"), 15),
++            writable ? QStringLiteral("Undo %1 with a new restore commit").arg(f.at(1))
++                     : QStringLiteral("Read-only mirror — no working tree to restore in"));
++        auto *del = makeActionButton(
++            themedOcticon("trash", QColor("#f85149"), 15),
++            writable ? QStringLiteral("Remove %1 from history").arg(f.at(1))
++                     : QStringLiteral("Read-only mirror — no working tree to rewrite history in"));
++        connect(restore, &QPushButton::clicked, this,
++                [this, fullHash] { revertCommit(fullHash); });
+         connect(del, &QPushButton::clicked, this,
+                 [this, fullHash] { deleteCommit(fullHash); });
+-        m_commitsTable->setCellWidget(row, kCommitActionCol, del);
++        actionLayout->addWidget(restore);
++        actionLayout->addWidget(del);
++        m_commitsTable->setCellWidget(row, kCommitActionCol, actions);
+     }
+     // Size the graph gutter to the widest the lanes ever got, then re-assert the
+     // Date-descending sort so rows stay in git-log order (the order the lanes were
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 830daa12..d3eeccab 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -324,6 +324,7 @@ public:
+     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
+     bool testReleasesTableHasKeyboardFocus() const;
+     bool testMirrorNodesTableHasKeyboardFocus() const;
++    bool testCommitRowActionsIncludeRestore();
+     // Rebuild the Branches panel, then read back the Worktree column (column 3)
+     // for `branch`, so a test can prove the branches list surfaces the worktree a
+     // branch is checked out in (issue #172).
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index c08df665..5fb38adf 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -314,6 +314,20 @@ int main(int argc, char *argv[])
+     check(window.testColumnsBecomeResizable(),
+           QStringLiteral("data-table content columns become drag-resizable"));
+ 
++    // Issue #207: each commit row's actions should offer restore beside delete.
++    {
++        QTemporaryDir commitRepo;
++        if (initGitRepo(commitRepo)) {
++            const int idx =
++                window.testAddLocalRepository("me", "commit-actions", commitRepo.path());
++            window.testOpenRepository(idx);
++            window.testClickRepoDetailTab(1); // Commits
++            QApplication::processEvents();
++            check(window.testCommitRowActionsIncludeRestore(),
++                  QStringLiteral("commit row actions include restore beside delete (#207)"));
++        }
++    }
++
+     // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
+     // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
+     // button instead of separate per-provider buttons. The Branches tab carries
