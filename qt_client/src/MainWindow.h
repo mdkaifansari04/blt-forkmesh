@@ -1625,16 +1625,22 @@ private:
     void attachQuickAddImage();
     bool tryPasteImageIntoQuickAdd();
     void queueQuickAddImage(const QString &path);
+    void removeQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Rebuilds the row of attachment chips (thumbnail + an "x" to remove each)
+    // shown next to the paperclip once images are queued.
+    void rebuildQuickAddAttachChips();
     // Screenshot button (next to the rebuild/restart button): drops a full-screen
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
     void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
-    // appears beside the prompt box. Clicking it records from the microphone;
-    // clicking again stops and transcribes the audio into the prompt locally.
-    void toggleVoiceCapture();
+    // appears beside the prompt box. It is push-to-talk: press and hold to
+    // record from the microphone, release to stop and transcribe the audio into
+    // the prompt locally.
+    void startVoiceCapture();
+    void stopVoiceCapture();
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
@@ -1860,6 +1866,10 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
+    // Post this node's one-time "just joined" greeting to the shared #welcome
+    // room. Only a brand-new identity announces (gated by a per-identity setting),
+    // so the network sees a single join line with no per-peer duplicates (#192).
+    void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
     // ("@<peerId>").
@@ -2235,6 +2245,7 @@ private:
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
+    QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -3384,6 +3395,9 @@ private:
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;
+    // True once this node has posted (or confirmed it already posted) its one-time
+    // #welcome greeting this run, so the per-roster check stays cheap (issue #192).
+    bool m_welcomeAnnounced = false;
     // Catalog-backed mirror list (issue #223): the worker's /mirrors payload for
     // the repo group currently shown in the mirror-nodes panel, merged in so a
     // mirror that isn't live in the chat room is still listed for the owner.
