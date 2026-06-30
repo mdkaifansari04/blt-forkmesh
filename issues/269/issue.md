@@ -5,7 +5,7 @@ title: show on the agent detail page if we hit our session limit and update the 
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 36
+priority: 41
 progress: 5
 assignees: []
 createdAt: 1782434273454
