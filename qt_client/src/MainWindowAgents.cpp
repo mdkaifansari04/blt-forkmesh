@@ -2481,19 +2481,9 @@ void MainWindow::refreshAgentMergeState()
     m_agentMergeStateRefreshing = false;
 }
 
-// HTML for a branch name that, when clicked in the agent session header, opens
-// the branch's row in the Branches tab (handled by m_agentMeta's linkActivated
-// -> switchToBranch). Plain (un-escaped) when there's no branch.
-static QString branchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return QStringLiteral(
-               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
-        .arg(href, branch.toHtmlEscaped());
-}
+// branchLinkHtml() — the clickable branch-name builder used here for the agent
+// session header — now lives in MainWindowInternal.h so the pull-request header
+// and other branch displays can render the same "open in Branches" link (#204).
 
 // HTML for a worktree location shown next to the branch in the agent session
 // header. Clicking it opens the branch's row in the Worktrees tab (handled by
