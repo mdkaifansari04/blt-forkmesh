@@ -160,3 +160,26 @@ def test_round_robin_wraps_modulo_candidate_count():
     ]
     presence = {"kS": NOW - 2 * STALE, "kA": NOW, "kB": NOW}
     assert _pick("source", "forkmesh", rows, presence, rotate=1001) == "bravo"
+
+
+def _route_source():
+    # The browse fallback lives in the per-repo router (_route), a Durable Object
+    # method that can't be exec'd in isolation like the pure helpers above. Lock
+    # the wiring in via source inspection so the redirect can't silently regress.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_route":
+            return ast.unparse(node)
+    raise AssertionError("_route not found in entry.py")
+
+
+def test_browse_route_falls_back_to_mirror_when_source_offline():
+    # A tree/blob/commits browse of a public repo whose host is offline must reuse
+    # the same _select_clone_fallback decision and 302 the request to the mirror,
+    # so the website serves the repo instead of "No live desktop host..." (the
+    # web counterpart of the clone fallback already exercised above).
+    src = _route_source()
+    browse = src.split("REPO_HOST_RE")[-1]
+    assert "_select_clone_fallback(owner, repo)" in browse
+    assert "/api/repo/%s/%s/%s" in browse
+    assert "status=302" in browse

@@ -545,6 +545,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
+    // Three little button-sized squares beside the diagnostics glyph, each
+    // plotting one resource — this app's CPU, the host's memory and its disk —
+    // as a moving sparkline fed one sample a second by updateFooterDiagnostics.
+    // The widget class, the member pointers and that feed loop all shipped with
+    // adhoc #17, but the charts were never actually built or added to the row,
+    // so the footer showed nothing; this constructs them (adhoc #25). Clicking
+    // one opens the same diagnostics dialog as the glyph.
+    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
+    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
+    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+        chart->onClicked = [this] { showDiagnosticsDialog(); };
+    m_cpuChart = cpuChart;
+    m_memChart = memChart;
+    m_diskChart = diskChart;
+
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
@@ -564,6 +580,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls and the donate/social cluster pinned to the far right.
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(m_footerGitIdentity);
+    quickAddRow->addWidget(cpuChart);
+    quickAddRow->addWidget(memChart);
+    quickAddRow->addWidget(diskChart);
     quickAddRow->addWidget(m_footerDiagnostics);
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(donateButton);
@@ -1162,7 +1181,7 @@ void MainWindow::startDiagnostics()
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
-        m_diagTimer->setInterval(1500);
+        m_diagTimer->setInterval(1000); // one sample a second into the charts
         connect(m_diagTimer, &QTimer::timeout, this,
                 &MainWindow::updateFooterDiagnostics);
         m_diagTimer->start();
@@ -1573,6 +1592,35 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
+    // Reward-availability toggle, right next to the balance. A node only collects
+    // rewards while it is online and serving, so make that link unmistakable: the
+    // switch flips the node online/offline, a status line spells out whether it's
+    // "available for rewards" (green, the state we nudge the user toward) or
+    // "offline · not collecting rewards" (amber), and an uptime line shows how
+    // long the node has been online.
+    m_nodeOnlineToggle = new QPushButton;
+    m_nodeOnlineToggle->setObjectName("nodeOnlineToggle");
+    m_nodeOnlineToggle->setCheckable(true);
+    m_nodeOnlineToggle->setCursor(Qt::PointingHandCursor);
+    m_nodeOnlineToggle->setFixedWidth(148);
+    connect(m_nodeOnlineToggle, &QPushButton::clicked, this,
+            [this](bool checked) { setNodeOffline(!checked); });
+
+    m_nodeRewardStatus = new QLabel;
+    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
+    m_nodeRewardStatus->setAlignment(Qt::AlignCenter);
+    m_nodeRewardStatus->setFixedWidth(148);
+    m_nodeRewardStatus->setWordWrap(true);
+
+    m_nodeUptimeLabel = new QLabel;
+    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
+    m_nodeUptimeLabel->setAlignment(Qt::AlignCenter);
+    m_nodeUptimeLabel->setFixedWidth(148);
+    m_nodeUptimeLabel->setStyleSheet(
+        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
+    m_nodeUptimeLabel->setToolTip(
+        QStringLiteral("How long this node has been online this session"));
+
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
     // utilisation so it renders immediately; a one-minute poll of the OAuth usage
@@ -1939,7 +1987,19 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
-    // Stack the node name on top of the wallet balance.
+    // Online/reward cluster sits to the LEFT of the wallet balance: the
+    // online toggle, the "available for rewards" status line and the uptime
+    // stack beside the money rather than below it, so this row doesn't grow
+    // taller than the node name + balance it sits next to.
+    auto *rewardColumn = new QVBoxLayout;
+    rewardColumn->setContentsMargins(0, 0, 0, 0);
+    rewardColumn->setSpacing(0);
+    rewardColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
+    rewardColumn->addWidget(m_nodeRewardStatus);
+    rewardColumn->addWidget(m_nodeUptimeLabel);
+    mainRow->addLayout(rewardColumn);
+    mainRow->addSpacing(8);
+    // Stack the node name above the wallet balance — "this is your money".
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
@@ -1991,6 +2051,7 @@ QWidget *MainWindow::buildBreadcrumb()
     updateNavSolanaBalance();
     updateRepoPushButton();
     updateNavRebuildButton();
+    updateNodeOnlineControls();
     return bar;
 }
 
@@ -2067,6 +2128,110 @@ void MainWindow::updateConnectionStatus()
     // themed via the #connectionDot rule in Theme.h so it works in light mode too.
     m_connectionDot->setStyleSheet(
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
+}
+
+// Flip this node online/offline from the top-bar toggle. "Offline" keeps the user
+// in the app but stops the two things that earn rewards — the once-a-minute reward
+// heartbeat and live repo serving — and folds the open session into the saved
+// uptime total. "Online" resumes both and restarts the uptime clock. The choice is
+// persisted so a node the user deliberately parked offline doesn't silently start
+// collecting rewards again on the next launch.
+void MainWindow::setNodeOffline(bool offline)
+{
+    if (offline == m_nodeOffline) {
+        updateNodeOnlineControls();
+        return;
+    }
+    m_nodeOffline = offline;
+    QSettings().setValue(kNodeOfflineSetting, offline);
+
+    if (offline) {
+        // Stop the uptime clock and bank the elapsed session into the total.
+        if (m_connectedAtMs > 0) {
+            m_totalConnectionMs +=
+                QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs;
+            m_connectedAtMs = 0;
+            QSettings().setValue(kConnectionTotalSetting, m_totalConnectionMs);
+        }
+        if (m_heartbeatTimer)
+            m_heartbeatTimer->stop();
+        stopRepoHosts();
+        logSystem("Node taken offline \xE2\x80\x94 no longer serving repos or "
+                  "collecting rewards.");
+    } else {
+        // Restart the uptime clock only if we are actually attached to a relay.
+        if (m_backend && m_connectedAtMs <= 0)
+            m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_backend) {
+            startRepoHosts();
+            if (!m_heartbeatTimer) {
+                m_heartbeatTimer = new QTimer(this);
+                m_heartbeatTimer->setInterval(60000);
+                connect(m_heartbeatTimer, &QTimer::timeout, this,
+                        &MainWindow::sendNodeHeartbeat);
+            }
+            m_heartbeatTimer->start();
+            sendNodeHeartbeat();
+        }
+        logSystem("Node back online \xE2\x80\x94 serving repos and collecting "
+                  "rewards.");
+    }
+    updateNodeOnlineControls();
+    updateConnectionStatus();
+}
+
+void MainWindow::updateNodeOnlineControls()
+{
+    if (!m_nodeOnlineToggle)
+        return;
+    // Online means the user hasn't parked the node *and* a relay link exists; the
+    // toggle reflects the user's intent even before the backend finishes attaching.
+    const bool online = !m_nodeOffline;
+    if (m_nodeOnlineToggle->isChecked() != online)
+        m_nodeOnlineToggle->setChecked(online);
+    m_nodeOnlineToggle->setText(online ? QString::fromUtf8("\xE2\x97\x8F  Online")
+                                       : QString::fromUtf8("\xE2\x97\x8B  Offline"));
+    m_nodeOnlineToggle->setToolTip(
+        online ? QStringLiteral("This node is online and collecting rewards. "
+                                "Click to take it offline.")
+               : QStringLiteral("This node is offline and not collecting "
+                                "rewards. Click to bring it back online."));
+    // Green pill when online (the state we want the user to keep), muted/amber when
+    // offline. Styled inline so the state colours don't depend on a QSS re-polish.
+    m_nodeOnlineToggle->setStyleSheet(
+        online
+            ? QStringLiteral(
+                  "#nodeOnlineToggle { background:#1a7f37; color:#ffffff; "
+                  "border:1px solid #2ea043; border-radius:9px; padding:2px 10px; "
+                  "font-size:11px; font-weight:800; }"
+                  "#nodeOnlineToggle:hover { background:#216e39; }")
+            : QStringLiteral(
+                  "#nodeOnlineToggle { background:transparent; color:#d29922; "
+                  "border:1px solid #9e6a03; border-radius:9px; padding:2px 10px; "
+                  "font-size:11px; font-weight:800; }"
+                  "#nodeOnlineToggle:hover { background:#161b22; }"));
+
+    if (m_nodeRewardStatus) {
+        m_nodeRewardStatus->setText(online
+                                        ? QStringLiteral("available for rewards")
+                                        : QStringLiteral("offline \xC2\xB7 not "
+                                                         "collecting rewards"));
+        m_nodeRewardStatus->setStyleSheet(
+            online ? QStringLiteral("color:#3fb950; font-size:10px; font-weight:700;")
+                   : QStringLiteral("color:#d29922; font-size:10px; font-weight:700;"));
+    }
+
+    if (m_nodeUptimeLabel) {
+        const qint64 sessionMs =
+            m_connectedAtMs > 0
+                ? QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs
+                : 0;
+        m_nodeUptimeLabel->setText(
+            !online ? QStringLiteral("offline")
+            : sessionMs > 0
+                ? QStringLiteral("online %1").arg(formatDuration(sessionMs))
+                : QString::fromUtf8("connecting\xE2\x80\xA6"));
+    }
 }
 
 void MainWindow::updateBreadcrumb()
@@ -4156,6 +4321,7 @@ QWidget *MainWindow::buildHostsSection()
     m_hostsTable->horizontalHeader()->setStretchLastSection(false);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. The password is never stored on
     // disk, so it is left blank for the user to re-enter.
@@ -4271,6 +4437,7 @@ QWidget *MainWindow::buildRelaysSection()
     for (int c = 1; c < 4; ++c)
         m_relaysTable->horizontalHeader()->setSectionResizeMode(
             c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_relaysTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a relay opens its website in the browser.
     connect(m_relaysTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) { openServerWebsite(row); });
