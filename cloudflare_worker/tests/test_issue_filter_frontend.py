@@ -11,8 +11,10 @@ from pathlib import Path
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 DASHBOARD = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+DASHBOARD_JS = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
 CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
+INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
 
 
 def test_dashboard_has_open_closed_all_filter_defaulting_to_open():
@@ -59,3 +61,58 @@ def test_styles_define_issue_filter_control():
     assert ".issue-filter" in STYLES
     assert ".issue-filter button.is-active" in STYLES
     assert ".panel-header-aside" in STYLES
+
+
+# --- Live dashboard (the page /owner/repo actually resolves to) -------------
+# The repo browser users land on is dashboard.html + dashboard.js, so the
+# Open-by-default behaviour has to live there to be visible on the website.
+
+
+def test_dashboard_js_defaults_issue_filter_to_open():
+    # The shared issues view starts on the Open filter.
+    assert 'filter: "open"' in DASHBOARD_JS
+    # The Issues panel renders Open/Closed/All toggles built from these states,
+    # with Open pre-selected.
+    assert '["open", "closed", "all"].map((stateName)' in DASHBOARD_JS
+    assert 'data-dashboard-issue-filter="${stateName}"' in DASHBOARD_JS
+    assert 'stateName === "open" ? "true" : "false"' in DASHBOARD_JS
+
+
+def test_dashboard_js_filters_issue_list_by_state():
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderRepoIssues")
+        : DASHBOARD_JS.index("function setIssueFilter")
+    ]
+    assert 'if (issuesView.filter === "all") return true;' in render
+    assert 'if (issuesView.filter === "open") return issue.status === "open";' in render
+    assert 'return issue.status !== "open";' in render
+
+
+def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
+    load = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoIssues")
+        : DASHBOARD_JS.index("async function loadRepoCollection")
+    ]
+    # Published issues come from the repo's issues/ git folder, not the inbox.
+    assert "/tree?path=" in load and "issues/${number}/issue.md" in load
+    # The default Open view is rendered through the filter, and the tab badge
+    # counts the open issues.
+    assert 'issuesView.filter = "open";' in load
+    assert 'setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);' in load
+    assert "renderRepoIssues();" in load
+
+
+def test_dashboard_js_shows_per_tab_counts():
+    # Every repo tab carries a count badge, filled from the bundled root-tree
+    # tallies plus the open-issue and mirror counts.
+    assert 'data-dashboard-repo-tab-count="${tab}"' in DASHBOARD_JS
+    assert "function applyServedCounts(counts)" in DASHBOARD_JS
+    assert 'setRepoTabCount("pulls", Number(counts.pulls));' in DASHBOARD_JS
+    assert 'setRepoTabCount("discussions", Number(counts.discussions));' in DASHBOARD_JS
+    assert 'setRepoTabCount("mirrors", mirrors.length);' in DASHBOARD_JS
+
+
+def test_homepage_links_to_active_nodes():
+    # The homepage surfaces a link to the live network/active-nodes page.
+    assert 'href="/network"' in INDEX
+    assert "View active nodes" in INDEX
