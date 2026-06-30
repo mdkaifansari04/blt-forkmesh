@@ -4,7 +4,7 @@ number: 3
 title: Agent: issue #207 on the commit page next to delete commit have a button to restore commit that undoes the commit and commits that change
 base: main
 head: mdkaifansari04:agent/issue-207-on-the-commit-page-next-to-delete-commit-have-a
-status: open
+status: merged
 ts: 1782832356925
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: mdkaifansari04
