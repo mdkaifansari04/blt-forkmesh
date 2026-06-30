@@ -708,10 +708,24 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
         updateVoiceInputButton();
         return;
     }
-    // Don't start a fresh recording while the previous clip is still transcribing.
+    // Don't start a fresh recording while the previous clip is still transcribing
+    // (it would clobber the shared insert span / target). Say so instead of
+    // silently ignoring the press, so a quick "click again to dictate more" reads
+    // as "wait a moment", not "the mic is broken".
     if (m_voiceTranscribeProc &&
-        m_voiceTranscribeProc->state() != QProcess::NotRunning)
+        m_voiceTranscribeProc->state() != QProcess::NotRunning) {
+        const QString busy =
+            QStringLiteral("still transcribing the last clip\xE2\x80\xA6");
+        const QString prev = target->placeholderText();
+        if (prev != busy) {
+            target->setPlaceholderText(busy);
+            QTimer::singleShot(1200, target, [target, busy, prev] {
+                if (target->placeholderText() == busy)
+                    target->setPlaceholderText(prev);
+            });
+        }
         return;
+    }
 
     // Remember which box this capture writes into and the box's own placeholder,
     // so status messages can be restored to it (not a hard-coded "enter prompt").
@@ -790,7 +804,19 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
 
     proc->start(rec.program, rec.args);
     if (!proc->waitForStarted(3000)) {
-        // errorOccurred handles cleanup; nothing more to do here.
+        // The recorder didn't come up in time (e.g. the audio device is busy).
+        // errorOccurred() already cleaned up if this was a FailedToStart (then
+        // m_voiceRecordProc is null and we skip). A plain timeout emits no such
+        // signal, so tear the half-started process down ourselves and tell the
+        // user — otherwise the mic looks dead while an orphan recorder lingers.
+        if (m_voiceRecordProc == proc) {
+            m_voiceRecordProc = nullptr;
+            proc->kill();
+            proc->deleteLater();
+            logSystem("Couldn't start the microphone recorder \xE2\x80\x94 the "
+                      "audio device may be busy. Try again.");
+            target->setPlaceholderText(m_voiceIdlePlaceholder);
+        }
         return;
     }
     m_voiceRecording = true;
@@ -867,8 +893,6 @@ void MainWindow::startVoiceTranscription(bool finalPass)
     auto finishIdle = [this] {
         if (m_voiceTargetEdit)
             m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
-        if (m_voiceActiveButton)
-            m_voiceActiveButton->setEnabled(true);
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         QFile::remove(m_voiceWavPath);
@@ -899,11 +923,8 @@ void MainWindow::startVoiceTranscription(bool finalPass)
         return;
     m_voiceLastTranscribeSize = wavSize;
 
-    if (finalPass) {
+    if (finalPass)
         m_voiceTargetEdit->setPlaceholderText("transcribing\xE2\x80\xA6");
-        if (m_voiceActiveButton)
-            m_voiceActiveButton->setEnabled(false);
-    }
 
     // whisper.cpp writes "<base>.txt" with -otxt -of <base>; reading the file is
     // more robust than parsing stdout (which also carries timing logs). Clear any
@@ -947,8 +968,6 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                     return;
                 }
 
-                if (m_voiceActiveButton)
-                    m_voiceActiveButton->setEnabled(true);
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);

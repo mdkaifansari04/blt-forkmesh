@@ -3041,11 +3041,13 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     reloadAgents();
     reloadIssues();
     if (!quiet) {
+        // Stay on the issue detail page after assigning — the inline notice
+        // confirms the session was created; jumping to the Agents tab yanked the
+        // user away from the issue they were reading (adhoc #8).
         setIssueInlineNotice(
             QStringLiteral("Assigned %1 session #%2.")
                 .arg(agentProviderName(provider))
                 .arg(sessionId));
-        switchToAgentsTab(sessionId);
     }
     processAgentQueue();
     return sessionId;
