@@ -286,6 +286,16 @@ public:
     {
         return m_issueHistoryDeleteInProgress;
     }
+    // Issue #203: drive the footer quick-add for a plain (no-agent) issue — set
+    // the title, clear the "assign agent" / "no issue" toggles, run
+    // quickAddIssue() — and return the now-current issue number so a test can
+    // prove the new issue's detail pane auto-opens. testIssueDetailVisible()
+    // reads whether that right-hand detail pane is showing.
+    Q_INVOKABLE int testQuickAddIssueNoAgent(const QString &title);
+    bool testIssueDetailVisible() const
+    {
+        return m_issueDetail && m_issueDetail->isVisible();
+    }
     // Provider id (openai/claude-api/claude-code) currently selected in each
     // agent-assignment picker, plus a way to drive the Settings "Default agent"
     // combo as a user would, so tests can assert the default seeds/updates them.
