@@ -1987,18 +1987,24 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
-    // Stack the node name and wallet balance, then the online/reward toggle with
-    // its status + uptime lines, so "this is your money" sits right above "stay
-    // online to keep earning it".
+    // Online/reward cluster sits to the LEFT of the wallet balance: the
+    // online toggle, the "available for rewards" status line and the uptime
+    // stack beside the money rather than below it, so this row doesn't grow
+    // taller than the node name + balance it sits next to.
+    auto *rewardColumn = new QVBoxLayout;
+    rewardColumn->setContentsMargins(0, 0, 0, 0);
+    rewardColumn->setSpacing(0);
+    rewardColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
+    rewardColumn->addWidget(m_nodeRewardStatus);
+    rewardColumn->addWidget(m_nodeUptimeLabel);
+    mainRow->addLayout(rewardColumn);
+    mainRow->addSpacing(8);
+    // Stack the node name above the wallet balance — "this is your money".
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
-    balanceColumn->addSpacing(2);
-    balanceColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
-    balanceColumn->addWidget(m_nodeRewardStatus);
-    balanceColumn->addWidget(m_nodeUptimeLabel);
     mainRow->addLayout(balanceColumn);
     // The tiny token-usage chart tucks between the earnings and the avatar.
     mainRow->addSpacing(6);
