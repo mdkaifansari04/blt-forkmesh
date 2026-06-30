@@ -3462,8 +3462,32 @@ void MainWindow::quickAddIssue()
         } else {
             assignIssueToAgent(provider);
         }
+    } else {
+        // Issue #203: with no agent to hand off to, land the user on the issue
+        // they just created -- open its detail pane, mirroring how the agent path
+        // jumps straight to the new session. reloadIssues() above re-selects the
+        // row in table mode, but call showIssue() explicitly so the detail opens
+        // regardless of the active list view (board, cards, a filtered table).
+        showIssue(number);
     }
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+int MainWindow::testQuickAddIssueNoAgent(const QString &title)
+{
+    if (!m_issueQuickAdd)
+        return -1;
+    // Type the title and make sure neither hand-off toggle is set, so the plain
+    // create-and-open path (issue #203) runs rather than the agent / no-issue one.
+    if (m_quickAddAssignAgent)
+        m_quickAddAssignAgent->setChecked(false);
+    if (m_quickAddNoIssue)
+        m_quickAddNoIssue->setChecked(false);
+    m_issueQuickAdd->setPlainText(title);
+    quickAddIssue();
+    return m_currentIssueNumber;
+}
+#endif
 
 // Append a just-sent quick-add prompt to the recall history (adhoc #200). Skips
 // consecutive duplicates so Up doesn't step through repeats, caps the list, and
