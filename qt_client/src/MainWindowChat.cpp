@@ -545,6 +545,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
+    // Three little button-sized squares beside the diagnostics glyph, each
+    // plotting one resource — this app's CPU, the host's memory and its disk —
+    // as a moving sparkline fed one sample a second by updateFooterDiagnostics.
+    // The widget class, the member pointers and that feed loop all shipped with
+    // adhoc #17, but the charts were never actually built or added to the row,
+    // so the footer showed nothing; this constructs them (adhoc #25). Clicking
+    // one opens the same diagnostics dialog as the glyph.
+    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
+    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
+    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+        chart->onClicked = [this] { showDiagnosticsDialog(); };
+    m_cpuChart = cpuChart;
+    m_memChart = memChart;
+    m_diskChart = diskChart;
+
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
     quickAddRow->setSpacing(8);
@@ -564,6 +580,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls and the donate/social cluster pinned to the far right.
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(m_footerGitIdentity);
+    quickAddRow->addWidget(cpuChart);
+    quickAddRow->addWidget(memChart);
+    quickAddRow->addWidget(diskChart);
     quickAddRow->addWidget(m_footerDiagnostics);
     quickAddRow->addStretch(1);
     quickAddRow->addWidget(donateButton);
@@ -1162,7 +1181,7 @@ void MainWindow::startDiagnostics()
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
-        m_diagTimer->setInterval(1500);
+        m_diagTimer->setInterval(1000); // one sample a second into the charts
         connect(m_diagTimer, &QTimer::timeout, this,
                 &MainWindow::updateFooterDiagnostics);
         m_diagTimer->start();
