@@ -1365,7 +1365,10 @@ private:
     void pullBaseIntoAllBranches();
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
-    void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
+    // `model` (adhoc #60) picks which model the chosen provider runs as; empty
+    // falls back to the provider's low-cost default.
+    void fixBranchConflictsWithAgent(const QString &branch, const QString &provider,
+                                     const QString &model = QString());
     void promptNewBranch();
     void deleteBranch(const QString &branch);
     // The branch listed next to `branch` in the Branches table (the row below it,
