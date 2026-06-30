@@ -422,7 +422,7 @@ bool MainWindow::testColumnsBecomeResizable()
     QApplication::processEvents();
 
     // Spreadsheet semantics: the flex/Stretch column also becomes draggable
-    // (frozen at the width it had stretched to); only Fixed button columns stay.
+    // (fitted to the width of its widest data); only Fixed button columns stay.
     const bool flexDraggable = header->sectionResizeMode(0) == QHeaderView::Interactive;
     const bool fixedUntouched = header->sectionResizeMode(3) == QHeaderView::Fixed;
     const bool col1Draggable = header->sectionResizeMode(1) == QHeaderView::Interactive;

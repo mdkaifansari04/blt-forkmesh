@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 285
 title: on the mirror nodes show memory use / available and CPU levels also show last heartbeat time
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 45
