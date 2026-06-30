@@ -1793,22 +1793,39 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
     auto *fixMenu = new QMenu(m_branchFixButton);
-    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
-    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
-    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
-    connect(fixClaude, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
-    });
-    connect(fixOpenAi, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
-    });
-    connect(fixClaudeCode, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                        QStringLiteral("claude-code"));
-    });
+    // Each provider is a submenu of model choices (adhoc #60); picking a model
+    // passes it through to fixBranchConflictsWithAgent, which uses it instead of
+    // the provider's hardcoded default. The first entry is that default.
+    auto addFixProvider =
+        [this, fixMenu](const QString &title, const QString &provider,
+                        const QList<QPair<QString, QString>> &models) -> QAction * {
+        auto *sub = new QMenu(title, fixMenu);
+        for (const QPair<QString, QString> &entry : models) {
+            const QString model = entry.second;
+            QAction *act = sub->addAction(entry.first);
+            connect(act, &QAction::triggered, this, [this, provider, model] {
+                if (!m_branchDiffBranch.isEmpty())
+                    fixBranchConflictsWithAgent(m_branchDiffBranch, provider, model);
+            });
+        }
+        return fixMenu->addMenu(sub);
+    };
+    QAction *fixClaude = addFixProvider(
+        QStringLiteral("Fix with Claude"), QStringLiteral("claude"),
+        {{QStringLiteral("Claude Haiku 4.5"), QStringLiteral("claude-haiku-4-5")},
+         {QStringLiteral("Claude Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6")},
+         {QStringLiteral("Claude Opus 4.8"), QStringLiteral("claude-opus-4-8")}});
+    QAction *fixOpenAi = addFixProvider(
+        QStringLiteral("Fix with OpenAI"), QStringLiteral("openai"),
+        {{QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano")},
+         {QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini")},
+         {QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1")}});
+    QAction *fixClaudeCode = addFixProvider(
+        QStringLiteral("Fix with Claude Code"), QStringLiteral("claude-code"),
+        {{QStringLiteral("Default model"), QString()},
+         {QStringLiteral("Opus"), QStringLiteral("opus")},
+         {QStringLiteral("Sonnet"), QStringLiteral("sonnet")},
+         {QStringLiteral("Haiku"), QStringLiteral("haiku")}});
     // Bold the user's configured default agent (Settings -> Agents) so the dropdown
     // makes the default choice obvious; refresh on open in case it changed.
     auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
@@ -3522,7 +3539,8 @@ void MainWindow::pullBaseIntoAllBranches()
 }
 
 void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
-                                             const QString &provider)
+                                             const QString &provider,
+                                             const QString &modelArg)
 {
     if (m_aiFix) {
         flashMessage("An AI conflict fix is already running; wait for it to finish.",
@@ -3548,10 +3566,14 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     // local login); the two API providers POST each conflicted file to their endpoint.
     const bool claudeCode = provider == QLatin1String("claude-code");
     const bool claude = !claudeCode && agentIsClaudeProvider(provider);
-    const QString model =
-        claudeCode ? QString()
-                   : claude ? QStringLiteral("claude-haiku-4-5")
-                            : QStringLiteral("gpt-4.1-nano");
+    // The dropdown lets the user pick a model per provider (adhoc #60). For the
+    // API providers an empty choice falls back to the provider's low-cost
+    // default; Claude Code passes the alias straight through to the CLI as
+    // --model (empty = the CLI's own default).
+    QString model = modelArg.trimmed();
+    if (model.isEmpty() && !claudeCode)
+        model = claude ? QStringLiteral("claude-haiku-4-5")
+                       : QStringLiteral("gpt-4.1-nano");
     QString apiKey;
     if (!claudeCode) {
         apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
@@ -3666,7 +3688,7 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        claudeCode
+        model.isEmpty()
             ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
                   .arg(agentProviderName(provider), base, branch)
             : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
