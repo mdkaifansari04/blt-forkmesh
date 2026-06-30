@@ -785,6 +785,14 @@ private:
     void editCurrentPullFile();         // edit the selected file on the PR's branch
     void deleteCurrentPullFile();       // delete the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
+    // Close each still-open issue in `numbers` as resolved by a just-merged change,
+    // posting `comment` into the issue thread and logging it as closed "via" `via`
+    // (e.g. "pull request #5" or 'branch "fix-x"'). Refreshes the issue list and
+    // counters when anything changed, and returns the numbers actually closed so
+    // callers can word their own status message. Shared by the pull-request merge
+    // (closeIssuesLinkedFromPull) and the worktree/branch merge flows (adhoc #23).
+    QList<int> closeIssuesForMerge(const QList<int> &numbers,
+                                   const QString &comment, const QString &via);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
