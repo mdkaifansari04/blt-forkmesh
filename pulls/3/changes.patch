@@ -1,0 +1,49 @@
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index c08df665..342987fa 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -505,6 +505,44 @@ int main(int argc, char *argv[])
+                   .arg(shown)
+                   .arg(realized)
+                   .arg(onScreen));
++
++    // Issue #207: the commit detail page must expose a restore/revert action
++    // beside the destructive delete-history action.
++    {
++        window.resize(1100, 800);
++        window.testClickRepoDetailTab(1); // Commits
++        QElapsedTimer commitTimer;
++        commitTimer.start();
++        QPushButton *deleteCommit = nullptr;
++        QPushButton *restoreCommit = nullptr;
++        while (commitTimer.elapsed() < 5000) {
++            QApplication::processEvents();
++            deleteCommit = findButtonStartingWith(window, "Delete commit");
++            restoreCommit = findButtonStartingWith(window, "Restore commit");
++            if (deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window))
++                break;
++        }
++        bool adjacent = false;
++        bool restoreOnScreen = false;
++        if (deleteCommit && restoreCommit) {
++            const QPoint deleteTopLeft = deleteCommit->mapTo(&window, QPoint(0, 0));
++            const QPoint restoreTopLeft = restoreCommit->mapTo(&window, QPoint(0, 0));
++            adjacent = restoreTopLeft.y() == deleteTopLeft.y() &&
++                       restoreTopLeft.x() >= deleteTopLeft.x() + deleteCommit->width();
++            restoreOnScreen = restoreTopLeft.x() >= 0 &&
++                              restoreTopLeft.x() + restoreCommit->width() <=
++                                  window.width();
++        }
++        check(deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window) &&
++                  adjacent && restoreOnScreen,
++              QString("commit restore button is visible beside delete "
++                      "(delete=%1 restore=%2 visible=%3 adjacent=%4 onScreen=%5)")
++                  .arg(deleteCommit != nullptr)
++                  .arg(restoreCommit != nullptr)
++                  .arg(restoreCommit && restoreCommit->isVisibleTo(&window))
++                  .arg(adjacent)
++                  .arg(restoreOnScreen));
++    }
+     }
+ 
+     window.resize(480, 420);
