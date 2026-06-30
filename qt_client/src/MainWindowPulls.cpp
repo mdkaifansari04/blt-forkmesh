@@ -125,8 +125,8 @@ QWidget *MainWindow::buildPullsTab()
         updateDiffSplitButton(m_commitSplitButton);
         if (m_commitSplitButton)
             m_commitSplitButton->setChecked(on);
-        if (m_pullFiles && m_pullFiles->currentItem())
-            renderPullDiff(m_pullFiles->currentItem()->data(Qt::UserRole).toString());
+        if (m_pullFiles && m_pullFiles->count() > 0)
+            renderPullDiff();
     });
     m_pullMergeButton->setObjectName("primaryButton");
     setOcticon(m_pullUpdateButton, "sync", 16);
@@ -291,8 +291,11 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item)
-                    renderPullDiff(item->data(Qt::UserRole).toString());
+                // The whole PR is rendered into one scrollable view; picking a
+                // file just scrolls to its section (issue #250). The guard skips
+                // that scroll when the selection is itself following the scroll.
+                if (item && !m_pullSuppressFileScroll)
+                    scrollPullDiffToFile(item->data(Qt::UserRole).toString());
                 if (!item) {
                     if (m_pullEditFileButton)
                         m_pullEditFileButton->setEnabled(false);
@@ -302,9 +305,9 @@ QWidget *MainWindow::buildPullsTab()
             });
 
     // ---- Files changed page: file explorer | diff viewer.
-    // Prev/Next walk every change in the PR: hunk-by-hunk within the open file,
-    // then on to the next/previous file, so the reviewer can scroll through all
-    // of the files without hunting in the list.
+    // The diff viewer shows every changed file in one scrollable view; Prev/Next
+    // jump the scroll between consecutive changes (hunks) across all of the
+    // files, and the file list selects whichever file is on screen (issue #250).
     m_pullPrevButton = new QPushButton;
     m_pullPrevButton->setToolTip("Previous change");
     setOcticon(m_pullPrevButton, "chevron-up", 14);
@@ -1218,11 +1221,17 @@ void MainWindow::showPull(int number)
     }
     m_pullFiles->sortItems();
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
-    if (m_pullFiles->count() > 0)
+    if (m_pullFiles->count() > 0) {
+        // Render every file into the one scrollable view, then select the first
+        // file without scrolling the diff (it already starts at the top).
+        renderPullDiff();
+        m_pullSuppressFileScroll = true;
         m_pullFiles->setCurrentRow(0);
-    else {
+        m_pullSuppressFileScroll = false;
+    } else {
         m_pullDiff->setPlainText("(no changes)");
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+        m_pullFileAnchors.clear();
     }
     renderPullCommits(*found);
     renderPullThread(*found);
@@ -1262,19 +1271,19 @@ void MainWindow::adjustDiffFont(int delta)
         return;
     m_diffFontPt = next;
     QSettings().setValue(kDiffFontPtSetting, m_diffFontPt);
-    if (m_pullDiff && m_pullFiles && m_pullFiles->currentItem())
-        renderPullDiff(m_pullFiles->currentItem()->data(Qt::UserRole).toString());
+    if (m_pullDiff && m_pullFiles && m_pullFiles->count() > 0)
+        renderPullDiff();
     m_scmDiffCache.clear(); // other diff views re-render at the new size next time
 }
 
-void MainWindow::renderPullDiff(const QString &filePath)
+void MainWindow::renderPullDiff()
 {
     if (!m_pullDiff)
         return;
-    const QString diff = m_pullFileDiffs.value(filePath);
 
-    // Collect already-posted review threads for this file, keyed by side:line,
-    // so the renderer can drop them beneath the lines they annotate.
+    // Collect already-posted review threads for every file, keyed by
+    // path\x1fside:line, so the renderer can drop each beneath the line it
+    // annotates even though every file now shares one rendered view (#250).
     QHash<QString, QString> notes;
     const PullRequest *pr = nullptr;
     for (const PullRequest &p : m_currentPulls)
@@ -1288,12 +1297,13 @@ void MainWindow::renderPullDiff(const QString &filePath)
         };
         const PullReviewSnapshot snapshot = buildPullReviewSnapshot(*pr);
         for (const PullReviewThread &thread : snapshot.threads) {
-            if (thread.path != filePath || thread.lineStart <= 0)
+            if (thread.lineStart <= 0)
                 continue;
             const QString side =
                 thread.side.isEmpty() ? QStringLiteral("new") : thread.side;
-            const QString key =
-                side + QStringLiteral(":") + QString::number(thread.lineStart);
+            const QString key = thread.path + QLatin1Char('\x1f') + side +
+                                QStringLiteral(":") +
+                                QString::number(thread.lineStart);
             QString note =
                 QStringLiteral("<div class='reviewthread'><div class='threadhead'>"
                                "<b>Review thread</b> on %1 line %2 "
@@ -1367,40 +1377,52 @@ void MainWindow::renderPullDiff(const QString &filePath)
         }
     }
 
-    // The PR patch carries no git object context for image previews; pass empty
-    // dir/base/head so the renderer skips them and just lays out the text diff.
-    // filePath is the comment anchor file (enables clickable line numbers).
+    // Render the whole PR — every changed file — into one scrollable view. The
+    // PR patch carries no git object context for image previews, so pass empty
+    // dir/base/head (the renderer just lays out the text diff). A non-empty
+    // anchorFile turns on the clickable comment gutters for every file.
     QList<DiffFileEntry> files;
     const QSet<QString> viewed =
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
-    const QString html = renderDiffHtml(diff, files, QString(), QString(),
-                                        QString(), filePath, notes, viewed);
+    const QString fullPatch = pr ? pr->patch : QString();
+    const QString html = renderDiffHtml(fullPatch, files, QString(), QString(),
+                                        QString(), QStringLiteral("*"), notes, viewed);
+
+    // Map each file path to its "file-N" anchor so the list and Prev/Next can
+    // scroll straight to a file's section in the combined view.
+    m_pullFileAnchors.clear();
+    for (const DiffFileEntry &f : files)
+        m_pullFileAnchors.insert(f.path, f.anchor);
+
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
-    // Handing an enormous single-file diff to QTextEdit::setHtml() parses, styles
-    // and lays it all out on the GUI thread, freezing the window for seconds
-    // (issue #244, same cause as the branch-diff cap in #187). Past a sane size,
-    // show a notice instead so selecting a giant file in the list stays
-    // responsive. Capping body here also feeds the skip-when-unchanged key below.
-    constexpr int kMaxDiffHtmlChars = 1'000'000;
+    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays it
+    // all out on the GUI thread, freezing the window for seconds (issue #244,
+    // same cause as the branch-diff cap in #187). Rendering every file at once
+    // raises the ceiling, so cap the combined HTML: past a sane size show a
+    // notice instead so opening a huge PR stays responsive. Capping body here
+    // also feeds the skip-when-unchanged key below.
+    constexpr int kMaxDiffHtmlChars = 3'000'000;
     const QString body =
         html.size() > kMaxDiffHtmlChars
-            ? QStringLiteral("<p style='color:#d29922'>This file's diff is too "
-                             "large to render here (%1 KB). View it in your "
+            ? QStringLiteral("<p style='color:#d29922'>This pull request's diff is "
+                             "too large to render here (%1 KB). View it in your "
                              "editor.</p>")
-                  .arg(diff.size() / 1024)
+                  .arg(fullPatch.size() / 1024)
             : html.isEmpty()
                   ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
                   : html;
+    if (html.size() > kMaxDiffHtmlChars)
+        m_pullFileAnchors.clear(); // notice has no per-file anchors to jump to
 
     // Laying out a large diff's HTML table in QTextDocument can block the GUI
     // thread for a second or more. A background PR refresh re-runs showPull(),
-    // which repopulates the file list and re-selects row 0, firing this render
-    // again for the file already on screen. Skip the re-layout when nothing the
-    // document depends on (file, theme/font via the stylesheet, split toggle,
-    // review notes and viewed state via the html) has changed.
+    // which repopulates the file list and re-renders the diff. Skip the
+    // re-layout when nothing the document depends on (the PR, theme/font via the
+    // stylesheet, split toggle, review notes and viewed state via the html) has
+    // changed.
     const QString key = QString::number(m_currentPullNumber) +
-                        QLatin1Char('\x1f') + filePath + QLatin1Char('\x1f') +
-                        styleSheet + QLatin1Char('\x1f') + body;
+                        QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
+                        body;
     if (key == m_pullDiffRenderKey)
         return;
     m_pullDiffRenderKey = key;
@@ -1409,57 +1431,62 @@ void MainWindow::renderPullDiff(const QString &filePath)
     m_pullDiff->setHtml(body);
 }
 
-void MainWindow::pullSelectAdjacentChange(int delta)
+// Scroll the all-files diff so the given file's section sits at the top.
+void MainWindow::scrollPullDiffToFile(const QString &filePath)
 {
-    if (!m_pullFiles)
+    if (!m_pullDiff)
         return;
-
-    // Step through the open file's hunks first; only move to the next/previous
-    // file once we're already past its last/first hunk.
-    QListWidgetItem *current = m_pullFiles->currentItem();
-    const bool fileOpen =
-        m_pullDiff && current &&
-        !current->data(Qt::UserRole).toString().isEmpty();
-    if (fileOpen && pullScrollToAdjacentHunk(delta))
+    const QString anchor = m_pullFileAnchors.value(filePath);
+    if (anchor.isEmpty())
         return;
-
-    if (m_pullFiles->count() == 0)
-        return;
-    const int cur = m_pullFiles->currentRow();
-    int next = cur < 0 ? (delta > 0 ? 0 : m_pullFiles->count() - 1) : cur + delta;
-    if (next < 0 || next >= m_pullFiles->count())
-        return; // clamp at the ends rather than wrapping
-    QListWidgetItem *target = m_pullFiles->item(next);
-    m_pullFiles->setCurrentItem(target); // fires currentItemChanged -> renderPullDiff
-    m_pullFiles->scrollToItem(target);
-    // Entering the previous file from below: land on its last hunk so prev keeps
-    // walking changes upward. The next file opens scrolled to the top already, so
-    // its first hunk is in view.
-    if (delta < 0)
-        pullScrollToAdjacentHunk(-1, /*fromEnd=*/true);
+    m_pullDiff->scrollToAnchor(anchor);
 }
 
-bool MainWindow::pullScrollToAdjacentHunk(int delta, bool fromEnd)
+void MainWindow::pullSelectAdjacentChange(int delta)
+{
+    // Every file is in one scrollable view, so a change is just the next/previous
+    // hunk header anywhere in the PR — pullScrollToAdjacentHunk handles crossing
+    // file boundaries on its own.
+    pullScrollToAdjacentHunk(delta);
+}
+
+bool MainWindow::pullScrollToAdjacentHunk(int delta)
 {
     if (!m_pullDiff)
         return false;
-    if (fromEnd)
-        m_pullDiff->moveCursor(QTextCursor::End);
-    // Each hunk header renders as "@@ -old +new @@ ..."; the "@@ -" prefix occurs
-    // exactly once per hunk, so searching for it walks the diff hunk-by-hunk.
-    const QTextDocument::FindFlags flags =
-        delta < 0 ? QTextDocument::FindBackward : QTextDocument::FindFlags();
-    if (!m_pullDiff->find(QStringLiteral("@@ -"), flags))
+    QScrollBar *vbar = m_pullDiff->verticalScrollBar();
+    if (!vbar)
         return false;
-    // Keep the find's selection as the cursor (so a further step advances past
-    // it), but scroll the matched hunk header up near the top of the view.
-    const QTextCursor found = m_pullDiff->textCursor();
-    QTextCursor lineCur(found);
-    lineCur.setPosition(found.selectionStart());
-    lineCur.movePosition(QTextCursor::StartOfLine);
-    const QRect r = m_pullDiff->cursorRect(lineCur);
-    if (QScrollBar *vbar = m_pullDiff->verticalScrollBar())
-        vbar->setValue(vbar->value() + r.top() - 4);
+    // Walk every hunk header — each renders as "@@ -old +new @@ …", so the
+    // "@@ -" prefix occurs once per hunk — and jump to the nearest one strictly
+    // below (next) or above (prev) the current scroll position. Anchoring on the
+    // viewport, not a persisted cursor, keeps Prev/Next consistent after the
+    // reviewer scrolls the diff by hand (issue #250).
+    const int curTop = vbar->value();
+    int target = delta > 0 ? std::numeric_limits<int>::max()
+                           : std::numeric_limits<int>::min();
+    QTextCursor cur(m_pullDiff->document());
+    while (true) {
+        cur = m_pullDiff->document()->find(QStringLiteral("@@ -"), cur);
+        if (cur.isNull())
+            break;
+        QTextCursor lineCur(cur);
+        lineCur.setPosition(cur.selectionStart());
+        lineCur.movePosition(QTextCursor::StartOfLine);
+        // cursorRect is in viewport coordinates; add the scroll offset to get the
+        // hunk's position within the document.
+        const int y = m_pullDiff->cursorRect(lineCur).top() + curTop;
+        if (delta > 0) {
+            if (y > curTop + 4)
+                target = std::min(target, y);
+        } else if (y < curTop - 4) {
+            target = std::max(target, y);
+        }
+    }
+    if (delta > 0 ? target == std::numeric_limits<int>::max()
+                  : target == std::numeric_limits<int>::min())
+        return false; // no further hunk in that direction
+    vbar->setValue(std::clamp(target - 4, vbar->minimum(), vbar->maximum()));
     return true;
 }
 
@@ -1480,14 +1507,16 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
             setPullThreadState(threadId, QStringLiteral("unresolved"));
         return;
     }
-    // "viewed:<path>" toggles a file's reviewed state and re-renders it.
+    // "viewed:<path>" toggles a file's reviewed state and re-renders the diff,
+    // keeping the toggled file in view (its section collapses/expands in place).
     if (url.scheme() == QLatin1String("viewed")) {
         const QString path = url.path();
         const QString context =
             QStringLiteral("pull/") + QString::number(m_currentPullNumber);
         const QSet<QString> cur = loadDiffViewed(context);
         setDiffViewed(context, path, !cur.contains(path));
-        renderPullDiff(path);
+        renderPullDiff();
+        scrollPullDiffToFile(path);
         return;
     }
     // "filecomment:<path>" posts a file-level comment on the pull request.
@@ -1524,16 +1553,17 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
         showPull(m_currentPullNumber);
         return;
     }
-    // Anchor format: "cmt:<side>:<line>" where side is old|new.
-    const QStringList parts = href.split(QLatin1Char(':'));
-    if (parts.size() != 3 || parts.at(0) != QLatin1String("cmt"))
+    // Anchor format: "cmt:<path>?s=<side>&l=<line>" (side is old|new). The path
+    // is carried in the anchor so the comment lands on the right file even though
+    // every file shares one rendered view (issue #250).
+    if (url.scheme() != QLatin1String("cmt"))
         return;
-    const QString side = parts.at(1);
-    const int line = parts.at(2).toInt();
-    if (m_currentPullNumber < 0 || !m_pullFiles || !m_pullFiles->currentItem())
+    const QString filePath = url.path();
+    const QUrlQuery cmtQuery(url);
+    const QString side = cmtQuery.queryItemValue(QStringLiteral("s"));
+    const int line = cmtQuery.queryItemValue(QStringLiteral("l")).toInt();
+    if (m_currentPullNumber < 0 || filePath.isEmpty() || line <= 0)
         return;
-    const QString filePath =
-        m_pullFiles->currentItem()->data(Qt::UserRole).toString();
 
     bool ok = false;
     const QString body = QInputDialog::getMultiLineText(
