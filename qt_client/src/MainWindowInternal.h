@@ -1464,11 +1464,13 @@ private:
 // just like Excel/Sheets. Qt's auto-sizing header modes fight this -- a Stretch or
 // stretch-last column silently absorbs a neighbour's drag (so the divider snaps
 // back and distant columns jump, which feels broken), and ResizeToContents locks
-// the divider entirely. So once real rows have populated, this snapshots each
-// auto-sized column's current width and switches it to Interactive: ResizeToContents
-// columns keep their fitted width, the flex/Stretch column keeps the width it had
-// stretched to, and stretch-last is turned off. Fixed button columns are left
-// exactly as the caller set them. Call once after the header has been configured.
+// the divider entirely. So once real rows have populated, this fits each auto-sized
+// column to the width of its widest data and switches it to Interactive:
+// ResizeToContents and Stretch/stretch-last columns alike are sized to their content
+// (a Stretch column would otherwise keep only the width it was stretched to fill,
+// which can be narrower than its content and elide the text), and stretch-last is
+// turned off. Fixed button columns are left exactly as the caller set them. Call
+// once after the header has been configured.
 inline void makeColumnsResizable(QTableWidget *table)
 {
     if (!table || !table->model())
@@ -1481,9 +1483,9 @@ inline void makeColumnsResizable(QTableWidget *table)
             if (*done)
                 return;
             *done = true;
-            // Defer to the next event-loop turn so the snapshot reflects the
+            // Defer to the next event-loop turn so the fit reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
-            QTimer::singleShot(0, table, [header]() {
+            QTimer::singleShot(0, table, [table, header]() {
                 // The last column may auto-fill via stretchLastSection rather than
                 // a per-section Stretch mode; capture that before turning it off.
                 const bool stretchLast = header->stretchLastSection();
@@ -1496,10 +1498,12 @@ inline void makeColumnsResizable(QTableWidget *table)
                         mode == QHeaderView::Stretch || (stretchLast && i == last);
                     if (!autosized)
                         continue; // leave Fixed button columns untouched
-                    const int w = header->sectionSize(i);
+                    // Switch to draggable Interactive, then expand the column to
+                    // the width of its widest cell (or header label) so nothing is
+                    // elided. A Stretch column otherwise reports only the width it
+                    // was stretched to fill, which can be narrower than its data.
                     header->setSectionResizeMode(i, QHeaderView::Interactive);
-                    if (w > 0)
-                        header->resizeSection(i, w);
+                    table->resizeColumnToContents(i);
                 }
             });
         });
