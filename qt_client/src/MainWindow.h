@@ -1624,6 +1624,10 @@ private:
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
+    // Live mic-level meter (adhoc #10): sample the growing capture and drive the
+    // bar beside the mic so you can see audio is coming in while you talk.
+    void updateVoiceLevelMeter();
+    void stopVoiceLevelMeter();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
     void refreshWhisperStatus();
@@ -2220,12 +2224,19 @@ private:
     bool m_voiceRecording = false;
     int m_voiceInsertPos = -1;
     int m_voiceInsertLen = 0;
+    // Live input-level meter shown beside the mic while recording. m_voiceLevelTimer
+    // samples the fresh tail of the WAV every ~80 ms; m_voiceLevelPos tracks the byte
+    // offset already metered so each tick only reads the newly-captured samples.
+    QProgressBar *m_voiceLevelMeter = nullptr;
+    QTimer *m_voiceLevelTimer = nullptr;
+    qint64 m_voiceLevelPos = 0;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;
     QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
+    QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
     // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
     // recalls the last prompt sent so it can be fired again. Newest entry last;
     // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1

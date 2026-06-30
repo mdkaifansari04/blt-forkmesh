@@ -293,6 +293,36 @@ QWidget *MainWindow::buildSettingsSection()
     voiceRow->addStretch();
     refreshWhisperStatus();
 
+    // Microphone picker (adhoc #10): choose which input device the recorder
+    // captures from. Populated from the installed recorder's device list; the
+    // first entry is the system default. Persisted to kVoiceInputDeviceSetting,
+    // which audioRecorderFor() reads when it starts a capture.
+    m_voiceDeviceCombo = new QComboBox;
+    m_voiceDeviceCombo->setToolTip(
+        "Microphone the recorder captures from. \"System default\" follows your "
+        "OS audio settings.");
+    {
+        const QString saved =
+            QSettings().value(kVoiceInputDeviceSetting).toString();
+        const auto devices = voiceInputDevices();
+        for (const auto &d : devices)
+            m_voiceDeviceCombo->addItem(d.first, d.second);
+        const int di = m_voiceDeviceCombo->findData(saved);
+        m_voiceDeviceCombo->setCurrentIndex(di >= 0 ? di : 0);
+    }
+    connect(m_voiceDeviceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                QSettings().setValue(kVoiceInputDeviceSetting,
+                                     m_voiceDeviceCombo->currentData().toString());
+            });
+    auto *voiceDeviceRow = new QHBoxLayout;
+    voiceDeviceRow->setSpacing(8);
+    auto *micLabel = new QLabel("Microphone");
+    micLabel->setObjectName("statusLine");
+    voiceDeviceRow->addWidget(micLabel);
+    voiceDeviceRow->addWidget(m_voiceDeviceCombo, 1);
+    voiceDeviceRow->addStretch();
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -930,6 +960,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(voiceLabel);
     agentsCol->addWidget(voiceHint);
     agentsCol->addLayout(voiceRow);
+    agentsCol->addLayout(voiceDeviceRow);
     agentsCol->addWidget(m_whisperStatusLabel);
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
